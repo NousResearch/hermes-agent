@@ -162,28 +162,38 @@ def _scan_heredoc_command_unit(command: str, start: int):
 
 
 def _find_heredoc_close(
-        command: str, body_start: int, delimiter: str, strip_tabs: bool) -> int | None:
-    """Return the position after an exact shell heredoc terminator line."""
+        command: str, body_start: int, delimiter: str, strip_tabs: bool, quoted: bool) -> int | None:
+    """Return the position after an exact shell heredoc terminator line. In an unquoted body
+    bash first joins a line ending in an odd run of backslashes with the next one, so
+    ``text\\`` + ``EOF`` is body text and ``EO\\`` + ``F`` is the terminator."""
     cursor = body_start
     while True:
-        newline = command.find("\n", cursor)
-        after = len(command) if newline == -1 else newline + 1
-        line = command[cursor:after].removesuffix("\n").removesuffix("\r")
-        candidate = line.lstrip("\t") if strip_tabs else line
+        logical = ""
+        while True:
+            newline = command.find("\n", cursor)
+            after = len(command) if newline == -1 else newline + 1
+            line = command[cursor:after].removesuffix("\n")
+            cursor = after
+            if quoted or newline == -1 or (len(line) - len(line.rstrip("\\"))) % 2 == 0:
+                logical += line
+                break
+            logical += line[:-1]
+        logical = logical.removesuffix("\r")
+        candidate = logical.lstrip("\t") if strip_tabs else logical
         if candidate == delimiter:
             return after
         if newline == -1:
             return None
-        cursor = after
 
 
-def strip_inert_heredoc_bodies(command: str) -> str:
-    """Mask heredoc bodies that are provably inert data (see module docstring)."""
+def _heredoc_units(command: str):
+    """Yield ``(command_start, command_end, specs, post_heredoc_list_operator, owner_start,
+    body_ranges)`` for each command that opens heredocs, in order. Yields ``None`` and stops
+    once a body cannot be delimited (unparseable ``<<`` opener, missing terminator line)."""
     # Runs on every terminal call: skip the state machine when no '<<' exists; stop past the last.
     if "<<" not in command:
-        return command
+        return
     last_opener_index = command.rfind("<<")
-    ranges: list[tuple[int, int]] = []
     command_start = 0
     while command_start <= last_opener_index:
         (
@@ -194,22 +204,90 @@ def strip_inert_heredoc_bodies(command: str) -> str:
             owner_start,
         ) = _scan_heredoc_command_unit(command, command_start)
         if unknown_operator:
-            return command
+            yield None
+            return
         if not specs:
             if command_end >= len(command):
-                break
+                return
             command_start = command_end + 1
             continue
         if command_end >= len(command):
-            return command  # opener with no body line: unterminated — leave visible
+            yield None  # opener with no body line: unterminated
+            return
         body_cursor = command_end + 1
         body_ranges: list[tuple[int, int]] = []
-        for delimiter, strip_tabs, _quoted in specs:
-            close_end = _find_heredoc_close(command, body_cursor, delimiter, strip_tabs)
+        for delimiter, strip_tabs, quoted in specs:
+            close_end = _find_heredoc_close(command, body_cursor, delimiter, strip_tabs, quoted)
             if close_end is None:
-                return command  # unterminated
+                yield None  # unterminated
+                return
             body_ranges.append((body_cursor, close_end))
             body_cursor = close_end
+        yield command_start, command_end, specs, post_heredoc_list_operator, owner_start, body_ranges
+        command_start = body_cursor
+
+
+def _substitution_end(command: str, cursor: int, limit: int) -> int:
+    """Index just past the ``$(...)`` (or ``$((...))``) opened at ``cursor``; ``limit`` if unclosed."""
+    depth, end = 0, cursor + 1
+    while end < limit:
+        char = command[end]
+        if char == "\\":
+            end += 2
+        elif char == "'":
+            end = command.find("'", end + 1) + 1 or limit
+        elif char in '"`':
+            end = _span_end(command, end, char)
+        else:
+            depth += (char == "(") - (char == ")")
+            end += 1
+            if depth == 0:
+                return end
+    return limit
+
+
+def _unquoted_body_data_ranges(command: str, start: int, end: int) -> list[tuple[int, int]]:
+    """Split an unquoted body into its data: bash runs the ``$(...)`` and backtick command
+    substitutions in it when it expands the body, so those stay live (quotes are literal here)."""
+    ranges: list[tuple[int, int]] = []
+    piece = cursor = start
+    while cursor < end:
+        if command[cursor] == "\\":
+            cursor += 2
+        elif command[cursor] == "`" or command.startswith("$(", cursor):
+            close = (min(_span_end(command, cursor, "`"), end) if command[cursor] == "`"
+                     else _substitution_end(command, cursor, end))
+            if cursor > piece:
+                ranges.append((piece, cursor))
+            piece = cursor = close
+        else:
+            cursor += 1
+    if end > piece:
+        ranges.append((piece, end))
+    return ranges
+
+
+def heredoc_body_ranges(command: str) -> list[tuple[int, int]] | None:
+    """``(start, end)`` of the data in every heredoc body, in order, or ``None`` when a body
+    cannot be delimited. The shell reads a body as data, so no list operator or command word in
+    it is live: a quoted body is data through its terminator line; an unquoted one is data
+    except for the command substitutions it expands (see ``_unquoted_body_data_ranges``)."""
+    ranges: list[tuple[int, int]] = []
+    for unit in _heredoc_units(command):
+        if unit is None:
+            return None
+        for (_delimiter, _strip_tabs, quoted), (start, end) in zip(unit[2], unit[-1]):
+            ranges.extend([(start, end)] if quoted else _unquoted_body_data_ranges(command, start, end))
+    return ranges
+
+
+def strip_inert_heredoc_bodies(command: str) -> str:
+    """Mask heredoc bodies that are provably inert data (see module docstring)."""
+    ranges: list[tuple[int, int]] = []
+    for unit in _heredoc_units(command):
+        if unit is None:
+            return command
+        command_start, command_end, specs, post_heredoc_list_operator, owner_start, body_ranges = unit
         if (
             all(quoted for _delimiter, _strip_tabs, quoted in specs)
             and not post_heredoc_list_operator
@@ -221,7 +299,8 @@ def strip_inert_heredoc_bodies(command: str) -> str:
                 for marker in ("$(", "`", "<(", ">(", "(", ")", "{", "}")
             ) and _INERT_HEREDOC_CONSUMER_RE.search(masked_owner):
                 ranges.extend(body_ranges)
-        command_start = body_cursor
+    if not ranges:
+        return command
     # Single-pass rebuild (ranges are sorted and non-overlapping), bodies -> their newlines only.
     parts: list[str] = []
     previous = 0

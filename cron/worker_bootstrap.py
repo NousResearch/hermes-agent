@@ -48,6 +48,9 @@ WORKER_MARKER = "_HERMES_CRON_WORKER_BOOT"
 
 def worker_bootstrap() -> None:
     """Run PM's dependency boot in the marked external worker (again after a relaunch)."""
+    # sys.flags.safe_path is already latched; keep PYTHONSAFEPATH out of our children.
+    if os.environ.pop("_HERMES_PINNED_SAFEPATH", None):
+        os.environ.pop("PYTHONSAFEPATH", None)
     if not os.environ.get(WORKER_MARKER):
         return
     from pm.environments import activate_dependencies

@@ -740,7 +740,34 @@ def test_pin_restores_the_committed_generation_site_packages(tmp_path):
     pm.environments.runtime_facts_path(repo_root).unlink()
     assert worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root) == {
         "PYTHONPATH": str(repo_root), "PYTHONSAFEPATH": "1",
+        "_HERMES_PINNED_SAFEPATH": "1",
     }
+
+
+def test_pinned_safe_path_does_not_leak_into_worker_children(tmp_path):
+    """PYTHONSAFEPATH is for the worker interpreter only: after boot, children built from
+    its os.environ (terminal / execute_code) must not carry it, but a user's own value
+    (no pin marker) must survive."""
+    import subprocess
+    import cron.scheduler_worker_env as worker_env_mod
+
+    repo_root = Path(worker_env_mod.__file__).resolve().parent.parent
+    env = worker_env_mod.pin_hermes_tree_on_pythonpath(dict(os.environ), repo_root)
+    boot = (
+        "import hermes_cli.main, os, sys\n"
+        "from tools.environments.local import _make_run_env\n"
+        "print(sys.flags.safe_path, 'PYTHONSAFEPATH' in _make_run_env({}), "
+        "'_HERMES_PINNED_SAFEPATH' in os.environ)"
+    )
+    out = subprocess.run([sys.executable, "-c", boot], env=env, cwd=tmp_path,
+                         capture_output=True, text=True, timeout=120).stdout.split()[-3:]
+    assert out == ["True", "False", "False"]  # latched for the worker, gone for children
+
+    user = {**os.environ, "PYTHONSAFEPATH": "1", "PYTHONPATH": str(repo_root)}
+    user.pop("_HERMES_PINNED_SAFEPATH", None)
+    out = subprocess.run([sys.executable, "-c", boot], env=user, cwd=tmp_path,
+                         capture_output=True, text=True, timeout=120).stdout.split()[-3:]
+    assert out[1] == "True"  # user's own value kept
 
 
 def test_pinned_worker_ignores_decoy_hermes_cli_in_cwd(tmp_path):

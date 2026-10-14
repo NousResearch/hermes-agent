@@ -385,3 +385,88 @@ def test_ws_orphan_reap_rearm_spares_post_wake_reconnect(monkeypatch):
     clocks["wall"] += 18.0
     timers[1].callback()
     assert reaped == []
+
+
+def _delivery_reap_harness(monkeypatch, session):
+    timers = []
+
+    class Timer:
+        def __init__(self, _delay, callback):
+            self.callback = callback
+            timers.append(self)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    sid = "bot-delivery"
+    interrupts = []
+    monkeypatch.setattr(server, "_sessions", {sid: session})
+    monkeypatch.setattr(server, "_pending_ws_reaps", {})
+    monkeypatch.setattr(server.threading, "Timer", Timer)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20)
+    monkeypatch.setattr(server, "_WS_ORPHAN_ACTIVITY_STALE_S", 0)  # every turn looks stale
+    monkeypatch.setattr(server, "_WS_ORPHAN_DELIVERY_MAX_DEFERRALS", 3)
+    monkeypatch.setattr(server, "_session_has_active_delegations", lambda *a: False)
+    monkeypatch.setattr(server, "_interrupt_session_turn",
+                        lambda *a, **kw: interrupts.append(kw.get("request_id")) or False)
+    server._schedule_ws_orphan_reap(sid)
+    return sid, timers, interrupts
+
+
+def test_bot_delivery_turn_survives_normal_grace(monkeypatch):
+    session = dict(transport=server._detached_ws_transport, running=True, _bot_delivery_turn="ab" * 16)
+    sid, timers, interrupts = _delivery_reap_harness(monkeypatch, session)
+    timers[-1].callback()
+    assert interrupts == []
+    assert session["_bot_delivery_reap_deferrals"] == 1
+    assert not session.get("_client_gone_interrupt_requested")
+    assert server._pending_ws_reaps[sid] is timers[-1] and len(timers) == 2
+
+
+def test_bot_delivery_turn_interrupted_after_extended_cap(monkeypatch):
+    session = dict(transport=server._detached_ws_transport, running=True, _bot_delivery_turn="ab" * 16)
+    sid, timers, interrupts = _delivery_reap_harness(monkeypatch, session)
+    for _ in range(3):
+        timers[-1].callback()
+    assert interrupts == []
+    timers[-1].callback()
+    assert interrupts == [f"client-gone-{sid}"]
+    assert session["_client_gone_interrupt_requested"]
+
+
+def test_normal_turn_still_interrupted_at_normal_grace(monkeypatch):
+    session = dict(transport=server._detached_ws_transport, running=True)
+    sid, timers, interrupts = _delivery_reap_harness(monkeypatch, session)
+    timers[-1].callback()
+    assert interrupts == [f"client-gone-{sid}"]
+    assert "_bot_delivery_reap_deferrals" not in session
+
+
+def test_bot_delivery_flag_clears_on_terminal_receipt(monkeypatch):
+    import tools.bot_live_delivery as live
+
+    lease = SimpleNamespace(lease_id="L1", released=False)
+    session = dict(agent=object(), active_session_lease=lease, session_key="K1", history_lock=threading.Lock())
+    owner = dict(lease_id="L1", live_session_id="sid1", session_id="K1")
+    monkeypatch.setattr(live, "has_mailbox", lambda home: True)
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda home: owner)
+    monkeypatch.setattr(live, "claim_pending_delivery", lambda home, o: {"id": "cd" * 16, "message": "hi"})
+    receipts = []
+    monkeypatch.setattr(live, "complete_delivery", lambda home, did, **kw: receipts.append((did, kw["status"])))
+    monkeypatch.setattr(server, "_session_home", lambda s: "/tmp/home")
+    callbacks = []
+
+    def submit(rid, sid, sess, text, **kw):
+        assert sess["_bot_delivery_turn"] == "cd" * 16
+        callbacks.append(kw["terminal_callback"])
+        return True
+
+    monkeypatch.setattr(server, "_run_prompt_submit", submit)
+    assert server._poll_bot_live_delivery_once("sid1", session)
+    session["_bot_delivery_reap_deferrals"] = 2
+    callbacks[0]({"status": "settled", "text": "ok"})
+    assert "_bot_delivery_turn" not in session and "_bot_delivery_reap_deferrals" not in session
+    assert receipts == [("cd" * 16, "settled")]

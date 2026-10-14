@@ -673,10 +673,14 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
         if claimed is None:
             return False
         session["running"] = True
+        # Mark the turn as a durable delivery so the ws-orphan reaper lets it finish detached.
+        session["_bot_delivery_turn"] = str(claimed["id"])
 
     delivery_id = str(claimed["id"])
 
     def terminal_receipt(terminal: dict) -> None:
+        session.pop("_bot_delivery_turn", None)
+        session.pop("_bot_delivery_reap_deferrals", None)
         status = str(terminal.get("status") or "failed")
         error = str(terminal.get("error") or "")
         reason = "cancelled" if status == "cancelled" else ""

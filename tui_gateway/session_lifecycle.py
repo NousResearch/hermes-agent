@@ -875,6 +875,11 @@ def _ws_orphan_turn_activity_is_fresh(session: dict) -> bool:
         return False
 
 
+# Max grace windows a detached Bot Chat delivery turn may outlive its client before the normal
+# stale-turn interrupt applies (default 30 x 20s grace = 10 min).
+_WS_ORPHAN_DELIVERY_MAX_DEFERRALS = 30
+
+
 def _schedule_ws_orphan_reap(
     sid: str, *, delay_s: float | None = None, _expected_timer: threading.Timer | None = None,
 ) -> None:
@@ -943,6 +948,13 @@ def _schedule_ws_orphan_reap(
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
             elif not current.get("running"):
                 session = _pop_session_by_id(sid)
+            elif (current.get("_bot_delivery_turn") and not current.get("_client_gone_interrupt_requested")
+                  and int(current.get("_bot_delivery_reap_deferrals") or 0) < _WS_ORPHAN_DELIVERY_MAX_DEFERRALS):
+                # A message_agent / cron Bot Chat delivery is not the departed client's turn: let it finish
+                # detached (even through a quiet tool call) so its receipt settles instead of being cancelled
+                # at grace. Bounded, so a wedged delivery still falls through to the interrupt path below.
+                current["_bot_delivery_reap_deferrals"] = int(current.get("_bot_delivery_reap_deferrals") or 0) + 1
+                reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
             elif not current.get("_client_gone_interrupt_requested") and _ws_orphan_turn_activity_is_fresh(current):
                 # Client-absent but producing: keep running detached (the sentinel buffers emits), re-check each grace.
                 logger.debug("client_gone sid=%s action=defer (turn activity fresh; stale threshold %.0fs)",

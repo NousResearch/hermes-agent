@@ -559,6 +559,39 @@ def test_plugin_host_wire_preserves_immutable_memory_observer_payload():
         decoded[0].payload["nested"][0]["x"] = 2
 
 
+def test_plugin_host_wire_preserves_reserved_markers_in_memory_payload():
+    from agent.memory_provider import (
+        MemoryObservation,
+        MemoryPrefetchResult,
+        _thaw_json_value,
+    )
+    from hermes_cli.plugin_host_wire import decode, encode
+
+    payload = {
+        "nested": [
+            {"__record__": "ProviderData", "fields": {"value": 1}},
+            {"__bytes__": "AQ=="},
+            {"__opaque__": "ProviderData", "repr": "provider value"},
+            {"__callable__": 1},
+            {"__object__": 2},
+            {"__handle__": 3},
+        ]
+    }
+    result = MemoryPrefetchResult(
+        context="context",
+        observations=(MemoryObservation("recall", "fixture", 1, payload),),
+    )
+    resolved = []
+    wire = json.loads(json.dumps(encode(result)))
+
+    decoded = decode(wire, resolve=lambda ref: resolved.append(ref))
+
+    assert type(decoded) is MemoryPrefetchResult
+    assert type(decoded.observations[0]) is MemoryObservation
+    assert _thaw_json_value(decoded.observations[0].payload) == payload
+    assert resolved == []
+
+
 def test_unload_profile_manager_does_not_hold_registry_lock_during_teardown(
     tmp_path, monkeypatch
 ):

@@ -19,6 +19,10 @@ from typing import Any, Optional
 LIVE_GATEWAY_SILENT_MARKERS = frozenset({
     "[SILENT]", "SILENT", "NO_REPLY", "NO REPLY",
     "[静默]", "静默", "[沉默]", "沉默",
+    # A model asked for "no changes" may answer with the bare control token
+    # instead of sentence prose; a whole-output NOCHANGE must never reach a
+    # chat as literal text.
+    "NOCHANGE", "[NOCHANGE]",
 })
 
 # Bracketed markers drive the autonomous lane's prefix rule ("[SILENT] nothing

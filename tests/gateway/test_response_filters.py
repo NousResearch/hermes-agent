@@ -10,6 +10,16 @@ def test_exact_silence_tokens_are_intentional_silence():
         assert is_intentional_silence_response(token)
 
 
+def test_nochange_control_token_is_silence_not_chat_text():
+    """A model asked for "no changes" may answer with the bare control token;
+    a whole-output NOCHANGE must suppress delivery, never post literally."""
+    assert is_intentional_silence_response("NOCHANGE")
+    assert is_intentional_silence_response("[NOCHANGE]")
+    assert is_autonomous_silence_response("[NOCHANGE] nothing to report")
+    # Prose that merely mentions the token is still delivered.
+    assert not is_intentional_silence_response("status: NOCHANGE means all synced")
+
+
 def test_autonomous_silence_accepts_marker_with_own_line_note():
     """The loose rule for cron/webhook lanes: marker + explanation suppresses."""
     assert is_autonomous_silence_response("[SILENT]")

@@ -609,3 +609,45 @@ def _estimate_tools_tokens_rough(tools: List[Dict[str, Any]]) -> int:
         _TOOLS_TOKENS_CACHE.pop(next(iter(_TOOLS_TOKENS_CACHE)), None)
     _TOOLS_TOKENS_CACHE[key] = (*signature, tokens)
     return tokens
+
+
+def is_local_endpoint(base_url: str) -> bool:
+    """True for local/LAN endpoints used by local model servers."""
+    import ipaddress
+    from urllib.parse import urlparse
+
+    try:
+        value = str(base_url or "").strip().rstrip("/")
+        if not value:
+            return False
+        parsed = urlparse(value if "://" in value else f"http://{value}")
+        host = parsed.hostname
+    except Exception:
+        return False
+    if not host:
+        return False
+    local_hosts = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+    local_suffixes = (".docker.internal", ".containers.internal", ".lima.internal")
+    if host in local_hosts or host.endswith(local_suffixes) or host.endswith(".local") or ("." not in host and ":" not in host):
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+        tailscale = ipaddress.IPv4Network("100.64.0.0/10")
+        return bool(
+            addr.is_private or addr.is_loopback or addr.is_link_local
+            or (isinstance(addr, ipaddress.IPv4Address) and addr in tailscale)
+        )
+    except ValueError:
+        parts = host.split(".")
+        if len(parts) != 4:
+            return False
+        try:
+            first, second = int(parts[0]), int(parts[1])
+        except ValueError:
+            return False
+        return (
+            first == 10
+            or (first == 172 and 16 <= second <= 31)
+            or (first == 192 and second == 168)
+            or (first == 100 and 64 <= second <= 127)
+        )

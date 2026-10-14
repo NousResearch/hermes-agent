@@ -222,14 +222,43 @@ From the next turn in that Bot Chat the teammate roster, the protocol section, a
 Bot-to-bot delivery is per-invocation: the receiving Bot picks the message up when it next runs. Live interrupt of a Bot mid-conversation is future work.
 :::
 
-### Failed turns retry safely
+### Local CLI fallback retains busy inputs without replaying uncertain turns
+
+When no live owner is available, `message_agent` retains the local input in the
+existing `runtime/bot_live_delivery/` mailbox before starting a CLI runner. A
+`queued` acknowledgement is durable admission, not proof of execution. Inputs
+are ordered by a persistent per-target sequence, not by wall-clock time. A busy
+profile lock or a typed pre-turn ownership refusal defers the same input with
+backoff (up to 12 attempts, a configured envelope TTL capped at 24 hours, and
+128 unresolved inputs per target). The runner drains for at most 120 seconds;
+it installs no scheduler. A still-queued input survives runner exit/restart and
+can resume through the same runner command or stable key.
+
+For this local CLI route only, `message_agent(target="researcher", message="…",
+idempotency_key="handoff-123")` binds a 1–128 character key to the sender home,
+target home, attributed input and author. Reusing it with different input is
+refused; reusing it with identical input returns the same delivery ID and
+outcome. Live-owner messages and remote/peer transports retain their existing
+receipt-ID protocol and do not accept this optional key.
+
+The actual canonical target session consumes a one-use claim before running
+tools and writes the receipt itself. The dispatcher reads that receipt back;
+stdout, exit code, or a model failure alone cannot prove safe retry. Failed
+target turns are terminal and are not re-executed: they may already have made
+changes. A crash after claim or an unverified outcome retains the input as
+`claimed`/`ambiguous`, blocks later CLI inputs, and must never be automatically
+replayed. Terminal inputs have their message text scrubbed while their digest
+and receipt remain available to reject late duplicates. This is a same-user
+local filesystem contract, not a remote apply API or a signed peer receipt.
+
+### Legacy and remote turn retry policy
 
 Local one-shot delivery preserves the active-session refusal code separately from
 its human-readable message. `SESSION_NOT_OWNED` produces `target_busy`; an
 unreadable coordination registry is not mislabeled as another owner. Older local
 CLIs without the code marker still use the historical refusal wording.
 
-A failed delivery turn is retried at most once, and only when a retry can actually help. Transient failures (target runtime offline, delivery timeout, provider rate limit or server error) re-run the same Bot Chat session unchanged. A context-overflow failure also re-runs the same session — the retried turn compacts the over-threshold transcript via the standard context-compression pass before calling the model, so the retry fits where the original didn't. Auth, quota, and configuration failures never auto-retry: a second attempt cannot fix them and only burns quota, so the failure is surfaced immediately. A retried turn never starts a fresh session — your Bot Chat history and context stay intact. The re-run resumes the message the failed attempt already wrote into the Bot Chat instead of appending it again, so the recipient's transcript carries exactly one copy of the DM.
+On legacy or remote delivery paths, a failed delivery turn is retried at most once, and only when a retry can actually help. Transient failures (target runtime offline, delivery timeout, provider rate limit or server error) re-run the same Bot Chat session unchanged. A context-overflow failure also re-runs the same session — the retried turn compacts the over-threshold transcript via the standard context-compression pass before calling the model, so the retry fits where the original didn't. Auth, quota, and configuration failures never auto-retry: a second attempt cannot fix them and only burns quota, so the failure is surfaced immediately. A retried turn never starts a fresh session — your Bot Chat history and context stay intact. The re-run resumes the message the failed attempt already wrote into the Bot Chat instead of appending it again, so the recipient's transcript carries exactly one copy of the DM.
 
 When a target has no live Desktop or TUI owner, local delivery opens that
 profile's canonical Bot Chat through a quiet CLI turn. The transport prefers

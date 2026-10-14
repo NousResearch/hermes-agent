@@ -140,6 +140,8 @@ def _ticket_shape_error(path: Path, record: dict[str, Any]) -> str | None:
         return f"unknown status {status!r}"
     if not all(isinstance(v, int) and not isinstance(v, bool) for v in (created_at, sequence)):
         return "created_at/sequence are not integers"
+    if record.get("transport") == "cli":
+        return None if isinstance(record.get("profile_home"), str) else "CLI target pin is incomplete"
     if not isinstance(owner, dict) or not all(isinstance(owner.get(k), str) and owner[k] for k in _OWNER_KEYS):
         return "owner pin is incomplete"
     return None
@@ -262,7 +264,8 @@ def claim_pending_delivery(
         pending = []
         for path in root.glob("*.json"):
             record = _scan_read(path)
-            if record is not None and record["status"] == "queued" and _matches(profile_home, record, current):
+            if (record is not None and record.get("transport") != "cli"
+                    and record["status"] == "queued" and _matches(profile_home, record, current)):
                 pending.append(record)
         if not pending:
             return None

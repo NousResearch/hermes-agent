@@ -245,6 +245,8 @@ def _runner_parts(command):
     argv = parts[marker + 3 :]
     if argv[:1] == ["--profile-home"]:
         argv = argv[2:]
+    if argv[:1] == ["--durable"]:
+        argv = argv[1:]
     return parts[marker + 1], parts[marker + 2], argv
 
 

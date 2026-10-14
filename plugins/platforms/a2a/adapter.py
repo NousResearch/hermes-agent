@@ -524,8 +524,14 @@ class A2AAdapter(BasePlatformAdapter):
             return self._profile_session_locks.setdefault(key, threading.Lock())
 
     def _end_task(self, rec: dict, state: str, text: str, stored_reply: str = "") -> tuple[dict, None]:
-        """Complete a task immediately (rejected / not ready) and build its terminal Task."""
-        self.tasks.complete(rec["task_id"], state, stored_reply)
+        """Complete a task immediately (rejected / not ready) and build its terminal Task.
+
+        The stored copy of an immediately-failed reply is persisted separately from the
+        audit line, so it is routed through the same scrub to keep the on-disk task
+        record consistent with the transcript — a credential must not survive in one
+        artifact just because the other one was cleaned.
+        """
+        self.tasks.complete(rec["task_id"], state, security.redact_for_persist(stored_reply))
         protocol.metrics.tasks_failed += state == protocol.STATE_FAILED
         return protocol.build_task(rec["task_id"], rec["context_id"], state, text, created_at=rec["created_iso"]), None
 

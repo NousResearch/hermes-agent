@@ -175,6 +175,31 @@ def redact_outbound(text: str) -> str:
     return _EMAIL_RE.sub("[redacted-email]", redact_for_egress(text))
 
 
+def redact_for_persist(text: str) -> str:
+    """Scrub credentials before A2A text is written to a durable local artifact
+    (the conversation transcript, the JSONL audit log).
+
+    Why this exists as a separate name: the audit log and the per-context
+    transcript are long-lived plaintext files that are read back by later turns
+    and by operators, and the transcript is replayed *to the peer itself* on the
+    next call (``load_conversation``). Text arriving on the wire is therefore not
+    "already safe because it came from our own agent" — inbound text in
+    particular is whatever the peer chose to send, which can be a credential it
+    wrongly pasted. Storing it in the clear silently turns one peer's mistake
+    into a durable estate-wide leak.
+
+    Unlike :func:`wrap_inbound` (which is about prompt injection) this is about
+    disclosure, and unlike :func:`redact_outbound` it applies to BOTH
+    directions and does not touch framing. E-mail addresses are deliberately
+    left intact here — the audit log records peer identity for operators.
+    """
+    if not text:
+        return text
+    from agent.redact import redact_for_egress
+
+    return redact_for_egress(text)
+
+
 # Blocked even in localhost-only mode — a remote peer must not make us probe internal services
 # (link-local/AWS metadata, RFC1918, unspecified, IPv6 link-local/ULA). Loopback only in localhost mode.
 _BLOCKED_PREFIXES = ("169.254.", "127.", "10.", *(f"172.{i}." for i in range(16, 32)), "192.168.",
@@ -208,10 +233,17 @@ def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> 
 
 
 def audit(direction: str, peer: str, task_id: str, summary: str) -> None:
-    """Append an audit record (direction: inbound | outbound | push). Never raises."""
+    """Append an audit record (direction: inbound | outbound | push). Never raises.
+
+    The summary is redacted BEFORE it is clipped: this file is plaintext on disk
+    and outlives the session, so it is held to the same standard as the wire.
+    Redacting first also avoids the case where clipping would cut a credential in
+    half and leave a fragment no pattern can recognise.
+    """
     try:
         from hermes_constants import get_hermes_home
-        rec = {"ts": time.time(), "direction": direction, "peer": peer, "task_id": task_id, "summary": (summary or "")[:500]}
+        rec = {"ts": time.time(), "direction": direction, "peer": peer, "task_id": task_id,
+               "summary": redact_for_persist(summary or "")[:500]}
         get_hermes_home().mkdir(parents=True, exist_ok=True)
         with (get_hermes_home() / "a2a_audit.jsonl").open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")

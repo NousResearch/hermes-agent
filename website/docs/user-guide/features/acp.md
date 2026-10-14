@@ -91,6 +91,37 @@ python -m acp_adapter
 
 Hermes logs to stderr so stdout remains reserved for ACP JSON-RPC traffic.
 
+### Detached completion delivery
+
+ACP enables async delivery by default: `hermes acp` (or
+`--async-delivery=on`) preserves detached delegation behavior for clients and
+sessions that can receive completions later. Bounded request/response hosts can
+instead launch:
+
+```bash
+hermes acp --async-delivery=off
+```
+
+The same option works with `hermes-acp` and `python -m acp_adapter`. With delivery
+turned off, each ACP model turn declares that it cannot receive detached
+completions. Delegation uses Hermes's existing synchronous aggregation path,
+including nested delegation, so required delegated results join before the turn
+completes. This is useful for orchestration hosts that verify work after ACP
+returns. It does not disable session persistence, load, or resume, and it does
+not join unrelated background terminal processes.
+
+Turning delivery off declares the ACP session incapable of receiving detached
+completions generally. Background terminal processes are not joined;
+`notify_on_complete` and watch-pattern async delivery are unavailable, so callers
+must poll or wait for those processes. Origin-based asynchronous delivery,
+such as cron, cannot use that ACP session as a later completion destination.
+These are existing session-capability semantics, not new behavior for those
+features.
+
+This is a host-controlled launch policy for all sessions in that ACP process;
+prompt text, tool arguments and ACP session config options cannot change it.
+Other Hermes surfaces retain their existing delivery behavior.
+
 For non-interactive checks:
 
 ```bash

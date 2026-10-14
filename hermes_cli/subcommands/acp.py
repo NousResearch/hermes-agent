@@ -15,6 +15,9 @@ def build_acp_parser(subparsers, *, cmd_acp: Callable) -> None:
     )
     add_accept_hooks_flag(acp_parser)
     acp_parser.add_argument(
+        "--async-delivery", choices=("on", "off"), default="on",
+        help="Allow detached delegation completions (default: on); off joins them inline.")
+    acp_parser.add_argument(
         "--version", action="store_true", dest="acp_version",
         help="Print Hermes ACP version and exit")
     acp_parser.add_argument(

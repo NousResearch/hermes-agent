@@ -1,10 +1,13 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
+import asyncio
 import contextlib
 import contextvars
 import itertools
 import json
 import os
+import threading
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -1770,6 +1773,37 @@ class TestParallelTick:
         start_s2 = next(t for action, jid, t in call_times if action == "start" and jid == "s2")
         assert start_s2 >= end_s1, "Jobs ran concurrently despite max_parallel=1"
 
+@contextlib.contextmanager
+def _managed_delivery_test_loop() -> Iterator[asyncio.AbstractEventLoop]:
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    real_schedule = asyncio.run_coroutine_threadsafe
+    try:
+        yield loop
+    finally:
+
+        async def drain():
+            current = asyncio.current_task()
+            tasks = [task for task in asyncio.all_tasks() if task is not current]
+            for task in tasks:
+                task.cancel()
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException) and not isinstance(
+                    result, asyncio.CancelledError
+                ):
+                    raise result
+
+        try:
+            real_schedule(drain(), loop).result(timeout=5)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            assert not thread.is_alive(), "the fixture event-loop thread did not stop"
+            loop.close()
+
+
 class TestDeliverResultTimeoutCancelsFuture:
     """When the live adapter's confirmation outlasts the wait, the outcome depends on whether the
     send had STARTED on the gateway loop. Started: it is in flight (a paced multi-chunk send can
@@ -1780,67 +1814,99 @@ class TestDeliverResultTimeoutCancelsFuture:
     and kills it — these tests drive a real loop for that reason.
     """
 
-    def _deliver(self, monkeypatch, adapter, loop):
+    def _deliver(self, monkeypatch, adapter, loop, moment, scheduled):
         from cron import scheduler_delivery
         from gateway.config import Platform
 
+        real_schedule = asyncio.run_coroutine_threadsafe
+
+        def schedule(coro, target_loop):
+            scheduled.append(real_schedule(coro, target_loop))
+            return _ConfirmationTimesOut(scheduled[-1], moment)
+
+        monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", schedule)
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
-        monkeypatch.setattr(scheduler_delivery, "_LIVE_SEND_CONFIRM_TIMEOUT_SECS", 0.3)
-        job = {"id": "timeout-job", "deliver": "origin", "origin": {"platform": "telegram", "chat_id": "123"}}
+        job = {
+            "id": "timeout-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
         standalone_send = AsyncMock(return_value={"success": True})
-        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
-            result = _deliver_result(job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop)
+        with (
+            patch("gateway.config.load_gateway_config", return_value=mock_cfg),
+            patch(
+                "cron.scheduler.load_config",
+                return_value={"cron": {"wrap_response": False}},
+            ),
+            patch("tools.send_message_tool._send_to_platform", new=standalone_send),
+        ):
+            result = _deliver_result(
+                job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop
+            )
         return result, standalone_send
 
-    def test_in_flight_send_outlasting_the_wait_keeps_running_and_is_not_duplicated(self, monkeypatch):
-        import asyncio
-        import threading
-        import time
-
-        loop = asyncio.new_event_loop()
-        threading.Thread(target=loop.run_forever, daemon=True).start()
+    def test_in_flight_send_outlasting_the_wait_keeps_running_and_is_not_duplicated(
+        self, monkeypatch
+    ):
         events = []
+        started = threading.Event()
+        release = asyncio.Event()
+        scheduled = []
 
         async def slow_send(chat_id, content, **_kw):
             events.append("started")
-            await asyncio.sleep(0.6)  # outlasts the 0.3s confirmation wait
+            started.set()
+            await release.wait()
             events.append("finished")
             return MagicMock(success=True, message_id="m1", raw_response=None)
 
         adapter = MagicMock()
         adapter.send = slow_send
-        try:
-            result, standalone_send = self._deliver(monkeypatch, adapter, loop)
-            time.sleep(0.6)
-        finally:
-            loop.call_soon_threadsafe(loop.stop)
-        assert result is None, f"expected the in-flight send to count as delivered, got {result!r}"
+        with _managed_delivery_test_loop() as loop:
+            try:
+                result, standalone_send = self._deliver(
+                    monkeypatch, adapter, loop, started, scheduled
+                )
+                loop.call_soon_threadsafe(release.set)
+                scheduled[0].result(timeout=5)
+            finally:
+                loop.call_soon_threadsafe(release.set)
+        assert result is None, (
+            f"expected the in-flight send to count as delivered, got {result!r}"
+        )
         standalone_send.assert_not_awaited()
-        assert events == ["started", "finished"], "the in-flight send must not be cancelled mid-way"
+        assert events == ["started", "finished"], (
+            "the in-flight send must not be cancelled mid-way"
+        )
 
     def test_send_that_never_started_falls_back_to_standalone(self, monkeypatch):
-        import asyncio
-        import threading
-        import time
+        wedged = threading.Event()
+        unwedge = threading.Event()
+        scheduled = []
 
-        loop = asyncio.new_event_loop()
-        threading.Thread(target=loop.run_forever, daemon=True).start()
-        loop.call_soon_threadsafe(time.sleep, 0.8)  # wedge the running loop past the 0.3s wait
+        def wedge_loop():
+            wedged.set()
+            unwedge.wait()
+
         adapter = MagicMock()
         adapter.send = AsyncMock(return_value=MagicMock(success=True))
-        try:
-            result, standalone_send = self._deliver(monkeypatch, adapter, loop)
-            time.sleep(0.8)  # the loop un-wedges: the abandoned send must still never go out
-        finally:
-            loop.call_soon_threadsafe(loop.stop)
+        with _managed_delivery_test_loop() as loop:
+            loop.call_soon_threadsafe(wedge_loop)
+            try:
+                result, standalone_send = self._deliver(
+                    monkeypatch, adapter, loop, wedged, scheduled
+                )
+                unwedge.set()
+                scheduled[0].result(timeout=5)
+            finally:
+                unwedge.set()
         assert result is None, f"standalone should have delivered, got {result!r}"
         standalone_send.assert_awaited_once()
         adapter.send.assert_not_awaited()
+
 
 class TestDeliverResultPartialSplitDelivery:
     def test_partial_split_delivery_is_not_resent_by_standalone(self):
@@ -1851,29 +1917,185 @@ class TestDeliverResultPartialSplitDelivery:
         from gateway.config import Platform
         from gateway.platforms.base import SendResult
 
-        loop = asyncio.new_event_loop()
-        threading.Thread(target=loop.run_forever, daemon=True).start()
         adapter = MagicMock()
         adapter.splits_long_messages = True
-        adapter.send = AsyncMock(return_value=SendResult(
-            success=False, error="Twilio 400: rejected",
-            raw_response={"partial_overflow": True, "delivered_chunks": 2, "total_chunks": 5}))
+        adapter.send = AsyncMock(
+            return_value=SendResult(
+                success=False,
+                error="Twilio 400: rejected",
+                raw_response={
+                    "partial_overflow": True,
+                    "delivered_chunks": 2,
+                    "total_chunks": 5,
+                },
+            )
+        )
         pconfig = MagicMock()
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
-        job = {"id": "partial-job", "deliver": "origin", "origin": {"platform": "telegram", "chat_id": "123"}}
+        job = {
+            "id": "partial-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
         standalone_send = AsyncMock(return_value={"success": True})
-        try:
-            with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-                 patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-                 patch("tools.send_message_tool._send_to_platform", new=standalone_send):
-                result = _deliver_result(job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop)
-        finally:
-            loop.call_soon_threadsafe(loop.stop)
+        with _managed_delivery_test_loop() as loop:
+            with (
+                patch("gateway.config.load_gateway_config", return_value=mock_cfg),
+                patch(
+                    "cron.scheduler.load_config",
+                    return_value={"cron": {"wrap_response": False}},
+                ),
+                patch("tools.send_message_tool._send_to_platform", new=standalone_send),
+            ):
+                result = _deliver_result(
+                    job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop
+                )
         adapter.send.assert_awaited_once()
         standalone_send.assert_not_awaited()
         assert result and "delivered 2 of 5 chunks" in result, result
+
+
+
+class _BlockingSendAdapter:
+    """A live adapter whose send stays in flight until the test sets ``release``."""
+
+    def __init__(self, outcome="sent"):
+        self.started = threading.Event()
+        self.release = asyncio.Event()
+        self.outcome = []
+        self.final_outcome = outcome
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        from gateway.platforms.base import SendResult
+
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.outcome.append("cancelled")
+            raise
+        if self.final_outcome == "cancelled":
+            self.outcome.append("cancelled")
+            raise asyncio.CancelledError
+        self.outcome.append("sent")
+        if self.final_outcome == "error":
+            raise RuntimeError("late transport failure")
+        if self.final_outcome == "unconfirmed":
+            return None
+        return SendResult(success=True, message_id="m1")
+
+
+class _ConfirmationTimesOut:
+    """The real ``run_coroutine_threadsafe`` future, except that ``result()`` raises
+    ``TimeoutError`` as soon as ``moment`` is set instead of after the 60-second bound."""
+
+    def __init__(self, future, moment):
+        self._future = future
+        self._moment = moment
+
+    def result(self, timeout=None):
+        assert self._moment.wait(5)
+        raise TimeoutError
+
+    def __getattr__(self, name):
+        return getattr(self._future, name)
+
+
+class TestDeliverResultLiveConfirmationTimeout:
+    """A live text send whose confirmation times out is resent through the standalone lane only if
+    the gateway loop never started it. A started send may still land: resending it would
+    duplicate the message, and interrupting it could cut it off part-way. Regression for #38922."""
+
+    @pytest.mark.parametrize(
+        ("loop_wedged", "outcome", "expected"),
+        [
+            pytest.param(False, "sent", (["sent"], 0, None, ["telegram:123"], False), id="started-send-completes-once"),
+            pytest.param(False, "error", (["sent"], 0, None, ["telegram:123"], True), id="started-send-later-fails"),
+            pytest.param(False, "unconfirmed", (["sent"], 0, None, ["telegram:123"], True), id="started-send-later-unconfirmed"),
+            pytest.param(False, "cancelled", (["cancelled"], 0, None, ["telegram:123"], True), id="started-send-later-cancelled"),
+            pytest.param(True, "sent", ([], 1, None, [], False), id="unstarted-send-goes-standalone-only"),
+        ],
+    )
+    def test_live_adapter_confirmation_timeout(self, loop_wedged, outcome, expected, caplog):
+        from concurrent.futures import CancelledError
+
+        from gateway.config import Platform
+
+        loop = asyncio.new_event_loop()
+        loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
+        loop_thread.start()
+        adapter = _BlockingSendAdapter(outcome)
+        wedged, unwedge = threading.Event(), threading.Event()
+
+        def wedge_loop():
+            wedged.set()
+            unwedge.wait()
+
+        if loop_wedged:
+            loop.call_soon_threadsafe(wedge_loop)
+        scheduled = []
+        observed = threading.Event()
+        from cron import scheduler_delivery
+        real_observe = scheduler_delivery._observe_late_live_send
+
+        def observe(*args):
+            try:
+                real_observe(*args)
+            finally:
+                observed.set()
+
+        real_schedule = asyncio.run_coroutine_threadsafe
+
+        def schedule(coro, target_loop):
+            scheduled.append(real_schedule(coro, target_loop))
+            return _ConfirmationTimesOut(scheduled[-1], wedged if loop_wedged else adapter.started)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        standalone_send = AsyncMock(return_value={"success": True})
+        job = {
+            "id": "timeout-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+        try:
+            with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+                 patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+                 patch("asyncio.run_coroutine_threadsafe", side_effect=schedule), \
+                 patch("tools.send_message_tool._send_to_platform", new=standalone_send), \
+                 patch("cron.scheduler_delivery._observe_late_live_send", side_effect=observe):
+                result = _deliver_result(
+                    job, "Hello world", adapters={Platform.TELEGRAM: adapter}, loop=loop)
+                unwedge.set()
+                loop.call_soon_threadsafe(adapter.release.set)
+                with contextlib.suppress(CancelledError, RuntimeError):
+                    scheduled[0].result(timeout=5)
+                if not loop_wedged:
+                    assert observed.wait(5), "the late-result observer did not complete"
+        finally:
+            unwedge.set()
+            loop.call_soon_threadsafe(adapter.release.set)
+            try:
+                if scheduled:
+                    with contextlib.suppress(CancelledError, RuntimeError):
+                        scheduled[0].result(timeout=5)
+            finally:
+                loop.call_soon_threadsafe(loop.stop)
+                loop_thread.join(timeout=5)
+                assert not loop_thread.is_alive(), (
+                    "the fixture event-loop thread did not stop"
+                )
+                loop.close()
+
+        late_warning = any("after confirmation timeout" in record.message for record in caplog.records)
+        assert (
+            adapter.outcome, standalone_send.await_count, result,
+            job.get("last_delivery_unverified") or [], late_warning,
+        ) == expected
 
 
 class TestDeliverResultLiveAdapterUnconfirmed:
@@ -1905,10 +2127,12 @@ class TestDeliverResultLiveAdapterUnconfirmed:
         loop.is_running.return_value = True
 
         completed_future = Future()
-        completed_future.set_result(send_value)
 
         def fake_run_coro(coro, _loop):
-            coro.close()
+            try:
+                completed_future.set_result(asyncio.run(coro))
+            except Exception as exc:
+                completed_future.set_exception(exc)
             return completed_future
 
         job = {
@@ -2541,7 +2765,13 @@ class TestMultiTargetDeliveryContinuesOnFailure:
             fail_future.result.side_effect = ConnectionError("SMTP connection refused")
             ok_future = MagicMock()
             ok_future.result.return_value = {"success": True}
-            mock_pool.submit.side_effect = [fail_future, ok_future]
+            futures = iter([fail_future, ok_future])
+
+            def submit(context_run, async_run, coro):
+                coro.close()
+                return next(futures)
+
+            mock_pool.submit.side_effect = submit
 
             result = _deliver_result(job, "Report content")
 
@@ -2570,7 +2800,11 @@ class TestMultiTargetDeliveryContinuesOnFailure:
 
             fail_future = MagicMock()
             fail_future.result.side_effect = ConnectionError("connection refused")
-            mock_pool.submit.return_value = fail_future
+            def submit(context_run, async_run, coro):
+                coro.close()
+                return fail_future
+
+            mock_pool.submit.side_effect = submit
 
             result = _deliver_result(job, "Report content")
 

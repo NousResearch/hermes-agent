@@ -760,14 +760,18 @@ class BaseEnvironment(ABC):
         )
 
     _SUDO_PROBE_TIMEOUT_S = 3
+    # bash's own "command not found": no sudo binary in this backend, so no password can help.
+    _SUDO_ABSENT_RC = 127
 
     def _sudo_nopasswd_works(self) -> bool:
         """``sudo -n true`` inside THIS backend (host sudo state must not leak into a sandbox).
-        Fails closed: any error or a timed-out probe means "assume a password is needed"."""
+        True when a password cannot help: NOPASSWD works, or sudo is not installed there at all.
+        Fails closed: any other error or a timed-out probe means "assume a password is needed"."""
         if not self._sudo_nopasswd_probe_supported:
             return False
         try:
             proc = self._run_bash("sudo -n true", timeout=self._SUDO_PROBE_TIMEOUT_S)
-            return self._wait_for_process(proc, timeout=self._SUDO_PROBE_TIMEOUT_S).get("returncode") == 0
+            returncode = self._wait_for_process(proc, timeout=self._SUDO_PROBE_TIMEOUT_S).get("returncode")
+            return returncode in (0, self._SUDO_ABSENT_RC)
         except Exception:
             return False

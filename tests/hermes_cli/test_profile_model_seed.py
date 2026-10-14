@@ -207,12 +207,29 @@ URL = "http://127.0.0.1:11434/v1"
         ),
         # A URL-less tuning seed replaces only its own key.
         (
-            {"providers": {"lab": {"request_timeout_seconds": 5}}},
-            {"providers": {"lab-alt": {"name": "lab", "base_url": URL}}},
+            {"providers": {"custom": {"request_timeout_seconds": 5}}},
+            {"providers": {"local": {"name": "custom", "base_url": URL}}},
             {
                 "providers": {
-                    "lab": {"request_timeout_seconds": 5},
-                    "lab-alt": {"name": "lab", "base_url": URL},
+                    "custom": {"request_timeout_seconds": 5},
+                    "local": {"name": "custom", "base_url": URL},
+                }
+            },
+        ),
+        # A camelCase ``baseUrl`` legacy seed is a live endpoint and still evicts its shadow.
+        (
+            {"custom_providers": [{"name": "Lab", "baseUrl": URL}]},
+            {"providers": {"lab": {"base_url": URL + "x"}}},
+            {"providers": {}, "custom_providers": [{"name": "Lab", "baseUrl": URL}]},
+        ),
+        # A disabled destination entry can never shadow, so it is kept.
+        (
+            {"providers": {"lab": {"base_url": URL}}},
+            {"providers": {"old": {"name": "lab", "base_url": URL + "x", "enabled": False}}},
+            {
+                "providers": {
+                    "lab": {"base_url": URL},
+                    "old": {"name": "lab", "base_url": URL + "x", "enabled": False},
                 }
             },
         ),

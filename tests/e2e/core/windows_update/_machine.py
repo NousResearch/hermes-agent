@@ -67,7 +67,8 @@ from tests.fakes.fake_llm_provider import write_hermes_home
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 OPT_IN_ENV = "HERMES_E2E_WINDOWS_INSTALL"
-INSTALL_TIMEOUT = 1500.0
+# Sized for upstream's 32-core runner; the fork workflow raises it for its standard runner.
+INSTALL_TIMEOUT = float(os.environ.get("HERMES_E2E_INSTALL_TIMEOUT") or 1500.0)
 UPDATE_TIMEOUT = 1200.0
 CMD_TIMEOUT = 300.0
 GATEWAY_READY_TIMEOUT = 240.0

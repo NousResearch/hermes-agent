@@ -52,13 +52,22 @@ def test_standard_python_runner_has_bounded_workers() -> None:
     assert "timeout-minutes: 60" in workflow
 
 
-def test_standard_windows_update_runner_has_room_for_a_cold_cache() -> None:
-    # Two workers on windows-latest take ~58 min warm and ~69 min cold; upstream keeps 60.
+def test_standard_windows_update_runner_has_room_for_a_slow_runner() -> None:
+    # Two workers on windows-latest take ~58 min warm, ~69 min cold, and a slow runner pushed
+    # one install past 1500 s. Upstream keeps its budgets; the fork's must reach the test.
     workflow = yaml.safe_load(_read(".github/workflows/windows-install-update-e2e.yml"))
     job = workflow["jobs"]["install-update"]
     assert "|| 'windows-latest' }}" in job["runs-on"]
     assert job["timeout-minutes"] == (
-        "${{ github.repository == 'NousResearch/hermes-agent' && 60 || 90 }}")
+        "${{ github.repository == 'NousResearch/hermes-agent' && 60 || 120 }}")
+    env = next(step for step in job["steps"] if step.get("name") == "Run Windows install + update E2E")["env"]
+    assert env["HERMES_E2E_INSTALL_TIMEOUT"] == (
+        "${{ github.repository == 'NousResearch/hermes-agent' && '1500' || '2400' }}")
+    assert env["HERMES_TEST_FILE_TIMEOUT"] == (
+        "${{ github.repository == 'NousResearch/hermes-agent' && '2400' || '3000' }}")
+    # run_tests.sh starts pytest under `env -i`; an unlisted knob never reaches the machines.
+    allowlist = re.search(r"for _test_var in (.*?); do", _read("scripts/run_tests.sh"), re.S)
+    assert allowlist and "HERMES_E2E_INSTALL_TIMEOUT" in allowlist.group(1).split()
 
 
 def test_standard_nix_runner_has_bounded_parallelism() -> None:

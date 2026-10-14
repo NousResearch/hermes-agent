@@ -31,7 +31,9 @@ jobs:
     # A typical run is ~17 min; one slow runner took 28 min for the same work (run 36295230146).
     # Forks run on windows-latest with 2 workers: 57.6 min with a warm uv cache (run 37065610693)
     # and ~69 min cold, which every PR's first run is because push CI on main saves no cache.
-    timeout-minutes: ${{ github.repository == 'NousResearch/hermes-agent' && 60 || 90 }}
+    # A slow runner then stretched every file by up to 45% (run 38508650541), so the fork
+    # budget allows one worker's three files at the fork's per-file limit below.
+    timeout-minutes: ${{ github.repository == 'NousResearch/hermes-agent' && 60 || 120 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -64,7 +66,10 @@ jobs:
           HERMES_E2E_ARTIFACTS: ${{ runner.temp }}\win-update-e2e
           # One journey per file, all in parallel (each is mostly network + subprocess wait).
           HERMES_TEST_WORKERS: ${{ github.repository == 'NousResearch/hermes-agent' && '6' || '2' }}
-          HERMES_TEST_FILE_TIMEOUT: '2400'
+          # On a fork's 4-vCPU runner up to three installs share the disk; one slow runner took
+          # 296 s to unpack npm and 804 s for Node dependencies, past the 1500 s install limit.
+          HERMES_E2E_INSTALL_TIMEOUT: ${{ github.repository == 'NousResearch/hermes-agent' && '1500' || '2400' }}
+          HERMES_TEST_FILE_TIMEOUT: ${{ github.repository == 'NousResearch/hermes-agent' && '2400' || '3000' }}
           HERMES_TEST_FILE_RETRIES: '0'
           OPENROUTER_API_KEY: ''
           OPENAI_API_KEY: ''

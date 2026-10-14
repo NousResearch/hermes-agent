@@ -59,7 +59,14 @@ def _records(root: Path) -> list[tuple[Path, dict]]:
 def defer(key: str, job: dict, content: str, profile: str, home: Path, *,
           for_failure: bool = False, suppressed: bool = False, degraded: bool = False) -> dict:
     """``degraded`` marks the short notice queued after a CLI-lane turn timed out; the record
-    carries it so the consumer recognizes the marker by the record, never by its text."""
+    carries it so the consumer recognizes the marker by the record, never by its text.
+
+    A job that opts in with ``bot_chat_coalesce: latest`` keeps one live snapshot: right after
+    its own queued record lands, the job's older still-queued snapshot receipts for the same
+    home are marked ``suppressed`` (pointing at the superseding sequence) so a fast no-agent
+    cron stops replaying hours-stale alerts ahead of fresh ones (#133349). Only receipts that
+    have provably never started are retired; failure notices and degraded markers always queue.
+    """
     root = _root()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     with _FileLock(root / ".lock"):
@@ -80,6 +87,26 @@ def defer(key: str, job: dict, content: str, profile: str, home: Path, *,
         if degraded:
             record["degraded"] = True
         atomic_json_write(root / f"{key}.json", record, fsync_dir=True, mode=0o600)
+        if not for_failure and not degraded and job.get("bot_chat_coalesce") == "latest":
+            # Retire the job's older never-started snapshots only AFTER this record is durable:
+            # a crash before any retirement leaves today's queue, never a lost alert. Failure
+            # notices and degraded markers are also never *retired* by a later snapshot — they
+            # are loss-of-signal receipts (a failed run's alert must survive the next success).
+            # Jobs without an id never match: two transient job dicts would otherwise
+            # suppress each other via ``None == None``.
+            job_id = job.get("id")
+            for path, stale in _records(root):
+                stale_job = stale.get("job") or {}
+                if (stale["status"] == "queued"
+                        and job_id
+                        and stale["id"] != key
+                        and stale.get("home") == str(home)
+                        and stale_job.get("id") == job_id
+                        and not stale.get("for_failure")
+                        and not stale.get("degraded")):
+                    stale.update(status="suppressed",
+                                 error=f"superseded by receipt seq {sequence}")
+                    atomic_json_write(path, stale, fsync_dir=True, mode=0o600)
         return record
 
 

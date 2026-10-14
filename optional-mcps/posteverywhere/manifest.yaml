@@ -4,7 +4,7 @@ manifest_version: 1
 
 name: posteverywhere
 connector_slug: posteverywhere_mcp
-description: Write, schedule and publish social media posts to Instagram, TikTok, YouTube, LinkedIn, Facebook, X, Threads, Pinterest, Bluesky and more.
+description: Social media scheduler. Write, schedule and publish posts to Instagram, TikTok, YouTube, LinkedIn, Facebook, X, Threads, Pinterest, Bluesky, Telegram, Discord and WordPress, plan a content calendar and cross-post video (https://posteverywhere.ai).
 source: https://posteverywhere.ai/mcp
 
 # Official vendor-hosted remote MCP (URL-only, Hermes never spawns a local
@@ -25,8 +25,12 @@ suggest:
   keywords:
     - posteverywhere
     - social media
+    - social media scheduler
     - schedule post
     - content calendar
+    - instagram
+    - tiktok
+    - linkedin
   hosts:
     - posteverywhere.ai
 
@@ -36,3 +40,4 @@ post_install: |
   access, then restart the session so tools load. Posts publish to the
   social accounts connected in your PostEverywhere workspace; ask for a
   draft first if you want to review before anything goes live.
+  Docs: https://posteverywhere.ai/mcp

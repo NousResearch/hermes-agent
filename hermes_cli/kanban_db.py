@@ -673,7 +673,7 @@ class Task:
             # reachable on a DB never opened since the rename migration landed.
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
-            auto_decompose=bool(g("auto_decompose", 1)),
+            auto_decompose=bool(int(g("auto_decompose", 1) or 0)),
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),

@@ -265,6 +265,19 @@ def check_state_db_integrity(home: Optional[Path] = None, *, deadline_s: Optiona
     return "check-failed: no result" if not row or row[0] is None else str(row[0])
 
 
+def _state_db_journal_mode(path: Path) -> Optional[str]:
+    """On-disk journal mode of ``path`` via one ``PRAGMA journal_mode`` read on a short-lived
+    connection (no lock outlives it); ``None`` when undeterminable.  Never raises."""
+    try:
+        from hermes_state_wal import _on_disk_journal_mode
+
+        with closing(sqlite3.connect(str(path), timeout=1.0)) as conn:
+            return _on_disk_journal_mode(conn) or None
+    except Exception:
+        logger.debug("Could not read state.db journal mode", exc_info=True)
+        return None
+
+
 def _report_unclean_exit(evidence: dict[str, Any], home: Optional[Path], *, defer_integrity_check: bool = False) -> None:
     """Persist the exit-diag record and log at WARNING.
 
@@ -347,10 +360,27 @@ def run_deferred_integrity_check(
     <verdict>, "prior_pid": ...}`` and logs the existing ERROR text on a bad verdict.  NEVER
     raises -- a forensic scan must not disturb a running gateway (the alerting path is the
     bounded per-poll readiness probe ``gateway/readiness.py::_probe_state_db``).
+
+    Only a WAL store is scanned: in rollback-journal mode (``database.journal_mode: delete``,
+    or a silent WAL fallback) the scan's SHARED lock would block every live commit for its
+    whole run, so the scan is skipped with a ``skipped: ...`` verdict and one WARNING.  The
+    on-disk mode decides, not config; an undeterminable mode is skipped too.
     """
     try:
-        verdict = check_state_db_integrity(home=home, deadline_s=deadline_s)
-        if verdict not in ("ok", "absent"):
+        path = _home_path(home, "state.db")
+        mode = _state_db_journal_mode(path) if path.exists() else "wal"
+        if mode != "wal":
+            verdict = (f"skipped: rollback-journal store (journal_mode={mode or 'unknown'}), "
+                       "scan would block live writes")
+            logger.warning(
+                "Previous gateway exit was unclean, but the state.db integrity check was skipped: %s is a "
+                "rollback-journal store (journal_mode=%s) and a background scan would block live writes. "
+                "To check it, stop the gateway and run: sqlite3 %s 'PRAGMA quick_check'",
+                path, mode or "unknown", path,
+            )
+        else:
+            verdict = check_state_db_integrity(home=home, deadline_s=deadline_s)
+        if verdict not in ("ok", "absent") and not verdict.startswith("skipped:"):
             logger.error(
                 "state.db FAILED integrity check after an unclean gateway exit: %s — sessions may read as "
                 "missing until it is repaired. Run `hermes doctor`.",

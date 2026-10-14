@@ -20,6 +20,7 @@ keep the historic INLINE behaviour covered via ``defer_integrity_check=False``.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -49,10 +50,12 @@ def _write_sentinel(home: Path, phase: str = "running") -> None:
     )
 
 
-def _make_state_db(home: Path, *, corrupt: bool) -> Path:
+def _make_state_db(home: Path, *, corrupt: bool, journal_mode: str = "delete") -> Path:
     """Build a real SQLite file, optionally with a genuinely torn b-tree page."""
     path = home / "state.db"
     conn = sqlite3.connect(path)
+    if journal_mode != "delete":
+        assert conn.execute(f"PRAGMA journal_mode={journal_mode}").fetchone()[0] == journal_mode
     conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY, v TEXT)")
     conn.executemany(
         "INSERT INTO sessions (v) VALUES (?)", [(f"row-{i}" * 40,) for i in range(4000)]
@@ -181,7 +184,7 @@ def test_deferred_startup_never_runs_the_check_inline(tmp_path: Path, monkeypatc
 
 
 def test_deferred_scan_appends_a_second_record_and_returns_the_verdict(tmp_path: Path) -> None:
-    _make_state_db(tmp_path, corrupt=True)
+    _make_state_db(tmp_path, corrupt=True, journal_mode="wal")
     _write_sentinel(tmp_path)
 
     evidence = record_startup(home=tmp_path, defer_integrity_check=True)
@@ -212,6 +215,94 @@ def test_deferred_scan_never_raises(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(ledger, "check_state_db_integrity", _boom)
 
     assert run_deferred_integrity_check(evidence, home=tmp_path).startswith("check-failed")
+
+
+# ── rollback-journal stores: a background scan would block live writers ──────
+# In journal_mode=delete a quick_check holds a SHARED lock for its whole run, so every
+# live gateway commit waits on it; WAL readers never block writers.
+
+
+def _spy_on_scan(monkeypatch) -> list:
+    """Record every scan while still running the real one."""
+    import gateway.lifecycle_ledger as ledger
+
+    calls: list = []
+    real = ledger.check_state_db_integrity
+
+    def _spy(**kwargs):
+        calls.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(ledger, "check_state_db_integrity", _spy)
+    return calls
+
+
+def test_deferred_scan_still_runs_on_a_wal_store(tmp_path: Path, monkeypatch) -> None:
+    _make_state_db(tmp_path, corrupt=False, journal_mode="wal")
+    calls = _spy_on_scan(monkeypatch)
+
+    verdict = run_deferred_integrity_check({"prior_pid": _DEAD_PID}, home=tmp_path, deadline_s=60.0)
+
+    assert verdict == "ok"
+    assert len(calls) == 1
+    assert _exit_diag_records(tmp_path)[-1]["state_db_integrity"] == "ok"
+
+
+def test_deferred_scan_skips_a_rollback_journal_store(tmp_path: Path, monkeypatch, caplog) -> None:
+    path = _make_state_db(tmp_path, corrupt=False)
+    calls = _spy_on_scan(monkeypatch)
+    evidence = {"prior_pid": _DEAD_PID}
+
+    with caplog.at_level(logging.WARNING, logger="gateway.lifecycle_ledger"):
+        verdict = run_deferred_integrity_check(evidence, home=tmp_path, deadline_s=60.0)
+
+    assert not calls, "quick_check ran beside live traffic on a rollback-journal store"
+    assert verdict == ("skipped: rollback-journal store (journal_mode=delete), "
+                       "scan would block live writes")
+    assert evidence["state_db_integrity"] == verdict
+    record = _exit_diag_records(tmp_path)[-1]
+    assert record["tag"] == "gateway.state_db_integrity"
+    assert record["state_db_integrity"] == verdict
+    assert record["prior_pid"] == _DEAD_PID
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "unclean" in warnings[0].lower() and "skipped" in warnings[0].lower()
+    assert str(path) in warnings[0] and "PRAGMA quick_check" in warnings[0]
+    # The journal-mode probe left no lock behind: a live writer commits without waiting.
+    writer = sqlite3.connect(path, timeout=0)
+    try:
+        writer.execute("BEGIN EXCLUSIVE")
+        writer.execute("INSERT INTO sessions (v) VALUES ('live')")
+        writer.commit()
+    finally:
+        writer.close()
+
+
+def test_deferred_scan_skips_when_the_journal_mode_is_undeterminable(tmp_path: Path, monkeypatch) -> None:
+    import hermes_state_wal
+
+    _make_state_db(tmp_path, corrupt=False, journal_mode="wal")
+    calls = _spy_on_scan(monkeypatch)
+
+    def _unreadable(conn):
+        raise sqlite3.DatabaseError("file is not a database")
+
+    monkeypatch.setattr(hermes_state_wal, "_on_disk_journal_mode", _unreadable)
+
+    verdict = run_deferred_integrity_check({"prior_pid": _DEAD_PID}, home=tmp_path, deadline_s=60.0)
+
+    assert not calls
+    assert verdict == ("skipped: rollback-journal store (journal_mode=unknown), "
+                       "scan would block live writes")
+    assert _exit_diag_records(tmp_path)[-1]["state_db_integrity"] == verdict
+
+
+def test_deferred_scan_of_an_absent_store_is_unchanged(tmp_path: Path) -> None:
+    verdict = run_deferred_integrity_check({"prior_pid": _DEAD_PID}, home=tmp_path, deadline_s=60.0)
+
+    assert verdict == "absent"
+    assert _exit_diag_records(tmp_path)[-1]["state_db_integrity"] == "absent"
+    assert not (tmp_path / "state.db").exists()
 
 
 # ── bounded scan: a deadline aborts through the progress handler ─────────────

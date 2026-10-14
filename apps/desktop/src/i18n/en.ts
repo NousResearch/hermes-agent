@@ -4985,6 +4985,8 @@ export const en: Translations = {
     audioReadFailed: 'Could not read recorded audio',
     sessionUnavailable: 'Session unavailable',
     createSessionFailed: 'Could not create a new session',
+    sendFailedTitle: 'Message not sent',
+    sendFailedBody: 'Your message is back in the composer. Send it again once the connection is restored.',
     promptFailed: 'Prompt failed',
     providerCredentialRequired: 'Add a provider credential before sending your first message.',
     emptySlashCommand: 'empty slash command',

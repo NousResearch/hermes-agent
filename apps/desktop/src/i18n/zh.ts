@@ -4706,6 +4706,8 @@ export const zhOverrides = {
     audioReadFailed: '无法读取录制的音频',
     sessionUnavailable: '会话不可用',
     createSessionFailed: '无法创建新会话',
+    sendFailedTitle: '消息未发送',
+    sendFailedBody: '你的消息已回到输入框。连接恢复后请重新发送。',
     promptFailed: '提示词发送失败',
     providerCredentialRequired: '发送第一条消息前请先添加提供方凭据。',
     emptySlashCommand: '空 slash 命令',

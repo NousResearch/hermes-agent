@@ -5533,6 +5533,9 @@ export const frOverrides = {
     audioReadFailed: "Impossible de lire l'audio enregistré",
     sessionUnavailable: 'Session indisponible',
     createSessionFailed: 'Impossible de créer une nouvelle session',
+    sendFailedTitle: 'Message non envoyé',
+    sendFailedBody:
+      'Votre message est de retour dans le compositeur. Renvoyez-le une fois la connexion rétablie.',
     promptFailed: "Échec de l'invite",
     providerCredentialRequired: "Ajoutez un identifiant de fournisseur avant d'envoyer votre premier message.",
     emptySlashCommand: 'commande slash vide',

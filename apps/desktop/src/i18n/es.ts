@@ -5519,6 +5519,9 @@ export const esOverrides = {
     audioReadFailed: 'No se pudo leer el audio grabado',
     sessionUnavailable: 'Sesión no disponible',
     createSessionFailed: 'No se pudo crear una sesión nueva',
+    sendFailedTitle: 'Mensaje no enviado',
+    sendFailedBody:
+      'Tu mensaje volvió al compositor. Vuelve a enviarlo cuando se restablezca la conexión.',
     promptFailed: 'Falló el prompt',
     providerCredentialRequired: 'Añade una credencial de proveedor antes de enviar tu primer mensaje.',
     emptySlashCommand: 'comando slash vacío',

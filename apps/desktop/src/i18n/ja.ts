@@ -3670,6 +3670,9 @@ export const jaOverrides = {
     audioReadFailed: '録音した音声を読み取れませんでした',
     sessionUnavailable: 'セッションが利用できません',
     createSessionFailed: '新しいセッションを作成できませんでした',
+    sendFailedTitle: 'メッセージは送信されませんでした',
+    sendFailedBody:
+      'メッセージは入力欄に戻りました。接続が復旧したら、もう一度送信してください。',
     promptFailed: 'プロンプトに失敗しました',
     providerCredentialRequired: '最初のメッセージを送信する前にプロバイダー認証情報を追加してください。',
     emptySlashCommand: '空のスラッシュコマンド',

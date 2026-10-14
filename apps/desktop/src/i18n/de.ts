@@ -5524,6 +5524,9 @@ export const deOverrides = {
     audioReadFailed: 'Aufgenommenes Audio konnte nicht gelesen werden',
     sessionUnavailable: 'Session nicht verfügbar',
     createSessionFailed: 'Neue Session konnte nicht erstellt werden',
+    sendFailedTitle: 'Nachricht nicht gesendet',
+    sendFailedBody:
+      'Deine Nachricht ist zurück im Composer. Sende sie erneut, sobald die Verbindung wiederhergestellt ist.',
     promptFailed: 'Prompt fehlgeschlagen',
     providerCredentialRequired:
       'Fügen Sie Anmeldedaten für einen Anbieter hinzu, bevor Sie Ihre erste Nachricht senden.',

@@ -97,7 +97,17 @@ class Lockfile:
             found = artifacts.get("any")
         if found is None:
             return []
-        return list(found) if isinstance(found, list) else [found]
+        entries = list(found) if isinstance(found, list) else [found]
+        for artifact in entries:
+            # The sha256 becomes a `fetch-` path component in the store, so a
+            # pin row off the 64-hex shape fails closed instead of traversing
+            # out of the store root during fetch or cleanup (#138359).
+            if (not isinstance(artifact, dict) or not isinstance(artifact.get("url"), str)
+                    or not artifact["url"]
+                    or not isinstance(artifact.get("sha256"), str)
+                    or not re.fullmatch(r"[a-f0-9]{64}", artifact["sha256"])):
+                raise ValueError(f"malformed artifact pin for {name}/{target}: {artifact!r}")
+        return entries
 
     def pinned_artifacts(self, name: str) -> dict:
         """Return the complete pin table, including targets without discovery."""

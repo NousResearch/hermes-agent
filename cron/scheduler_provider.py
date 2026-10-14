@@ -61,7 +61,7 @@ def _guarded_store_write(action, description, *args, **kwargs):
     """
     try:
         action(*args, **kwargs)
-    except BaseException as e:  # noqa: BLE001 - mirror the tick body's BaseException policy
+    except BaseException as e:
         logger.warning("Cron %s write failed: %s", description, e, exc_info=True)
 
 
@@ -156,18 +156,18 @@ class CronScheduler(ABC):
 
     def stop(self) -> None:
         """Optional eager teardown; stop_event is the primary signal."""
-        return None
+        return
 
     # Optional hooks for external providers — default-safe; keep NON-abstract.
 
     def on_jobs_changed(self) -> None:
         """After a successful store mutation; external providers reconcile. Built-in: no-op."""
-        return None
+        return
 
     def register_job(self, job: dict[str, Any]) -> None:
         """Register the external trigger for a newly persisted job (must complete before callers
         report it as scheduled). Built-in: no-op."""
-        return None
+        return
 
     def recover_interrupted(self) -> int:
         """Run profile-local attempt recovery for every provider lifecycle."""
@@ -238,7 +238,7 @@ class CronScheduler(ABC):
 
     def reconcile(self) -> None:
         """Converge the external registry toward jobs.json (desired state). Built-in: no-op."""
-        return None
+        return
 
 
 def provider_supports_force_fire(provider: Any) -> bool:
@@ -291,7 +291,7 @@ def _misfire_grace_minutes() -> float:
 
 
 def fire_overdue_jobs(
-    provider: "CronScheduler", *, adapters: Any = None, loop: Any = None, now: Any = None,
+    provider: CronScheduler, *, adapters: Any = None, loop: Any = None, now: Any = None,
 ) -> int:
     """Misfire backstop (gateway housekeeping loop): fire jobs whose external HTTP fire never
     arrived, else ``next_run_at`` stays parked in the past forever. No-op for the built-in (its tick
@@ -384,7 +384,7 @@ def fire_overdue_jobs(
     return fired
 
 
-def resolve_cron_scheduler() -> "CronScheduler":
+def resolve_cron_scheduler() -> CronScheduler:
     """Resolve ``cron.provider``; missing/failing/unavailable providers fall back to the built-in
     with a warning — cron must never be left without a trigger."""
     name = ""
@@ -414,8 +414,8 @@ def resolve_cron_scheduler() -> "CronScheduler":
 
 
 def scheduler_for_profile_mode(
-    provider: "CronScheduler", *, multiplex_profiles: bool
-) -> "CronScheduler":
+    provider: CronScheduler, *, multiplex_profiles: bool
+) -> CronScheduler:
     """External providers own one unscoped remote registry and cannot reconcile several profile
     stores: fail closed to the built-in multiplex ticker until the API carries profile identity."""
     if not multiplex_profiles or isinstance(provider, InProcessCronScheduler):

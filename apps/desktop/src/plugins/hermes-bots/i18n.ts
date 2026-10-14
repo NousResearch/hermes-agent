@@ -32,6 +32,7 @@
 import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@hermes/plugin-sdk'
 import { useMemo } from 'react'
 
+import { bind, type Bound } from './i18n-bind'
 import { getPluginCtx } from './shared'
 
 type BotsMessages = {
@@ -388,6 +389,8 @@ type BotsMessages = {
     portalUnavailable: string
     /** Managed runtimes (Hermes Cloud): updates are the platform's job, not the user's. */
     portalUnavailableManaged: string
+    managedNotIncludedTitle: string
+    managedNotIncludedBody: string
     unavailableTitle: string
     autoOpenMenu: string
     autoOpenOnToast: (name: string) => string
@@ -827,6 +830,9 @@ const en: BotsMessages = {
     portalUnsupported: 'Not available on this host',
     portalUnavailable: 'Update the bot\u2019s Hermes to use Screen',
     portalUnavailableManaged: 'Screen is not available on this managed Hermes release yet',
+    managedNotIncludedTitle: 'Screen isn’t included on this bot',
+    managedNotIncludedBody:
+      'Hermes Cloud includes Screen on bots with 8 GB of memory or more. It can’t be installed on a smaller bot.',
     unavailableTitle: 'Screen needs a newer Hermes',
     autoOpenMenu: 'Open Screen when the bot uses it',
     autoOpenOnToast: name => `${name}’s Screen opens when it starts using its desktop`,
@@ -1267,6 +1273,9 @@ const ja: BotsMessages = {
     portalUnsupported: 'このホストでは利用できません',
     portalUnavailable: 'Screen を使うにはボットの Hermes を更新してください',
     portalUnavailableManaged: 'この管理された Hermes リリースではまだ Screen を利用できません',
+    managedNotIncludedTitle: 'このボットには Screen が含まれていません',
+    managedNotIncludedBody:
+      'Hermes Cloud では、メモリが 8 GB 以上のボットに Screen が含まれます。これより小さいボットにはインストールできません。',
     unavailableTitle: 'Screen には新しい Hermes が必要です',
     autoOpenMenu: 'ボットが画面を使い始めたら Screen を開く',
     autoOpenOnToast: name => `${name} がデスクトップを使い始めると Screen が開きます`,
@@ -1691,6 +1700,8 @@ const zh: BotsMessages = {
     portalUnsupported: '此主机不可用',
     portalUnavailable: '更新机器人的 Hermes 以使用屏幕',
     portalUnavailableManaged: '此托管 Hermes 版本尚不支持屏幕',
+    managedNotIncludedTitle: '此机器人不包含屏幕',
+    managedNotIncludedBody: 'Hermes Cloud 为内存 8 GB 及以上的机器人提供屏幕，较小的机器人无法安装。',
     unavailableTitle: '屏幕需要更新版的 Hermes',
     autoOpenMenu: '机器人使用屏幕时自动打开',
     autoOpenOnToast: name => `${name} 开始使用桌面时会自动打开屏幕`,
@@ -2115,6 +2126,8 @@ const zhHant: BotsMessages = {
     portalUnsupported: '此主機不可用',
     portalUnavailable: '更新機器人的 Hermes 以使用螢幕',
     portalUnavailableManaged: '此託管 Hermes 版本尚不支援螢幕',
+    managedNotIncludedTitle: '此機器人不包含螢幕',
+    managedNotIncludedBody: 'Hermes Cloud 為記憶體 8 GB 以上的機器人提供螢幕，較小的機器人無法安裝。',
     unavailableTitle: '螢幕需要較新版的 Hermes',
     autoOpenMenu: '機器人使用螢幕時自動開啟',
     autoOpenOnToast: name => `${name} 開始使用桌面時會自動開啟螢幕`,
@@ -2209,32 +2222,6 @@ const zhHant: BotsMessages = {
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
 export const BOTS_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
-
-// Bind the message SHAPE to a plugin translator: string leaves resolve now,
-// function leaves forward their args through t(path, …).
-type Bound<T> = {
-  [K in keyof T]: T[K] extends (...args: infer A) => string
-    ? (...args: A) => string
-    : T[K] extends object
-      ? Bound<T[K]>
-      : string
-}
-
-function bind<T extends object>(t: PluginTranslate, template: T, prefix = ''): Bound<T> {
-  const out = {} as Record<string, unknown>
-
-  for (const [key, value] of Object.entries(template)) {
-    const path = prefix ? `${prefix}.${key}` : key
-    out[key] =
-      typeof value === 'function'
-        ? (...args: unknown[]) => t(path, ...args)
-        : value && typeof value === 'object'
-          ? bind(t, value as object, path)
-          : t(path)
-  }
-
-  return out as Bound<T>
-}
 
 export type BotsText = Bound<BotsMessages>
 

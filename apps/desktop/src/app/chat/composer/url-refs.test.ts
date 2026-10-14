@@ -120,7 +120,8 @@ describe('linkifyUrls', () => {
   // destination into a reference marker leaves the link pointing at the
   // marker instead of the href.
   it('preserves the destination of a Markdown link', () => {
-    const text = 'Show this retained source without using tools: [Mission Control issue 7](https://example.invalid/projects/synthetic/issues/7)'
+    const text =
+      'Show this retained source without using tools: [Mission Control issue 7](https://example.invalid/projects/synthetic/issues/7)'
 
     expect(linkifyUrls(text)).toBe(text)
   })

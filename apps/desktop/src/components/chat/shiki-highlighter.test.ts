@@ -32,7 +32,6 @@ describe('chunkByLines', () => {
   })
 })
 
-
 describe('copyableCodeText', () => {
   it('unwraps quoted URL reference directives before copying a code block', () => {
     expect(copyableCodeText('curl @url:`https://example.com/image.png` -o image.png')).toBe(
@@ -60,7 +59,7 @@ second @url:"https://two.example" @file:\`src/app.ts\``
       '@url:http://?',
       '@url:https://?',
       '@url:http://:80',
-      '@url:https://#fragment',
+      '@url:https://#fragment'
     ]) {
       expect(copyableCodeText(code)).toBe(code)
     }

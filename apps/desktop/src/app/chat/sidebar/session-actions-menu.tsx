@@ -38,7 +38,8 @@ import {
   applyRenamedSessionTitle,
   moveSessionToProject,
   projectIdForCwd,
-  projectRootCwd
+  projectRootCwd,
+  refreshProjectTree
 } from '@/store/projects'
 import {
   $activeSessionId,
@@ -94,9 +95,7 @@ function resolveRuntimeIdForStored(storedSessionId: string): null | string {
     }
   }
 
-  const tileRuntimeId = $sessionTiles
-    .get()
-    .find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+  const tileRuntimeId = $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
 
   if (tileRuntimeId) {
     return tileRuntimeId
@@ -116,6 +115,11 @@ export async function renameSessionPreferringRpc(
   title: string,
   profile?: string
 ): Promise<{ title?: string }> {
+  const resolvedProfile =
+    (profile ?? '').trim() ||
+    $sessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))?.profile ||
+    undefined
+
   const runtimeId = resolveRuntimeIdForStored(storedSessionId)
   const gateway = activeGateway()
 
@@ -136,7 +140,7 @@ export async function renameSessionPreferringRpc(
     }
   }
 
-  return renameSession(storedSessionId, title, profile)
+  return renameSession(storedSessionId, title, resolvedProfile)
 }
 
 interface SessionActions {
@@ -210,6 +214,16 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
   const cwd = session?.cwd?.trim() || ''
   const currentProjectId = cwd ? projectIdForCwd(cwd) : null
   const targets = tree.filter(node => node.id !== currentProjectId && !node.isNoProject && projectRootCwd(node))
+
+  // The flat (non-grouped) sidebar view only warms $projectTree on a
+  // background timer (PROJECT_TREE_WARM_MS in sidebar/index.tsx), so opening
+  // this submenu before that timer fires — or before the grouped view has
+  // ever been visited this run — showed "No other projects" even when
+  // projects exist. Refresh on open so the list is authoritative regardless
+  // of sidebar grouping state or timing.
+  useEffect(() => {
+    void refreshProjectTree()
+  }, [])
 
   if (targets.length === 0) {
     return <kit.Item disabled>{p.moveNoProjects}</kit.Item>
@@ -739,7 +753,10 @@ function RenameSessionDialog({ open, onOpenChange, sessionId, currentTitle, prof
     setSubmitting(true)
 
     try {
-      const result = await renameSessionPreferringRpc(sessionId, next, profile)
+      const targetProfile =
+        (profile ?? '').trim() || $sessions.get().find(s => sessionMatchesStoredId(s, sessionId))?.profile || undefined
+
+      const result = await renameSessionPreferringRpc(sessionId, next, targetProfile)
       const finalTitle = result.title || next || ''
       // One write, every list: patch the main store AND the project surfaces.
       // Bare-id patching only the recents slice left project-scoped rows

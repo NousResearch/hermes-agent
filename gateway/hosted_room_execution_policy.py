@@ -38,7 +38,7 @@ class RoomExecutionPolicy:
     policy_digest: str
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "RoomExecutionPolicy":
+    def from_mapping(cls, value: Mapping[str, Any]) -> RoomExecutionPolicy:
         if not isinstance(value, Mapping) or set(value) != _POLICY_FIELDS:
             raise RoomExecutionPolicyError("execution policy fields are invalid")
         if value["version"] != POLICY_VERSION:

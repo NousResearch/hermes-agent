@@ -12,6 +12,13 @@ def _flag(parser, *names, help, **kw):
     parser.add_argument(*names, action="store_true", help=help, **kw)
 
 
+def cmd_sessions_lazy(args, **kwargs):
+    """``hermes sessions`` handler; sessions_cmd imports only when the subcommand runs."""
+    from hermes_cli.sessions_cmd import cmd_sessions
+
+    return cmd_sessions(args, **kwargs)
+
+
 def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     """Attach the ``sessions`` subcommand to ``subparsers``."""
     sessions_parser = subparsers.add_parser(
@@ -89,7 +96,8 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_export.add_argument("--session-id", help="Session ID or unique prefix to export")
     _add_session_filter_args(
         sessions_export, "Only export sessions older than AGE (duration like '5h'/'2d', "
-        "bare number of days, or an ISO timestamp)")
+        "bare number of days, or an ISO timestamp). Filtered exports include pinned and archived "
+        "sessions, so they back up everything a matching prune could delete")
     _flag(sessions_export, "--redact",
         help="Redact secrets (API keys, tokens, credentials) from exported content")
     sessions_export.add_argument("--lineage", choices=["single", "logical"], default="single",

@@ -45,6 +45,11 @@ name: uv.lock check
 
 on:
   workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
     outputs:
       review_status:
         description: "JSON review status for the review-status aggregator"
@@ -54,8 +59,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: uv-lockfile-check-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  group: uv-lockfile-check-${{ (github.ref_type == 'tag' || inputs.commit != '') && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && inputs.commit == '' }}
 
 jobs:
   check:
@@ -66,7 +71,9 @@ jobs:
       review_status: ${{ steps.verify.outputs.review_status }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
 
       - uses: ./.github/actions/setup-pm
         with:
@@ -168,7 +175,7 @@ jobs:
       - name: Upload review status artifact
         if: always() && steps.verify.outcome != 'skipped'
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: review-status-uv-lockfile
           path: review-status.json

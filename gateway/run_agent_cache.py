@@ -274,6 +274,7 @@ class GatewayAgentCacheMixin:
                 source.platform, str(source.chat_id) if source.chat_id else "",
                 thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
                 parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+                source=source,
             )
         else:
             model = _resolve_gateway_model()

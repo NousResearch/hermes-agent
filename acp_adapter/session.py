@@ -136,6 +136,9 @@ class SessionState:
     agent: Any  # AIAgent instance
     cwd: str = "."
     model: str = ""
+    # The reasoning effort a client chose for this session, overriding Hermes' own config until
+    # the session ends. Absent means the config value stands.
+    reasoning_effort: str | None = None
     history: list[dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
     is_running: bool = False
@@ -181,6 +184,11 @@ class SessionManager:
         state = self._install_state(session_id, agent, cwd, getattr(agent, "model", "") or "", [])
         logger.info("Created ACP session %s (cwd=%s)", session_id, cwd)
         return state
+
+    def session_ids(self) -> list[str]:
+        """Every session this process serves, for routing a background completion to its owner."""
+        with self._lock:
+            return list(self._sessions.keys())
 
     def get_session(self, session_id: str) -> Optional[SessionState]:
         """Return the session, transparently restoring it from the DB (e.g. after
@@ -491,6 +499,25 @@ class SessionManager:
 
     # ---- internal -----------------------------------------------------------
 
+    def _reasoning_config_for(self, config: dict, model: str, session_id: str) -> dict | None:
+        """Hermes' own reasoning config for ``model``, with the effort a client chose for this
+        session laid on top, so a rebuild keeps the picker's choice."""
+        from hermes_constants import resolve_reasoning_config
+
+        resolved = resolve_reasoning_config(config, model)
+        state = self.get_session(session_id)
+        chosen = getattr(state, "reasoning_effort", None) if state is not None else None
+        if not chosen:
+            return resolved
+        merged = dict(resolved) if isinstance(resolved, dict) else {}
+        if chosen == "none":
+            merged.pop("effort", None)
+            merged["enabled"] = False
+        else:
+            merged.pop("enabled", None)
+            merged["effort"] = chosen
+        return merged
+
     def _make_agent(self, *, session_id: str, cwd: str, model: str | None = None,
                     requested_provider: str | None = None, base_url: str | None = None, api_mode: str | None = None,
                     enabled_toolsets: list[str] | None = None, disabled_toolsets: list[str] | None = None):
@@ -532,7 +559,7 @@ class SessionManager:
             # Same chokepoint as the CLI/gateway/TUI/cron: without it ``agent.reasoning_effort: none`` never
             # reaches an ACP session and the transport applies its default effort (a 400 on non-reasoning
             # models). Resolved against the session's model so per-model overrides apply.
-            "reasoning_config": resolve_reasoning_config(config, model or default_model),
+            "reasoning_config": self._reasoning_config_for(config, model or default_model, session_id),
         }
         resolve_error: Exception | None = None
         try:

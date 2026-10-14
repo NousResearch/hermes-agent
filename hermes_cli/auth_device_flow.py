@@ -7,6 +7,7 @@ inside each function so ``hermes_cli.auth.<name>`` patches still intercept (and 
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import hashlib
 import logging
 import os
@@ -410,20 +411,43 @@ def _prompt_yes_no(prompt: str, *, default: str) -> bool:
     return answer in {"", "y", "yes"} if default == "y" else answer in {"y", "yes"}
 
 
+@contextmanager
+def _provider_activation(provider_id: str):
+    """Commit provider activation with the caller's config write, or restore exact auth bytes."""
+    from hermes_cli.auth import _auth_file_path, _auth_store_lock, _load_auth_store, _save_auth_store
+    from utils import atomic_write_bytes
+    # Hold the lock through rollback so a concurrent auth writer cannot be lost.
+    with _auth_store_lock():
+        auth_file = _auth_file_path()
+        snapshot = auth_file.read_bytes() if auth_file.exists() else None
+        auth_store = _load_auth_store()
+        auth_store["active_provider"] = provider_id
+        try:
+            _save_auth_store(auth_store)
+            yield
+        except BaseException:
+            if snapshot is None:
+                auth_file.unlink(missing_ok=True)
+            else:
+                atomic_write_bytes(auth_file, snapshot, mode=0o600, fsync_dir=True)
+            raise
+
+
 def _print_login_success(
-    provider_id: str, config_path: Path, *, show_auth_state: bool = False) -> None:
+    provider_id: str, config_path: Optional[Path], *, show_auth_state: bool = False) -> None:
     print()
     print("Login successful!")
     if show_auth_state:
         from hermes_constants import display_hermes_home as _dhh
         print(f"  Auth state: {_dhh()}/auth.json")
-    print(f"  Config updated: {config_path} (model.provider={provider_id})")
+    if config_path is not None:
+        print(f"  Config updated: {config_path} (model.provider={provider_id})")
 
 
 def _offer_existing_oauth_credentials(
     provider_id: str, *, resolve: Callable[[], dict[str, Any]],
     is_expiring: Callable[[str, int], bool], display_name: str, default_base_url: str,
-    expired_notice: Optional[str] = None) -> bool:
+    expired_notice: Optional[str] = None, update_config: bool = True) -> bool:
     """Offer to reuse still-valid stored OAuth credentials. Returns True when the user accepted.
 
     *resolve* attempts a refresh, so a resolved token should be valid — but double-check the
@@ -436,8 +460,8 @@ def _offer_existing_oauth_credentials(
         if isinstance(api_key, str) and api_key and not is_expiring(api_key, 60):
             print(f"Existing {display_name} credentials found in Hermes auth store.")
             if _prompt_yes_no("Use existing credentials? [Y/n]: ", default="y"):
-                config_path = _update_config_for_provider(
-                    provider_id, existing.get("base_url", default_base_url))
+                config_path = (_update_config_for_provider(
+                    provider_id, existing.get("base_url", default_base_url)) if update_config else None)
                 _print_login_success(provider_id, config_path)
                 return True
         elif expired_notice:

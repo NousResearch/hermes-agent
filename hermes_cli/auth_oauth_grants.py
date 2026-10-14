@@ -649,6 +649,30 @@ class _HealPass:
             self.profile_changed = self.summary["providers_block"] = True
             if block_result:
                 self.root_changed = self.summary["adopted"] = True
+        else:
+            self.heal_pool_only_provider_block()
+
+    def heal_pool_only_provider_block(self) -> None:
+        """A copied profile singleton can alias a root grant with no provider block yet."""
+        providers = self.profile_store.get("providers") or {}
+        block = providers.get(self.provider_id)
+        root_block = (self.root_store.get("providers") or {}).get(self.provider_id) or {}
+        if not isinstance(block, dict) or not isinstance(root_block, dict):
+            return
+        tokens = _block_tokens(block)
+        if not tokens.get("refresh_token") or any(
+            _block_tokens(root_block).get(key) for key in ("access_token", "refresh_token")
+        ):
+            return
+        candidate = {"access_token": tokens.get("access_token"), "refresh_token": tokens["refresh_token"],
+                     "last_refresh": block.get("last_refresh")}
+        # Source names and account identity are NOT lineage. Shared token material is.
+        match_idx = _find_root_counterpart(candidate, self.r_rows)
+        if match_idx is None:
+            return
+        self._adopt_root_row(match_idx, candidate)
+        del providers[self.provider_id]
+        self.profile_changed = self.summary["providers_block"] = True
 
     def heal_profile_singleton(self, profile_singleton: Optional[Path]) -> None:
         if profile_singleton is None or not profile_singleton.exists():

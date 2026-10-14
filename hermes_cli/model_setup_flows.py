@@ -392,13 +392,15 @@ def _model_flow_openai_codex(config, current_model=""):
 
 def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     """xAI Grok OAuth (SuperGrok / Premium+) provider: ensure logged in, then pick model."""
+    from functools import partial
     from hermes_cli.auth import (
         get_xai_oauth_auth_status, _prompt_model_selection, resolve_xai_oauth_runtime_credentials, _login_xai_oauth,
-        DEFAULT_XAI_OAUTH_BASE_URL, PROVIDER_REGISTRY)
+        _update_config_for_provider, DEFAULT_XAI_OAUTH_BASE_URL, PROVIDER_REGISTRY)
     from hermes_cli.models import provider_model_ids
     login_args = argparse.Namespace(no_browser=bool(getattr(args, "no_browser", False)), timeout=getattr(args, "timeout", None))
     if not _oauth_gate(
-        bool(get_xai_oauth_auth_status().get("logged_in")), "xAI Grok OAuth (SuperGrok / Premium+)", _login_xai_oauth,
+        bool(get_xai_oauth_auth_status().get("logged_in")), "xAI Grok OAuth (SuperGrok / Premium+)",
+        partial(_login_xai_oauth, update_config=False),
         login_args, PROVIDER_REGISTRY["xai-oauth"], fresh_name="xAI OAuth"):
         return
 
@@ -412,8 +414,11 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
 
     models = provider_model_ids("xai-oauth")
     selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.6"))
-    _activate_provider_model(selected, "xai-oauth", base_url,
-                             f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
+    if selected:
+        _update_config_for_provider("xai-oauth", base_url, default_model=selected, replace_default_model=True)
+        print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
+    else:
+        print("No change.")
 
 
 def _model_flow_qwen_oauth(_config, current_model=""):

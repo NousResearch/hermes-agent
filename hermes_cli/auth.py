@@ -853,12 +853,17 @@ def _provider_state_transaction(
     to BOTH locks: a transaction that spans a network call must let waiters outlive that call."""
     with _auth_store_lock(timeout_seconds):
         auth_store = _load_auth_store()
-        state, source_path = _load_provider_state_with_source(auth_store, provider_id)
+        from hermes_cli.auth_xai import _load_xai_oauth_state_with_source, _xai_oauth_state_from_store
+        state, source_path = (_load_xai_oauth_state_with_source(auth_store) if provider_id == "xai-oauth"
+                              else _load_provider_state_with_source(auth_store, provider_id))
         if source_path is None or _same_path(source_path, _auth_file_path()):
             yield auth_store, state, source_path
             return
         with _auth_store_lock(timeout_seconds, target_path=source_path):
-            yield auth_store, _provider_state_in(_load_auth_store(source_path), provider_id), source_path
+            source_store = _load_auth_store(source_path)
+            state = (_xai_oauth_state_from_store(source_store) if provider_id == "xai-oauth"
+                     else _provider_state_in(source_store, provider_id))
+            yield auth_store, state, source_path
 
 
 def _store_provider_state(
@@ -2343,19 +2348,12 @@ def resolve_external_process_provider_credentials(provider_id: str) -> dict[str,
 
 def _update_config_for_provider(
     provider_id: str, inference_base_url: str, default_model: Optional[str] = None,
-    *, clear_default: bool = False) -> Path:
-    """Update config.yaml and auth.json to reflect the active provider.
+    *, clear_default: bool = False, replace_default_model: bool = False) -> Path:
+    """Select provider and model together; roll back auth activation if config cannot be saved.
 
-    *default_model*, when given, is written as ``model.default`` in the same step so the gateway
-    (which re-reads config per message) can't pick up the new provider before model selection
-    finishes and send an OpenRouter-style ``vendor/model`` name to a direct API. *clear_default*
-    removes ``model.default`` in that same write, for a caller that has no model to offer and must
-    not leave the previous provider's model paired with the new host."""
-    with _auth_store_lock():  # so auto-resolution picks this provider
-        auth_store = _load_auth_store()
-        auth_store["active_provider"] = provider_id
-        _save_auth_store(auth_store)
-
+    *default_model* replaces absent/vendor-prefixed defaults; explicit picks set
+    *replace_default_model* to replace bare names too. *clear_default* removes the previous
+    provider's model when the caller has no replacement to offer."""
     config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     require_readable_config_before_write(config_path)
@@ -2380,12 +2378,14 @@ def _update_config_for_provider(
     # providers.
     if default_model:
         cur_default = model_cfg.get("default", "")
-        if not cur_default or "/" in cur_default:
+        if replace_default_model or not cur_default or "/" in cur_default:
             model_cfg["default"] = default_model
     elif clear_default:
         model_cfg.pop("default", None)
     config["model"] = model_cfg
-    atomic_config_replace(config_path, config)
+    from hermes_cli.auth_device_flow import _provider_activation
+    with _provider_activation(provider_id):
+        atomic_config_replace(config_path, config)
     return config_path
 
 

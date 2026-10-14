@@ -1,10 +1,12 @@
 """Tests for the bundled hermes-achievements dashboard plugin.
 
-These target the two behaviors that matter for official integration:
+These target the three behaviors that matter for official integration:
 
 * The 200-session scan cap is removed — the plugin now walks the entire
   session history by default. Lifetime badges (tens of thousands of
   tool calls) were unreachable before this fix on long-running installs.
+* Archived sessions are scanned too. ``archived`` only hides a session from
+  the sidebar; archiving old work must not shrink lifetime badge totals.
 * First-ever scans run in a background thread so the dashboard request
   path never blocks, even on 8000+ session databases where a cold scan
   takes minutes.
@@ -67,6 +69,7 @@ class _FakeSessionDB:
         self.scan_delay = scan_delay
         self.last_limit: Optional[int] = None
         self.last_include_children: Optional[bool] = None
+        self.last_include_archived: Optional[bool] = None
         self.list_calls = 0
         self.messages_calls = 0
 
@@ -78,11 +81,13 @@ class _FakeSessionDB:
         offset: int = 0,
         include_children: bool = False,
         project_compression_tips: bool = True,
+        include_archived: bool = False,
     ) -> list[dict[str, Any]]:
         if self.scan_delay:
             time.sleep(self.scan_delay)
         self.last_limit = limit
         self.last_include_children = include_children
+        self.last_include_archived = include_archived
         self.list_calls += 1
         # SQLite semantics: LIMIT -1 = unlimited. Honor that here.
         effective = self.session_count if limit == -1 else min(self.session_count, limit)
@@ -333,3 +338,26 @@ def test_scan_sessions_never_opens_a_writable_session_db(plugin_api, tmp_path, m
     assert result.get("error") is None
     assert [s["session_id"] for s in result["sessions"]] == ["s1"]
     assert writable_opens == [], "the achievements scan must attach read-only"
+
+
+def test_scan_sessions_includes_archived_sessions(plugin_api):
+    """Bug regression: archived sessions must still be scanned.
+
+    ``archived`` is a sidebar visibility flag — ``_session_filter_where`` defaults
+    to ``include_archived=False`` because the session list should not show them. The
+    achievements scan reused that default, so every archived session dropped out of the
+    lifetime sums, per-session maxima and event counters. Badges already recorded in
+    ``state.json`` stayed sticky, so the UI kept showing them unlocked while their progress
+    silently shrank back toward the threshold — totals that shrink when the user archives
+    old sessions. On a real install 649 of 719 non-hidden sessions were archived, leaving
+    the scan with 70 sessions and ~2,000 of ~40,000 tool calls.
+    """
+    fake_db = _FakeSessionDB(session_count=100)
+    _install_fake_session_db(plugin_api, fake_db)
+
+    plugin_api.scan_sessions()
+
+    assert fake_db.last_include_archived is True, (
+        "scan_sessions() must pass include_archived=True: lifetime achievement totals "
+        "must not shrink when the user archives old sessions"
+    )

@@ -3724,7 +3724,7 @@ class GatewayTurnMixin:
                         pending_event = None
                         pending = None
 
-        if self._draining and (pending_event or pending):
+        if self._draining and (pending_event or pending) and getattr(pending_event, "_admitted_before_drain", False) is not True:
             logger.info(
                 "Discarding pending follow-up for session %s during gateway %s",
                 session_key or "?", self._status_action_label(),

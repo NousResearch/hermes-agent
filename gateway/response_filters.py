@@ -111,21 +111,32 @@ def display_kind_for_event(event: Any) -> str | None:
     by the gateway poller, never inferred from inbound text), but it deliberately stays
     non-internal so authorization and the emergency stop still apply to it.
     """
-    if getattr(event, "internal", False) and display_metadata_for_event(event):
+    from gateway.session_display import admission_display
+    if kind := admission_display(event).get("kind"):
+        # A canonical admission committed hidden (Desktop widget intent): never a user bubble.
+        return kind
+    if getattr(event, "internal", False) and _producer_card(event):
         return event.metadata["display_kind"]
     if getattr(event, "internal", False) or getattr(event, "_heartbeat_session_id", None):
         return INTERNAL_NOTIFICATION_DISPLAY_KIND
     return None
 
 
-def display_metadata_for_event(event: Any) -> dict:
-    """``{"display_text": ...}`` for an internal event whose producer named an async-result card."""
+def _producer_card(event: Any) -> dict:
     metadata = getattr(event, "metadata", None) or {}
     text = metadata.get("display_text")
     if (getattr(event, "internal", False) and metadata.get("display_kind") in PRODUCER_NOTICE_DISPLAY_KINDS
             and isinstance(text, str) and text.strip()):
         return {"display_text": text}
     return {}
+
+
+def display_metadata_for_event(event: Any) -> dict:
+    """``{"display_text": ...}`` for an internal event whose producer named an async-result card, plus the
+    ``title_preview`` (titler-only) a canonical admission committed for this exact event."""
+    from gateway.session_display import admission_display
+    preview = admission_display(event).get("title_preview")
+    return {**_producer_card(event), **({"title_preview": preview} if preview else {})}
 
 
 def is_machinery_display_kind(display_kind: Any) -> bool:

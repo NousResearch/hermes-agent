@@ -37,28 +37,28 @@ async def bot(tmp_path, monkeypatch):
         store._db.close()
 
 
-def _target_id(bot):
+async def _target_id(bot):
     from gateway.session_bot import _target
-    ref, _live, _entry = _target(bot.authority, bot.owner)
+    ref, _live, _entry = await _target(bot.authority, bot.owner)
     return ref.session_id
 
 
 @pytest.mark.asyncio
 async def test_renamed_or_deleted_bot_chat_gets_a_fresh_replacement(bot):
     db = bot.authority.db
-    first = _target_id(bot)
-    assert _target_id(bot) == first  # converges: resolved by title, never re-created
+    first = await _target_id(bot)
+    assert await _target_id(bot) == first  # converges: resolved by title, never re-created
 
     db.set_session_title(first, 'Planning notes')
-    second = _target_id(bot)
+    second = await _target_id(bot)
     assert second != first
     assert db.get_session(first)['title'] == 'Planning notes'  # the rename stands
     assert db.get_session(second)['title'] == 'Bot Chat'
 
     assert db.delete_session(second, sessions_dir=bot.home / 'sessions')
     bot.authority.sessions.pop(second, None)
-    third = _target_id(bot)
+    third = await _target_id(bot)
     assert third not in (first, second)  # a replacement, not the retired id
     assert db.get_session(second) is None
     assert db.get_session(third)['title'] == 'Bot Chat'
-    assert _target_id(bot) == third
+    assert await _target_id(bot) == third

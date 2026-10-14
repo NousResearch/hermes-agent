@@ -13,6 +13,7 @@ import httpx
 import pytest
 from tests.gateway.fixtures.local_recovery_probe import daemon, Model, websocket, rpc
 from tests.gateway.test_native_http_auth import ticket, headers as native_headers
+from tests.waiting import async_wait_until
 
 
 @pytest.mark.platforms("linux")
@@ -55,13 +56,11 @@ def test_used_api_and_native_delete_restart_exact_retry(tmp_path):
             sid = created['result']['session_id']
             submitted = await rpc(ws, 'prompt.submit', session_id=sid, input_id='native-once', text='NATIVE_USED_ONCE')
             assert submitted['result']['status'] == 'queued', submitted
-            async with asyncio.timeout(30):
-                while True:
-                    with sqlite3.connect(home / 'state.db') as db:
-                        row = db.execute("SELECT status FROM session_admissions WHERE request_id='native-once'").fetchone()
-                    if row and row[0] == 'terminal':
-                        break
-                    await asyncio.sleep(.03)
+            def settled():
+                with sqlite3.connect(home / 'state.db') as db:
+                    row = db.execute("SELECT status FROM session_admissions WHERE request_id='native-once'").fetchone()
+                return bool(row and row[0] == 'terminal')
+            await async_wait_until(settled, timeout=30, interval=.03, what='the native turn to settle')
             # Wait for the drain's publication, not only the earlier DB terminal commit.
             async with asyncio.timeout(20):
                 while True:
@@ -106,13 +105,13 @@ def test_used_api_and_native_delete_restart_exact_retry(tmp_path):
                 assert db.execute("SELECT 1 FROM session_admissions WHERE request_id='busy-once'").fetchone()
 
     try:
-        with daemon(root, home, env, barrier=True) as (proc, desc):
+        with daemon(root, home, env, barrier=True) as (_proc, desc):
             first = asyncio.run(api_request())
             native_sid = asyncio.run(native_turn(desc))
             asyncio.run(busy_delete_refused(desc))
             delete(desc, 'used-api'); delete(desc, native_sid)
             before = len(peer.requests)
-        with daemon(root, home, env, barrier=False) as (proc, desc):
+        with daemon(root, home, env, barrier=False) as (_proc, desc):
             with httpx.Client(base_url=desc['api_origin'], trust_env=False) as client:
                 for sid, (params, receipt) in receipts.items():
                     path = '/api/sessions/' + sid

@@ -71,7 +71,7 @@ async def test_cancelling_model_request_cannot_strand_next_admission(tmp_path, m
 @pytest.mark.asyncio
 async def test_profile_retirement_waits_for_mutation_thread(tmp_path, monkeypatch):
     from gateway.run_runtime import _retire_profile_authority
-    owner, connection, ref, task, release, completed = await pending_model(tmp_path, monkeypatch)
+    owner, connection, _ref, task, release, completed = await pending_model(tmp_path, monkeypatch)
     retirement = asyncio.create_task(_retire_profile_authority(owner))
     try:
         # Retirement must not finish while the writer can still mutate this profile.

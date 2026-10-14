@@ -47,7 +47,7 @@ def test_full_agent_worker_rotation_continues_inference_without_canonical_opens(
             receipt = tmp_path / 'receipt.json'
             result = subprocess.run([sys.executable, str(root / 'tests/gateway/fixtures/rotation_persistence_worker.py')],
                 cwd=root, env=env, input=json.dumps(dict(home=str(home), url=url, session_id=sid,
-                    foreign=foreign, receipt=str(receipt))) + '\n', text=True, capture_output=True, timeout=120)
+                    foreign=foreign, receipt=str(receipt))) + '\n', text=True, capture_output=True, timeout=120, check=False)
             assert result.returncode == 0, result.stdout + result.stderr
             proof = json.loads(receipt.read_text())
             assert proof['opens'] == proof['fds'] == [], json.dumps(proof['opens'], indent=2)

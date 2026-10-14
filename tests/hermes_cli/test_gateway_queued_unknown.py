@@ -5,6 +5,7 @@ import json
 import pytest
 
 from hermes_cli.gateway_chat_view import GatewayChatView
+from tests.waiting import async_wait_until
 
 
 @pytest.mark.asyncio
@@ -84,11 +85,14 @@ async def test_own_lost_turn_exits_from_its_unknown_completion_not_queued_detach
                 return {'result': {}}
 
             async def lose_worker():
-                await asyncio.sleep(0.01)
+                # Worker loss follows the receipt: the view already owns its admission.
+                await async_wait_until(lambda: view.finite_admission == 'ours', timeout=5, what='the receipt')
                 self.events.put_nowait({'method': 'event', 'params': {'session_id': 's', 'type': 'session.info',
                     'admission_id': 'ours', 'payload': {'pending': [{'admission_id': 'ours', 'status': 'unknown'}]}}})
                 if yield_between:
-                    await asyncio.sleep(0.01)
+                    # A separate WebSocket frame: the view renders session.info before the completion.
+                    await async_wait_until(lambda: any(r.get('admission_id') == 'ours' for r in view.pending),
+                                           timeout=5, what='session.info rendered')
                 self.events.put_nowait({'method': 'event', 'params': {'session_id': 's', 'type': 'message.complete',
                     'admission_id': 'ours', 'payload': {'outcome': 'unknown', 'text': 'Worker execution is unknown.'}}})
             asyncio.get_running_loop().create_task(lose_worker())

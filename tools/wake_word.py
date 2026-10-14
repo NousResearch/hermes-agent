@@ -496,7 +496,7 @@ class WakeWordDetector:
     once and kept across pause/resume — only the stream + reader thread cycle, so mic toggles are cheap."""
 
     def __init__(self, engine: _Engine, on_wake: Callable[[], None], cooldown: float = _FIRE_COOLDOWN_SECONDS,
-                 on_failure: Optional[Callable[["WakeWordDetector"], None]] = None,
+                 on_failure: Optional[Callable[[WakeWordDetector], None]] = None,
                  input_device: int | str | None = None, external_audio: bool = False):
         self.engine, self.on_wake, self.cooldown, self.on_failure = engine, on_wake, cooldown, on_failure
         self.input_device, self.external_audio = input_device, bool(external_audio)
@@ -510,7 +510,7 @@ class WakeWordDetector:
         self._stop, self._callback_inflight = threading.Event(), threading.Event()
         self._lock, self._last_fire = threading.Lock(), 0.0
         # Client-capture PCM queue (int16 mono frames). Local mode ignores this.
-        self._audio_q: "queue.Queue[Any]" = queue.Queue(maxsize=64)
+        self._audio_q: queue.Queue[Any] = queue.Queue(maxsize=64)
         # True when the stream is open but every frame is (near-)silence, so status
         # surfaces can tell "armed" from "deaf".
         self.audio_silent, self._silent_frames = False, 0

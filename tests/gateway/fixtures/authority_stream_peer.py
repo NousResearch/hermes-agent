@@ -10,6 +10,8 @@ import queue
 import socket
 import threading
 import traceback
+from tests.waiting import async_wait_until
+import time
 
 
 class ModelPeer(BaseHTTPRequestHandler):
@@ -171,7 +173,8 @@ async def probe(peer, target):
 
             async def witness_blockage():
                 nonlocal blocked_bytes, kernel_queued
-                while not b.complete.is_set():
+                deadline = time.monotonic() + 60  # b.complete ends the sampling; this bounds a hang
+                while not b.complete.is_set() and time.monotonic() < deadline:
                     buffered = server_transport.get_write_buffer_size()
                     if buffered > server_transport.get_write_buffer_limits()[1]:
                         blocked_bytes = max(blocked_bytes, buffered)
@@ -187,10 +190,9 @@ async def probe(peer, target):
         # The idle session.info is published after message.complete (its terminal frame); wait for
         # it on every observer that sees the whole stream before reading "the last event".
         for observer in (b,) if peer.blocked else (a, b):
-            async with asyncio.timeout(10):
-                while not (observer.events and observer.events[-1]['type'] == 'session.info'
-                           and observer.events[-1].get('payload', {}).get('running') is False):
-                    await asyncio.sleep(.01)
+            await async_wait_until(lambda: observer.events and observer.events[-1]['type'] == 'session.info'
+                                   and observer.events[-1].get('payload', {}).get('running') is False,
+                                   timeout=10, what='the idle session.info after message.complete')
         assert target.read_text() == 'owned-effect'
         agent = authority.agent(ref)
         assert isinstance(agent, AIAgent)
@@ -210,9 +212,7 @@ async def probe(peer, target):
             assert a.events == b.events, 'observers saw competing event ordering/stamps'
         events = b.events
         if peer.blocked:
-            async with asyncio.timeout(5):
-                while not a.events:
-                    await asyncio.sleep(.01)
+            await async_wait_until(lambda: a.events, timeout=5, what='the resumed slow observer to read a frame')
             assert a.events == events[:len(a.events)], 'slow observer prefix has competing stamps'
             with fanout._lock:
                 assert len(fanout._peers) <= 2

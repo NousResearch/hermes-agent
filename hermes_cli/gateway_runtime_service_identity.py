@@ -172,13 +172,13 @@ def verify_launchd_loaded(output: str, home: Path, *, uid: int, username: str) -
     # Only the job's own blocks, never inherited/default environments or a
     # different job embedded in launchctl diagnostic text.
     def block(name):
-        found = re.findall(r"^\t" + name + r" = \{\n(.*?)^\t\}", output, re.M | re.S)
+        found = re.findall(r"^\t" + name + r" = \{\n(.*?)^\t\}", output, re.MULTILINE | re.DOTALL)
         if len(found) != 1:
             _unverified()
         return found[0].splitlines()
 
     for key, expected in (("uid", str(uid)), ("username", username)):
-        values = re.findall(r"^\t" + key + r" = (.+)$", output, re.M)
+        values = re.findall(r"^\t" + key + r" = (.+)$", output, re.MULTILINE)
         if values and values != [expected]:
             raise ValueError("service_account_mismatch")
     env = {}
@@ -193,7 +193,7 @@ def verify_launchd_loaded(output: str, home: Path, *, uid: int, username: str) -
     if home.parent.name != "profiles" and not env.get("HERMES_SUPERVISED_CHILD"):
         _unverified()
     argv = [line.strip() for line in block("arguments")]
-    programs = re.findall(r"^\tprogram = (.+)$", output, re.M)
+    programs = re.findall(r"^\tprogram = (.+)$", output, re.MULTILINE)
     if len(programs) != 1 or not argv or programs[0] != argv[0]:
         _unverified()
     verify_gateway_argv(argv, home)

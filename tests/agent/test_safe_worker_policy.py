@@ -22,7 +22,7 @@ def run_worker(tmp_path, body, mode="safe"):
     result = subprocess.run(
         [sys.executable, str(script)], env=env,
         cwd=root, stdin=subprocess.DEVNULL,
-        capture_output=True, text=True, timeout=45,
+        capture_output=True, text=True, timeout=45, check=False
     )
     assert result.returncode == 0, result.stdout + result.stderr
     return json.loads(result.stdout.strip().splitlines()[-1])

@@ -72,7 +72,7 @@ def _killed_mid_write(tmp_path: Path, rel: str, committed: dict[str, str] | None
          "from hermes_cli.update_cmd_commit import arm_tree_move; "
          "arm_tree_move([sys.argv[2]], Path(sys.argv[3]), pre=sys.argv[4], target=sys.argv[5], stash=None)",
          str(SOURCE), git_exe, str(root), pre, target], env=env, capture_output=True, text=True, encoding="utf-8",
-                            errors="replace", timeout=60)
+                            errors="replace", timeout=60, check=False)
     assert armed.returncode == 0, armed.stderr  # the updater that armed the move is gone
 
     gate = tmp_path / "filter-ready"
@@ -120,7 +120,7 @@ def test_a_launch_repairs_a_move_killed_while_writing_the_repairs_own_code(tmp_p
     if not published:
         shutil.rmtree(root / ".git/hermes-update-recovery")
     launch = subprocess.run([str(launcher)], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8",
-                            errors="replace", timeout=60)
+                            errors="replace", timeout=60, check=False)
     assert launch.returncode == 0 and "APP_REACHED" in launch.stdout, launch.stderr
     assert (root / rel).read_bytes() == original
     assert not (root / ".git/hermes-update-pull").exists()
@@ -145,7 +145,7 @@ def test_the_published_repair_leaves_the_tree_to_a_live_writer_holding_the_check
     try:
         assert holder.stdout is not None and holder.stdout.readline().strip() == "HELD"
         launch = subprocess.run([str(launcher)], cwd=tmp_path, env={**env, "PATH": os.pathsep + env["PATH"]},
-                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, check=False)
         assert launch.returncode != 0 and "Not repairing the checkout now" in launch.stderr, launch.stderr
         # One reason, not a "repairing it" banner followed by the import's traceback (m3).
         assert "Traceback" not in launch.stderr and "repairing it" not in launch.stderr, launch.stderr
@@ -157,7 +157,7 @@ def test_the_published_repair_leaves_the_tree_to_a_live_writer_holding_the_check
         holder.kill()
         holder.wait()
     launch = subprocess.run([str(launcher)], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8",
-                            errors="replace", timeout=60)
+                            errors="replace", timeout=60, check=False)
     assert launch.returncode == 0 and "APP_REACHED" in launch.stdout, launch.stderr
     assert (root / "hermes_bootstrap.py").read_bytes() == original
 
@@ -174,7 +174,7 @@ def test_a_damaged_published_closure_is_rebuilt_from_git_objects_not_trusted(tmp
     module.write_bytes(b"" if damage == "truncated" else
                        module.read_bytes() + b"\nprint('NOT_PRE_CODE_RAN', file=__import__('sys').stderr)\n")
     launch = subprocess.run([str(launcher)], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8",
-                            errors="replace", timeout=60)
+                            errors="replace", timeout=60, check=False)
     assert launch.returncode == 0 and "APP_REACHED" in launch.stdout, launch.stderr
     assert "NOT_PRE_CODE_RAN" not in launch.stderr, launch.stderr
     assert (root / "hermes_bootstrap.py").read_bytes() == original
@@ -198,7 +198,7 @@ def test_git_object_bytes_that_do_not_hash_to_pres_blob_never_run(tmp_path, corr
         obj.chmod(0o644)
         obj.write_bytes(zlib.compress(b"blob %d\0" % len(foreign) + foreign))
     launch = subprocess.run([str(launcher)], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8",
-                            errors="replace", timeout=60)
+                            errors="replace", timeout=60, check=False)
     assert not ran.exists(), launch.stderr
     assert (launch.returncode == 0) is not corrupt, launch.stderr
     assert (root / "hermes_bootstrap.py").exists() is not corrupt
@@ -215,7 +215,7 @@ def test_a_stdlib_named_file_in_the_tree_never_runs_before_the_repair(tmp_path, 
     shadow = {"shutil.py": f"open({str(ran)!r}, 'w').close()\nraise ImportError('shadow')\n"} if shadowed else {}
     root, env, original, launcher = _killed_mid_write(tmp_path, "hermes_bootstrap.py", shadow)
     launch = subprocess.run([str(launcher)], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8",
-                            errors="replace", timeout=60)
+                            errors="replace", timeout=60, check=False)
     assert not ran.exists(), launch.stderr
     assert launch.returncode == 0 and "APP_REACHED" in launch.stdout, launch.stderr
     assert (root / "hermes_bootstrap.py").read_bytes() == original

@@ -175,7 +175,7 @@ def add_comment_xml(doc, runs, text, author, initials) -> str:
                                   encoding="UTF-8", standalone=True)
         part.__class__ = type("CommentsXmlPart", (Part,),
                               {"blob": property(lambda self: _blob(self))})
-    now = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = _dt.datetime.now(_dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     comment = etree.SubElement(root, q("comment"))
     comment.set(q("id"), cid)
     comment.set(q("author"), author)

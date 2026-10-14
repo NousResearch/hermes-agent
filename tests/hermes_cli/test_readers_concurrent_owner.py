@@ -44,5 +44,5 @@ with SessionDB(db_path=path) as owner:
     assert owner.get_session_title('committed-fixture') == 'Committed title'
 '''
     result = subprocess.run([sys.executable, '-c', code], cwd=repo, env=env, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=60)
+                            capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode == 0, result.stdout + result.stderr

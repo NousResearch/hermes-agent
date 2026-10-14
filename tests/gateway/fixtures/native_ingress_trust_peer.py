@@ -9,6 +9,7 @@ import threading
 import traceback
 
 from shared_authority_peer import ModelPeer
+from tests.waiting import async_wait_until
 
 
 async def probe(mode, peer):
@@ -78,9 +79,8 @@ async def probe(mode, peer):
         hostile = adapter.build_source(chat_id='forged-profile', chat_type='dm', user_id='fixture-user')
         hostile.profile = 'foreign'
         await adapter.handle_message(MessageEvent(text='FORGED_PROFILE', source=hostile, message_id='foreign-profile'))
-        async with asyncio.timeout(10):
-            while adapter._active_sessions:
-                await asyncio.sleep(0.01)
+        await async_wait_until(lambda: not adapter._active_sessions, timeout=10,
+                               what='the forged-profile message to finish')
         assert not authority.sessions, 'unrouted profile field became durable authority'
         print(json.dumps({'rejected': rejected}))
         return
@@ -94,9 +94,7 @@ async def probe(mode, peer):
     accepted = admit_session_input(authority.db, epoch=authority.epoch, principal_id='messaging:' + identity,
                                    session_id=ref.session_id, request_id='trust-1', payload=payload)
     await adapter.handle_message(event)
-    async with asyncio.timeout(15):
-        while adapter._active_sessions:
-            await asyncio.sleep(0.01)
+    await async_wait_until(lambda: not adapter._active_sessions, timeout=15, what='the trusted turn to finish')
     entry = runner.session_store.get_or_create_session(source)
     rows = list_session_admissions(authority.db, session_id=entry.session_id, pending_only=False)
     assert rows and rows[0]['status'] == 'terminal' and rows[0]['outcome'] == 'completed', (rows, adapter.deliveries)
@@ -107,9 +105,7 @@ async def probe(mode, peer):
     fresh = MessageEvent(text='FRESH_CALLBACK_INPUT', source=adapter.build_source(
         chat_id='trust-chat', chat_type='dm', user_id='fixture-user'), message_id='trust-2')
     await adapter.handle_message(fresh)
-    async with asyncio.timeout(10):
-        while adapter._active_sessions:
-            await asyncio.sleep(0.01)
+    await async_wait_until(lambda: not adapter._active_sessions, timeout=10, what='the fresh turn to finish')
     rows = list_session_admissions(authority.db, session_id=entry.session_id, pending_only=False)
     assert len(rows) == 2 and 'provenance' in rows[1]['payload']['native_text_v1'], rows
     assert all(row['outcome'] == 'completed' for row in rows) and len(peer.requests) == 2

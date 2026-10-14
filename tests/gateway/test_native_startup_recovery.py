@@ -13,6 +13,7 @@ import threading
 import aiohttp
 
 from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon
+from tests.waiting import async_wait_until
 
 
 def test_native_queue_recovers_only_after_current_adapter_publication(tmp_path):
@@ -50,9 +51,8 @@ def test_native_queue_recovers_only_after_current_adapter_publication(tmp_path):
                 assert response.status == 202, await response.text()
         assert rows() == {'safe': 'queued'}
     async def settled():
-        async with asyncio.timeout(25):
-            while rows()['safe'] != 'terminal':
-                await asyncio.sleep(.05)
+        await async_wait_until(lambda: rows()['safe'] == 'terminal', timeout=25, interval=.05,
+                               what='the recovered admission to settle')
     evidence = []
     try:
         with daemon(root, home, env, barrier=True, fixture='api_recovery_daemon.py') as (proc, desc):

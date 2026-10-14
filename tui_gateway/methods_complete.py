@@ -40,7 +40,9 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4004, "empty paste")
     _paste_counter += 1
     line_count = text.count("\n") + 1
-    paste_dir = _hermes_home / "pastes"
+    # The shared owner's legacy fallback serves secondary profiles too: write under the ticket's home.
+    from tui_gateway.ws_legacy_fallback import connection_profile_home
+    paste_dir = Path(connection_profile_home() or _hermes_home) / "pastes"
     paste_dir.mkdir(parents=True, exist_ok=True)
     from datetime import datetime
     paste_file = paste_dir / f"paste_{_paste_counter}_{datetime.now().strftime('%H%M%S')}.txt"

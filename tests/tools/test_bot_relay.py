@@ -277,7 +277,7 @@ def test_hostile_roster_fields_ride_as_argv_data(root):
     reply_path = bot_relay.relay_root(root) / bot_relay.REPLIES_DIR / f"{env['id']}.json"
     reply_path.parent.mkdir(parents=True, exist_ok=True)
     reply_path.write_text(json.dumps({"reply": "pong"}), encoding="utf-8")
-    proc = subprocess.run(parts, capture_output=True, text=True, timeout=30)
+    proc = subprocess.run(parts, capture_output=True, text=True, timeout=30, check=False)
 
     assert proc.returncode == 0 and proc.stdout.splitlines() == [f"Reply from @researcher on {inj}:", "pong"]
 

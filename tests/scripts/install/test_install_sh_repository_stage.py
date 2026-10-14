@@ -39,7 +39,7 @@ def _run(tmp_path: Path, body: str, *, env: dict | None = None, **kwargs) -> sub
     script = f"source {shlex.quote(INSTALL_SH.as_posix())} --manifest\nsleep() {{ :; }}\n{body}\n"
     full_env = dict(os.environ, HOME=tmp_path.as_posix(), HERMES_HOME=(tmp_path / "home").as_posix(),
                     HERMES_INSTALL_DIR=(tmp_path / "install").as_posix(), **(env or {}))
-    return subprocess.run(["bash", "-c", script], env=full_env, capture_output=True, text=True, timeout=60, **kwargs)
+    return subprocess.run(["bash", "-c", script], env=full_env, capture_output=True, text=True, timeout=60, **kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
 
 
 def _stage(tmp_path: Path, origin: Path, *, commit: str = "", extra_env: dict | None = None,
@@ -51,7 +51,7 @@ def _stage(tmp_path: Path, origin: Path, *, commit: str = "", extra_env: dict | 
 def test_piped_one_liner_runs_the_installer():
     """`curl ... | bash` has an empty BASH_SOURCE; under `set -u` the entry guard must still run main."""
     result = subprocess.run(["bash", "-s", "--", "--manifest"], input=INSTALL_SH.read_bytes(),
-                            capture_output=True, timeout=30)
+                            capture_output=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr.decode()
     assert json.loads(result.stdout)["protocol_version"] == 1
 
@@ -119,7 +119,7 @@ def test_unmerged_index_is_cleared_then_stashed(tmp_path):
     _git(install, "checkout", "-q", "main")
     _commit(install, "ours")
     subprocess.run(["git", "-C", str(install), "-c", "user.email=t@t", "-c", "user.name=t", "merge", "conflict"],
-                   capture_output=True)
+                   capture_output=True, check=False)
     assert _git(install, "ls-files", "--unmerged")
     _commit(origin, "two")
     result = _stage(tmp_path, origin)

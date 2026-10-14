@@ -8,6 +8,7 @@ import sqlite3
 import threading
 
 from tests.gateway.fixtures.local_recovery_probe import Model, daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 
 def probe(tmp_path):
@@ -34,9 +35,8 @@ def probe(tmp_path):
         with sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True) as db:
             return dict(db.execute('SELECT request_id,status FROM session_admissions'))
     async def terminal(request_id):
-        async with asyncio.timeout(30):
-            while db_rows().get(request_id) != 'terminal':
-                await asyncio.sleep(.03)
+        await async_wait_until(lambda: db_rows().get(request_id) == 'terminal', timeout=30, interval=.03,
+                               what=f'{request_id} to settle')
     async def first(desc, proc):
         async with websocket(home, desc) as ws:
             for name in ('safe', 'reset', 'unknown', 'foreign'):
@@ -57,15 +57,15 @@ def probe(tmp_path):
             await ws.send(json.dumps({'id': 'crash', 'method': 'prompt.submit', 'params': {
                 'session_id': sessions['safe'], 'input_id': 'safe', 'text': 'RECOVER_SAFE'}}))
             # Wait for the actual publication, not just admission before the fixture ran.
-            async with asyncio.timeout(20):
-                while True:
-                    with sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True) as db:
-                        ended = dict(db.execute('SELECT id,end_reason FROM sessions'))
-                    if all(ended.get(sessions[n]) == reason for n, reason in
-                           [('safe', 'compression'), ('reset', 'session_reset'), ('unknown', 'compression')]):
-                        break
-                    assert proc.poll() is None
-                    await asyncio.sleep(.03)
+            def published():
+                with sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True) as db:
+                    ended = dict(db.execute('SELECT id,end_reason FROM sessions'))
+                if all(ended.get(sessions[n]) == reason for n, reason in
+                       [('safe', 'compression'), ('reset', 'session_reset'), ('unknown', 'compression')]):
+                    return True
+                assert proc.poll() is None
+                return False
+            await async_wait_until(published, timeout=20, interval=.03, what='the lineage publications')
             proc.kill()
             await asyncio.to_thread(proc.wait, 10)
     async def recovered(desc):

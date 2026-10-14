@@ -57,6 +57,7 @@ def test_tui_import_exposes_live_provider_projection(tmp_path):
         capture_output=True,
         text=True,
         timeout=30,
+        check=False,
     )
 
     assert probe.returncode == 0, probe.stdout + probe.stderr

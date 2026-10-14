@@ -136,7 +136,7 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
     """HTTP handler for the A2A JSON-RPC surface; all state lives on ``self.server.adapter``."""
 
     @property
-    def adapter(self) -> "A2AAdapter":
+    def adapter(self) -> A2AAdapter:
         return self.server.adapter  # type: ignore[attr-defined]
 
     def log_message(self, format, *args):  # noqa: A002,N802
@@ -275,7 +275,7 @@ class A2AAdapter(BasePlatformAdapter):
         # Request ownership outlives reply Futures and also covers synchronous profile forwards.
         self._active_tasks: set[str] = set()
         # Admission ids this process already forwarded; a resend of one is a retry, not a new turn.
-        self._forwarded_inputs: "OrderedDict[str, None]" = OrderedDict()
+        self._forwarded_inputs: OrderedDict[str, None] = OrderedDict()
         self._pending_lock = threading.Lock()
 
     @property
@@ -482,6 +482,11 @@ class A2AAdapter(BasePlatformAdapter):
                 self._forwarded_inputs.popitem(last=False)
         return seen
 
+    def _forget_forwarded_input(self, input_id: Optional[str]) -> None:
+        """Drop a fresh id a pre-admission guard refused, so its resend is refused again."""
+        with self._pending_lock:
+            self._forwarded_inputs.pop(input_id, None)
+
     def _pop_pending(self, task_id: str) -> None:
         with self._pending_lock:
             self._active_tasks.discard(task_id)
@@ -531,12 +536,18 @@ class A2AAdapter(BasePlatformAdapter):
         # A retry after a timeout must find its accepted work, not queue a second turn.
         input_id = ("a2a-msg:" + hashlib.sha256(f"{context_id}\0{message_id}".encode()).hexdigest()
                     if message_id else None)
-        retry = input_id is not None and self._note_forwarded_input(input_id)
+        # The process LRU answers concurrent resends atomically; the durable context log answers
+        # one whose id the LRU evicted or a restart forgot.
+        retry = input_id is not None and (self._note_forwarded_input(input_id)
+                                          or protocol.logged_input(context_id, input_id))
         task_id = protocol.new_task_id()
         # The owner answers a resend from the accepted admission; it is not another turn of the loop.
         turn = 0 if retry else self._turns.track(context_id)
         max_turns = protocol.max_pingpong_turns()
-        rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent))
+        rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent),
+                                input_id=(input_id or task_id) if forwarded else "")
+        if not retry and (turn > max_turns or not text):
+            self._forget_forwarded_input(input_id)
         if turn > max_turns:
             protocol.metrics.anti_loop_triggers += 1
             logger.warning("A2A: anti-loop triggered for context %s (turn %d > %d)", context_id, turn, max_turns)
@@ -547,7 +558,7 @@ class A2AAdapter(BasePlatformAdapter):
         framed = security.wrap_inbound(peer, text)
         security.audit("inbound", peer, task_id, text)
         if not retry:
-            protocol.persist_message(context_id, "user", text, task_id)
+            protocol.persist_message(context_id, "user", text, task_id, input_id=input_id or "")
             protocol.metrics.inbound_total += 1
         self._register_inline_push(task_id, params, agent=agent)
         if forwarded:

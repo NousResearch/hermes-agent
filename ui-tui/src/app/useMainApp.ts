@@ -41,18 +41,13 @@ import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../l
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
-import {
-  buildToolTrailLine,
-  clarifyAnswerText,
-  formatAbandonedClarify,
-  sameToolTrailGroup,
-  toolTrailLabel
-} from '../lib/text.js'
+import { formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { applyAgentSnapshot } from './agentRoster.js'
+import { clarifySettledRows } from './clarifyTranscript.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createServerRequestHandler } from './createServerRequestHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
@@ -60,6 +55,7 @@ import { planGatewayRecovery } from './gatewayRecovery.js'
 import { applyGoalSnapshot } from './goalStatus.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type SlashHandler, type StateSetter, type TranscriptRow, type UiState } from './interfaces.js'
+import { requestLiveSessions } from './liveSessions.js'
 import { $overlayState, capturePromptResponseGuard, hasSensitivePrompt, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
@@ -91,8 +87,49 @@ const BRACKET_PASTE_ON = '\x1b[?2004h'
 const BRACKET_PASTE_OFF = '\x1b[?2004l'
 const MAX_HEIGHT_CACHE_BUCKETS = 12
 
-const clarifyQuestionCountLabel = (count: number) =>
-  t(count === 1 ? 'session.main.clarifyQuestionsOne' : 'session.main.clarifyQuestionsOther', String(count))
+interface ExitClose {
+  close: () => Promise<void>
+  flight: boolean
+}
+
+/** Exit closes this view's canonical sessions first (main stamped `tui_shutdown` at sidecar exit).
+ *  The exit itself is Ink's exit() plus an explicit process.exit(): unmount() resets terminal modes
+ *  but leaves the Node process alive (stdin keeps the loop open), so entry.tsx's process.on('exit')
+ *  final resetTerminalModes() would never fire and kitty keyboard / mouse modes would stay enabled
+ *  in the parent shell (#19194). */
+function useDie(gw: GatewayClient, exit: () => void) {
+  const exitClose = useRef<ExitClose>({ close: async () => undefined, flight: false }).current
+
+  const dieWithCode = useCallback(
+    (code: number, reason = `app.dieWithCode:${code}`) => {
+      if (deferExitForClose(gw, exitClose, () => dieWithCode(code, reason))) {
+        return
+      }
+
+      gw.kill(reason)
+      exit()
+      process.exit(code)
+    },
+    [exit, exitClose, gw]
+  )
+
+  const die = useCallback(() => dieWithCode(0, 'app.die'), [dieWithCode])
+
+  return { die, dieWithCode, exitClose }
+}
+
+/** On a canonical gateway, close this view's sessions (bounded so a dead socket never holds the
+ *  terminal) and then re-run the exit; true when the exit was deferred. */
+function deferExitForClose(gw: GatewayClient, state: ExitClose, again: () => void): boolean {
+  if (!gw.isCanonical || state.flight) {
+    return false
+  }
+
+  state.flight = true
+  void Promise.race([state.close().catch(() => undefined), new Promise(resolve => setTimeout(resolve, 1500))]).then(again)
+
+  return true
+}
 
 const statusColorOf = (status: string, t: { error: string; muted: string; ok: string; warn: string }) => {
   if (status === 'ready') {
@@ -570,26 +607,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const gateway = useMemo(() => ({ gw, rpc }), [gw, rpc])
 
-  const die = useCallback(() => {
-    gw.kill('app.die')
-    exit()
-    // Ink's exit() calls unmount() which resets terminal modes but does NOT
-    // call process.exit().  Without an explicit exit the Node process stays
-    // alive (stdin listener keeps the event loop open), so the process.on('exit')
-    // handler in entry.tsx — which sends the final resetTerminalModes() — never
-    // fires.  This leaves kitty keyboard protocol, mouse modes, etc. enabled
-    // in the parent shell.  See issue #19194.
-    process.exit(0)
-  }, [exit, gw])
-
-  const dieWithCode = useCallback(
-    (code: number) => {
-      gw.kill(`app.dieWithCode:${code}`)
-      exit()
-      process.exit(code)
-    },
-    [exit, gw]
-  )
+  const { die, dieWithCode, exitClose } = useDie(gw, exit)
 
   const session = useSessionLifecycle({
     colsRef,
@@ -607,6 +625,8 @@ export function useMainApp(gw: GatewayClient) {
     setVoiceRecording,
     sys
   })
+
+  exitClose.close = session.closeForExit
 
   useEffect(() => {
     if (dashboardFreshSessionId) {
@@ -635,6 +655,10 @@ export function useMainApp(gw: GatewayClient) {
 
       return
     }
+
+    // Offline (sid kept across a socket close): each poll would re-dial through
+    // ensureAttachedWebSocket and collapse GatewayClient's backoff (B2-20).
+    if (ui.gatewayConnected === false) { return }
 
     let stopped = false
     applyAgentSnapshot(ui.sid)
@@ -673,7 +697,7 @@ export function useMainApp(gw: GatewayClient) {
           }
         })
         .catch(() => {})
-      gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: getUiState().sid })
+      requestLiveSessions(gw, getUiState().sid)
         .then(raw => {
           const result = asRpcResult<SessionActiveListResponse>(raw)
 
@@ -708,7 +732,7 @@ export function useMainApp(gw: GatewayClient) {
       stopped = true
       clearInterval(timer)
     }
-  }, [gw, ui.sid])
+  }, [gw, ui.sid, ui.gatewayConnected])
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
   // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.
@@ -846,20 +870,13 @@ export function useMainApp(gw: GatewayClient) {
             }
 
             const label = toolTrailLabel('clarify')
+            const settled = clarifySettledRows([question], { [qid]: answer })
 
             turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
             patchTurnState({ turnTrail: turnController.turnTools })
             turnController.persistedToolLabels.add(label)
-            appendMessage({
-              kind: 'trail',
-              role: 'system',
-              text: '',
-              tools: [buildToolTrailLine('clarify', question.question)]
-            })
-            appendMessage({
-              role: 'user',
-              text: answer.trim() ? clarifyAnswerText(answer, question.multiSelect) : t('session.main.skipped')
-            })
+            appendMessage({ kind: 'trail', role: 'system', text: '', tools: [settled.trail] })
+            appendMessage({ role: 'user', text: settled.userText })
             patchUiState({ status: 'running…' })
             patchOverlayState({ clarify: null })
           }
@@ -893,25 +910,13 @@ export function useMainApp(gw: GatewayClient) {
 
         // Batch complete: persist the whole Q&A set as one user-visible block.
         const label = toolTrailLabel('clarify')
+        const settled = clarifySettledRows(clarify.questions, answers)
 
         turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
         patchTurnState({ turnTrail: turnController.turnTools })
         turnController.persistedToolLabels.add(label)
-        appendMessage({
-          kind: 'trail',
-          role: 'system',
-          text: '',
-          tools: [buildToolTrailLine('clarify', clarifyQuestionCountLabel(clarify.questions.length))]
-        })
-        appendMessage({
-          role: 'user',
-          text: clarify.questions
-            .map(
-              q =>
-                `${q.question} → ${answers[q.qid]?.trim() ? clarifyAnswerText(answers[q.qid]!, q.multiSelect) : t('session.main.skipped')}`
-            )
-            .join('\n')
-        })
+        appendMessage({ kind: 'trail', role: 'system', text: '', tools: [settled.trail] })
+        appendMessage({ role: 'user', text: settled.userText })
         patchUiState({ status: 'running…' })
         patchOverlayState({ clarify: null })
       })
@@ -1083,7 +1088,8 @@ export function useMainApp(gw: GatewayClient) {
           status: t('session.status.reconnecting')
         })
 
-        if (state.sid) {
+        // Once per outage: each failed redial emits another exit (main printed it once).
+        if (state.sid && state.gatewayConnected !== false) {
           turnController.pushActivity(connectionLostActivity(), 'warn')
           sys(connectionLost())
         }

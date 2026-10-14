@@ -20,7 +20,7 @@ def run_worker(tmp_path, body, mode="safe"):
     script = home / "probe.py"
     script.write_text(f"import sys; sys.path.insert(0, {str(root)!r})\n" + textwrap.dedent(body), encoding="utf-8")
     result = subprocess.run([sys.executable, str(script)], cwd=root, env=env,
-                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90)
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=90, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     return json.loads(result.stdout.strip().splitlines()[-1])
 

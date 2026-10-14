@@ -242,10 +242,10 @@ def test_native_task_query_uses_installed_xml_and_vendor_launcher(wrong, tmp_pat
     script.write_text(_build_gateway_vbs_script(sys.executable, str(home), str(home), ''), encoding='utf-8', newline='')
     original = script.read_bytes()
     # whoami is read-only native account evidence; no task-manager mutation.
-    identity = subprocess.run(['whoami.exe', '/USER', '/FO', 'CSV', '/NH'], stdin=subprocess.DEVNULL, capture_output=True, timeout=5)
+    identity = subprocess.run(['whoami.exe', '/USER', '/FO', 'CSV', '/NH'], stdin=subprocess.DEVNULL, capture_output=True, timeout=5, check=False)
     from hermes_cli.gateway_windows import _schtasks_encoding
     import csv
-    account, sid = next(csv.reader(identity.stdout.decode(_schtasks_encoding()).splitlines()))
+    _account, sid = next(csv.reader(identity.stdout.decode(_schtasks_encoding()).splitlines()))
     suffix = service.service_suffix(home)
     name = 'Hermes_Gateway' + ('_' + suffix if suffix else '')
     xml = _build_scheduled_task_xml(name, script, 'S-1-5-18' if wrong else sid)

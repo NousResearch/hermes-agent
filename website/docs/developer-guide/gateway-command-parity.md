@@ -12,119 +12,124 @@ Every local client (classic CLI, Ink TUI, Desktop, ACP) attaches to the one gate
 the session. A slash command either runs in the client against a canonical verb
 (`session.mutate`, `session.create`, `prompt.receipt`, ...), or goes to the owner as
 `slash.exec`, where `gateway/session_commands.py` runs only the reviewed reads below and refuses
-the rest (`unsupported_command`). The classic CLI prints a refusal as
-"/x is not available on the shared gateway yet" with a link to this page.
+the rest (`unsupported_command`). The classic CLI (`hermes chat`) is main's `HermesCLI` with a
+gateway-backed agent and session store: its column names the main handler it runs in-process
+(turns, tools and session writes go to the gateway through `hermes_cli/gateway_agent.py` /
+`gateway_session_store.py`). The `--stream-json` / safe-mode transport client keeps its own
+narrower routes (`hermes_cli/gateway_chat_commands.py`).
 
 **Gateway (`slash.exec`)**: `read` = the real handler runs for a local session (proved by
-`tests/gateway/test_session_read_commands.py`); `control` = admission-fenced write; `refused`.
-**Notes**: `port: per-session setting` toggles write config.yaml or messaging-only state
-through their gateway handler, so they stay refused until ported to the session's frozen
-policy; `client-local (cli_only)` commands are terminal/UI features of a client.
+`tests/gateway/test_session_read_commands.py`); `control` = admission-fenced write (`/approve`
+`/deny` resolve this session's waiting approval, `tests/gateway/test_session_approval_commands.py`);
+`refused`.
+**Notes**: `per-session setting (gateway handler)` = the messaging handler runs and applies the
+setting to this local session (its next turn and `config.get`), saving config.yaml only where the
+handler does; `client-local (cli_only)` commands are terminal/UI features of a client.
 
-103 registry commands: 1 control, 15 read, 87 refused.
+103 registry commands: 29 control, 18 read, 56 refused.
 
 | Command | Gateway (`slash.exec`) | Classic CLI | Ink | Desktop | ACP | Notes |
 |---|---|---|---|---|---|---|
-| `/agents` (/tasks) | refused | refused: not available yet | sidecar: delegation.pause | slash.exec: refused | refused | gateway-wide: lists every chat's running agents and the process's async jobs |
-| `/approvals` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | port: per-session setting |
-| `/approve` | refused | approval.respond (prompt id) | slash.exec: refused | unavailable: messaging | refused | messaging-only |
-| `/battery` | refused | refused: not available yet | config.set; sidecar: system.battery | slash.exec: refused | refused | client-local (cli_only) |
-| `/bg` | refused | refused: not available yet | canonical route | action: background | refused |  |
-| `/blueprint` (/bp) | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
-| `/branch` (/fork) | refused | session.mutate branch | canonical route | action: branch | ACP fork_session |  |
-| `/browser` | refused | refused: not available yet | sidecar: browser.manage | action: browser | refused | client-local (cli_only) |
-| `/btw` | refused | refused: not available yet | canonical route | action: btw | refused |  |
-| `/bundles` | read | slash.exec | slash.exec | slash.exec | refused |  |
-| `/busy` | refused | refused: not available yet | canonical route | unavailable: terminal | refused | port: per-session setting |
-| `/clear` | refused | session.create | local | action: new | refused | client-local (cli_only) |
-| `/codex-runtime` (/codex_runtime) | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | port: per-session setting |
-| `/commands` | read | slash.exec | slash.exec | action: help | refused | messaging-only |
-| `/compress` (/compact) | refused | session.mutate compress | canonical route | action: compress | session.mutate compress |  |
-| `/config` | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | client-local (cli_only) |
-| `/context` (/ctx) | read | slash.exec | slash.exec | slash.exec | refused |  |
-| `/copy` | refused | refused: not available yet | local | unavailable: terminal | refused | client-local (cli_only) |
-| `/cron` | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | client-local (cli_only) |
-| `/curator` | refused | refused: not available yet | slash.exec: refused | unavailable: advanced | refused | no gateway handler (`_handle_curator_command` is missing) |
-| `/debug` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | uploads logs to a public paste |
-| `/deny` | refused | refused: not available yet | slash.exec: refused | unavailable: messaging | refused | messaging-only |
-| `/diff` | read | slash.exec | slash.exec | slash.exec | refused |  |
-| `/egress` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
-| `/export` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |
-| `/fast` | refused | refused: not available yet | config.get, config.set | unavailable: advanced | refused | port: per-session setting |
-| `/focus` | refused | refused: not available yet | config.set | slash.exec: refused | refused | client-local (cli_only) |
-| `/footer` | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | port: per-session setting |
-| `/goal` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
-| `/handoff` | refused | refused: not available yet | slash.exec: refused | action: handoff | refused | client-local (cli_only) |
-| `/hatch` (/generate-pet) | refused | refused: not available yet | slash.exec: refused | action: hatch | refused | client-local (cli_only) |
-| `/heartbeat` (/hb) | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
-| `/help` | read | local | local | action: help | refused |  |
-| `/history` | refused | refused: not available yet | local | unavailable: terminal | refused | client-local (cli_only) |
-| `/image` | refused | refused: not available yet | local | unavailable: terminal | refused | client-local (cli_only) |
-| `/import` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |
-| `/indicator` | refused | refused: not available yet | config.get, config.set | unavailable: terminal | refused | client-local (cli_only) |
-| `/init` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
-| `/initiate-setup` (/initiate_setup) | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
-| `/insights` | read | slash.exec | slash.exec | unavailable: advanced | refused |  |
-| `/journey` (/learning, /memory-graph) | refused | refused: not available yet | local | action: journey | refused | client-local (cli_only) |
-| `/kanban` | read (list/show/stats/assignees/context/runs/log/diagnostics) | slash.exec | slash.exec | unavailable: advanced | refused |  |
-| `/learn` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
-| `/login` | refused | refused: not available yet | slash.exec: refused | unavailable: settings | refused |  |
-| `/loop` (/proactive) | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
-| `/memory` | read (bare / `pending`) | slash.exec | slash.exec | slash.exec | refused |  |
-| `/moa` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
-| `/model` | refused | session.mutate model | canonical route | picker: model | session.mutate model |  |
-| `/new` (/reset) | refused | session.create | local | action: new | refused |  |
-| `/palette` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |
-| `/paste` | refused | refused: not available yet | local | unavailable: terminal | refused | client-local (cli_only) |
-| `/pause` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | messaging-only |
-| `/personality` | refused | refused: not available yet | config.set | slash.exec: refused | refused | port: per-session setting |
-| `/pet` | refused | refused: not available yet | slash.exec | action: pet | refused | client-local (cli_only) |
-| `/plan` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
-| `/platform` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | messaging adapters; `pause`/`resume` mutate them |
-| `/platforms` (/gateway) | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | client-local (cli_only) |
-| `/plugins` | refused | refused: not available yet | slash.exec | unavailable: terminal | refused | client-local (cli_only) |
-| `/profile` | read | slash.exec | slash.exec | action: profile | refused |  |
-| `/prompt` (/compose) | refused | refused: not available yet | local | slash.exec: refused | refused | client-local (cli_only) |
-| `/queue` (/q) | refused | refused: not available yet | local | slash.exec: refused | refused |  |
-| `/quit` (/exit) | refused | detach | local | unavailable: terminal | refused | client-local (cli_only) |
-| `/reasoning` | refused | refused: not available yet | config.get, config.set | action: reasoning | refused | port: per-session setting |
-| `/redraw` | refused | refused: not available yet | local | unavailable: terminal | refused | client-local (cli_only) |
-| `/refine` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
-| `/reload` | refused | refused: not available yet | sidecar: reload.env | unavailable: terminal | refused | client-local (cli_only) |
-| `/reload-mcp` (/reload_mcp) | refused | refused: not available yet | sidecar: reload.mcp | unavailable: advanced | refused |  |
-| `/reload-skills` (/reload_skills) | refused | refused: not available yet | commands.catalog; sidecar: skills.reload | unavailable: advanced | refused |  |
-| `/restart` | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | messaging-only |
-| `/resume` | refused | refused: not available yet | local | picker: session | refused | switches the messaging chat's session; local clients resume by id |
-| `/retry` | refused | session.mutate rewind + resubmit | canonical route | slash.exec: refused | refused |  |
-| `/review` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
-| `/rollback` | refused | refused: not available yet | sidecar: rollback.diff, rollback.list, rollback.restore | slash.exec: refused | refused | restores filesystem checkpoints |
-| `/save` | refused | refused: not available yet | canonical route | slash.exec: refused | refused | writes an export file on the gateway host |
-| `/sessions` | refused | refused: not available yet | local | picker: session | refused | messaging origin-scoped listing (`/sessions all` needs a messaging admin) |
-| `/sethome` (/set-home) | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | messaging-only |
-| `/skills` | refused | refused: not available yet | slash.exec; sidecar: skills.manage | slash.exec: refused | refused | write-approval queue; `/skills approve\|approval` write |
-| `/skin` | refused | refused: not available yet | config.get, config.set | action: skin | refused | client-local (cli_only) |
-| `/snapshot` (/snap) | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | client-local (cli_only) |
-| `/start` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | messaging-only |
-| `/status` | read | slash.exec | canonical route | slash.exec (rpc fallback) | refused |  |
-| `/statusbar` (/sb) | refused | refused: not available yet | config.set | unavailable: terminal | refused | client-local (cli_only) |
-| `/steer` (/s) | refused | refused: not available yet | canonical route | slash.exec: refused | refused |  |
-| `/stop` | refused | session.interrupt | sidecar: process.stop | action: stop | refused |  |
-| `/subgoal` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused |  |
-| `/subscription` (/upgrade) | refused | refused: not available yet | sidecar: subscription.state | slash.exec: refused | refused | client-local (cli_only) |
-| `/suggestions` (/suggest) | read (bare only) | slash.exec | slash.exec | slash.exec | refused |  |
-| `/timestamps` (/ts) | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |
-| `/title` | control | session.mutate rename | canonical route | action: title | refused |  |
-| `/tools` | refused | session.info launch toolsets | canonical route | slash.exec: refused | refused | client-local (cli_only) |
-| `/toolsets` | refused | refused: not available yet | slash.exec: refused | unavailable: terminal | refused | client-local (cli_only) |
-| `/topic` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | messaging-only |
-| `/topup` | read | slash.exec | sidecar: billing.state | slash.exec | refused |  |
-| `/undo` | refused | session.mutate rewind | canonical route | slash.exec: refused | refused |  |
-| `/update` | refused | refused: not available yet | local | unavailable: terminal | refused |  |
-| `/usage` | read (bare only (`reset` refused)) | slash.exec + last-turn receipt | canonical route | slash.exec | refused |  |
-| `/verbose` | refused | refused: not available yet | config.set | unavailable: terminal | refused | port: per-session setting |
-| `/version` (/v) | read | slash.exec | slash.exec | slash.exec | refused |  |
-| `/voice` | refused | refused: not available yet | sidecar: voice.toggle | unavailable: composer-voice | refused | port: per-session setting |
-| `/wake` | refused | refused: not available yet | local | action: wake | refused | client-local (cli_only) |
-| `/whoami` | read | slash.exec | slash.exec | slash.exec | refused |  |
-| `/worktree` | refused | refused: not available yet | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |
-| `/yolo` | refused | config.set yolo | config.set | action: yolo | refused | port: per-session setting |
+| `/agents` (/tasks) | refused | HermesCLI._handle_agents_command | delegation.pause | slash.exec: refused | refused | gateway-wide: lists every chat's running agents and the process's async jobs |
+| `/approvals` | control | HermesCLI._handle_approvals_command | slash.exec | slash.exec | refused | per-session setting (gateway handler) |
+| `/approve` | control | messaging-only: unknown command | slash.exec | slash.exec | refused | messaging-only |
+| `/battery` | refused | HermesCLI._handle_battery_command | sidecar: system.battery (preference not saved) | slash.exec: refused | refused | client-local (cli_only) |
+| `/bg` | refused | HermesCLI._handle_background_command | prompt.background | action: background | refused |  |
+| `/blueprint` (/bp) | control | HermesCLI._handle_blueprint_command | slash.exec | slash.exec | refused |  |
+| `/branch` (/fork) | refused | HermesCLI._handle_branch_command | canonical route | action: branch | ACP fork_session |  |
+| `/browser` | refused | HermesCLI._handle_browser_command | sidecar: browser.manage | action: browser | refused | client-local (cli_only) |
+| `/btw` | refused | HermesCLI._handle_btw_command | prompt.btw | action: btw | refused |  |
+| `/bundles` | read | HermesCLI._handle_bundles_command | slash.exec | slash.exec | refused |  |
+| `/busy` | control | HermesCLI._handle_busy_command | canonical route | unavailable: terminal | refused | per-session setting (gateway handler) |
+| `/clear` | refused | HermesCLI._cmd_clear | local | action: new | refused | client-local (cli_only) |
+| `/codex-runtime` (/codex_runtime) | control | HermesCLI._handle_codex_runtime | slash.exec | slash.exec | refused | per-session setting (gateway handler) |
+| `/commands` | read | messaging-only: unknown command | slash.exec | action: help | refused | messaging-only |
+| `/compress` (/compact) | refused | HermesCLI._manual_compress | canonical route | action: compress | session.mutate compress |  |
+| `/config` | refused | HermesCLI.show_config | slash.exec: refused | unavailable: terminal | refused | client-local (cli_only) |
+| `/context` (/ctx) | read | HermesCLI._show_context_breakdown | slash.exec | slash.exec | refused | TUI session: main's live /context with the category table |
+| `/copy` | refused | HermesCLI._handle_copy_command | local | unavailable: terminal | refused | client-local (cli_only) |
+| `/cron` | refused | HermesCLI._handle_cron_command | slash.exec | unavailable: terminal | refused | TUI session: bare `/cron` and `/cron list [--all]` read the profile's jobs; client-local (cli_only) |
+| `/curator` | control | HermesCLI._handle_curator_command | slash.exec | unavailable: advanced | refused |  |
+| `/debug` | control | HermesCLI._handle_debug_command | slash.exec | slash.exec | refused | uploads logs to a public paste |
+| `/deny` | control | messaging-only: unknown command | slash.exec | slash.exec | refused | messaging-only |
+| `/diff` | read | HermesCLI._handle_diff_command | slash.exec | slash.exec | refused |  |
+| `/egress` | control | HermesCLI._cmd_egress | slash.exec | slash.exec | refused |  |
+| `/export` | refused | HermesCLI._handle_export_command | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |
+| `/fast` | control | HermesCLI._handle_fast_command | config.get, config.set | unavailable: advanced | refused | per-session setting (gateway handler) |
+| `/focus` | refused | HermesCLI._handle_focus_command | local (preference not saved) | slash.exec: refused | refused | client-local (cli_only) |
+| `/footer` | control | HermesCLI._handle_footer_command | slash.exec | unavailable: terminal | refused | per-session setting (gateway handler) |
+| `/goal` | control | HermesCLI._handle_goal_command | slash.exec | slash.exec | refused |  |
+| `/handoff` | refused | HermesCLI._handle_handoff_command | slash.exec: refused | action: handoff | refused | client-local (cli_only) |
+| `/hatch` (/generate-pet) | refused | HermesCLI._handle_hatch_command | slash.exec: refused | action: hatch | refused | client-local (cli_only) |
+| `/heartbeat` (/hb) | control | HermesCLI._handle_heartbeat_command | slash.exec | slash.exec | refused |  |
+| `/help` | read | HermesCLI._cmd_help | local | action: help | refused |  |
+| `/history` | refused | HermesCLI.show_history | local | unavailable: terminal | refused | client-local (cli_only) |
+| `/image` | refused | HermesCLI._handle_image_command | local | unavailable: terminal | refused | client-local (cli_only) |
+| `/import` | refused | HermesCLI._handle_import_command | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |
+| `/indicator` | refused | HermesCLI._handle_indicator_command | config.get, config.set | unavailable: terminal | refused | client-local (cli_only) |
+| `/init` | control | HermesCLI._handle_init_command | slash.exec | slash.exec | refused |  |
+| `/initiate-setup` (/initiate_setup) | control | HermesCLI._handle_initiate_setup_command | slash.exec | slash.exec | refused |  |
+| `/insights` | read | HermesCLI._show_insights | slash.exec | unavailable: advanced | refused |  |
+| `/journey` (/learning, /memory-graph) | refused | HermesCLI._handle_journey_command | local | action: journey | refused | client-local (cli_only) |
+| `/kanban` | read (list/show/stats/assignees/context/runs/log/diagnostics) | HermesCLI._handle_kanban_command | slash.exec | unavailable: advanced | refused |  |
+| `/learn` | control | HermesCLI._handle_learn_command | slash.exec | slash.exec | refused |  |
+| `/login` | control | HermesCLI._handle_login_command | slash.exec | unavailable: settings | refused |  |
+| `/loop` (/proactive) | control | HermesCLI._handle_loop_command | slash.exec | slash.exec | refused |  |
+| `/memory` | read (bare / `pending`) | HermesCLI._handle_memory_command | slash.exec | slash.exec | refused |  |
+| `/moa` | control | HermesCLI._cmd_moa | slash.exec | slash.exec | refused |  |
+| `/model` | refused | HermesCLI._handle_model_switch | canonical route | picker: model | session.mutate model |  |
+| `/new` (/reset) | refused | HermesCLI._cmd_new | local | action: new | refused |  |
+| `/palette` | refused | HermesCLI._open_command_palette | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |
+| `/paste` | refused | HermesCLI._handle_paste_command | local | unavailable: terminal | refused | client-local (cli_only) |
+| `/pause` | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | refused | messaging-only |
+| `/personality` | control | HermesCLI._handle_personality_command | canonical route | slash.exec | refused | per-session setting (gateway handler) |
+| `/pet` | refused | HermesCLI._handle_pet_command | slash.exec | action: pet | refused | client-local (cli_only) |
+| `/plan` | control | HermesCLI._handle_plan_command | slash.exec | slash.exec | refused |  |
+| `/platform` | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | refused | messaging adapters; `pause`/`resume` mutate them |
+| `/platforms` (/gateway) | read | HermesCLI._show_gateway_status | slash.exec | unavailable: terminal | refused | client-local (cli_only) |
+| `/plugins` | refused | HermesCLI._cmd_plugins | slash.exec | unavailable: terminal | refused | client-local (cli_only) |
+| `/profile` | read | HermesCLI._handle_profile_command | slash.exec | action: profile | refused |  |
+| `/prompt` (/compose) | refused | HermesCLI._handle_prompt_compose_command | local | slash.exec: refused | refused | client-local (cli_only) |
+| `/queue` (/q) | refused | HermesCLI._cmd_queue | local | action: queue | refused |  |
+| `/quit` (/exit) | refused | HermesCLI._cmd_exit | local | unavailable: terminal | refused | client-local (cli_only) |
+| `/reasoning` | control | HermesCLI._handle_reasoning_command | canonical route | action: reasoning | refused | per-session setting (gateway handler) |
+| `/redraw` | refused | HermesCLI._cmd_redraw | local | unavailable: terminal | refused | client-local (cli_only) |
+| `/refine` | control | HermesCLI._handle_refine_command | slash.exec | slash.exec | refused |  |
+| `/reload` | refused | HermesCLI._cmd_reload | canonical route | unavailable: terminal | refused | client-local (cli_only) |
+| `/reload-mcp` (/reload_mcp) | refused | HermesCLI._confirm_and_reload_mcp | refused: not available yet | unavailable: advanced | refused |  |
+| `/reload-skills` (/reload_skills) | refused | HermesCLI._cmd_reload_skills | commands.catalog, skills.reload | unavailable: advanced | refused |  |
+| `/restart` | refused | messaging-only: unknown command | slash.exec: refused | unavailable: terminal | refused | messaging-only |
+| `/resume` | refused | HermesCLI._handle_resume_command | local | picker: session | refused | switches the messaging chat's session; local clients resume by id |
+| `/retry` | refused | HermesCLI._cmd_retry | canonical route | action: retry | refused |  |
+| `/review` | control | HermesCLI._handle_review_command | slash.exec | slash.exec | refused |  |
+| `/rollback` | refused | HermesCLI._handle_rollback_command | rollback.diff, rollback.list, rollback.restore | slash.exec: refused | refused | restores filesystem checkpoints |
+| `/save` | refused | HermesCLI.save_conversation | session.save | rpc session.save | refused | writes an export file on the gateway host |
+| `/sessions` | refused | HermesCLI._handle_sessions_command | local | picker: session | refused | messaging origin-scoped listing (`/sessions all` needs a messaging admin) |
+| `/sethome` (/set-home) | refused | messaging-only: unknown command | slash.exec: refused | unavailable: terminal | refused | messaging-only |
+| `/skills` | read (bare/`pending`/`diff`; `approve`/`reject`/`approval` control; hub refused) | HermesCLI._cmd_skills | slash.exec; sidecar: skills.manage | slash.exec | refused | client-local (cli_only) |
+| `/skin` | refused | HermesCLI._handle_skin_command | config.get, config.set | action: skin | refused | client-local (cli_only) |
+| `/snapshot` (/snap) | refused | HermesCLI._handle_snapshot_command | slash.exec: refused | unavailable: terminal | refused | client-local (cli_only) |
+| `/start` | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | refused | messaging-only |
+| `/status` | read | HermesCLI._show_session_status | canonical route | slash.exec (rpc fallback) | refused | TUI session: main's `Hermes TUI Status` |
+| `/statusbar` (/sb) | refused | HermesCLI._cmd_statusbar | local (preference not saved) | unavailable: terminal | refused | client-local (cli_only) |
+| `/steer` (/s) | refused | HermesCLI._cmd_steer | canonical route | action: steer | refused |  |
+| `/stop` | refused | HermesCLI._handle_stop_command | canonical route | action: stop | refused |  |
+| `/subgoal` | control | HermesCLI._handle_subgoal_command | slash.exec | slash.exec | refused |  |
+| `/subscription` (/upgrade) | refused | HermesCLI._show_subscription | sidecar: subscription.state | slash.exec: refused | refused | client-local (cli_only) |
+| `/suggestions` (/suggest) | read (bare only) | HermesCLI._handle_suggestions_command | slash.exec | slash.exec | refused |  |
+| `/timestamps` (/ts) | refused | HermesCLI._handle_timestamps_command | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |
+| `/title` | control | HermesCLI._cmd_title | canonical route | action: title | refused |  |
+| `/tools` | refused | HermesCLI._handle_tools_command | canonical route | slash.exec: refused | refused | client-local (cli_only) |
+| `/toolsets` | read | HermesCLI.show_toolsets | slash.exec | unavailable: terminal | refused | client-local (cli_only) |
+| `/topic` | refused | messaging-only: unknown command | slash.exec: refused | slash.exec: refused | refused | messaging-only |
+| `/topup` | read | HermesCLI._show_billing | sidecar: billing.state | slash.exec | refused |  |
+| `/undo` | refused | HermesCLI._cmd_undo | canonical route | action: undo | refused |  |
+| `/update` | refused | HermesCLI._cmd_update | local | unavailable: terminal | refused |  |
+| `/usage` | read (bare only (`reset` refused)) | HermesCLI._handle_usage_command | canonical route | slash.exec | refused |  |
+| `/verbose` | control | HermesCLI._toggle_verbose | config.set | unavailable: terminal | refused | per-session setting (gateway handler) |
+| `/version` (/v) | read | HermesCLI._cmd_version | slash.exec | slash.exec | refused |  |
+| `/voice` | control | HermesCLI._handle_voice_command | canonical route | unavailable: composer-voice | refused | per-session setting (gateway handler) |
+| `/wake` | refused | HermesCLI._handle_wake_command | local | action: wake | refused | client-local (cli_only) |
+| `/whoami` | read | HermesCLI._handle_whoami_command | slash.exec | slash.exec | refused |  |
+| `/worktree` | refused | HermesCLI._handle_worktree_command | slash.exec: refused | slash.exec: refused | refused | client-local (cli_only) |
+| `/yolo` | control | HermesCLI._toggle_yolo | config.set | action: yolo | refused | per-session setting (gateway handler) |

@@ -25,7 +25,9 @@ def rebase_for_save(config: dict[str, Any], live_raw: dict[str, Any], merge_exis
 
 def _three_way(live: Any, desired: Any, base: Any) -> Any:
     """*live* with the caller's edits (*desired* relative to the *base* it loaded) applied.
-    Mappings recurse; list edits add/remove items; a key the caller dropped is left alone."""
+    Mappings recurse; list edits add/remove items; a key the caller dropped is left alone. A
+    mapping/list branch deleted (or retyped) on *live* since *base* stays as live has it: a
+    leaf edit must not resurrect the stale snapshot subtree around it."""
     if desired == base:
         return copy.deepcopy(live)
     if isinstance(desired, dict) and isinstance(base, dict) and isinstance(live, dict):
@@ -34,6 +36,9 @@ def _three_way(live: Any, desired: Any, base: Any) -> Any:
             if key not in base:
                 merged[key] = copy.deepcopy(value)
             elif value != base[key]:
+                kind = dict if isinstance(base[key], dict) else list if isinstance(base[key], list) else None
+                if kind is not None and not isinstance(live.get(key), kind):
+                    continue  # concurrently deleted/replaced live branch: live wins
                 merged[key] = _three_way(live.get(key), value, base[key])
         return merged
     if isinstance(desired, list) and isinstance(base, list) and isinstance(live, list):

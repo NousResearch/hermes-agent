@@ -51,13 +51,15 @@ def probe(tmp_path):
             epoch = resumed['result']['replay_epoch']
             accepted = await rpc(ws, 'prompt.submit', session_id=sid, input_id=phase + side, text=phase + side)
             assert 'result' in accepted, accepted
-            async with asyncio.timeout(30):
-                while True:
-                    receipt = await rpc(ws, 'prompt.receipt', session_id=sid,
-                                        admission_id=accepted['result']['admission_id'])
-                    if receipt['result']['status'] == 'terminal':
-                        break
-                    await asyncio.sleep(.03)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 30
+            while True:
+                receipt = await rpc(ws, 'prompt.receipt', session_id=sid,
+                                    admission_id=accepted['result']['admission_id'])
+                if receipt['result']['status'] == 'terminal':
+                    break
+                assert loop.time() < deadline, ('admission never settled', receipt)
+                await asyncio.sleep(.03)
             events = await rpc(ws, 'session.events.since', session_id=sid, last_sequence=0, replay_epoch=epoch)
             if phase == 'denied':
                 # This baseline's pre-agent display failure has generic public

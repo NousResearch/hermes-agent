@@ -1,6 +1,7 @@
 """Bot receipt polling is local and mailbox serialization never parks the event loop."""
 import asyncio
 import threading
+import time
 
 import pytest
 
@@ -72,9 +73,10 @@ async def test_paused_receipt_rearms_on_resume_without_polling_rpc(bot, monkeypa
     monkeypatch.setattr(bot.authority, '_schedule', schedule)
     schedule(ref)
     await bot.authority.sessions[ref.session_id].task
-    async with asyncio.timeout(5):
-        while (await asyncio.to_thread(read_delivery_result, bot.home, key))['status'] != 'settled':
-            await asyncio.sleep(.01)
+    deadline = time.monotonic() + 5
+    while (await asyncio.to_thread(read_delivery_result, bot.home, key))['status'] != 'settled':
+        assert time.monotonic() < deadline, 'the paused delivery never settled'
+        await asyncio.sleep(.01)
     assert (await asyncio.to_thread(read_delivery_result, bot.home, key))['reply'] == 'pong'
 
 
@@ -113,9 +115,10 @@ async def test_adopted_result_during_unknown_projection_is_not_lost(bot, monkeyp
             generation=row['generation'], outcome='completed', result={'result': {'final_response': 'adopted reply'}, 'usage': {}})
         bot.authority._publish_pending(ref)
         release.set()
-        async with asyncio.timeout(5):
-            while (await asyncio.to_thread(read_delivery_result, bot.home, key))['status'] == 'ambiguous':
-                await asyncio.sleep(.01)
+        deadline = time.monotonic() + 5
+        while (await asyncio.to_thread(read_delivery_result, bot.home, key))['status'] == 'ambiguous':
+            assert time.monotonic() < deadline, 'the adopted delivery stayed ambiguous'
+            await asyncio.sleep(.01)
         assert (await asyncio.to_thread(read_delivery_result, bot.home, key))['status'] == 'settled'
         assert (await asyncio.to_thread(read_delivery_result, bot.home, key))['reply'] == 'adopted reply'
     finally:
@@ -155,7 +158,8 @@ async def test_drain_defers_retry_without_publishing_interim_failure(bot, monkey
     monkeypatch.setattr(finite, 'execute_finite_admission', execute)
     bot.authority.runner._draining = False
     await recover_bot_deliveries(bot.authority)
-    async with asyncio.timeout(5):
-        while (await asyncio.to_thread(read_delivery_result, bot.home, key))['status'] != 'settled':
-            await asyncio.sleep(.01)
+    deadline = time.monotonic() + 5
+    while (await asyncio.to_thread(read_delivery_result, bot.home, key))['status'] != 'settled':
+        assert time.monotonic() < deadline, 'the recovered delivery never settled'
+        await asyncio.sleep(.01)
     assert (await asyncio.to_thread(read_delivery_result, bot.home, key))['retry_admission_id']

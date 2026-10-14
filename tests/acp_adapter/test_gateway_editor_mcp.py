@@ -14,6 +14,7 @@ import pytest
 
 from tests.acp_adapter.test_gateway_sessions import editor, viewer
 from tests.gateway.test_normal_runtime_boot import control
+from tests.waiting import async_wait_until
 
 
 class MCPModelPeer(BaseHTTPRequestHandler):
@@ -103,9 +104,8 @@ async def test_native_opposing_editor_mcp_survives_viewer_exit(daemon, specs, tm
         bs = bc['result']['sessionId']
         pending = asyncio.create_task(prompt(b, bs))
         try:
-            async with asyncio.timeout(25):
-                while not (tmp_path / 'B.entered').exists():
-                    await asyncio.sleep(.05)
+            await async_wait_until(lambda: (tmp_path / 'B.entered').exists(), timeout=25,
+                                   what="B's MCP tool call entered")
             async with editor(daemon, tmp_path) as a:
                 await initialize(a)
                 ac = await a.rpc('session/new', cwd=str(tmp_path), mcpServers=[specs[0]])
@@ -149,7 +149,7 @@ async def test_native_cold_editor_rebind_refuses_changed_secret(daemon, specs, t
     os.kill(owned.pid, signal.SIGINT)
     await asyncio.to_thread(owned.wait, 20)
     with (tmp_path / 'cold.log').open('w') as log:
-        process = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=root, env=env,
+        process = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=root, env=env,  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         try:
             deadline = time.monotonic() + 40

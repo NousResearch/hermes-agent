@@ -66,3 +66,21 @@ def worker_tool_names(db, conn, session_id, payload):
                  (db._store_system_prompt(conn, encoded), session_id))
     db._delete_unreferenced_system_prompts(conn)
     return {'value': None}
+
+
+def worker_tail_role(db, conn, session_id, payload):
+    """``SessionDB.latest_conversation_role`` on the receipt connection (failed-turn boundary)."""
+    if payload:
+        raise RuntimeStoreError('invalid_params')
+    row = conn.execute("SELECT role FROM messages WHERE session_id=? AND active=1 "
+                       "AND role NOT IN ('session_meta','system') ORDER BY id DESC LIMIT 1", (session_id,)).fetchone()
+    return {'value': row[0] if row else None}
+
+
+def worker_row_role(db, conn, session_id, payload):
+    """``SessionDB.get_message_role``: the role of an active row of THIS transcript, else None."""
+    if set(payload) != {'row_id'} or type(payload['row_id']) is not int:
+        raise RuntimeStoreError('invalid_params')
+    row = conn.execute('SELECT role FROM messages WHERE id=? AND session_id=? AND active=1',
+                       (payload['row_id'], session_id)).fetchone()
+    return {'value': row[0] if row else None}

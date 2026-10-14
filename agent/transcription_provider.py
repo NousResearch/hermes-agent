@@ -43,7 +43,7 @@ class TranscriptionProvider(CatalogProviderBase):
 
     def open_stream_session(
         self, *, language: Optional[str] = None, prompt: Optional[str] = None,
-    ) -> "TranscriptionStreamSession":
+    ) -> TranscriptionStreamSession:
         """A single-use live session for one utterance (streaming-capable providers only)."""
         raise NotImplementedError(f"{self.name} does not support live streaming transcription")
 

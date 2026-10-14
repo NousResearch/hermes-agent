@@ -45,7 +45,7 @@ _SHOW_CONFIG_API_KEYS = (
     ("FAL_KEY", "FAL"))
 
 
-def _show_model_section(config: Dict[str, Any]) -> None:
+def _show_model_section(config: dict[str, Any]) -> None:
     _section("Model")
     print(f"  Model:        {_cfg.redact_config_value(config.get('model', 'not set'))}")
     cfg_max_turns = config.get('agent', {}).get('max_turns', _cfg.DEFAULT_CONFIG['agent']['max_turns'])
@@ -61,7 +61,7 @@ def _show_model_section(config: Dict[str, Any]) -> None:
                     f"(run 'hermes doctor --fix' to remove)", Colors.YELLOW))
 
 
-def _show_display_section(config: Dict[str, Any]) -> None:
+def _show_display_section(config: dict[str, Any]) -> None:
     _section("Display")
     display = config.get('display', {})
     try:
@@ -69,7 +69,7 @@ def _show_display_section(config: Dict[str, Any]) -> None:
         active_personality = active_personality_name(config) or 'none'
     except Exception:
         active_personality = display.get('personality') or 'none'
-    on_off = lambda flag: 'on' if flag else 'off'  # noqa: E731
+    on_off = lambda flag: 'on' if flag else 'off'
     print(f"  Personality:  {active_personality}")
     print(f"  Reasoning:    {on_off(display.get('show_reasoning', True))}")
     print(
@@ -80,14 +80,14 @@ def _show_display_section(config: Dict[str, Any]) -> None:
     print(f"  User preview: first {ump.get('first_lines', 2)} line(s), last {ump.get('last_lines', 2)} line(s)")
 
 
-def _show_terminal_section(config: Dict[str, Any]) -> None:
+def _show_terminal_section(config: dict[str, Any]) -> None:
     _section("Terminal")
     terminal = config.get('terminal', {})
     print(f"  Backend:      {terminal.get('backend', 'local')}")
     print(f"  Working dir:  {terminal.get('cwd', '.')}")
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
 
-    configured = lambda *names: 'configured' if all(_cfg.get_env_value(n) for n in names) else '(not set)'  # noqa: E731
+    configured = lambda *names: 'configured' if all(_cfg.get_env_value(n) for n in names) else '(not set)'
     from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as default_img, DEFAULT_VERCEL_IMAGE as _DEFAULT_VERCEL_IMAGE
     backend_lines = {
         'docker': lambda: [f"  Docker image: {terminal.get('docker_image', default_img)}"],
@@ -109,7 +109,7 @@ def _show_terminal_section(config: Dict[str, Any]) -> None:
         print(line)
 
 
-def _show_compression_section(config: Dict[str, Any]) -> None:
+def _show_compression_section(config: dict[str, Any]) -> None:
     _section("Context Compression")
     compression = config.get('compression', {})
     enabled = compression.get('enabled', True)
@@ -133,7 +133,7 @@ def _show_compression_section(config: Dict[str, Any]) -> None:
         print(f"  Provider:     {comp_provider}")
 
 
-def _show_aux_overrides(config: Dict[str, Any]) -> None:
+def _show_aux_overrides(config: dict[str, Any]) -> None:
     aux_tasks = {"Vision": config.get('auxiliary', {}).get('vision', {})}
     overrides = {
         label: (t.get('provider', 'auto'), t.get('model', ''))

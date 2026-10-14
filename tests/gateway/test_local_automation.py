@@ -13,7 +13,7 @@ def _probe(tmp_path, source):
     env['PYTHONPATH'] = str(root)
     result = subprocess.run([sys.executable, str(root / 'tests/gateway/fixtures/local_automation_peer.py'),
         str(tmp_path), source], cwd=root, env=env, stdin=subprocess.DEVNULL,
-        capture_output=True, text=True, timeout=150)
+        capture_output=True, text=True, timeout=150, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     print(result.stdout)
 

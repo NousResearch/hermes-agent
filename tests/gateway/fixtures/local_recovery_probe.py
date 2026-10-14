@@ -14,6 +14,7 @@ import time
 
 from websockets.asyncio.client import connect
 from tests.gateway.test_normal_runtime_boot import control
+from tests.waiting import async_wait_until
 
 
 class Model(BaseHTTPRequestHandler):
@@ -125,9 +126,7 @@ def probe(tmp_path):
                 sessions[name] = result['result']['session_id']
             warm = await rpc(ws, 'prompt.submit', session_id=sessions['safe'], input_id='warm', text='WARM_HISTORY')
             assert warm['result']['status'] == 'queued', warm
-            async with asyncio.timeout(30):
-                while rows().get('warm') != 'terminal':
-                    await asyncio.sleep(.02)
+            await async_wait_until(lambda: rows().get('warm') == 'terminal', timeout=30, what='warm turn terminal')
             await rpc(ws, 'prompt.submit', session_id=sessions['unknown'], input_id='started', text='BLOCK_STARTED')
             assert await asyncio.to_thread(peer.blocked.wait, 20)
             await rpc(ws, 'prompt.submit', session_id=sessions['unknown'], input_id='follower', text='NEVER_REPLAY')
@@ -136,17 +135,14 @@ def probe(tmp_path):
             # The daemon stops itself immediately after this admission commits.
             await ws.send(json.dumps({'id': 'kill-boundary', 'method': 'prompt.submit', 'params': {
                 'session_id': sessions['safe'], 'input_id': 'safe', 'text': 'RECOVER_QUEUED'}}))
-            async with asyncio.timeout(20):
-                while rows().get('safe') != 'queued':
-                    await asyncio.sleep(.02)
+            await async_wait_until(lambda: rows().get('safe') == 'queued', timeout=20, what='safe admission queued')
             assert rows()['foreign'] == 'queued', rows()
             proc.kill()
             await asyncio.to_thread(proc.wait, 10)
     async def second(desc):
         async with websocket(home, desc) as ws:
-            async with asyncio.timeout(35):
-                while rows().get('safe') != 'terminal':
-                    await asyncio.sleep(.05)
+            await async_wait_until(lambda: rows().get('safe') == 'terminal', timeout=35, interval=.05,
+                                   what='recovered safe admission terminal')
             result = await rpc(ws, 'session.resume', session_id=sessions['safe'])
             assert 'result' in result, result
             history = json.dumps(result['result']['messages'])

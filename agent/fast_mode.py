@@ -30,8 +30,10 @@ NORMAL_TIER_WORDS = frozenset({"", "normal", "default", "standard", "off", "none
 # on CLI / gateway / TUI) parses through, so a new tier is one edit.
 SERVICE_TIER_WORDS: dict[str, str] = {
     "fast": "priority", "priority": "priority", "on": "priority",
-    "ultrafast": "ultrafast", "auto": "auto", "cold": "cold",
+    "ultrafast": "ultrafast", "ultra": "ultrafast", "auto": "auto", "cold": "cold",
 }
+# Typed /fast shorthands -> canonical /fast word (pickers always send the canonical value).
+FAST_ARG_ALIASES: dict[str, str] = {"ultra": "ultrafast"}
 
 
 def parse_service_tier(raw: Any) -> str | None:
@@ -86,6 +88,8 @@ def effective_request_overrides(agent: Any) -> dict[str, Any]:
         )
     if "speed" in overrides and getattr(agent, "model", None) in (getattr(agent, "_fast_mode_unavailable_models", None) or ()):
         overrides.pop("speed", None)
+    from agent.codex_service_tiers import negotiate_request_tier
+    negotiate_request_tier(agent, overrides)
     return overrides
 
 

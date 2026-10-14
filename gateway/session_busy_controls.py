@@ -29,6 +29,10 @@ async def busy_config(connection, ref, params, *, write=False):
     allowed = {'session_id', 'profile', 'key'} | ({'value'} if write else set())
     if params.get('key') == 'verbose' and not set(params) - allowed and ref.session_id:
         return verbose_config(connection, ref, params, write)
+    if params.get('key') == 'show_reasoning' and not set(params) - allowed and ref.session_id:
+        return show_reasoning_config(connection, ref, params, write)
+    if params.get('key') == 'service_tier' and write and not set(params) - allowed and ref.session_id:
+        return service_tier_config(connection, ref, params)
     if params.get('key') == 'yolo' and not set(params) - allowed and ref.session_id:
         return await yolo_config(connection, ref, params, write)
     if (set(params) - allowed or not ref.session_id or params.get('key') != 'busy'
@@ -45,10 +49,16 @@ async def busy_config(connection, ref, params, *, write=False):
     if value is None:
         from gateway.session_policy import policy_for_source
         policy = policy_for_source(authority.runner, live.source)
-        value = (policy.config().get('display', {}).get('busy_input_mode', 'interrupt') if policy else
+        # Main's TUI defaulted to ``queue`` (``ui-tui/src/app/useConfigSync.ts`` TUI_BUSY_DEFAULT): in a
+        # full-screen composer the next prompt is authored while the agent streams, and an unintended
+        # interrupt loses work. Only an explicit ``display.busy_input_mode`` overrides it; every other
+        # surface keeps the framework default ``interrupt``.
+        fallback = 'queue' if policy is not None and getattr(policy, 'source', None) == 'tui' else 'interrupt'
+        display = (policy.config().get('display') or {}) if policy else {}
+        value = (display.get('busy_input_mode') or fallback if policy else
                  authority.runner._effective_busy_input_mode(live.source))
         if value not in ('interrupt', 'steer', 'queue'):
-            value = 'interrupt'
+            value = fallback
     return {'key': 'busy', 'value': value, 'scope': 'session'}
 
 
@@ -68,6 +78,39 @@ def verbose_config(connection, ref, params, write):
         live.tool_progress_mode = current = (
             _VERBOSE_CYCLE[(_VERBOSE_CYCLE.index(current) + 1) % 4] if value == 'cycle' else value)
     return {'key': 'verbose', 'value': current, 'scope': 'session'}
+
+
+def show_reasoning_config(connection, ref, params, write):
+    """Session-scoped reasoning display (the classic CLI's ``/reasoning show|hide`` and verbose
+    reasoning): whether a local-viewer turn of this session streams ``reasoning.delta``. Off until
+    set, because a reasoning sink changes what the provider is asked for. Never a settings write."""
+    value = params.get('value')
+    word = str(value).strip().lower()
+    if write and word not in _YOLO_WORDS:
+        raise RuntimeStoreError('invalid_params')
+    authorize(connection, ref, params, 'session:control' if write else 'session:read')
+    live = connection.authority.sessions[ref.session_id]
+    if write:
+        live.show_reasoning = _YOLO_WORDS[word]
+    return {'key': 'show_reasoning', 'value': '1' if getattr(live, 'show_reasoning', None) is True else '0',
+            'scope': 'session'}
+
+
+def service_tier_config(connection, ref, params):
+    """Session-scoped ``/fast`` (the classic CLI's tier pick, ``normal`` clears to normal): the
+    session's service-tier override the next turn's agent reads (``current_service_tier``), never a
+    settings write. ``--global`` persistence stays the client's own config.yaml write."""
+    from agent.fast_mode import parse_exact_service_tier
+    try:
+        tier = parse_exact_service_tier(params.get('value')) if isinstance(params.get('value'), str) else None
+    except ValueError:
+        tier = None
+    if tier is None:
+        raise RuntimeStoreError('invalid_params')
+    authorize(connection, ref, params, 'session:control')
+    live = connection.authority.sessions[ref.session_id]
+    connection.authority.runner._set_session_service_tier_override(live.route, tier or None)
+    return {'key': 'service_tier', 'value': tier or 'normal', 'scope': 'session'}
 
 
 _YOLO_WORDS = {'1': True, 'on': True, 'true': True, '0': False, 'off': False, 'false': False}
@@ -102,6 +145,18 @@ async def yolo_config(connection, ref, params, write):
     return {'key': 'yolo', 'value': '1' if enabled else '0', 'scope': 'session'}
 
 
+def adopts_owner_agent(authority, ref):
+    """The claimed turn runs an in-process owner agent, which adopt_agent hands latched steers to;
+    a cron job or a managed worker has no steer seam, so a latch there would be acknowledged and lost."""
+    from gateway.session_managed_worker import managed_policy
+    from gateway.session_policy import policy_for_source
+    try:
+        policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+        return not (policy is not None and policy.source == 'cron') and managed_policy(authority, ref) is None
+    except RuntimeStoreError:
+        return False
+
+
 async def correct(connection, ref, params, *, verb):
     if (set(params) - {'session_id', 'profile', 'text', 'execution_generation'}
             or not isinstance(params.get('text'), str) or not params['text'].strip()
@@ -117,7 +172,12 @@ async def correct(connection, ref, params, *, verb):
         # agent. Refuse explicitly instead of acknowledging undeliverable text.
         if ref.session_id in getattr(authority, '_managed_workers', {}):
             raise RuntimeStoreError('unsupported_control')
-        agent = authority.agent(ref)
+        # Accepted for this exact claim before its turn built an agent: steer_agent latches it for
+        # the agent this generation adopts, never a later one.
+        agent, latched = authority.steer_agent(ref, generation, params['text'] if verb == 'steer' else None)
+        if latched:
+            return {'status': 'queued', 'text': params['text'], 'execution_generation': generation,
+                    'authority_epoch': authority.epoch}
         method = getattr(agent, verb, None)
         if not callable(method):
             raise RuntimeStoreError('execution_not_ready')

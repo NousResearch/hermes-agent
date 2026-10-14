@@ -175,7 +175,7 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path, request):
             "oneshot=True, provider='custom', model='test-model', api_key='local-test-only', "
             f"base_url={url!r}, toolsets='terminal', max_turns=3, ignore_rules=True)",
         ], cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, encoding="utf-8", timeout=60)
+            capture_output=True, text=True, encoding="utf-8", timeout=60, check=False)
         # The canonical CLI is a finite client: it exits on its turn's terminal event while
         # the daemon that owns the child keeps its watcher. The owned completion is admitted
         # there as a follow-up turn, so the model must stay reachable until it arrives.

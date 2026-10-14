@@ -99,6 +99,7 @@ def _acp_supported(command: str, args: list[str]) -> bool | None:
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=5,
             stdin=subprocess.DEVNULL,
+            check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None

@@ -83,7 +83,7 @@ def desktop_ensure(env, root, profile):
     """The exact child the Desktop spawns: ``hermes --profile <p> gateway ensure --json``."""
     result = subprocess.run([sys.executable, '-m', 'hermes_cli.main', '--profile', profile,
                              'gateway', 'ensure', '--json', '--timeout', '30'],
-                            cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+                            cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60, check=False)
     payload = json.loads(result.stdout)
     assert result.returncode == 0 and payload['state'] == 'ready', (result.returncode, payload, result.stderr[-500:])
     return payload['endpoint']

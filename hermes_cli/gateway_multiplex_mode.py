@@ -275,14 +275,33 @@ def resolve_multiplex_mode(config) -> MultiplexDecision:
     return decision
 
 
+_pending_decision: list[MultiplexDecision] = []
+
+
 def record_multiplex_decision(decision: MultiplexDecision) -> None:
     """Persist a guard refusal into ``gateway_state.json`` so `hermes gateway status` can show why this
-    gateway serves one profile while the default says multiplex; any other verdict clears the field."""
+    gateway serves one profile while the default says multiplex; any other verdict clears the field.
+
+    Only the runtime-lock owner writes that file. The decision is made while the config loads, before
+    the lock claim, and a pre-lock write published this process's pid as a live ``starting`` gateway:
+    a launch racing it read that as an owner and refused, leaving no gateway at all. Until this process
+    holds the lock the decision stays pending; ``publish_pending_multiplex_decision`` writes it once
+    the claim succeeds, and a launch that loses the claim never writes it."""
     try:
-        from gateway.status import write_runtime_status
+        from gateway.status import owns_gateway_runtime_lock, write_runtime_status
+        if not owns_gateway_runtime_lock():
+            _pending_decision[:] = [decision]
+            return
+        _pending_decision.clear()
         write_runtime_status(multiplex_standalone_reason=decision.reason if decision.source == "guard" else None)
     except Exception:
         logger.debug("could not record the multiplex decision", exc_info=True)
+
+
+def publish_pending_multiplex_decision() -> None:
+    """Write the decision held back before the runtime-lock claim (called right after the claim)."""
+    if _pending_decision:
+        record_multiplex_decision(_pending_decision[-1])
 
 
 def log_multiplex_decision(decision: MultiplexDecision) -> None:

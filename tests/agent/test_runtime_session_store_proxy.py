@@ -28,8 +28,8 @@ def _refusing_proxy():
 def test_worker_rpc_reaches_loopback_owner_with_proxy_env(monkeypatch, tmp_path):
     from websockets.sync.server import serve
     from agent import runtime_session_store as store
-    import hermes_cli.gateway_client as gateway_client
-    import hermes_cli.gateway_runtime as gateway_runtime
+    from hermes_cli import gateway_client
+    from hermes_cli import gateway_runtime
     import hermes_cli.gateway_runtime_discovery as discovery
 
     def owner(ws):
@@ -39,7 +39,7 @@ def test_worker_rpc_reaches_loopback_owner_with_proxy_env(monkeypatch, tmp_path)
     proxy, seen = _refusing_proxy()
     with serve(owner, '127.0.0.1', 0, subprotocols=['hermes-gateway-v1']) as server:
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        origin = 'http://127.0.0.1:%d' % server.socket.getsockname()[1]
+        origin = f'http://127.0.0.1:{server.socket.getsockname()[1]}'
         endpoint = SimpleNamespace(api_origin=origin, control_home=None)
         monkeypatch.setattr(gateway_runtime, 'discover_gateway_endpoint',
                             lambda home, timeout: SimpleNamespace(state='ready', endpoint=endpoint))
@@ -48,7 +48,7 @@ def test_worker_rpc_reaches_loopback_owner_with_proxy_env(monkeypatch, tmp_path)
         for name in ('NO_PROXY', 'no_proxy', 'HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy',
                      'ALL_PROXY', 'all_proxy'):
             monkeypatch.delenv(name, raising=False)
-        monkeypatch.setenv('HTTPS_PROXY', 'http://127.0.0.1:%d' % proxy.getsockname()[1])
+        monkeypatch.setenv('HTTPS_PROXY', f'http://127.0.0.1:{proxy.getsockname()[1]}')
         try:
             assert store.WorkerRPC(tmp_path)('worker.persist') == {'method': 'worker.persist'}
         finally:

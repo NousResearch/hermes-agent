@@ -10,6 +10,7 @@ import pytest
 from gateway.session_contract import Submission
 from hermes_state_runtime import get_session_admission
 from tests.gateway.test_session_authority_cancel_settlement import _authority, ACTOR, REF
+from tests.waiting import async_wait_until
 
 
 @pytest.mark.asyncio
@@ -55,9 +56,8 @@ async def test_cancel_before_worker_reservation_settles_interrupted(tmp_path, mo
             assert row['status'] == 'terminal' and row['outcome'] == 'interrupted'
             assert authority.sessions['s'].event_stream.execution == {}
             if phase != 'environment':
-                async with asyncio.timeout(10):
-                    while not children or any(child.poll() is None for child in children):
-                        await asyncio.sleep(.01)
+                await async_wait_until(lambda: children and all(child.poll() is not None for child in children),
+                                       timeout=10, what='the managed worker child exited')
             assert db._read_one('SELECT COUNT(*) FROM worker_executions')[0] == 0
         finally:
             release.set()

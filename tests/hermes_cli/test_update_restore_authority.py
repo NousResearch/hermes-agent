@@ -9,6 +9,7 @@ import sqlite3
 import threading
 
 from tests.gateway.fixtures.local_recovery_probe import Model, daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 
 def test_restore_refuses_live_authority_without_changing_data(tmp_path):
@@ -44,9 +45,8 @@ def test_restore_refuses_live_authority_without_changing_data(tmp_path):
             created = await rpc(ws, 'session.create', request_id='create', source='tui', cwd=str(home), toolsets=[])
             session = created['result']['session_id']
             await rpc(ws, 'prompt.submit', session_id=session, input_id='warm', text='WARM')
-            async with asyncio.timeout(30):
-                while dict(rows()).get('warm') != 'terminal':
-                    await asyncio.sleep(.05)
+            await async_wait_until(lambda: dict(rows()).get('warm') == 'terminal', timeout=30, interval=.05,
+                                   what='the warm turn to settle')
             snapshot = create_quick_snapshot(hermes_home=home)
             assert snapshot, snapshot
             await rpc(ws, 'prompt.submit', session_id=session, input_id='started', text='BLOCK_STARTED')
@@ -65,7 +65,7 @@ def test_restore_refuses_live_authority_without_changing_data(tmp_path):
             return snapshot
 
     try:
-        with daemon(root, home, env, barrier=False) as (proc, desc):
+        with daemon(root, home, env, barrier=False) as (_proc, desc):
             snapshot = asyncio.run(exercise(desc))
             old_epoch = desc['authority_epoch']
         peer.release.set()
@@ -168,7 +168,7 @@ def test_update_restore_excludes_startup_until_publication(tmp_path, monkeypatch
         contender = subprocess.run([sys.executable, '-c',
             "import logging, runpy; logging.basicConfig(level=logging.INFO); runpy.run_module('gateway.run', run_name='__main__')"],
             cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True,
-            text=True, encoding='utf-8', timeout=25)
+            text=True, encoding='utf-8', timeout=25, check=False)
         assert 'already owns profile' in contender.stdout + contender.stderr, contender
         assert (destination.read_bytes(), source.read_bytes()) == before
     finally:

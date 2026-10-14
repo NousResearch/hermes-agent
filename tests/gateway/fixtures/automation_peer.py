@@ -13,6 +13,7 @@ import time
 
 import websockets
 from tests.gateway.test_normal_runtime_boot import control
+from tests.waiting import async_wait_until
 from local_recovery_probe import websocket, rpc
 
 
@@ -103,9 +104,7 @@ async def probe(root, base, mode):
             return [dict(r) for r in db.execute('SELECT * FROM session_admissions ORDER BY seq')]
 
     async def wait_for(predicate, seconds=35):
-        async with asyncio.timeout(seconds):
-            while not predicate():
-                await asyncio.sleep(.03)
+        await async_wait_until(predicate, timeout=seconds)
 
     proc = None
     try:
@@ -124,7 +123,7 @@ async def probe(root, base, mode):
                 GATEWAY_RELAY_PLATFORMS='telegram', GATEWAY_RELAY_BOT_IDS='{"telegram":"fixture-bot"}',
                 GATEWAY_RELAY_ID='fixture-gateway', GATEWAY_RELAY_SECRET='fixture-secret')
             with (home / 'daemon.log').open('w+') as log:
-                proc = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=root, env=env,
+                proc = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=root, env=env,  # noqa: ASYNC220 -- Popen returns immediately; the test drives the child through its handle
                     stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
                 try:
                     ws = await asyncio.wait_for(ready.get(), 35)

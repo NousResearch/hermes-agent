@@ -31,7 +31,7 @@ print('CLAIMED', result)
     witness = tmp_path / 'witness'
     try:
         result = subprocess.run([sys.executable, '-c', code], env={**os.environ, 'WITNESS': str(witness)},
-                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+                                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, check=False)
         assert result.returncode == 0, result.stderr
         assert not witness.exists(), result.stdout + result.stderr
         assert 'CLAIMED False' in result.stdout
@@ -115,3 +115,61 @@ def test_profile_reservations_unwind_without_releasing_another_owner(tmp_path):
         blocker.reserve([homes[1]])
     free.close()
     contender.close()
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.skipif(hasattr(os, 'geteuid') and os.geteuid() == 0, reason="root opens a mode-000 file")
+@pytest.mark.parametrize("mode", [0o400])
+def test_stale_unopenable_gateway_lock_is_replaced_on_boot(tmp_path, monkeypatch, mode):
+    """Main's #42685: a lock this user cannot write (left by a root-run gateway) that a read-only
+    flock proves unheld is unlinked and recreated, so boot does not exit "already held" forever.
+    An unreadable one is refused instead (test_foreign_stale_gateway_lock)."""
+    import json
+    from gateway.status import acquire_gateway_runtime_lock, release_gateway_runtime_lock
+    home = tmp_path / 'home'
+    home.mkdir(mode=0o700)
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    lock = home / 'gateway.lock'
+    lock.write_text('{"pid": 1}', encoding='utf-8')
+    lock.chmod(mode)
+    try:
+        assert acquire_gateway_runtime_lock()
+        assert lock.stat().st_mode & 0o777 == 0o600  # a fresh inode (the stale one is not ours to chmod)
+        assert json.loads(lock.read_text(encoding='utf-8-sig'))['pid'] == os.getpid()
+    finally:
+        release_gateway_runtime_lock()
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.skipif(hasattr(os, 'geteuid') and os.geteuid() == 0, reason="root opens a mode-000 file")
+def test_unusable_gateway_lock_held_or_linked_is_never_unlinked(tmp_path):
+    """The stale-lock recovery never removes an inode a live process holds, and never follows a
+    symlink or touches a hardlinked lock."""
+    from gateway import runtime_ownership
+    homes = {kind: tmp_path / kind for kind in ('held', 'held_readable', 'hardlink', 'symlink')}
+    for home in homes.values():
+        home.mkdir(mode=0o700)
+    held = [homes[kind] / 'gateway.lock' for kind in ('held', 'held_readable')]
+    for path in held:
+        path.write_text('', encoding='utf-8')
+    holder = subprocess.Popen(  # a live owner (flock on both inodes) from another process
+        [sys.executable, '-c', 'import fcntl,sys;fs=[open(p) for p in sys.argv[1:]];'
+         '[fcntl.flock(f,fcntl.LOCK_EX) for f in fs];print(1,flush=True);sys.stdin.read()',
+         *map(str, held)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == '1'
+        held[0].chmod(0)  # unopenable: only /proc/locks can show the holder
+        held[1].chmod(0o400)  # readable: the flock probe sees the holder
+        (tmp_path / 'other').write_text('', encoding='utf-8')
+        os.link(tmp_path / 'other', homes['hardlink'] / 'gateway.lock')
+        (homes['hardlink'] / 'gateway.lock').chmod(0)
+        (homes['symlink'] / 'gateway.lock').symlink_to(tmp_path / 'target')
+        before = {kind: os.lstat(home / 'gateway.lock').st_ino for kind, home in homes.items()}
+        for kind, home in homes.items():
+            with pytest.raises(OSError):
+                runtime_ownership.ProfileOwnership().reserve([home])
+            assert os.lstat(home / 'gateway.lock').st_ino == before[kind], kind
+        assert not (tmp_path / 'target').exists()
+    finally:
+        holder.stdin.close()
+        holder.wait(timeout=10)

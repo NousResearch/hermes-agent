@@ -54,13 +54,17 @@ def _stream_through_relay(tmp_path, monkeypatch, response_body: bytes, *, finali
     subscriber_name = "test.openai_stream"
     events = []
     relay_finalizer_started = threading.Event()
-    allow_relay_finalizer = threading.Event()
     relay_finalizer_finished = threading.Event()
     run_relay_finalizer = relay_llm.ManagedLlmStream._relay_finalizer
 
+    # The finalizer is never gated. Relay runs it on the stream's own loop, which only the consumer
+    # thread drives (``__next__`` -> ``run_until_complete``), and Relay may reach EOF and finalize
+    # BEFORE it hands over the terminal chunk. A finalizer that waited for the consumer then parked the
+    # only thread that could release it: a 30 s deadlock, then "consumer did not release Relay's
+    # finalizer". Finalizing first already IS the ordering under test; the consumer-first ordering is
+    # forced below by pumping the loop until the finalizer has finished.
     def run_synchronized_relay_finalizer(managed_stream, attempt):
         relay_finalizer_started.set()
-        assert allow_relay_finalizer.wait(30), "consumer did not release Relay's finalizer"
         try:
             return run_relay_finalizer(managed_stream, attempt)
         finally:
@@ -81,7 +85,6 @@ def _stream_through_relay(tmp_path, monkeypatch, response_body: bytes, *, finali
             import asyncio
 
             stream = self.managed_stream_holder["stream"]
-            allow_relay_finalizer.set()
             # A schedule probe may hold the provider generator at this chunk until the consumer has
             # taken it (adverse consumer-first ordering); release it so the pump below can reach EOF.
             gate = getattr(stream, "_review_gate", None)

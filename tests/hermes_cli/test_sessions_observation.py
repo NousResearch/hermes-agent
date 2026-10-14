@@ -46,5 +46,5 @@ for action in ('list', 'stats', 'pinned', 'export'):
     assert after == before, action + ' created or mutated state.db'
 '''.replace('POPULATED', repr(populated))
     result = subprocess.run([sys.executable, '-c', code], cwd=repo, env=env, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr

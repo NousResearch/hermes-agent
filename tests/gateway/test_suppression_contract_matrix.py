@@ -157,7 +157,7 @@ async def _drive(adapter, *, interrupt: bool):
         consumer.finish()
         try:
             await asyncio.wait_for(task, timeout=2.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             task.cancel()
     return consumer
 

@@ -7,12 +7,14 @@ from hermes_state_runtime import RuntimeStoreError
 
 async def attach_bytes(connection, ref, params):
     if (not isinstance(ref.session_id, str) or not ref.session_id
-            or set(params) - {'session_id', 'content_base64', 'data', 'filename', 'ext'}
+            or set(params) - {'session_id', 'profile', 'content_base64', 'data', 'filename', 'ext'}
             or any(not isinstance(value, str) for value in params.values())):
         raise RuntimeStoreError('invalid_params')
     if ref.session_id not in connection.subscriptions:
         raise RuntimeStoreError('permission_denied')
-    connection.authority.authorize(connection.actor, ref, 'session:submit')
+    # The declared ``profile`` selector names this owner's own home or is refused (dokterdok N73).
+    from gateway.session_busy_controls import authorize
+    authorize(connection, ref, params, 'session:submit')
     # The owner, never the caller or ambient process profile, selects staging.
     directory = Path(connection.authority.profile_id) / 'cache' / 'images'
     return await asyncio.to_thread(_stage, directory, params)

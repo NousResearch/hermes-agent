@@ -111,3 +111,32 @@ def test_profile_discovery_and_group_controls_enforce_actor_scope(tmp_path, monk
                 assert denied['error']['message'] == 'profile_mismatch', denied
             assert (await call('profiles.delete'))['error']['code'] == -32601  # unknown method, not a bad argument
         asyncio.run(probe())
+
+
+def test_groups_list_pages_the_actor_visible_rooms(tmp_path):
+    """keeltrace: pagination is applied to the rooms the actor may see, not to the room table
+    before the authorization filter (which returned empty/short pages ahead of visible rooms)."""
+    from gateway import hosted_rooms as rooms
+    from gateway.session_group_controls import _group
+    from hermes_state_runtime import RuntimeStoreError
+    db_path = tmp_path / 'state.db'
+    with SessionDB(db_path) as db:
+        for index, name in enumerate(['f1', 'f2', 'm1', 'f3', 'm2', 'm3']):
+            rooms.create_room(db_path, room_id=name, name=name, members=[], authority_gateway_id='gw',
+                              now=1000.0 - index)  # list order = updated_at DESC = this order
+
+        def authorize_room(subject, room_id):
+            if not room_id.startswith('m'):
+                raise RuntimeStoreError('permission_denied')
+        service = SimpleNamespace(db_path=db_path, authorize_room=authorize_room,
+                                  runtime=SimpleNamespace(status=lambda: {'running': True}))
+        authority = SimpleNamespace(db=db, hosted_room_service=service)
+        actor = SimpleNamespace(subject='me')
+        pages, params = [], {'limit': 2}
+        while True:
+            page = _group(authority, actor, tmp_path, 'groups.list', params)
+            pages.append([room['room_id'] for room in page['rooms']])
+            if page['next_offset'] is None:
+                break
+            params = {'limit': 2, 'offset': page['next_offset']}
+        assert pages == [['m1', 'm2'], ['m3']], pages

@@ -9,6 +9,7 @@ runs sync httpx connects through the process-wide Happy Eyeballs racer
 
 from __future__ import annotations
 
+import functools
 import socket
 import sys
 import threading
@@ -55,7 +56,7 @@ class _HappyEyeballsSyncBackend:
         try:
             sock = _happy_eyeballs_create_connection((host, port), timeout, source_address=source_address,
                                                      socket_options=socket_options or ())
-        except socket.timeout as exc:
+        except TimeoutError as exc:
             raise ConnectTimeout(str(exc)) from exc
         except OSError as exc:
             raise ConnectError(str(exc)) from exc
@@ -291,6 +292,11 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
         mounts = None
+        # Official Codex backend only: zstd request bodies when the stdlib codec exists (None otherwise).
+        from agent.codex_headers import codex_request_compression_hooks
+        hooks = codex_request_compression_hooks(base_url, async_mode=async_mode)
+        if hooks:
+            client_cls = functools.partial(client_cls, event_hooks=hooks)
         if proxy is None:
             happy_eyeballs = not async_mode and _uses_codex_cloud_transport(base_url)
             # One pool serves every agent in the process, so its ceiling must cover a whole

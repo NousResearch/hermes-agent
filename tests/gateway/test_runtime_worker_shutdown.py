@@ -20,11 +20,12 @@ async def test_managed_claims_participate_in_zero_and_nonzero_drain(tmp_path):
         's': SimpleNamespace(control=lambda frame: stopped.append(frame), closed=threading.Event())})
     runner = SimpleNamespace(session_authority=authority, _running_agents={},
         _running_agent_count=lambda: 0, _active_cron_job_count=lambda: 0, _active_api_run_count=lambda: 0,
-        _active_deferred_agent_worker_count=lambda: 0, _snapshot_running_agents=lambda: {},
+        _active_deferred_agent_worker_count=lambda: 0, _snapshot_running_agents=dict,
         _update_runtime_status=lambda *a: None)
     runner._drain_work_counts = GatewayShutdownMixin._drain_work_counts.__get__(runner)
     authority.runner = runner
     authority.pending_stops = {}
+    authority.adopted = {}
     try:
         assert GatewayShutdownMixin._active_work_count(runner) == 1
         _, timed_out = await GatewayShutdownMixin._drain_active_agents(runner, timeout=0)
@@ -60,8 +61,8 @@ async def test_profile_timeout_keeps_authority_until_physical_worker_exits(tmp_p
     registry.add(launch, SimpleNamespace(profile_id=str(launch)))
     agent = SimpleNamespace(hard_interrupt=lambda message: stopped.set())
     live = SimpleNamespace(task=task, route='beta-route', event_stream=SimpleNamespace(execution={'execution_generation': 2}))
-    authority = SimpleNamespace(sessions={'s': live}, profile_id=str(beta), pending_stops={},
-        agent=lambda ref: agent, _turn_workers={1: (SimpleNamespace(worker_done=done), [agent])})
+    authority = SimpleNamespace(sessions={'s': live}, profile_id=str(beta), pending_stops={}, adopted={},
+        waiters={}, native_waiters=set(), agent=lambda ref: agent, _turn_workers={1: (SimpleNamespace(worker_done=done), [agent])})
     registry.add(beta, authority, name='beta')
     runner = SimpleNamespace(session_authorities=registry, session_runtime_descriptor={},
                              session_ticket_store=SimpleNamespace(profile_ids=registry.profile_ids()))
@@ -74,7 +75,8 @@ async def test_profile_timeout_keeps_authority_until_physical_worker_exits(tmp_p
         assert stopped.is_set() and not done.is_set()
         assert registry.for_home(beta) is authority
         assert not unbound
-        assert str(beta) in runner.session_ticket_store.profile_ids
+        # Kept for its live writer, but it refuses all work: no longer published or ticketed.
+        assert str(beta) not in runner.session_ticket_store.profile_ids
         release.set()
         await asyncio.wait_for(task, 5)
         await run_runtime.unserve_profile_runtime(runner, beta)
@@ -94,7 +96,7 @@ async def test_whole_runtime_settle_logs_late_work_and_finishes_shutdown(monkeyp
     task = asyncio.create_task(late.wait())
     agent = SimpleNamespace(hard_interrupt=lambda message=None: None)
     live = SimpleNamespace(task=task, route='r', event_stream=SimpleNamespace(execution={}))
-    authority = SimpleNamespace(sessions={'s': live}, _managed_workers={}, pending_stops={}, profile_id='p',
+    authority = SimpleNamespace(sessions={'s': live}, _managed_workers={}, pending_stops={}, adopted={}, profile_id='p',
                                 _turn_workers={1: (SimpleNamespace(worker_done=wedged), [agent])})
     revoked, stopped = [], []
     runner = SimpleNamespace(session_authority=authority, _running_agents={},

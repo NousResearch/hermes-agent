@@ -177,8 +177,10 @@ class TestRequiredChallenge:
         assert [p for _, p in nas.calls].count("/api/anonymous/token") == 2
 
     def test_the_managed_tool_token_path_works_a_challenge_too(self, nas, presented):
+        """Against a NAS from before the connectors purpose, which still challenges that mint."""
         from hermes_cli.auth import resolve_nous_access_token
         assert anon_auth.is_guest_state(anon_auth.ensure_portal_identity(explicit=True))
+        nas.honours_purpose = False
         nas.challenge_required = True
         nas.challenge_statuses = ["pending"]
         assert resolve_nous_access_token()

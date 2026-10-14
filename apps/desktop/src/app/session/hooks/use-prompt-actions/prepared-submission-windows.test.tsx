@@ -58,7 +58,7 @@ async function openWindow(submit: (params: Record<string, unknown>) => unknown) 
 
   const hook = renderHook(() => useSubmitPrompt(deps))
 
-  return { send: (text: string) => act(async () => hook.result.current(text)) }
+  return { send: (text: string, options?: { submission_id: string }) => act(async () => hook.result.current(text, options)) }
 }
 
 afterEach(() => {
@@ -91,6 +91,6 @@ it('two windows sending the same text keep separate identities; only the writer 
   expect(ids[1]).not.toBe(ids[0])
 
   // The writer's explicit retry reuses its own retained identity.
-  expect(await first.send('same text')).toBe(true)
+  expect(await first.send('same text', { submission_id: ids[0] })).toBe(true)
   expect(ids[2]).toBe(ids[0])
 })

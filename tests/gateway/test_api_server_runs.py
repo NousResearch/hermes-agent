@@ -31,6 +31,7 @@ from gateway.platforms.api_server import (
 )
 from tools import approval as approval_mod
 from tools import approval_gateway_wait
+from tests.waiting import async_wait_until
 
 
 # ---------------------------------------------------------------------------
@@ -718,7 +719,10 @@ class TestRunEvents:
                 # The server only notices the dropped socket on its next write.
                 _mark_run_event(adapter, run_id, "run.steered", accepted=False)
                 assert "run.steered" in await frame(second)
-                await asyncio.sleep(0.05)
+                stream = adapter._run_streams[run_id]
+                # ceiling past the 10s SSE keepalive, whose write also detaches a dead socket
+                await async_wait_until(lambda: len(stream.subscribers) == 1, timeout=30,
+                                       what="the dropped subscriber to detach")
                 _mark_run_event(adapter, run_id, "approval.responded", choice="once")
                 assert "approval.responded" in await frame(second)
 

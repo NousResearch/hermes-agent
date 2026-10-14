@@ -40,8 +40,10 @@ def test_script_termination_reaps_descendants(tmp_path, monkeypatch, trigger, to
         except BaseException as exc:
             errors.append(exc)
     def live(pid):
+        # 'dead' is the instant a parent is reaping the zombie: exited, not alive. Counting it
+        # alive flips a gone child back to "survived" on the read after the loop saw a zombie.
         try:
-            return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+            return psutil.Process(pid).status() not in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD)
         except psutil.NoSuchProcess:
             return False
     thread = threading.Thread(target=run)

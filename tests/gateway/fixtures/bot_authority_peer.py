@@ -10,6 +10,7 @@ import threading
 
 from automation_peer import Model
 from local_recovery_probe import daemon, websocket, rpc
+from tests.waiting import async_wait_until
 
 
 def probe(base):
@@ -34,9 +35,7 @@ def probe(base):
             return [dict(r) for r in db.execute('SELECT * FROM session_admissions ORDER BY seq')]
 
     async def wait(predicate):
-        async with asyncio.timeout(30):
-            while not predicate():
-                await asyncio.sleep(.05)
+        await async_wait_until(predicate, timeout=30, interval=.05)
 
     async def run(desc):
         async with websocket(home, desc) as ws:

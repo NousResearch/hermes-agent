@@ -8,7 +8,7 @@ from pathlib import Path
 
 def test_runs_refuse_native_session_without_phantom_run(tmp_path):
     result = subprocess.run([sys.executable, __file__], cwd=Path(__file__).resolve().parents[2],
-        env=dict(os.environ, HERMES_HOME=str(tmp_path)), capture_output=True, text=True, timeout=90)
+        env=dict(os.environ, HERMES_HOME=str(tmp_path)), capture_output=True, text=True, timeout=90, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     print((tmp_path / 'runs-receipt.json').read_text(encoding='utf-8'))
 

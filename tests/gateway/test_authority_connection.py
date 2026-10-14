@@ -44,7 +44,7 @@ async def test_repeated_resume_and_close_preserve_only_live_memberships(tmp_path
 async def test_close_after_a_subscribed_session_was_deleted_releases_every_membership(tmp_path, deleted_first):
     """Deletion evicts the live session before the viewer disconnects; teardown must still
     release the other subscription and the transport instead of raising not_found."""
-    import tui_gateway.ws  # noqa: F401 — the fanout drain thread imports it lazily during teardown
+    import tui_gateway.ws
     db = SessionDB(db_path=tmp_path / 'state.db')
     try:
         for sid in ('doomed', 'kept'):

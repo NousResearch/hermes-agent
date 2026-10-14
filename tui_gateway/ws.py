@@ -104,6 +104,8 @@ class WSTransport:
         #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers
         #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
         self.auth_identity = auth_identity
+        #: The served profile home whose skin this peer follows (None = the launch home); see change_watcher.
+        self.skin_home: str | None = None
         self._closed = False
         # Token-coalescing buffer. The lock guards the buffer + "armed" flag against worker threads
         # calling write(); the timer handle is only ever touched on the loop thread.
@@ -193,6 +195,16 @@ class WSTransport:
         await self._safe_send_many(batch)
         return not self._closed
 
+    async def write_many_async(self, frames: list[dict]) -> bool:
+        """``write_async`` for an ordered batch: buffered tokens, then *frames*, in one send batch."""
+        if self._closed:
+            return False
+        with self._token_lock:
+            batch, self._pending_tokens = self._pending_tokens, []
+            batch.extend(serialize_frame(frame, self._peer, _log) for frame in frames)
+        await self._safe_send_many(batch)
+        return not self._closed
+
     async def _safe_send_many(self, lines: list[str]) -> None:
         """Send one indivisible batch of pre-serialized frames in wire order."""
         async with self._send_lock:
@@ -204,7 +216,7 @@ class WSTransport:
                 payload = _sanitize_ws_text(line)
                 try:
                     await asyncio.wait_for(self._ws.send_text(payload), timeout=_WS_SEND_DEADLINE_S)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # The loop is responsive (the timer fired) but the socket never drained: unlike the
                     # loop-stall wait in write(), this is a dead peer. Latch under the writer lock so queued
                     # batches bail, and close the socket so handle_ws's read loop ends and its teardown
@@ -294,7 +306,7 @@ def _disable_nagle(ws: Any) -> None:
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
-def _authority_connection(ws: Any, transport: "WSTransport", auth_identity: dict | None, operator: bool):
+def _authority_connection(ws: Any, transport: WSTransport, auth_identity: dict | None, operator: bool):
     """The session-authority connection for this socket (route scope, else app state), or None
     when this backend has no authority and requests go to the legacy ``server.dispatch``."""
     authority = (getattr(ws, 'scope', None) or {}).get('hermes.session_authority') or getattr(
@@ -305,7 +317,7 @@ def _authority_connection(ws: Any, transport: "WSTransport", auth_identity: dict
     return AuthorityConnection(authority, transport, auth_identity or {}, operator=operator)
 
 
-async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any, transport: "WSTransport") -> Any:
+async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any, transport: WSTransport) -> Any:
     """One request through the authority when attached, else the legacy dispatcher."""
     if authority_connection is None:
         return await asyncio.to_thread(server.dispatch, req, transport)
@@ -422,6 +434,9 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             # global broadcasts write_json can't route.
             server._ensure_skin_watcher()
             server._ensure_lease_watcher()  # cross-process lease moves → display.lease
+            if authority_connection is not None:
+                # A served profile's TUI repaints from ITS home's skin, never the launch home's.
+                transport.skin_home = server._skin_home_for(authority_connection.actor.profile_id)
             server.register_live_transport(transport)
         # Cross-backend liveness: a heartbeat row lets the startup orphan sweep tell "live but idle
         # backend" from "truly orphaned". Idempotent and once-per-process, like the orphan sweep (the

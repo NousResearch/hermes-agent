@@ -160,7 +160,7 @@ def main() -> int:
         refused_b = subprocess.run(
             [str(PYTHON), "-u", "-m", "tui_gateway.entry"], cwd=str(REPO),
             env={**os.environ, "HERMES_HOME": str(home)}, stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180, check=False)
         check("B cannot start a second writer on A's home", refused_b.returncode == 1
               and "gateway.ready" not in refused_b.stdout, (refused_b.stderr or "")[-200:])
 

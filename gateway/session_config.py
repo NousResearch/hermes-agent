@@ -54,7 +54,7 @@ async def config_get(connection, ref, params):
     key = params.get('key')
     if not isinstance(key, str):
         raise RuntimeStoreError('invalid_params')
-    if key in ('busy', 'verbose', 'yolo'):
+    if key in ('busy', 'verbose', 'yolo', 'show_reasoning'):
         from gateway.session_busy_controls import busy_config
         return await busy_config(connection, ref, params)
     policy = _authorize(connection, ref, params)
@@ -83,10 +83,8 @@ async def config_get(connection, ref, params):
                                      k: (policy.config() if policy else cfg).get(k)
                                      for k in ('mcp', 'mcp_servers', 'tools')},
                                      sort_keys=True).encode()).hexdigest()[:12]},
-                'reasoning': lambda: _reasoning(agent, policy, cfg),
-                'fast': lambda: {'value': 'fast' if (getattr(agent, 'service_tier', None) or
-                    (policy.config() if policy else cfg).get('agent', {}).get('service_tier'))
-                    in {'priority', 'fast', 'on'} else 'normal'},
+                'reasoning': lambda: _reasoning(agent, policy, cfg, connection, ref),
+                'fast': lambda: _fast(connection, ref, policy, agent, cfg),
                 'skin': lambda: {'value': display.get('skin', 'default')},
                 'theme': lambda: {'value': display.get('tui_theme', 'auto')},
                 'indicator': lambda: {'value': display.get('tui_status_indicator', DEFAULT_INDICATOR_STYLE)},
@@ -102,11 +100,25 @@ async def config_get(connection, ref, params):
     return await asyncio.to_thread(read)
 
 
-def _reasoning(agent, policy, cfg):
+def _fast(connection, ref, policy, agent, cfg):
+    from agent.fast_mode import parse_service_tier
+    if ref.session_id:  # the session's next-turn tier: its /fast pin, else its policy's
+        from gateway.session_tui_config import current_tier
+        tier = current_tier(connection, ref, policy)
+    else:
+        tier = getattr(agent, 'service_tier', None) or parse_service_tier(cfg.get('agent', {}).get('service_tier'))
+    return {'value': {'priority': 'fast', 'ultrafast': 'ultrafast'}.get(tier, 'normal')}
+
+
+def _reasoning(agent, policy, cfg, connection=None, ref=None):
     from hermes_constants import resolve_reasoning_config
     value = getattr(agent, 'reasoning_config', None)
-    if not isinstance(value, dict):
-        value = policy.reasoning_config if policy else resolve_reasoning_config(cfg, '')
+    if not isinstance(value, dict) and policy is not None:
+        # The next turn's level: a typed session /reasoning, else the frozen (or followed) one.
+        runner = connection.authority.runner
+        value = policy.current_reasoning_config(runner, connection.authority.sessions[ref.session_id].route)
+    elif not isinstance(value, dict):
+        value = resolve_reasoning_config(cfg, '')
     effort = 'none' if value and value.get('enabled') is False else (value or {}).get('effort', 'medium')
     return {'value': effort, 'display': 'show' if cfg.get('display', {}).get('show_reasoning', True) else 'hide'}
 

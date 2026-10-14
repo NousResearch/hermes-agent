@@ -155,7 +155,7 @@ def test_merge_does_not_mutate_caller_list(hermes_env):
     not grow as a side effect of save_jobs()."""
     from cron.jobs import create_job, save_jobs
 
-    job = create_job(
+    create_job(
         prompt=None,
         schedule="every 2m",
         script="watch.sh",

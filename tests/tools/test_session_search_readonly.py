@@ -9,7 +9,7 @@ import sqlite3
 def test_search_does_not_create_current_storage_for_empty_or_foreign_reads(tmp_path, monkeypatch):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_state import SessionDB
-    import tools.session_search_tool  # noqa: F401
+    import tools.session_search_tool
     from tools.registry import registry
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -45,7 +45,7 @@ def test_search_does_not_create_current_storage_for_empty_or_foreign_reads(tmp_p
 def test_search_reads_live_storage_without_a_write_commit(tmp_path, monkeypatch):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_state import SessionDB
-    import tools.session_search_tool  # noqa: F401
+    import tools.session_search_tool
     from tools.registry import registry
 
     home = tmp_path / "profile"

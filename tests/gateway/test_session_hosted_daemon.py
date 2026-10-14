@@ -4,6 +4,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import threading
+import time
 
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
 
@@ -85,12 +86,13 @@ def test_native_room_service_local_member_and_restart(tmp_path):
             sent = await rpc(ws, 'groups.send', room_id='owned', event_id='input-one',
                              payload={'text': 'LOCAL_HOSTED_PROOF', 'thread_id': 'thread', 'attachments': saved['manifest']})
             assert sent['result']['accepted'], sent
-            async with asyncio.timeout(45):
-                while True:
-                    log = await rpc(ws, 'groups.log', room_id='owned')
-                    if sum(e['kind'] == 'turn.settled' for e in log['result']['events']) >= 2:
-                        break
-                    await asyncio.sleep(.1)
+            deadline = time.monotonic() + 45
+            while True:
+                log = await rpc(ws, 'groups.log', room_id='owned')
+                if sum(e['kind'] == 'turn.settled' for e in log['result']['events']) >= 2:
+                    break
+                assert time.monotonic() < deadline, f'two turns never settled: {log}'
+                await asyncio.sleep(.1)
             state = await rpc(ws, 'groups.state', room_id='owned')
             assert state['result']['driver_status']['counts'].get('settled') == 2, state
             assert len(model.requests) == 2, model.requests
@@ -170,17 +172,18 @@ def test_room_unknown_discard_releases_only_its_followers(tmp_path):
             # The killed owner's room lease is same-gateway with a fresh process
             # generation, so the restarted owner cannot steal it and waits out the
             # 30s TTL (acquire_lease -> LeaseHeldError until expiry). Measured 30.2s.
-            async with asyncio.timeout(90):
-                while True:
-                    snapshot = await state(ws)
-                    actions = [a for a in snapshot['pending_actions'] if a['kind'] == 'discard']
-                    if actions:
-                        import sqlite3
-                        with sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True) as db:
-                            lease = db.execute('SELECT process_generation FROM hosted_room_driver_leases WHERE room_id=?', ('unknown',)).fetchone()
-                        if lease is not None and lease[0] != previous['lease']:
-                            break
-                    await asyncio.sleep(.1)
+            deadline = time.monotonic() + 90
+            while True:
+                snapshot = await state(ws)
+                actions = [a for a in snapshot['pending_actions'] if a['kind'] == 'discard']
+                if actions:
+                    import sqlite3
+                    with sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True) as db:
+                        lease = db.execute('SELECT process_generation FROM hosted_room_driver_leases WHERE room_id=?', ('unknown',)).fetchone()
+                    if lease is not None and lease[0] != previous['lease']:
+                        break
+                assert time.monotonic() < deadline, f'restarted owner never took the lease and offered discard: {snapshot}'
+                await asyncio.sleep(.1)
             assert len(model.requests) == 1, model.requests
             control = {k: v for k, v in actions[0].items() if k != 'kind'}
             for method, params, reason in [
@@ -194,12 +197,13 @@ def test_room_unknown_discard_releases_only_its_followers(tmp_path):
             assert reply.get('result', {}).get('discarded'), reply
             same = await rpc(ws, 'groups.discard', room_id='unknown', **control)
             assert same == reply, (same, reply)
-            async with asyncio.timeout(30):
-                while True:
-                    snapshot = await state(ws)
-                    if snapshot['counts'].get('settled', 0) >= 2:
-                        break
-                    await asyncio.sleep(.1)
+            deadline = time.monotonic() + 30
+            while True:
+                snapshot = await state(ws)
+                if snapshot['counts'].get('settled', 0) >= 2:
+                    break
+                assert time.monotonic() < deadline, f'the follower never settled after discard: {snapshot}'
+                await asyncio.sleep(.1)
             assert snapshot['counts'].get('cancelled') == 1, snapshot
             assert len(model.requests) == 3, model.requests
     try:

@@ -9,6 +9,7 @@ import pytest
 from acp_adapter.server import HermesACPAgent
 from hermes_cli.gateway_client import GatewayClientError
 from tests.acp_adapter.test_gateway_sessions import editor, viewer
+from tests.waiting import async_wait_until
 
 
 @pytest.mark.platforms("linux")
@@ -44,9 +45,8 @@ async def test_real_acp_answer_resolves_the_exact_pending_control(daemon, tmp_pa
             task = asyncio.create_task(acp.rpc("session/prompt", sessionId=sid,
                 prompt=[{"type": "text", "text": "Remove owned fixture after consent"}]))
             try:
-                async with asyncio.timeout(15):
-                    while not any(f.get("method") == "session/request_permission" for f in acp.frames):
-                        await asyncio.sleep(.05)
+                await async_wait_until(lambda: any(f.get("method") == "session/request_permission" for f in acp.frames),
+                                       timeout=15, what="the ACP permission request")
                 permission = next(f for f in acp.frames if f.get("method") == "session/request_permission")
                 assert target.exists()
                 pending = (await ws.rpc("session.resume", session_id=sid))["prompts"][0]

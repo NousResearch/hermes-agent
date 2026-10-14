@@ -40,9 +40,9 @@ def downgrade_reason(skew, *, update_in_progress: bool, predates: Callable[[], b
     """The log line when this gateway must stop for a downgraded tree, else None."""
     if not skew or update_in_progress or not predates():
         return None
-    return ("This gateway loaded %s, but its checkout is now at %s, a release that predates the gateway "
+    return ("This gateway loaded {}, but its checkout is now at {}, a release that predates the gateway "
             "runtime. Downgrading is unsupported; stopping (no restart) so the older release can run its "
-            "own gateway." % tuple(skew))
+            "own gateway.".format(*tuple(skew)))
 
 
 async def _stop_or_exit(runner, *, hard_exit: Callable[[int], None] = os._exit) -> None:

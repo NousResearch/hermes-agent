@@ -52,7 +52,7 @@ def test_launch_policy_reaches_real_turn_runner(tmp_path):
     env = child_env()
     env.update(HOME=str(home), USERPROFILE=str(home), HERMES_HOME=str(state), PYTHONPATH=str(repo))
     result = subprocess.run([sys.executable, str(Path(__file__).parent / 'fixtures' / 'session_policy_peer.py')],
-                            cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=130)
+                            cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=130, check=False)
     assert result.returncode == 0, result.stdout + '\n' + result.stderr
     receipt = json.loads((state / 'policy-receipt.json').read_text())
     assert receipt['cwd_effects'] and receipt['same_agents'] and receipt['no_spill']
@@ -119,7 +119,7 @@ def test_ordinary_daemon_cli_launch_policy(tmp_path):
         'import json,sys; from pathlib import Path; '
         'from tests.gateway.fixtures.cli_launch_policy_probe import probe; '
         'print(json.dumps(probe(Path(sys.argv[1]))))', str(tmp_path)], cwd=root,
-        stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=180)
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=180, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     print(json.dumps(json.loads(result.stdout.splitlines()[-1])))
 
@@ -215,3 +215,37 @@ def test_lazy_info_reports_the_free_tier_pinned_model(tmp_path, monkeypatch):
     assert _lazy_model(authority, build_policy({'cwd': str(tmp_path), 'model': 'pick'}, {})) == 'pick'
     monkeypatch.setattr(anon_auth, 'free_tier_route', lambda: False)
     assert _lazy_model(authority, configured) == 'cfg-model'
+
+
+def test_run_budget_is_a_frozen_launch_option(tmp_path):
+    """`hermes chat --run-budget N` (main: AIAgent(run_budget_seconds=N)): frozen as the session's
+    agent.run_budget_seconds; the profile's own value applies without the flag; junk is refused."""
+    from gateway.session_policy import build_policy
+    from hermes_state_runtime import RuntimeStoreError
+    cfg = {'agent': {'run_budget_seconds': 300}}
+    assert build_policy(dict(cwd=str(tmp_path), run_budget=120), cfg).run_budget_seconds == 120.0
+    assert build_policy(dict(cwd=str(tmp_path)), cfg).run_budget_seconds == 300.0
+    assert build_policy(dict(cwd=str(tmp_path)), {}).run_budget_seconds is None
+    for bad in (0, -5, True, 'soon'):
+        with pytest.raises(RuntimeStoreError, match='invalid_params'):
+            build_policy(dict(cwd=str(tmp_path), run_budget=bad), cfg)
+
+
+def test_run_budget_passes_the_session_create_contract():
+    """The canonical dispatcher refuses undeclared session.create keys before the policy sees them."""
+    from tui_gateway.contracts.registry import CANONICAL_METHODS, canonical_param_problems
+    from gateway.session_policy import CREATE_FIELDS
+    contract = CANONICAL_METHODS['session.create']
+    assert canonical_param_problems(contract, {'request_id': 'r', 'source': 'cli', 'run_budget': 120.0}) == []
+    declared = set(contract.params.model_fields)
+    assert CREATE_FIELDS <= declared | {'request_id'}, CREATE_FIELDS - declared
+
+
+def test_verbose_is_a_frozen_launch_option(tmp_path):
+    """`hermes chat -v` (main: AIAgent(quiet_mode=False)): the session agent's status lines are not quieted."""
+    from gateway.session_policy import build_policy
+    from hermes_state_runtime import RuntimeStoreError
+    assert build_policy(dict(cwd=str(tmp_path), verbose=True), {}).verbose is True
+    assert build_policy(dict(cwd=str(tmp_path)), {}).verbose is False
+    with pytest.raises(RuntimeStoreError, match='invalid_params'):
+        build_policy(dict(cwd=str(tmp_path), verbose='yes'), {})

@@ -600,7 +600,7 @@ class TestFinalResponseDeliveryGuard:
         consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5))
         consumer.on_delta("x" * 1200)  # past the 500-codepoint floor of the safe limit
         task = asyncio.create_task(consumer.run())
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(0.3)  # health: allow HX013 -- the window is the measurement: passes per 0.3s tell a yielding loop from a spinning one
         passes = adapter.send.await_count
         consumer.finish()
         await task

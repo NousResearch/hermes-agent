@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import threading
 import traceback
+import time
 
 
 class ModelPeer(BaseHTTPRequestHandler):
@@ -91,16 +92,15 @@ async def probe(peer):
         await rpc(a, 1, 'session.resume')
         await rpc(b, 1, 'session.resume')
         assert 'result' in await rpc(a, 2, 'prompt.submit', input_id='clarify-first', text='Ask my color')
-        try:
-            async with asyncio.timeout(15):
-                while True:
-                    snapshot = await rpc(b, 3, 'session.resume')
-                    prompts = snapshot['result']['prompts']
-                    if prompts:
-                        break
-                    await asyncio.sleep(.05)
-        except TimeoutError:
-            raise AssertionError('real clarify waiter missing from shared snapshot') from None
+        deadline = time.monotonic() + 15
+        while True:
+            snapshot = await rpc(b, 3, 'session.resume')
+            prompts = snapshot['result']['prompts']
+            if prompts:
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError('real clarify waiter missing from shared snapshot')
+            await asyncio.sleep(.05)
         prompt = prompts[0]
         assert prompt['kind'] == 'clarify', prompt
         assert clarify_gateway.has_pending(authority.sessions[ref.session_id].route)

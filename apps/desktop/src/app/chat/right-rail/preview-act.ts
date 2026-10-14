@@ -94,6 +94,11 @@ const NOTHING_OPEN = 'No live page is open in the in-app browser — open one wi
 const NAVIGATED =
   'The page stopped answering right after — it is probably navigating. Call elements to see where you landed.'
 
+/** Locate never returned, so the pointer was not sent. That is not a
+ *  navigation: nothing this action did could have moved the page. */
+const UNANSWERED =
+  'The page did not answer in time, so no input was sent. Call elements to see whether it is still the same page.'
+
 /** A fingerprint of the overlay's source, so the guest page can tell that the
  *  code it is running has changed underneath it.
  *
@@ -564,8 +569,11 @@ async function driveAction(
     return { error: trip.error, success: false }
   }
 
+  // Silence after the pointer has been sent can be a navigation tearing the
+  // document down. Silence here is earlier: locate never returned, so no
+  // input was sent.
   if (trip.kind === 'silent') {
-    return { acted: action.kind, note: NAVIGATED, success: true }
+    return { error: UNANSWERED, success: false }
   }
 
   const found = trip.result

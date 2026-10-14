@@ -1,4 +1,9 @@
-"""Ink reconnect re-ensures a crashed owner, never an explicitly stopped one (W11)."""
+"""Ink reconnect re-ensures an owner that is gone, however it went (W11, P2).
+
+Main's TUI owned its own sidecar and never depended on an external daemon, so an open TUI must come
+back on its own after ANY end of the shared gateway: a crash, its idle exit, or a planned
+`hermes gateway stop` while the TUI is open. The bounded recovery slot (gatewayClient.ts
+OWNER_RECOVERY_LIMIT) is what keeps a crash-looping owner from being respawned forever."""
 
 from __future__ import annotations
 
@@ -24,19 +29,25 @@ def _load_bootstrap():
     return module
 
 
-@pytest.mark.parametrize("record, ensured", [
-    ({"gateway_state": "running", "pid": 999999}, True),  # SIGKILL / OOM: dead process still claims live
-    ({"gateway_state": "stopped", "pid": 999999}, False),  # `hermes gateway stop`
-    ({"gateway_state": "running", "desired_state": "stopped"}, False),  # durable operator stop intent
+@pytest.mark.parametrize("record", [
+    {"gateway_state": "running", "pid": 999999},  # SIGKILL / OOM: dead process still claims live
+    {"gateway_state": "stopped", "pid": 999999},  # `hermes gateway stop` while the TUI is open
+    {"gateway_state": "running", "desired_state": "stopped"},  # durable operator stop intent
+    {"gateway_state": "stopped", "exit_reason": "auto-started gateway idle for 600s "
+     "(gateway.unmanaged_idle_exit_seconds)"},
+    {"gateway_state": "stopped", "exit_reason": "Gateway restart requested"},
+    None,  # no record at all
 ])
-def test_recover_reensures_only_a_crashed_owner(monkeypatch, tmp_path, record, ensured):
+def test_recover_reensures_an_owner_that_is_gone(monkeypatch, tmp_path, record):
+    ensured = True
     module = _load_bootstrap()
     home = (tmp_path / "home").resolve()
     home.mkdir()
-    (home / "gateway_state.json").write_text(json.dumps(record))
+    if record is not None:
+        (home / "gateway_state.json").write_text(json.dumps(record))
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
     monkeypatch.setattr(gateway_runtime, "discover_gateway_endpoint",
-                        lambda h, timeout=5: SimpleNamespace(state="absent", endpoint=None, reason_code=None))
+                        lambda h, timeout=5: SimpleNamespace(state="absent", endpoint=None, reason_code=None, detail=None))
     calls = []
 
     def ensure(h, timeout=30, idle_exit=False):
@@ -53,3 +64,60 @@ def test_recover_reensures_only_a_crashed_owner(monkeypatch, tmp_path, record, e
     with pytest.raises(RuntimeError, match="absent"):
         module.bootstrap(False)
     assert calls == []
+
+
+@pytest.mark.parametrize("observed", [
+    SimpleNamespace(state="incompatible", endpoint=None, reason_code="runtime_protocol", detail=None),
+    SimpleNamespace(state="starting", endpoint=None, reason_code=None, detail=None),
+])
+def test_recover_reensures_any_unready_owner(monkeypatch, tmp_path, observed):
+    """A reconnect that finds an old (incompatible) owner, or one still starting, ensures like the
+    first launch does instead of reporting the same verdict every 30 s."""
+    module = _load_bootstrap()
+    home = (tmp_path / "home").resolve()
+    home.mkdir()
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(gateway_runtime, "discover_gateway_endpoint", lambda h, timeout=5: observed)
+    calls = []
+    monkeypatch.setattr(gateway_runtime, "ensure_gateway_runtime", lambda h, timeout=30, idle_exit=False: (
+        calls.append(h), SimpleNamespace(state="starting", endpoint=None, reason_code="deadline", detail=None))[1])
+    with pytest.raises(RuntimeError):
+        module.bootstrap(False, recover=True)
+    assert calls == [home]
+
+
+def test_failure_names_the_reason_and_its_remedy(monkeypatch, tmp_path):
+    """The TUI echoes this text; a refusal's detail (what to do) must travel with the verdict."""
+    module = _load_bootstrap()
+    home = (tmp_path / "home").resolve()
+    home.mkdir()
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(gateway_runtime, "ensure_gateway_runtime", lambda h, timeout=30, idle_exit=False:
+                        SimpleNamespace(state="incompatible", endpoint=None, reason_code="runtime_protocol",
+                                        detail="the gateway belongs to another Hermes install; stop it there"))
+    with pytest.raises(RuntimeError) as err:
+        module.bootstrap(True)
+    assert str(err.value).splitlines() == [
+        "gateway incompatible: runtime_protocol",
+        "gateway incompatible: the gateway belongs to another Hermes install; stop it there"]
+
+
+def test_started_daemon_does_not_inherit_the_launch_time_kanban_board(monkeypatch, tmp_path):
+    """`hermes --tui` pins HERMES_KANBAN_BOARD for its own launch; the shared daemon this bootstrap
+    starts (spawn_unmanaged_gateway copies os.environ) must keep the profile's current board."""
+    module = _load_bootstrap()
+    home = (tmp_path / "home").resolve()
+    home.mkdir()
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "launch-board")
+    seen = []
+
+    def ensure(h, timeout=30, idle_exit=False):
+        import os
+        seen.append(os.environ.get("HERMES_KANBAN_BOARD"))
+        return SimpleNamespace(state="starting", endpoint=None, reason_code="deadline", detail=None)
+
+    monkeypatch.setattr(gateway_runtime, "ensure_gateway_runtime", ensure)
+    with pytest.raises(RuntimeError):
+        module.bootstrap(True)
+    assert seen == [None]

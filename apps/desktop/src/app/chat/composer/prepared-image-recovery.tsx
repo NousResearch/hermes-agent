@@ -12,7 +12,8 @@ interface Props {
   sessionKey: string | null
   request: GatewayRequest
   occupied: boolean
-  onRestore: (text: string, attachments: ComposerAttachment[]) => void
+  /** `id` is the retained send's identity: sending the restored draft unchanged retries it. */
+  onRestore: (text: string, attachments: ComposerAttachment[], id: string) => void
 }
 
 export function PreparedImageRecovery({ sessionKey, request, occupied, onRestore }: Props) {
@@ -39,7 +40,7 @@ export function PreparedImageRecovery({ sessionKey, request, occupied, onRestore
     <div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-xs" key={draft.key}>
       <span className="min-w-0 flex-1 truncate">{draft.text || draft.attachments.map(attachment => attachment.label).join(', ')}</span>
       <Button disabled={occupied} onClick={() => {
-        onRestore(draft.text, draft.attachments)
+        onRestore(draft.text, draft.attachments, draft.id)
         setDrafts(current => current.filter(entry => entry.key !== draft.key))
       }} size="sm" type="button" variant="outline">{t.composer.restoreImageDraft}</Button>
     </div>

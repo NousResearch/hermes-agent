@@ -117,7 +117,7 @@ def main():
             time.sleep(.05)
         raise AssertionError(('deadline', receipt))
     try:
-        with daemon(root, home, env, barrier=False) as (proc, desc):
+        with daemon(root, home, env, barrier=False) as (_proc, desc):
             subprocess.Popen = spawn
             try:
                 with closing(connect(board='owned')) as conn:

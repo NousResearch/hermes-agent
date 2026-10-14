@@ -88,11 +88,16 @@ class SessionAuthorities:
             return self._by_key[self.launch_key]
         return self._by_key.get(hermes_home_key(get_hermes_home()))
 
+    def serving(self) -> list:
+        """Authorities that accept work: not a reserved-but-unbuilt slot, not one retiring (a
+        failed serve or an unserve whose turn outlived Stop keeps its slot but refuses admissions)."""
+        return [a for a in self._by_key.values() if a is not None and not getattr(a, 'retiring', False)]
+
     def served_profiles(self) -> list[dict]:
-        return [{'profile_id': a.profile_id, 'home': a.profile_id} for a in self._by_key.values()]
+        return [{'profile_id': a.profile_id, 'home': a.profile_id} for a in self.serving()]
 
     def profile_ids(self) -> frozenset[str]:
-        return frozenset(a.profile_id for a in self._by_key.values())
+        return frozenset(a.profile_id for a in self.serving())
 
 
 def served_profile_name(home) -> str:
@@ -134,6 +139,25 @@ def all_authorities(runner):
         return list(registry)
     authority = getattr(runner, 'session_authority', None)
     return [authority] if authority is not None else []
+
+
+def require_serving(authority):
+    """Refuse a verb reached through a stale connection to a retired authority: its ownership is
+    released, and until a successor bumps the epoch its own epoch still passes the store fence."""
+    if getattr(authority, 'retired', False):
+        raise RuntimeStoreError('runtime_retired')
+
+
+def admission_owner(authority, session_id):
+    """The admission identity a physical store row answers to: its compression root, then the
+    local creation id a canonical reset forks under (a reset child is not a compression child, so
+    ``logical_owner`` alone stops at the child and misses the conversation's admissions)."""
+    from hermes_state_local import local_lineage_owner
+    sid = authority.logical_owner(session_id)
+    if not sid:
+        return sid
+    with authority.db._read_ctx() as conn:
+        return local_lineage_owner(conn, sid)
 
 
 def owner_scope(authority, *, hydrate_secrets=False):

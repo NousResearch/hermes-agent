@@ -27,7 +27,7 @@ def test_rejected_api_images_are_collected_and_history_owns_accepted_images(api,
     settle_session_input(owner.db, epoch=owner.epoch, admission_id=row['admission_id'],
                          generation=started['generation'], outcome='completed')
     owner.db.create_session('branch', source='api_server', model_config={'_branched_from': 's'})
-    owner.db.append_message('branch', 'user', '[Image attached at: %s]' % path)
+    owner.db.append_message('branch', 'user', f'[Image attached at: {path}]')
     owner.db.delete_session('s')
     assert path.read_bytes() == PNG, 'branch history still owns its image'
     owner.db.delete_session('branch')

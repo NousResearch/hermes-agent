@@ -6,10 +6,12 @@ import json
 from pathlib import Path
 import sqlite3
 import threading
+import time
 
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 
 class OverflowModel(BaseHTTPRequestHandler):
@@ -115,13 +117,14 @@ def test_automatic_worker_rotation_retains_retry_identity_and_fifo(tmp_path, end
             for i in range(12):
                 params = dict(session_id=sid, input_id=f'pressure-{i}', text='HISTORY_' + str(i) + ' preserve these facts ' * 100)
                 accepted = await call('prompt.submit', **params)
-                async with asyncio.timeout(40):
-                    while True:
-                        admission = rows('SELECT * FROM session_admissions WHERE admission_id=?', (accepted['admission_id'],))[0]
-                        children = rows('SELECT id FROM sessions WHERE parent_session_id=?', (sid,))
-                        if children or admission['status'] in ('terminal', 'unknown'):
-                            break
-                        await asyncio.sleep(.03)
+                deadline = time.monotonic() + 40
+                while True:
+                    admission = rows('SELECT * FROM session_admissions WHERE admission_id=?', (accepted['admission_id'],))[0]
+                    children = rows('SELECT id FROM sessions WHERE parent_session_id=?', (sid,))
+                    if children or admission['status'] in ('terminal', 'unknown'):
+                        break
+                    assert time.monotonic() < deadline, dict(admission)
+                    await asyncio.sleep(.03)
                 if not children:
                     assert admission['status'] == 'terminal', admission
                     continue
@@ -146,9 +149,8 @@ def test_automatic_worker_rotation_retains_retry_identity_and_fifo(tmp_path, end
                     peer.release.set()
                     # Follower turn = a fresh worker process + one inference; on a loaded runner
                     # (40 parallel test files) that has taken >45 s.
-                    async with asyncio.timeout(120):
-                        while rows("SELECT status FROM session_admissions WHERE request_id='follower'")[0]['status'] != 'terminal':
-                            await asyncio.sleep(.03)
+                    await async_wait_until(lambda: rows("SELECT status FROM session_admissions WHERE request_id='follower'")[0][
+                        'status'] == 'terminal', timeout=120, interval=.03, what='follower terminal')
                     assert rows("SELECT status FROM session_admissions WHERE status!='terminal'") == []
                     assert rows("SELECT status FROM worker_executions WHERE status!='terminal'") == []
                     snapshot = await call('session.resume', session_id=sid)

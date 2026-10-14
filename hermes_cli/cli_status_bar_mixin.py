@@ -52,7 +52,7 @@ class CLIStatusBarMixin:
             return "class:status-bar-bad"
         return _threshold_style(percent_used, ((50, "warn"),), "good")
 
-    def _cache_hit_rate(self, snapshot: dict, precision: int = 1) -> "tuple[float, str] | None":
+    def _cache_hit_rate(self, snapshot: dict, precision: int = 1) -> tuple[float, str] | None:
         """Return (cache_pct, label) or None without cache data. Prefers the baseline-delta pct
         from ``_get_status_bar_snapshot`` (resets on model switch / compression, so it reflects
         the *current* cache regime); falls back to the session-lifetime ratio."""
@@ -202,8 +202,7 @@ class CLIStatusBarMixin:
             # Shared RID-prefix stripper so this and ModelSwitchResult can't drift.
             from hermes_cli.model_switch import format_model_for_display
             model_short = format_model_for_display(model_short)
-        if model_short.endswith(".gguf"):
-            model_short = model_short[:-5]
+        model_short = model_short.removesuffix(".gguf")
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
@@ -274,13 +273,8 @@ class CLIStatusBarMixin:
         except Exception:
             pass
         try:
-            from tools.process_registry import process_registry
-            snapshot["active_background_processes"] = process_registry.count_running()
-        except Exception:
-            pass
-        try:
-            from tools.async_delegation import active_count as _async_active_count
-            snapshot["active_background_subagents"] = _async_active_count()
+            from hermes_cli.gateway_tools import background_counts
+            snapshot.update(background_counts())
         except Exception:
             pass
 
@@ -456,7 +450,7 @@ class CLIStatusBarMixin:
         return "".join(out).rstrip() + "..."
 
     @classmethod
-    def _status_title_badge(cls, title: str, width: int) -> "tuple[str, int] | None":
+    def _status_title_badge(cls, title: str, width: int) -> tuple[str, int] | None:
         """(badge, left_width) for the far-right session-title badge, or None when it
         doesn't fit (no title / bar narrower than 24 cells)."""
         title = str(title or "").strip()
@@ -830,7 +824,7 @@ class CLIStatusBarMixin:
         except (OSError, ValueError):
             pass
 
-    def _pet_view(self) -> "tuple[str, bool] | None":
+    def _pet_view(self) -> tuple[str, bool] | None:
         """(state, is_kitty) for the current frame, or None when no pet shows."""
         with self._pet_lock:
             if not self._pet_enabled or self._pet_renderer is None:

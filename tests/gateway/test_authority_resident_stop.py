@@ -13,7 +13,7 @@ async def test_stop_reaches_resident_agent_after_real_cache_eviction(tmp_path, m
     db, authority = _authority(tmp_path, monkeypatch)
     calls = []
     agent = SimpleNamespace(interrupt=lambda: calls.append('stop'))
-    runner, state = _build_gateway(agent, [])
+    runner, _state = _build_gateway(agent, [])
     authority.runner = runner
     authority.sessions['s'].route = KEY
     with db:

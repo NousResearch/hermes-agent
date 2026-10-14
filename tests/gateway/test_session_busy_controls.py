@@ -11,6 +11,7 @@ import pytest
 from websockets.asyncio.client import connect
 
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 
 class CorrectionModel(BaseHTTPRequestHandler):
@@ -90,9 +91,8 @@ def admissions(home):
 
 
 async def settled(home):
-    async with asyncio.timeout(40):
-        while not admissions(home) or any(r[1] != 'terminal' for r in admissions(home)):
-            await asyncio.sleep(.05)
+    await async_wait_until(lambda: (rows := admissions(home)) and all(r[1] == 'terminal' for r in rows),
+                           timeout=40, interval=.05, what='every admission to settle')
 
 
 @pytest.mark.platforms("linux")

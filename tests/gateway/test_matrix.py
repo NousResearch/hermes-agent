@@ -1260,7 +1260,7 @@ class TestMatrixSyncLoop:
             ),
             # Plain timeout echoing the pagination token, which embeds "401".
             (
-                asyncio.TimeoutError(
+                TimeoutError(
                     "Connection timeout to host https://matrix.example.org/_matrix/"
                     "client/v3/sync?timeout=30000&since=s72802_401975_486_12943_11759"
                 ),

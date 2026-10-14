@@ -327,19 +327,19 @@ class PluginHost:
         return self._call("invoke", {"ref": ref, "args": encode(list(args)), "kwargs": encode(kwargs)},
                           generation=generation)
 
-    def obj_invoke(self, slot: "_ObjectSlot", method: str, args: tuple, kwargs: dict) -> Any:
+    def obj_invoke(self, slot: _ObjectSlot, method: str, args: tuple, kwargs: dict) -> Any:
         ref, generation = slot.live()
         return self._call("obj_invoke", {"ref": ref, "method": method, "args": encode(list(args)),
                                          "kwargs": encode(kwargs)}, generation=generation)
 
-    def obj_getattr(self, slot: "_ObjectSlot", name: str) -> Any:
+    def obj_getattr(self, slot: _ObjectSlot, name: str) -> Any:
         ref, generation = slot.live()
         value = self._call("obj_getattr", {"ref": ref, "name": name}, generation=generation)
         if isinstance(value, dict) and set(value) == {"__missing__"}:
             raise AttributeError(name)
         return value
 
-    def obj_setattr(self, slot: "_ObjectSlot", name: str, value: Any) -> None:
+    def obj_setattr(self, slot: _ObjectSlot, name: str, value: Any) -> None:
         ref, generation = slot.live()
         self._call("obj_setattr", {"ref": ref, "name": name, "value": encode(value)}, generation=generation)
 

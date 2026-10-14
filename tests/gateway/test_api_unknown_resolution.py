@@ -225,10 +225,14 @@ async def test_http_resolve_unknown_refuses_stale_or_foreign_admission(
         )
         for body, code in attempts:
             response = await client.post(run_path, json=body, headers=_AUTH_HEADERS)
-            assert response.status == 409
+            assert response.status == (400 if code == "invalid_params" else 409)
             assert (await response.json())["error"]["code"] == code
 
-        await asyncio.sleep(0.05)
+        # A refused resolution must not release the FIFO: let any drain it scheduled run to the end
+        # (the restored drain parks on the unknown head) before reading what it left behind.
+        drain = owner.sessions["api-session"].task
+        if drain is not None:
+            await asyncio.wait_for(drain, 10)
         rows = {
             row["admission_id"]: row["status"]
             for row in list_session_admissions(owner.db, session_id="api-session")
@@ -246,7 +250,7 @@ async def test_http_resolve_unknown_refuses_stale_or_foreign_admission(
 async def test_fresh_adapter_recovers_non_idempotent_owner_but_refuses_other_credential(
     tmp_path, monkeypatch
 ):
-    client, adapters, store, owner, unknown, follower, executed, tasks = (
+    client, adapters, store, _owner, unknown, _follower, _executed, tasks = (
         await _restarted_api_runs(tmp_path, monkeypatch, idempotent=False)
     )
     try:
@@ -263,5 +267,45 @@ async def test_fresh_adapter_recovers_non_idempotent_owner_but_refuses_other_cre
         response = await client.post(path, json=body, headers=_AUTH_HEADERS)
         assert response.status == 200, await response.text()
         assert (await response.json())["outcome"] == "interrupted"
+    finally:
+        await _close_fixture(client, adapters, store, tasks)
+
+
+@pytest.mark.asyncio
+async def test_http_poll_reports_unknown_head_as_non_terminal_until_resolved(
+    tmp_path, monkeypatch
+):
+    """The documented discovery path: a client polls GET /v1/runs/{id}, learns the head is
+    unknown (not finished), reads admission_id/execution_generation from that body and
+    resolves it. ``interrupted`` is in TERMINAL_STATUSES and documented as terminal, so a
+    poller cannot tell a paused head from a finished run if the projection reuses it."""
+    from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
+
+    client, adapters, store, owner, unknown, _follower, executed, tasks = (
+        await _restarted_api_runs(tmp_path, monkeypatch)
+    )
+    try:
+        path = "/v1/runs/" + unknown["request_id"]
+        polled = await client.get(path, headers=_AUTH_HEADERS)
+        assert polled.status == 200, await polled.text()
+        body = await polled.json()
+        print("POLL_BEFORE_RESOLVE", json.dumps({k: body.get(k) for k in (
+            "status", "admission_id", "execution_generation")}, sort_keys=True))
+        assert body["status"] not in TERMINAL_STATUSES, body
+        assert body["status"] == "unknown", body
+        assert body["admission_id"] == unknown["admission_id"]
+        assert body["execution_generation"] == unknown["generation"]
+
+        resolved = await client.post(path + "/resolve-unknown", headers=_AUTH_HEADERS, json={
+            "admission_id": body["admission_id"],
+            "execution_generation": body["execution_generation"],
+        })
+        assert resolved.status == 200, await resolved.text()
+        await owner.sessions["api-session"].task
+        assert executed == ["FOLLOWER"]
+
+        after = await (await client.get(path, headers=_AUTH_HEADERS)).json()
+        print("POLL_AFTER_RESOLVE", json.dumps({"status": after.get("status")}))
+        assert after["status"] in TERMINAL_STATUSES, after
     finally:
         await _close_fixture(client, adapters, store, tasks)

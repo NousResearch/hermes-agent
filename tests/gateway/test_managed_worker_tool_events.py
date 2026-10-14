@@ -27,7 +27,7 @@ def test_worker_tool_frames_publish_the_in_process_payload(tmp_path):
         live = authority.sessions['s'] = LiveSession(SimpleNamespace(platform=None, user_id='human'), 'route')
         admit_session_input(db, epoch=epoch, principal_id='human', session_id='s', request_id='r', payload={'text': 'go'})
         row = claim_session_input(db, epoch=epoch, session_id='s')
-        live.event_stream.execution = {'admission_id': row['admission_id']}
+        authority._stamp_claim(SimpleNamespace(session_id='s'), live, row)  # the drain's claim stamp
         frames, observed = [], []
         live.event_stream.observers.add(frames.append)
         authority.api_observers = {row['admission_id']: [{

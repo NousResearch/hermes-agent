@@ -15,6 +15,7 @@ import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import daemon, rpc, websocket
 from tests.gateway.test_worker_agent_execution import Model
+from tests.waiting import async_wait_until
 
 
 @pytest.mark.platforms("linux")
@@ -56,13 +57,11 @@ def test_worker_lifecycle_then_owner_successor_refuses_late_mutations(tmp_path):
             assert 'result' in resumed, resumed
             response = await rpc(ws, 'prompt.submit', session_id=sid, input_id='successor', text='SUCCESSOR')
             assert 'result' in response, response
-            async with asyncio.timeout(30):
-                while True:
-                    with closing(sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True)) as db:
-                        status = db.execute('SELECT status FROM session_admissions WHERE request_id=?', ('successor',)).fetchone()
-                    if status and status[0] == 'terminal':
-                        return
-                    await asyncio.sleep(.05)
+            def terminal():
+                with closing(sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True)) as db:
+                    status = db.execute('SELECT status FROM session_admissions WHERE request_id=?', ('successor',)).fetchone()
+                return status and status[0] == 'terminal'
+            await async_wait_until(terminal, timeout=30, what='the successor admission terminal')
     try:
         with daemon(root, home, env, barrier=False) as (_, desc):
             sid, foreign = asyncio.run(create(desc))

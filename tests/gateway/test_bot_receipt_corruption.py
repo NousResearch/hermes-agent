@@ -145,10 +145,9 @@ async def test_legacy_migration_skips_structurally_corrupt_neighbor(monkeypatch,
         ref = SimpleNamespace(session_id="tip")
         live = object()
         entry = SimpleNamespace(session_id="tip")
-        monkeypatch.setattr(
-            "gateway.session_bot._target",
-            lambda authority, actor: (ref, live, entry),
-        )
+        async def target(authority, actor):
+            return ref, live, entry
+        monkeypatch.setattr("gateway.session_bot._target", target)
 
         @contextmanager
         def inactive_session(*args, **kwargs):

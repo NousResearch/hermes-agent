@@ -1437,7 +1437,7 @@ class TestMultiAgentRouting:
 
         monkeypatch.setenv("A2A_MAX_PINGPONG_TURNS", "2")
         persisted = []
-        monkeypatch.setattr(protocol, "persist_message", lambda context_id, role, text, task_id="": persisted.append(role))
+        monkeypatch.setattr(protocol, "persist_message", lambda context_id, role, text, task_id="", input_id="": persisted.append(role))
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {"dev": {"profile": "dev", "tenant": "dev"}}
         }))

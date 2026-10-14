@@ -25,6 +25,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, is_network_accessible,
 )
 from gateway.platforms.event import MessageEvent, MessageType
+from datetime import UTC
 
 logger = logging.getLogger(__name__)
 
@@ -167,14 +168,14 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
 
-    async def _handle_health(self, request: "web.Request") -> "web.Response":
+    async def _handle_health(self, request: web.Request) -> web.Response:
         if not self._source_ip_allowed(request):
             return web.Response(status=403)
         return web.json_response({
             "status": "ok", "platform": self.platform.value, "webhook_path": self._webhook_path,
             "accepted": self._accepted_count, "duplicates": self._duplicate_count})
 
-    async def _handle_validation(self, request: "web.Request") -> "web.Response":
+    async def _handle_validation(self, request: web.Request) -> web.Response:
         """Graph subscription validation handshake: echo ``validationToken`` verbatim as text/plain. Bare GETs
         are rejected so the endpoint can't be enumerated."""
         if not self._source_ip_allowed(request):
@@ -203,7 +204,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         self._accepted_count += 1
         return "accepted"
 
-    async def _handle_notification(self, request: "web.Request") -> "web.Response":
+    async def _handle_notification(self, request: web.Request) -> web.Response:
         if not self._source_ip_allowed(request):
             return web.Response(status=403)
         # Graph never sends validationToken on POST, but tolerate clients replaying it in-band.
@@ -228,7 +229,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             return web.Response(status=403)
         return web.Response(status=400)
 
-    async def _read_notifications(self, request: "web.Request") -> tuple[int, list]:
+    async def _read_notifications(self, request: web.Request) -> tuple[int, list]:
         """Read and validate the POST body; returns (error_status, []) or (0, notifications)."""
         try:
             content_length = request.content_length
@@ -249,7 +250,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         notifications = body.get("value") if isinstance(body, dict) else None
         return (0, notifications) if isinstance(notifications, list) else (400, [])
 
-    def _source_ip_allowed(self, request: "web.Request") -> bool:
+    def _source_ip_allowed(self, request: web.Request) -> bool:
         """Loopback-only binds may omit ``allowed_source_cidrs`` (local proxies, dev tunnels);
         network-accessible binds fail closed without one."""
         if self._source_allowlist_required_but_missing():
@@ -336,18 +337,23 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             provenance = capture_provenance(authority.runner, event)
             if provenance is None:
                 raise RuntimeStoreError('permission_denied')
-            ref = authority.register(event.source)
+            # The routing reservation writes too: off the owner loop like the admission below.
+            ref = authority._publish_route(event.source, *await asyncio.to_thread(authority._reserve_route, event.source))
             route = authority.sessions[ref.session_id].route
             source = event.source.to_dict()
             source['is_bot'] = event.source.is_bot
             envelope = {'source': source, 'route': route, 'provenance': provenance,
-                'timestamp': datetime.fromtimestamp(0, timezone.utc).isoformat(),
+                'timestamp': datetime.fromtimestamp(0, UTC).isoformat(),
                 'event': {'message_id': event.message_id},
                 'automation': {'identity': event.message_id, 'owner': ref.session_id}}
-            row = admit_session_input(authority.db, epoch=authority.epoch,
-                principal_id='msgraph:' + route, session_id=ref.session_id,
-                request_id=event.message_id, payload={'text': event.text, 'native_text_v1': envelope})
-            event._gateway_accepted = True
-            authority._publish_pending(ref)
-            authority._schedule(ref)
-            return authority._receipt(row)
+            # Off the owner loop and in admission order (``tracked_write``), committed before the
+            # 202: a held SQLite writer must not freeze every session while Graph waits.
+            from functools import partial
+            from gateway.session_runtime_workers import tracked_write
+            return await tracked_write(authority, partial(
+                admit_session_input, authority.db, epoch=authority.epoch,
+                principal_id='msgraph:' + route, session_id=ref.session_id, request_id=event.message_id,
+                payload={'text': event.text, 'native_text_v1': envelope},
+                _authorize_write=authority._admission_gate()),
+                then=partial(authority._admitted, ref, event), ordered=True,
+                after=partial(authority._schedule_admitted, ref))

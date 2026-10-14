@@ -18,10 +18,10 @@ from providers.base import ProviderProfile
 from .auth import broker_token_request, discover_client
 from .transport import INFERENCE_BASE_URL, SolsticeClient
 
-# Verified on the per-user-quota endpoint, which has no model listing a user token may read (its
+# Hardcoded because the per-user-quota endpoint has no model listing a user token may read (its
 # /models answers 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT). Quota is per model, so lite stays last as the
-# reserve once the flash family is exhausted.
-FALLBACK_MODELS = ("gemini-3.5-flash", "gemini-flash-latest", "gemini-flash-lite-latest")
+# reserve once the larger models are exhausted.
+FALLBACK_MODELS = ("gemini-3.1-pro", "gemini-3.8-flash", "gemini-3.5-flash-lite")
 
 # The broker owns client_id/scope (discovered per login); refresh needs neither, the broker adds them.
 _BASE_CFG = OAuthPKCEConfig(

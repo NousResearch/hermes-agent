@@ -84,13 +84,15 @@ def test_api_and_ws_pending_controls_share_identity(tmp_path):
                 run = accepted['run_id']
                 async with websocket(home, desc) as ws:
                     prompt = None
-                    async with asyncio.timeout(15):
-                        while not prompt:
-                            resumed = await rpc(ws, 'session.resume', session_id='api-controls')
-                            assert 'result' in resumed, resumed
-                            prompt = next((p for p in resumed['result'].get('prompts', []) if p['kind'] == kind), None)
-                            if not prompt:
-                                await asyncio.sleep(.05)
+                    loop = asyncio.get_running_loop()
+                    deadline = loop.time() + 15
+                    while not prompt:
+                        resumed = await rpc(ws, 'session.resume', session_id='api-controls')
+                        assert 'result' in resumed, resumed
+                        prompt = next((p for p in resumed['result'].get('prompts', []) if p['kind'] == kind), None)
+                        if not prompt:
+                            assert loop.time() < deadline, ('no pending ' + kind, resumed)
+                            await asyncio.sleep(.05)
                     async with client.get(url + '/' + run) as response:
                         projected = await response.json()
                     assert projected['pending_controls'] == [prompt], projected
@@ -109,13 +111,15 @@ def test_api_and_ws_pending_controls_share_identity(tmp_path):
                                      session_id='api-controls', execution_generation=body['execution_generation'],
                                      prompt_id=body['request_id'], **({'choice': 'once'} if kind == 'approval' else {'answer': 'GREEN'}))
                     assert 'error' in late or late['result']['status'] == 'already_resolved', late
-                async with asyncio.timeout(20):
-                    while True:
-                        async with client.get(url + '/' + run) as response:
-                            final = await response.json()
-                        if final['status'] == 'completed':
-                            break
-                        await asyncio.sleep(.05)
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + 20
+                while True:
+                    async with client.get(url + '/' + run) as response:
+                        final = await response.json()
+                    if final['status'] == 'completed':
+                        break
+                    assert loop.time() < deadline, ('run never completed', final)
+                    await asyncio.sleep(.05)
                 assert (await post(path, body))[0] == 409
             assert not peer.target.exists()
             tools = [m for req in peer.requests for m in req.get('messages', []) if m['role'] == 'tool']

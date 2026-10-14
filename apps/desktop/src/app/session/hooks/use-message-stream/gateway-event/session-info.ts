@@ -5,7 +5,7 @@ import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting } from '@/store/compaction'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
-import { reconcilePendingSubmissions } from '@/store/pending-submissions'
+import { pendingSnapshotFence, reconcilePendingSubmissions } from '@/store/pending-submissions'
 import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts } from '@/store/prompts'
 import {
@@ -136,13 +136,15 @@ function maybeRebindPaneToRebuiltRuntime(ctx: GatewayEventContext): boolean {
 /** Project the runtime's pending-submission receipts onto the durable
  *  session's composer queue (keyed by stored id when known). */
 function reconcileSessionInfoPendingSubmissions(ctx: GatewayEventContext): void {
-  const { deps, payload, sessionId } = ctx
+  const { deps, event, payload, sessionId } = ctx
 
   if (sessionId) {
     const storedId =
       payload?.stored_session_id ?? deps.sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId ?? sessionId
 
-    reconcilePendingSubmissions(storedId, (payload as Record<string, unknown>)?.pending_submissions)
+    // A canonical frame's own place in the session's event order fences absence-based retirement.
+    reconcilePendingSubmissions(storedId, (payload as Record<string, unknown>)?.pending_submissions,
+      pendingSnapshotFence(event.replay_epoch, event.seq))
   }
 }
 

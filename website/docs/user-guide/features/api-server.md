@@ -478,6 +478,12 @@ Runs accept a simple `input` string and optional `session_id`, `instructions`, `
 
 For safely retryable creation, send an `Idempotency-Key` header (1–255 visible ASCII characters). Hermes durably reserves the key before starting work. An identical retry returns the original `run_id` with HTTP 202 and `Idempotency-Replayed: true`, including after a gateway restart and after the run has completed, failed, or been cancelled. Reusing the same key with a different JSON payload returns HTTP 409 with code `idempotency_key_conflict`. Keys are isolated by authenticated API profile/credential and retained for 24 hours after their last status update; clients should use unique, unguessable keys and must not reuse them for unrelated operations. Requests without the header retain the legacy behavior and always create a new run.
 
+A run the gateway could not admit keeps no reservation, so an exact retry is safe. While the profile is
+draining or retiring, or when the state database stays locked past the write timeout, `POST /v1/runs`
+and the run controls answer HTTP 503 (`runtime_draining` or `storage_unavailable`) with `Retry-After`;
+a malformed control body answers 400 `invalid_params`; ownership, generation and identity refusals
+stay 409.
+
 When `session_id` identifies an existing Hermes session and no explicit
 `conversation_history` or `previous_response_id` is supplied, the run loads
 that session's active transcript. Session turn leases serialize concurrent
@@ -514,7 +520,7 @@ Poll the current run state. This is useful for dashboards that need status witho
 
 `model` echoes what the request asked for. On a completed run, `runtime` is the provider/model pair that actually served the turn — after a [fallback provider](fallback-providers.md) switch it names the fallback pair, so a cost-attribution poller books the run to the right provider. `usage.cache_read_tokens` / `usage.cache_write_tokens` are the session's prompt-cache reads and writes, so cached input is not priced as full-price input. `runtime` has the same shape as on `/v1/chat/completions` and `/v1/responses`: `route_source` says how the runtime was chosen (`global`, `raw_request`, `model_routes`), and a request that named a `model`/`provider` also gets `requested: {provider, model}` so the asked-for and served pairs can be compared. The `run.completed` event on the events stream carries the same `usage` and `runtime` fields.
 
-Statuses are retained briefly after terminal states (`completed`, `failed`, `cancelled`, or `interrupted`) for polling and UI reconciliation. When the gateway shuts down while a run is active, the run is persisted as `interrupted` (error `Gateway shutdown interrupted the run.`, terminal event `run.interrupted`) before the agent is asked to stop, so a durable run never survives a restart as `running`; a late result from the interrupted turn cannot overwrite it.
+Statuses are retained briefly after terminal states (`completed`, `failed`, `cancelled`, or `interrupted`) for polling and UI reconciliation. When the gateway shuts down while a run is active, the run is persisted as `interrupted` (error `Gateway shutdown interrupted the run.`, terminal event `run.interrupted`) before the agent is asked to stop, so a durable run never survives a restart as `running`; a late result from the interrupted turn cannot overwrite it. A canonical run whose owner restarted mid-turn reports `unknown` instead, which is not terminal: later turns in that session wait until it is acknowledged with `POST /v1/runs/{run_id}/resolve-unknown` (below).
 
 While the gateway is still draining (a `hermes gateway stop`/`restart` or SIGTERM with a turn in flight), every non-terminal run additionally carries `shutdown_requested_at` (Unix seconds) from the moment new turns are refused. `status` stays `running` because the turn is still being served; a poller that sees the field knows the process is on its way out and the run will end `interrupted` at the latest when the drain budget expires. Terminal runs never gain the field.
 
@@ -584,9 +590,10 @@ subscriber continues draining normally.
 ### POST /v1/runs/\{run_id\}/resolve-unknown
 
 After an authority-owner restart, a turn that was already claimed has an
-unknown execution outcome. Hermes pauses later work in that session rather than
-risk replaying the lost head. Read the exact `admission_id` and
-`execution_generation` from `GET /v1/runs/{run_id}`, then acknowledge that the
+unknown execution outcome, and `GET /v1/runs/{run_id}` reports it as
+`"status": "unknown"` (not terminal). Hermes pauses later work in that session
+rather than risk replaying the lost head. Read the exact `admission_id` and
+`execution_generation` from that body, then acknowledge that the
 lost execution will not finish:
 
 ```json
@@ -600,10 +607,16 @@ The request is authenticated and run-owner scoped like the other run controls;
 hosted-room callers need the existing `stop` grant. A successful response is the
 canonical terminal receipt (`outcome: "interrupted"`) plus `run_id`. It releases
 the FIFO once and schedules the queued follower without replaying the unknown
-head. Repeated resolution, a stale or non-integer generation, and a run that is
-not currently unknown return `409 stale_generation`; an admission ID that does
-not belong to the path run returns `409 not_found`. The body must contain exactly
-those two fields, or the server returns `409 invalid_params`.
+head. An exact repeat of a resolution that already committed returns the same
+receipt (200), so a retry after a lost response is safe. A stale or non-integer
+generation, or a run that is not currently unknown, returns `409 stale_generation`;
+an admission ID that does not belong to the path run returns `409 not_found`. The
+body must contain exactly those two fields, or the server returns `400 invalid_params`.
+
+Hosted-room homes resolve a member's `unknown` run this way on their next poll and
+settle the room task as interrupted ("member gateway restarted"). A room home on an
+older release does not know the `unknown` status and reports a mismatched run status
+until it is upgraded.
 
 This recovery control is advertised as `features.run_unknown_resolution` and as
 the `run_unknown_resolution` endpoint only when the canonical session authority

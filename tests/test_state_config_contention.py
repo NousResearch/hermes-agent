@@ -90,7 +90,7 @@ def test_partial_config_import_cannot_invert_config_and_module_locks(tmp_path):
         },
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=15, check=False
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
 

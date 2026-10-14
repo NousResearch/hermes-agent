@@ -17,10 +17,12 @@ function kindFor(file: File): string {
   return 'file'
 }
 
-export function CanonicalGroupAttachments({ binding, attachments, onChange, disabled, readOnly = false }: {
+export function CanonicalGroupAttachments({ binding, attachments, onChange, onUploadingChange, disabled, readOnly = false }: {
   binding: CanonicalGroupBinding
   attachments: Attachment[]
   disabled: boolean
+  // C21: the form holds Send while a selected file's manifest is not committed yet.
+  onUploadingChange?: (uploading: boolean) => void
 } & ({ readOnly: true; onChange?: never } | { readOnly?: false; onChange: (attachments: Attachment[]) => void })) {
   const labels = useCanonicalGroupLabels()
   const input = useRef<HTMLInputElement>(null)
@@ -40,7 +42,7 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, disa
 
   async function upload(file: File) {
     if (readOnly) {return}
-    setBusy(true); setError('')
+    setBusy(true); setError(''); onUploadingChange?.(true)
 
     try {
       const data = await new Promise<string>((resolve, reject) => {
@@ -59,7 +61,7 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, disa
       const { attachment_id, kind, name, mime, size } = result
       onChange?.([...attachments, { attachment_id, kind, name, mime, size }])
     } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
-    finally { setBusy(false) }
+    finally { setBusy(false); onUploadingChange?.(false) }
   }
 
   async function download(attachment: Attachment) {

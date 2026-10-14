@@ -8,6 +8,7 @@ from pathlib import Path
 import socket
 import sqlite3
 import threading
+import time
 
 import aiohttp
 
@@ -67,14 +68,15 @@ def test_hosted_grant_inference_survives_owner_restart(tmp_path):
                     assert accepted['run_id'] == run_ids[task] and accepted['replayed'], accepted
                     assert len(peer.requests) == before
                 run_ids[task] = accepted['run_id']
-                async with asyncio.timeout(20):
-                    while True:
-                        async with client.get(url + '/runs/' + run_ids[task], headers=headers) as response:
-                            result = await response.json()
-                            assert response.status == 200, result
-                        if result['status'] in {'completed', 'failed'}:
-                            break
-                        await asyncio.sleep(.05)
+                deadline = time.monotonic() + 20
+                while True:
+                    async with client.get(url + '/runs/' + run_ids[task], headers=headers) as response:
+                        result = await response.json()
+                        assert response.status == 200, result
+                    if result['status'] in {'completed', 'failed'}:
+                        break
+                    assert time.monotonic() < deadline, ('run never settled', result)
+                    await asyncio.sleep(.05)
                 assert result['status'] == 'completed' and prompt in result['output'], result
                 sessions.append(result['session_id'])
             async with client.get(url + '/runs/' + run_ids[1], headers={'Authorization': 'HermesRoom invalid'}) as response:

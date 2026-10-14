@@ -25,7 +25,7 @@ def _probe(tmp_path, mode):
     env.update(HOME=str(home), USERPROFILE=str(home), HERMES_HOME=str(state), PYTHONPATH=str(repo))
     result = subprocess.run([sys.executable, str(Path(__file__).parent / 'fixtures' /
                              'native_role_peer.py'), mode], cwd=repo, env=env,
-                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     print(result.stdout)
 

@@ -143,7 +143,7 @@ _INVALIDATE_APPEND = {
 
 @pytest.mark.parametrize("invalid", ["room", "event", "metadata", "private", "expired"])
 def test_append_requires_exact_live_room_visible_commitment(tmp_path, invalid):
-    db, store, manifest, args = _staged(tmp_path, viewer=invalid != "private")
+    db, _store, _manifest, args = _staged(tmp_path, viewer=invalid != "private")
     _INVALIDATE_APPEND[invalid](db, args)
     with pytest.raises(hosted_rooms.EventCursorConflictError):
         hosted_rooms.append_event(db, **args)

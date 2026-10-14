@@ -9,6 +9,7 @@ import threading
 import traceback
 
 from tests.gateway.fixtures.shared_authority_peer import ModelPeer
+from tests.waiting import async_wait_until
 
 
 async def probe(peer, creator):
@@ -149,12 +150,10 @@ async def probe(peer, creator):
             assert (await rpc(viewer, 'session.resume', session_id=sid))['stored_session_id'] == sid
             assert await rpc(viewer, 'prompt.submit', **followup) == accepted
             peer.release.set()
-            async with asyncio.timeout(45):
-                while True:
-                    rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
-                    if len(rows) == 2 and all(row['status'] == 'terminal' for row in rows):
-                        break
-                    await asyncio.sleep(.05)
+            def settled():
+                rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+                return rows if len(rows) == 2 and all(row['status'] == 'terminal' for row in rows) else None
+            rows = await async_wait_until(settled, timeout=45, what='both admissions terminal')
             assert [row['principal_id'] for row in rows] == attribution
             assert local_receipt(authority.db, sid)['principal_id'] == original_owner
             messages = authority.db.get_messages_as_conversation(sid)

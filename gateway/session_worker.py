@@ -62,6 +62,8 @@ def _verify(connection, ref, params, claim):
 
 
 async def worker_request(connection, ref, params, *, operation):
+    from gateway.session_authorities import require_serving
+    require_serving(connection.authority)  # adopt/persist would write with the released epoch
     if operation == "persist" and isinstance(params.get("operation"), str) and params["operation"].startswith("delegation."):
         from gateway.session_worker_delegation import worker_delegation_request
         return await worker_delegation_request(connection, ref, params)
@@ -73,7 +75,9 @@ async def worker_request(connection, ref, params, *, operation):
     authority._require_admission_open()
     scope = {key: params[key] for key in ('execution_id', 'session_id', 'generation')}
     if operation == 'register':
-        authority.authorize(connection.actor, ref, 'session:control')
+        # Only a worker-adoption ticket (what a launched worker carries): an interactive client
+        # must not park a 'registered' row that nothing reaps (the FIFO would pause until restart).
+        authority.authorize(connection.actor, ref, 'worker:adopt')
         if params['kind'] != 'compute':
             raise RuntimeStoreError('unsupported_producer')
         return await asyncio.to_thread(register_worker_execution, authority.db, epoch=authority.epoch,

@@ -17,7 +17,7 @@ import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
 import { isLiveTailReplyId } from '@/lib/spoken-reply'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
-import { reconcilePendingSubmissions } from '@/store/pending-submissions'
+import { pendingSnapshotFence, reconcilePendingSubmissions } from '@/store/pending-submissions'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
 import {
@@ -2428,7 +2428,8 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
 /** Session-independent side effects of one runtime info snapshot. */
 function reportRuntimeInfoAppState(info: SessionRuntimeInfo): void {
   if (info.stored_session_id) {
-    reconcilePendingSubmissions(info.stored_session_id, info.pending_submissions)
+    reconcilePendingSubmissions(info.stored_session_id, info.pending_submissions,
+      pendingSnapshotFence(info.replay_epoch, info.last_sequence))
   }
 
   // App/profile-level reporting is session-independent — a tile's runtime

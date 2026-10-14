@@ -791,7 +791,7 @@ class TurnController {
     return { finalMessages, finalText, interruptedReply, wasInterrupted }
   }
 
-  recordMessageDelta({ text }: { rendered?: string | null; text?: string }) {
+  recordMessageDelta({ text }: { rendered?: string | null; text?: string | null }) {
     if (this.interrupted || !text) {
       return
     }

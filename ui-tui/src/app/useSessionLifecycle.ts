@@ -131,6 +131,8 @@ const trimTail = (items: Msg[]) => {
   return q
 }
 
+type CanonicalEndReason = 'tui_close' | 'tui_shutdown'
+
 export interface UseSessionLifecycleOptions {
   colsRef: { current: number }
   composerActions: ComposerActions
@@ -181,8 +183,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   const canonicalDetachFlights = useRef(new Map<string, Promise<void>>())
   const staleAttachments = useRef(new Map<string, { session_id: string; subscription_id: string }>())
 
+  // `endReason`: main's `session.close` stamp for a view this TUI closes for good (`tui_close` on /new or
+  // a resume switch, `tui_shutdown` on exit); the owner applies it once no other viewer remains.
   const detachCanonical = useCallback(
-    (sessionId?: null | string, subscriptionId?: null | string) => {
+    (sessionId?: null | string, subscriptionId?: null | string, endReason?: CanonicalEndReason) => {
       if (!gw.isCanonical || !sessionId || !subscriptionId) {
         return
       }
@@ -190,7 +194,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       const detach = () =>
         rpc<SessionDetachResponse>('session.detach', {
           session_id: sessionId,
-          subscription_id: subscriptionId
+          subscription_id: subscriptionId,
+          ...(endReason ? { end_reason: endReason } : {})
         })
           .then(result => {
             if (result?.detached && canonicalSubscriptions.current.get(sessionId) === subscriptionId) {
@@ -208,9 +213,18 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           canonicalDetachFlights.current.delete(sessionId)
         }
       })
+
+      return pending
     },
     [gw.isCanonical, rpc]
   )
+
+  // Exit (`/quit`, Ctrl+D): main's sidecar stamped every session it held `tui_shutdown` at shutdown.
+  const closeForExit = useCallback(async () => {
+    const open = [...canonicalSubscriptions.current.entries()]
+
+    await Promise.all(open.map(([sessionId, subscriptionId]) => detachCanonical(sessionId, subscriptionId, 'tui_shutdown')))
+  }, [detachCanonical])
 
   const disposeStaleAttachments = useCallback(() => {
     // In-flight attaches can share a token before either result is adopted.
@@ -255,7 +269,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     (
       result: { session_id: string; subscription_id?: string },
       previousSid?: null | string,
-      previousSubscription?: null | string
+      previousSubscription?: null | string,
+      closePrevious = false
     ) => {
       if (!gw.isCanonical || !result.subscription_id) {
         return
@@ -268,7 +283,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         previousSubscription &&
         (previousSid !== result.session_id || previousSubscription !== result.subscription_id)
       ) {
-        detachCanonical(previousSid, previousSubscription)
+        detachCanonical(previousSid, previousSubscription, closePrevious && previousSid !== result.session_id ? 'tui_close' : undefined)
       }
     },
     [detachCanonical, gw.isCanonical]
@@ -379,6 +394,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         writeActiveSessionFile(storedSid)
         patchUiState({
+          gatewayConnected: true,
           info,
           sid: r.session_id,
           status: gw.isCanonical || info?.version ? 'ready' : t('session.status.startingAgent'),
@@ -418,7 +434,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         }
 
         signalFreshSessionBoundary(previousSid, r.session_id, onFreshSessionStarted)
-        adoptAttachment(r, previousSid, previousSubscription)
+        // Main closed the previous session here (`closeSession` → `tui_close`) unless kept live.
+        adoptAttachment(r, previousSid, previousSubscription, !keepCurrent)
 
         return r.session_id
       } finally {
@@ -468,6 +485,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       clearConnectionOperation()
 
       const pendingDetach = canonicalDetachFlights.current.get(id)
+      const hold = gw.holdAttach?.(id) ?? null
 
       const request = pendingDetach
         ? pendingDetach.then(() =>
@@ -507,6 +525,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           writeActiveSessionFile(storedSid)
           patchUiState({
             busy: running,
+            gatewayConnected: true,
             info,
             sid: r.session_id,
             status: statusFromLiveSession(r.status, running),
@@ -517,6 +536,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           // still-pending approval/clarify prompts are the only way they come back.
           gw.hydrateSharedPrompts?.(r)
           hydrateLiveSessionInflight(r.inflight)
+          gw.settleAttach?.(hold, r)
 
           if (r.pending_connection) {
             applyConnectionRequest(r.pending_connection)
@@ -534,7 +554,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           sys(`error: ${e.message}`)
           patchUiState({ status: 'ready' })
         })
-        .finally(() => finishAttachment(flight))
+        .finally(() => {
+          // A failed or superseded attach releases what it held (no-op after a settled snapshot).
+          gw.settleAttach?.(hold)
+          finishAttachment(flight)
+        })
     },
     [
       adoptAttachment,
@@ -577,6 +601,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           }
 
           const pendingDetach = canonicalDetachFlights.current.get(id)
+          const hold = gw.holdAttach?.(id) ?? null
 
           const request = pendingDetach
             ? pendingDetach.then(() =>
@@ -628,6 +653,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               })
               gw.hydrateSharedPrompts?.(r)
               hydrateLiveSessionInflight(r.inflight)
+              gw.settleAttach?.(hold, r)
 
               if (r.pending_connection) {
                 applyConnectionRequest(r.pending_connection)
@@ -642,7 +668,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
                 void closeSession(previousSid)
               }
 
-              adoptAttachment(r, previousSid, previousSubscription)
+              adoptAttachment(r, previousSid, previousSubscription, true)
             })
             .catch((e: Error) => {
               if (flight !== attachmentFlight.current) {
@@ -652,6 +678,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               sys(`error: ${e.message}`)
               patchUiState({ status: 'ready' })
             })
+            .finally(() => gw.settleAttach?.(hold))
         })
         .finally(() => finishAttachment(flight))
     },
@@ -688,6 +715,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   return useMemo(
     () => ({
       activateLiveSession,
+      closeForExit,
       closeSession,
       guardBusySessionSwitch,
       newLiveSession,
@@ -699,6 +727,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     }),
     [
       activateLiveSession,
+      closeForExit,
       closeSession,
       guardBusySessionSwitch,
       newLiveSession,

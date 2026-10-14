@@ -58,4 +58,3 @@ def test_rpc_accepts_only_bound_manifest_after_producer_authorization(hosted_own
     assert len(rows) == 1
     path = Path(rows[0]['payload']['text'].split('file: ')[1].split('\n')[0])
     assert path.read_bytes() == b'exact bytes'
-

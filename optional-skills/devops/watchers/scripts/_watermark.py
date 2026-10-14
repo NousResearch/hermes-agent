@@ -51,7 +51,7 @@ class Watermark:
         self._data: Dict[str, Any] = {"seen_ids": [], "first_run": True}
 
     @classmethod
-    def load(cls, name: str, *, max_seen: int = 500) -> "Watermark":
+    def load(cls, name: str, *, max_seen: int = 500) -> Watermark:
         wm = cls(name, max_seen=max_seen)
         if wm._path.exists():
             try:

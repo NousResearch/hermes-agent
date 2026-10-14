@@ -50,7 +50,7 @@ def test_admitted_images_reach_managed_worker(tmp_path, mode, model):
             assert 'result' in accepted, accepted
             image.unlink()  # Execution must use retained bytes, never the staging path.
             async with asyncio.timeout(40):
-                while True:
+                for _ in range(800):  # bounded poll; the timeout above is the deadline
                     receipt = await rpc(ws, 'prompt.receipt', session_id=sid,
                                         admission_id=accepted['result']['admission_id'])
                     if receipt.get('result', {}).get('status') in ('terminal', 'unknown'):

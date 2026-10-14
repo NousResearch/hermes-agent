@@ -12,7 +12,7 @@ import { findSlashCommand } from './slash/registry.js'
 import type { SlashRunCtx } from './slash/types.js'
 import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { getUiState } from './uiStore.js'
-import { describeSlashExecError, shouldFallbackToDispatch } from './userMessages.js'
+import { describeSlashExecError, isUnsupportedCommand, shouldFallbackToDispatch } from './userMessages.js'
 
 /** Shared metrics count each user-typed command once, from the client: the gateway no longer
  *  counts slash.exec, so locally handled commands (/resume, /skin, overlays) land too.
@@ -59,7 +59,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
 
     const guardedErr = (e: unknown) => {
       if (!stale()) {
-        sys(`error: ${rpcErrorMessage(e)}`)
+        sys(isUnsupportedCommand(e) ? describeSlashExecError(parsed.name, e) : `error: ${rpcErrorMessage(e)}`)
       }
     }
 
@@ -123,7 +123,14 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
       }
     }
 
-    const handleDispatch = (raw: unknown): void => {
+    // Main's sidecar slash output: a long reply opens the pager, a short one is a system line.
+    const showOutput = (text: string) => {
+      const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
+
+      long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
+    }
+
+    const handleDispatch = (raw: unknown, fromExec = false): void => {
       const d = parseCommandDispatch(raw)
 
       if (!d) {
@@ -131,7 +138,9 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
       }
 
       if (d.type === 'exec' || d.type === 'plugin') {
-        return sys(d.output || '(no output)')
+        // The shared owner answers its slash.exec reads as `{type: 'exec'}`; they page like
+        // main's bare `{output}` did. command.dispatch output keeps its system line.
+        return fromExec && d.output ? showOutput(d.output) : sys(d.output || '(no output)')
       }
 
       if (d.type === 'alias') {
@@ -190,14 +199,12 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
         }
 
         if (parseCommandDispatch(r)) {
-          return handleDispatch(r)
+          return handleDispatch(r, true)
         }
 
         const body = r?.output || `/${parsed.name}: no output`
-        const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
-        const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
 
-        long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
+        showOutput(r?.warning ? `warning: ${r.warning}\n${body}` : body)
       })
       .catch((execErr: unknown) => {
         if (stale()) {
@@ -209,6 +216,10 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
         // be shown as itself — the fallback's "not a quick/plugin/bundle/skill
         // command" refusal used to bury the real cause and imply the command
         // did not exist.
+        if (isUnsupportedCommand(execErr)) {
+          return sys(describeSlashExecError(parsed.name, execErr))
+        }
+
         if (!shouldFallbackToDispatch(execErr)) {
           sys(`error: ${describeSlashExecError(parsed.name, execErr)}`)
 

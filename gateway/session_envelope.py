@@ -4,8 +4,10 @@ Ordinary context and local media are retained without serializing delegated trus
 Multiplex callbacks bind current connector ownership; roles require fresh preflight.
 Relay snapshots bind the authenticated connector and exact source; replay rechecks both.
 """
+import asyncio
 from copy import copy, deepcopy
 from datetime import datetime
+import json
 
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
@@ -17,15 +19,48 @@ _EVENT_FIELDS = (
     'reply_to_message_id', 'reply_to_text', 'reply_to_author_id',
     'reply_to_author_name', 'reply_to_is_own_message', 'allow_gateway_control',
 )
-_CONTEXT_FIELDS = ('auto_skill', 'channel_prompt', 'channel_context')
+_CONTEXT_FIELDS = ('auto_skill', 'channel_prompt', 'channel_context', 'reply_expected')
+# Closed metadata contract: only the keys the Baileys adapter stamps on ordinary inbound
+# (``WhatsAppAdapter._build_message_event``) cross native admission; any other key refuses.
+_WHATSAPP_METADATA = frozenset({'whatsapp_native_type', 'whatsapp_native', 'whatsapp_from_owner'})
+# Top-level ``nativeMetadata`` keys the bridge emits (scripts/whatsapp-bridge/bridge_helpers.js).
+_WHATSAPP_NATIVE_KEYS = frozenset({'video', 'audio', 'sticker', 'location', 'contact', 'contacts',
+                                   'reaction', 'poll', 'pollUpdate'})
+_WHATSAPP_NATIVE_MAX_BYTES = 16 * 1024
+
+
+def _native_metadata(event):
+    """JSON projection of the adapter metadata a native replay keeps; ``None`` refuses the event.
+    An oversized ``whatsapp_native`` (vCards with photos) is dropped, never refused."""
+    metadata = event.metadata
+    if not metadata:
+        return {}
+    if (not isinstance(metadata, dict) or event.source.platform.value != 'whatsapp'
+            or not set(metadata) <= _WHATSAPP_METADATA):
+        return None
+    kind, native = metadata.get('whatsapp_native_type'), metadata.get('whatsapp_native')
+    if (kind is not None and not (isinstance(kind, str) and 0 < len(kind) <= 64)
+            or metadata.get('whatsapp_from_owner') not in (None, True)
+            or native is not None and not (isinstance(native, dict) and set(native) <= _WHATSAPP_NATIVE_KEYS)):
+        return None
+    projected = {key: metadata[key] for key in ('whatsapp_native_type', 'whatsapp_from_owner') if key in metadata}
+    if native is not None:
+        try:
+            encoded = json.dumps(native, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError):
+            return None
+        if len(encoded.encode()) <= _WHATSAPP_NATIVE_MAX_BYTES:
+            projected['whatsapp_native'] = json.loads(encoded)
+    return projected
 
 
 def _validate_native(runner, event, provenance=None, fresh_roles=False):
     source = event.source
     if (source is None or not isinstance(event.text, str)
             or not isinstance(event.message_type, MessageType)
-            or event.message_type == MessageType.COMMAND or event.is_command()
-            or event.internal or event.metadata or event.prompt_response
+            # The ingress router's own classifier: ``/tmp/x is broken`` is text, not a command.
+            or event.message_type == MessageType.COMMAND or event.get_command()
+            or event.internal or _native_metadata(event) is None or event.prompt_response
             or (source.role_authorized and not fresh_roles)
             or (source.delivered_via_upstream_relay and not (provenance and 'relay' in provenance))
             or source.profile_route_rejected
@@ -38,8 +73,9 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
     delegated = fresh_roles or bool(provenance and 'relay' in provenance)
     if not runner._is_user_authorized_for_source(source, allow_adapter_delegation=delegated):
         raise RuntimeStoreError('permission_denied')
-    if any(value is not None and not isinstance(value, str)
-           for value in (event.channel_prompt, event.channel_context)):
+    if (any(value is not None and not isinstance(value, str)
+            for value in (event.channel_prompt, event.channel_context))
+            or event.reply_expected is not None and type(event.reply_expected) is not bool):
         raise RuntimeStoreError('invalid_params')
     skill = event.auto_skill
     if not (skill is None or isinstance(skill, str)
@@ -79,11 +115,16 @@ async def prepare_native(runner, event):
     # not silently discard them while freezing the caller's source identity.
     frozen = replace(event, source=copy(event.source))
     fresh_roles = await reauthorize_roles(runner, frozen.source, provenance)
-    return _snapshot_native(runner, frozen, provenance, fresh_roles)
+    encoded_source = _validate_native(runner, frozen, provenance, fresh_roles)
+    # Copy + SHA-256 + fsyncs of up to max_inbound_media_bytes stay off the owner loop; the
+    # copied context carries the admission's capture lease.
+    media = await asyncio.to_thread(capture_native_media, frozen.media_urls) if frozen.media_urls else None
+    return _snapshot_native(runner, frozen, provenance, fresh_roles, encoded_source, media)
 
 
-def _snapshot_native(runner, event, provenance, fresh_roles=False):
-    encoded_source = _validate_native(runner, event, provenance, fresh_roles)
+def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_source=None, media=None):
+    if encoded_source is None:
+        encoded_source = _validate_native(runner, event, provenance, fresh_roles)
     envelope = {'source': encoded_source,
                 'route': runner.session_store._generate_session_key(event.source),
                 'event': deepcopy({name: getattr(event, name) for name in _EVENT_FIELDS}),
@@ -104,10 +145,12 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False):
     # its fingerprint. Explicit context (including an empty skill list) is exact.
     envelope['event'].update({name: deepcopy(getattr(event, name)) for name in _CONTEXT_FIELDS
                               if getattr(event, name) is not None})
+    if metadata := _native_metadata(event):
+        envelope['event']['metadata'] = metadata
     if event.message_type != MessageType.TEXT:
         envelope['message_type'] = event.message_type.value
     if event.media_urls:
-        envelope['media'] = capture_native_media(event.media_urls)
+        envelope['media'] = media if media is not None else capture_native_media(event.media_urls)
         envelope['event'].update(media_types=list(event.media_types),
                                  media_text_inlined=list(event.media_text_inlined))
     # Keep the private dispatch key so previously committed text-only rows recover
@@ -129,7 +172,9 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False):
     return payload
 
 
-def restore_native(payload, runner=None):
+def restore_native_source(payload, runner=None):
+    """restore_native's source (provenance included) without re-verifying the captured media:
+    admission needs only the route; execution's restore_native still checks every byte."""
     envelope = payload['native_text_v1']
     source = SessionSource.from_dict(envelope['source'])
     source.is_bot = envelope['source']['is_bot']
@@ -140,8 +185,18 @@ def restore_native(payload, runner=None):
         runner = runner or callback_runner()
         if runner is not None:
             restore_provenance(runner, source, envelope['provenance'])
-    event = MessageEvent(text=payload['text'], source=source,
-                        timestamp=datetime.fromisoformat(envelope['timestamp']),
+    return source
+
+
+def restore_native(payload, runner=None):
+    envelope = payload['native_text_v1']
+    source = restore_native_source(payload, runner)
+    timestamp = datetime.fromisoformat(envelope['timestamp'])
+    if timestamp.tzinfo is not None and timestamp.timestamp() == 0:
+        # Epoch 0 pins the retry fingerprint of producers with no provider time (relay, webhook,
+        # automation); the turn records local time, as main's arrival-stamped event did.
+        timestamp = datetime.now()
+    event = MessageEvent(text=payload['text'], source=source, timestamp=timestamp,
                         message_type=MessageType(envelope.get('message_type', 'text')),
                         media_urls=restore_native_media(envelope.get('media', [])),
                         **deepcopy(envelope['event']))

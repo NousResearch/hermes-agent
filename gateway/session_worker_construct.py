@@ -68,3 +68,37 @@ def construct_kwargs(frame):
 
 def _dict_list(value):
     return value is None or (isinstance(value, list) and all(isinstance(e, dict) for e in value))
+
+
+def checkpoint_agent_kwargs(config):
+    """``AIAgent`` checkpoint arguments from a config dict (every turn: the gateway's live config, a
+    managed worker's frozen session snapshot). The gateway bypasses ``load_config()``, so defaults
+    are here; legacy ``checkpoints: true`` works."""
+    cp_cfg = config.get("checkpoints", {}) if isinstance(config, dict) else {}
+    if isinstance(cp_cfg, bool):
+        cp_cfg = {"enabled": cp_cfg}
+    elif not isinstance(cp_cfg, dict):
+        cp_cfg = {}
+    from hermes_cli.config import DEFAULT_CONFIG
+    defaults = DEFAULT_CONFIG["checkpoints"]
+    return {
+        "checkpoints_enabled": cp_cfg.get("enabled", defaults["enabled"]),
+        "checkpoint_max_snapshots": cp_cfg.get("max_snapshots", defaults["max_snapshots"]),
+        "checkpoint_max_total_size_mb": cp_cfg.get("max_total_size_mb", defaults["max_total_size_mb"]),
+        "checkpoint_max_file_size_mb": cp_cfg.get("max_file_size_mb", defaults["max_file_size_mb"])}
+
+
+def routing_agent_kwargs(config, model, provider, base_url):
+    """The provider-routing ``AIAgent`` arguments every in-process surface passes (the CLI's
+    ``provider_routing`` / ``openrouter.min_coding_score`` / ``agent.service_tier``, a static fast
+    tier's request overrides), from a managed worker's frozen session config."""
+    from agent.fast_mode import STATIC_TIERS, parse_service_tier
+    from hermes_cli.models import resolve_fast_mode_overrides
+    pr = config.get('provider_routing') or {}
+    score = (config.get('openrouter') or {}).get('min_coding_score')
+    tier = parse_service_tier((config.get('agent') or {}).get('service_tier', ''))
+    overrides = resolve_fast_mode_overrides(model, provider=provider, base_url=base_url, tier=tier) if tier in STATIC_TIERS else None
+    return {'providers_allowed': pr.get('only'), 'providers_ignored': pr.get('ignore'), 'providers_order': pr.get('order'),
+            'provider_sort': pr.get('sort'), 'provider_require_parameters': pr.get('require_parameters', False),
+            'provider_data_collection': pr.get('data_collection'), 'service_tier': tier, 'request_overrides': overrides,
+            'openrouter_min_coding_score': score if isinstance(score, (int, float)) and 0 <= score <= 1 else None}

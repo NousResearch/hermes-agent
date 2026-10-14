@@ -18,7 +18,7 @@ def _probe(tmp_path, *, advanced=False, runs=False):
     if runs:
         env['API_RUN'] = str(runs)
     result = subprocess.run([sys.executable, str(Path(__file__).parent / 'fixtures' / 'api_authority_peer.py')],
-                            cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=100)
+                            cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=100, check=False)
     assert result.returncode == 0, result.stdout + '\n' + result.stderr
     receipt = json.loads((state / 'receipt.json').read_text())
     assert receipt['same_agent'], receipt

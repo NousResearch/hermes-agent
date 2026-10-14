@@ -111,6 +111,8 @@ def lose_admission_worker(authority, row, scope):
         if worker is None or worker['generation'] != scope['generation'] or worker['owner_epoch'] != scope['epoch']:
             raise RuntimeStoreError('stale_generation')
         conn.execute("UPDATE worker_executions SET status='terminal' WHERE execution_id=?", (scope['execution_id'],))
+        from hermes_state_runtime_workers import compact_terminal_receipts
+        compact_terminal_receipts(conn, scope['execution_id'])
         conn.execute("UPDATE session_admissions SET status='unknown' WHERE admission_id=?", (row['admission_id'],))
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (current['target_session_id'],))
     authority.db._execute_write(write)

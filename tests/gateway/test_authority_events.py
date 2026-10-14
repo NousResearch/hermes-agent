@@ -18,7 +18,7 @@ def test_full_observer_cannot_block_real_authority_execution(tmp_path):
                PYTHONPATH=str(repo), PYTHONUNBUFFERED='1')
     result = subprocess.run(
         [sys.executable, str(Path(__file__).parent / 'fixtures' / 'authority_events_peer.py')],
-        cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=100)
+        cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=100, check=False)
     assert result.returncode == 0, result.stdout + '\n' + result.stderr
     print(result.stdout)
 

@@ -472,7 +472,7 @@ def stop_profile_gateway(ph: ParityHome, timeout: float = STOP_TIMEOUT) -> bool:
     """
     proc = subprocess.run(
         hermes_argv("gateway", "stop"), cwd=ph.project, env=ph.env(), capture_output=True, text=True,
-        timeout=timeout, stdin=subprocess.DEVNULL,
+        timeout=timeout, stdin=subprocess.DEVNULL, check=False
     )
     assert proc.returncode == 0, f"hermes gateway stop exited {proc.returncode}: {proc.stderr[-2000:]}"
     return "Stopped gateway" in proc.stdout

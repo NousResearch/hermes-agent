@@ -62,6 +62,7 @@ async def probe():
     from tui_gateway import server
     from run_agent import AIAgent
     from shared_authority_recovery import prepare_crash, recover_probe, verify_envelope_guards
+    from tests.waiting import async_wait_until
 
     class CaptureAdapter(BasePlatformAdapter):
         def __init__(self):
@@ -103,9 +104,7 @@ async def probe():
         return
     event = MessageEvent(text="MESSAGING_WARM", source=source, message_id="warm-1")
     await adapter.handle_message(event)
-    async with asyncio.timeout(35):
-        while adapter._active_sessions:
-            await asyncio.sleep(0.05)
+    await async_wait_until(lambda: not adapter._active_sessions, timeout=35, what='the warm-up turn to finish')
     assert event._gateway_accepted, adapter.sent
     assert any("LOCAL_ACK_MESSAGING_WARM" in text for text in adapter.sent), adapter.sent
     entry = runner.session_store.get_or_create_session(source)
@@ -128,11 +127,9 @@ async def probe():
         port = listener.getsockname()[1]
         http = uvicorn.Server(uvicorn.Config(app, log_level="warning", lifespan="off", ws="websockets"))
         task = asyncio.create_task(http.serve(sockets=[listener]))
-        async with asyncio.timeout(10):
-            while not http.started:
-                if task.done():
-                    await task
-                await asyncio.sleep(0.01)
+        await async_wait_until(lambda: http.started or task.done(), timeout=10, what='uvicorn to start')
+        if task.done():
+            await task
     frames = []
     receipt = {"messaging_completed": True, "stored_id": entry.session_id,
                "unauthenticated_rejected": False, "ws_completed": False, "same_agent": False}
@@ -185,10 +182,9 @@ async def probe():
                 queued_event = MessageEvent(text='FIFO_SECOND', source=source, message_id='fifo-2')
                 queued_task = asyncio.create_task(adapter.handle_message(queued_event))
                 try:
-                    async with asyncio.timeout(3):
-                        while not any(r['request_id'] == 'fifo-2' for r in list_session_admissions(
-                                runner.session_authority.db, session_id=entry.session_id)):
-                            await asyncio.sleep(0.01)
+                    await async_wait_until(lambda: any(r['request_id'] == 'fifo-2' for r in list_session_admissions(
+                        runner.session_authority.db, session_id=entry.session_id)), timeout=3,
+                        what='the queued FIFO_SECOND admission')
                     assert not adapter._pending_messages, 'second frontend queue owns accepted work'
                     receipt['durable_native_fifo'] = True
                     pending = list_session_admissions(runner.session_authority.db, session_id=entry.session_id)
@@ -212,9 +208,8 @@ async def probe():
                 finally:
                     peer.release.set()
                     await queued_task
-                    async with asyncio.timeout(10):
-                        while adapter._active_sessions:
-                            await asyncio.sleep(0.01)
+                    await async_wait_until(lambda: not adapter._active_sessions, timeout=10,
+                                           what='the FIFO turns to finish')
                     task_owner = runner.session_authority.sessions[entry.session_id].task
                     if task_owner is not None:
                         await task_owner

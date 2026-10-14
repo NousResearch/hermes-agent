@@ -74,12 +74,25 @@ async def prepare_compress(authority, live, payload, prepared):
             compressed = compressor.compress(json.loads(json.dumps(head)), force=True,
                                                focus_topic=request.focus_topic, memory_context=memory_context)
             if not any(m.get('_compressed_summary') for m in compressed):
-                raise RuntimeStoreError('nothing_to_compress')
+                return None, compressor
             return rejoin_compressed_head_and_tail(compressed, tail), compressor
     compressed, compressor = await asyncio.to_thread(summarize)
     # The same report every native /compress prints ("Compressed: N → M messages").
     from agent.manual_compression_feedback import summarize_manual_compression
+    if compressed is None:
+        # Nothing removable (a short session keeps every message): main's read-only
+        # "No changes from compression" report, estimated like main's (system prompt + tools).
+        tokens = _request_tokens(resident, messages)
+        return {'status': 'noop', 'summary': summarize_manual_compression(
+            messages, messages, tokens, tokens, compression_state=compressor)}
     summary = summarize_manual_compression(messages, compressed, estimate_request_tokens_rough(messages),
                                            estimate_request_tokens_rough(compressed), compression_state=compressor)
     return dict(prepared, messages=compressed, summary=summary,
                 in_place=is_truthy_value(options.get('in_place'), default=True))
+
+
+def _request_tokens(agent, messages):
+    """Main's /compress request estimate: the agent's system prompt and tool schemas plus the messages."""
+    from agent.model_metadata import estimate_request_tokens_rough
+    return estimate_request_tokens_rough(messages, system_prompt=getattr(agent, '_cached_system_prompt', '') or '',
+                                         tools=getattr(agent, 'tools', None) or None)

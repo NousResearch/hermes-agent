@@ -143,8 +143,8 @@ def test_failure_notice_reaches_the_owner_as_a_diagnostic(tmp_path, monkeypatch)
     assert seen == ["diagnostic", "result"]
 
 
-def test_deliver_without_authority_is_unverified_not_a_second_writer(tmp_path, monkeypatch):
-    """No running authority → explicit unverified status; never a local CLI turn."""
+def test_deliver_without_authority_is_parked_not_a_second_writer(tmp_path, monkeypatch):
+    """No running authority → parked for a later tick (explicit queued status); never a local CLI turn."""
     import subprocess
     from tools import bot_live_delivery as mailbox
 
@@ -153,7 +153,7 @@ def test_deliver_without_authority_is_unverified_not_a_second_writer(tmp_path, m
     monkeypatch.setattr(mailbox, "find_canonical_live_owner",
                         mock.Mock(side_effect=ValueError("profile authority is not ready")))
     err = _deliver_to_bot_chat({"id": "j1", "name": "n", "execution_id": "r1"}, "out", "")
-    assert err is not None and "unverified" in err and "not ready" in err
+    assert err is not None and "queued" in err and "not running" in err
 
 
 def test_failure_notice_to_a_profile_hiding_warnings_is_suppressed_not_sent(tmp_path, monkeypatch):

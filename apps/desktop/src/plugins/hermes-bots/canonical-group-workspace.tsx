@@ -13,6 +13,9 @@ type RoomEvent = CanonicalGroupEvent
 interface Attachment { attachment_id?: string; event_id?: string; kind: string; name: string; mime: string; size?: number }
 interface RoomState { room: { name: string }; driver_status?: { pending_actions?: CanonicalPendingAction[] } }
 
+const sameGroupPayload = (payload: Record<string, unknown>, text: string, attachments: Attachment[]) =>
+  payload.text === text && JSON.stringify(payload.attachments ?? []) === JSON.stringify(attachments)
+
 export function CanonicalGroupWorkspace({ binding, visible = true, onBack }: {
   binding: CanonicalGroupBinding; visible?: boolean; onBack?: () => void
 }) {
@@ -31,6 +34,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const [readError, setReadError] = useState('')
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [uploading, setUploading] = useState(false)
   const [restored, setRestored] = useState(false)
   const [pending, setPending] = useState<PreparedCanonicalGroupSend | null>(null)
   const [busy, setBusy] = useState(false)
@@ -38,6 +42,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   const alive = useRef(true)
   const [discard, setDiscard] = useState<CanonicalPendingAction | null>(null)
   const revision = useRef(0)
+  // This window's typed draft while it sends the room's one pending intent another window prepared.
+  const heldDraft = useRef<{ text: string; attachments: Attachment[] } | null>(null)
 
   // eslint-disable-next-line no-restricted-syntax -- journal hydration and mounted lifetime, not a reactive store mirror
   useEffect(() => {
@@ -118,18 +124,30 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
   }
 
   const send = () => {
-    if (!restored || busyRef.current || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
+    if (!restored || busyRef.current || uploading || !state?.driver_status || (!pending && !draft.trim() && !attachments.length)) {return}
     void mutate(async () => {
       const exact = pending ?? await prepareCanonicalGroupSend(binding, { text: draft, attachments })
 
       if (!alive.current) {return}
+
+      // Another window won the room's slot: send its intent first, keep this window's words.
+      if (!pending && !sameGroupPayload(exact.params.payload, draft, attachments)) {
+        heldDraft.current = { text: draft, attachments }
+      }
+
       setPending(exact)
       setDraft(String(exact.params.payload.text ?? ''))
       setAttachments((exact.params.payload.attachments as Attachment[] | undefined) ?? [])
       await canonicalGroupRequest(exact.binding, 'groups.send', exact.params)
       await retireCanonicalGroupSend(exact.binding, exact.params.event_id)
 
-      if (alive.current) {setPending(null); setDraft(''); setAttachments([])}
+      if (alive.current) {
+        const held = heldDraft.current
+        heldDraft.current = null
+        setPending(null)
+        setDraft(held?.text ?? '')
+        setAttachments(held?.attachments ?? [])
+      }
     })
   }
 
@@ -163,9 +181,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack }: {
     </div>}
     {pending && <p role="status">{labels.restoredPendingSend}</p>}
     <form className="flex gap-2" onSubmit={event => { event.preventDefault(); send() }}>
-      <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={composerLocked} onChange={setAttachments} />
+      <CanonicalGroupAttachments attachments={attachments} binding={binding} disabled={composerLocked} onChange={setAttachments} onUploadingChange={setUploading} />
       <textarea aria-label={labels.groupMessage} className="min-w-0 flex-1" disabled={composerLocked} onChange={e => setDraft(e.target.value)} value={draft} />
-      <Button disabled={!restored || busy || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} type="submit">{pending ? labels.retry : labels.send}</Button>
+      <Button disabled={!restored || busy || uploading || (!pending && !draft.trim() && !attachments.length) || !state?.driver_status} type="submit">{pending ? labels.retry : labels.send}</Button>
     </form>
   </section>
 }

@@ -3,12 +3,14 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
 import { ruBoot } from './ru_boot'
+import { ruConnectors } from './ru_connectors'
 import { ruModelMenu } from './ru_model_menu'
 import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
+import { ruUpdateChannel } from './ru_update_channel'
 
 // RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
 // RU_NOUN: (count, one, few, many) — формы род. множественного
@@ -32,41 +34,9 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 }
 
 export const ruOverrides = {
+  connectors: ruConnectors.connectors,
   sharedMetrics: ruSharedMetrics,
-  sessionImport: {
-    title: 'Продолжить из другого приложения',
-    subtitle: 'Перенесите разговор в Hermes и продолжите с того места, где остановились.',
-    action: 'Импортировать сессию',
-    readingFrom: 'Читаем с',
-    connectedComputer: 'подключённого компьютера',
-    destination: 'Импорт в',
-    all: 'Все',
-    search: 'Поиск по загруженным сессиям',
-    scanning: 'Поиск разговоров',
-    scanError: 'Не удалось найти сессии',
-    scanHelp: 'Проверьте подключение к серверу и повторите попытку. Старому серверу может требоваться обновление.',
-    empty: 'Разговоров пока нет',
-    emptyHelp: 'Здесь появятся сессии Claude Code и Codex с этого сервера.',
-    noMatches: 'Совпадений нет',
-    searchHelp: 'Попробуйте другой заголовок или папку либо загрузите ещё сессии.',
-    skipped: 'Некоторые журналы пусты, недоступны или слишком велики для просмотра.',
-    more: 'Загрузить ещё сессии',
-    messages: 'сообщений',
-    choose: 'Разговор, который стоит продолжить',
-    chooseHelp: 'Выберите сессию, чтобы прочитать историю перед импортом в Hermes.',
-    previewLoading: 'Открываем просмотр',
-    previewError: 'Просмотр недоступен',
-    previewHelp: 'Исходный файл мог переместиться или измениться. Обновите список и повторите попытку.',
-    previewLimit: 'Просмотр сокращён для удобства чтения. Импортируется весь разговор.',
-    you: 'Вы',
-    snapshot: 'Этот разговор уже есть в Hermes. Откройте существующую копию, чтобы продолжить.',
-    copyNotice:
-      'Копируется текст разговора. Исходные файлы не меняются. Вывод инструментов и рассуждения не переносятся.',
-    importing: 'Импорт…',
-    open: 'Открыть в Hermes',
-    continue: 'Продолжить в Hermes',
-    importError: 'Не удалось импортировать разговор.'
-  },
+  sessionImport: ruConnectors.sessionImport,
   common: {
     apply: 'Применить',
     back: 'Назад',
@@ -943,9 +913,7 @@ export const ruOverrides = {
           'Когда Hermes обновляет себя из приложения (без запроса в терминале), сохранять локальные правки исходников (stash) или выбрасывать (discard). Обновления из терминала всегда спрашивают.'
       }
     }),
-    about: {
-      updates: 'Обновления'
-    },
+    about: { updates: 'Обновления', channel: ruUpdateChannel },
     config: {
       minimizeToTrayTitle: 'Сворачивать в трей',
       minimizeToTrayDesc:
@@ -2808,12 +2776,6 @@ export const ruOverrides = {
     editingQueuedInComposer: 'Редактирование хода в очереди в композере',
     restoredDraftNotice: 'Восстановлено ваше неотправленное сообщение',
     restoredDraftUndo: 'Отменить',
-    localSetup: {
-      title: 'Это может работать на вашем компьютере',
-      text: (model: string) =>
-        `${model} подходит для этого компьютера. Бесплатно, а чаты остаются на вашем компьютере.`,
-      action: 'Показать'
-    },
     queueEdit: 'Изменить',
     queueExpand: 'Раскрыть',
     queueCollapse: 'Свернуть',

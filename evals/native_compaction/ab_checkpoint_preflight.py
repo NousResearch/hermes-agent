@@ -245,7 +245,7 @@ def main() -> int:
     (tmp / "home").mkdir(parents=True)
     import subprocess
 
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False).stdout.strip()
     wire = _FakeResponses()
     try:
         result = {

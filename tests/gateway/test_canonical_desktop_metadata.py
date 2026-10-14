@@ -44,6 +44,10 @@ def test_canonical_desktop_metadata_survives_create_info_and_reattach(tmp_path):
                             info = event['payload']
                             assert info['desktop_protocol'] == creator.subprotocol
                             assert 'desktop_contract' not in info
+                            if 'pending' not in info:
+                                # The banner/inventory republish (turn end, title, reasoning) is not the
+                                # owner's queue snapshot; Desktop's lease/fence logic ignores it too.
+                                continue
                             saw_pending |= bool(info['pending'])
                             finished = saw_pending and not info['pending'] and not info['running']
                 await settled(home)

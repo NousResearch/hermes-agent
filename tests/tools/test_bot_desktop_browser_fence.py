@@ -175,12 +175,12 @@ def test_vault_page_operations_respect_the_human_lease(monkeypatch):
     for name in ("browser_vault_fill", "browser_vault_enter_code", "browser_vault_save_login"):
         monkeypatch.setattr(vault, name, lambda *a, **k: touched.append(name) or json.dumps({"success": True}))
     lease.acquire("human")
-    for handler in (vault._handle_vault_fill, vault._handle_vault_enter_code, vault._handle_vault_save_login):
-        res = json.loads(handler({"handle": "vault_x"}, task_id="default"))
-        assert res["code"] == "human_has_control", handler.__name__
+    for action in ("fill", "enter_code", "save_login"):
+        res = json.loads(vault._handle_vault({"action": action, "handle": "vault_x"}, task_id="default"))
+        assert res["code"] == "human_has_control", action
     assert touched == [], "no vault page access while the human holds the screen"
     lease.release("human")
-    assert json.loads(vault._handle_vault_fill({"handle": "vault_x"}, task_id="default"))["success"] is True
+    assert json.loads(vault._handle_vault({"action": "fill", "handle": "vault_x"}, task_id="default"))["success"] is True
 
 
 def test_secret_write_re_admits_after_a_takeover_during_the_code_prompt(monkeypatch):

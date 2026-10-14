@@ -10,6 +10,7 @@ import threading
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 
 @pytest.mark.parametrize(('mode', 'invariant'), [
@@ -49,10 +50,14 @@ def test_worker_lineage_and_settlement(tmp_path, mode, invariant):
         return reply['result']
 
     async def settled(ws, sid, input_id):
-        async with asyncio.timeout(45):
-            while query('SELECT status FROM session_admissions WHERE request_id=?', (input_id,)) != [('terminal',)]:
-                await asyncio.sleep(.005)
+        await async_wait_until(lambda: query('SELECT status FROM session_admissions WHERE request_id=?', (
+            input_id,)) == [('terminal',)], timeout=45, interval=.005, what=input_id + ' terminal')
         return await call(ws, 'session.resume', session_id=sid)
+
+    def unwound():
+        # What reset/rewind fence on: no live worker and no transcript turn lease left behind.
+        return (not query("SELECT 1 FROM worker_executions WHERE status!='terminal'")
+                and not query('SELECT 1 FROM session_turn_leases'))
 
     async def mutate(ws, sid, request_id, operation, payload):
         snap = await call(ws, 'session.resume', session_id=sid)
@@ -68,9 +73,8 @@ def test_worker_lineage_and_settlement(tmp_path, mode, invariant):
             sid = created['session_id']
             first = await call(ws, 'prompt.submit', session_id=sid, input_id='before', text='BEFORE_RESET')
             if invariant == 'initialization':
-                async with asyncio.timeout(30):
-                    while query('SELECT status FROM session_admissions') != [('unknown',)]:
-                        await asyncio.sleep(.02)
+                await async_wait_until(lambda: query('SELECT status FROM session_admissions') == [('unknown',)],
+                                       timeout=30, interval=.02, what='failed worker admission unknown')
                 assert peer.requests == []
                 errors = (home / 'logs/errors.log').read_text()
                 assert 'Managed worker lost: managed_worker_failed' in errors
@@ -90,7 +94,7 @@ def test_worker_lineage_and_settlement(tmp_path, mode, invariant):
                 assert duplicate['admission_id'] == first['admission_id']
                 return
             # Base's broken finish handshake needs to unwind before the independent reset probe.
-            await asyncio.sleep(.5)
+            await async_wait_until(unwound, timeout=30, what='finished worker and turn lease released')
             reset = await mutate(ws, sid, 'reset', 'reset', {})
             target = reset['target_session_id']
             await call(ws, 'prompt.submit', session_id=sid, input_id='after', text='AFTER_RESET')
@@ -103,7 +107,7 @@ def test_worker_lineage_and_settlement(tmp_path, mode, invariant):
                 if mode != 'normal':
                     assert query("SELECT json_extract(lineage_json,'$[#-1]') FROM session_admissions WHERE request_id='after'") == [(target,)]
             else:
-                await asyncio.sleep(.5)
+                await async_wait_until(unwound, timeout=30, what='finished worker and turn lease released')
                 rows = query("SELECT id FROM messages WHERE session_id=? AND role='user'", (target,))
                 assert rows, snap
                 rewound = await mutate(ws, sid, 'rewind', 'rewind', {'target_message_id': rows[-1][0]})

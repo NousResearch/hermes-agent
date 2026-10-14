@@ -296,7 +296,7 @@ async def _scrape_one(url: str, formats: List[str], format: Optional[str]) -> Di
                 ),
                 timeout=60,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning("Firecrawl scrape timed out for %s", url)
             return _error_entry(url, _SCRAPE_TIMEOUT_MSG)
         payload = _extract_scrape_payload(scrape_result)

@@ -26,12 +26,21 @@ def validate_prepared(db, conn, session_id, prepared):
     return current
 
 
-def model_in_transaction(db, conn, session_id, payload, prepared):
+def _commit_policy(db, conn, session_id, prepared):
+    """Write the prepared policy over the snapshot it was derived from and bump the generation."""
     from hermes_state_runtime import _json
     snapshot = validate_prepared(db, conn, session_id, prepared)
     saved = snapshot['receipt']
     saved['policy'] = prepared['policy']
     conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(saved), POLICY_PREFIX + session_id))
+    conn.execute('UPDATE sessions SET runtime_generation=runtime_generation+1 WHERE id=?', (session_id,))
+    generation = conn.execute('SELECT runtime_generation FROM sessions WHERE id=?', (session_id,)).fetchone()[0]
+    return snapshot, generation
+
+
+def model_in_transaction(db, conn, session_id, payload, prepared):
+    from hermes_state_runtime import _json
+    snapshot, generation = _commit_policy(db, conn, session_id, prepared)
     model = prepared['policy']['model']
     config = json.loads(prepared['policy']['config_json'])['model']
     target = snapshot['target']
@@ -41,6 +50,28 @@ def model_in_transaction(db, conn, session_id, payload, prepared):
     model_config = json.loads(row[0] or '{}')
     model_config['provider'] = config['provider']
     conn.execute('UPDATE sessions SET model=?,model_config=? WHERE id=?', (model, _json(model_config), target))
-    conn.execute('UPDATE sessions SET runtime_generation=runtime_generation+1 WHERE id=?', (session_id,))
-    generation = conn.execute('SELECT runtime_generation FROM sessions WHERE id=?', (session_id,)).fetchone()[0]
     return {session_id, target}, {'model': model, 'provider': config['provider'], 'execution_generation': generation}
+
+
+def reasoning_in_transaction(db, conn, session_id, payload, prepared):
+    snapshot, generation = _commit_policy(db, conn, session_id, prepared)
+    return {session_id, snapshot['target']}, {'effort': payload['effort'], 'execution_generation': generation}
+
+
+def workspace_in_transaction(db, conn, session_id, payload, prepared):
+    """The policy (execution cwd + TERMINAL_CWD) and every row of the conversation move together:
+    the sidebar groups by the row's cwd/git identity, which a move REPLACES (main's update_session_cwd
+    with replace_git_meta), never merges."""
+    from hermes_state_local import local_conversation_ids
+    snapshot, generation = _commit_policy(db, conn, session_id, prepared)
+    cwd, git = prepared['policy']['cwd'], prepared['git']
+    rows = list(dict.fromkeys([*local_conversation_ids(conn, session_id), snapshot['target']]))
+    conn.executemany('UPDATE sessions SET cwd=?, git_branch=?, git_repo_root=?, '
+                     'git_metadata_generation=COALESCE(git_metadata_generation, 0)+1 WHERE id=?',
+                     [(cwd, git['branch'] or None, git['root'] or None, sid) for sid in rows])
+    return {session_id, snapshot['target']}, {'cwd': cwd, 'branch': git['branch'] or None,
+                                              'git_repo_root': git['root'] or None, 'execution_generation': generation}
+
+
+POLICY_HANDLERS = {'model': model_in_transaction, 'reasoning': reasoning_in_transaction,
+                   'workspace': workspace_in_transaction}

@@ -9,6 +9,7 @@ import sys
 import threading
 
 from tests.gateway.fixtures.local_recovery_probe import Model, child_env, daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 
 def probe(base, legacy_root, owner_root=None):
@@ -30,7 +31,7 @@ def probe(base, legacy_root, owner_root=None):
     def cli(checkout, *args):
         result = subprocess.run([sys.executable, '-m', 'hermes_cli.main', 'chat', *args],
             cwd=checkout, env={**env, 'PYTHONPATH': str(checkout)}, stdin=subprocess.DEVNULL,
-            capture_output=True, text=True, timeout=120)
+            capture_output=True, text=True, timeout=120, check=False)
         (home / ('cli-' + str(len(list(home.glob('cli-*')))) + '.log')).write_text(result.stdout + result.stderr)
         assert result.returncode == 0, result.stdout + result.stderr
         return result.stdout
@@ -39,9 +40,8 @@ def probe(base, legacy_root, owner_root=None):
             db.row_factory = sqlite3.Row
             return [dict(r) for r in db.execute(sql, args)]
     async def wait_settled():
-        async with asyncio.timeout(45):
-            while any(r['status'] != 'terminal' for r in query('SELECT status FROM session_admissions')):
-                await asyncio.sleep(.05)
+        await async_wait_until(lambda: all(r['status'] == 'terminal' for r in query('SELECT status FROM session_admissions')),
+                               timeout=45, interval=.05, what='every admission to settle')
     async def run(desc):
         async with websocket(home, desc) as ws:
             first = await rpc(ws, 'session.resume', session_id=sid)

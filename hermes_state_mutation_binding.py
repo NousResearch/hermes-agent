@@ -5,6 +5,20 @@ from hermes_state_runtime import RuntimeStoreError
 BINDING_PREFIX = 'gateway.history_control.v1.'
 
 
+def _history_sources():
+    """Local surfaces whose unrouted rows are owner history: every source the native resume adopts
+    (``LEGACY_LOCAL_SOURCES``: old ``desktop`` chats and ``oneshot``/``tool`` CLI runs too) plus imports.
+    A row resume can adopt must also take a sidebar edit (pin/archive/hide/rename)."""
+    from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
+    return LEGACY_LOCAL_SOURCES | {'import'}
+
+
+def _owner_user(row):
+    """The row's owner identity; main's Desktop Nous-account label is not one (see validate_legacy_row)."""
+    from hermes_state_local_migration import legacy_account_label
+    return None if legacy_account_label(dict(row)) else row['user_id']
+
+
 def import_history_control(conn, actor, session_ids):
     binding = json.dumps([actor.profile_id, actor.subject], separators=(',', ':'))
     for sid in session_ids:
@@ -27,9 +41,9 @@ def authorize_history(conn, actor, session_id, *, claim=False):
         if saved[0] != binding:
             raise RuntimeStoreError('permission_denied')
         return True
-    if row['source'] not in {'cli', 'tui', 'gui', 'import'}:
+    if row['source'] not in _history_sources():
         return False
-    if row['user_id'] and row['user_id'] != actor.subject:
+    if _owner_user(row) and row['user_id'] != actor.subject:
         raise RuntimeStoreError('permission_denied')
     if 'session:create' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
@@ -62,4 +76,4 @@ def same_history_owner(conn, anchor_id, session_id):
     if binding != history_binding(conn, anchor_id):
         return False
     return binding is not None or (
-        row['source'] in {'cli', 'tui', 'gui', 'import'} and row['user_id'] in (None, '', anchor['user_id']))
+        row['source'] in _history_sources() and _owner_user(row) in (None, '', anchor['user_id']))

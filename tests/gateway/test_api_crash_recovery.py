@@ -11,6 +11,7 @@ import threading
 import aiohttp
 
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, Model
+from tests.waiting import async_wait_until
 
 
 def test_api_crash_queue_and_identified_result_retry(tmp_path):
@@ -77,9 +78,8 @@ def test_api_crash_queue_and_identified_result_retry(tmp_path):
 
     async def restarted():
         async with aiohttp.ClientSession(headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as client:
-            async with asyncio.timeout(20):
-                while rows()[runs['safe']] != 'terminal':
-                    await asyncio.sleep(.05)
+            await async_wait_until(lambda: rows()[runs['safe']] == 'terminal', timeout=20, interval=.05,
+                                   what='the recovered safe run to settle')
             assert rows()[runs['started']] == 'unknown' and rows()[runs['follower']] == 'queued', rows()
             async with client.post(url + '/chat/completions',
                 json={'messages': [{'role': 'user', 'content': 'BLOCK_STARTED'}]},

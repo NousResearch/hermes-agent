@@ -11,6 +11,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
+import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { $goalsBySession, setSessionGoal } from '@/store/goals'
 import { $hudMode } from '@/store/hud'
@@ -34,8 +35,6 @@ import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
 import { actRender, Harness, type HarnessHandle, RUNTIME_SESSION_ID, sessionInfo } from './index-test-utils'
 import { clearSingleFlightSessionResumeState } from './single-flight-resume'
 import { SESSION_COMPRESS_TIMEOUT_MS } from './slash'
-
-import { uploadComposerAttachment } from '.'
 
 // Suites in this file reuse the same stored-id constants. The module-level
 // single-flight resume map (and drift-recovery cache) would otherwise leak a
@@ -89,7 +88,7 @@ describe('durable submit acknowledgement', () => {
     const requestGateway = vi.fn(async (_method: string, params?: Record<string, unknown>) => {
       expect(Object.values(journal.read())).toHaveLength(1)
 
-      return { admission_id: 'server-admission', submission_id: params?.submission_id, session_id: params?.session_id, status: accepted ? 'queued' : 'unknown' } as never
+      return { admission_id: 'server-admission', submission_id: accepted ? params?.submission_id : 'other-input', session_id: params?.session_id, status: 'queued' } as never
     })
 
     try {
@@ -117,7 +116,7 @@ describe('durable submit acknowledgement', () => {
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'slash.exec') {return { type: 'skill', name: 'private-skill', message: 'expanded skill' } as never}
 
-      return { admission_id: params?.submission_id, status: 'unknown' } as never
+      return { admission_id: 'other-input', status: 'queued' } as never
     })
 
     let handle: HarnessHandle | null = null
@@ -139,7 +138,8 @@ describe('durable submit acknowledgement', () => {
     [{ admission_id: 'entry-id', status: 'terminal' }, true],
     [{ admission_id: 'canonical-admission', submission_id: 'entry-id', session_id: RUNTIME_SESSION_ID, status: 'queued' }, true],
     [{ admission_id: 'canonical-admission', submission_id: 'entry-id', session_id: 'wrong-destination', status: 'queued' }, false],
-    [{ admission_id: 'entry-id', status: 'unknown' }, false]
+    // An exact retry of an admission the owner lost mid-turn: admitted, never replayed (Discard resolves it).
+    [{ admission_id: 'entry-id', status: 'unknown' }, true]
   ])('requires the matching authoritative receipt: %j', async (receipt, accepted) => {
     const requestGateway = vi.fn(async () => receipt as never)
     let handle: HarnessHandle | null = null
@@ -208,6 +208,39 @@ describe('submit timeout admission fences', () => {
     expect(accepted).toBe(false)
     expect(await handle!.submitText('legacy accepted before ACK loss', { submission_id: 'legacy-timeout' })).toBe(false)
     expect(submits).toHaveLength(2)
+  })
+
+  // Adolanium 6055121721: after a lost identityless (legacy) ACK, Enter on that exact text did
+  // nothing forever. The explicit retry is refused once, visibly; a new send of the words is the
+  // user's informed new turn and goes out.
+  it('a lost legacy acknowledgement is surfaced once and never blocks sending the same text again', async () => {
+    const submits: Record<string, unknown>[] = []
+    clearNotifications()
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {return { session_id: RUNTIME_SESSION_ID } as never}
+
+      if (method !== 'prompt.submit') {return {} as never}
+      submits.push(params!)
+
+      // A legacy serve refuses every submission_id before admission.
+      if (params?.submission_id) {throw Object.assign(new Error('capability refused'), { code: 4094 })}
+
+      if (submits.length === 2) {throw new Error('request timed out: prompt.submit')}
+
+      return { ok: true } as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+    expect(await handle!.submitText('hello there', { submission_id: 'legacy-lost' })).toBe(false)
+    expect(await handle!.submitText('hello there', { submission_id: 'legacy-lost' })).toBe(false)
+    expect(submits).toHaveLength(2)
+    const shown = $notifications.get().map(n => n.message)
+    // The restored draft keeps its identity; pressing Enter again after the notice sends it.
+    expect(await handle!.submitText('hello there', { submission_id: 'legacy-lost' })).toBe(true)
+    expect(submits).toHaveLength(4)
+    expect(shown).toContain(en.promptNotices.legacySendUnconfirmed)
   })
 
   it('retries an identified timeout with the same admission identity after resume', async () => {
@@ -496,7 +529,7 @@ describe('usePromptActions /stop', () => {
 
     expect(calls).toEqual([
       { method: 'session.interrupt', params: { session_id: 'rt-target-session' } },
-      { method: 'process.stop', params: {} }
+      { method: 'process.stop', params: { session_id: 'rt-target-session' } }
     ])
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
     expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
@@ -523,7 +556,7 @@ describe('usePromptActions /stop', () => {
     await handle!.submitText('/stop')
 
     expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
-    expect(requestGateway).toHaveBeenCalledWith('process.stop', {})
+    expect(requestGateway).toHaveBeenCalledWith('process.stop', { session_id: RUNTIME_SESSION_ID })
   })
 })
 
@@ -3180,7 +3213,8 @@ describe('usePromptActions restoreToMessage', () => {
         text: 'first prompt',
         confirm_truncate: true,
         truncate_before_message_id: 'u1',
-        confirm_empty_truncate: true
+        confirm_empty_truncate: true,
+        confirm_deep_truncate: true
       },
       1_800_000
     )
@@ -3249,7 +3283,8 @@ describe('usePromptActions restoreToMessage', () => {
         text: 'first prompt',
         confirm_truncate: true,
         truncate_before_message_id: 'u1',
-        confirm_empty_truncate: true
+        confirm_empty_truncate: true,
+        confirm_deep_truncate: true
       },
       1_800_000
     )
@@ -3296,7 +3331,8 @@ describe('usePromptActions restoreToMessage', () => {
         text: 'first prompt',
         confirm_truncate: true,
         truncate_before_message_id: 'u1',
-        confirm_empty_truncate: true
+        confirm_empty_truncate: true,
+        confirm_deep_truncate: true
       },
       1_800_000
     )
@@ -3491,46 +3527,6 @@ describe('usePromptActions file attachment sync', () => {
         text: '@file:.hermes/desktop-attachments/report.txt\n\nsummarize'
       }
     })
-  })
-
-  it('uses image.attach_bytes for a Windows image when the local backend cwd is POSIX', async () => {
-    const readFileDataUrl = vi.fn(async () => 'data:image/jpeg;base64,aGVsbG8=')
-    Object.defineProperty(window, 'hermesDesktop', {
-      configurable: true,
-      value: { readFileDataUrl }
-    })
-
-    const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'image.attach_bytes') {
-        return { attached: true, path: '/root/tmp/photo.jpg' } as never
-      }
-
-      return {} as never
-    })
-
-    const uploaded = await uploadComposerAttachment(
-      {
-        id: 'image:photo.jpg',
-        kind: 'image',
-        label: 'photo.jpg',
-        path: 'C:\\Users\\alice\\Pictures\\photo.jpg'
-      },
-      {
-        backendCwd: '/root',
-        remote: false,
-        requestGateway,
-        sessionId: RUNTIME_SESSION_ID
-      }
-    )
-
-    expect(readFileDataUrl).toHaveBeenCalledWith('C:\\Users\\alice\\Pictures\\photo.jpg')
-    expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', {
-      content_base64: 'aGVsbG8=',
-      filename: 'photo.jpg',
-      session_id: RUNTIME_SESSION_ID
-    })
-    expect(requestGateway).not.toHaveBeenCalledWith('image.attach', expect.anything())
-    expect(uploaded.path).toBe('/root/tmp/photo.jpg')
   })
 
   it('merges image staging into the current occurrence without dropping its thumbnail', async () => {
@@ -5362,6 +5358,10 @@ describe('usePromptActions stale-closure session routing', () => {
 
     expect(updated).toContain(RUNTIME_SESSION_B)
     expect(updated).not.toContain(RUNTIME_SESSION_ID)
+    // A tail edit archives no later user turn, so it asks nothing and sends no deep confirm.
+    expect(gatewayCalls(requestGateway).find(([m]) => m === 'prompt.submit')?.[1]).not.toHaveProperty(
+      'confirm_deep_truncate'
+    )
 
     for (const [, params] of gatewayCalls(requestGateway)) {
       if (params && 'session_id' in params) {
@@ -5468,9 +5468,11 @@ describe('usePromptActions reloadFromMessage failed-submit rollback (#95745)', (
     setMessages(seed as never)
 
     let latest: Record<string, unknown> | undefined
+    const submits: Record<string, unknown>[] = []
 
-    const requestGateway = vi.fn(async (method: string) => {
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'prompt.submit') {
+        submits.push(params ?? {})
         throw new JsonRpcGatewayError('target user message is no longer in session history', {
           code: 4018,
           data: {
@@ -5501,7 +5503,27 @@ describe('usePromptActions reloadFromMessage failed-submit rollback (#95745)', (
       />
     )
 
+    // Regenerating u1 archives the later u2 turn: it asks first; a decline sends nothing (#133716).
+    let answer = false
+    let asked = 0
+
+    const stopConfirming = $confirmRequest.listen(request => {
+      if (request) {
+        asked += 1
+        settleConfirm(answer)
+      }
+    })
+
     await handle!.reloadFromMessage('u1')
+    expect(asked).toBe(1)
+    expect(submits).toEqual([])
+
+    answer = true
+    await handle!.reloadFromMessage('u1')
+    stopConfirming()
+    expect(asked).toBe(2)
+    expect(submits).toHaveLength(1)
+    expect(submits[0]).toMatchObject({ confirm_deep_truncate: true })
 
     const rolledBack = latest?.messages as Array<{ hidden?: boolean; id: string }> | undefined
 

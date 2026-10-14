@@ -41,7 +41,7 @@ def test_candidates_share_one_messages_pass(owner, tmp_path, monkeypatch):
         path.write_bytes(b'x')
         references.append({'path': str(path), 'sha256': sha, 'size': 1})
     for reference in references[:3]:
-        db.append_message('keep', 'user', '[Image attached at: %s]' % reference['path'])
+        db.append_message('keep', 'user', '[Image attached at: {}]'.format(reference['path']))
     db.append_message('keep', 'user', 'unrelated history')
     db._execute_write(lambda conn: conn.executemany('INSERT INTO state_meta(key,value) VALUES(?,?)',
         [(PREFIX + str(index), json.dumps(reference)) for index, reference in enumerate(references)]))

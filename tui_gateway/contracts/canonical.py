@@ -12,7 +12,8 @@ from __future__ import annotations
 from typing import Literal
 
 from .base import JsonValue, Params, Result
-from .common import OpenModel
+from .common import McpServerStatus, OpenModel, ProjectRef
+from .events import SkinPayload
 from .groups_bot_relay import RoomParams, RoomTaskReceipt
 from .registry import canonical_method
 
@@ -79,7 +80,9 @@ canonical_method("prompt.resolve_unknown", params=PromptResolveUnknownParams, re
 
 class SessionMutateParams(Params):
     """``operation`` + ``payload`` are validated by ``hermes_state_mutations.validate_action``;
-    ``expected_generation`` is required for delete/rewind/reset/branch/model/compress."""
+    ``expected_generation`` is required for delete/rewind/reset/branch/model/compress/reasoning/workspace.
+    ``reasoning`` (``{effort}``) and ``workspace`` (``{cwd}``, refused ``session_busy`` mid-turn) rewrite
+    the session's frozen policy: session-scope ``/reasoning`` and Desktop's Move to project."""
 
     session_id: str
     request_id: str
@@ -101,15 +104,58 @@ class SessionMutateResult(OpenModel):
 
 canonical_method("session.mutate", params=SessionMutateParams, result=SessionMutateResult,
                  doc="Revision-fenced, retry-idempotent session edit (rename, archive, sidebar, branch, "
-                     "delete, rewind, reset, model, compress, import).")
+                     "delete, rewind, reset, model, reasoning, workspace, compress, import).")
+
+
+class SessionPruneParams(Params):
+    """Exactly one of ``filters`` (``SessionDB.prune_sessions`` keyword filters, as
+    ``hermes sessions prune`` builds them) or ``never_active_days`` (``--never-active``)."""
+
+    filters: dict[str, JsonValue] | None = None
+    never_active_days: float | None = None
+
+
+class SessionPruneResult(Result):
+    deleted: int
+    routing_deleted: int | None = None
+    skipped: int | None = None
+
+
+canonical_method("session.prune", params=SessionPruneParams, result=SessionPruneResult,
+                 doc="Local operator only: the owner deletes the ended sessions `hermes sessions prune` "
+                     "selected, skipping busy sessions and retained reset owners.")
 
 
 class CanonicalSessionInfoParams(Params):
     session_id: str
 
 
-class CanonicalSessionInfo(OpenModel):
-    """``gateway/session_local.py::local_session_info``."""
+class SessionInventoryFields(Result):
+    """Main's banner / status-bar inventory (``gateway/session_local_inventory.py::session_inventory``):
+    the shapes ``tui_gateway/server.py::_session_info`` sent, computed for the session's frozen policy.
+    ``enabled_toolsets`` / ``tool_availability`` / ``context_length`` feed the classic CLI banner."""
+
+    provider: str | None = None
+    tools: dict[str, list[str]] | None = None
+    skills: dict[str, list[str]] | None = None
+    mcp_servers: list[McpServerStatus] | None = None
+    version: str | None = None
+    release_date: str | None = None
+    update_behind: JsonValue | None = None
+    update_command: str | None = None
+    branch: str | None = None
+    project: ProjectRef | None = None
+    system_prompt: str | None = None
+    context_length: int | None = None
+    enabled_toolsets: list[str] | None = None
+    tool_availability: dict[str, JsonValue] | None = None
+    # Classic CLI surface (``source: cli``) only: main's startup lines under the banner (Rich markup).
+    tool_availability_warnings: list[str] | None = None
+    browser_backend_notice: str | None = None
+
+
+class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
+    """``gateway/session_local_inventory.py::snapshot_info``: ``local_session_info`` + the inventory."""
 
     source: str
     model: str | None = None
@@ -119,15 +165,87 @@ class CanonicalSessionInfo(OpenModel):
     profile_name: str
     cwd: str | None = None
     launch_request: dict[str, JsonValue] | None = None
+    reasoning_effort: str | None = None
+    reasoning_effort_wire: str | None = None
+    service_tier: str | None = None
+    fast: bool | None = None
+    # What main's classic CLI read off itself (/status, status bar, exit summary).
+    title: str | None = None
+    started_at: float | None = None
+    last_active_at: float | None = None
+    yolo: bool | None = None
+    api_mode: str | None = None
+    tool_count: int | None = None
+    credential_hint: str | None = None
 
 
 canonical_method("session.info", params=CanonicalSessionInfoParams, result=CanonicalSessionInfo,
                  doc="Frozen launch policy projection of one local session.")
 
 
+class SessionStatsParams(Params):
+    session_id: str
+
+
+class SessionStats(Result):
+    """``gateway/session_usage.py::usage_stats``: session-cumulative counters (the agent's ``session_*``),
+    context / compressor figures, rolling latency and throughput, rate-limit state, live subagents."""
+
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    reasoning_tokens: int
+    api_calls: int
+    last_prompt_tokens: int
+    context_tokens: int
+    context_length: int | None = None
+    config_context_length: int | None = None
+    context_source: str | None = None
+    compression_count: int
+    avg_latency_s: float | None = None
+    tokens_per_s: float | None = None
+    last_turn_tokens: int
+    rate_limit: dict[str, JsonValue] | None = None
+    active_subagents: int
+    model: str
+    provider: str
+    fallback_model: str | None = None
+
+
+canonical_method("session.stats", params=SessionStatsParams, result=SessionStats,
+                 doc="The session.usage dict on demand: what main's classic CLI read off its agent.")
+
+
+class SessionAutomationParams(Params):
+    session_id: str
+    kind: Literal["goal", "loop", "heartbeat"]
+    call: str
+    args: list[JsonValue] | None = None
+    kwargs: dict[str, JsonValue] | None = None
+
+
+class SessionAutomationResult(Result):
+    """``gateway/session_viewer_automation.py``: the manager's persisted state after the call (its own
+    JSON, ``null`` when none) and the call's value, or the refusal main's manager raised."""
+
+    state: str | None
+    value: JsonValue | None = None
+    error: dict[str, str] | None = None
+
+
+canonical_method("session.automation", params=SessionAutomationParams, result=SessionAutomationResult,
+                 doc="The classic CLI's /goal, /subgoal, /loop, /heartbeat manager calls (state writes, the "
+                     "goal judge, quality gates), run by the owner on the session's row.")
+
+
 class SessionDetachParams(Params):
     session_id: str
     subscription_id: str
+    end_reason: str | None = None
 
 
 class SessionDetachResult(Result):
@@ -137,7 +255,9 @@ class SessionDetachResult(Result):
 
 
 canonical_method("session.detach", params=SessionDetachParams, result=SessionDetachResult,
-                 doc="Drop this connection's subscription; a stale subscription id answers detached=false.")
+                 doc="Drop this connection's subscription; a stale subscription id answers detached=false. "
+                     "end_reason (snake_case): the viewer is closing the conversation; the last viewer "
+                     "leaving an idle local session ends its row with that reason.")
 
 
 class RuntimeDescribeParams(Params):
@@ -155,6 +275,8 @@ class RuntimeDescribeResult(Result):
     authority_epoch: int
     capabilities: list[str]
     session_create: SessionCreateDescriptor
+    #: The owning profile's resolved skin (``resolve_skin()``, main's ``gateway.ready.skin``).
+    skin: SkinPayload | None = None
 
 
 canonical_method("runtime.describe", params=RuntimeDescribeParams, result=RuntimeDescribeResult,
@@ -370,4 +492,4 @@ canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDisc
 
 
 # Shared-name overrides load after the authority-only value shapes above.
-from . import canonical_sessions, canonical_projections  # noqa: F401,E402
+from . import canonical_sessions, canonical_projections

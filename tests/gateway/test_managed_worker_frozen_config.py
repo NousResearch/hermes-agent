@@ -19,6 +19,7 @@ import threading
 import pytest
 
 from tests.gateway.fixtures.local_recovery_probe import child_env, daemon, rpc, websocket
+from tests.waiting import async_wait_until
 
 PEER = '''import json, sys
 for line in sys.stdin:
@@ -94,9 +95,8 @@ def test_existing_session_keeps_frozen_mcp_transport_after_profile_edit(tmp_path
         before = len(peer.requests)
         submitted = await rpc(ws, 'prompt.submit', session_id=sid, input_id=request_id, text='HELLO')
         assert 'result' in submitted, submitted
-        async with asyncio.timeout(120):
-            while status(request_id) != [('terminal',)]:
-                await asyncio.sleep(.05)
+        await async_wait_until(lambda: status(request_id) == [('terminal',)], timeout=120, interval=.05,
+                               what=f'{request_id} to settle')
         tools = json.dumps([r.get('tools') for r in peer.requests[before:]])
         return [tag for tag in ('echo_FROZEN_A', 'echo_LIVE_B') if tag in tools]
 
@@ -154,7 +154,7 @@ def test_ordinary_worker_binding_freezes_readers_but_keeps_customizations(tmp_pa
     env = {**child_env(), **{k: os.environ[k] for k in ('TIRITH_ENABLED',) if k in os.environ}}
     env.update(HOME=str(tmp_path), USERPROFILE=str(tmp_path), HERMES_HOME=str(home), PYTHONPATH=str(root))
     result = subprocess.run([sys.executable, str(script)], cwd=root, env=env, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=90)
+                            capture_output=True, text=True, timeout=90, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     receipt = json.loads(result.stdout.strip().splitlines()[-1])
     assert receipt == {'safe': False, 'turns': [7, 7, 7], 'mcp': 'FROZEN_A', 'plugin': True}, receipt

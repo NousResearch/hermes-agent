@@ -41,7 +41,7 @@ def _run(tmp_path, mode):
     env = child_env()
     env.update(HOME=str(home), USERPROFILE=str(home), HERMES_HOME=str(home), PROBE_MODE=mode, HERMES_DISABLE_LAZY_INSTALLS="1")
     proc = subprocess.run([sys.executable, str(script)], cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
-                          capture_output=True, text=True, timeout=90)
+                          capture_output=True, text=True, timeout=90, check=False)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     return json.loads(proc.stdout.strip().splitlines()[-1])
 

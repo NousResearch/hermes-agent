@@ -5,6 +5,7 @@ import json
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from tests.waiting import async_wait_until
 
 
 @pytest.mark.asyncio
@@ -40,9 +41,8 @@ async def test_output_indices_survive_completion_order_and_eviction(api, owner):
             pending.append(asyncio.create_task(client.post('/v1/responses', json=body, headers=headers)))
             await asyncio.wait_for(entered.wait(), 5)
             pending.append(asyncio.create_task(client.post('/v1/responses', json=body, headers=headers)))
-            async with asyncio.timeout(5):
-                while sum(map(len, owner.api_observers.values())) < 2:
-                    await asyncio.sleep(.01)
+            await async_wait_until(lambda: sum(map(len, owner.api_observers.values())) >= 2, timeout=5,
+                                   what='both streams to observe the run')
             release.set()
             responses = await asyncio.gather(*pending)
             terminal = []
@@ -95,13 +95,12 @@ async def test_late_stream_observer_receives_defined_output_indices(api, owner):
             pending.append(asyncio.create_task(client.post('/v1/responses', json=body, headers=headers)))
             await asyncio.wait_for(entered.wait(), 5)
             # Ensure the first stream actually published the tool items before the retry joins.
-            async with asyncio.timeout(5):
-                while api._current_response_store()._conn.execute('SELECT COUNT(*) FROM response_output_order').fetchone()[0] < 2:
-                    await asyncio.sleep(.01)
+            await async_wait_until(
+                lambda: api._current_response_store()._conn.execute('SELECT COUNT(*) FROM response_output_order').fetchone()[0] >= 2,
+                timeout=5, what='the first stream to publish its tool items')
             pending.append(asyncio.create_task(client.post('/v1/responses', json=body, headers=headers)))
-            async with asyncio.timeout(5):
-                while sum(map(len, owner.api_observers.values())) < 2:
-                    await asyncio.sleep(.01)
+            await async_wait_until(lambda: sum(map(len, owner.api_observers.values())) >= 2, timeout=5,
+                                   what='both streams to observe the run')
             release.set()
             responses = await asyncio.gather(*pending)
             second = [json.loads(line[6:]) for line in (await responses[1].text()).splitlines()

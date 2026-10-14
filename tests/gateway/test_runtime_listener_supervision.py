@@ -1,7 +1,30 @@
 """A dead session listener must never leave a ready gateway behind."""
 import asyncio
+import faulthandler
+import os
+import sys
 
 import pytest
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _dump_every_thread_on_hang(request):
+    """This file once hit CI's 600 s per-file SIGKILL in its third test, which leaves no stack at all.
+
+    The file takes ~5 s idle and ~17 s at load average 500, so a module still running at 240 s is
+    a hang: print every thread's stack and exit, so the log names what start_gateway blocked on.
+    Module scope covers each test's event-loop teardown too.
+    """
+    # pytest's fd capture would swallow the dump with the killed process: write to the real stderr.
+    capman = request.config.pluginmanager.getplugin("capturemanager")
+    with capman.global_and_fixture_disabled():
+        real_stderr = os.dup(sys.stderr.fileno())
+    faulthandler.dump_traceback_later(240, exit=True, file=real_stderr)
+    try:
+        yield
+    finally:
+        faulthandler.cancel_dump_traceback_later()
+        os.close(real_stderr)
 
 
 @pytest.mark.asyncio

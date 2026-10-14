@@ -201,6 +201,7 @@ def _independent_gpgv_verify(keyring_home: Path, *args: Path) -> subprocess.Comp
         ["gpgv", "--homedir", kr, "--keyring", f"{kr}/pubring.kbx",
          *[str(a) for a in args]],
         capture_output=True,
+        check=False,
     )
 
 

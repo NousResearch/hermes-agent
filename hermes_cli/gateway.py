@@ -148,6 +148,7 @@ def _get_service_pids(all_profiles: bool = False) -> set:
                     + ["list-units", pattern, "--plain", "--no-legend", "--no-pager"],
                     timeout=5,
                     **_CAPTURE_TEXT,
+                    check=False,
                 )
                 for line in result.stdout.strip().splitlines():
                     parts = line.split()
@@ -159,6 +160,7 @@ def _get_service_pids(all_profiles: bool = False) -> set:
                             scope_args + ["show", svc, "--property=MainPID", "--value"],
                             timeout=5,
                             **_CAPTURE_TEXT,
+                            check=False,
                         )
                         pid = int(show.stdout.strip())
                         if pid > 0:
@@ -189,7 +191,7 @@ def _get_service_pids(all_profiles: bool = False) -> set:
             # Prefix scan also catches ai.hermes.gateway* agents the label derivation can't map
             # (renamed profiles, other installs). Over-inclusion is safe: PIDs are only protected.
             try:
-                result = subprocess.run(["launchctl", "list"], timeout=5, **_CAPTURE_TEXT)
+                result = subprocess.run(["launchctl", "list"], timeout=5, **_CAPTURE_TEXT, check=False)
                 if result.returncode == 0:
                     for line in result.stdout.strip().splitlines():
                         parts = line.split()
@@ -221,7 +223,7 @@ def _get_parent_pid(pid: int) -> int | None:
     if is_windows() or not shutil.which("ps"):
         return None
     try:
-        result = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], timeout=5, **_CAPTURE_TEXT)
+        result = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], timeout=5, **_CAPTURE_TEXT, check=False)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
     raw = result.stdout.strip()
@@ -566,8 +568,7 @@ def _scan_gateway_pids(
     exclude_pids: set[int], all_profiles: bool = False, include_restart_managers: bool = False
 ) -> list[int]:
     """Best-effort process-table scan for gateway PIDs (backs up a stale/missing PID file; ``--all`` sweeps)."""
-    # Exclude the entire ancestor chain so the CLI process that invoked this scan (e.g. ``hermes gateway
-    # status``) is never mistaken for a running gateway. See #13242.
+    # Exclude the whole ancestor chain: the invoking CLI (``hermes gateway status``) is not a gateway (#13242).
     exclude_pids = exclude_pids | _get_ancestor_pids()
     pids: list[int] = []
     # Strict matcher shared with gateway.status: requires a real ``gateway run`` argv, so
@@ -580,6 +581,7 @@ def _scan_gateway_pids(
         command_line_names_hermes_home,
     )
     from hermes_cli.dashboard_procs import _hermes_home_for_pid, _normalized_home_for_compare
+    from hermes_cli.gateway_migrate_guards import pid_is_other_users
     current_home_path = get_hermes_home().resolve()
     current_home = str(current_home_path)
     # Forward slashes on both sides of the HERMES_HOME= match (mirrors gateway.status), and no
@@ -623,7 +625,7 @@ def _scan_gateway_pids(
         matches_runtime = looks_like_gateway_command_line(command) or (
             include_restart_managers and looks_like_gateway_runtime_command_line(command)
         )
-        if matches_runtime and (all_profiles or _matches_current_profile(pid, command)):
+        if matches_runtime and not pid_is_other_users(pid) and (all_profiles or _matches_current_profile(pid, command)):
             _append_unique_pid(pids, pid, exclude_pids)
 
     try:
@@ -646,7 +648,7 @@ def _scan_gateway_pids(
 
             if not _found_via_proc:
                 # ``-Aww`` not ``-A eww``: BSD/macOS ps rejects ``e``; ``-ww`` = unlimited width.
-                result = subprocess.run(["ps", "-Aww", "-o", "pid=,command="], timeout=10, **_CAPTURE_TEXT)
+                result = subprocess.run(["ps", "-Aww", "-o", "pid=,command="], timeout=10, **_CAPTURE_TEXT, check=False)
                 if result.returncode != 0:
                     return []
                 for line in result.stdout.split("\n"):
@@ -1490,7 +1492,7 @@ def _launchd_print_service_pid(domain: str, label: str) -> tuple[bool, int | Non
     launchctl call must be reported, not read as "unloaded").
     """
     try:
-        result = subprocess.run(["launchctl", "print", f"{domain}/{label}"], timeout=5, **_CAPTURE_TEXT)
+        result = subprocess.run(["launchctl", "print", f"{domain}/{label}"], timeout=5, **_CAPTURE_TEXT, check=False)
     except FileNotFoundError:
         return (False, None)
     if result.returncode != 0:
@@ -1501,7 +1503,7 @@ def _launchd_print_service_pid(domain: str, label: str) -> tuple[bool, int | Non
 def _launchd_service_registered(label: str, *, timeout: int = 5) -> bool:
     """True when launchd knows ``label`` (``launchctl list`` exit 0). Domain-agnostic, so still true on
     macOS 26+ hosts whose per-user domains reject management. FileNotFoundError/TimeoutExpired propagate."""
-    result = subprocess.run(["launchctl", "list", label], timeout=timeout, **_CAPTURE_TEXT)
+    result = subprocess.run(["launchctl", "list", label], timeout=timeout, **_CAPTURE_TEXT, check=False)
     return result.returncode == 0
 
 
@@ -2125,6 +2127,7 @@ def _windows_scheduled_task_state(task_name: str) -> str | None:
             [powershell, "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
             capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=10,
             creationflags=windows_hide_flags(),
+            check=False,
         )
         if result.returncode != 0:
             return None
@@ -2533,7 +2536,7 @@ def _run_systemctl(args: list[str], *, system: bool = False, **kwargs) -> subpro
     """Run systemctl; raise RuntimeError (not raw FileNotFoundError) if missing, for callers bypassing
     ``supports_systemd_services()``."""
     try:
-        return subprocess.run(_systemctl_cmd(system) + args, **kwargs)
+        return subprocess.run(_systemctl_cmd(system) + args, **kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
     except FileNotFoundError:
         from hermes_cli.gateway_command_errors import SystemctlUnavailableError
         raise SystemctlUnavailableError() from None
@@ -3924,7 +3927,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         log_cmd = ["journalctl"] + ([] if system else ["--user"]) + ["-u", svc, "-n", "20", "--no-pager"]
         if full:
             log_cmd.append("-l")
-        subprocess.run(log_cmd, timeout=10)
+        subprocess.run(log_cmd, timeout=10, check=False)
 
 
 # =============================================================================
@@ -3975,6 +3978,7 @@ from hermes_cli.gateway_launchd import (  # noqa: E402,F401 — facade re-export
     wait_for_launchd_gateway_supervision,
     launchd_status,
 )
+from datetime import UTC
 
 
 # Cached launchd domain — probe once per process invocation.
@@ -4505,7 +4509,7 @@ def _make_exit_diag():
             log_dir = _ghh() / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             line = {
-                "ts": _dt.now(_tz.utc).isoformat(), "tag": tag, "pid": os.getpid(),
+                "ts": _dt.now(UTC).isoformat(), "tag": tag, "pid": os.getpid(),
                 "python": sys.version.split()[0], "platform": sys.platform, **extra,
             }
             with open(log_dir / "gateway-exit-diag.log", "a", encoding="utf-8") as f:
@@ -5614,6 +5618,7 @@ def _status_host_kind() -> str:
 
 def _cmd_status(args):
     from hermes_cli.gateway_profile_lifecycle import print_parked_status
+    from hermes_cli.gateway_status_notes import print_standalone_by_config, report_incompatible_owner
     deep = getattr(args, "deep", False)
     full = getattr(args, "full", False)
     system = getattr(args, "system", False)
@@ -5645,11 +5650,14 @@ def _cmd_status(args):
         else:
             _gw_windows().status(deep=deep)
         _print_gateway_process_mismatch(snapshot)
+        report_incompatible_owner(())
         _print_multiplex_standalone_reason()
         _print_served_ingress_urls()
     else:
         pids = list(snapshot.gateway_pids)
-        if pids:
+        if pids and report_incompatible_owner(pids):
+            pass  # an older Hermes's gateway: alive, but every client of this version refuses it
+        elif pids:
             print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
             print("  (Running manually, not as a system service)")
             _print_runtime_health()
@@ -5674,20 +5682,7 @@ def _cmd_status(args):
 
     _print_duplicate_credential_warnings()
     _print_other_profiles_gateway_status()
-    _print_standalone_by_config()
-
-
-def _print_standalone_by_config() -> None:
-    """Default-profile status: name the profiles that opted out of the host multiplexer by config,
-    so the served set the host gateway reports is not mistaken for the installed roster."""
-    from hermes_cli.profiles import get_active_profile_name, profiles_to_serve
-    if (get_active_profile_name() or "default") != "default":
-        return
-    roster = {name for name, _home in profiles_to_serve(True, include_standalone=True)}
-    served = {name for name, _home in profiles_to_serve(True)}
-    names = sorted(roster - served - {"default"})
-    if names:
-        print(f"standalone by config (temporary compatibility shim): {', '.join(names)}")
+    print_standalone_by_config()
 
 
 def _cmd_list(args):

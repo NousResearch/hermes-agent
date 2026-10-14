@@ -95,7 +95,7 @@ def test_staged_plugin_publication_uses_installed_identity_and_local_dependencie
     if active:
         python = selected / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         probe = subprocess.run([str(python), "-I", "-c", "import publication_dep; print(publication_dep.__version__)"],
-                               text=True, capture_output=True, timeout=30)
+                               text=True, capture_output=True, timeout=30, check=False)
         assert probe.returncode == 0, probe.stderr
         assert probe.stdout.strip() == "1.0"
         facts = (install_state_dir(project) / "facts.json").read_bytes()
@@ -256,7 +256,7 @@ def test_worker_death_recovers_at_each_durable_publication_boundary(
                f"project = Path({str(project)!r})\n"
                "activate_dependencies(project)\nactivate_dependencies(project)\n")
     recovery = subprocess.run([sys.executable, "-I", "-S", "-c", program], capture_output=True, text=True,
-                              env=dict(os.environ), timeout=30)
+                              env=dict(os.environ), timeout=30, check=False)
     assert recovery.returncode == 0, recovery.stderr
     committed = phase == "commit"
     assert (selected_venv(project) != before_env) is (committed and rebuild)

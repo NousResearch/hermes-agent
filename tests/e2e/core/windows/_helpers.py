@@ -152,6 +152,7 @@ def run(argv: list[str], home: WinHome, *, cwd: Path | None = None, timeout: flo
     proc = subprocess.run(
         argv, cwd=cwd or home.project, env=home.env(env_extra), capture_output=True,
         input=stdin, stdin=None if stdin is not None else subprocess.DEVNULL, timeout=timeout,
+        check=False,
     )
     return Run(proc.returncode, _decode(proc.stdout), _decode(proc.stderr))
 
@@ -331,7 +332,7 @@ def kill_owned(home: WinHome, *, since: float) -> None:
 
 def taskkill_tree(pid: int) -> subprocess.CompletedProcess:
     """The Desktop's backend quit path on Windows (electron/backend-child.ts): taskkill /T /F."""
-    return subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=60)
+    return subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=60, check=False)
 
 
 def nonce(prefix: str) -> str:

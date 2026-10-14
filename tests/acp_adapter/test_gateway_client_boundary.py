@@ -5,7 +5,7 @@ from acp_adapter.server import HermesACPAgent
 
 
 def test_default_acp_does_not_construct_an_embedded_session_manager(monkeypatch):
-    import acp_adapter.server as server
+    from acp_adapter import server
 
     def forbidden(*args, **kwargs):
         raise AssertionError("ACP constructed an independent session owner")

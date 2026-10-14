@@ -570,7 +570,7 @@ def _dotted_provider(case: Case) -> str:
 
 def _cli(env: dict, *args: str, timeout: float = 120) -> subprocess.CompletedProcess:
     return subprocess.run([sys.executable, "-m", "hermes_cli.main", *args], cwd=str(WORKTREE), env=env,
-                          capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+                          capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, check=False)
 
 
 def _cli_home(tmp_path: Path, case: Case) -> tuple[dict, Path]:

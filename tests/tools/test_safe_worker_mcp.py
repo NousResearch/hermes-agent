@@ -58,7 +58,7 @@ def test_safe_worker_never_spawns_mcp_servers(tmp_path, mode):
                            "discovered": discovered, "again": again}}))
     '''), encoding="utf-8")
     result = subprocess.run([sys.executable, str(script)], cwd=root, env=env, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=120)
+                            capture_output=True, text=True, timeout=120, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     out = json.loads(result.stdout.strip().splitlines()[-1])
     if mode == "safe":

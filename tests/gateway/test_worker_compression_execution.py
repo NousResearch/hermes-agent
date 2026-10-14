@@ -47,7 +47,7 @@ def test_ordinary_daemon_worker_compresses_without_canonical_sqlite_opens(tmp_pa
             receipt = tmp_path / 'receipt.json'
             result = subprocess.run([sys.executable, str(root / 'tests/gateway/fixtures/compression_persistence_worker.py')],
                 cwd=root, env=env, input=json.dumps(dict(home=str(home), url=url, session_id=sid,
-                    foreign=foreign, receipt=str(receipt))) + '\n', text=True, capture_output=True, timeout=120)
+                    foreign=foreign, receipt=str(receipt))) + '\n', text=True, capture_output=True, timeout=120, check=False)
             assert result.returncode == 0, result.stdout + result.stderr
             proof = json.loads(receipt.read_text())
             assert proof['opens'] == proof['fds'] == []

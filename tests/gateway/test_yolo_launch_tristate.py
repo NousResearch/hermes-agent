@@ -36,7 +36,7 @@ def test_untoggled_entry_keeps_launch_yolo_after_restart_but_explicit_off_stays_
 
     def restarted(key):
         result = subprocess.run([sys.executable, '-c', _RESTARTED_OWNER, str(tmp_path), key],
-                                capture_output=True, text=True, timeout=30)
+                                capture_output=True, text=True, timeout=30, check=False)
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
     assert restarted(untouched.session_key) == 'ENABLED True', 'launch --yolo lost for an entry nobody revoked'

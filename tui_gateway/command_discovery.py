@@ -292,5 +292,3 @@ def slash_completions(text: str = "", scope=None) -> dict:
     if (details_items := _details_completions(text)) is not None:
         return {"items": details_items, "replace_from": text.rfind(" ") + 1 if " " in text else len(text)}
     return {"items": items, "replace_from": text.rfind(" ") + 1 if " " in text else 1}
-
-

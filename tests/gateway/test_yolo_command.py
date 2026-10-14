@@ -63,7 +63,7 @@ async def test_yolo_command_toggles_only_current_session(monkeypatch):
 def test_launch_yolo_revocation_survives_the_next_turn(monkeypatch):
     """`hermes chat --yolo` seeds the bypass once; a later `/yolo` off is not re-enabled per turn."""
     from types import SimpleNamespace
-    import gateway.session_policy as session_policy
+    from gateway import session_policy
     from gateway.run_turn_runner import TurnRunner
     from gateway.turn_context import TurnContext
 

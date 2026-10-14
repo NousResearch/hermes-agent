@@ -68,3 +68,33 @@ def test_declared_cache_boundary_matches_local_database(tmp_path):
             store.close()
     finally:
         db.close()
+
+
+def test_terminal_worker_keeps_no_full_history_receipt(tmp_path):
+    """N19: every managed turn reads compression.history; once execution.finish (or settlement)
+    makes the execution terminal, that full-transcript copy must not stay in worker_receipts,
+    while its digest still makes a late duplicate with other content conflict."""
+    from hermes_state_runtime import RuntimeStoreError
+    db = SessionDB(tmp_path / 'state.db')
+    try:
+        db.create_session('s', 'cli')
+        db.append_messages_batch('s', [{'role': 'user', 'content': 'x' * 2000}])
+        epoch = begin_runtime_epoch(db, instance_id='fixture')
+        scope = dict(epoch=epoch, execution_id='worker', session_id='s', generation=0)
+        register_worker_execution(db, **scope, kind='compute', adoption_secret='secret')
+        read = dict(target='s', include_ancestors=False, include_inactive=False, repair_alternation=False,
+                    include_row_ids=False, include_compacted=False)
+        history = mutate_worker_execution(db, **scope, sequence=1, operation='compression.history', payload=read)
+        assert history['messages'][0]['content'] == 'x' * 2000
+        mutate_worker_execution(db, **scope, sequence=2, operation='execution.finish', payload={})
+        stored = db._read_all('SELECT sequence, LENGTH(result_json) FROM worker_receipts ORDER BY sequence')
+        assert stored[0][1] < 200, 'a terminal execution kept a full-history receipt'
+        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+            mutate_worker_execution(db, **scope, sequence=1, operation='compression.history',
+                                    payload=dict(read, include_row_ids=True))
+        with pytest.raises(RuntimeStoreError, match='stale_generation'):
+            mutate_worker_execution(db, **scope, sequence=1, operation='compression.history', payload=read)
+        assert mutate_worker_execution(db, **scope, sequence=2, operation='execution.finish',
+                                       payload={}) == {'status': 'terminal'}
+    finally:
+        db.close()

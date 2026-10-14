@@ -96,3 +96,50 @@ test('a typed /model on a canonical session answers the same handshake and its r
   protocol.result('session.resume', { session_id: 's' }, { session_id: 's', revision: 3, execution_generation: 2 })
   expect(protocol.prepare('slash.exec', { session_id: 's', command: 'model pricey' }).payload).toEqual({ model: 'pricey' })
 })
+
+test('a confirmed model switch whose reply was lost retries as the exact token-bearing request until answered', () => {
+  const protocol = new CanonicalDesktopProtocol()
+  protocol.result('session.resume', { session_id: 's' }, { session_id: 's', revision: 3, execution_generation: 2 })
+  const pick = { session_id: 's', key: 'model', value: 'pricey --provider custom' }
+  const refused = protocol.prepare('config.set', pick)
+  protocol.result('config.set', refused, { session_id: 's', operation: 'model', status: 'confirmation_required', confirm: 'tok-1', confirm_message: 'pricey' })
+
+  // The user confirmed; the owner may have committed it, but the reply never arrived.
+  const confirmed = protocol.prepare('config.set', { ...pick, confirm_expensive_model: true })
+  expect(confirmed.payload).toEqual({ model: 'pricey', provider: 'custom', confirm: 'tok-1' })
+  protocol.failure(confirmed, new Error('Hermes gateway connection closed'))
+
+  // Every retry of that target is the same confirmed intent: same request id, same token.
+  for (const retry of [{ ...pick, confirm_expensive_model: true }, pick]) {
+    const again = protocol.prepare('config.set', retry)
+    expect(again.request_id).toBe(confirmed.request_id)
+    expect(again.payload).toEqual(confirmed.payload)
+  }
+
+  // A different target never inherits the token.
+  expect(protocol.prepare('config.set', { ...pick, value: 'other --provider custom', confirm_expensive_model: true }).payload)
+    .toEqual({ model: 'other', provider: 'custom' })
+
+  // The owner's answer spends it: the next switch to the same target asks afresh.
+  protocol.result('config.set', confirmed, { session_id: 's', operation: 'model', revision: 4, execution_generation: 3, model: 'pricey' })
+  expect(protocol.prepare('config.set', { ...pick, confirm_expensive_model: true }).payload).toEqual({ model: 'pricey', provider: 'custom' })
+})
+
+test('a typed refusal of the confirmed request spends its token; a declined dialog never sends one', () => {
+  const protocol = new CanonicalDesktopProtocol()
+  protocol.result('session.resume', { session_id: 's' }, { session_id: 's', revision: 3, execution_generation: 2 })
+
+  const refuse = (prepared: Record<string, unknown>, token: string) =>
+    protocol.result('slash.exec', prepared, { session_id: 's', operation: 'model', status: 'confirmation_required', confirm: token, confirm_message: 'x' })
+
+  refuse(protocol.prepare('slash.exec', { session_id: 's', command: 'model pricey' }), 'tok-1')
+  // Declined: the user's next plain attempt of the same target carries no token.
+  expect(protocol.prepare('slash.exec', { session_id: 's', command: 'model pricey' }).payload).toEqual({ model: 'pricey' })
+
+  const confirmed = protocol.prepare('slash.exec', { session_id: 's', command: 'model pricey', confirm_expensive_model: true })
+  expect(confirmed.payload).toEqual({ model: 'pricey', confirm: 'tok-1' })
+  const stale = Object.assign(new Error('stale_generation'), { data: { reason: 'stale_generation' } })
+  protocol.failure(confirmed, stale)
+  protocol.result('session.resume', { session_id: 's' }, { session_id: 's', revision: 3, execution_generation: 2 })
+  expect(protocol.prepare('slash.exec', { session_id: 's', command: 'model pricey', confirm_expensive_model: true }).payload).toEqual({ model: 'pricey' })
+})

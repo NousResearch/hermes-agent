@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -23,9 +24,10 @@ def test_ensure_waits_for_real_control_owner_without_claiming_pending_is_ready(t
         payload = {"runtime_protocol": 1, "state": "starting", "instance_id": "peer",
                    "served_profiles": [{"profile_id": str(home), "home": str(home)}]}
         stalled = False
+        unstall = threading.Event()  # set at teardown so the stalled handler thread exits
         def identify():
             if stalled:
-                time.sleep(4)  # longer than the caller's deadline: a stalled owner is 'starting', never ready
+                unstall.wait(30)  # outlives the caller's deadline: a stalled owner is 'starting', never ready
             return payload
         server = GatewayControlServer(home, verb_handlers={"identify": identify})
         assert await server.start()
@@ -45,6 +47,7 @@ def test_ensure_waits_for_real_control_owner_without_claiming_pending_is_ready(t
             assert result.state == "starting" and result.reason_code == "deadline"
             assert not (home / "logs").exists()
         finally:
+            unstall.set()
             await server.stop()
     asyncio.run(probe())
 
@@ -122,17 +125,17 @@ def test_public_ensure_json_deadline_and_invalid_invocation(tmp_path):
         encoding="utf-8")
     env = {**os.environ, "HERMES_HOME": str(home)}
     result = subprocess.run([sys.executable, "-m", "hermes_cli.main", "gateway", "ensure", "--json"],
-                            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
+                            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15, check=False)
     assert result.returncode == 6, result.stderr
     value = json.loads(result.stdout)
     assert value["state"] == "draining" and value["reason_code"] == "update_paused"
     assert "private-token" not in result.stdout
     result = subprocess.run([sys.executable, "-m", "hermes_cli.main", "gateway", "ensure", "--json", "--timeout", "nan"],
-                            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
+                            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15, check=False)
     assert result.returncode == 2
     assert json.loads(result.stdout)["reason_code"] == "invalid_invocation"
     result = subprocess.run([sys.executable, "-m", "hermes_cli.main", "gateway", "ensure", "--json", "--unknown", "private-value"],
-                            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
+                            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15, check=False)
     assert result.returncode == 2
     assert json.loads(result.stdout)["reason_code"] == "invalid_invocation"
     assert "private-value" not in result.stdout
@@ -177,6 +180,7 @@ def test_unmanaged_child_uses_explicit_home_and_survives_launcher_exit(tmp_path,
         f"home=Path({str(home)!r})\n"
         "real=start.subprocess.Popen\n"
         "def boundary(argv, **kw):\n"
+        " if 'hermes_cli.main' not in argv: return real(argv, **kw)  # e.g. git from the env builder\n"
         " assert argv[-3:] == ['gateway','run','--quiet']\n"
         " assert '--replace' not in argv and '--force' not in argv\n"
         " assert kw['env']['HERMES_HOME'] == str(home)\n"
@@ -187,7 +191,7 @@ def test_unmanaged_child_uses_explicit_home_and_survives_launcher_exit(tmp_path,
         "print(child.pid, flush=True)\n", encoding="utf-8")
     env = {**os.environ, "PYTHONPATH": str(Path.cwd()), "HERMES_HOME": str(tmp_path / "wrong")}
     result = subprocess.run([sys.executable, str(launcher)], env=env, stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=10)
+                            capture_output=True, text=True, timeout=10, check=False)
     try:
         assert result.returncode == 0, result.stderr
         deadline = time.monotonic() + 5

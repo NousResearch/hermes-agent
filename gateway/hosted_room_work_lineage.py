@@ -38,4 +38,3 @@ def validate_provenance(record, spans):
 def task_origins(record, spans):
     return {task["task_id"]: {"gateway_id": origin.gateway_id, "epoch": origin.epoch}
             for task in record["tasks"] for origin in [at_sequence(spans, task["source_event_seq"])]}
-

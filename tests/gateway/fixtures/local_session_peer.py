@@ -7,6 +7,7 @@ from pathlib import Path
 import shlex
 import sys
 import threading
+import time
 import traceback
 
 from authority_controls_peer import ModelPeer
@@ -101,12 +102,13 @@ async def probe(peer, target, kind):
         assert resumed['result']['session_id'] == sid, resumed
         submitted = await rpc(a, 'prompt.submit', session_id=sid, input_id='first', text='Remove owned fixture')
         assert submitted.get('result', {}).get('status') == 'queued', submitted
-        async with asyncio.timeout(25):
-            while True:
-                snapshot = await rpc(b, 'session.resume', session_id=sid)
-                if snapshot['result'].get('prompts'):
-                    break
-                await asyncio.sleep(.03)
+        deadline = time.monotonic() + 25
+        while True:
+            snapshot = await rpc(b, 'session.resume', session_id=sid)
+            if snapshot['result'].get('prompts'):
+                break
+            assert time.monotonic() < deadline, f'no prompt reached the shared attach: {snapshot}'
+            await asyncio.sleep(.03)
         assert target.exists(), 'effect preceded consent'
         ref = SessionRef(authority.profile_id, sid)
         agent = authority.agent(ref)

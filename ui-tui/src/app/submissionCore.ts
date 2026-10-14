@@ -6,6 +6,7 @@ import { pendingInputOwner, savePendingInput } from '../lib/pendingInputs.js'
 import type { Msg } from '../types.js'
 
 import { markBubbleShown } from './pendingBubbles.js'
+import { retireCanonicalControls } from './slash/canonicalSessionControls.js'
 import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -165,7 +166,7 @@ function settleAdmissionReply(item: QueueItem, r: PromptSubmitResponse, ctx: Adm
     (r?.input_id ?? r?.admission_id) === item.submissionId &&
     Boolean(destination.storedSid) &&
     r?.target_session_id === destination.storedSid &&
-    r?.target_profile_home === destination.profileHome &&
+    r?.target_profile_home === (destination.ownerHome ?? destination.profileHome) &&
     ['queued', 'started', 'terminal', 'unknown'].includes(r?.status ?? '')
 
   item.settle?.(accepted)
@@ -337,6 +338,7 @@ export function submitPrompt(
       return
     }
 
+    retireCanonicalControls(deps.gw, sid)
     deps.gw
       .request<PromptSubmitResponse>(
         item?.controlMethod ?? 'prompt.submit',

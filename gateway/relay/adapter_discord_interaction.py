@@ -27,7 +27,7 @@ class RelayDiscordInteractionMixin:
         session key matches the one the follow-up capability was bound under."""
         try:
             payload = json.loads(bytes(getattr(forward, "body", b"")).decode("utf-8"))
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
         if not isinstance(payload, dict):
             return None

@@ -53,6 +53,11 @@ def completion_payload(row, settled, response, captured):
     # its stored row, so a transcript read racing this frame never paints it twice.
     # ``submission_id`` names whose turn it is: the sending viewer binds its optimistic
     # prompt (``user-<submission_id>``), which the queued admission ack could not name.
+    # A local viewer's turn end recorded the session-cumulative stats (``session_usage.publish_usage``):
+    # main's TUI read ``message.complete.usage`` for its status bar and ``/usage`` totals.
+    if isinstance((captured or {}).get('session_usage'), dict):
+        from gateway.session_usage import tui_usage
+        complete['usage'] = tui_usage(captured['session_usage'])
     if isinstance(captured_result.get('persisted_turn'), dict):
         complete['persisted_turn'] = {**captured_result['persisted_turn'],
                                       'submission_id': row['request_id']}

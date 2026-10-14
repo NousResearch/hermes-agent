@@ -12,6 +12,21 @@ def _authority(adapter):
     return active_authority(adapter.gateway_runner)
 
 
+# Malformed input is 400 and a retryable refusal 503; every other reason (ownership, generation,
+# identity) keeps the documented 409, as /v1/runs clients already branch on it.
+_STORE_ERROR_STATUS = {'invalid_params': 400, 'runtime_draining': 503, 'storage_unavailable': 503}
+
+
+def store_error_response(_openai_error, exc):
+    """A refused store call -> HTTP: a ``RuntimeStoreError`` keeps its reason; any other failure
+    (SQLite writer patience exhausted, I/O) is ``storage_unavailable``."""
+    from aiohttp import web
+    reason = exc.reason if isinstance(exc, RuntimeStoreError) else 'storage_unavailable'
+    status = _STORE_ERROR_STATUS.get(reason, 409)
+    return web.json_response(_openai_error(reason, code=reason), status=status,
+                             headers={'Retry-After': '1'} if status == 503 else None)
+
+
 def run_admission(adapter, run_id):
     authority = _authority(adapter)
     if authority is None:
@@ -28,7 +43,9 @@ def run_projection(adapter, run_id):
     if owned is None:
         return None
     authority, row = owned
-    status = {'queued': 'queued', 'started': 'running', 'unknown': 'interrupted', 'terminal': row['outcome']}.get(row['status'])
+    # ``unknown`` is not terminal: later turns wait for POST /v1/runs/{id}/resolve-unknown, and
+    # ``interrupted`` is in TERMINAL_STATUSES, so a poller would stop at a paused head.
+    status = {'queued': 'queued', 'started': 'running', 'unknown': 'unknown', 'terminal': row['outcome']}.get(row['status'])
     saved = admission_result(authority.db, row['admission_id'])
     result = saved.get('result', {}) if saved else {}
     if row['status'] == 'terminal':
@@ -94,12 +111,21 @@ async def stop_run(adapter, run_id):
     actor = Principal('api', authority.profile_id,
                       frozenset({'session:submit', 'session:control'}), 'api-run:' + run_id)
     if row['status'] == 'queued':
-        await authority.cancel_queued(actor, ref, row['admission_id'])
-        adapter._stopping_run_ids.add(run_id)
-        waiter = authority.waiters.pop(row['admission_id'], None)
-        if waiter is not None and not waiter.done():
-            waiter.set_result(None)
-    elif row['status'] == 'started':
+        try:
+            await authority.cancel_queued(actor, ref, row['admission_id'])
+        except RuntimeStoreError as exc:
+            # The drain claimed the head between the read above and the cancel commit: the run is
+            # executing now, so Stop that exact claim below instead of refusing a live run.
+            if exc.reason != 'stale_generation':
+                raise
+            authority, row = run_admission(adapter, run_id)
+        else:
+            adapter._stopping_run_ids.add(run_id)
+            waiter = authority.waiters.pop(row['admission_id'], None)
+            if waiter is not None and not waiter.done():
+                waiter.set_result(None)
+            return run_projection(adapter, run_id)
+    if row['status'] == 'started':
         await authority.interrupt(actor, ref, row['generation'])
         adapter._stopping_run_ids.add(run_id)
         return {'run_id': run_id, 'status': 'stopping', 'admission_id': row['admission_id']}

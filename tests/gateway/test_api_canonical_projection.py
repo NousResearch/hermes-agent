@@ -11,6 +11,7 @@ from gateway.platforms import api_server as _api_server
 from gateway.platforms.api_server_runs import _RunLaunch, _execute_run
 from gateway.session_api_turn import admit_api_turn
 from gateway.session_ingress import execute_admission
+from tests.waiting import async_wait_until
 
 PNG = base64.b64encode(b'\x89PNG\r\n\x1a\n' + b'\x00' * 64).decode()
 
@@ -86,7 +87,7 @@ async def test_initialization_failure_is_a_failed_receipt_not_completed(api, own
 async def test_run_sse_carries_controls_tool_payloads_and_authoritative_cancellation(api, owner):
     from tools import clarify_gateway
     admitted = admit_api_turn(api, session_id='sse', user_message='hello', conversation_history=[])
-    _, ref, row = admitted
+    _, ref, _row = admitted
     launch, queue = _launch(api, admitted)
     tool_payloads = []
 
@@ -228,8 +229,8 @@ async def test_room_grant_answers_the_clarify_prompt_its_run_raised(api, owner, 
     headers = {'Authorization': f'HermesRoom {grant}'}
     admitted = admit_api_turn(api, session_id='room-clarify', request_id='run_room', user_message='hello',
                               conversation_history=[])
-    _, ref, row = admitted
-    launch, queue = _launch(api, admitted, run_id='run_room')
+    _, ref, _row = admitted
+    launch, _queue = _launch(api, admitted, run_id='run_room')
     scope_request = SimpleNamespace(headers=headers, path='/v1/runs/run_room/clarify', method='POST')
     api._run_owners['run_room'] = api._run_idempotency_scope(scope_request)
 
@@ -243,9 +244,8 @@ async def test_room_grant_answers_the_clarify_prompt_its_run_raised(api, owner, 
         return entry.response
     owner.runner._handle_message = handle
     run = asyncio.ensure_future(_execute_run(api, launch, _api_server=_api_server))
-    async with asyncio.timeout(10):
-        while not (run_projection(api, 'run_room') or {}).get('pending_controls'):
-            await asyncio.sleep(0.02)
+    await async_wait_until(lambda: (run_projection(api, 'run_room') or {}).get('pending_controls'),
+                           timeout=10, what='the clarify prompt projected on the run')
     prompt = run_projection(api, 'run_room')['pending_controls'][0]
     body = {'request_id': prompt['prompt_id'], 'execution_generation': prompt['execution_generation'], 'answer': 'b'}
     app = web.Application()

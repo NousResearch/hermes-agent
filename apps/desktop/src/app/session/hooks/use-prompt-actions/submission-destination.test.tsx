@@ -79,6 +79,26 @@ afterEach(() => {
 })
 
 describe('submission intent destinations', () => {
+  // N7 (ported from #135061): two panes in one window are enough. The owner replays a known
+  // submission id as `terminal`, so a new message adopting the uncertain send's id would vanish.
+  it('separate mounted composers submit identical text as distinct intents while an explicit retry retains its payload', async () => {
+    const first = setup()
+    const second = setup()
+    first.requestGateway.mockRejectedValueOnce(new Error('lost acknowledgement'))
+    const a = renderHook(() => useSubmitPrompt(first.deps))
+    const b = renderHook(() => useSubmitPrompt(second.deps))
+    await act(async () => { expect(await a.result.current('same text')).toBe(false) })
+    const original = first.requestGateway.mock.calls.find(call => call[0] === 'prompt.submit')![1]!
+    await act(async () => { expect(await b.result.current('same text')).toBe(true) })
+    const other = second.requestGateway.mock.calls.find(call => call[0] === 'prompt.submit')![1]!
+    expect(other.submission_id).not.toBe(original.submission_id)
+    const retained = Object.values(JSON.parse(localStorage.getItem('hermes.desktop.preparedSubmissions.v1')!))
+    expect(retained).toHaveLength(1)
+    expect(retained[0]).toMatchObject({ id: original.submission_id, params: original })
+    await act(async () => { expect(await a.result.current('same text', { submission_id: String(original.submission_id) })).toBe(true) })
+    expect(first.requestGateway.mock.calls.filter(call => call[0] === 'prompt.submit')[1][1]).toEqual(original)
+  })
+
   it('stages canonical images on the captured owner without a legacy image RPC', async () => {
     const { uploadComposerAttachment } = await import('.')
     const original = window.hermesDesktop
@@ -109,12 +129,12 @@ describe('submission intent destinations', () => {
     deps.syncAttachmentsForSubmit.mockResolvedValue({ sessionId: 'runtime-a', attachments: [image] } as never)
     requestGateway.mockRejectedValueOnce(new Error('connection closed'))
     let hook = renderHook(() => useSubmitPrompt(deps))
-    await act(async () => { expect(await hook.result.current('image retry', { attachments: [image] })).toBe(false) })
+    await act(async () => { expect(await hook.result.current('image retry', { submission_id: 'image-retry', attachments: [image] })).toBe(false) })
     const first = requestGateway.mock.calls.find(call => call[0] === 'prompt.submit')![1]
     expect(first?.attachments).toEqual([{ path: image.path, mime: image.mime }])
     hook.unmount()
     hook = renderHook(() => useSubmitPrompt(deps))
-    await act(async () => { expect(await hook.result.current('image retry', { attachments: [image] })).toBe(true) })
+    await act(async () => { expect(await hook.result.current('image retry', { submission_id: 'image-retry', attachments: [image] })).toBe(true) })
     expect(requestGateway.mock.calls.filter(call => call[0] === 'prompt.submit')[1][1]).toEqual(first)
     expect(deps.syncAttachmentsForSubmit).toHaveBeenCalledOnce()
     expect(window.localStorage.getItem('hermes.desktop.preparedSubmissions.v1')).not.toContain('image retry')
@@ -172,7 +192,7 @@ describe('submission intent destinations', () => {
     requestGateway.mockRejectedValueOnce(new Error('connection closed'))
     let hook = renderHook(() => useSubmitPrompt(deps))
     await act(async () => {
-      expect(await hook.result.current('retry me')).toBe(false)
+      expect(await hook.result.current('retry me', { submission_id: 'explicit-retry' })).toBe(false)
     })
     const journal = window.localStorage.getItem('hermes.desktop.preparedSubmissions.v1')
     expect(journal).toContain('retry me')
@@ -197,7 +217,7 @@ describe('submission intent destinations', () => {
     hook = renderHook(() => useSubmitPrompt(deps))
     const { result } = hook
     await act(async () => {
-      expect(await result.current('retry me')).toBe(true)
+      expect(await result.current('retry me', { submission_id: 'explicit-retry' })).toBe(true)
     })
 
     const calls = requestGateway.mock.calls.filter(
@@ -283,7 +303,7 @@ describe('submission intent destinations', () => {
     const input = slash ? '/private-skill' : 'first prompt'
     let hook = mount()
     await act(async () => {
-      expect(await hook.result.current(input)).toBe(false)
+      expect(await hook.result.current(input, { submission_id: 'new-session-retry' })).toBe(false)
     })
     const serialized = window.localStorage.getItem('hermes.desktop.preparedSubmissions.v1')
     expect(serialized).toBeTruthy()
@@ -294,7 +314,7 @@ describe('submission intent destinations', () => {
     loseAck = false
     hook = mount()
     await act(async () => {
-      expect(await hook.result.current(input)).toBe(true)
+      expect(await hook.result.current(input, { submission_id: 'new-session-retry' })).toBe(true)
     })
     expect(accepted.size).toBe(1)
     expect(deps.createBackendSessionForSend).toHaveBeenCalledTimes(1)
@@ -302,7 +322,7 @@ describe('submission intent destinations', () => {
     expect(expansions).toBe(slash ? 1 : 0)
   })
 
-  it.each(['missing', 'wrong', 'unknown', '4094', 'lost-legacy'])(
+  it.each(['missing', 'wrong', '4094', 'lost-legacy'])(
     'requires a matching receipt or one pre-admission legacy refusal: %s',
     async mode => {
       const { deps, requestGateway } = setup()
@@ -324,18 +344,18 @@ describe('submission intent destinations', () => {
           return { ok: true } as never
         }
 
-        return { admission_id: mode === 'wrong' ? 'wrong-id' : params?.submission_id, status: 'unknown' } as never
+        return { admission_id: 'wrong-id', status: 'queued' } as never
       })
       let hook = renderHook(() => useSubmitPrompt(deps))
       await act(async () => {
-        expect(await hook.result.current('receipt')).toBe(mode === '4094')
+        expect(await hook.result.current('receipt', { submission_id: `receipt-${mode}` })).toBe(mode === '4094')
       })
       hook.unmount()
       hook = renderHook(() => useSubmitPrompt(deps))
 
       if (mode !== '4094') {
         await act(async () => {
-          expect(await hook.result.current('receipt')).toBe(false)
+          expect(await hook.result.current('receipt', { submission_id: `receipt-${mode}` })).toBe(false)
         })
         const attempts = requestGateway.mock.calls.filter(call => call[0] === 'prompt.submit')
 
@@ -346,6 +366,44 @@ describe('submission intent destinations', () => {
       }
     }
   )
+
+  it.each([true, false])('submits a fresh draft to the owner its create published after activation (owner known: %s)', async ownerKnown => {
+    const { deps, requestGateway } = setup()
+    deps.activeSessionIdRef.current = null
+    deps.selectedStoredSessionIdRef.current = null
+    deps.getRuntimeIdForStoredSession = () => 'runtime-new'
+    $connection.set({ connectionId: 'local', profile: 'default', mode: 'local' } as never)
+    deps.createBackendSessionForSend.mockImplementation(async () => {
+      // A newly created profile finishes activating while session.create is in flight.
+      $activeGatewayProfile.set('fresh-profile')
+      $connection.set({ connectionId: 'local', profile: 'fresh-profile', mode: 'local' } as never)
+      deps.activeSessionIdRef.current = 'runtime-new'
+      deps.selectedStoredSessionIdRef.current = 'stored-new'
+
+      if (ownerKnown) {
+        $sessions.set([{ id: 'stored-new', connection_id: 'local', profile: 'fresh-profile' }] as never)
+      }
+
+      return 'runtime-new' as never
+    })
+    const { result } = renderHook(() => useSubmitPrompt(deps))
+
+    await act(async () => {
+      expect(await result.current('first message in the new profile')).toBe(ownerKnown)
+    })
+
+    expect(requestGateway.mock.calls.filter(call => call[0] === 'prompt.submit')).toHaveLength(0)
+    const routed = wire.request.mock.calls.filter(call => call[2] === 'prompt.submit')
+
+    if (ownerKnown) {
+      expect(routed).toHaveLength(1)
+      expect(routed[0].slice(0, 2)).toEqual(['local', 'fresh-profile'])
+      expect(routed[0][3]).toMatchObject({ session_id: 'runtime-new', text: 'first message in the new profile' })
+    } else {
+      // Without a published owner the write keeps the entry authority, which has moved.
+      expect(routed).toHaveLength(0)
+    }
+  })
 
   it('assigns one direct ID before preprocessing and keeps it through busy retries', async () => {
     const { deps, requestGateway } = setup()

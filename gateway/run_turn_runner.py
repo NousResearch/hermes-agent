@@ -78,7 +78,7 @@ class _ExecApprovalDeclined(RuntimeError):
 class TurnRunner:
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
-    def __init__(self, runner: "GatewayRunner", ctx: TurnContext) -> None:
+    def __init__(self, runner: GatewayRunner, ctx: TurnContext) -> None:
         self._runner = runner
         self._ctx = ctx
 
@@ -546,7 +546,7 @@ class TurnRunner:
         _PROGRESS_TEXT_LIMIT: int
         _edit_accepts_metadata: bool
 
-    def _progress_edit_state(self, adapter) -> "TurnRunner._ProgressEditState":
+    def _progress_edit_state(self, adapter) -> TurnRunner._ProgressEditState:
         ctx = self._ctx
         len_fn = adapter.message_len_fn if isinstance(adapter, BasePlatformAdapter) else len
         try:

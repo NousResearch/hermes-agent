@@ -32,7 +32,7 @@ class ApiServerMemorySessions:
     """Session-keyed ``MemoryManager`` registry with exclusive check-out/check-in."""
 
     def __init__(self, *, max_size: Optional[int] = None, idle_ttl_secs: Optional[float] = None) -> None:
-        self._entries: "OrderedDict[tuple[str, str], tuple[Any, Optional[Path], float]]" = OrderedDict()
+        self._entries: OrderedDict[tuple[str, str], tuple[Any, Optional[Path], float]] = OrderedDict()
         self._lock = threading.Lock()
         self._max_size = max_size
         self._idle_ttl_secs = idle_ttl_secs

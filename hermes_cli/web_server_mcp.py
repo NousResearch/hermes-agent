@@ -105,7 +105,7 @@ def _mcp_server_summary(name: str, cfg: dict[str, Any], plugin: str | None = Non
     }
 
 
-_mcp_oauth_flows: dict[str, "DashboardOAuthFlow"] = {}
+_mcp_oauth_flows: "dict[str, DashboardOAuthFlow]" = {}
 _mcp_oauth_transactions: dict[tuple[str, str], threading.Lock] = {}
 _mcp_oauth_transactions_lock = threading.Lock()
 

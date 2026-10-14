@@ -103,8 +103,11 @@ def test_claim_flags_remove_exactly_the_jobs_the_gate_expects_skipped():
     from scripts.releases.stable import SKIPPED_BY
 
     jobs = workflow("stable-release.yml")["jobs"]
-    outputs = {"skipTests": "needs.admit.outputs.skip-tests",
-               "skipBundles": "needs.admit.outputs.skip-bundles"}
+    # A skip flag removes a job when it is true; an opt-in flag when it is not.
+    outputs = {"skipTests": "needs.admit.outputs.skip-tests != 'true'",
+               "skipBundles": "needs.admit.outputs.skip-bundles != 'true'",
+               "excludeMacosIntel": "needs.admit.outputs.include-macos-intel == 'true'",
+               "excludeTermux": "needs.admit.outputs.include-termux == 'true'"}
 
     def needs_of(name):
         needs = jobs[name].get("needs", [])
@@ -112,7 +115,7 @@ def test_claim_flags_remove_exactly_the_jobs_the_gate_expects_skipped():
 
     def removed_by(name, flag):
         condition = str(jobs[name].get("if", ""))
-        if f"{outputs[flag]} != 'true'" in condition:
+        if outputs[flag] in condition:
             return True
         # Without a status function a job skips when any job it needs skipped.
         return ("always()" not in condition and "!cancelled()" not in condition
@@ -128,14 +131,32 @@ def test_claim_flags_remove_exactly_the_jobs_the_gate_expects_skipped():
     for name in ("docker", "candidates-darwin-arm64", "candidates-darwin-x64", "candidates-win32-arm64",
                  "candidates-win32-x64", "candidates-win32-bundle", "candidates-termux"):
         assert jobs[name]["with"]["skip-tests"] == "${{ needs.admit.outputs.skip-tests == 'true' }}"
-    assert {"skip-bundles", "skip-tests"} <= set(jobs["admit"]["outputs"])
+    assert {"skip-bundles", "skip-tests", "include-macos-intel", "include-termux"} <= \
+        set(jobs["admit"]["outputs"])
     for name in ("acceptance", "publication", "complete"):
         gate = next(step for step in jobs[name]["steps"]
                     if "scripts.releases.stable gate" in step.get("run", ""))
         assert gate["env"]["SKIP_BUNDLES"] == "${{ needs.admit.outputs.skip-bundles }}"
         assert gate["env"]["SKIP_TESTS"] == "${{ needs.admit.outputs.skip-tests }}"
+        assert gate["env"]["INCLUDE_MACOS_INTEL"] == "${{ needs.admit.outputs.include-macos-intel }}"
+        assert gate["env"]["INCLUDE_TERMUX"] == "${{ needs.admit.outputs.include-termux }}"
         gated = gate["run"].split(" gate ", 1)[1].split()
         assert set(gated) <= set(needs_of(name)), name
+
+
+def test_a_skipped_upgrade_arm_never_skips_a_gated_publish_job():
+    """The signed-package upgrade arms skip when there is no published baseline (the first bundled
+    release). A gated job downstream of one without a status function inherits that skip, and the
+    publication gate then refuses it: rc.11-v0.21.7 blocked on publish-bundles=skipped."""
+    from scripts.releases.stable import PACKAGED_BY
+
+    jobs = workflow("stable-release.yml")["jobs"]
+
+    for name, job in jobs.items():
+        if set(PACKAGED_BY) & ancestors(jobs, name):
+            condition = str(job.get("if", ""))
+            assert "always()" in condition or "!cancelled()" in condition, (
+                f"{name} skips whenever an upgrade arm skips")
 
 
 def test_all_applicable_ci_jobs_are_aggregated_and_desktop_e2e_stays_deferred():
@@ -336,7 +357,34 @@ def test_docker_recovery_refuses_to_replace_a_divergent_version_tag(tmp_path):
              "IMAGE_NAME": "owner/repo", "RELEASE_TAG": "0.21.5",
              "CREATE_MARKER": str(marker)},
         capture_output=True, text=True, encoding="utf-8",
+        check=False,
     )
     assert result.returncode != 0
     assert "versioned Docker manifest differs" in result.stderr
     assert not marker.exists()
+
+
+def test_every_run_step_receives_the_variables_it_reads():
+    """A run step reading $VAR it was never given gets an empty string: rc.14-v0.21.7 passed
+    every build and gate, then 'complete' died rendering the builds table without
+    CLOUDFLARE_R2_PUBLIC_URL or RELEASE_CLAIM_TAG."""
+    import re
+
+    runner = {"GITHUB_REPOSITORY", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY", "GITHUB_ENV", "GITHUB_SHA",
+              "GITHUB_RUN_ID", "GITHUB_WORKSPACE", "RUNNER_TEMP", "HOME", "PATH"}
+    for name, job in workflow("stable-release.yml")["jobs"].items():
+        given = set(job.get("env") or {})
+        for step in job.get("steps", []):
+            used = set(re.findall(r"\$\{?([A-Z][A-Z0-9_]+)", step.get("run", ""))) - runner
+            missing = used - given - set(step.get("env") or {})
+            assert not missing, f"{name} / {step.get('name') or step['run'][:40]}: {sorted(missing)}"
+
+
+def test_the_builds_table_render_cannot_block_the_release_and_has_its_r2_inputs():
+    """The table is presentation: it never fails 'Stable release is green', and it gets the
+    R2 credentials its listing and page writes need."""
+    step = next(step for step in workflow("stable-release.yml")["jobs"]["complete"]["steps"]
+                if step.get("name") == "Render the admitted candidate smoke results")
+    assert str(step.get("continue-on-error")).lower() == "true"  # base YAML loader: a string
+    assert {"CLOUDFLARE_R2_ACCOUNT_ID", "CLOUDFLARE_R2_ACCESS_KEY_ID", "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
+            "CLOUDFLARE_R2_BUCKET", "CLOUDFLARE_R2_PUBLIC_URL", "RELEASE_CLAIM_TAG"} <= set(step["env"])

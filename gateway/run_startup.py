@@ -140,13 +140,6 @@ class GatewayStartupMixin:
             drained += 1
         return drained
 
-    @staticmethod
-    def _start_free_tier_bootstrap() -> None:
-        """One bootstrap per process. `run_bootstrap` already records its own failure in the boot record
-        and never raises, so this is a plain call; it exists as a method so tests can seam it."""
-        from hermes_cli.free_tier_bootstrap import run_bootstrap
-        run_bootstrap(announce=False)
-
     def _start_startup_warmup(self) -> None:
         """Kick off the boot turn-machinery warm-up so it overlaps the network-bound platform
         connects; ``_finish_startup_restore`` awaits it (bounded)."""
@@ -158,8 +151,7 @@ class GatewayStartupMixin:
 
     async def _run_boot_probe_in_launch_scope(self, fn):
         """Run a boot-time probe on the default executor under the LAUNCH profile's scope when
-        multiplexing (the ``_discover_gateway_mcp_tools`` shape). Boot probes (``check_fn``s, the
-        free-tier bootstrap) read profile-scoped secrets; an unscoped read under multiplex fails
+        multiplexing (the ``_discover_gateway_mcp_tools`` shape). Boot probes (``check_fn``s) read profile-scoped secrets; an unscoped read under multiplex fails
         closed, so routing overrides resolve as absent and default routing applies. ``copy_context``
         carries the contextvars across the executor hop; single-profile keeps environ semantics."""
         loop = asyncio.get_running_loop()
@@ -175,11 +167,6 @@ class GatewayStartupMixin:
                 logger.debug("multiplex launch-scope entry failed for boot probe %s; running unscoped",
                              getattr(fn, "__name__", fn), exc_info=True)
         return await loop.run_in_executor(None, copy_context().run, fn)
-
-    async def _run_free_tier_bootstrap(self) -> None:
-        """The free-tier bootstrap mints the Portal identity through the same profile-scoped routing
-        overrides the warm-up resolves, so it takes the same launch-profile binding."""
-        await self._run_boot_probe_in_launch_scope(self._start_free_tier_bootstrap)
 
     async def _warm_turn_prerequisites(self) -> None:
         """Initialize turn machinery on an executor thread before the gate opens. Never raises: a
@@ -273,7 +260,7 @@ class GatewayStartupMixin:
         """Done-callback for boot-path tasks that outlive the startup-restore gate: surface a late
         failure otherwise swallowed once the task leaves ``_background_tasks``. Cancellation is
         expected (shutdown), not an error."""
-        def _report(task: "asyncio.Task") -> None:
+        def _report(task: asyncio.Task) -> None:
             if task.cancelled():
                 return
             exc = task.exception()
@@ -421,7 +408,7 @@ class GatewayStartupMixin:
                     try:
                         await asyncio.wait_for(wake.wait(), timeout=delay)
                         continue  # A shorter sibling may now be due first.
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         pass
                     if getattr(self, "_running", False):
                         await self._redeliver_failed_obligations_for_platform(target, profile=profile)
@@ -429,7 +416,7 @@ class GatewayStartupMixin:
                 pending.pop(key, None)
                 wakes.pop(key, None)
 
-        task = asyncio.create_task(_redeliver_after_wait(), name="flood-redelivery:%s:%s" % key)
+        task = asyncio.create_task(_redeliver_after_wait(), name="flood-redelivery:{}:{}".format(*key))
         pending[key] = task
         # The gateway's ordinary shutdown drain must cancel sleeping timers too.
         background = getattr(self, "_background_tasks", None)
@@ -1624,12 +1611,6 @@ class GatewayStartupMixin:
         if self._start_check_access_policy():
             return True
         await self._start_recover_previous_run()
-        # The gateway is a boot owner of the Nous free tier, beside `cmd_chat` and `hermes serve`: every
-        # demand-time site (provider resolution, /login, the connector token) is a read that needs the
-        # identity to already exist. Blocking here, before any adapter connects, is what keeps a fast
-        # first DM from arriving with nothing to resolve. With the launch gate unset this is a local
-        # inventory and no network.
-        await self._run_free_tier_bootstrap()
         # Serialize startup restore against inbound: adapters receive as soon as they connect, so inbound
         # queues until every synthetic resume turn has finished.
         self._startup_restore_in_progress = True
@@ -1715,7 +1696,7 @@ class GatewayStartupMixin:
 
     async def _handoff_resolve_destination(
         self, row: dict[str, Any], profile_name: Optional[str]
-    ) -> "GatewayStartupMixin._HandoffDestination":
+    ) -> GatewayStartupMixin._HandoffDestination:
         """Resolve platform, transport, home channel, thread and destination source for a row."""
         from gateway.delivery import resolve_delivery_transport
         cli_session_id = row["id"]

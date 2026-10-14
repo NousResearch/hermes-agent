@@ -443,6 +443,15 @@ class ChannelPublisher:
             raise ChannelError("Retirement requires a directly active stable-release destination")
         target_raw = self.reader.read_bytes(target["head"]["manifestKey"], target["head"]["sha256"])
         manifest = validate_manifest(decode_json(target_raw), target, self.public_base)
+        # Clients pin destinationHead and need their own package in it, so a
+        # stable head that left a target out (macOS Intel is opt-in) cannot
+        # receive a preview that shipped that target.
+        if record["head"] is not None:
+            source_raw = self.reader.read_bytes(record["head"]["manifestKey"], record["head"]["sha256"])
+            source = validate_manifest(decode_json(source_raw), record, self.public_base)
+            covered = {(p["platform"], p["arch"]) for p in manifest["packages"]}
+            if any((p["platform"], p["arch"]) not in covered for p in source["packages"]):
+                raise ChannelError("Retirement destination lacks a package this channel ships")
         # Two-tier retirement: the kind is derived, never asserted by the caller.
         # A suffixed (canary/commit) identity can never match stable's, so
         # "in-place" cannot be mis-assigned; the kind is a client routing hint.

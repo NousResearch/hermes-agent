@@ -88,6 +88,7 @@ import { recycleOwnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import { createInstalledRuntimeGate } from './backend-resolution'
 import { createBackendServeSupportResolver } from './backend-serve-support'
+import { desktopBackendSpawnEnv } from './backend-spawn-env'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
@@ -286,7 +287,6 @@ import { resolveGatewayVersion } from './gateway-version'
 import { probeGatewayWebSocket, spawnedBackendProbeOptions } from './gateway-ws-probe'
 import { windowsGitCandidates } from './git-binary-candidates'
 import { registerGitIpc } from './git-ipc'
-import { desktopBackendSpawnEnv, guestOnboardingEnabled } from './guest-onboarding'
 import {
   assertExistingPathForOpen,
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
@@ -462,6 +462,7 @@ import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
 import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
 import { commandFocusedGuest, notePreviewGuestHidden } from './preview-guest-offscreen'
+import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
 import { PreviewReachRegistry } from './preview-reach'
 import { previewHttpUrlTarget } from './preview-url-target'
 import {
@@ -644,8 +645,8 @@ import { ChannelResolver, type ChannelTarget } from './updater/channel'
 import { inspectRunningChannelApp } from './updater/channel-native'
 import { ChannelStrategy } from './updater/channel-strategy'
 import { verifyPreparedChannelInstaller } from './updater/channel-windows-host'
-import { createCheckoutStrategy } from './updater/checkout'
-import { readSourceUpdate, type SourceUpdate } from './updater/checkout-source'
+import { type CheckoutStrategy, createCheckoutStrategy } from './updater/checkout'
+import { readSourceUpdate, sourceChannelName, type SourceUpdate } from './updater/checkout-source'
 import { ExternalStrategy } from './updater/external'
 import { readUpdatesFeedBaseFromConfig, resolveFeedBaseUrl } from './updater/feed-config'
 import { createChannelMacStrategy, createMacStrategy } from './updater/mac-client'
@@ -1422,8 +1423,6 @@ const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
 // nobody to answer a modal, so the active-work confirmation would hang the
 // caller instead of letting the process exit. Force quits set this.
 const SKIP_QUIT_CONFIRM = process.env.HERMES_DESKTOP_SKIP_QUIT_CONFIRM === '1'
-// One launch decision must reach both the renderer and every backend spawn.
-const GUEST_ONBOARDING: boolean = guestOnboardingEnabled()
 
 const BOOT_FAKE_STEP_MS = (() => {
   const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
@@ -3602,11 +3601,6 @@ function writeFileAtomic(targetPath, data, encoding?: BufferEncoding) {
   fs.renameSync(tmp, targetPath)
 }
 
-function writeDesktopUpdateConfig(config) {
-  fs.mkdirSync(path.dirname(DESKTOP_UPDATE_CONFIG_PATH), { recursive: true })
-  writeFileAtomic(DESKTOP_UPDATE_CONFIG_PATH, JSON.stringify(config, null, 2))
-}
-
 // ─── Main-window geometry persistence (window-state.json) ──────────────────
 
 function readWindowState() {
@@ -3903,21 +3897,25 @@ function requireBundledPayload(mechanism: UpdaterStrategy['mechanism']): Payload
  * entrypoints dispatch only through this strategy — there is no other
  * production path to the checkout arms.
  */
-function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
+function resolveCheckoutUpdateStrategy(): CheckoutStrategy {
   return createCheckoutStrategy({
     hermesHome: HERMES_HOME,
     isWindows: IS_WINDOWS,
     isMac: IS_MAC,
     defaultUpdateBranch: DEFAULT_UPDATE_BRANCH,
     updateHandoffDwellMs: UPDATE_HANDOFF_DWELL_MS,
-    readSourceUpdate: async (updateRoot: string, opts: { force?: boolean }): Promise<SourceUpdate | null> =>
+    readSourceUpdate: async (
+      updateRoot: string,
+      opts: { force?: boolean; setChannel?: 'main' | 'stable' }
+    ): Promise<SourceUpdate | null> =>
       readSourceUpdate({
         python: await findPythonForRoot(updateRoot),
         git: resolveGitBinary(),
         updateRoot,
         hermesHome: HERMES_HOME,
         branchConfigPath: DESKTOP_UPDATE_CONFIG_PATH,
-        force: opts.force
+        force: opts.force,
+        setChannel: opts.setChannel
       }),
     resolveUpdateRoot,
     resolveUpdaterBinary,
@@ -10233,7 +10231,6 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       probeReuseProof: sshProbeReuseProof,
       adoptServedToken: adoptServedDashboardToken,
       rememberLog: sshRememberLog,
-      guestOnboarding: GUEST_ONBOARDING,
       signal: lease.signal
     })
   } catch (error: any) {
@@ -12234,27 +12231,24 @@ async function runPoolBackendStart(
     backend.args,
     hiddenWindowsChildOptions({
       cwd: hermesCwd,
-      env: desktopBackendSpawnEnv(
-        {
-          // Never another profile's dotenv credentials from the Desktop env (#68367), and never
-          // the launch profile's TERMINAL_CWD: a pooled backend serves THIS --profile, whose
-          // placeholder/unset terminal.cwd sessions must resolve their own workspace, not the
-          // app-global one (#87584). The child re-resolves from its profile config like a
-          // standalone `hermes -p X serve`.
-          ...pooledProfileBackendEnv({ hermesHome: HERMES_HOME, profile, backendEnv: backend.env }),
-          HERMES_DASHBOARD_SESSION_TOKEN: token,
-          // Marks this dashboard backend as desktop-spawned so it runs the cron
-          // scheduler tick loop (the gateway isn't running under the app).
-          HERMES_DESKTOP: '1',
-          // Exact parent identity lets the backend self-exit after an unclean
-          // Desktop death without mistaking a reused PID for its owner. If the
-          // optional marker probe fails, retain legacy PID-only tracking.
-          ...parentIdentityEnv,
-          HERMES_WEB_DIST: webDist,
-          ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
-        },
-        GUEST_ONBOARDING
-      ),
+      env: desktopBackendSpawnEnv({
+        // Never another profile's dotenv credentials from the Desktop env (#68367), and never
+        // the launch profile's TERMINAL_CWD: a pooled backend serves THIS --profile, whose
+        // placeholder/unset terminal.cwd sessions must resolve their own workspace, not the
+        // app-global one (#87584). The child re-resolves from its profile config like a
+        // standalone `hermes -p X serve`.
+        ...pooledProfileBackendEnv({ hermesHome: HERMES_HOME, profile, backendEnv: backend.env }),
+        HERMES_DASHBOARD_SESSION_TOKEN: token,
+        // Marks this dashboard backend as desktop-spawned so it runs the cron
+        // scheduler tick loop (the gateway isn't running under the app).
+        HERMES_DESKTOP: '1',
+        // Exact parent identity lets the backend self-exit after an unclean
+        // Desktop death without mistaking a reused PID for its owner. If the
+        // optional marker probe fails, retain legacy PID-only tracking.
+        ...parentIdentityEnv,
+        HERMES_WEB_DIST: webDist,
+        ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
+      }),
       shell: backend.shell,
       stdio: ['ignore', 'pipe', 'pipe']
     })
@@ -13148,34 +13142,31 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       backend.args,
       hiddenWindowsChildOptions({
         cwd: hermesCwd,
-        env: desktopBackendSpawnEnv(
-          {
-            // Never another profile's dotenv credentials from the Desktop env (#68367).
-            ...profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: activeProfile }),
-            // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
-            // resolves to the SAME location our resolveHermesHome() picked. Without
-            // this pin, Python falls back to ~/.hermes on every platform — fine on
-            // mac/linux (where our default matches), but on Windows our default is
-            // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
-            // Mismatch would split config / sessions / .env / logs across two
-            // directories. install.ps1 sets HERMES_HOME via setx; the desktop
-            // can't reliably do that, so we set it inline for every spawn.
-            HERMES_HOME,
-            ...backend.env,
-            TERMINAL_CWD: hermesCwd,
-            HERMES_DASHBOARD_SESSION_TOKEN: token,
-            // Marks this dashboard backend as desktop-spawned so it runs the cron
-            // scheduler tick loop (the gateway isn't running under the app).
-            HERMES_DESKTOP: '1',
-            // Exact parent identity lets the backend self-exit after an unclean
-            // Desktop death without mistaking a reused PID for its owner. If the
-            // optional marker probe fails, retain legacy PID-only tracking.
-            ...parentIdentityEnv,
-            HERMES_WEB_DIST: webDist,
-            ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
-          },
-          GUEST_ONBOARDING
-        ),
+        env: desktopBackendSpawnEnv({
+          // Never another profile's dotenv credentials from the Desktop env (#68367).
+          ...profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: activeProfile }),
+          // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
+          // resolves to the SAME location our resolveHermesHome() picked. Without
+          // this pin, Python falls back to ~/.hermes on every platform — fine on
+          // mac/linux (where our default matches), but on Windows our default is
+          // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
+          // Mismatch would split config / sessions / .env / logs across two
+          // directories. install.ps1 sets HERMES_HOME via setx; the desktop
+          // can't reliably do that, so we set it inline for every spawn.
+          HERMES_HOME,
+          ...backend.env,
+          TERMINAL_CWD: hermesCwd,
+          HERMES_DASHBOARD_SESSION_TOKEN: token,
+          // Marks this dashboard backend as desktop-spawned so it runs the cron
+          // scheduler tick loop (the gateway isn't running under the app).
+          HERMES_DESKTOP: '1',
+          // Exact parent identity lets the backend self-exit after an unclean
+          // Desktop death without mistaking a reused PID for its owner. If the
+          // optional marker probe fails, retain legacy PID-only tracking.
+          ...parentIdentityEnv,
+          HERMES_WEB_DIST: webDist,
+          ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
+        }),
         shell: backend.shell,
         stdio: ['ignore', 'pipe', 'pipe']
       })
@@ -13653,11 +13644,7 @@ function installPreviewGuestPreload() {
     }
 
     contents.on('will-attach-webview', (_attachEvent, webPreferences, params) => {
-      if (params.partition !== 'persist:hermes-preview') {
-        return
-      }
-
-      webPreferences.preload = PREVIEW_GUEST_PRELOAD_PATH
+      applyPreviewGuestAttachPrefs(webPreferences, params.partition, PREVIEW_GUEST_PRELOAD_PATH)
     })
   })
 }
@@ -14019,7 +14006,7 @@ const wakeIndicatorController = createWakeIndicatorWindowController({
   wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('wakeIndicator'))
 })
 
-registerWindowSizing({ enabled: GUEST_ONBOARDING, mainWindow: (): BrowserWindow | null => mainWindow })
+registerWindowSizing({ mainWindow: (): BrowserWindow | null => mainWindow })
 registerMachineProfile()
 
 // The pet overlay: a single transparent, frameless, always-on-top window that
@@ -18208,7 +18195,9 @@ ipcMain.on('hermes:feature-flags', (event: IpcMainEvent): void => {
       argv: process.argv,
       canary: resolveUpdaterChannelFromStamp() === 'canary'
     }),
-    guestOnboarding: GUEST_ONBOARDING
+    // Dev-only: `--fresh-install` makes onboarding treat this launch as a fresh
+    // install. Packaged builds never honour it.
+    assumeFreshInstall: !app.isPackaged && process.argv.includes('--fresh-install')
   }
 })
 
@@ -18663,18 +18652,12 @@ ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
   }))
 )
 
-ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
+// About ▸ Updates channel selector; source checkouts only (packages bake their channel).
+ipcMain.handle('hermes:updates:channel:set', async (_event, name: unknown): Promise<UpdaterStatusWire> => {
+  assertSourceUpdateChannel(INSTALL_STAMP)
 
-ipcMain.handle(
-  'hermes:updates:branch:set',
-  async (_event: Electron.IpcMainInvokeEvent, name: unknown): Promise<{ branch: string }> => {
-    assertSourceUpdateChannel(INSTALL_STAMP)
-    const branch: string = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
-    writeDesktopUpdateConfig({ branch })
-
-    return { branch }
-  }
-)
+  return resolveCheckoutUpdateStrategy().check({ force: true, setChannel: sourceChannelName(name) })
+})
 
 function resolveHermesVersion(scope: { connectionId?: string; profile?: string } = {}): Promise<string> {
   return resolveGatewayVersion(path => handleHermesApiRequest({ ...scope, path, timeoutMs: 5000 }))

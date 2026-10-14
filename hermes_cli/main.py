@@ -185,7 +185,7 @@ def _run_and_exit_oneshot(
         _exit_after_oneshot(rc)
 
 
-def _warn_if_unsupervised_pid1(pid: "int | None" = None) -> None:
+def _warn_if_unsupervised_pid1(pid: int | None = None) -> None:
     """Warn when this process is PID 1 with nothing above it to reap orphans.
 
     The official image's ENTRYPOINT (``docker/entrypoint-dispatch.sh`` -> s6-overlay's
@@ -244,7 +244,7 @@ def _set_process_title() -> None:
 # in: mouse-residue suppression reads this BEFORE `_apply_profile_override()`
 # sets HERMES_HOME, and a cache keyed on nothing pinned every later caller to
 # the default home's interface for the whole run (#116902).
-_EARLY_INTERFACE_CACHE: "tuple[str, str] | None" = None
+_EARLY_INTERFACE_CACHE: tuple[str, str] | None = None
 
 
 def _early_interface_config_path() -> str:
@@ -280,7 +280,7 @@ def _config_default_interface_early() -> str:
     return value
 
 
-def _wants_tui_early(argv: "list[str] | None" = None) -> bool:
+def _wants_tui_early(argv: list[str] | None = None) -> bool:
     """Earliest TUI decision, usable before argparse/config imports.
 
     Precedence: ``--cli`` wins, then ``--tui``/``HERMES_TUI=1``, then a
@@ -389,6 +389,7 @@ from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
+from hermes_cli.subcommands.connectors import build_connectors_parser
 from hermes_cli.subcommands.claw import build_claw_parser
 from hermes_cli.subcommands.vault import build_vault_parser
 from hermes_cli.subcommands.moa import build_moa_parser
@@ -405,7 +406,7 @@ from hermes_cli.subcommands.curator import build_curator_parser
 from hermes_cli.subcommands.pets import build_pets_parser
 from hermes_cli.subcommands.journey import build_journey_parser
 from hermes_cli.subcommands.computer_use import build_computer_use_parser
-from hermes_cli.subcommands.sessions import build_sessions_parser
+from hermes_cli.subcommands.sessions import build_sessions_parser, cmd_sessions_lazy
 from hermes_cli.subcommands.completion import build_completion_parser
 
 
@@ -1060,10 +1061,7 @@ def _dotenv_has_provider_key(env_file: Path, provider_env_vars: set) -> bool:
             line = line.strip()
             if line.startswith("#") or "=" not in line:
                 continue
-            if line.startswith("export "):
-                # Strip the bash-compatible ``export `` prefix so lines like ``export API_KEY=...`` parse as
-                # ``API_KEY`` rather than being stored under the wrong key ``"export API_KEY"`` (#6659).
-                line = line[7:]
+            line = line.removeprefix("export ")
             key, _, val = line.partition("=")
             if key.strip() in provider_env_vars and val.strip().strip("'\""):
                 return True
@@ -1094,7 +1092,7 @@ def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool)
 def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     """Check if at least one inference provider is usable. Never creates one: the Nous free tier
     counts only once its identity exists, and the boot bootstrap (``hermes_cli.free_tier_bootstrap``)
-    is the only thing that creates it; ``cmd_chat`` runs the bootstrap before asking.
+    creates it at boot (a first connector use can too); ``cmd_chat`` runs the bootstrap before asking.
 
     ``strict_profile_scope``: the caller has bound a NAMED profile's home and
     secret scope and wants an answer for that profile only — launch-process
@@ -1179,12 +1177,6 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
         except Exception:
             pass
 
-    # Nothing explicit anywhere: an existing Nous free-tier identity counts while the tier is on.
-    try:
-        from hermes_cli.anon_auth import guest_enabled, has_guest
-        return guest_enabled() and has_guest()
-    except Exception as exc:
-        logger.debug("free tier check on first run skipped: %s", exc)
     return False
 
 
@@ -1285,6 +1277,7 @@ def _resolve_workspace_key() -> Optional[str]:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+            check=False,
         )
         if result.returncode == 0 and result.stdout.strip():
             return os.path.abspath(result.stdout.strip())
@@ -1746,12 +1739,10 @@ def cmd_chat(args):
 
     _warn_retired_xai_models()
 
-    # First-run guard: the free-tier bootstrap runs first (synchronously here; it is the only thing
-    # that may create the identity), then the inventory decides whether setup is needed.
-    from hermes_cli.free_tier_bootstrap import run_bootstrap
-
-    run_bootstrap(announce=False)
-    if not _has_any_provider_configured():
+    # The TUI owns its first-run state: it renders "Setup Required" with in-place /setup.
+    # The classic prompt only fronts the classic CLI.
+    provider_configured = _has_any_provider_configured()
+    if not use_tui and not provider_configured:
         _first_run_setup_guard(args)
         return
 
@@ -1777,7 +1768,10 @@ def cmd_chat(args):
     _pin_kanban_board_env()
     from hermes_cli.observability.shared_metrics_consent import offer_consent_before_chat
 
-    offer_consent_before_chat(args)
+    # Not before setup: a blank install meets "Setup Required" first. The offer stays
+    # undecided, so it is asked on the first launch with a provider.
+    if provider_configured:
+        offer_consent_before_chat(args)
     _confirm_startup_expensive_model_override(args)
 
     passthrough = {k: getattr(args, k, d) for k, d in _CHAT_PASSTHROUGH}
@@ -2808,7 +2802,7 @@ def cmd_console(args):
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "codex-runtime", "completion",
-        "computer-use",
+        "computer-use", "connectors",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
@@ -3352,13 +3346,6 @@ def _register_plugin_cli_commands(subparsers) -> None:
         logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
 
 
-def _cmd_sessions_lazy(args, **kwargs):
-    """``hermes sessions`` handler; sessions_cmd imports only when the subcommand runs."""
-    from hermes_cli.sessions_cmd import cmd_sessions
-
-    return cmd_sessions(args, **kwargs)
-
-
 def _build_cli_parser():
     """Build the full ``hermes`` argparse tree -> ``(parser, subparsers)``.
 
@@ -3448,7 +3435,8 @@ def _build_cli_parser():
     build_tools_parser(subparsers, cmd_tools=cmd_tools)
     build_computer_use_parser(subparsers)
     build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)
-    build_sessions_parser(subparsers, cmd_sessions=_cmd_sessions_lazy)
+    build_connectors_parser(subparsers)
+    build_sessions_parser(subparsers, cmd_sessions=cmd_sessions_lazy)
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
     build_usage_parser(subparsers)
     build_monitoring_parser(subparsers, cmd_monitoring=cmd_monitoring)

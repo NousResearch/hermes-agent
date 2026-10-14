@@ -31,6 +31,7 @@ import hermes_cli.web_server_lifecycle as _web_server_lifecycle
 import hermes_cli.web_server_memory as _web_server_memory
 import hermes_cli.web_server_messaging as _web_server_messaging
 import hermes_cli.web_server_sessions as _web_server_sessions
+from datetime import UTC
 
 
 # ---------------------------------------------------------------------------
@@ -1487,14 +1488,14 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 
     def test_model_set_flips_a_stale_setup_record(self, monkeypatch):
         """POST /api/model/set landed a provider on disk; the serve process's boot record
-        (``provider_configured: false`` since a failed boot-time mint) must follow at once, with
+        (``provider_configured: false``: nothing carried inference at boot) must follow at once, with
         the ``setup.ready`` broadcast, or the web chat stays gated on "need setup" until a restart
         (setup.status answers from the record)."""
         from hermes_cli import free_tier_bootstrap as fb
 
         fb.reset_for_tests()
         monkeypatch.setattr("hermes_cli.model_cost_guard.expensive_model_warning", lambda *_a, **_k: None)
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
         broadcasts = []
         monkeypatch.setattr(fb, "_broadcast", broadcasts.append)
         with fb._lock:
@@ -4184,7 +4185,7 @@ class TestGatewayUpdatedAtContract:
         assert isinstance(value, str)
         parsed = datetime.fromisoformat(value)
         assert parsed.tzinfo is not None
-        assert parsed == datetime.fromtimestamp(epoch, tz=timezone.utc)
+        assert parsed == datetime.fromtimestamp(epoch, tz=UTC)
 
 
     def test_remote_health_numeric_updated_at_normalized(self, monkeypatch):

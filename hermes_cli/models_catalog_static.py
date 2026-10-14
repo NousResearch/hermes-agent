@@ -42,7 +42,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
         "openai/gpt-6-astra-pro-fast", "openai/gpt-6-astra-pro-flex",
         "openai/gpt-6.1-sol", "openai/gpt-6.1-sol-pro", "openai/gpt-6-sol", "openai/gpt-6-sol-pro",
         "openai/gpt-6-luna", "openai/gpt-6-luna-pro",
-        "openai/gpt-5.5", "openai/gpt-5.5-pro", "openai/gpt-5.4-mini", "google/gemini-3.1-pro-preview",
+        "openai/gpt-5.5", "openai/gpt-5.5-pro", "openai/gpt-5.4-mini", "google/gemini-4-argon",
+        "google/gemini-3.1-pro-preview",
         "google/gemini-3.8-flash", "google/gemini-3.7-flash", "x-ai/grok-4.7", "x-ai/grok-4.6",
         "deepseek/deepseek-v4-pro",
         "deepseek/deepseek-v4-pro-0813", "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4-flash-0731",
@@ -64,8 +65,8 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 # OpenRouter entries the Nous Portal does not carry (routing/fast variants, free tier —
 # ``stealth/union-alpha`` is a $0 stealth SKU without the ``:free`` suffix).
 _OPENROUTER_ONLY = {
-    "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8-fast", "meta/muse-spark-1.2",
-    "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3", "meta/muse-spark-1.3-contributor", "openrouter/pareto-code",
+    "anthropic/claude-opus-5-fast", "anthropic/claude-opus-4.8-fast",
+    "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3-contributor", "openrouter/pareto-code",
     "stealth/union-alpha",
 }
 
@@ -187,7 +188,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro",
     ],
     "gemini": [
-        "gemini-3.8-flash", "gemini-3.7-flash",
+        # Argon second: [0] is the silent default when no model is configured, and a flagship never is.
+        "gemini-3.8-flash", "gemini-4-argon", "gemini-3.7-flash",
         "gemini-3.1-pro-preview", "gemini-3-pro-preview", "gemini-3.6-flash", "gemini-3.1-flash-lite-preview",
     ],
     "zai": [
@@ -296,7 +298,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # only shows the configured model. IDs carry the "google/" publisher prefix Vertex expects
     # (see hermes_cli/model_setup_flows.py); validated live against a GCP project (global region).
     "vertex": [
-        "google/gemini-3.8-flash", "google/gemini-3.7-flash",
+        "google/gemini-3.8-flash", "google/gemini-4-argon", "google/gemini-3.7-flash",  # [0] = silent default
         "google/gemini-3.1-pro-preview", "google/gemini-3-pro-preview", "google/gemini-3.6-flash",
         "google/gemini-3.5-flash", "google/gemini-3.5-flash-lite", "google/gemini-3-flash-preview",
         "google/gemini-3.1-flash-lite-preview", "google/gemini-3.1-flash-lite",
@@ -582,10 +584,10 @@ _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "openc
 # positives are harmless. Codex-series models are excluded — the Codex Responses API doesn't
 # expose service_tier.
 _OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = ("gpt-", "o1", "o3", "o4")
-# OpenAI Ultrafast (service_tier="ultrafast", 6x Standard): broadly available for GPT-6 Astra only
-# (developers.openai.com/api/docs/guides/ultrafast-mode, 2026-09-29); GPT-6.1 Sol "coming soon".
+# OpenAI Ultrafast (service_tier="ultrafast", 6x Standard): GPT-6 Astra and GPT-6.1 Sol
+# (developers.openai.com/api/docs/guides/ultrafast-mode, 2026-10-08).
 # Exact wire slugs, matched after stripping the vendor prefix and the Hermes-side ``-900k`` alias.
-_OPENAI_ULTRAFAST_MODELS: frozenset[str] = frozenset({"gpt-6-astra"})
+_OPENAI_ULTRAFAST_MODELS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6.1-sol"})
 
 
 # Providers where models.dev is authoritative: the curated list is an offline fallback plus custom

@@ -390,6 +390,8 @@ class CLIInitMixin:
             self._release_active_session()
         sid = store.open_session(self, launch)
         self._gateway_session_open = True
+        from hermes_cli.gateway_tools import bind_session
+        bind_session(self, store.connection)  # the session's processes, before _init_agent's chat proxy
         if sid and sid != self.session_id:
             self.session_id = sid
             getattr(self, "_write_terminal_breadcrumb", lambda: None)()

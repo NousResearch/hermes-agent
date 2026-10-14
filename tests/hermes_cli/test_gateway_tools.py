@@ -110,6 +110,29 @@ def test_agents_lists_the_gateway_sessions_processes_and_subagents(gateway, caps
     assert ("process.list", {"session_id": SID}) in client.calls
 
 
+def test_agents_before_the_first_turn_reads_the_opened_sessions_processes(gateway, capsys):
+    """A resumed session's background work runs on the gateway before this CLI's first turn builds
+    its chat agent: opening the session binds the view, so /agents never reads the empty local
+    registry (Greptile 4277259979)."""
+    from cli import HermesCLI
+    from hermes_cli.gateway_session_store import GatewaySessionStore
+
+    class _ResumedStore(GatewaySessionStore):
+        def open_session(self, cli, launch=None):
+            return SID
+
+    agent, client = gateway
+    gateway_tools._view = None  # no chat agent built yet
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id, cli._resumed, cli.enabled_toolsets = SID, True, ["terminal"]
+    cli._session_db = _ResumedStore(agent.connection)
+    cli._ensure_gateway_session()
+    cli._handle_agents_command()
+    out = capsys.readouterr().out
+    assert "proc_1" in out and "sleep 300" in out
+    assert ("process.list", {"session_id": SID}) in client.calls
+
+
 def test_stop_typed_mid_turn_interrupts_the_turn_then_stops_processes(gateway, capsys):
     """/stop typed while a turn runs is dispatched inline and interrupts it like Ctrl+C (tracker
     #134889 N4), instead of being queued until the turn it should stop has finished."""

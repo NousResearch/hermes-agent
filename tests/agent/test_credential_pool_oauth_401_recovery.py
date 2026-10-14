@@ -6,7 +6,7 @@ import time
 import pytest
 
 from agent.agent_runtime_helpers import recover_with_credential_pool
-from agent.credential_pool import AUTH_TYPE_OAUTH, CredentialPool, PooledCredential
+from agent.credential_pool import AUTH_TYPE_OAUTH, STATUS_EXHAUSTED, CredentialPool, PooledCredential
 
 _API = "https://api.anthropic.com"
 _EIGHT_HOURS_MS = 8 * 3600 * 1000
@@ -45,9 +45,9 @@ def endpoint(monkeypatch):
     return server
 
 
-def _row(eid, *, access=None, refresh=None, expires_in_ms=_EIGHT_HOURS_MS):
+def _row(eid, *, access=None, refresh=None, expires_in_ms=_EIGHT_HOURS_MS, priority=0):
     return PooledCredential(
-        provider="anthropic", id=eid, label=eid, auth_type=AUTH_TYPE_OAUTH, priority=0,
+        provider="anthropic", id=eid, label=eid, auth_type=AUTH_TYPE_OAUTH, priority=priority,
         source="manual:hermes_pkce", access_token=f"{eid}-at-0" if access is None else access,
         refresh_token=refresh or f"{eid}-rt-0", expires_at_ms=int(time.time() * 1000) + expires_in_ms,
         base_url=_API,
@@ -173,3 +173,29 @@ def test_a_second_401_refreshes_only_when_its_own_token_is_due(
     assert endpoint.posts == (["claude-3-rt-0", "claude-3-rt-1"] if must_refresh else ["claude-3-rt-0"])
     assert got.access_token == ("claude-3-at-2" if must_refresh else "claude-3-at-1")
     assert endpoint.accepts(got.access_token)
+
+
+def _status(pool, eid):
+    return next(e for e in pool.entries() if e.id == eid).last_status
+
+
+def _two_refreshes_then_401(child):
+    assert _on_401(child) == (True, False)
+    assert _on_401(child) == (True, False)
+    return _on_401(child)
+
+
+class TestRefreshCap:
+    """A long delegated turn: the cap is per auth-failure episode, and reaching it rotates."""
+
+    def test_after_the_cap_the_session_rotates_to_another_healthy_row(self, endpoint, fake_pool_store):
+        pool = CredentialPool("anthropic", [_row("claude-3"), _row("claude-4", priority=1)])
+        child = _DelegatedChild(pool, "claude-3")
+
+        recovered, _ = _two_refreshes_then_401(child)
+
+        assert recovered is True
+        assert (child._credential_pool_entry_id, child.api_key) == ("claude-4", "claude-4-at-0")
+        assert _status(pool, "claude-3") == STATUS_EXHAUSTED
+        # No refresh past the cap: it would only revoke the token the row's other holders have.
+        assert endpoint.posts == ["claude-3-rt-0", "claude-3-rt-1"]

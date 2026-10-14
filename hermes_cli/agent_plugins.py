@@ -6,6 +6,7 @@ import ipaddress
 import json
 import os
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Tuple
@@ -104,11 +105,11 @@ def _server_declarations(
             raise AgentPluginError(f"server declaration '{name}' must be an object")
         if "liveness" in raw and "app" not in raw and "requires" not in raw:
             raise AgentPluginError(f"server declaration '{name}' has liveness without app or requires")
-        unknown = set(raw) - {"app", "requires", "liveness", "trust"}
+        unknown = set(raw) - {"app", "requires", "liveness", "trust", "timeout"}
         if unknown:
             raise AgentPluginError(f"server declaration '{name}' has unknown keys {sorted(unknown)}")
-        if set(raw) == {"trust"}:
-            continue  # trust only (see _server_trust): no application to declare
+        if raw and set(raw) <= {"trust", "timeout"}:
+            continue  # transport settings alone do not declare an application
         try:
             declaration = parse_declaration(
                 name, raw.get("app"), raw.get("requires"),
@@ -145,6 +146,20 @@ def _server_trust(manifest: Mapping[str, Any], mcp_servers: Mapping[str, dict[st
         if value == "untrusted":
             trust[name] = value
     return trust
+
+
+def _server_timeouts(manifest: Mapping[str, Any], mcp_servers: Mapping[str, dict[str, Any]]) -> dict[str, float]:
+    """Translate optional Hermes call deadlines without changing other servers' defaults."""
+    raw_servers = manifest.get("extensions", {}).get(_HERMES_EXTENSION, {}).get("servers", {})
+    timeouts: dict[str, float] = {}
+    for name, raw in (raw_servers.items() if isinstance(raw_servers, dict) else ()):
+        if not isinstance(raw, dict) or "timeout" not in raw or name not in mcp_servers:
+            continue
+        value = raw["timeout"]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= threading.TIMEOUT_MAX:
+            raise AgentPluginError(f"server declaration '{name}' timeout must be positive seconds within the platform wait limit")
+        timeouts[name] = float(value)
+    return timeouts
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -451,6 +466,8 @@ def load_agent_plugin(plugin_root: Path, data_root: Path) -> AgentPluginPackage:
     mcp_servers = _discover_mcp(root, resolved_data, diagnostics)
     for name, tier in _server_trust(manifest, mcp_servers).items():
         mcp_servers[name] = {**mcp_servers[name], "trust": tier}
+    for name, timeout in _server_timeouts(manifest, mcp_servers).items():
+        mcp_servers[name] = {**mcp_servers[name], "timeout": timeout}
     return AgentPluginPackage(
         name=manifest["name"], version=manifest.get("version", ""),
         description=manifest.get("description", ""), root=root, data_root=resolved_data,

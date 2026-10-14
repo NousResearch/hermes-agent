@@ -902,9 +902,30 @@ def check(*, include_venv: bool = True) -> list[str]:
     return [f"{name}: {reason}" for name, reason in drift(include_venv=include_venv).items()]
 
 
+def _dependents_first(names: list[str]) -> list[str]:
+    """*names* with each package moved ahead of the packages it depends on.
+
+    A package that extends its dependency must win on PATH: node's own dir also holds node's
+    bundled npm and npx, so with node first every ``npm`` ran that copy, not the pinned npm.
+    Unrelated packages keep their order.
+    """
+    order = list(names)
+    for name in names:
+        try:
+            deps = {package.name for package in walk([name])} - {name}
+        except KeyError:
+            continue
+        positions = [order.index(dep) for dep in deps if dep in order]
+        if positions and min(positions) < order.index(name):
+            order.remove(name)
+            order.insert(min(positions), name)
+    return order
+
+
 def _store_path_dirs() -> list[str]:
     """Composed PATH dirs of all installed (non-internal, on_path) store
-    packages, deps-first, deduped. Includes optional packages that are
+    packages, each package ahead of its dependencies (``_dependents_first``),
+    deduped. Includes optional packages that are
     *installed* (facts say so) — an installed git/gh must be on PATH even
     though it's not in the root closure. A package whose dependency chain is
     not fully installed contributes nothing: store npm over a missing store
@@ -920,7 +941,7 @@ def _store_path_dirs() -> list[str]:
         return locations[package.name]
 
     dirs: list[str] = []
-    for name in lockfile.names():
+    for name in _dependents_first(lockfile.names()):
         try:
             package = get_package(name)
             chain = walk([name])

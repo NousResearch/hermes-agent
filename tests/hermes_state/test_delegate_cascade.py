@@ -11,30 +11,30 @@ the deletion set, permanently deleting the parent session and its messages.
 import json
 import sqlite3
 
+from hermes_state_schema import reconcile_state_schema
 from hermes_state_sessions import _collect_delegate_child_ids, _delete_delegate_children
 
 
 def _make_conn():
+    # The real schema: deleting a session first retires its admission/worker
+    # ledger rows, so the cascade needs those tables to exist.
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    conn.execute(
-        "CREATE TABLE sessions ("
-        " id TEXT PRIMARY KEY,"
-        " parent_session_id TEXT,"
-        " model_config TEXT)"
-    )
-    conn.execute("CREATE TABLE messages (session_id TEXT)")
+    reconcile_state_schema(conn)
     return conn
 
 
 def _add_session(conn, sid, *, delegate_from=None, parent_session_id=None, messages=0):
     model_config = json.dumps({"_delegate_from": delegate_from}) if delegate_from else None
     conn.execute(
-        "INSERT INTO sessions (id, parent_session_id, model_config) VALUES (?, ?, ?)",
+        "INSERT INTO sessions (id, source, started_at, parent_session_id, model_config)"
+        " VALUES (?, 'cli', 0, ?, ?)",
         (sid, parent_session_id, model_config),
     )
     for _ in range(messages):
-        conn.execute("INSERT INTO messages (session_id) VALUES (?)", (sid,))
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', 'x', 0)", (sid,)
+        )
 
 
 class TestCollectDelegateChildIds:

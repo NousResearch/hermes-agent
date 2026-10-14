@@ -6,8 +6,8 @@ from contextlib import asynccontextmanager
 import pytest
 
 from hermes_cli.gateway_agent import GatewayAgent
-from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_connection import GatewayConnection
+from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
+from hermes_cli.gateway_connection import DISCONNECTED, GatewayConnection
 
 SID = "local-abc"
 
@@ -659,3 +659,51 @@ def test_fast_tier_reaches_the_session_on_each_rebuild_and_back_to_normal(make_a
     assert fast and again and normal
     sets = [p["value"] for m, p in client.calls if m == "config.set" and p.get("key") == "service_tier"]
     assert sets == ["priority", "normal"]
+
+
+class RefusingClient(FakeClient):
+    """``prompt.submit`` raises ``error`` instead of admitting the turn."""
+
+    def __init__(self, error):
+        super().__init__([])
+        self.error = error
+
+    async def rpc(self, method, *, _timeout=None, **params):
+        if method == "prompt.submit":
+            self.calls.append((method, params))
+            raise self.error
+        return await super().rpc(method, _timeout=_timeout, **params)
+
+
+def submit_against(error):
+    conn = GatewayConnection(connect=connect_with(RefusingClient(error)))
+    conn.start(5)
+    try:
+        return GatewayAgent(connection=conn, session_id=SID).run_conversation("q")
+    finally:
+        conn.close()
+
+
+def test_a_session_busy_refusal_at_submit_is_the_session_busy_verdict():
+    """The owner answered: the session is busy. That is the busy verdict (send again), not a
+    lost gateway connection."""
+    result = submit_against(GatewayRPCError("session_busy"))
+    assert result["failed"] is True and result["completed"] is False
+    assert result["failure_reason"] == "session_busy"
+    assert result["failure_retryable"] is True
+
+
+@pytest.mark.parametrize("reason", ["permission_denied", "runtime_draining", "invalid_params"])
+def test_other_owner_refusals_at_submit_are_not_a_lost_connection(reason):
+    """A received refusal keeps main's unclassified failed result: no gateway_connection label and
+    no retryability verdict."""
+    result = submit_against(GatewayRPCError(reason))
+    assert result["failed"] is True and result["error"] == reason
+    assert result["failure_reason"] is None
+    assert "failure_retryable" not in result
+
+
+def test_a_transport_loss_at_submit_is_still_gateway_connection():
+    result = submit_against(GatewayClientError(DISCONNECTED))
+    assert result["failed"] is True and result["error"] == DISCONNECTED
+    assert result["failure_reason"] == "gateway_connection" and result["failure_retryable"] is False

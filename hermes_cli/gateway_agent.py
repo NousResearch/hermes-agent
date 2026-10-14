@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 from hermes_cli.gateway_connection import DISCONNECTED, lost_before
 
 logger = logging.getLogger(__name__)
@@ -529,6 +529,12 @@ class GatewayAgent:
             try:
                 receipt = self.connection.call("prompt.submit", **self._submit_params(
                     user_message, persist_user_message, turn_author))
+            except GatewayRPCError as exc:
+                # The owner answered and refused: not a lost connection. Only its own site code
+                # (session_busy: send again) is a verdict; any other refusal stays unclassified.
+                busy = str(exc) == "session_busy"
+                return self._failed(history, user_message, str(exc),
+                                    failure_reason="session_busy" if busy else None, retryable=busy)
             except GatewayClientError as exc:
                 return self._failed(history, user_message, str(exc), failure_reason="gateway_connection")
         self._epoch = getattr(self.connection, "epoch", None)
@@ -815,13 +821,13 @@ class GatewayAgent:
             return staged
         return {"role": "user", "content": user_message}
 
-    def _failed(self, history, user_message, error, *, failure_reason=None):
+    def _failed(self, history, user_message, error, *, failure_reason=None, retryable=False):
         """``failure_reason="gateway_connection"``: the CLI shows ``error`` as written instead of
         classifying a lost gateway as a model failure ("Run /model to switch...")."""
         out = {**_RESULT_DEFAULTS, "final_response": "", "messages": history + [self._user_row(user_message)],
                "failed": True, "completed": False, "error": error, "session_id": self.session_id}
         if failure_reason:
-            out.update(failure_reason=failure_reason, failure_retryable=False)
+            out.update(failure_reason=failure_reason, failure_retryable=retryable)
         return out
 
     def _result(self, history, user_message, complete):

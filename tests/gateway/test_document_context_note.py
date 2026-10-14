@@ -74,6 +74,51 @@ class TestTextDocumentNote:
         assert "read the cached file" in prepared.lower()
 
 
+class TestAttachmentTextLabel:
+    """The note's text/binary label follows the cached bytes, never the MIME class: platforms and
+    mimetypes file source code and data (.rs, .sql, .json, ...) under application/*."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name, mime, data, inlined, is_text", [
+        # Telegram shape: octet-stream from the client, content inlined by the adapter.
+        ("main.rs", "application/octet-stream", b'fn main() { println!("hi"); }\n', True, True),
+        ("data.json", "application/json", '{"k": "ünïcode"}\n'.encode(), True, True),
+        ("schema.sql", "application/sql", b"CREATE TABLE t (id int);\n", False, True),
+        ("Makefile", "application/octet-stream", b"all:\n\techo hi\n", False, True),
+        ("blob.rs", "application/octet-stream", b"\x00\x01\x02 not text", False, False),
+        # A PDF can open with an ASCII-only prefix; it stays a binary document.
+        ("report.pdf", "application/pdf", b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n", False, False),
+        # ...also without a .pdf name (Discord/Slack keep the upload's name), with no inline flag.
+        ("report", "application/pdf", b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n", None, False),
+        ("scan", "application/octet-stream", b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n", None, False),
+    ], ids=["rs-inlined", "json-inlined", "sql", "makefile", "nul-bytes", "ascii-pdf",
+            "extensionless-pdf", "extensionless-pdf-octet-stream"])
+    async def test_label_follows_cached_bytes(self, name, mime, data, inlined, is_text):
+        from gateway.platforms.base import cache_media_bytes
+
+        cached = cache_media_bytes(data, filename=name, mime_type=mime)
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake")})
+        runner.adapters = {}
+        runner._pending_native_image_paths_by_session = {}
+        runner._session_model_overrides = {}
+        runner._session_reasoning_overrides = {}
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="c", chat_type="dm", user_id="42")
+        event = MessageEvent(
+            text="review this", message_type=MessageType.DOCUMENT, source=source,
+            media_urls=[cached.path], media_types=[cached.media_type], media_text_inlined=[inlined],
+        )
+
+        prepared = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+        note = prepared.split("\n\n", 1)[0]
+        assert cached.path in note
+        assert ("text document" in note) is is_text
+        assert ("binary format" in note) is not is_text
+        if inlined:
+            assert "included below" in note
+
+
 class TestBinaryDocumentNote:
     @pytest.mark.parametrize(
         "mtype",

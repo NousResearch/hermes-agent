@@ -150,6 +150,8 @@ export const userMessagesEn = {
     },
 
     promptTimeout: {
+      approval:
+        'Approval prompt closed: no answer in time, so the command did not run. Send your request again when you are ready to approve it, or raise approvals.timeout in config.yaml.',
       secret:
         'Secret prompt closed: no answer in time, so the step that needed it was skipped. Send your request again when you are ready to enter it.',
       sudo: 'Password prompt closed: no answer in time, so the command was skipped. Send your request again when you are ready to enter it.',

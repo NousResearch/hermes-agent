@@ -237,7 +237,7 @@ describe('backend lifecycle copy', () => {
 })
 
 describe('promptTimeoutNotice', () => {
-  it('explains a timed-out password/vault prompt and stays silent for other reasons', () => {
+  it('explains a timed-out password/vault/approval prompt and stays silent for other reasons', () => {
     const sudo = promptTimeoutNotice('sudo', 'timeout')
 
     expect(sudo).toBeTruthy()
@@ -245,7 +245,15 @@ describe('promptTimeoutNotice', () => {
     expect(sudo).not.toMatch(/\d+ minutes?/)
     expect(promptTimeoutNotice('vault.code', 'timeout')).not.toMatch(/\d+ minutes?/)
     expect(promptTimeoutNotice('sudo', 'interrupted')).toBeNull()
-    expect(promptTimeoutNotice('approval', 'timeout')).toBeNull()
+
+    // approvals.timeout is configurable, so the copy names the setting, not a length.
+    const approval = promptTimeoutNotice('approval', 'timeout')
+
+    expect(approval).toMatch(/did not run/)
+    expect(approval).toMatch(/approvals\.timeout/)
+    expect(approval).not.toMatch(/\d+ minutes?/)
+    expect(promptTimeoutNotice('approval', 'resolved')).toBeNull()
+    expect(promptTimeoutNotice('approval', 'session_closed')).toBeNull()
   })
 })
 

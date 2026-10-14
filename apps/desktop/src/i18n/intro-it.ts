@@ -4,7 +4,7 @@ import type { Translations } from './types'
 export const introIt: Translations['intro'] = {
   stock: {
     helpful: [
-      'Chiedimi di aprire un repository, eseguire i test, correggere un bug o scrivere una PR. Ti accompagnio passo dopo passo.',
+      'Chiedimi di aprire un repository, eseguire i test, correggere un bug o scrivere una PR. Ti accompagno passo dopo passo.',
       'Indicami un file, incolla un errore o descrivi ciò che stai costruendo. Al resto penso io.',
       'Prova: esamina il mio diff, esegui la suite di test o fammi spiegare questa funzione. Chiedimi quello che vuoi sul tuo codice.',
       'Posso modificare file, eseguire comandi, cercare sul web e aiutarti con i bug più ostinati. Descrivi pure l’attività.',
@@ -29,7 +29,7 @@ export const introIt: Translations['intro'] = {
       'Dammi una scintilla (una funzione, un refactoring, un prototipo folle) e la trasformerò in codice che funziona.',
       'Descrivi ciò che non esiste ancora. Riunirò test, file e API in una bozza funzionante.',
       'Porta un’intenzione, non una specifica. Prototipiamo in fretta, rifiniamo dopo e riscriviamo il mondo tra i margini.',
-      'Raccontami cosa inseguisci. Remixo esempi, adatto frammenti e lascio un commit ordinato.'
+      'Raccontami cosa inseguisci. Rimescolo esempi, adatto frammenti e lascio un commit ordinato.'
     ],
     teacher: [
       'Chiedi di qualsiasi file, concetto o errore. Ti spiego il perché, non solo la soluzione, e mostro un esempio risolto.',
@@ -54,7 +54,7 @@ export const introIt: Translations['intro'] = {
     ],
     pirate: [
       'Nomina la tua preda (un bug, una funzione, un test maledetto) e le darò la caccia, mozzo. Diff come bottino.',
-      'Mostrami le carte (il codice) e rattopperò lo scafo, farò fuoco coi cannoni (i test) e isserò un PR pulito.',
+      'Mostrami le carte (il codice) e rattopperò lo scafo, farò fuoco coi cannoni (i test) e isserò una PR pulita.',
       'Incolla un errore o un piano, cane rabbioso. Navigherò lo stack trace e tornerò col tesoro: test in verde.',
       'Dimmi dove segna la X. Leggo, modifico e faccio commit con la disciplina di un vero equipaggio, arrr.',
       'Lanciami un bug, il percorso di un repo o un’idea folle. Saccheggierò la documentazione e tornerò con codice che funziona.'
@@ -70,7 +70,7 @@ export const introIt: Translations['intro'] = {
       'Lascia lì un file, un bug, uno stack trace bello cattivo: lo surfo. Diff puliti, test in verde, zero sbatti.',
       'Incolla il percorso del tuo repo o il bug che ti ha messo giù. Remiamo, sistemiamo e usciamo. Tranqui.',
       'Dimmi il motivo: funzione, refactoring, hotfix. Eseguo i test, consegno la patch e tutto liscio, fra’.',
-      'Bug grosso? Virgoletta sbagliata? Riscrittura totale? Indica e basta. Al codice penso io; tu goditi i commit.',
+      'Bug grosso? Un refuso? Riscrittura totale? Indica e basta. Al codice penso io; tu goditi i commit.',
       'Di’ l’attività e si parte. Leggo, modifico, provo e lascio un commit più liscio di una sessione all’alba.'
     ],
     noir: [
@@ -78,7 +78,7 @@ export const introIt: Translations['intro'] = {
       'Tu hai un bug. Io ho pazienza e un terminale. Dimmi il caso e lo lavorerò finché non parla.',
       'Incolla lo stack trace, il file sospetto, l’alibi. Leggo tra le righe e torno con la verità.',
       'Ogni bug lascia una traccia. Dammi il repo e un indizio: la seguirò, patcherò e archivierò il fascicolo.',
-      'Una virgola di troppo, un segfault, un’intera architettura marcia: dammi le chiavi. Tornerò con test puliti.'
+      'Un refuso, un segfault, un’intera architettura marcia: dammi le chiavi. Tornerò con test puliti.'
     ],
     uwu: [
       'incolla un awchivo con bug o un obiettivo~ weo patcho e pwovo, con zampette picciwine nel diff owo',
@@ -96,10 +96,10 @@ export const introIt: Translations['intro'] = {
     ],
     hype: [
       'Incolla quel bug, quel repo, quell’idea di funzione pazzesca: SONO CARICATO. Diff puliti. Test in verde. SUBITO.',
-      'Lascia lì la tua attività e guardami dare il massimo. File letti, test eseguiti, PR aperti: oggi NON perdiamo, amico.',
+      'Lascia lì la tua attività e guardami dare il massimo. File letti, test eseguiti, PR aperte: oggi NON perdiamo, amico.',
       'Portami il bug più contorto che hai. Leggo, patcho, testo e faccio commit come se mi andasse la vita. ANDIAMO.',
-      'Descrivi l’attività. Spazzo via i file, schiaccio i test che falliscono e lascio un commit che FA CORARE. Dai, dai, dai.',
-      'Virgoletta minuscola o refactoring enorme, uguale. Oggi consegno codice pulito. Di’ l’attività e AL LAVORO.'
+      'Descrivi l’attività. Spazzo via i file, schiaccio i test che falliscono e lascio un commit che SPACCA. Dai, dai, dai.',
+      'Un refuso minuscolo o un refactoring enorme, uguale. Oggi consegno codice pulito. Di’ l’attività e AL LAVORO.'
     ],
     none: [
       'Fai una domanda, incolla un errore o indicami un repository. So leggere codice, usare strumenti e aiutarti a consegnare.',

@@ -37,7 +37,7 @@ export const itFirstRun: FirstRunCopy = {
   },
   intro: {
     greeting: 'Ciao, sono Hermes.',
-    plan: 'Prepariamo tutto per te. Poi combiniamo qualcosa di bello.'
+    plan: 'Prepariamo tutto per te. Poi facciamo qualcosa di bello.'
   },
   rerun: {
     title: 'Riesegui la configurazione iniziale',

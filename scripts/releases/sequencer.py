@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
+from scripts.releases import lanes as lane_set
 from scripts.releases.progress import error as log_error, group, log, logged_run, notice
 from scripts.releases.versioning import (
     marker_ref, outstanding_attempts, parse_attempt_ref, parse_marker_ref,
@@ -225,7 +226,7 @@ def _tag_message(tag: str, expected_object: str, run=output) -> dict:
 
 def discover(repository: str, run=output) -> list[dict]:
     """Derive every stable claim state from remote refs and GitHub objects."""
-    from scripts.releases.stable import tagger_epoch, validate_claim, validate_final
+    from scripts.releases.stable import is_claim_run, tagger_epoch, validate_claim, validate_final
 
     log("Fetching stable receipt tags, attempt refs and abandon markers from origin")
     run([
@@ -262,7 +263,7 @@ def discover(repository: str, run=output) -> list[dict]:
         commit = claim_ref["commit"]
         claim = _tag_message(claim_tag, claim_ref["object"], run)
         try:
-            # Normalized: a claim cut before the opt-in platform flags reads them as false.
+            # Normalized: a claim cut before lanes existed reads as the lane set it gated.
             claim = validate_claim(claim, version=version, attempt=attempt, commit=commit)
         except ValueError as error:
             raise ValueError(f"{claim_tag} metadata is invalid") from error
@@ -309,8 +310,9 @@ def discover(repository: str, run=output) -> list[dict]:
                                         or release.get("draft") is not True
                                         or release.get("prerelease") is not False):
                 raise ValueError(f"{claim_tag} draft state is invalid")
-            matching_runs = [row for row in workflow_runs
-                             if row.get("head_branch") == claim_tag and row.get("head_sha") == commit]
+            matching_runs = [row for row in workflow_runs if is_claim_run(
+                title=row.get("display_title"), head_branch=row.get("head_branch"),
+                head_sha=row.get("head_sha"), claim_tag=claim_tag, commit=commit)]
             state, retry = classify_runs(
                 matching_runs,
                 claimed_at=datetime.fromtimestamp(claim_epoch, tz=UTC),
@@ -324,18 +326,15 @@ def discover(repository: str, run=output) -> list[dict]:
             if retry:
                 why += f"; failed-job retry due (attempt {retry['attempt'] + 1} of {MAX_ATTEMPTS})"
 
-        flags = [name for name, on in (("autopublish", claim["autopublish"]),
-                                       ("skip-bundles", claim["skipBundles"]),
-                                       ("skip-tests", claim["skipTests"])) if on]
         log(f"  {claim_tag} @ {commit[:10]}: {state.upper()} — {why}"
-            + (f" [{', '.join(flags)}]" if flags else ""))
+            + (" [autopublish]" if claim["autopublish"] else "")
+            + f" [{lane_set.describe(claim['lanes'])}]")
         records.append({
             "version": version,
             "attempt": attempt,
             "state": state,
             "autopublish": claim["autopublish"],
-            "skip_bundles": claim["skipBundles"],
-            "skip_tests": claim["skipTests"],
+            "lanes": claim["lanes"],
             "claim_tag": claim_tag,
             "claim_object": claim_ref["object"],
             "claim_epoch": claim_epoch,
@@ -357,15 +356,17 @@ def channel_head(desktop_head: str | None, records: list[dict],
                  stable_alias_digest: str | None) -> str | None:
     """The newest version whose publication pass finished.
 
-    A bundle release finishes when the protected R2 head names it. A release
-    that skipped bundles never moves that head. It finishes when the Docker
-    ``stable`` alias carries the digest its final receipt binds.
+    A release that advances the desktop channel finishes when the protected R2
+    head names it. One that does not finishes when the Docker ``stable`` alias
+    carries the digest its final receipt binds, or, when it moves no channel at
+    all, as soon as it is public.
     """
     versions = [desktop_head] if desktop_head is not None else []
-    if stable_alias_digest is not None:
-        versions += [record["version"] for record in records
-                     if record["state"] == "published"
-                     and record["docker_manifest_digest"] == stable_alias_digest]
+    versions += [record["version"] for record in records
+                 if record["state"] == "published"
+                 and (not lane_set.moves_channels(record["lanes"])
+                      or (stable_alias_digest is not None
+                          and record["docker_manifest_digest"] == stable_alias_digest))]
     return max(versions, key=_key, default=None)
 
 
@@ -437,7 +438,7 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
 
     if advance_head is None:
         def production_advance(record: dict) -> None:
-            if not record["skip_bundles"]:
+            if lane_set.advances_desktop(record["lanes"]):
                 log(f"Advancing the protected desktop channel to {record['version']} from "
                     f"releases/tag/{record['claim_tag']}/ "
                     f"(receipt manifest {record['candidate_manifest_sha256']})")
@@ -445,16 +446,17 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
                     channel_releases.advance_stable(env, record, Path(directory))
                 log(f"Desktop channel head is now {record['version']}")
             else:
-                log(f"{record['version']} skipped bundles: no desktop channel to advance")
-            log(f"Moving Docker stable/latest aliases onto {record['claim_tag']} "
-                f"({record['docker_manifest_digest']})")
-            # The stable/latest aliases move onto the attempt's image here, in
-            # the publication pass with the feed pointer, never in the green
-            # build that pushed the image under the attempt ref. A release
-            # that skipped bundles moves only these aliases.
-            docker.promote_stable(record["claim_tag"], record["docker_manifest_digest"])
-            log("Docker aliases moved")
-            if not record["skip_bundles"]:
+                log(f"{record['version']} did not build every desktop package the channel serves "
+                    "(windows, macos-arm64): the desktop channel stays on the previous release")
+            if "docker" in record["lanes"]:
+                log(f"Tagging Docker {record['tag']}/stable/latest onto {record['claim_tag']} "
+                    f"({record['docker_manifest_digest']})")
+                # The final vX.Y.Z and the stable/latest aliases move onto the attempt's image here, in
+                # the publication pass with the feed pointer, never in the green
+                # build that pushed the image under the attempt ref.
+                docker.promote_stable(record["claim_tag"], record["docker_manifest_digest"], record["tag"])
+                log("Docker aliases moved")
+            if "windows-store" in record["lanes"]:
                 log("Checking the Microsoft Store submission")
                 # The Store check joins the pass here (after the feeds and aliases
                 # move). It never releases the held submission: the API cannot,

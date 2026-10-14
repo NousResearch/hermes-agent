@@ -844,8 +844,55 @@ function Disable-TreelessGraphWrites([string]$Dir) {
     }
 }
 
+# A YAML scalar as Hermes writes it: unquoted, or one pair of matching quotes; trailing comment dropped.
+function ConvertFrom-YamlScalar([string]$Text) {
+    $s = ($Text -replace '\s+#.*$', '').Trim()
+    if ($s.Length -gt 1 -and ($s[0] -eq '"' -or $s[0] -eq "'") -and $s[-1] -eq $s[0]) { $s = $s.Substring(1, $s.Length - 2) }
+    return $s
+}
+
+# The update channel this install chose (config.yaml update.installs.<id>.channel, id = sha16 of
+# the canonical install path, as hermes_cli.update_channel keys it; a record naming this path also
+# counts, since Windows paths can differ only in case). Pre-Python reader of the block YAML Hermes
+# writes; anything it cannot read returns '', which keeps the plain branch behaviour.
+function Get-ChosenChannel {
+    $config = Join-Path $HermesHome 'config.yaml'
+    if (-not (Test-Path -LiteralPath $config)) { return '' }
+    try {
+        $root = (Get-Item -LiteralPath $InstallDir -Force).FullName.TrimEnd('\')
+        $hash = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($root))
+        $id = (-join ($hash | ForEach-Object { $_.ToString('x2') })).Substring(0, 16)
+        $lines = [IO.File]::ReadAllLines($config)
+    } catch { return '' }
+    $keys = New-Object System.Collections.Generic.List[object]
+    $records = @{}
+    foreach ($line in $lines) {
+        if ($line -match '^\s*(#|$)') { continue }
+        if ($line -notmatch '^( *)([^:]+):(.*)$') { continue }
+        $indent = $Matches[1].Length
+        $key = ConvertFrom-YamlScalar $Matches[2]
+        $value = ConvertFrom-YamlScalar $Matches[3]
+        while ($keys.Count -and $keys[$keys.Count - 1].Indent -ge $indent) { $keys.RemoveAt($keys.Count - 1) }
+        $keys.Add([pscustomobject]@{ Indent = $indent; Key = $key })
+        if ($keys.Count -eq 4 -and $keys[0].Key -ceq 'update' -and $keys[1].Key -ceq 'installs') {
+            $record = $keys[2].Key
+            if (-not $records.ContainsKey($record)) { $records[$record] = @{} }
+            $records[$record][$key] = $value
+        }
+    }
+    foreach ($record in $records.GetEnumerator()) {
+        $path = "$($record.Value['path'])".TrimEnd('\')
+        if ($record.Key -ceq $id -or ($path -and $path -eq $root)) {
+            $channel = "$($record.Value['channel'])"
+            if ($channel -cmatch '^[a-z0-9]+(-[a-z0-9]+)*$') { return $channel }
+        }
+    }
+    return ''
+}
+
 function Stage-Repository {
     $pinned = $false
+    $channel = ''
     # Refuse an occupied non-checkout before provisioning Git. This check
     # needs no tool download and must not overwrite a user's existing files.
     if (-not (Test-Path (Join-Path $InstallDir ".git")) -and (Test-Path -LiteralPath $InstallDir)) {
@@ -869,7 +916,15 @@ function Stage-Repository {
         }
     }
     if (Test-Path (Join-Path $InstallDir ".git")) {
-        Log "Updating $InstallDir ($Branch)"
+        # A chosen channel (stable, a preview) owns where this checkout sits: `hermes update`
+        # moves it. Switching it to the installer's branch would leave it on main while its
+        # channel still says otherwise, and the next check would offer the release as an update.
+        # Only an explicit -Commit pin outranks the choice.
+        if (-not $Commit) { $channel = Get-ChosenChannel }
+        if ($channel -ceq 'main') { $channel = '' }
+        if ($channel) { Log "Repairing $InstallDir on the $channel update channel it chose" } else { Log "Updating $InstallDir ($Branch)" }
+        # A checkout cloned before longpaths was set: a deep path past MAX_PATH fails checkout.
+        Invoke-Native { git -C $InstallDir config core.longpaths true } | Out-Null
         # An explicit HERMES_REPO_URL names the source for reruns too, not
         # just the first clone.
         if ($env:HERMES_REPO_URL) {
@@ -905,6 +960,10 @@ function Stage-Repository {
                     if ($LASTEXITCODE) { Write-Warn "could not record the blobless filter in $InstallDir" }
                 }
             }
+        }
+        if ($channel) {
+            Log "Keeping its checkout: ``hermes update`` moves it (``hermes update --set-channel main`` follows main)"
+            return
         }
         Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
         if ($LASTEXITCODE) { Fail "git fetch failed$(Get-NativeDetail)" git_fetch_failed }
@@ -989,6 +1048,10 @@ function Stage-Repository {
         # branch tip first fetches and rewrites every file the two differ in.
         $checkout = @()
         if ($Commit) { $checkout = @('--no-checkout') }
+        # Staging dir + deepest tracked path (~160) pass MAX_PATH (260) once LOCALAPPDATA
+        # is longer than ~55 characters (a ~33-character user name), and checkout dies with
+        # "Filename too long". --config lands before checkout and stays for `hermes update`.
+        $longPaths = @('--config', 'core.longpaths=true')
         try {
             $cloned = $false
             $deferred = $false
@@ -1000,7 +1063,7 @@ function Stage-Repository {
                 # checkout and history walk (#129712).
                 $cloneLabel = "Cloning $RepoUrl ($Branch) into $InstallDir"
                 if ($attempt -gt 1) { $cloneLabel += " (attempt $attempt of 3)" }
-                Invoke-Logged $cloneLabel { git clone @progress --filter=blob:none @checkout --branch $Branch $RepoUrl $tree }
+                Invoke-Logged $cloneLabel { git clone @progress @longPaths --filter=blob:none @checkout --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) { $cloned = $true; break }
                 Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue
                 if ($attempt -lt 3) { Start-Sleep -Seconds ($attempt * 5) }
@@ -1009,7 +1072,7 @@ function Stage-Repository {
                 # The checkout step is where throttled downloads die: clone the
                 # graph alone, then retry materializing the tree separately.
                 Write-Warn "direct clone failed; trying deferred checkout"
-                Invoke-Logged "Cloning history" { git clone @progress --filter=blob:none --no-checkout --branch $Branch $RepoUrl $tree }
+                Invoke-Logged "Cloning history" { git clone @progress @longPaths --filter=blob:none --no-checkout --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) { $cloned = $true; $deferred = $true }
             }
             if (-not $cloned) { Fail "git clone failed; no checkout published$(Get-NativeDetail)" git_clone_failed }

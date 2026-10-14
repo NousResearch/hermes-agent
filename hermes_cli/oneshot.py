@@ -235,6 +235,26 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         pass
 
 
+def _register_oneshot_workspace(task_id: str, workspace_cwd: str) -> str:
+    """Attach only the explicit ``--in`` directory to this one-shot task's sandbox."""
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise RuntimeError("one-shot workspace requires a session task id")
+    workspace = Path(workspace_cwd).expanduser().resolve(strict=True)
+    if not workspace.is_dir():
+        raise ValueError("one-shot workspace must be an existing directory")
+    from tools.terminal_tool import register_task_env_overrides
+
+    register_task_env_overrides(task_id, {"cwd": str(workspace), "cwd_source": "session"})
+    return task_id
+
+
+def _clear_oneshot_workspace(task_id: str) -> None:
+    """Remove the one-shot task's in-memory cwd override after agent cleanup."""
+    from tools.terminal_tool import clear_task_env_overrides
+
+    clear_task_env_overrides(task_id)
+
+
 def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
@@ -242,15 +262,19 @@ def run_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: Optional[str] = None,
+    workspace_cwd: Optional[str] = None,
+    max_turns: Optional[int] = None,
     resume: Optional[str] = None,
     reasoning: object = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
     Model/provider fall back to ``HERMES_INFERENCE_MODEL`` and config.yaml. ``usage_file`` gets a
-    JSON usage report even when the run fails. ``resume`` is a session id (already normalized by
-    the CLI layer: latest/title/--continue resolution) whose transcript is loaded and continued
-    by this turn. Returns the exit code; the caller owns process termination.
+    JSON usage report even when the run fails. ``workspace_cwd`` is supplied only from an explicit
+    ``--in`` and is mounted as this session's workspace. ``max_turns`` caps tool-calling iterations.
+    ``resume`` is a session id (already normalized by the CLI layer: latest/title/--continue resolution)
+    whose transcript is loaded and continued by this turn. Returns the exit code; the caller owns
+    process termination.
     """
     # Silence every stdlib logger: AIAgent, tools and provider adapters log to stderr through the
     # root logger. File handlers from setup_logging() keep working (level-independent).
@@ -269,6 +293,11 @@ def run_oneshot(
     explicit_toolsets, toolsets_error = _validate_explicit_toolsets(toolsets)
     if toolsets_error:
         sys.stderr.write(toolsets_error)
+        return 2
+    if max_turns is not None and (
+        not isinstance(max_turns, int) or isinstance(max_turns, bool) or max_turns < 1
+    ):
+        sys.stderr.write("hermes -z: --max-turns must be a positive integer.\n")
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 
@@ -302,6 +331,8 @@ def run_oneshot(
                 use_config_toolsets=use_config_toolsets,
                 skills=skills,
                 resume=resume,
+                workspace_cwd=workspace_cwd,
+                max_turns=max_turns,
                 reasoning=reasoning,
                 ledger=bool(usage_file),
             )
@@ -508,6 +539,8 @@ def _run_agent(
     use_config_toolsets: bool = True,
     skills: object = None,
     resume: Optional[str] = None,
+    workspace_cwd: Optional[str] = None,
+    max_turns: Optional[int] = None,
     reasoning: object = None,
     ledger: bool = False,
 ) -> tuple[str, dict]:
@@ -573,30 +606,34 @@ def _run_agent(
     # The try spans agent construction (not just ``chat``) so the store is always closed, even when
     # ``AIAgent(...)`` raises — the one-shot exit path hard-exits via os._exit and skips finalizers.
     agent = relay_session_id = None
+    workspace_task_id = None
     try:
-        agent = AIAgent(
-            api_key=runtime.get("api_key"),
-            base_url=runtime.get("base_url"),
-            provider=runtime.get("provider"),
-            requested_provider=runtime.get("requested_provider"),
-            api_mode=runtime.get("api_mode"),
-            model=choice.model,
-            enabled_toolsets=toolsets_list,
-            quiet_mode=True,
-            platform="cli",
-            session_db=session_db,
-            session_id=resume_sid,
-            credential_pool=runtime.get("credential_pool"),
-            fallback_model=get_fallback_chain(cfg) or None,
+        agent_kwargs = {
+            "api_key": runtime.get("api_key"),
+            "base_url": runtime.get("base_url"),
+            "provider": runtime.get("provider"),
+            "requested_provider": runtime.get("requested_provider"),
+            "api_mode": runtime.get("api_mode"),
+            "model": choice.model,
+            "enabled_toolsets": toolsets_list,
+            "quiet_mode": True,
+            "platform": "cli",
+            "session_db": session_db,
+            "session_id": resume_sid,
+            "credential_pool": runtime.get("credential_pool"),
+            "fallback_model": get_fallback_chain(cfg) or None,
             # The resolved provider's request body (a custom entry's extra_body), as `hermes chat` passes it.
-            request_overrides=runtime.get("request_overrides"),
-            ephemeral_system_prompt=skills_prompt,
-            reasoning_config=reasoning_config,
+            "request_overrides": runtime.get("request_overrides"),
+            "ephemeral_system_prompt": skills_prompt,
+            "reasoning_config": reasoning_config,
             # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on
             # HERMES_INTERACTIVE (never set), hook approval via HERMES_ACCEPT_HOOKS=1, dangerous
             # commands via HERMES_YOLO_MODE=1, skill secret capture degrades gracefully.
-            clarify_callback=_oneshot_clarify_callback,
-        )
+            "clarify_callback": _oneshot_clarify_callback,
+        }
+        if max_turns is not None:
+            agent_kwargs["max_iterations"] = max_turns
+        agent = AIAgent(**agent_kwargs)
         # Belt-and-braces: no streaming display callbacks may bypass our stdout capture.
         agent.suppress_status_output = True
         agent.stream_delta_callback = None
@@ -606,13 +643,29 @@ def _run_agent(
         # Relay keys the root conversation to the id at turn entry; compression may rotate
         # agent.session_id mid-turn without opening a second root, so keep the entry id.
         relay_session_id = getattr(agent, "session_id", None)
-        result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
+        if workspace_cwd is not None:
+            workspace_task_id = str(getattr(agent, "session_id", None) or "")
+            _register_oneshot_workspace(workspace_task_id, workspace_cwd)
+            result = agent.run_conversation(
+                prompt,
+                conversation_history=conversation_history or None,  # type: ignore[arg-type]
+                task_id=workspace_task_id,
+            )
+        else:
+            result = agent.run_conversation(
+                prompt,
+                conversation_history=conversation_history or None,  # type: ignore[arg-type]
+            )
         if ledger:
             _attach_auxiliary_usage(result, session_db, aux_before,
                                     fallback_session_id=agent.session_id or resume_sid)
         return (result.get("final_response") or "", result)
     finally:
-        _close_agent(agent, session_db, relay_session_id)
+        try:
+            _close_agent(agent, session_db, relay_session_id)
+        finally:
+            if workspace_task_id:
+                _quietly("workspace override cleanup", lambda: _clear_oneshot_workspace(workspace_task_id))
 
 
 def _quietly(what: str, fn) -> None:

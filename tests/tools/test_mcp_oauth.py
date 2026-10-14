@@ -953,6 +953,68 @@ class TestPasteCallbackReader:
         _paste_callback_reader(result)  # must not raise
         assert result["auth_code"] is None
 
+    @pytest.mark.platforms("posix")
+    def test_oauth_timeout_releases_stdin_for_cli_prompt(self, monkeypatch):
+        """A timed-out paste fallback must stop reading before the CLI prompt resumes."""
+        import os
+        import select
+        import threading
+        import tools.mcp_oauth as mod
+
+        read_fd, write_fd = os.pipe()
+        stdin = os.fdopen(read_fd, "r")
+        monkeypatch.setattr(mod.sys, "stdin", stdin)
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        existing = set(threading.enumerate())
+        try:
+            with pytest.raises(OAuthNonInteractiveError, match="timed out"):
+                asyncio.run(mod._make_callback_waiter(_find_free_port(), timeout=0.1)())
+            readers = [t for t in threading.enumerate() if t not in existing
+                       and "_paste_callback_reader" in t.name]
+            for reader in readers:
+                reader.join(timeout=0.3)
+            assert all(not reader.is_alive() for reader in readers)
+            os.write(write_fd, b"next prompt\n")
+            assert select.select([read_fd], [], [], 0.3)[0]
+            assert os.read(read_fd, 20) == b"next prompt\n"
+        finally:
+            os.write(write_fd, b"\n")  # release the legacy reader on a red run
+            os.close(write_fd)
+            stdin.close()
+
+    @pytest.mark.platforms("posix")
+    def test_partial_oauth_paste_does_not_hold_stdin_after_cancel(self, monkeypatch):
+        import os
+        import select
+        import threading
+        import time
+        import tools.mcp_oauth as mod
+
+        read_fd, write_fd = os.pipe()
+        stdin = os.fdopen(read_fd, "r")
+        monkeypatch.setattr(mod.sys, "stdin", stdin)
+        stopped = threading.Event()
+        result = self._empty_result()
+        thread = threading.Thread(target=mod._paste_callback_reader, args=(result, stopped), daemon=True)
+        thread.start()
+        try:
+            os.write(write_fd, b"partial")  # raw terminal: characters arrive before Enter
+            deadline = time.monotonic() + 1
+            while select.select([read_fd], [], [], 0)[0] and time.monotonic() < deadline:
+                threading.Event().wait(0.01)
+            assert not select.select([read_fd], [], [], 0)[0], "reader never consumed the partial paste"
+            stopped.set()
+            thread.join(timeout=0.4)
+            assert not thread.is_alive()
+            os.write(write_fd, b"next\n")
+            assert select.select([read_fd], [], [], 0.3)[0]
+            assert os.read(read_fd, 20).endswith(b"next\n")
+            assert result["auth_code"] is None
+        finally:
+            os.write(write_fd, b"\n")
+            os.close(write_fd)
+            stdin.close()
+
 
 class TestWaitForCallbackPasteIntegration:
     """_wait_for_callback offers the paste prompt only when interactive."""

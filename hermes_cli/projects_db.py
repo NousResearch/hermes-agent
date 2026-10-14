@@ -74,9 +74,9 @@ _BRANCH_SAFE_RE = re.compile(r"[^a-z0-9._-]+")
 _INITIALIZED_PATHS: set[str] = set()
 # TEXT columns added to `projects` after v1; re-applied idempotently on every open so a legacy DB
 # upgrades in place.
-_OPTIONAL_PROJECT_COLUMNS = ("board_slug", "primary_path", "icon", "color")
+_OPTIONAL_PROJECT_COLUMNS = ("board_slug", "primary_path", "icon", "color", "model", "provider")
 # Nullable TEXT columns that may be absent from a legacy row.
-_OPTIONAL_ROW_FIELDS = ("description", "icon", "color", "board_slug", "primary_path")
+_OPTIONAL_ROW_FIELDS = ("description", "icon", "color", "board_slug", "primary_path", "model", "provider")
 _ACTIVE_META_KEY = "active_id"
 _DISCOVERY_POLICY_META_KEY = "repo_discovery_policy"
 
@@ -167,6 +167,11 @@ class Project:
     color: Optional[str] = None
     board_slug: Optional[str] = None
     primary_path: Optional[str] = None
+    # Default model route for sessions whose working directory falls inside this project. ``model``
+    # empty/absent = no pin (the profile default wins). ``provider`` empty = whatever the model
+    # resolves to on its own.
+    model: Optional[str] = None
+    provider: Optional[str] = None
     archived: bool = False
     folders: list[ProjectFolder] = field(default_factory=list)
 
@@ -273,20 +278,23 @@ def get_project(conn: sqlite3.Connection, id_or_slug: str) -> Optional[Project]:
 def update_project(
     conn: sqlite3.Connection, project_id: str, *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, board_slug: Optional[str] = None,
+    model: Optional[str] = None, provider: Optional[str] = None,
 ) -> bool:
-    """Patch top-level project fields; only provided (non-None) fields change. ``icon``, ``color`` and
-    ``board_slug`` take ``""`` to clear (store NULL) — ``None`` leaves the field untouched."""
+    """Patch top-level project fields; only provided (non-None) fields change. ``icon``, ``color``,
+    ``board_slug``, ``model`` and ``provider`` take ``""`` to clear (store NULL) — ``None`` leaves the
+    field untouched. Prefer ``set_project_model`` for the model route, which validates it."""
     if name is not None:
         name = str(name).strip()
         if not name:
             raise ValueError("project name must not be empty")
     if board_slug is not None:
         board_slug = normalize_slug(board_slug) if board_slug.strip() else ""
-    # (column, provided value, stored value) — "" clears icon/color/board_slug to NULL.
+    # (column, provided value, stored value) — "" clears icon/color/board_slug/model/provider to NULL.
     fields = [
         (col, given, stored) for col, given, stored in (
             ("name", name, name), ("description", description, description), ("icon", icon, icon or None),
             ("color", color, color or None), ("board_slug", board_slug, board_slug or None),
+            ("model", model, model or None), ("provider", provider, provider or None),
         ) if given is not None
     ]
     if not fields:
@@ -471,10 +479,78 @@ def project_for_path(conn: sqlite3.Connection, path: str, *, include_archived: b
 
     def owns(folder: str) -> bool:
         stem = folder.rstrip("/\\")
-        return target == folder or target.startswith(stem + os.sep) or target.startswith(stem + "/")
+        if target == folder or target.startswith(stem + os.sep) or target.startswith(stem + "/"):
+            return True
+        # Symlinked spellings of the same place (macOS ``/tmp`` -> ``/private/tmp``, a linked
+        # checkout root) must still match: compare realpaths, but only when the plain check
+        # failed, so a genuine non-match stays a non-match.
+        real_target, real_stem = os.path.realpath(target), os.path.realpath(stem)
+        return real_target != target and (
+            real_target == real_stem or real_target.startswith(real_stem + os.sep)
+        )
 
     owners = [row for row in conn.execute(sql).fetchall() if owns(row["folder"])]
     return get_project(conn, max(owners, key=lambda r: len(r["folder"]))["pid"]) if owners else None
+
+
+def validate_project_model(model: Optional[str], provider: Optional[str]) -> tuple[str, str]:
+    """Normalize a project model route.
+
+    A provider without a model is refused: it would pin credentials to a model nobody chose. This
+    mirrors kanban's task-level ``provider_override``-without-``model_override`` rule. Returns
+    ``("", "")`` for "no pin" (both cleared).
+    """
+    m = str(model).strip() if model is not None else ""
+    p = str(provider).strip().lower() if provider is not None else ""
+    if p and not m:
+        raise ValueError("a project provider needs a model to apply to (`--model`)")
+    return (m, p if m else "")
+
+
+def set_project_model(
+    conn: sqlite3.Connection, project_id: str, model: Optional[str], provider: Optional[str] = None
+) -> tuple[str, str]:
+    """Pin (or clear, when ``model`` is empty) a project's default model route.
+
+    Returns the normalized ``(model, provider)`` pair actually stored.
+    """
+    m, p = validate_project_model(model, provider)
+    update_project(conn, project_id, model=m, provider=p)
+    return (m, p)
+
+
+def project_model_for_path(
+    conn: sqlite3.Connection, path: str, *, include_archived: bool = False
+) -> Optional[tuple[str, str, str]]:
+    """The default ``(model, provider, project_slug)`` pinned on the project owning ``path``, else None.
+
+    Resolution is the same longest-folder-wins rule as ``project_for_path``, so a session inside a
+    nested project gets the innermost pin. A project with no model pinned returns None (profile
+    default wins) even when it has a provider recorded from an earlier route.
+    """
+    proj = project_for_path(conn, path, include_archived=include_archived)
+    if proj is None:
+        return None
+    model = str(proj.model or "").strip()
+    if not model:
+        return None
+    return (model, str(proj.provider or "").strip(), proj.slug)
+
+
+def resolve_default_model_for_path(path: str, *, db_path: Optional[Path] = None) -> Optional[tuple[str, str, str]]:
+    """Open the projects DB and return ``project_model_for_path`` for ``path``.
+
+    Fail-open by design: this runs on the startup path of every surface, and a missing/corrupt
+    projects DB (or an unexpected sqlite error) must degrade to "no project pin", never to a
+    failed startup.
+    """
+    if not str(path or "").strip():
+        return None
+    try:
+        with connect_closing(db_path=db_path) as conn:
+            return project_model_for_path(conn, path)
+    except Exception:
+        return None
 
 
 def branch_name_for(project: Project, task_id: str, *, title: str = "") -> str:

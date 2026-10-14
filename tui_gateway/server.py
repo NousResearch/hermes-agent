@@ -2543,11 +2543,28 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
         raise
 
 
-def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str, dict]:
+def _project_model_pin(cwd: str) -> tuple[str, str, str] | None:
+    """``hermes project set-model`` route pinned on the project owning ``cwd``, else None.
+
+    Fail-open: an unreadable projects DB must never stop a session from being built.
+    """
+    if not str(cwd or "").strip():
+        return None
+    try:
+        from hermes_cli import projects_db as pdb
+
+        return pdb.resolve_default_model_for_path(cwd)
+    except Exception:
+        logger.debug("project model pin lookup failed for cwd %s", cwd, exc_info=True)
+        return None
+
+
+def _resolve_agent_model_runtime(model_override, provider_override, cwd: str = "") -> tuple[str, dict]:
     """(model, runtime) for a new agent; a per-session override (/model switch or a resumed row's persisted
-    runtime) wins over global config/env. Older rows stored the resolved provider "custom" (no named entry
-    matches) — recover the identity from the persisted base_url or the rebuild fails "No LLM provider
-    configured". Persisted base_url/api_key/api_mode are honored only for the original runtime, never a fallback."""
+    runtime) wins over a project-pinned default, which wins over global config/env. Older rows stored the
+    resolved provider "custom" (no named entry matches) — recover the identity from the persisted base_url
+    or the rebuild fails "No LLM provider configured". Persisted base_url/api_key/api_mode are honored only
+    for the original runtime, never a fallback."""
     if isinstance(model_override, dict) and model_override.get("model"):
         model = str(model_override.get("model") or "")
         requested_provider = model_override.get("provider") or provider_override or None
@@ -2568,6 +2585,12 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
             model = model_override
         if provider_override:
             requested_provider = provider_override
+        elif not (isinstance(model_override, str) and model_override):
+            # Nothing deliberate was chosen for this session (/model pick or stored route), so a
+            # project owning this session's cwd may pin the default route; it outranks the global
+            # default. A pinned project with no provider keeps whatever the global default resolved.
+            if pin := _project_model_pin(cwd):
+                model, requested_provider = pin[0], (pin[1] or requested_provider)
         resolve_kwargs = {"requested": requested_provider, "target_model": model or None}
         overrides = {}
     resolution = _resolve_runtime_with_fallback(resolve_kwargs)
@@ -2670,13 +2693,18 @@ def _make_agent(
     from agent.shell_hooks import register_from_config
     register_from_config(cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)
-    model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
+    with _sessions_lock:
+        session = _sessions.get(sid)
+    # The session's own working directory decides which project owns it — and so which
+    # project-pinned default route applies when neither a /model pick nor a stored route is set.
+    model, runtime = _resolve_agent_model_runtime(
+        model_override, provider_override,
+        cwd_override or _session_cwd(session) or _default_session_cwd(),
+    )
     fallback_notice = runtime.pop("_fallback_notice", None)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
-    with _sessions_lock:
-        session = _sessions.get(sid)
     agent = AIAgent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
         requested_provider=runtime.get("requested_provider"),

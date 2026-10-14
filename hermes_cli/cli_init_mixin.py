@@ -116,7 +116,19 @@ class CLIInitMixin:
         )
         # resume must not clobber an explicit -m with the session's stored model.
         self._explicit_model_override = bool(model)
-        self.model = model or _config_model or ""
+        # A project may pin a default model route (`hermes project set-model`) that stands in for the
+        # profile default when the working directory sits inside one of its folders. An explicit
+        # -m/--provider still wins, and a missing/corrupt projects DB simply means "no pin".
+        _project_model = _project_provider = ""
+        self._project_model_pin: Optional[tuple[str, str, str]] = None
+        if not model:
+            from hermes_cli import projects_db as _pdb
+
+            _pin = _pdb.resolve_default_model_for_path(os.getcwd())
+            if _pin is not None:
+                _project_model, _project_provider, _ = _pin
+                self._project_model_pin = _pin
+        self.model = model or _project_model or _config_model or ""
         _cfg_provider = _model_config.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER")
         _startup_provider_override = _startup_base_url_override = _startup_api_key_override = ""
         if self.model:
@@ -147,7 +159,7 @@ class CLIInitMixin:
                 self.model = _auto_detect_local_model(_base_url) or self.model
         # Provider normalisation may silently override the default but must warn for an
         # explicit choice (a config model equal to the global fallback is NOT explicit).
-        self._model_is_default = not model and not _config_model
+        self._model_is_default = not model and not _config_model and not _project_model
 
         # --api-key wins; otherwise a URL-bearing startup alias carries its own credential.
         # See #28660.
@@ -156,8 +168,8 @@ class CLIInitMixin:
 
         # Resolved lazily at use-time via _ensure_runtime_credentials().
         self.requested_provider = (
-            _moa_provider_override or provider or _startup_provider_override or _nested_provider
-            or _cfg_provider or "auto"
+            _moa_provider_override or provider or _project_provider or _startup_provider_override
+            or _nested_provider or _cfg_provider or "auto"
         )
         # `--provider <custom>` without `-m` uses that entry's default_model, else the global
         # default goes to the custom endpoint and the compressor gets the wrong context length.

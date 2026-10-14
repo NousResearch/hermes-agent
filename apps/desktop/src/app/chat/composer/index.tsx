@@ -409,7 +409,6 @@ export function ChatBar({
     disabled,
     draftScopeRef,
     draftRef,
-    drainNextQueued,
     editorRef,
     exitQueuedEdit,
     focusInput,

@@ -14,7 +14,6 @@ child runs one long turn. Three defects turned an ordinary token expiry into dea
 from __future__ import annotations
 
 import time
-from typing import Dict
 
 import pytest
 
@@ -29,7 +28,7 @@ _RATE_LIMIT = {"message": "This request would exceed your account's rate limit. 
 @pytest.fixture(autouse=True)
 def _fake_pool_store(monkeypatch):
     """Back the pool's auth.json reads/writes with a dict (the shared on-disk store)."""
-    store: Dict[str, list] = {}
+    store: dict[str, list] = {}
 
     def _write(provider, entries, *, removed_ids=None, status_cleared_ids=None, token_bases=None):
         store[provider] = list(entries)
@@ -49,7 +48,7 @@ class _TokenEndpoint:
 
     def __init__(self):
         self.posts: list[str] = []
-        self.live: Dict[str, str] = {}
+        self.live: dict[str, str] = {}
 
     def refresh(self, refresh_token, *, use_json=False):
         self.posts.append(refresh_token)

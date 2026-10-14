@@ -373,6 +373,19 @@ def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str,
                             "status": result.get("status") or "queued", "delivery_id": result.get("delivery_id")},
                      [f"Peer '{peer_name}' has its Bot Chat open, so the message went into that chat (session "
                       f"{queued_in}) and is answered there. The reply cannot come back on this call. Do NOT resend."])
+    if result.get("failed"):
+        # The peer accepted the message and ran the turn, but its agent failed (quota, auth,
+        # overflow…). The message IS delivered — it stays in the peer's transcript — so a resend
+        # would run a second turn, yet nothing answered it: the command's own contract ("1
+        # delivery/peer error") makes that exit 1. The signal rides the completion object's
+        # additive failed/error/failure_reason keys (#136472).
+        msg = result.get("message")
+        fallback = str(msg.get("content") or "") if isinstance(msg, dict) else ""
+        detail = str(result.get("error") or fallback or "turn failed").strip()
+        reason = f" ({result['failure_reason']})" if result.get("failure_reason") else ""
+        print(f"Peer '{peer_name}' accepted the message but its turn failed{reason}: {detail}",
+              file=sys.stderr)
+        return 1
     msg = result.get("message")
     reply = str(msg.get("content") or "") if isinstance(msg, dict) else ""
     # A successful bare silence marker is a delivery decision, not a message:

@@ -1,0 +1,15 @@
+name: hermes-impossibl
+repo: https://github.com/impossiblco/hermes-impossibl
+sha: 146805e4eabab33687fa2e34bbe959f0057f9497
+description: Impossibl, the AI gateway (100+ models from every major lab behind one OpenAI-compatible API), as a model provider
+maintainer: impossiblco
+tier: community
+category: models
+docs_url: https://github.com/impossiblco/hermes-impossibl#readme
+version: "1.0.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - IMPOSSIBL_API_KEY

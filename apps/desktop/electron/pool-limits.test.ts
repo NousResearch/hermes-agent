@@ -40,7 +40,7 @@ describe('clampPoolLimits', () => {
   })
 
   it('clamps absurdly high backend counts', () => {
-    expect(clampPoolLimits({ maxBackends: 10_000 }).maxBackends).toBeLessThanOrEqual(64)
+    expect(clampPoolLimits({ maxBackends: 10_000 }).maxBackends).toBe(POOL_LIMITS_BOUNDS.maxBackendsMax)
   })
 
   it('clamps idleMs to the shared ceiling (7 days)', () => {

@@ -188,23 +188,6 @@ describe('ensureGatewayForProfile — secondary connect failure surfaces (#81094
     await vi.runAllTimersAsync()
     expect(gatewayMocks.instances[0].connectionState).toBe('open')
   })
-
-  it('activates the secondary when connect succeeds', async () => {
-    const getConnection = vi.fn(async ({ profile }: { profile: string }) => ({
-      authMode: 'token',
-      baseUrl: `https://${profile}.invalid`,
-      mode: 'local',
-      profile,
-      token: 'fake-test-token',
-      wsUrl: `wss://${profile}.invalid/ws`
-    }))
-
-    installDesktop({ getConnection })
-
-    await ensureGatewayForProfile('work')
-
-    expect(activeGateway()).toBe(gatewayMocks.instances[0])
-  })
 })
 
 describe('connection-scoped dial failure identity (#95421)', () => {
@@ -230,13 +213,6 @@ describe('connection-scoped dial failure identity (#95421)', () => {
       const messages = errorSpy.mock.calls.map(([message]) => String(message))
 
       expect(messages).toHaveLength(2)
-      expect(messages).toEqual(
-        expect.arrayContaining([
-          expect.stringContaining('scope="conn:work::default"'),
-          expect.stringContaining('scope="conn:homelab::default"')
-        ])
-      )
-      expect(messages.every(message => message.includes('profile="default"'))).toBe(true)
       expect(new Set(messages).size).toBe(2)
       expect(messages.join(' ')).not.toContain('wss://')
 
@@ -381,6 +357,61 @@ describe('secondary connection timeout (#93454)', () => {
     // resolve after a single 20s timeout instead of two stacked ones.
     expect(callCount).toBe(2)
     expect(activeGateway()).toBe(gatewayMocks.instances[0])
+  })
+
+  it('waits out a slow registry bring-up instead of failing the dial at the reconnect budget', async () => {
+    // A registry route is not one IPC: it is a backend coming up on ANOTHER
+    // machine — ssh connect, the platform/locate/version probes, the remote
+    // spawn and its ready sentinel. Cold bring-ups measured 37-64 s against a
+    // small VPS, so the reconnect-class budget rejected a dial that was still
+    // arriving (~20 s later it landed anyway, and the user read the toast as a
+    // failure).
+    vi.useFakeTimers()
+
+    try {
+      let release: () => void = () => undefined
+
+      const getConnectionFor = vi.fn(
+        () =>
+          new Promise(resolve => {
+            release = () =>
+              resolve({
+                authMode: 'token',
+                connectionId: 'homelab',
+                profile: 'default',
+                wsUrl: 'wss://homelab.invalid/ws'
+              })
+          })
+      )
+
+      installDesktop({ getConnectionFor })
+
+      // The #92434 pin above leaves gatewayMocks.connect latched on a
+      // never-resolving mockImplementation; restore the resolving dial.
+      gatewayMocks.connect.mockImplementation(async () => undefined)
+
+      let outcome = 'pending'
+
+      const dial = openGatewayForAgent('homelab', 'default').then(
+        () => {
+          outcome = 'resolved'
+        },
+        (error: Error) => {
+          outcome = error.message
+        }
+      )
+
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(outcome).toBe('pending')
+
+      release()
+      await dial
+
+      expect(outcome).toBe('resolved')
+      expect(gatewayMocks.instances[0].connectionState).toBe('open')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

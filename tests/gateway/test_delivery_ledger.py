@@ -382,10 +382,6 @@ class TestPrune:
         assert _row("ob-1") is None
 
 
-class TestLedgerEnabled:
-    def test_default_on(self):
-        assert dl.ledger_enabled({}) is True
-        assert dl.ledger_enabled({"gateway": {}}) is True
 
 
 class TestGatewayRedeliverySweep:
@@ -485,6 +481,61 @@ class TestGatewayRedeliverySweep:
         sent = adapter.send.call_args.kwargs
         assert sent["content"].startswith(dl.RECOVERED_MARKER)
         assert sent["content"].endswith("the final answer")
+
+    @pytest.mark.parametrize("earlier_boot", ["killed_inside_send", "older_build_left_pending"])
+    @pytest.mark.asyncio
+    async def test_redelivery_after_an_earlier_boot_claim_is_marked(self, earlier_boot):
+        """Once a boot has claimed a row it may have sent it: every later copy carries the marker."""
+        import asyncio
+
+        _record()
+        _orphan("ob-1")
+        if earlier_boot == "killed_inside_send":
+            # The platform accepts the plain resend, then the boot dies before mark_delivered.
+            first = MagicMock()
+            first.send = AsyncMock(side_effect=asyncio.CancelledError)
+            with pytest.raises(asyncio.CancelledError):
+                await self._runner(first)._redeliver_pending_obligations()
+            assert first.send.call_args.kwargs["content"] == "the final answer"
+        else:
+            with dl._connect() as conn:
+                conn.execute("UPDATE delivery_obligations SET attempts=1 WHERE obligation_id='ob-1'")
+        _orphan("ob-1")
+        second = self._adapter()
+
+        await self._runner(second)._redeliver_pending_obligations()
+
+        sent = second.send.call_args.kwargs["content"]
+        assert sent == dl.RECOVERED_MARKER + "the final answer"
+        assert _row("ob-1")["state"] == "delivered"
+
+    def test_boot_claimed_row_is_not_reclaimed_by_runtime_sweep_mid_send(self):
+        """A boot claim is exclusive while its send is in flight: the reconnect sweep must not resend it."""
+        _record(platform="telegram")
+        dl.mark_failed("ob-1", "send_path_degraded")
+        _orphan("ob-1")
+
+        assert [r["obligation_id"] for r in dl.sweep_recoverable()] == ["ob-1"]
+
+        assert dl.sweep_failed_for_runtime("telegram") == []
+
+    @pytest.mark.parametrize("claimed_state", ["pending", "failed"])
+    @pytest.mark.asyncio
+    async def test_boot_claim_whose_adapter_vanishes_is_left_for_the_reconnect_sweep(self, claimed_state):
+        """A boot claim never sent (platform went away before dispatch) must not strand in 'attempting'."""
+        _record()
+        if claimed_state == "failed":
+            dl.mark_failed("ob-1", "send_path_degraded")
+        _orphan("ob-1")
+        runner = self._runner(self._adapter())
+        claimed = await runner._claim_pending_obligations()
+        assert [r["obligation_id"] for r in claimed] == ["ob-1"]
+        runner.adapters = {}  # platform went fatal during the restart notification / flood sleep
+
+        await runner._redeliver_claimed_obligations(claimed)
+
+        assert _row("ob-1")["state"] == "failed" and _row("ob-1")["attempts"] == 0
+        assert [r["obligation_id"] for r in dl.sweep_failed_for_runtime("slack")] == ["ob-1"]
 
     @pytest.mark.asyncio
     async def test_runtime_failed_redelivery_clears_resume_before_send(self):

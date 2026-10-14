@@ -23,6 +23,7 @@ makes the corresponding assertion fail.
 """
 
 import copy
+import sqlite3
 from types import SimpleNamespace
 from pathlib import Path
 import tempfile
@@ -748,6 +749,125 @@ def test_flush_stale_row_id_from_other_session_does_not_fill_child_blank(tmp_pat
     ]
 
 
+def test_flush_sanitized_active_user_and_tool_rows_do_not_append_duplicates(tmp_path):
+    """The outbound sanitizer pops ``_db_persisted``; active rows keep their ``_row_id`` and are not re-inserted.
+
+    The row-version digest must not be priced by the token estimator, and a row another writer changed after our
+    flush must survive the re-flush (the concurrent winner is adopted, never clobbered or duplicated).
+    """
+    from agent.message_sanitization import _sanitize_messages_surrogates
+    from agent.model_metadata import estimate_messages_tokens_rough
+
+    agent = _make_agent()
+    session_id = "sess-sanitized-active-rows"
+    db = _attach_real_session_db(agent, tmp_path / "state.db", session_id)
+    messages = [
+        # Int message_id: SQLite TEXT affinity stores it as "12345", so the digest must hash stored rows.
+        {"role": "user", "message_id": 12345, "content": [
+            {"type": "text", "text": "hi \ud800 there " + "x" * 4000},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]},
+        {"role": "assistant", "content": "ok", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "terminal", "arguments": '{"q": "x \ud800"}'}},
+        ]},
+        {"role": "tool", "tool_call_id": "c1", "name": "terminal", "content": "r \ud800"},
+    ]
+    estimate_before = estimate_messages_tokens_rough(messages)
+    agent._flush_messages_to_session_db(messages)
+    assert estimate_messages_tokens_rough(messages) - estimate_before < 50
+    durable_ids = [message["_row_id"] for message in messages]
+
+    # Another writer replaces the tool row after our flush; our live dict still carries the old version.
+    other = sqlite3.connect(tmp_path / "state.db")
+    with other:
+        other.execute("UPDATE messages SET content = ? WHERE id = ?", ("winner", durable_ids[2]))
+    other.close()
+    # A same-process metadata write (reaction) changes the user row's digest but not its content.
+    assert db.set_message_reaction(session_id, durable_ids[0], "\U0001F44D")
+    # ...followed by a real in-place live edit: the row is still ours, so the edit must win and be persisted.
+    messages[0]["content"][0]["text"] += " EDITED"
+    # A resumed / cloned dict carries ``_row_id`` without a digest (legacy path) over a filled assistant row.
+    messages[1].pop("_db_row_snapshot")
+
+    assert _sanitize_messages_surrogates(messages) is True
+    assert not any(message.get("_db_persisted") for message in (messages[0], messages[2]))
+    agent._db_flush_scan_prefix = None
+
+    assert agent._flush_messages_to_session_db(messages) is True
+
+    rows = db.get_messages(session_id, include_inactive=True)
+    assert [row["id"] for row in rows] == durable_ids
+    assert [message["_row_id"] for message in messages] == durable_ids
+    assert rows[0]["content"].startswith("hi \ufffd there")
+    assert " EDITED" in rows[0]["content"]
+    assert messages[0]["content"][0]["text"].endswith(" EDITED")
+    assert messages[0]["message_id"] == 12345 and "platform_message_id" not in messages[0]
+    # Neither our own rewrite nor a metadata-only change copies the lossy durable projection back: the live
+    # image part survives while the reaction metadata is synced.
+    assert messages[0]["content"][1]["type"] == "image_url"
+    assert messages[0]["display_metadata"] == rows[0]["display_metadata"]
+    assert rows[2]["content"] == "winner"
+    assert messages[2]["content"] == "winner"
+    # The legacy path adopts the durable content only: the sanitized live tool_calls never revert to the
+    # stored lone surrogate.
+    assert messages[1]["content"] == "ok"
+    assert messages[1]["tool_calls"][0]["function"]["arguments"] == '{"q": "x \ufffd"}'
+
+
+def test_flush_sanitized_archived_user_and_tool_rows_do_not_append_duplicates(tmp_path):
+    """Sanitizer rewrites retain durable identity for every persisted transcript role."""
+    from agent.message_sanitization import _sanitize_messages_surrogates
+
+    agent = _make_agent()
+    db_path = tmp_path / "state.db"
+    session_id = "sess-sanitized-archived-non-assistant-rows"
+    db = _attach_real_session_db(agent, db_path, session_id)
+    messages = [
+        {"role": "user", "content": "prompt \ud800 tail"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "name": "terminal",
+            "content": "result \ud800 tail",
+        },
+    ]
+    agent._flush_messages_to_session_db(messages)
+    durable_ids = {message["role"]: message["_row_id"] for message in messages}
+    durable_timestamps = {message["role"]: message["timestamp"] for message in messages}
+
+    db.archive_and_compact(
+        session_id,
+        compacted_messages=[{"role": "user", "content": "prior turns summarized"}],
+    )
+    assert _sanitize_messages_surrogates(messages) is True
+    agent._db_flush_scan_prefix = None
+
+    assert agent._flush_messages_to_session_db(messages) is True
+
+    all_rows = db.get_messages(session_id, include_inactive=True)
+    for role, expected_content in (("user", "prompt \ufffd tail"), ("tool", "result \ufffd tail")):
+        matching = [row for row in all_rows if row.get("role") == role and row.get("content") == expected_content]
+        assert len(matching) == 1
+        assert matching[0]["id"] == durable_ids[role]
+        assert matching[0]["timestamp"] == durable_timestamps[role]
+        assert matching[0]["active"] == 0
+        assert matching[0]["compacted"] == 1
+        live = next(message for message in messages if message["role"] == role)
+        assert live["_row_id"] == durable_ids[role]
+        assert live["_db_persisted"] is True
+
+
 def test_flush_archived_same_session_row_id_fills_active_clone(tmp_path):
     """Watermark compaction clones the tail; stale `_row_id` must not win.
 
@@ -824,7 +944,7 @@ def test_flush_atomic_mixed_repair_and_append_rollback_on_failure(tmp_path, monk
     agent = _make_agent()
     db_path = tmp_path / "state.db"
     session_id = "sess-atomic-rollback"
-    db = _attach_real_session_db(agent, db_path, session_id)
+    _attach_real_session_db(agent, db_path, session_id)
 
     messages = [
         {"role": "user", "content": "summarize"},

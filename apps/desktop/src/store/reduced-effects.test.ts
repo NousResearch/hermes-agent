@@ -23,4 +23,12 @@ describe('reduced effects preference', () => {
 
     expect(document.documentElement.hasAttribute('data-reduced-effects')).toBe(true)
   })
+
+  it('removes the CSS gate and persists Full when effects are re-enabled', async () => {
+    const { setReducedEffects } = await import('./reduced-effects')
+    setReducedEffects(true)
+    setReducedEffects(false)
+    expect(document.documentElement.hasAttribute('data-reduced-effects')).toBe(false)
+    expect(window.localStorage.getItem('hermes.desktop.reducedEffects.v1')).toBe('false')
+  })
 })

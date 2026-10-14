@@ -39,7 +39,7 @@ _BLOCK_MESSAGE = (
     "See: https://hermes-agent.nousresearch.com/docs/getting-started/installation\n"
     "\n"
     "If you are developing, use an editable install instead:\n"
-    "  uv sync          # or: uv pip install -e .\n"
+    "  source ./activate  # PowerShell: . .\\activate.ps1\n"
     "\n"
     "If you are building with Nix (uv2nix), this error should not fire —\n"
     "the Hermes Nix derivation sets HERMES_NIX_BUILD=1. If it does, file a bug."

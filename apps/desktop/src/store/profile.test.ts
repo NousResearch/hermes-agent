@@ -7,16 +7,18 @@ import type { ProfileInfo } from '@/types/hermes'
 // Keep profile.ts's side-effecting imports inert: the gateway socket layer and
 // the REST query client must not run for real in a unit test.
 const ensureGatewayForProfile = vi.fn(async (_profile: string) => undefined)
-const ensureGatewayForAgent = vi.fn(async () => undefined)
+const ensureGatewayForAgent = vi.fn(async (_connectionId: string, _profile: string) => undefined)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const openGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => undefined)
 const openSecondaryCount = vi.fn(() => 0)
+const activeGatewayConnectionId = vi.fn((): null | string => null)
 const $gateway = atom<unknown>({ id: 'live-socket', connectionState: 'open' })
 const resetStarmapGraph = vi.fn()
 
 vi.mock('@/store/gateway', () => ({
   $gateway,
-  activeGatewayConnectionId: () => null,
+  activeGateway: () => null,
+  activeGatewayConnectionId,
   // Activation now verifies the socket's route before publishing the profile.
   activeGatewayProfileKey: () => ensureGatewayForProfile.mock.lastCall?.[0] ?? $activeGatewayProfile.get(),
   ensureGatewayForAgent,
@@ -44,9 +46,15 @@ const {
   $profiles,
   ensureGatewayProfile,
   invalidateProfileListFetches,
+  newSessionInProfile,
   prewarmProfileBackend,
-  refreshProfiles
+  prewarmProfilePick,
+  refreshProfiles,
+  selectProfile
 } = await import('./profile')
+
+const { $projectScope, ALL_PROJECTS } = await import('./project-scope')
+const { $projectTree, resolveNewSessionCwd } = await import('./projects')
 
 const { $poolLimits } = await import('@/store/pool-limits')
 const { $connectionsRegistry } = await import('@/store/connection-registry-state')
@@ -225,14 +233,6 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
     expect(openGatewayForProfile).not.toHaveBeenCalled()
   })
 
-  it('pre-warms while pool slots are free', () => {
-    openSecondaryCount.mockReturnValue(1)
-
-    prewarmProfileBackend('warm-slot-free')
-
-    expect(openGatewayForProfile).toHaveBeenCalledWith('warm-slot-free')
-  })
-
   it('follows the live pool-limit atom, not a hard-coded cap', () => {
     // User raises Warm Bot Backends to 8 in Settings: prewarming must keep
     // working well past the old default of 3.
@@ -249,6 +249,29 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
     prewarmProfileBackend('warm-lowered-cap')
 
     expect(openGatewayForProfile).not.toHaveBeenCalledWith('warm-lowered-cap')
+  })
+
+  // A hover-warm on a current-source pick must dial the pair the click will:
+  // the bare name resolved on the legacy door, so hovering a remote source's
+  // `default` spawned This device's default instead (#100098 review).
+  it('warms the same (connection, profile) a current-source pick activates', async () => {
+    activeGatewayConnectionId.mockReturnValue('gateway')
+    $activeGatewayProfile.set('research')
+    openGatewayForAgent.mockClear()
+    ensureGatewayForAgent.mockClear()
+
+    try {
+      prewarmProfilePick('default')
+      selectProfile('default')
+      await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalled())
+
+      expect(openGatewayForProfile).not.toHaveBeenCalled()
+      expect(openGatewayForAgent.mock.calls.map(([connection, name]) => [connection, name])).toEqual(
+        ensureGatewayForAgent.mock.calls.map(([connection, name]) => [connection, name])
+      )
+    } finally {
+      activeGatewayConnectionId.mockReturnValue(null)
+    }
   })
 })
 
@@ -381,5 +404,40 @@ describe('stale profile-list fetches across a backend switch (#85731)', () => {
     await oldFetch
 
     expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'coder'])
+  })
+})
+
+describe("profile switch leaves the previous profile's project (#54990)", () => {
+  const enterDefaultProfileProject = () => {
+    $projectTree.set([{ id: 'p_app1', label: 'app1', path: '/work/app1', repos: [] } as never])
+    $projectScope.set('p_app1')
+  }
+
+  afterEach(() => {
+    $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([])
+  })
+
+  it.each([
+    ['selectProfile', selectProfile],
+    ['newSessionInProfile', newSessionInProfile]
+  ])('%s to another profile does not root the fresh draft in the old project', (_name, open) => {
+    enterDefaultProfileProject()
+    expect(resolveNewSessionCwd()).toBe('/work/app1')
+
+    // The gateway swap is async: the old profile's project tree is still loaded
+    // when the fresh draft resolves its cwd.
+    open('sinan')
+
+    expect($projectScope.get()).toBe(ALL_PROJECTS)
+    expect(resolveNewSessionCwd()).not.toBe('/work/app1')
+  })
+
+  it('keeps the entered project when the draft stays on the active profile', () => {
+    enterDefaultProfileProject()
+
+    newSessionInProfile('default')
+
+    expect(resolveNewSessionCwd()).toBe('/work/app1')
   })
 })

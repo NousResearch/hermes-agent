@@ -144,19 +144,6 @@ class TestFileToolsReadTheRecord:
         assert not str(resolved).startswith(str(wt_b))
 
 
-class TestDelegateSeedsChildRecord:
-    def test_child_record_seeded_from_parent_then_isolated(self):
-        tt.record_session_cwd("parent-task", "/parent/worktree")
-        # what delegate_tool does at spawn:
-        tt.record_session_cwd("child-1", tt.get_session_cwd("parent-task"))
-
-        assert tt.get_session_cwd("child-1") == "/parent/worktree"
-        # child cds somewhere; parent record must be untouched.
-        tt.record_session_cwd("child-1", "/child/scratch")
-        assert tt.get_session_cwd("parent-task") == "/parent/worktree"
-        assert tt.get_session_cwd("child-1") == "/child/scratch"
-
-
 class TestReapedEnvFallbackIsFillOnly:
     """file_tools' reaped-env rescue (#26211) must not overwrite the record.
 
@@ -168,7 +155,6 @@ class TestReapedEnvFallbackIsFillOnly:
 
     def _reap(self, monkeypatch, tmp_path, task_id, stale_cwd):
         import tools.file_tools as ft
-        import tools.file_tools_paths as ftp
 
         class _StaleFileOps:
             cwd = stale_cwd

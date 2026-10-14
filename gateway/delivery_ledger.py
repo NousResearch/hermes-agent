@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 
 from gateway.dead_targets import classify_dead_error
 from hermes_cli.sqlite_util import add_column_if_missing
-from hermes_constants import get_hermes_home
+from hermes_constants import get_process_hermes_home
 
 logger = logging.getLogger(__name__)
 _DB_LOCK = threading.Lock()
@@ -169,7 +169,11 @@ def retry_not_before(updated_at: Any, last_error: Any, attempts: Any) -> Optiona
 
 
 def _db_path():
-    return get_hermes_home() / "state.db"
+    # Launch home, not get_hermes_home(): a multiplexed gateway records a served profile's replies
+    # under that profile's home override, but the boot sweep reads from the launch context, so both
+    # must open the one shared store (adapter_profile tells the bots apart). No get_hermes_home()
+    # fallback for an unset HERMES_HOME: a default gateway run in the foreground has none.
+    return get_process_hermes_home() / "state.db"
 
 
 def _connect() -> sqlite3.Connection:
@@ -281,6 +285,28 @@ def record_obligation(*, obligation_id: str, session_key: str, platform: str, ch
         _prune_unlocked(conn, now)
 
 
+def record_crash_left_reply(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
+                            thread_id: Optional[str], content: str, since: float,
+                            adapter_profile: Optional[str] = None) -> None:
+    """Adopt a reply a killed process persisted but never ledgered. Unowned, so this boot's sweep
+    claims it, and 'attempting', because a streamed reply may already be on screen: it is
+    redelivered once, with the recovered marker. A no-op when the same reply was already ledgered
+    since *since* (the turn start), and idempotent across boots that die before their sweep."""
+    now = time.time()
+    with _DB_LOCK, _transaction() as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO delivery_obligations
+               (obligation_id, session_key, platform, chat_id, thread_id,
+                content, state, attempts, created_at, updated_at,
+                owner_pid, owner_started_at, adapter_profile)
+               SELECT ?, ?, ?, ?, ?, ?, 'attempting', 0, ?, ?, NULL, NULL, ?
+               WHERE NOT EXISTS (SELECT 1 FROM delivery_obligations
+                                 WHERE session_key = ? AND content = ? AND created_at >= ?)""",
+            (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
+             content, now, now, str(adapter_profile).strip() if adapter_profile else "default",
+             session_key, content, since))
+
+
 def mark_attempting(obligation_id: str) -> None:
     _update_state(obligation_id, "attempting")
 
@@ -325,7 +351,7 @@ def _update_state(obligation_id: str, state: str, error: str = "") -> None:
 
 def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts, profile, *,
                  needs_marker: bool, runtime: bool = False, flood: bool = False,
-                 last_error: Optional[str] = None) -> Dict[str, Any]:
+                 last_error: Optional[str] = None) -> dict[str, Any]:
     """Claimed-row dict handed back for redelivery. A marked row names its own cause: ``flood`` (a reply
     the rate limit refused, possibly after accepting part of it) gets FLOOD_MARKER at boot or at runtime, a
     ``runtime`` reconnect replay gets RECONNECTED_MARKER, and a boot-recovered crash keeps the runner's
@@ -340,11 +366,12 @@ def _claimed_row(oid, session_key, platform, chat_id, thread_id, content, attemp
 
 
 def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Optional[set] = None,
-                      deliverable_targets: Optional[set] = None) -> List[Dict[str, Any]]:
+                      deliverable_targets: Optional[set] = None) -> list[dict[str, Any]]:
     """Claim undelivered rows owned by dead processes; return them for redelivery.
 
-    Claiming atomically re-stamps the owner to THIS process and increments ``attempts`` (the UPDATE is
-    guarded on the previous owner stamp, so a second gateway racing the same sweep cannot double-claim).
+    Claiming atomically re-stamps the owner to THIS process, moves the row to 'attempting' and increments
+    ``attempts`` (the UPDATE is guarded on the previous owner stamp, so a second gateway racing the same
+    sweep cannot double-claim).
     Rows over the attempts cap or stale cutoff become 'abandoned'. ``deliverable_platforms`` restricts
     claiming to platforms the caller can send on this boot: ``attempts`` is the redelivery budget and
     must only be spent on a real send, else a platform that failed to connect burns one attempt per boot
@@ -359,7 +386,7 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
     ``'default'`` on claim or adoption (the caller only accepts such rows when it is not multiplexed),
     because the runtime sweep matches profiles exactly and could otherwise never claim it."""
     now, (pid, started) = now if now is not None else time.time(), _owner_stamp()
-    claimed: List[Dict[str, Any]] = []
+    claimed: list[dict[str, Any]] = []
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
@@ -397,28 +424,30 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                         "profile": adapter_profile or "default", "attempts": attempts,
                         "adopted": True, "not_before": flood_not_before(updated_at, last_error)})
                 continue
-            # A claimed flood row is resent as a fresh attempt: clear the stale refusal so an interrupted
-            # resend is seen as 'attempting' with no error by the next boot and gets the marker.
+            # Every claim starts a send, so the row leaves 'pending'/'failed' for 'attempting' in the same
+            # CAS: a boot killed inside the redelivery then leaves proof the platform may have it (next boot
+            # marks it), and the runtime sweep, which only takes 'failed', cannot re-claim it mid-send. A
+            # claimed flood row also drops its stale refusal, so an interrupted resend has no error.
             cursor = conn.execute(
                 """UPDATE delivery_obligations
                    SET owner_pid=?, owner_started_at=?, attempts=attempts+1, updated_at=?,
-                       adapter_profile=COALESCE(adapter_profile, 'default'),
-                       state=CASE WHEN ? THEN 'attempting' ELSE state END,
+                       adapter_profile=COALESCE(adapter_profile, 'default'), state='attempting',
                        last_error=CASE WHEN ? THEN NULL ELSE last_error END
                    WHERE obligation_id=? AND (owner_pid IS ? OR owner_pid=?)""",
-                (pid, started, now, 1 if flood_row else 0, 1 if flood_row else 0, oid, owner_pid, owner_pid))
+                (pid, started, now, 1 if flood_row else 0, oid, owner_pid, owner_pid))
             if cursor.rowcount:
-                # pending = never started, redeliver plainly; anything else (crashed mid-await, other
-                # rejection, a flood refusal whose earlier chunks the platform may have accepted) carries
+                # A never-claimed pending row was never sent: redeliver plainly. Anything else (crashed
+                # mid-await, other rejection, a flood refusal whose earlier chunks the platform may have
+                # accepted, or a pending row an older build already claimed and may have sent) carries
                 # the marker.
                 claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
-                                            adapter_profile or "default", needs_marker=state != "pending",
-                                            flood=flood_row))
+                                            adapter_profile or "default",
+                                            needs_marker=state != "pending" or attempts > 0, flood=flood_row))
     return claimed
 
 
 def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
-                             profile: Optional[str] = None) -> List[Dict[str, Any]]:
+                             profile: Optional[str] = None) -> list[dict[str, Any]]:
     """Claim this process's failed rows that are due for another send, for one adapter.
 
     ``profile`` scopes multiplexed gateways to the bot identity that owned the failed send (``None`` =
@@ -433,7 +462,7 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
     if started is None:  # PID alone cannot distinguish this process from a stale row left after PID
         return []        # reuse; runtime replay is optional, so fail closed (startup recovery remains).
     expected_profile = "default" if not profile or profile == "default" else str(profile)
-    claimed: List[Dict[str, Any]] = []
+    claimed: list[dict[str, Any]] = []
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute(
             """SELECT obligation_id, session_key, platform, chat_id, thread_id,
@@ -476,7 +505,7 @@ def sweep_failed_for_runtime(platform: str, now: Optional[float] = None, *,
     return claimed
 
 
-def pending_retries(now: Optional[float] = None) -> List[Dict[str, Any]]:
+def pending_retries(now: Optional[float] = None) -> list[dict[str, Any]]:
     """This process's failed rows that still await redelivery, one entry per adapter identity with the
     earliest deadline (``not_before``). The runner arms one redelivery timer per entry, so a row adopted
     at boot, skipped because its wait had not passed, or rejected again is never stranded. Rows past the
@@ -489,7 +518,7 @@ def pending_retries(now: Optional[float] = None) -> List[Dict[str, Any]]:
             """SELECT platform, adapter_profile, updated_at, last_error, attempts, created_at
                FROM delivery_obligations
                WHERE state='failed' AND owner_pid IS ? AND owner_started_at IS ?""", (pid, started)).fetchall()
-    earliest: Dict[tuple, float] = {}
+    earliest: dict[tuple, float] = {}
     for platform, adapter_profile, updated_at, last_error, attempts, created_at in rows:
         # Reconnect-only rows (a claim released because the adapter was gone) are re-claimed by the
         # reconnect sweep; a timer would claim and release them every tick until the adapter is back.
@@ -523,7 +552,7 @@ def _prune_unlocked(conn, now: float) -> None:
                  LIMIT ?)""", (total - _MAX_ROWS,))
 
 
-def ledger_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
+def ledger_enabled(config: Optional[dict[str, Any]] = None) -> bool:
     """Read the ``gateway.delivery_ledger`` config gate (default on)."""
     try:
         if config is None:
@@ -533,33 +562,3 @@ def ledger_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
         return value.strip().lower() not in {"false", "0", "no", "off"} if isinstance(value, str) else bool(value)
     except Exception:
         return True
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import json  # noqa: F401,E402
-import json  # noqa: F401,E402
-
-def debug_rows(limit: int = 20) -> str:
-    """Human-readable dump for ad-hoc inspection (sqlite3-free path)."""
-    with _DB_LOCK, _transaction() as conn:
-        rows = conn.execute(
-            """SELECT obligation_id, session_key, state, attempts,
-                      created_at, updated_at, last_error
-               FROM delivery_obligations
-               ORDER BY updated_at DESC LIMIT ?""",
-            (limit,),
-        ).fetchall()
-    return json.dumps(
-        [
-            {
-                "id": r[0], "session": r[1], "state": r[2], "attempts": r[3],
-                "created_at": r[4], "updated_at": r[5], "last_error": r[6],
-            }
-            for r in rows
-        ],
-        indent=2,
-    )
-# ---- END PLUGIN-COMPAT ----

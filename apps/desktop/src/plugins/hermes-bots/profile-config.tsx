@@ -22,7 +22,7 @@ import { useState } from 'react'
 
 import { $lastRoster, ROSTER_KEY } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
-import { useBots } from './i18n'
+import { botsText, useBots } from './i18n'
 import { McpSetupButton } from './mcp-setup'
 import { ModelPicker } from './model-picker'
 import { botBackendProfileScope, requestForBot, resolveBotConnectionRoute } from './routing'
@@ -141,15 +141,14 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
 
   if (!loaded) {
     setLoaded(true)
+    // The user just opened this editor: a cold backend takes the pool's
+    // reserved slot instead of queuing behind warm roster backends.
+    const opened = { spawnPriority: 'foreground' } as const
     Promise.all([
-      requestForBot(bot, 'profiles.describe', {
-        name: bot.name
-      }) as Promise<ProfileDescribeResponse>,
-      (
-        requestForBot(bot, 'mcp.catalog', {
-          profile: bot.name
-        }) as Promise<McpCatalogResponse>
-      ).catch(() => null)
+      requestForBot(bot, 'profiles.describe', { name: bot.name }, opened) as Promise<ProfileDescribeResponse>,
+      (requestForBot(bot, 'mcp.catalog', { profile: bot.name }, opened) as Promise<McpCatalogResponse>).catch(
+        () => null
+      )
     ])
       .then(([res, cat]) => {
         const configured = res.mcp_servers || []
@@ -184,11 +183,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
   }
 
   if (unsupported) {
-    return (
-      <div className="px-2 py-3 text-center text-xs text-(--ui-text-tertiary)">
-        Full configuration needs a newer gateway (restart it after updating Hermes).
-      </div>
-    )
+    return <div className="px-2 py-3 text-center text-xs text-(--ui-text-tertiary)">{b.editor.fullConfigHint}</div>
   }
 
   if (!state.loaded) {
@@ -274,7 +269,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
           }}
         />
         {labeled(
-          'Capabilities (applies immediately — skills, tools, MCP)',
+          b.editor.liveCapabilities,
           <ResizableFrame height={460} minHeight={300}>
             <CapabilitiesView
               embedded
@@ -288,7 +283,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
           </ResizableFrame>
         )}
         {labeled(
-          'SOUL.md (persona + agent-messaging protocol)',
+          b.editor.editSoul,
           <Textarea
             className="min-h-28 font-mono text-xs leading-5"
             onChange={event =>
@@ -323,10 +318,10 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
           }}
         />
         <div className="rounded-md border border-(--ui-stroke-secondary) px-3 py-2 text-xs text-(--ui-text-tertiary)">
-          Remote capabilities require a newer desktop. Model and SOUL changes remain staged until you save.
+          {b.editor.remoteCapabilitiesHint}
         </div>
         {labeled(
-          'SOUL.md (persona + agent-messaging protocol)',
+          b.editor.editSoul,
           <Textarea
             className="min-h-28 font-mono text-xs leading-5"
             onChange={event =>
@@ -360,7 +355,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
         }}
       />
       {labeled(
-        `Skills (${enabledSkills}/${state.skills.length} enabled)`,
+        b.editor.skillsEnabled(enabledSkills, state.skills.length),
         <div className="grid gap-1.5 rounded-md border border-(--ui-stroke-secondary) p-2">
           <Input
             className="h-7 text-xs"
@@ -398,7 +393,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
         </div>
       )}
       {labeled(
-        `Toolsets (${enabledToolsets}/${state.toolsets.length} enabled — unchecking all restores the default)`,
+        b.editor.toolsetsEnabled(enabledToolsets, state.toolsets.length),
         <div className="rounded-md border border-(--ui-stroke-secondary) p-2">
           <div
             className="overflow-y-auto overscroll-contain"
@@ -431,7 +426,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
         </div>
       )}
       {labeled(
-        'MCP servers',
+        b.editor.mcpServers,
         <div className="overflow-hidden rounded-md border border-(--ui-stroke-secondary)">
           {ConnectorsTab && typeof host.getGateway === 'function' ? (
             <div
@@ -470,7 +465,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
                         <span>{m.name}</span>
                         {m.fromCatalog && !needsSetup ? (
                           <span className="ml-1.5 text-[0.65rem] text-(--ui-text-quaternary)">
-                            {m.installed ? 'catalog · installed' : 'catalog'}
+                            {m.installed ? b.editor.catalogInstalled : b.editor.catalog}
                           </span>
                         ) : null}
                         {needsSetup ? (
@@ -491,7 +486,7 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
         </div>
       )}
       {labeled(
-        'SOUL.md (persona + agent-messaging protocol)',
+        b.editor.editSoul,
         <Textarea
           className="min-h-28 font-mono text-xs leading-5"
           onChange={event =>
@@ -619,7 +614,7 @@ export async function applyAdvancedConfig(bot: RosterRow, state: AdvancedConfigS
     delete merged.model
     void surfaceModelSwitchConfirm({
       confirmMessage: result.confirm_message,
-      failureMessage: 'Model switch failed',
+      failureMessage: botsText().editor.modelSwitchFailed,
       finish: () =>
         queryClient.invalidateQueries({
           queryKey: ROSTER_KEY

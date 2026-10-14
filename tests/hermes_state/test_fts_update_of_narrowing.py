@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import sqlite3
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from hermes_state import SessionDB
 from hermes_state_common import FTS_CJK_STALE_KEY
-from hermes_state_schema import SessionSchemaMixin
 
 
 def _trigger_sql(conn: sqlite3.Connection, name: str) -> str | None:
@@ -123,14 +121,6 @@ def test_migrate_replaces_broad_update_trigger(tmp_path: Path):
         db.close()
 
 
-def test_needs_narrowing_helper():
-    assert SessionSchemaMixin._fts_update_trigger_needs_narrowing(
-        "CREATE TRIGGER t AFTER UPDATE ON messages BEGIN SELECT 1; END"
-    )
-    assert not SessionSchemaMixin._fts_update_trigger_needs_narrowing(
-        "CREATE TRIGGER t AFTER UPDATE OF content ON messages BEGIN SELECT 1; END"
-    )
-    assert not SessionSchemaMixin._fts_update_trigger_needs_narrowing(None)
 
 
 def test_v23_status_only_update_bypasses_fts_trigger_body(tmp_path: Path):

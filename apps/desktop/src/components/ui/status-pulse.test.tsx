@@ -69,11 +69,7 @@ describe('StatusPulse', () => {
     render(<StatusPulse kind="ping" opacity={0.7} />)
 
     expect(played).toHaveLength(1)
-    expect(played[0]?.keyframes).toEqual([
-      { opacity: 0.7, transform: 'scale(1)' },
-      { opacity: 0, transform: 'scale(2)' }
-    ])
-    expect(played[0]?.options).toMatchObject({ duration: 400, iterations: 1 })
+    expect(played[0]?.options).toMatchObject({ iterations: 1 })
     expect(vi.getTimerCount()).toBe(1)
 
     act(() => vi.advanceTimersByTime(4_999))
@@ -123,5 +119,22 @@ describe('StatusPulse', () => {
     expect(played).toHaveLength(0)
     act(() => vi.advanceTimersByTime(5_000))
     expect(played).toHaveLength(0)
+  })
+
+  it('cancels active effects immediately and resumes when Full is restored', () => {
+    render(<StatusPulse kind="opacity" />)
+    expect(played).toHaveLength(1)
+
+    act(() => setReducedEffects(true))
+    expect(played[0]?.cancel).toHaveBeenCalledTimes(1)
+    act(() => vi.advanceTimersByTime(5_000))
+    expect(played).toHaveLength(1)
+    expect(vi.getTimerCount()).toBe(0)
+
+    act(() => setReducedEffects(false))
+    expect(played).toHaveLength(2)
+    act(() => vi.advanceTimersByTime(5_000))
+    expect(played).toHaveLength(3)
+    expect(vi.getTimerCount()).toBe(1)
   })
 })

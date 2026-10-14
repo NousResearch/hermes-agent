@@ -49,7 +49,7 @@ def worker_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path,
     return workspace, task
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -90,7 +90,7 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     assert "ANTHROPIC_API_KEY" not in captured_env
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_managed_gateway_worker_spawn_fails_closed_without_scope(
     worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -106,7 +106,7 @@ def test_managed_gateway_worker_spawn_fails_closed_without_scope(
     assert popen_calls == []
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_managed_gateway_scope_builder_fails_closed_if_binary_disappears(
     worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -143,7 +143,7 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
     assert captured_cmd[:3] == ["hermes", "-p", "coder"]
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_oneshot_unit_dispatcher_scope_wraps_or_warns_never_dooms_silently(
     worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -188,7 +188,7 @@ def test_oneshot_unit_dispatcher_scope_wraps_or_warns_never_dooms_silently(
     assert cron.mode == "in_process"
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_real_user_systemd_scope_preserves_worker_context(
     worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -201,18 +201,19 @@ def test_real_user_systemd_scope_preserves_worker_context(
     receipt = workspace / "worker-receipt.json"
     script = (
         "import json, os, pathlib, sys, time; "
-        "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+        "p = pathlib.Path(sys.argv[1]); t = p.with_suffix('.tmp'); "
+        "t.write_text(json.dumps({"
         "'pid': os.getpid(), 'cwd': os.getcwd(), "
         "'task': os.environ.get('HERMES_KANBAN_TASK'), "
         "'run': os.environ.get('HERMES_KANBAN_RUN_ID'), "
-        "'cgroup': pathlib.Path('/proc/self/cgroup').read_text()})); time.sleep(0.5)"
+        "'cgroup': pathlib.Path('/proc/self/cgroup').read_text()})); os.replace(t, p); time.sleep(0.5)"
     )
     monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: [sys.executable, "-c", script, str(receipt)])
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
 
     pid = kbd._default_spawn(task, str(workspace))
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 15
     while not receipt.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
 

@@ -6,11 +6,17 @@ import { isReauthRequiredError, makeUnsignedOauthError } from './backend-health'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
+  isSshAuthFailedBootFailure,
+  isSshClientFailedBootFailure,
   shouldHoldBootProgressForReauth,
   shouldLatchBackendStartFailure,
   shouldLatchHostKeyChangedFailure,
-  shouldLatchRemoteReauthFailure
+  shouldLatchRemoteReauthFailure,
+  shouldLatchSshAuthFailure,
+  shouldLatchSshClientFailure,
+  sshClientFailedError
 } from './backend-start-failure'
+import { SshConnection } from './ssh-connection'
 
 test('latches a LOCAL backend failure so the install-retry loop is broken', () => {
   assert.equal(shouldLatchBackendStartFailure({ attemptedRemote: false }), true)
@@ -28,13 +34,6 @@ test('never latches a supervisor-owned respawn failure (it has its own bounded c
   // the remaining crash-loop slots instead of becoming a permanent local latch.
   assert.equal(shouldLatchBackendStartFailure({ attemptedRemote: false, supervisorRecovery: true }), false)
   assert.equal(shouldLatchBackendStartFailure({ attemptedRemote: false, supervisorRecovery: false }), true)
-})
-
-test('the two branches are mutually exclusive (a failure either latches or stays retryable)', () => {
-  for (const attemptedRemote of [true, false]) {
-    const latched = shouldLatchBackendStartFailure({ attemptedRemote })
-    assert.equal(latched, !attemptedRemote)
-  }
 })
 
 test('latches a CONFIRMED remote reauth failure so the overlay stays clickable', () => {
@@ -159,6 +158,41 @@ test('every remote failure picks exactly one path: retry, reauth latch, or host-
   }
 })
 
+test('FIX #72698: a rejected SSH key latches the boot failure and is never auto-retried', () => {
+  // The error exactly as SshConnection.open() rejects it, and as the SSH
+  // bootstrap re-wraps a lifecycle failure (message + sshError tag).
+  const fromOpen = new SshConnection({ host: '127.0.0.1', user: 'me' }, {})._fail(
+    'me@127.0.0.1: Permission denied (publickey,password,keyboard-interactive).'
+  )
+
+  const rewrapped = Object.assign(new Error(fromOpen.message), { sshError: fromOpen.kind, isSshBootstrap: true })
+
+  for (const error of [fromOpen, rewrapped, new Error(fromOpen.message)]) {
+    const isSshAuthFailed = isSshAuthFailedBootFailure(error)
+    const context = { attemptedRemote: true, isReauth: false, isHostKeyChanged: false, isSshAuthFailed }
+
+    assert.equal(shouldLatchSshAuthFailure(context), true)
+    assert.equal(isRetryableRemoteBootFailure(context), false)
+  }
+
+  // Connectivity faults keep self-healing; local boots use the local latch.
+  const unreachable = new SshConnection({ host: '127.0.0.1', user: 'me' }, {})._fail(
+    'ssh: connect to host 127.0.0.1 port 22: Connection refused'
+  )
+
+  const transient = {
+    attemptedRemote: true,
+    isReauth: false,
+    isSshAuthFailed: isSshAuthFailedBootFailure(unreachable)
+  }
+
+  assert.equal(shouldLatchSshAuthFailure(transient), false)
+  assert.equal(isRetryableRemoteBootFailure(transient), true)
+  assert.equal(shouldLatchSshAuthFailure({ attemptedRemote: false, isReauth: false, isSshAuthFailed: true }), false)
+  // A remote lifecycle's filesystem "Permission denied" is not a credential rejection.
+  assert.equal(isSshAuthFailedBootFailure(new Error('mkdir: /opt/hermes: Permission denied')), false)
+})
+
 test('FIX #95701: while a reauth rejection is latched, only re-emits of that failure reach the renderer', () => {
   const latched = 'Your remote gateway session has expired. Sign in again.'
 
@@ -179,4 +213,43 @@ test('FIX #95701: with no reauth latch every boot-progress update flows as befor
     assert.equal(shouldHoldBootProgressForReauth(latch, {}), false)
     assert.equal(shouldHoldBootProgressForReauth(latch, { error: 'Desktop boot failed: spawn ENOENT' }), false)
   }
+})
+
+test('FIX #103288: a failed local `ssh -G` probe latches and is never auto-retried', () => {
+  const error = sshClientFailedError(
+    'C:\\Windows\\System32\\OpenSSH\\ssh.exe',
+    new Error('Command failed: ssh.exe -G -- box'),
+    'win32'
+  )
+
+  assert.equal(isSshClientFailedBootFailure(error), true)
+  assert.match(error.message, /System32\\OpenSSH\\ssh\.exe/)
+  assert.match(error.message, /Command failed/)
+  assert.match(error.message, /desktop\.ssh_path/)
+
+  const context = { attemptedRemote: true, isReauth: false, isSshClientFailed: true }
+
+  assert.equal(shouldLatchSshClientFailure(context), true)
+  assert.equal(isRetryableRemoteBootFailure(context), false)
+
+  // Ordinary remote faults keep retrying; local boots never take this latch.
+  const unreachable = new Error('ssh: connect to host box port 22: Connection timed out')
+
+  assert.equal(isSshClientFailedBootFailure(unreachable), false)
+  assert.equal(
+    isRetryableRemoteBootFailure({
+      attemptedRemote: true,
+      isReauth: false,
+      isSshClientFailed: isSshClientFailedBootFailure(unreachable)
+    }),
+    true
+  )
+  assert.equal(shouldLatchSshClientFailure({ attemptedRemote: false, isReauth: false, isSshClientFailed: true }), false)
+})
+
+test('FIX #103288: the desktop.ssh_path hint is Windows-only', () => {
+  const error = sshClientFailedError('ssh', new Error('boom'), 'darwin')
+
+  assert.equal(isSshClientFailedBootFailure(error), true)
+  assert.doesNotMatch(error.message, /ssh_path/)
 })

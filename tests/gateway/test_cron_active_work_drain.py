@@ -18,7 +18,7 @@ this relies on (get_running_job_ids, mark_running_jobs_interrupted).
 """
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -46,10 +46,6 @@ def _make_async_noop():
     return _noop
 
 
-class TestActiveCronJobCount:
-    def test_zero_when_no_cron_jobs_running(self):
-        runner, _adapter = make_restart_runner()
-        assert runner._active_cron_job_count() == 0
 
 
 class TestDrainWaitsForCronWork:
@@ -84,7 +80,7 @@ class TestKillToolSubprocessesMarksCronInterrupted:
         import cron.scheduler as sched
         import tools.process_registry as _pr
         import tools.terminal_tool as _tt
-        import tools.terminal_tool_lifecycle as terminal_tool_lifecycle
+        from tools import terminal_tool_lifecycle
 
         runner, adapter = make_restart_runner()
         runner._restart_drain_timeout = 0.01  # force the timeout path

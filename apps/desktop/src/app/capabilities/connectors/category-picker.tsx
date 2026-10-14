@@ -1,7 +1,15 @@
 import { useRef, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandItemCheck,
+  CommandList
+} from '@/components/ui/command'
 import { controlVariants } from '@/components/ui/control'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useI18n } from '@/i18n'
@@ -45,24 +53,21 @@ export function CategoryPicker({ categories, onChange, value }: CategoryPickerPr
           <Codicon className="shrink-0 opacity-60" name="chevron-down" size="0.875rem" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="min-w-(--radix-popover-trigger-width) p-0">
-        <Command>
+      <PopoverContent align="start" className="min-w-(--radix-popover-trigger-width)" variant="menu">
+        <Command variant="menu">
           <CommandInput autoFocus placeholder={copy.filterCategory} />
           <CommandList>
             <CommandEmpty>{copy.tools.noMatch}</CommandEmpty>
             <CommandGroup>
               <CommandItem onSelect={() => pick(null)} value={copy.categoryAll}>
-                <Codicon className={cn('mr-2 size-4', value === null ? 'opacity-100' : 'opacity-0')} name="check" />
-                {copy.categoryAll}
+                <span className="min-w-0 flex-1 truncate">{copy.categoryAll}</span>
+                <CommandItemCheck checked={value === null} />
               </CommandItem>
               {categories.map(entry => (
                 <CommandItem key={entry.value} onSelect={() => pick(entry.value)} value={labelFor(entry.value)}>
-                  <Codicon
-                    className={cn('mr-2 size-4', entry.value === value ? 'opacity-100' : 'opacity-0')}
-                    name="check"
-                  />
                   <span className="min-w-0 flex-1 truncate">{labelFor(entry.value)}</span>
-                  <span className="ml-2 shrink-0 tabular-nums text-(--ui-text-tertiary)">{entry.count}</span>
+                  <span className="shrink-0 tabular-nums text-(--ui-text-tertiary)">{entry.count}</span>
+                  <CommandItemCheck checked={entry.value === value} />
                 </CommandItem>
               ))}
             </CommandGroup>

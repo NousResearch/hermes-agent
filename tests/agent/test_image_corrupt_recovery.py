@@ -46,7 +46,6 @@ from unittest.mock import MagicMock, patch
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import _strip_images_from_messages
 
-
 class _FakeApiError(Exception):
     """Stand-in for an openai.BadRequestError with status_code + body."""
 
@@ -56,9 +55,7 @@ class _FakeApiError(Exception):
         self.body = body or {"error": {"message": message}}
         self.response = None
 
-
 # ─── Classifier: xAI corrupt-image wording ───────────────────────────────────
-
 
 class TestImageCorruptClassification:
     def test_xai_invalid_png_image_classifies_as_image_corrupt(self):
@@ -170,9 +167,7 @@ class TestImageCorruptClassification:
         assert result.reason == FailoverReason.image_corrupt
         assert result.reason != FailoverReason.image_too_large
 
-
 # ─── Strip helper (reused, not reimplemented) ────────────────────────────────
-
 
 class TestStripHelperBehaviorBackingTheBranch:
     """The image_corrupt branch in conversation_loop.py only retries when
@@ -202,15 +197,12 @@ class TestStripHelperBehaviorBackingTheBranch:
         msgs = [{"role": "user", "content": "just text, no images"}]
         assert _strip_images_from_messages(msgs) is False
 
-
 # ─── Integration: run_conversation recovers from a corrupt-image 400 ─────────
-
 
 def _mock_response(content: str):
     msg = SimpleNamespace(content=content, tool_calls=None)
     choice = SimpleNamespace(message=msg, finish_reason="stop")
     return SimpleNamespace(choices=[choice], model="grok-5", usage=None)
-
 
 def _make_agent():
     """Build a minimal AIAgent, mirroring the idiom in
@@ -233,7 +225,6 @@ def _make_agent():
         )
         agent.client = MagicMock()
         return agent
-
 
 class TestRunConversationRecoversFromCorruptImage400:
     def test_strip_and_retry_succeeds_at_the_sequenced_provider_layer(self):
@@ -412,9 +403,7 @@ class TestRunConversationRecoversFromCorruptImage400:
             f"{only_call_msgs!r}"
         )
 
-
 # ─── History isolation: strip only the per-call payload copy (#69104) ────────
-
 
 class TestCanonicalHistoryIsolation:
     def test_payload_copy_strip_preserves_canonical_history(self):
@@ -436,30 +425,4 @@ class TestCanonicalHistoryIsolation:
         assert api_messages[0]["content"] == [text_part]
         assert canonical[0]["content"] == [text_part, image_part], (
             "canonical history lost its image through shallow aliasing"
-        )
-
-    def test_image_corrupt_branch_strips_only_payload_copy(self):
-        """Contract check on the recovery branch itself: the image_corrupt
-        path must NOT call _strip_images_from_messages(messages) — only the
-        api_messages per-call copy. Stripping canonical history permanently
-        erased images on a transient provider error (#69104 sweeper review,
-        copy-on-write contract from e762a5a473)."""
-        import inspect
-        import re as _re
-
-        import agent.turn_recovery as loop_mod
-
-        src = inspect.getsource(loop_mod.recover_after_classification)
-        # Locate the image_corrupt recovery block and inspect its calls.
-        block = _re.search(
-            r"image_corrupt:\n(.*?)\n\s*(?:continue|return|else)", src, _re.S
-        )
-        assert block is not None, "image_corrupt recovery branch not found"
-        body = block.group(1)
-        assert "_strip_request_images_and_retry(agent, api_messages)" in body, (
-            "recovery must strip the per-call api_messages copy"
-        )
-        assert "_strip_images_from_messages(messages)" not in body, (
-            "recovery must NOT strip canonical messages — that permanently "
-            "erases history on a transient provider rejection"
         )

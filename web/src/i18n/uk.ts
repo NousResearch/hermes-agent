@@ -95,6 +95,7 @@ export const uk: Translations = {
   status: {
     actionFailed: "Дія не вдалася",
     actionFinished: "Завершено",
+    actionFinishedOwed: "Оновлено, але роботу ще не завершено (запустіть `hermes update` знову, щоб завершити)",
     actions: "Дії",
     agent: "Агент",
     activeSessions: "Активні сесії",
@@ -162,9 +163,14 @@ export const uk: Translations = {
     deleteSelectedConfirmMessage:
       "Це назавжди видалить {count} вибраних сесій і всі їхні повідомлення. Цю дію неможливо скасувати.",
     selectedSessionsDeleted: "Видалено сесій: {count}",
+    selectedSessionsSkippedActive: "Видалено: {deleted}; залишено: {count}, бо хід ще виконується",
     failedToDeleteSelected: "Не вдалося видалити вибрані сесії",
     resumeInChat: "Продовжити в чаті",
     newChat: "Новий чат",
+    workspace: "робоча папка",
+    workspaceDefault: "За замовчуванням",
+    workspaceRescan: "Пересканувати репозиторії",
+    workspaceCustom: "Інший шлях…",
     previousPage: "Попередня сторінка",
     nextPage: "Наступна сторінка",
     roles: {

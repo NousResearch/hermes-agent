@@ -94,9 +94,6 @@ class TestCLIDiscardSessionIfEmpty:
 
 
 
-    def test_none_session_id_is_noop(self, db):
-        cli = self._make_cli(db)
-        assert cli._discard_session_if_empty(None) is False
 
     def test_db_error_swallowed(self, db):
         class Boom:

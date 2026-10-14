@@ -14,13 +14,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.context_compressor import ContextCompressor
 from agent.turn_context import (
     PreflightCompressionTimedOut,
     TurnContext,
     build_turn_context,
 )
-from hermes_state import SessionDB
 
 
 class _FakeTodoStore:
@@ -137,33 +135,6 @@ class _FakeAgent:
 
     def _persist_session(self, *_a, **_k):
         self._persist_calls += 1
-
-
-def _make_agent_with_cooldown(db_path, session_id, *, cooldown_until=None):
-    agent = _FakeAgent()
-    agent.compression_enabled = True
-    agent._emit_status = MagicMock()
-    agent._compress_context = MagicMock(
-        side_effect=lambda messages, *_a, **_k: (messages, "SYSTEM")
-    )
-
-    db = SessionDB(db_path=db_path)
-    db.create_session(session_id, source="cli")
-    if cooldown_until is not None:
-        db.record_compression_failure_cooldown(session_id, cooldown_until, "timeout")
-
-    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-        compressor = ContextCompressor(
-            model="test/model",
-            threshold_percent=0.85,
-            protect_first_n=2,
-            protect_last_n=2,
-            quiet_mode=True,
-        )
-    compressor.bind_session_state(db, session_id)
-    agent.context_compressor = compressor
-    agent._session_db = db
-    return agent
 
 
 @pytest.fixture(autouse=True)
@@ -484,7 +455,7 @@ def test_between_turns_refresh_adds_late_tool_when_servers_registered():
     new_def = {"type": "function", "function": {"name": "mcp_x_tool", "description": "", "parameters": {}}}
 
     import model_tools
-    import tools.mcp_tool  # noqa: F401 — the prologue's import-cost gate requires it in sys.modules
+    import tools.mcp_tool
     with patch("tools.mcp_tool_discovery.has_registered_mcp_tools", return_value=True), \
          patch.object(model_tools, "get_tool_definitions", return_value=[new_def]):
         _build(agent)
@@ -533,6 +504,29 @@ def test_prologue_does_not_title_machine_driven_runs(platform):
     overwritten or never read.
     """
     assert not _title_turn(platform).called
+
+
+def test_prologue_names_a_subagent_run_after_its_goal_without_a_model_call():
+    """A delegate run gets ``Subagent: <goal>`` at derived authority so it reads as machinery
+    wherever ``sessions.show_subagents`` lists it, instead of staying untitled (#97202)."""
+    from agent import turn_context
+
+    agent = _TitlingAgent("subagent")
+    agent._session_db.set_auto_title.return_value = True
+    with patch("agent.title_generator.maybe_auto_title") as titler:
+        turn_context._maybe_title_session_at_turn_start(
+            agent, [{"role": "user", "content": "Audit the billing module\n\nContext: ..."}])
+    assert not titler.called
+    agent._session_db.set_auto_title.assert_called_once_with(
+        "sess-1", "Subagent: Audit the billing module", source="derived")
+
+
+def test_prologue_leaves_cron_runs_untitled():
+    agent = _TitlingAgent("cron")
+    from agent import turn_context
+
+    turn_context._maybe_title_session_at_turn_start(agent, [{"role": "user", "content": "Run the job"}])
+    assert not agent._session_db.set_auto_title.called
 
 
 def test_prologue_forwards_the_submit_title_preview_to_the_titler():

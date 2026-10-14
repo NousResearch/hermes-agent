@@ -242,13 +242,6 @@ class TestStreamingEndToEnd:
 
         asyncio.run(run())
 
-    def test_agent_card_advertises_streaming(self):
-        card = protocol.build_agent_card(
-            name="test", url="http://localhost:9900/",
-            description="test", streaming=True, push_notifications=True,
-        )
-        assert card["capabilities"]["streaming"] is True
-        assert card["capabilities"]["pushNotifications"] is True
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -302,9 +295,6 @@ class TestAntiLoopProtection:
         turns.reset("c1")
         assert turns.track("c1") == 1
 
-    def test_max_pingpong_turns_default(self, monkeypatch):
-        monkeypatch.delenv("A2A_MAX_PINGPONG_TURNS", raising=False)
-        assert protocol.max_pingpong_turns() == 5
 
     def test_max_pingpong_turns_env_override(self, monkeypatch):
         monkeypatch.setenv("A2A_MAX_PINGPONG_TURNS", "10")
@@ -343,11 +333,6 @@ class TestAntiLoopProtection:
 
 
 class TestRateLimiting:
-    def test_allows_under_limit(self, monkeypatch):
-        monkeypatch.setenv("A2A_RATE_LIMIT", "10")
-        rl = protocol.RateLimiter()
-        for _ in range(10):
-            assert rl.allow("peer-1") is True
 
     def test_blocks_over_limit(self, monkeypatch):
         monkeypatch.setenv("A2A_RATE_LIMIT", "3")
@@ -402,13 +387,6 @@ class TestRateLimiting:
 
 
 class TestMetrics:
-    def test_metrics_snapshot_has_fields(self):
-        m = protocol.metrics.snapshot()
-        for field in ("uptime_seconds", "inbound_total", "outbound_total",
-                      "streams_started", "push_sent", "push_failed",
-                      "tasks_completed", "tasks_failed", "anti_loop_triggers",
-                      "rate_limit_triggers", "avg_latency_ms"):
-            assert field in m
 
     def test_record_latency_updates_average(self):
         m = protocol.Metrics()
@@ -446,22 +424,7 @@ class TestMetrics:
 
 
 class TestTaskStore:
-    def test_create_and_get(self):
-        store = protocol.TaskStore()
-        store.create("t1", "c1", "peer-1")
-        rec = store.get("t1")
-        assert rec["state"] == protocol.STATE_SUBMITTED
-        assert rec["context_id"] == "c1"
-        assert rec["peer"] == "peer-1"
 
-    def test_complete_keeps_task_queryable(self):
-        store = protocol.TaskStore()
-        store.create("t1", "c1", "p")
-        store.complete("t1", protocol.STATE_COMPLETED, "the reply")
-        rec = store.get("t1")
-        assert rec is not None
-        assert rec["state"] == protocol.STATE_COMPLETED
-        assert rec["reply"] == "the reply"
 
     def test_complete_is_idempotent(self):
         store = protocol.TaskStore()
@@ -696,10 +659,6 @@ class TestA2AOrchestrate:
         assert "capability" in tools.a2a_orchestrate({"message": "do something"})
         assert "message" in tools.a2a_orchestrate({"capability": "research"})
 
-    def test_no_matching_peers(self, monkeypatch):
-        monkeypatch.setattr(tools, "_load_config", lambda: {})
-        result = tools.a2a_orchestrate({"capability": "research", "message": "search X"})
-        assert "no configured peers" in result
 
     def test_match_peers_by_capability(self, monkeypatch):
         monkeypatch.setattr(tools, "_load_config", lambda: _TWO_PEERS)

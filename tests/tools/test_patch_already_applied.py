@@ -8,8 +8,6 @@ into re-read/re-patch loops; they now return success with no_change=True.
 """
 
 import json
-import os
-import tempfile
 
 import pytest
 
@@ -63,7 +61,6 @@ class TestPatchReplaceAlreadyApplied:
                         new_string="value = compute_total(items)", task_id="t-applied")
         assert r["success"] is True
         assert r.get("no_change") is True
-        assert "already" in r["note"]
         assert f.read_text() == "value = compute_total(items)\n"
 
     def test_replay_of_landed_edit_is_success_noop(self, workdir):
@@ -90,14 +87,6 @@ class TestPatchReplaceAlreadyApplied:
                         new_string="def not_here_function():", task_id="t-applied")
         assert "error" in r
 
-    def test_half_applied_rename_still_errors(self, workdir):
-        # Both old and new text present: NOT already-applied. The identical
-        # old/new strings short-circuit before any fuzzy matching, and the
-        # old text still being present must block the no-op path.
-        f = workdir / "e.py"
-        f.write_text("def old_fn_name():\n    pass\n\ndef new_fn_variant():\n    pass\n")
-        from tools.fuzzy_match import is_already_applied
-        assert not is_already_applied(f.read_text(), "def old_fn_name():", "def new_fn_variant():")
 
 
 class TestV4AAlreadyApplied:

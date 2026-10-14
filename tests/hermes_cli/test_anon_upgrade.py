@@ -99,7 +99,6 @@ def portal(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_PORTAL_BASE_URL", PORTAL)
     monkeypatch.setenv("HERMES_ANON_API_SECRET", "test-secret")
     monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
-    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
     for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NOUS_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     from hermes_cli import auth_nous
@@ -145,7 +144,7 @@ class TestUpgrade:
         anon_auth.ensure_portal_identity(explicit=True)
         before = _auth_file_path().read_bytes()
         shared_before = _shared_store(tmp_path)
-        portal.status_sequence = [{"status": "pending"}, {"status": "voided", "reason": "user_declined"}]
+        portal.status_sequence = [{"status": "voided", "reason": "user_declined"}]
         code = anon_auth.upgrade_guest(_args())
         out = capsys.readouterr().out
         assert code == 1

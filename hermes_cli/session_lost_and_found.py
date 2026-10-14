@@ -16,10 +16,10 @@ from typing import Any, Callable, Optional, Sequence
 
 from hermes_cli.session_schema_history import SCHEMA_HISTORY, reachable_physical_layouts
 
-from hermes_state_ids import SESSION_ID_PATTERN  # timestamp prefix: strongest sentinel for schema-less rows
+from hermes_state_ids import is_known_session_id  # every minted id shape: sentinel for schema-less rows
 from hermes_cli.session_recovery import (
-    _AUXILIARY_TABLE_SCHEMAS, _AUXILIARY_TABLES, _CANONICAL_TABLES, _count_rows, _immediate_transaction,
-    _placeholder_titles, _quoted_columns, _table_columns,
+    _AUXILIARY_TABLE_SCHEMAS, _AUXILIARY_TABLES, _CANONICAL_TABLES, _DANGLING_TOOL_PIN, _count_rows,
+    _immediate_transaction, _placeholder_titles, _quoted_columns, _table_columns,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ SQLITE3_CLI_GUIDANCE = (
 # The predicate lives in hermes_cli.sqlite_runtime (stdlib-only, shared with
 # the installer/update gates) so the embedded runtime and the salvage shell
 # can never disagree about which versions are safe.
-from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _wal_reset_vulnerable  # noqa: E502
+from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _wal_reset_vulnerable
 
 _WAL_RESET_VULNERABLE_GUIDANCE = (
     "salvage against a Hermes database with the WAL-reset bug "
@@ -103,7 +103,7 @@ class LostAndFoundError(RuntimeError):
 def _parse_sqlite3_cli_version(binary: str) -> Optional[tuple[int, int, int]]:
     """Version of the sqlite3 CLI at *binary* via ``--version``, or None when it cannot run or be parsed."""
     try:
-        probe = subprocess.run([binary, "--version"], capture_output=True, timeout=30)
+        probe = subprocess.run([binary, "--version"], capture_output=True, timeout=30, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     if probe.returncode != 0:
@@ -172,7 +172,7 @@ def _cli_supports_recover(binary: str) -> bool:
             conn.commit()
         finally:
             conn.close()
-        probe = subprocess.run([binary, "-readonly", str(scratch), ".recover"], capture_output=True, timeout=30)
+        probe = subprocess.run([binary, "-readonly", str(scratch), ".recover"], capture_output=True, timeout=30, check=False)
         return probe.returncode == 0 and b"sqlite_dbpage" not in probe.stderr
     except (OSError, subprocess.SubprocessError, sqlite3.Error):
         return False
@@ -297,7 +297,8 @@ def _parse_sql_default(text: str) -> Any:
 
 
 def _is_session_id(value: Any) -> bool:
-    return isinstance(value, str) and bool(SESSION_ID_PATTERN.match(value))
+    """A cell that can be a session id: any shape in ``SESSION_ID_RECOGNIZERS``."""
+    return isinstance(value, str) and is_known_session_id(value)
 
 
 def _looks_like_source(value: Any) -> bool:
@@ -830,6 +831,7 @@ def stub_missing_parent_sessions(dest: sqlite3.Connection) -> dict[str, Any]:
             "UPDATE sessions SET system_prompt_hash = NULL WHERE system_prompt_hash IS NOT NULL AND NOT EXISTS "
             "(SELECT 1 FROM system_prompts WHERE system_prompts.hash = sessions.system_prompt_hash)"
         )
+        dest.execute(f"UPDATE sessions SET tool_names = NULL WHERE {_DANGLING_TOOL_PIN}")
     return result
 
 

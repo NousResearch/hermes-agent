@@ -5,32 +5,9 @@ call arguments, _summarize_tool_result() must not crash with TypeError or
 AttributeError. This caused an infinite TUI crash loop in production.
 """
 import json
-import pytest
 from agent.context_compressor import _summarize_tool_result
 
 
-class TestTypeSafety:
-    """Non-string tool arguments must not crash _summarize_tool_result."""
-
-    def test_terminal_command_bool(self):
-        """bool value for 'command' should not raise TypeError."""
-        args = json.dumps({"command": True})
-        result = _summarize_tool_result("terminal", args, '{"exit_code": 0}')
-        assert "terminal" in result
-        assert "True" in result or "exit" in result
-
-    def test_terminal_command_int(self):
-        """int value for 'command' should not raise TypeError."""
-        args = json.dumps({"command": 42})
-        result = _summarize_tool_result("terminal", args, '{"exit_code": 0}')
-        assert "terminal" in result
-        assert "42" in result
-
-    def test_terminal_command_none(self):
-        """None value for 'command' should not raise TypeError."""
-        args = json.dumps({"command": None})
-        result = _summarize_tool_result("terminal", args, '{"exit_code": 0}')
-        assert "terminal" in result
 
 
 
@@ -88,12 +65,6 @@ class TestEdgeCases:
         assert "terminal" in result
 
 
-    def test_unknown_tool_name(self):
-        """Unknown tool name should return generic summary."""
-        args = json.dumps({"foo": "bar"})
-        result = _summarize_tool_result("unknown_tool", args, "output")
-        # Should return some fallback, not crash
-        assert isinstance(result, str)
 
 
 

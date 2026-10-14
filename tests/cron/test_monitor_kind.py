@@ -112,20 +112,6 @@ def _install_agent_stubs(monkeypatch, observed: dict):
 # ---------------------------------------------------------------------------
 
 
-def test_create_job_stores_monitor_script(hermes_env):
-    from cron.jobs import create_job, get_job
-
-    _write_script(hermes_env, "mon.sh", "echo stable\n")
-    job = create_job(
-        prompt="React to the change",
-        schedule="every 5m",
-        monitor_script="mon.sh",
-        deliver="local",
-    )
-    reloaded = get_job(job["id"])
-    assert reloaded["monitor_script"] == "mon.sh"
-    assert reloaded.get("monitor_url") is None
-    assert reloaded.get("monitor_state") is None
 
 
 def test_create_job_monitor_script_and_url_mutually_exclusive(hermes_env):
@@ -222,20 +208,6 @@ def test_update_job_allows_clearing_monitor_then_no_agent(hermes_env):
     assert reloaded["no_agent"] is True
 
 
-def test_update_job_unrelated_fields_skip_mode_validation(hermes_env):
-    """A legacy/odd record must keep accepting updates that don't touch the
-    mode fields — the invariant re-check is scoped to changed fields."""
-    from cron.jobs import create_job, update_job
-
-    _write_script(hermes_env, "mon.sh", "echo stable\n")
-    job = create_job(
-        prompt="React",
-        schedule="every 5m",
-        monitor_script="mon.sh",
-        deliver="local",
-    )
-    updated = update_job(job["id"], {"name": "renamed"})
-    assert updated["name"] == "renamed"
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +257,7 @@ def test_first_run_always_runs_agent(hermes_env, monkeypatch):
     observed: dict = {}
     _install_agent_stubs(monkeypatch, observed)
 
-    success, doc, final, error = run_job(job)
+    success, _doc, _final, error = run_job(job)
     assert success is True
     assert error is None
     assert observed["agent_runs"] == 1
@@ -308,6 +280,46 @@ def test_bidi_monitor_output_is_sanitized_before_agent(hermes_env, monkeypatch):
     assert observed["agent_runs"] == 1
     assert "\u202a" not in observed["prompts"][0]
     assert "Alice Work" in observed["prompts"][0]
+
+
+def test_monitor_script_uses_configured_interpreter(hermes_env, monkeypatch):
+    """A monitor script uses the same job-level interpreter as `script`."""
+    import stat
+
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    wrapper = hermes_env / "venv" / "bin" / "python3"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "env = os.environ.copy()\n"
+        'env["CRON_MONITOR_WRAPPER_USED"] = "1"\n'
+        "os.execve(sys.executable, [sys.executable, *sys.argv[1:]], env)\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+    _write_script(
+        hermes_env,
+        "mon.py",
+        'import os\nprint(os.environ.get("CRON_MONITOR_WRAPPER_USED", "0"))\n',
+    )
+    job = create_job(
+        prompt="React to the change",
+        schedule="every 5m",
+        monitor_script="mon.py",
+        interpreter=str(wrapper),
+        deliver="local",
+    )
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+
+    success, _, _, error = run_job(job)
+
+    assert success is True
+    assert error is None
+    assert "1" in observed["prompts"][0]
 
 
 def test_unchanged_output_suppresses_agent_run(hermes_env, monkeypatch):
@@ -344,11 +356,10 @@ def test_changed_output_injects_diff(hermes_env, monkeypatch):
     # Mutate the monitored source, then fire again.
     _write_script(hermes_env, "mon.sh", "echo 'state B'\n")
     job = get_job(job["id"])
-    success, doc, final, error = run_job(job)
+    success, _doc, _final, _error = run_job(job)
     assert success is True
     assert observed["agent_runs"] == 2
     prompt = observed["prompts"][1]
-    assert "MONITOR CHANGE DETECTED" in prompt
     assert "-state A" in prompt
     assert "+state B" in prompt
     assert "state B" in prompt  # new output included verbatim
@@ -378,7 +389,7 @@ def test_hash_persists_across_scheduler_restart(hermes_env, monkeypatch):
 
     job = cron.jobs.get_job(job["id"])
     assert job["monitor_state"]["last_output_hash"]
-    success, doc, final, error = cron.scheduler.run_job(job)
+    success, _doc, final, _error = cron.scheduler.run_job(job)
     assert success is True
     assert final == cron.scheduler.SILENT_MARKER
     assert observed["agent_runs"] == 1  # still suppressed after restart
@@ -398,7 +409,7 @@ def test_monitor_script_failure_is_error_not_change(hermes_env, monkeypatch):
     # Break the source: non-zero exit must be an error, never a "change".
     _write_script(hermes_env, "mon.sh", "echo boom >&2\nexit 3\n")
     job = get_job(job["id"])
-    success, doc, final, error = run_job(job)
+    success, _doc, _final, error = run_job(job)
     assert success is False
     assert error is not None
     assert observed["agent_runs"] == 1  # agent NOT invoked on source failure

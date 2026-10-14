@@ -5,7 +5,7 @@ one heading. A leftover ``## Active Task`` section is not disclaimed by SUMMARY_
 so grounding must replace it (and any duplicate task section) rather than prepend a second one.
 """
 
-from types import SimpleNamespace
+from unittest.mock import patch
 
 from agent.context_compressor import ContextCompressor, HISTORICAL_TASK_HEADING
 
@@ -16,19 +16,6 @@ def _headings(text: str) -> list[str]:
     return [line for line in text.splitlines() if line.startswith("## ")]
 
 
-def test_update_instruction_names_the_emitted_heading():
-    """The prompt built when a previous summary exists (the update path) names HISTORICAL_TASK_HEADING."""
-    stub = SimpleNamespace(
-        tail_mode="lean",
-        _previous_summary="PREVIOUS SUMMARY BODY",
-        _bound_summary_input=lambda text: text,
-    )
-    stub._summary_template_sections = ContextCompressor._summary_template_sections
-    stub._build_summary_prompt = ContextCompressor._build_summary_prompt.__get__(stub)
-    prompt = stub._build_summary_prompt("NEW TURNS", 2000, None, "", True)
-
-    assert f'Update "{HISTORICAL_TASK_HEADING}"' in prompt
-    assert f'"{_LEGACY_ACTIVE_TASK_HEADING}"' not in prompt
 
 
 def test_grounding_collapses_alias_and_duplicate_task_sections():
@@ -49,3 +36,30 @@ def test_grounding_collapses_alias_and_duplicate_task_sections():
     assert headings[1:] == ["## Goal", "## Constraints & Preferences"]
     assert "fresh ask" in grounded
     assert "stale" not in grounded
+
+
+def test_long_user_request_is_not_quoted_by_summary_model():
+    """Long quotes stall Codex output; the postprocessor preserves source wording."""
+    with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+        compressor = ContextCompressor(model="test", quiet_mode=True)
+    section = compressor._build_summary_prompt(
+        "A long user request", 500, None, "", True
+    )
+    assert "summarize it in your own words rather than copying long" in section
+    for removed_directive in (
+        "input verbatim — the exact words",
+        "<exact latest user request>",
+        "write the reverse signal verbatim",
+    ):
+        assert removed_directive not in section
+
+    latest_request = "Please check this issue carefully. " * 20
+    generated = (
+        f"{HISTORICAL_TASK_HEADING}\nUser asked for an issue check\n\n"
+        "## Goal\nCheck an issue"
+    )
+    grounded = ContextCompressor._ground_historical_task_snapshot(
+        generated, [{"role": "user", "content": latest_request}]
+    )
+    assert latest_request.strip() in grounded
+    assert "## Goal\nCheck an issue" in grounded

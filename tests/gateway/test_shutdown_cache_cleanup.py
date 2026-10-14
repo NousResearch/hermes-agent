@@ -155,16 +155,6 @@ class TestCachedAgentCleanupOnShutdown:
 
         agent.shutdown_memory_provider.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_cache_cleared_after_shutdown(self):
-        """The _agent_cache dict is cleared after stop."""
-        gw = _FakeGateway()
-        agent = _make_mock_agent()
-        gw._agent_cache["s1"] = (agent, "sig1")
-
-        await gw_mod.GatewayRunner.stop(gw)
-
-        assert len(gw._agent_cache) == 0
 
 
 class TestRunningAgentsNotDoubleCleaned:

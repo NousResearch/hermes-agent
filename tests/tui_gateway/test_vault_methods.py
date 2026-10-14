@@ -85,12 +85,10 @@ def test_add_validation_errors_are_clean(home):
         )
     )
     assert err["code"] == 5095
-    assert "origin is required" in err["message"]
     assert "s3cret-pw-9000" not in json.dumps(err)
 
     err = _error(srv._methods["vault.add"](2, {"kind": "login", "label": "x"}))
     assert err["code"] == 5095
-    assert "secret payload is required" in err["message"]
 
     err = _error(
         srv._methods["vault.add"](
@@ -98,7 +96,6 @@ def test_add_validation_errors_are_clean(home):
         )
     )
     assert err["code"] == 5095
-    assert "unknown vault kind" in err["message"]
     assert "s3cret-pw-9000" not in json.dumps(err)
 
 

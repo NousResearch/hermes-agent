@@ -6,6 +6,7 @@ import {
   type JournalableSessionState,
   mergeInFlightMessages,
   persistInFlightTurnState,
+  purgeInFlightTurnJournals,
   readInFlightTurnJournal,
   recoverInFlightTurnJournal,
   resetInFlightTurnJournalStateForTests
@@ -102,26 +103,6 @@ describe('persistInFlightTurnState', () => {
     expect(window.localStorage.getItem(sessionStorageKey('expired'))).toBeNull()
     expect(window.localStorage.getItem(sessionStorageKey('old-24'))).toBeNull()
     expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).not.toBeNull()
-  })
-
-  it('writes only the current session instead of reading and rewriting the aggregate journal', () => {
-    const localStorage = window.localStorage
-    const storageConstructor = window.Storage
-
-    const spyTarget =
-      typeof storageConstructor === 'function' && localStorage instanceof storageConstructor
-        ? storageConstructor.prototype
-        : localStorage
-
-    const getItem = vi.spyOn(spyTarget, 'getItem')
-    const setItem = vi.spyOn(spyTarget, 'setItem')
-
-    persistInFlightTurnState(journalState())
-    vi.advanceTimersByTime(400)
-
-    expect(getItem).not.toHaveBeenCalledWith(STORAGE_KEY)
-    expect(setItem).not.toHaveBeenCalledWith(STORAGE_KEY, expect.any(String))
-    expect(setItem).toHaveBeenCalledWith(sessionStorageKey('stored-1'), expect.any(String))
   })
 
   it('keeps another session snapshot when one session settles', () => {
@@ -847,5 +828,42 @@ describe('mid-turn redirect corrections', () => {
     const journaled = readInFlightTurnJournal('stored-boundary')?.messages ?? []
 
     expect(journaled.map(message => message.id)).toEqual(['user-1', 'assistant-stream-1'])
+  })
+})
+
+describe('purgeInFlightTurnJournals', () => {
+  it("clears a busy session's journaled tail from localStorage (delete must reach the local copy)", () => {
+    persistInFlightTurnState(journalState())
+    vi.advanceTimersByTime(400)
+
+    expect(readInFlightTurnJournal('stored-1')?.messages.length).toBeGreaterThan(0)
+
+    purgeInFlightTurnJournals(['stored-1'])
+
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
+    expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
+  })
+
+  it('drains every id it is given, not just the stored tip', () => {
+    persistInFlightTurnState(journalState({ storedSessionId: 'stored-tip' }))
+    persistInFlightTurnState(journalState({ storedSessionId: 'lineage-root' }))
+    vi.advanceTimersByTime(400)
+
+    purgeInFlightTurnJournals(['stored-tip', 'lineage-root', null, undefined])
+
+    expect(readInFlightTurnJournal('stored-tip')).toBeNull()
+    expect(readInFlightTurnJournal('lineage-root')).toBeNull()
+  })
+
+  it('drops a pending throttled write so the tail cannot land after the purge', () => {
+    persistInFlightTurnState(journalState())
+
+    expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
+
+    purgeInFlightTurnJournals(['stored-1'])
+    vi.advanceTimersByTime(400)
+
+    expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
   })
 })

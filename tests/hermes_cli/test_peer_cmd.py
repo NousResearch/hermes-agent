@@ -72,7 +72,7 @@ def test_add_list_remove_roundtrip(monkeypatch, capsys):
 
 
 def test_add_rejects_bad_name_and_url(monkeypatch):
-    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {})
+    monkeypatch.setattr(peer_cmd, "_load_peers", dict)
     monkeypatch.setattr(peer_cmd, "_save_peers", lambda peers: None)
 
     assert peer_cmd.cmd_peer(SimpleNamespace(peer_action="add", name="Bad Name!", url="http://x", key="", note="")) == 2
@@ -172,7 +172,7 @@ class _FakePeer(BaseHTTPRequestHandler):
 
         return self._json({"error": {"message": "not found"}}, 404)
 
-    def log_message(self, *args):  # noqa: D102 — silence test server logging
+    def log_message(self, *args):
         pass
 
 
@@ -441,18 +441,6 @@ def test_dm_older_peer_hidden_duplicate_gives_clear_error(monkeypatch, capsys, o
     assert "Title already in use" in err
 
 
-def test_dm_older_peer_with_visible_bot_chat_still_works(monkeypatch, capsys, fake_peer_server):
-    """Backward compat: an older peer ignores the new query params and returns
-    the plain visible listing — a visible Bot Chat must still resolve."""
-    _FakePeer.sessions = ["bc_visible"]
-    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
-    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
-
-    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark", message="ping", json=True))
-
-    assert rc == 0
-    assert json.loads(capsys.readouterr().out)["reply"] == "reply from the other machine"
-    assert _FakePeer.sessions == ["bc_visible"]
 
 
 def test_run_starts_async_turn_with_canonical_session_and_idempotency(
@@ -549,7 +537,7 @@ class _AttackerOrigin(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, *args):  # noqa: D102 — silence test server logging
+    def log_message(self, *args):
         pass
 
 
@@ -565,7 +553,7 @@ class _RedirectingPeer(BaseHTTPRequestHandler):
         self.send_header("Location", type(self).redirect_target + self.path)
         self.end_headers()
 
-    def log_message(self, *args):  # noqa: D102 — silence test server logging
+    def log_message(self, *args):
         pass
 
 

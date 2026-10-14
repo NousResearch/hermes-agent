@@ -87,15 +87,17 @@ test('setWslBridgeActive(false) → resolvePickerDefaultPath passes raw path thr
   assert.equal(resolvePickerDefaultPath(undefined), undefined)
 })
 
-test('setWslBridgeActive(false) → resolveLocalReadPath passes raw path through without bridging', () => {
+test('setWslBridgeActive(false) → local reads normalize drive aliases without WSL bridging', () => {
   setWslBridgeActive(false)
   // resolveLocalReadPath is used by fs-read-dir to make WSL paths readable
   // on the Windows host. When the bridge is inactive (remote gateway), the
-  // raw POSIX path must be returned as-is — no UNC rewriting, no distro
-  // resolution. The downstream fs call will fail gracefully on non-WSL
-  // hosts, which is the desired behaviour.
+  // non-drive POSIX path must be returned as-is — no UNC rewriting or
+  // distro resolution. Windows drive aliases still identify native files.
   assert.equal(resolveLocalReadPath('/home/alex/proj'), '/home/alex/proj')
-  assert.equal(resolveLocalReadPath('/mnt/c/Users/alex'), '/mnt/c/Users/alex')
+  assert.equal(
+    resolveLocalReadPath('/mnt/c/Users/alex'),
+    process.platform === 'win32' ? 'C:/Users/alex' : '/mnt/c/Users/alex'
+  )
   // Non-POSIX paths are never bridged regardless of state.
   assert.equal(resolveLocalReadPath('C:\\Users\\alex'), 'C:\\Users\\alex')
   assert.equal(resolveLocalReadPath(''), '')

@@ -184,6 +184,15 @@ export function resolvePickerDefaultPath(
 export function resolveLocalReadPath(dirPath: string, distro?: string, profile?: null | string): string {
   const value = String(dirPath || '').trim()
 
+  // Native attachments can use Git Bash/Cygwin drive spelling even while the
+  // local backend has WSL bridging enabled. Translate before the WSL fallback
+  // turns /c/... into a nonexistent \\wsl.localhost\Ubuntu\c\... share.
+  const shellDrive = IS_WINDOWS && value.match(/^\/(?:cygdrive\/|mnt\/)?([a-z])(?:\/|$)/i)
+
+  if (shellDrive) {
+    return `${shellDrive[1].toUpperCase()}:/${value.slice(shellDrive[0].length)}`
+  }
+
   // In remote-gateway mode the POSIX paths belong to a host the Windows
   // desktop cannot open locally — skip the WSL bridge entirely (no distro
   // probe, no wsl.exe) so the file panel never spawns the install prompt on

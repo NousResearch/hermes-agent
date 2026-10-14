@@ -296,23 +296,46 @@ def _apply_managed_extra(authored: dict, managed: dict, platforms_data: dict) ->
     return hook_pins
 
 
-def _authored_wins(extra: dict, block: dict, plat_name: str, *, toplevel: bool, warned: Optional[set] = None) -> dict:
+# Top-level keys that stand in for a platform's own value when its block has none: the core bridge
+# and the Telegram hook apply a top-level ``require_mention`` to Telegram that way.
+_GLOBAL_PLATFORM_FALLBACKS = frozenset({"require_mention"})
+
+
+def _section_label(name: str, toplevel: bool, gateway_platforms: Any) -> str:
+    """Where ``platform_section`` found *name*'s block, as the precedence warning names it."""
+    if toplevel:
+        return f"the top-level '{name}:' block"
+    nested_in_gateway = isinstance(gateway_platforms, dict) and isinstance(gateway_platforms.get(name), dict)
+    return f"gateway.platforms.{name}" if nested_in_gateway else f"platforms.{name}"
+
+
+def _same_setting(a: Any, b: Any) -> bool:
+    """Equal as the YAML→env bridges encode them: ``[C1, C2]`` == ``"C1,C2"``, ``True`` == ``"true"``."""
+    def encoded(value: Any) -> Any:
+        if isinstance(value, list):
+            return ",".join(str(v) for v in value)
+        return str(value).lower() if isinstance(value, bool) else value
+
+    return a == b or encoded(a) == encoded(b)
+
+
+def _authored_wins(
+    extra: dict, block: dict, plat_name: str, *, where: str, warned: Optional[set] = None,
+    global_keys: Any = (),
+) -> dict:
     """Effective ``<plat>:`` block for YAML→extra/env bridging: *block* (top-level or
     nested) overlaid with the keys the user authored in ``platforms.<plat>.extra``.
 
     Returns a NEW dict and never mutates *block* or *extra*. For every key present in
-    both with DIFFERENT values, ONE warning logs that the authored extra took precedence
-    (equal values are silent). *warned* dedupes across both copy sites within one
-    ``load_yaml_layer`` pass; ``None`` gives the caller a fresh local set.
+    both with DIFFERENT values, ONE warning names *where* the block lives and says the
+    authored extra took precedence (equal values are silent). *warned* dedupes across both
+    copy sites within one ``load_yaml_layer`` pass; ``None`` (read-only callers such as the
+    relay predicate) resolves the same block without logging.
     """
-    if warned is None:
-        warned = set()
-    where = f"the top-level '{plat_name}:' block" if toplevel else f"platforms.{plat_name}"
-
     def overlay_onto(source: dict) -> dict:
         overlay = {k: extra[k] for k in source if k in extra}
         for key, value in overlay.items():
-            if source[key] != value and (plat_name, key) not in warned:
+            if warned is not None and not _same_setting(source[key], value) and (plat_name, key) not in warned:
                 warned.add((plat_name, key))
                 logger.warning(
                     "%s set in both %s and platforms.%s.extra; platforms.%s.extra took precedence",
@@ -323,12 +346,14 @@ def _authored_wins(extra: dict, block: dict, plat_name: str, *, toplevel: bool, 
     effective = overlay_onto(block)
     # A root block may carry its own ``extra:`` sub-dict (``_bridged_keys`` merges it with
     # ``PlatformConfig.from_dict`` semantics); the authored extra outranks that too.
-    if isinstance(block.get("extra"), dict):
-        effective["extra"] = overlay_onto(block["extra"])
-        # Hooks consume direct keys before global fallbacks. Expose the resolved
-        # authored subdict values there too, without promoting typed platform fields.
-        effective.update({k: extra[k] for k in block["extra"]
-                          if k in extra and k not in PlatformConfig._TYPED_KEYS})
+    own_extra = block.get("extra")
+    if isinstance(own_extra, dict):
+        effective["extra"] = overlay_onto(own_extra)
+    # Hooks read direct keys only and fall back to a top-level key of the same name when the block
+    # has none. Expose the authored value for keys the block's own ``extra:`` holds or a global
+    # default (*global_keys*) would stand in for, without promoting typed platform fields.
+    shadowed = set(_coerce_dict(own_extra)) | set(global_keys)
+    effective.update({k: extra[k] for k in shadowed if k in extra and k not in PlatformConfig._TYPED_KEYS})
     return effective
 
 
@@ -354,7 +379,8 @@ def bridge_platform_shared_keys(
         # An authored ``platforms.<plat>.extra`` key beats the same key in the (top-level or
         # nested) block, so the shared-key bridge works on the effective block.
         effective = _authored_wins(
-            authored.get(plat.value, {}), platform_cfg, plat.value, toplevel=cfg_toplevel, warned=warned)
+            authored.get(plat.value, {}), platform_cfg, plat.value,
+            where=_section_label(plat.value, cfg_toplevel, gateway_platforms), warned=warned)
         bridged = _bridged_keys(plat, effective, gw_data, root_block=cfg_toplevel)
         has_channel_overrides = "channel_overrides" in platform_cfg
         if has_channel_overrides and isinstance(platform_cfg.get("channel_overrides"), dict):
@@ -386,6 +412,7 @@ def apply_plugin_yaml_hooks(
         return
     if authored is None:
         authored = snapshot_authored_extra(platforms_data)
+    global_keys = _GLOBAL_PLATFORM_FALLBACKS.intersection(yaml_cfg)
     for entry in registry.all_entries():
         # Plugin-owned YAML→env config bridges (#24836). See ``PlatformEntry.apply_yaml_config_fn`` for the
         # hook contract. Order: shared-key loop (above) → this dispatch → legacy hardcoded blocks (below;
@@ -398,9 +425,12 @@ def apply_plugin_yaml_hooks(
             continue
         # Overlay the authored extra BEFORE the hook so the block the hook sees — and
         # therefore the values it bridges to env — already carry the authored nested
-        # value for keys present in both (adapter readers are env-first).
+        # value for keys present in both (adapter readers are env-first). An authored
+        # ``require_mention`` also beats the top-level one the Telegram hook falls back to.
         effective = _authored_wins(
-            authored.get(entry.name, {}), platform_cfg, entry.name, toplevel=cfg_toplevel, warned=warned)
+            authored.get(entry.name, {}), platform_cfg, entry.name,
+            where=_section_label(entry.name, cfg_toplevel, gateway_platforms), warned=warned,
+            global_keys=global_keys)
         # Restored managed pins must reach hooks before raw-YAML/global fallbacks
         # can seed a stale env value. Other authored-only keys keep existing behavior.
         effective.update((managed_extra or {}).get(entry.name, {}))

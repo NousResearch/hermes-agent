@@ -2,6 +2,7 @@
 redispatched on reconnect, and handed to the adapter that replaces this one (#132829)."""
 
 import asyncio
+import itertools
 import logging
 import weakref
 from typing import Optional
@@ -10,6 +11,24 @@ from gateway.platforms.event import MessageEvent
 from gateway.platforms.helpers import cancel_task
 
 logger = logging.getLogger("plugins.platforms.telegram.adapter")
+
+# Process-wide, so positions stay comparable when a replacement adapter adopts a predecessor's queue.
+_ARRIVALS = itertools.count()
+_ARRIVAL_ATTR = "_telegram_arrival_seq"
+
+
+def _insert_by_arrival(held: list, event: MessageEvent) -> None:
+    """Queue ``event`` behind every held event that arrived before it. Events are held at different
+    times (on arrival behind the delivery fence, by their own flush, by a cancelled flush, by teardown
+    salvage), so appending would replay a later update before an earlier buffered one. Unstamped events
+    keep append order."""
+    seq = getattr(event, _ARRIVAL_ATTR, None)
+    if seq is not None:
+        for i, other in enumerate(held):
+            if getattr(other, _ARRIVAL_ATTR, -1) > seq:
+                held.insert(i, event)
+                return
+    held.append(event)
 
 
 class TelegramHeldInboundMixin:
@@ -34,6 +53,20 @@ class TelegramHeldInboundMixin:
         if prior is not None and not prior.done() and prior is not current:
             return
         self._held_inbound_redispatch_task = loop.create_task(self._redispatch_held_inbound(prior=None if prior is current else prior))
+
+    @staticmethod
+    def _note_arrival(event: MessageEvent) -> None:
+        """Stamp an inbound update with its arrival position; a batch keeps its first update's stamp."""
+        if getattr(event, _ARRIVAL_ATTR, None) is None:
+            setattr(event, _ARRIVAL_ATTR, next(_ARRIVALS))
+
+    def _salvage_buffered_inbound(self) -> None:
+        """Hold every buffered batch (text, photo burst, album) at teardown, before the maps are cleared."""
+        for events, where in (
+                (self._pending_text_batches, "text-batch-teardown"), (self._pending_photo_batches, "photo-batch-teardown"),
+                (self._media_group_events, "media-group-teardown")):
+            for event in list(events.values()):
+                self._hold_inbound_event(event, where=where)
 
     def _hold_inbound_event(self, event: MessageEvent, *, where: str, schedule: bool = True) -> None:
         """Preserve an inbound event that cannot be dispatched now (PTB already acked the update, so dropping is silent loss).
@@ -63,7 +96,7 @@ class TelegramHeldInboundMixin:
             dropped = held.pop(0)
             logger.warning(
                 "[Telegram] Held-inbound queue full (%d); dropping oldest (%d chars)", max_n, len(getattr(dropped, "text", None) or ""))
-        held.append(event)
+        _insert_by_arrival(held, event)
         self._accept_update()
         logger.warning(
             "[Telegram] Holding inbound (%s, %d chars, queue=%d)%s", where, len(getattr(event, "text", None) or ""), len(held),

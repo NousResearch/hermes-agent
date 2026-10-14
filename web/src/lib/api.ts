@@ -140,6 +140,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/dashboard/theme",
   "/api/dashboard/font",
   "/api/dashboard/plugins",
+  "/api/dashboard/agent-plugins",
   // The shared-metrics answer is one per profile (telemetry.shared_metrics in its config.yaml).
   "/api/shared-metrics",
 ];
@@ -154,8 +155,7 @@ function withManagementProfile(url: string): string {
   if (url.includes("profile=")) return url; // explicit param wins
   const path = url.split("?")[0];
   if (!PROFILE_SCOPED_PREFIXES.some((p) => path.startsWith(p))) return url;
-  const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}profile=${encodeURIComponent(scope)}`;
+  return `${url}${url.includes("?") ? "&" : "?"}profile=${encodeURIComponent(scope)}`;
 }
 
 export async function fetchJSON<T>(

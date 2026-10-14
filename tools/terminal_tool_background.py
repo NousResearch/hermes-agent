@@ -8,7 +8,10 @@ monkeypatch points authoritative.
 import json
 import logging
 import sys
-from typing import Any, List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
+
+if TYPE_CHECKING:  # import-light by design: this module is loaded on the terminal hot path
+    from tools.environments.base_output import ProcessHandle
 
 logger = logging.getLogger("tools.terminal_tool")
 
@@ -248,7 +251,7 @@ def yield_to_background_handler(
     if env_type != "local":
         return None
 
-    def _handler(proc, output_so_far: str) -> dict:
+    def _handler(proc: "ProcessHandle", output_so_far: str) -> dict:
         from tools.process_registry import process_registry
         session = process_registry.adopt_local(
             proc, command=command, cwd=cwd, task_id=effective_task_id,

@@ -1,6 +1,6 @@
 name: doctorpack
 repo: https://github.com/godhiraj-code/hermes-doctorpack
-sha: 98114e43781d6a10b74233d4d1829491c3ebd5ae
+sha: ac00ace14ea9210e2e02a7b978cf4bc51eec2d8f
 description: Local-first diagnostics, safety audit, and incident postmortems for Hermes Agent.
 maintainer: godhiraj-code
 tier: community

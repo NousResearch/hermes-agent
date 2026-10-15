@@ -1491,7 +1491,7 @@ slash:
   start:
     description: "Принимать стартовые пинги платформы без ответа"
   new:
-    description: "Начать новый сеанс (новый ID сеанса и история)"
+    description: "Новая беседа"
   topic:
     description: "Включить или просмотреть сеансы-темы в личных сообщениях Telegram"
   clear:

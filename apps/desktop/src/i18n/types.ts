@@ -2959,6 +2959,7 @@ export interface Translations extends NoticeTranslations {
     queueMessage: string
     steer: string
     redirect: string
+    steerKeyHint: string
     stop: string
     send: string
     speaking: string

@@ -18,9 +18,11 @@ import { useBusyInputMode } from '@/app/session/hooks/use-busy-input-mode'
 import { composerFloatingStrip, composerInputBacking } from '@/components/chat/composer-dock'
 import { useSetupChatView } from '@/components/onboarding/first-run/assembly'
 import { OnboardingSkip } from '@/components/onboarding/skip-setup'
+import { KbdCombo } from '@/components/ui/kbd'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
+import { isSlashCommandText } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
@@ -28,6 +30,7 @@ import { isMacPlatform } from '@/lib/platform'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { sessionCompacting } from '@/store/compaction'
+import { behaviorKeyAction } from '@/store/composer-behavior'
 import { draftRetry } from '@/store/composer-draft-retry'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
@@ -37,7 +40,7 @@ import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
-import { $gatewayState } from '@/store/session'
+import { $currentReasoningEffortWire, $gatewayState } from '@/store/session'
 import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession } from '@/store/session-states'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
@@ -62,10 +65,11 @@ import { COMPOSER_AREAS } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
-import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
+import { $activeComposerRevision, getActiveComposer, markActiveComposer, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useCardWaitingSubmit } from './hooks/use-card-waiting-submit'
+import { useComposerBehavior } from './hooks/use-composer-behavior'
 import { useComposerBranch } from './hooks/use-composer-branch'
 import { useComposerDraft } from './hooks/use-composer-draft'
 import { useComposerDrop } from './hooks/use-composer-drop'
@@ -118,6 +122,7 @@ import {
   resolveExactLinkPaste,
   selectionLinkLabel
 } from './url-refs'
+import { useComposerVisible } from './visibility'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
 export function ChatBar({
@@ -471,6 +476,31 @@ export function ChatBar({
     triggerKeyConsumedRef,
     triggerLoading
   } = useComposerTrigger({ at, draftRef, editorRef, emoji, recordUndoPoint, requestMainFocus, setComposerText, slash })
+
+  const promptPaneVisible = useComposerVisible()
+  // Focus changes do not otherwise guarantee a render for empty composers.
+  useStore($activeComposerRevision)
+  const promptReasoning = useStore($currentReasoningEffortWire)
+
+  const nextPrompt = useComposerBehavior({
+    gateway,
+    profile,
+    sessionId,
+    storedId: queueSessionKey || sessionId,
+    busy,
+    empty: !hasComposerPayload,
+    revision: `${state.model.provider}:${state.model.model}:${promptReasoning}`,
+    enabled:
+      promptPaneVisible &&
+      getActiveComposer() === scope.target &&
+      !inputDisabled &&
+      !awaitingInput &&
+      !blockingPrompt &&
+      !cardWaiting &&
+      !queueEdit &&
+      queuedPrompts.length === 0 &&
+      !trigger
+  })
 
   // Pull the live contentEditable text into draftRef + the AUI composer state
   // (which drives `hasComposerPayload` → the send button). Shared by the input
@@ -891,6 +921,40 @@ export function ChatBar({
       }
     }
 
+    // Ghost text is not a payload. Only an explicit, unmodified Tab can turn
+    // it into a draft, after IME and ordinary completion have had first refusal.
+    if (
+      !trigger &&
+      nextPrompt.text &&
+      !busy &&
+      !cardWaiting &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      !event.shiftKey &&
+      liveComposerDraft(editorRef.current, draftRef.current).trim().length === 0 &&
+      attachments.length === 0
+    ) {
+      if (event.key === 'Tab' || event.key === 'Escape') {
+        const accepted = nextPrompt.decide(event.key === 'Tab' ? 'consumed' : 'dismissed')
+
+        if (accepted) {
+          event.preventDefault()
+          triggerKeyConsumedRef.current = true
+
+          if (event.key === 'Tab') {
+            withUndoPoint(() => {
+              loadIntoComposer(accepted, [])
+
+              return true
+            })
+          }
+
+          return
+        }
+      }
+    }
+
     // ArrowUp/ArrowDown navigate, in priority order: the queue (edit entries in
     // place) then sent-message history. The history ring is derived from live
     // session messages each press — single source of truth, no mirror.
@@ -963,14 +1027,57 @@ export function ChatBar({
       return
     }
 
+    const enterAction =
+      event.key === 'Enter' && !event.shiftKey
+        ? behaviorKeyAction({
+            key: event.key,
+            busy,
+            ctrlKey: event.ctrlKey,
+            metaKey: event.metaKey,
+            altKey: event.altKey,
+            shiftKey: event.shiftKey
+          })
+        : undefined
+
+    if (enterAction === 'steer') {
+      event.preventDefault()
+
+      if (disabled || inputDisabled || !busy) {
+        return
+      }
+
+      const editorText = liveComposerDraft(editorRef.current, draftRef.current)
+      draftRef.current = editorText
+      setComposerText(editorText)
+
+      // Cards and slash commands retain native arbitration. A normal draft
+      // explicitly requests session.steer, never the default interrupt mode.
+      if (cardWaiting || queueEdit || isSlashCommandText(editorText)) {
+        submitDraft()
+      } else {
+        steerDraft('steer')
+      }
+
+      return
+    }
+
     // Cmd/Ctrl+Enter queues a follow-up while a turn runs. Plain Enter steers
     // a text-only draft, so both live-turn actions stay reachable by keyboard.
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
+    // A composer-behavior extension may also route a plain Enter into the queue.
+    if (
+      event.key === 'Enter' &&
+      !event.shiftKey &&
+      (event.metaKey ||
+        event.ctrlKey ||
+        (enterAction === 'queue' &&
+          !event.altKey &&
+          !cardWaiting &&
+          !queueEdit &&
+          !isSlashCommandText(liveComposerDraft(editorRef.current, draftRef.current))))
+    ) {
       event.preventDefault()
 
       if (busy && !disabled) {
-        // As with plain Enter, source the just-typed content from the DOM so a
-        // fast keypress cannot queue a stale draft.
         const editorText = liveComposerDraft(editorRef.current, draftRef.current)
 
         if (editorText !== draftRef.current) {
@@ -996,7 +1103,7 @@ export function ChatBar({
       const editorText = liveComposerDraft(editorRef.current, draftRef.current)
       const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
 
-      if (disabled) {
+      if (disabled || (!busy && (event.metaKey || event.ctrlKey))) {
         return
       }
 
@@ -1006,8 +1113,8 @@ export function ChatBar({
         return
       }
 
-      // Empty Enter while busy. With prompts queued this is the double-send:
-      // the first Enter put the words in the queue, a second delivers them
+      // The native (extension-free) empty Enter delivers the queue head:
+      // the extension's queue/steer branches return before this fallback.
       // now — steered into the live turn when a steer can carry them, else
       // promote + interrupt + drain on settle — mirroring the idle empty-Enter
       // drain above. With nothing queued it stays a no-op — interrupting is
@@ -1174,7 +1281,8 @@ export function ChatBar({
           hudNativeDrag && '[-webkit-app-region:no-drag]'
         )}
         contentEditable={!inputDisabled}
-        data-placeholder={placeholder}
+        data-next-prompt={nextPrompt.text ? 'ready' : undefined}
+        data-placeholder={nextPrompt.text || placeholder}
         data-slot={RICH_INPUT_SLOT}
         dir={textDirection}
         onBeforeInput={handleEditorBeforeInput}
@@ -1218,7 +1326,10 @@ export function ChatBar({
         onCut={handleCut}
         onDragOver={handleInputDragOver}
         onDrop={handleInputDrop}
-        onFocus={() => markActiveComposer(scope.target)}
+        onFocus={() => {
+          markActiveComposer(scope.target)
+          nextPrompt.refresh()
+        }}
         onInput={handleEditorInput}
         onKeyDown={handleEditorKeyDown}
         onKeyUp={handleEditorKeyUp}
@@ -1228,6 +1339,7 @@ export function ChatBar({
         role="textbox"
         spellCheck={false}
         suppressContentEditableWarning
+        title={nextPrompt.text ? `${nextPrompt.text} · Tab` : undefined}
       />
       <ComposerDirectiveActions editorRef={editorRef} />
       {/* assistant-ui requires ComposerPrimitive.Input somewhere in the tree
@@ -1519,6 +1631,35 @@ export function ChatBar({
                       {controls}
                     </div>
                   </div>
+                  {/* Steer hint: the composer's own key contract, shown only
+                      while the keys actually mean this (busy, steerable, with
+                      a payload). The chord follows the active behavior policy:
+                      the extension's own keyAction when it maps a chord to
+                      steer, else the native busy-input policy (plain Enter
+                      when it steers). No chord steers → no hint; the steer
+                      button in the controls is the affordance. */}
+                  {canSteer && hasComposerPayload && (
+                    (behaviorKeyAction({ key: 'Enter', busy: true, ctrlKey: true, metaKey: true }) === 'steer'
+                      ? 'mod+enter'
+                      : busyAction === 'steer'
+                        ? 'enter'
+                        : null) && (
+                      <div
+                        className="flex items-center justify-end gap-1 text-[0.68rem] leading-none text-muted-foreground/70"
+                        data-slot="composer-steer-hint"
+                      >
+                        <KbdCombo
+                          combo={
+                            behaviorKeyAction({ key: 'Enter', busy: true, ctrlKey: true, metaKey: true }) === 'steer'
+                              ? 'mod+enter'
+                              : 'enter'
+                          }
+                          size="sm"
+                        />
+                        <span>{t.composer.steerKeyHint}</span>
+                      </div>
+                    )
+                  )}
                   <ContribSlot area={COMPOSER_AREAS.bottom} />
                 </div>
               </div>

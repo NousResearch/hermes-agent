@@ -2354,6 +2354,7 @@ export const jaOverrides = {
     openDirective: '開く',
     queueMessage: 'メッセージをキューに入れる',
     redirect: '現在の実行をリダイレクト',
+    steerKeyHint: '実行中のターンを指示（Ctrl+Enter）',
     stop: '停止',
     send: '送信',
     speaking: '話しています',

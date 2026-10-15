@@ -3286,6 +3286,7 @@ export const zhOverrides = {
     queueMessage: '排队消息',
     steer: '引导当前运行',
     redirect: '重新定向当前运行',
+    steerKeyHint: '转向当前回合',
     stop: '停止',
     send: '发送',
     speaking: '讲话中',

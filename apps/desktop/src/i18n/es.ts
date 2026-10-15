@@ -3821,6 +3821,7 @@ export const esOverrides = {
     queueMessage: 'Poner mensaje en cola',
     steer: 'Guiar la ejecución actual',
     redirect: 'Redirigir la ejecución actual',
+    steerKeyHint: 'Guiar la ejecución actual (Ctrl+Enter)',
     stop: 'Detener',
     send: 'Enviar',
     speaking: 'Hablando',

@@ -30,7 +30,7 @@ export interface HarnessHandle {
   restoreToMessage: (messageId: string, target?: { text?: string; userOrdinal?: number | null }) => Promise<void>
   redirectPrompt: (text: string) => Promise<boolean>
   /** @deprecated Use `redirectPrompt`. */
-  steerPrompt: (text: string) => Promise<boolean>
+  steerPrompt: (text: string, mode?: 'steer') => Promise<boolean>
   submitTextRaw: (text: string, options?: SubmitTextOptions) => Promise<boolean>
   submitText: (text: string, options?: SubmitTextOptions) => Promise<boolean>
 }

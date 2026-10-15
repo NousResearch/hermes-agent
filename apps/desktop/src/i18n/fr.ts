@@ -22,6 +22,18 @@ import { frUpdateChannel } from './fr_update_channel'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
+  externalOpenFailed: {
+    title: 'Impossible d’ouvrir ce lien',
+    message:
+      "Aucun navigateur n’est enregistré pour ouvrir cette adresse. Copiez le lien et ouvrez-le manuellement.",
+    copyUrl: 'Copier le lien',
+    close: 'Fermer',
+    missing: {
+      title: 'Fichier introuvable',
+      message:
+        "Ce fichier n’existe pas — il a peut-être été supprimé ou déplacé, ou il se trouve sur une autre machine."
+    }
+  },
   sharedMetrics: frSharedMetrics,
   appTour: frAppTour,
   firstRun: frFirstRun,
@@ -402,6 +414,11 @@ export const frOverrides = {
     show: 'Afficher',
     more: count => `${count} autre ${count === 1 ? 'notification' : 'notifications'}`,
     clearAll: 'Tout effacer',
+    compressDeferredDone: 'Compression du contexte terminée',
+    sharedProfileWarning:
+      "Une autre installation de Hermes utilise ce profil. Les deux installations partagent ses paramètres et ses données : les modifications peuvent donc entrer en conflit. Vous pouvez continuer, ou fermer l’autre installation avant de faire des changements.",
+    updateReadyMessageAppInstaller:
+      "Une nouvelle version de Hermes est prête. Mettez à jour maintenant et Windows terminera l’opération pour vous.",
     dismiss: 'Fermer la notification',
     details: 'Détails',
     copyDetail: 'Copier le détail',
@@ -544,6 +561,7 @@ export const frOverrides = {
   keybinds: {
     title: 'Raccourcis clavier',
     subtitle: open => `Cliquez sur un raccourci pour le réaffecter · ${open} rouvre ce panneau.`,
+    clear: 'Effacer',
     search: 'Rechercher des raccourcis…',
     rebind: 'Réaffecter',
     reset: 'Réinitialiser',
@@ -591,6 +609,7 @@ export const frOverrides = {
       'composer.focus': 'Mettre le focus sur le compositeur',
       'composer.modelPicker': 'Ouvrir le sélecteur de modèle',
       'composer.voice': 'Démarrer / arrêter la conversation vocale',
+      'composer.dictate': 'Démarrer / arrêter la dictée',
       'composer.reasoningUp': 'Augmenter le niveau de raisonnement',
       'composer.reasoningDown': 'Réduire le niveau de raisonnement',
       'view.toggleSidebar': 'Basculer la barre latérale des sessions',
@@ -598,6 +617,8 @@ export const frOverrides = {
       'view.toggleRightSidebar': "Basculer l'explorateur de fichiers",
       'view.toggleReview': 'Basculer le panneau de révision',
       'view.toggleStatusbar': 'Basculer la barre de statut',
+      'conversation.scrollPageUp': 'Faire défiler la conversation d’une page vers le haut',
+      'conversation.scrollPageDown': 'Faire défiler la conversation d’une page vers le bas',
       'view.toggleTabStrip': 'Basculer les onglets',
       'view.toggleProfileRail': 'Afficher ou masquer la barre des profils',
       'view.toggleSimpleMode': 'Activer ou désactiver le mode simple',
@@ -756,6 +777,7 @@ export const frOverrides = {
       gateway: 'Gateway',
       apiKeys: 'Outils et clés',
       keybinds: 'Raccourcis clavier',
+      plugins: 'Plugins',
       keysTools: 'Outils',
       keysSettings: 'Paramètres',
       mcp: 'MCP',
@@ -1255,8 +1277,16 @@ export const frOverrides = {
           language: 'Langue de transcription'
         },
         openai: {
-          model: 'Modèle STT OpenAI'
+          model: 'Modèle STT OpenAI',
+          streamingModel: 'Modèle de transcription en direct OpenAI'
         },
+        xai: {
+          model: 'Modèle STT xAI'
+        },
+        deepinfra: {
+          model: 'Modèle STT DeepInfra'
+        },
+        streaming: 'Transcription en direct',
         groq: {
           model: 'Modèle STT Groq'
         },
@@ -1445,6 +1475,8 @@ export const frOverrides = {
       },
       stt: {
         enabled: 'Activer la transcription vocale locale ou via fournisseur.',
+        streaming:
+          "Afficher le texte pendant que vous parlez (OpenAI, xAI, ElevenLabs). En cas d'échec, l'enregistrement est utilisé à la place.",
         echoTranscripts: 'Publier la transcription brute 🎙️ des messages vocaux dans la conversation.',
         elevenlabs: {
           languageCode: 'Code de langue ISO-639-3 facultatif. Vide = détection automatique par ElevenLabs.'
@@ -1536,6 +1568,12 @@ export const frOverrides = {
       disableF12Title: 'Désactiver les outils de développement avec F12',
       disableF12Desc:
         "Empêcher F12 d'ouvrir les outils de développement. Ctrl+Maj+I (ou Cmd+Option+I sur Mac) continue de fonctionner.",
+      alwaysExternalLinksTitle: 'Toujours ouvrir les liens dans le navigateur externe',
+      alwaysExternalLinksDesc:
+        "Ouvrir chaque lien cliqué dans le navigateur du système plutôt que dans le navigateur intégré. « Ouvrir dans le navigateur intégré » reste disponible dans le menu contextuel.",
+      voiceShortcutHintTitle: "Raccourci d'enregistrement vocal",
+      voiceShortcutHintDesc:
+        "Définissez le raccourci d'enregistrement vocal dans Paramètres → Raccourcis clavier (« Démarrer / arrêter la conversation vocale »). La valeur voice.record_key ne s'applique qu'à la CLI et à la TUI.",
       attachmentSizeTitle: 'Taille maximale de chargement des aperçus / images',
       attachmentSizeDesc:
         "Taille maximale d'un fichier local que Desktop chargera pour les aperçus et les pièces jointes image, en Mo. La valeur par défaut est 16. Les pièces jointes distantes non-image utilisent une limite distincte de 256 Mo. Une valeur très élevée charge le fichier entier en mémoire et peut figer ou planter l'application.",
@@ -2443,6 +2481,19 @@ export const frOverrides = {
         }
       }
     }
+  },
+  skillDeepLink: {
+    installTitle: (name: string) => `Installer « ${name} » ?`,
+    installDescription:
+      "Cette compétence sera disponible dans les nouvelles sessions. N’installez que des sources de confiance.",
+    installTo: 'Installer vers',
+    thisComputer: 'Cet ordinateur',
+    installing: 'Installation…',
+    installComplete: (name: string) => `« ${name} » installé`,
+    destinationChanged:
+      "La destination a changé. Fermez cette fenêtre et rouvrez le lien d’installation.",
+    installed: 'Installé',
+    source: 'Source'
   },
   skills: {
     tabSkills: 'Skills',
@@ -3370,6 +3421,8 @@ export const frOverrides = {
       `L'invite système / persona pour ce profil.\nLaissez vide pour conserver la valeur par défaut ${mode}.`,
     soulPlaceholderCloned: 'cloné',
     soulPlaceholderEmpty: 'vide',
+    soulMissing:
+      "Aucun fichier SOUL.md n’existe encore pour ce profil. Ajoutez des instructions ci-dessous et enregistrez pour en créer un. Les préréglages de personnalité de config.yaml sont gérés séparément.",
     unsavedChanges: 'Modifications non enregistrées',
     loadingSoul: 'Chargement de SOUL.md...',
     emptySoul: 'SOUL.md vide — commencez à écrire le persona...',
@@ -3772,6 +3825,11 @@ export const frOverrides = {
   },
   composer: {
     message: 'Message',
+    terminalSelectionMissingTitle: 'Sélection de terminal indisponible',
+    terminalSelectionMissingBody:
+      'Sélectionnez à nouveau les lignes du terminal (Ctrl/Cmd+L) avant d’envoyer — ce bloc n’a pas de texte d’origine.',
+    queuedTerminalSelectionExpiredBody:
+      'Cette sélection de terminal en attente n’est plus disponible. Sélectionnez à nouveau les lignes (Ctrl/Cmd+L) et remettez le message en attente.',
     wakingProfile: profile => `Réveil de ${profile}…`,
     placeholderStarting: 'Démarrage de Hermes…',
     placeholderReconnecting: 'Reconnexion à Hermes…',
@@ -4151,6 +4209,8 @@ export const frOverrides = {
     },
     coding: {
       title: 'Arbre de travail',
+      readOnlyScope:
+        'Vue en lecture seule — indexer, annuler et valider s’appliquent aux modifications non validées',
       noBranch: 'Aucune branche',
       detached: 'détaché',
       clean: 'Propre',
@@ -4356,6 +4416,8 @@ export const frOverrides = {
       restarting: 'Redémarrage du backend pour charger la mise à jour…',
       notAvailable: 'Mise à jour indisponible pour ce backend.',
       failed: 'Échec de la mise à jour du backend.',
+      owed: steps =>
+        `Backend mis à jour, mais il reste à faire : ${steps}. Relancez \`hermes update\` pour terminer.`,
       noReturn:
         "Le backend ne s'est pas reconnecté. La mise à jour n'est peut-être pas terminée — vérifiez l'hôte du backend."
     }
@@ -4385,6 +4447,13 @@ export const frOverrides = {
       'Utilisez un backend distant avec un jeton de session ou une connexion par navigateur. Aucune installation locale ne démarrera.',
     installLocalTitle: 'Installer Hermes localement',
     installLocalDesc: 'Téléchargez Hermes, créez son environnement Python et exécutez le backend sur cet ordinateur.',
+    useLocalTitle: 'Utiliser Hermes sur cet ordinateur',
+    useLocalDesc:
+      'Un moteur Hermes est déjà installé ici — démarrez-le en un clic. Rien n’est téléchargé.',
+    bundledLocalDesc:
+      'Utilisez le moteur Hermes fourni avec cette application — le backend groupé est l’installation locale.',
+    setupChoiceDescLocal:
+      'Installez Hermes sur cet ordinateur, ou connectez-vous à un gateway Hermes que vous exécutez déjà.',
     localStartUnavailable: "L'installation locale n'a pas pu démarrer. Redémarrez Hermes Desktop et réessayez.",
     remoteSetupTitle: 'Se connecter à un Hermes existant',
     remoteSetupDesc:
@@ -4620,6 +4689,11 @@ export const frOverrides = {
       showTerminal: 'Afficher le terminal',
       hideTerminal: 'Masquer le terminal',
       gateway: 'Gateway',
+      backend: 'Backend',
+      messagingStopped: 'messagerie arrêtée',
+      messagingDegraded: name => `${name} indisponible`,
+      releaseAvailable: version => `La version ${version} est disponible.`,
+      compressions: count => `Compressions : ${count}`,
       gatewayReady: 'prêt',
       gatewayNeedsSetup: 'nécessite une configuration',
       gatewayUnavailable: 'inférence indisponible',
@@ -4739,6 +4813,10 @@ export const frOverrides = {
     terminalHide: 'Masquer le terminal',
     terminalsAria: 'Terminaux',
     terminalNew: 'Nouveau terminal',
+    terminalOpenInteractive: 'Ouvrir un nouveau terminal',
+    terminalReadOnly: 'Sortie en lecture seule',
+    terminalReadOnlyHelp:
+      "Pour répondre aux invites, arrêtez la commande en arrière-plan et relancez-la dans un nouveau terminal. Le nouveau terminal ouvre un shell distinct : il ne se connecte pas à ce processus.",
     terminalCloseOthers: 'Fermer les autres',
     terminalCloseAll: 'Tout fermer',
     addToChat: 'Ajouter à la conversation'
@@ -4750,6 +4828,10 @@ export const frOverrides = {
     closePane: "Fermer le panneau d'aperçu",
     loading: "Chargement de l'aperçu",
     unavailable: 'Aperçu indisponible',
+    missingTitle: 'Le fichier n’existe plus',
+    missingTarget: 'Ce chemin n’existe pas sur cet ordinateur',
+    missingBody: target =>
+      `${target} a été supprimé, déplacé, ou son emplacement temporaire a été vidé. Cet onglet ne sera pas restauré au prochain lancement.`,
     opening: 'Ouverture...',
     hide: 'Masquer',
     openPreview: "Ouvrir l'aperçu",
@@ -5198,6 +5280,7 @@ export const frOverrides = {
     },
     approval: {
       gatewayDisconnected: "La Gateway Hermes n'est pas connectée",
+      commandDetails: 'Détails de la commande',
       sendFailed: "Impossible d'envoyer la réponse d'approbation",
       reconnect: 'Se reconnecter',
       timedOutSystemLine:
@@ -5468,6 +5551,12 @@ export const frOverrides = {
     promptFailed: "Échec de l'invite",
     providerCredentialRequired: "Ajoutez un identifiant de fournisseur avant d'envoyer votre premier message.",
     emptySlashCommand: 'commande slash vide',
+    slashCommandIgnoredTitle: 'Commande non envoyée',
+    slashCommandIgnoredBody:
+      'Les commandes slash ne peuvent pas être combinées avec des pièces jointes. Retirez la pièce jointe ou envoyez la commande séparément.',
+    zoomIn: 'Zoom avant',
+    zoomOut: 'Zoom arrière',
+    resetZoom: 'Réinitialiser le zoom',
     desktopCommands: 'Commandes Desktop',
     skillCommandsAvailable: count => `${count} commandes de skill disponibles.`,
     warningLine: message => `avertissement : ${message}`,

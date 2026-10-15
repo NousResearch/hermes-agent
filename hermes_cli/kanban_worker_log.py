@@ -3,7 +3,11 @@ wrapper a worker subprocess runs under (``python -m hermes_cli.kanban_worker_log
 
 from __future__ import annotations
 
+# PM's bare interpreter must select its committed dependencies before registration imports.
+import hermes_bootstrap
+
 import argparse
+import codecs
 import contextlib
 import os
 import re
@@ -78,11 +82,7 @@ def rotate_worker_log(
 
 _PRIVATE_KEY_BEGIN_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----")
 _PRIVATE_KEY_END_RE = re.compile(r"-----END[A-Z ]*PRIVATE KEY-----")
-_UNFINISHED_AUTH_HEADER_RE = re.compile(
-    r"(?im)(?<!\S)(?:proxy-)?authorization:[ \t]+(?:bearer|basic|token)[ \t]+\S*$"
-)
 _READ_CHUNK_BYTES = 65536
-_SAFETY_MARGIN = 128
 
 
 def open_worker_log_file(log_path: Path):
@@ -102,86 +102,88 @@ def _read_chunk(src) -> bytes:
     return reader(_READ_CHUNK_BYTES) if reader is not None else src.read(_READ_CHUNK_BYTES)
 
 
+def _worker_log_record_continues(text: str) -> bool:
+    """Keep quoted values, header whitespace and incomplete control-split tokens together."""
+    from agent.redact import (
+        _AUTH_HEADER_RE, _CONTROL_CHARS_RE, _PREFIX_RE, _PREFIX_SUBSTRINGS,
+        _SECRET_HEADER_RE, _TOKEN_BODY_CHARS,
+    )
+
+    # Synthetic completions expose canonical headers awaiting a colon or credential.
+    # Inspect matches only: lookahead never reaches the log or duplicates the grammar.
+    if any(m.start(pattern.groups) == len(text) + len(completion) - 1
+           for pattern, completion in ((_AUTH_HEADER_RE, "?"),
+                                       (_SECRET_HEADER_RE, "?"),
+                                       (_SECRET_HEADER_RE, ":?"))
+           for m in pattern.finditer(text + completion)):
+        return True
+    if sum(m[0] == '"' for m in re.finditer(r'\\.|"', text, re.DOTALL)) % 2:
+        return True
+
+    start = len(text)
+    while start and (text[start - 1] in _TOKEN_BODY_CHARS
+                     or _CONTROL_CHARS_RE.fullmatch(text[start - 1])):
+        start -= 1
+    suffix = text[start:]
+    # The canonical redactor deliberately does not join a self-matching token across newlines.
+    if _PREFIX_RE.search(suffix):
+        return False
+    stripped = _CONTROL_CHARS_RE.sub("", suffix)
+    return bool(stripped) and any(p in stripped or p.startswith(stripped) for p in _PREFIX_SUBSTRINGS)
+
+
 def copy_redacted_worker_log_stream(src, dst) -> None:
-    """Copy worker stdout to *dst* in bounded chunks with secret redaction."""
+    """Redact complete logical records before writing, with bounded reads, not bounded records.
+
+    Unterminated lines/quoted values and continuations stay in memory until complete or EOF;
+    cutting them at an arbitrary size can expose opaque credentials to the log.
+    """
     from agent.redact import redact_terminal_output
 
-    redact_private_blocks = True
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     inside_private_key = False
     buffer = ""
+    record = ""
 
-    def _emit(text: str) -> None:
-        if not text:
-            return
-        redacted = redact_terminal_output(text, force=True) if redact_private_blocks else text
-        dst.write(redacted.encode("utf-8", errors="replace"))
-
-    def _unfinished_secret_start(text: str) -> int | None:
-        from agent.redact import _PREFIX_RE
-
-        starts = [match.start(1) for match in _PREFIX_RE.finditer(text) if match.end(1) == len(text)]
-        starts.extend(match.start() for match in _UNFINISHED_AUTH_HEADER_RE.finditer(text))
-        return min(starts) if starts else None
-
-    def _split_secret_start(text: str, safe_end: int) -> int | None:
-        """Keep an entire token when the bounded emit point cuts through it."""
-        from agent.redact import _PREFIX_RE
-
-        starts = [match.start(1) for match in _PREFIX_RE.finditer(text)
-                  if match.start(1) < safe_end < match.end(1)]
-        return min(starts) if starts else None
+    def _without_private_keys(line: str) -> str:
+        nonlocal inside_private_key
+        public = ""
+        while line:
+            if inside_private_key:
+                end = _PRIVATE_KEY_END_RE.search(line)
+                if end is None:
+                    break
+                line = line[end.end():]
+                inside_private_key = False
+            else:
+                begin = _PRIVATE_KEY_BEGIN_RE.search(line)
+                if begin is None:
+                    public += line
+                    break
+                public += line[:begin.start()] + "[REDACTED PRIVATE KEY]"
+                line = line[begin.end():]
+                inside_private_key = True
+        return public
 
     while True:
         raw = _read_chunk(src)
-        if not raw:
+        eof = not raw
+        buffer += decoder.decode(raw, final=eof)
+        while buffer:
+            newline = buffer.find("\n")
+            if newline == -1 and not eof:
+                break
+            end = newline + 1 if newline != -1 else len(buffer)
+            line, buffer = buffer[:end], buffer[end:]
+            # Frame PEM delimiters by full lines, so neither boundary can be lost between reads.
+            record += _without_private_keys(line)
+            if record.endswith("\n") and not _worker_log_record_continues(record):
+                dst.write(redact_terminal_output(record, force=True).encode("utf-8"))
+                record = ""
+        if eof:
             break
-        buffer += raw.decode("utf-8", errors="replace")
-        while True:
-            if redact_private_blocks and inside_private_key:
-                end = _PRIVATE_KEY_END_RE.search(buffer)
-                if end is None:
-                    buffer = ""
-                    break
-                dst.write(b"[REDACTED PRIVATE KEY]\n")
-                nl = buffer.find("\n", end.end())
-                buffer = buffer[nl + 1:] if nl != -1 else buffer[end.end():]
-                inside_private_key = False
-                continue
-
-            if redact_private_blocks:
-                begin = _PRIVATE_KEY_BEGIN_RE.search(buffer)
-                if begin is not None:
-                    line_start = buffer.rfind("\n", 0, begin.start()) + 1
-                    _emit(buffer[:line_start])
-                    end = _PRIVATE_KEY_END_RE.search(buffer, begin.end())
-                    if end is not None:
-                        dst.write(b"[REDACTED PRIVATE KEY]\n")
-                        nl = buffer.find("\n", end.end())
-                        buffer = buffer[nl + 1:] if nl != -1 else buffer[end.end():]
-                        continue
-                    inside_private_key = True
-                    buffer = ""
-                    break
-
-            if len(buffer) > _SAFETY_MARGIN:
-                safe_end = len(buffer) - _SAFETY_MARGIN
-                unfinished_start = _unfinished_secret_start(buffer)
-                split_start = _split_secret_start(buffer, safe_end)
-                if unfinished_start is not None:
-                    safe_end = min(safe_end, unfinished_start)
-                if split_start is not None:
-                    safe_end = min(safe_end, split_start)
-                emittable = buffer[:safe_end]
-                if not emittable:
-                    break
-                _emit(emittable)
-                buffer = buffer[safe_end:]
-            break
-
-    if inside_private_key:
-        dst.write(b"[REDACTED PRIVATE KEY]\n")
-    elif buffer:
-        _emit(buffer)
+    if record:
+        dst.write(redact_terminal_output(record, force=True).encode("utf-8"))
 
 
 def _kill_proc_group(proc: subprocess.Popen, signum: int) -> None:
@@ -244,7 +246,7 @@ def run_worker_with_redacted_log(log_path: Path, command: list[str]) -> int:
                     start_new_session=False,
                 )
             except FileNotFoundError as exc:
-                log_f.write(f"Worker launch failed: {exc}\n".encode("utf-8"))
+                log_f.write(f"Worker launch failed: {exc}\n".encode())
                 return 127
 
             previous_handlers = _install_signal_forwarders(proc)

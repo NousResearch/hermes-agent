@@ -4839,11 +4839,11 @@ class TestPluginAPISecretScopeProductionMount:
         monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
         monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
 
-        # Named profile B: a live profile (``.env`` is both an identity marker and the
-        # secret source) with its OWN value for the probe key.
-        worker_home = profiles_root / "workerb"
-        worker_home.mkdir(parents=True, exist_ok=True)
+        # Named profile B: a live profile with its OWN probe key value in ``.env`` (also its identity
+        # marker); ``?profile=`` runs the plugin on B, so B has enabled it too (#134889).
+        (worker_home := profiles_root / "workerb").mkdir(parents=True, exist_ok=True)
         (worker_home / ".env").write_text(f"{self._PROBE_KEY}=sk-workerb\n", encoding="utf-8")
+        (worker_home / "config.yaml").write_text("plugins:\n  enabled: [example]\n", encoding="utf-8")
 
         # Launch profile A: an env-only credential (systemd ``Environment=`` style), frozen
         # into the launch scope when multi-profile hosting activates.

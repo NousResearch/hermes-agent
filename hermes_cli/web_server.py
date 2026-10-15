@@ -395,20 +395,22 @@ async def host_header_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+from hermes_cli.web_server_dashboard import (
+    PluginApiWebSocketGate, _plugin_api_name, _plugin_api_request_refused,
+)
+
+
 @app.middleware("http")
 async def _plugin_api_runtime_gate(request: Request, call_next):
-    """Block requests to disabled plugin API routes at request time.
+    """Block requests to disabled plugin API routes at request time
+    (:func:`_plugin_api_request_refused`).
 
-    :func:`_mount_plugin_api_routes` gates at import time; a plugin disabled
-    while running keeps its router mounted until restart, so enforce on every
-    ``/api/plugins/{name}/...`` request. Registered BEFORE the auth middlewares
-    (runs AFTER them): an unauthenticated caller must get auth's 401, never this
-    404, or the status code becomes a plugin-name oracle.
+    Registered BEFORE the auth middlewares (runs AFTER them): an unauthenticated
+    caller must get auth's 401, never this 404, or the status code becomes a
+    plugin-name oracle.
     """
     path = request.url.path
-    # parts: ['', 'api', 'plugins', '<name>', ...]
-    parts = path.split("/")
-    plugin_name = parts[3] if path.startswith("/api/plugins/") and len(parts) >= 4 else ""
+    plugin_name = _plugin_api_name(request.scope)
     # Only gate authenticated requests. Unauthenticated ones fall through so
     # auth_middleware / the OAuth gate return 401 first and this route can't
     # be used as a plugin-name oracle. Desktop authenticates with a native ticket.
@@ -418,24 +420,13 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
         or getattr(request.app.state, "auth_required", False)
         or _has_valid_session_token(request)
         or _has_valid_query_token(request, path)
-    ):
-        try:
-            # Gate: only serve user plugins that are in plugins.enabled and not in plugins.disabled. This
-            # prevents the frontend from loading JS/CSS from plugins the user has not explicitly activated.
-            # (#46435)
-            from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
-            enabled_set = _get_enabled_set()
-            disabled_set = _get_disabled_set()
-        except Exception:
-            enabled_set = set()
-            disabled_set = set()
-        # Source from the cached plugin list; unknown => user plugin (safe default — blocks).
-        plugin = next((p for p in _get_dashboard_plugins() if p.get("name") == plugin_name), None)
-        source = plugin.get("source") if plugin else "user"
-        blocked = plugin_name in disabled_set or (source == "user" and plugin_name not in enabled_set)
-        if blocked and source in ("user", "bundled"):
-            return JSONResponse(status_code=404, content={"detail": "Plugin not found"})
+    ) and _plugin_api_request_refused(plugin_name):
+        return JSONResponse(status_code=404, content={"detail": "Plugin not found"})
     return await call_next(request)
+
+
+# The same gate for WebSocket upgrades: ``@app.middleware("http")`` passes those through untouched.
+app.add_middleware(PluginApiWebSocketGate)
 
 
 @app.middleware("http")

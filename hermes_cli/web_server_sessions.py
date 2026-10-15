@@ -202,7 +202,12 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         params['expected_generation'] = expected_generation
     try:
         if authority is None:
-            result = await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
+            from gateway.session_read_status import operator_read_status
+            from hermes_cli.gateway_read_status import forward_read_status
+            result = await asyncio.to_thread(forward_read_status, profile, actor, params) if (
+                operator_read_status(actor, params)) else None
+            if result is None:
+                result = await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
         else:
             with _native_history_transport(request, authority, actor):
                 result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params)

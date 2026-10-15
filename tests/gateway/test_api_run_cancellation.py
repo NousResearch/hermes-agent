@@ -127,3 +127,8 @@ async def test_http_cancel_never_launches_and_fails_closed_during_admission(tmp_
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
     adapter._run_idempotency_store.close()
+
+
+def test_cancel_by_key_uses_native_queued_admission(tmp_path):
+    from tests.gateway.test_api_authority_execution import _probe
+    _probe(tmp_path, runs="cancel-by-key")

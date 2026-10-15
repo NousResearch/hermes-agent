@@ -1,0 +1,63 @@
+"""A new or rerun install of the official repository lands on the latest stable release.
+
+`hermes update` already follows stable for an official checkout that never chose a channel;
+the installer has to put a fresh install there too, or new users start on main's tip. The
+official URL is redirected to a local origin and `curl` answers the release lookup.
+"""
+from pathlib import Path
+import os
+import subprocess
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+OFFICIAL = "https://github.com/NousResearch/hermes-agent.git"
+
+pytestmark = pytest.mark.platforms("posix")
+
+
+def _git(cwd, *args, env=None):
+    return subprocess.run(
+        ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+         "-c", "commit.gpgsign=false", *args],
+        cwd=cwd, check=True, capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env,
+    ).stdout.strip()
+
+
+@pytest.mark.parametrize("start,args,lands", [
+    (None, [], "release"),                     # fresh install: the release, not main's tip
+    (None, ["--channel", "main"], "tip"),      # explicit opt-out: main's tip
+    ("before", [], "release"),                 # rerun behind the release: moves forward to it
+    ("tip", [], "tip"),                        # rerun already containing it: never moves back
+])
+def test_install_lands_on_the_latest_stable_release(tmp_path, start, args, lands):
+    origin, home, bin_dir = tmp_path / "origin", tmp_path / "home", tmp_path / "bin"
+    install = home / ".hermes" / "hermes-agent"
+    for d in (origin, home, bin_dir):
+        d.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    for label in ("before", "release", "newer"):
+        _git(origin, "commit", "-q", "--allow-empty", "-m", label)
+    _git(origin, "tag", "-a", "v1.2.3", "-m", "release", "HEAD~1")
+    commits = {name: _git(origin, "rev-parse", ref)
+               for name, ref in (("before", "HEAD~2"), ("release", "HEAD~1"), ("tip", "HEAD"))}
+    (home / ".gitconfig").write_text(f'[url "file://{origin}"]\n  insteadOf = {OFFICIAL}\n', encoding="utf-8")
+    (bin_dir / "curl").write_text(
+        '#!/bin/sh\ncase "$*" in *api.github.com*) printf \'{\\n  "tag_name": "v1.2.3",\\n}\\n\';; *) exit 22;; esac\n',
+        encoding="utf-8")
+    (bin_dir / "curl").chmod(0o755)
+    env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "HOME": str(home), "NO_COLOR": "1",
+           "GIT_CONFIG_NOSYSTEM": "1"}
+    if start:
+        install.parent.mkdir(parents=True)
+        _git(tmp_path, "clone", "-q", OFFICIAL, str(install), env=env)
+        _git(install, "checkout", "-q", "--detach", commits[start])
+
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "install.sh"), "--stage", "repository", "--dir", str(install),
+         "--hermes-home", str(home / ".hermes"), "--non-interactive", *args],
+        check=False, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120, env=env,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _git(install, "rev-parse", "HEAD") == commits[lands], result.stdout + result.stderr

@@ -49,10 +49,17 @@ than the latest release (for example one that tracked `main` before this default
 stays where it is until a newer release ships. Running `--set-channel stable`
 pins the checkout to the exact release commit, even when that is older; the
 Desktop names that move as a rollback to the release, and `hermes update --check`
-says the checkout is newer, instead of announcing a new update. Re-running the
-installer (`install.sh`, `install.ps1` or Hermes-Setup) over an install that chose
-a channel other than `main` keeps its checkout where it is: only `hermes update`
-moves it. An explicit `--commit` pin still applies.
+says the checkout is newer, instead of announcing a new update.
+
+The installers (`install.sh`, `install.ps1` and Hermes-Setup) put a new install
+on the latest stable release too. Re-running one over an install that never
+chose a channel moves it forward to that release the same way (a checkout that
+already contains it stays). Over an install that chose a channel other than
+`main`, a rerun keeps its checkout where it is: only `hermes update` moves it.
+To install the tip of `main` instead, pass `--channel main` (`-Channel main`
+for `install.ps1`, or set `HERMES_INSTALL_CHANNEL=main` before an
+`irm | iex` one-liner); the installer saves that choice the way
+`hermes update --set-channel main` does. An explicit `--commit` pin still applies.
 Windows Store, MSIX and bundled desktop installs are unaffected; their channel
 is baked into the package (see below).
 

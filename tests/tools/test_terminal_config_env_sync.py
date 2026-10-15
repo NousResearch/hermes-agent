@@ -5,7 +5,7 @@ terminal_tool._get_env_config() reads ALL terminal settings from os.environ
 at startup, by THREE separate code paths:
 
   1. cli.py            -> ``env_mappings`` dict (CLI / TUI startup)
-  2. gateway/run.py    -> ``_terminal_env_map`` dict (gateway / messaging
+  2. gateway/run_terminal_env.py -> ``_terminal_env_map`` dict (gateway / messaging
                           platforms)
   3. hermes_cli/config.py:set_config_value
                        -> bridges via the canonical ``TERMINAL_CONFIG_ENV_MAP``
@@ -33,7 +33,7 @@ def _cli_env_map() -> dict[str, str]:
 
 def _gateway_env_map() -> dict[str, str]:
     """terminal config key -> env var actually written by the gateway bridge."""
-    from gateway.run import _bridge_terminal_config_to_env
+    from gateway.run_terminal_env import _bridge_terminal_config_to_env
     from hermes_cli import config as hc_config
 
     class _KeyRecorder(dict):
@@ -123,7 +123,7 @@ def test_cli_and_gateway_env_maps_agree():
     mismatched = {k: (cli_map[k], gw_map[k]) for k in set(cli_map) & set(gw_map) if cli_map[k] != gw_map[k]}
 
     assert not missing_in_gateway, (
-        f"Keys the CLI bridges but gateway/run.py _bridge_terminal_config_to_env "
+        f"Keys the CLI bridges but gateway/run_terminal_env.py _bridge_terminal_config_to_env "
         f"ignores: {missing_in_gateway}.  Add them to both maps (same bug class "
         f"as docker_run_as_host_user shipping wired in cli but not gateway)."
     )

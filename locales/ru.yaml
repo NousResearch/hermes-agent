@@ -1559,7 +1559,7 @@ slash:
   subgoal:
     description: "Добавить дополнительные критерии к активной цели или управлять ими"
   status:
-    description: "Показать сведения о сеансе, модели, токенах и контексте"
+    description: "Сведение о модели"
   egress:
     description: "Показать состояние egress-прокси Docker"
   context:

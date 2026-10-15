@@ -51,3 +51,32 @@ class ProviderTransport(ABC):
     def map_finish_reason(self, raw_reason: str) -> str:
         """Map a provider stop reason via ``_STOP_REASON_MAP`` (unknown -> 'stop'); passthrough when no map."""
         return raw_reason if self._STOP_REASON_MAP is None else self._STOP_REASON_MAP.get(raw_reason, "stop")
+
+    def normalize_stream_delta(self, delta: Any) -> Any:
+        """Translate one streaming chunk's delta to the shape the assembler reads; identity by default.
+
+        The streaming assembler reads ``delta.tool_calls`` only. A provider whose dialect predates
+        that field streams its call on a different attribute — the legacy OpenAI ``delta.function_call``
+        pair, which carries ``name``/``arguments``/``id`` for a single call — so the call is dropped
+        with no error: the turn ends as an empty response while the tokens were spent (measured live,
+        a 105-token completion folded to ``response_len=7``). Core cannot know that shape, so the
+        transport that owns the dialect returns a delta exposing the call as ``tool_calls`` instead.
+
+        Implementations may return the delta unchanged. The assembler calls this for every chunk
+        whose ``tool_calls`` is empty — which includes ordinary text deltas, so an implementation
+        should stay cheap and return the delta untouched when it does not own the shape.
+        """
+        return delta
+
+    def normalize_message_tool_calls(self, message: Any) -> Any:
+        """Translate one non-streaming ``message``'s tool calls to the shape the reader expects.
+
+        The non-streaming counterpart of :meth:`normalize_stream_delta`, and it exists for the same
+        reason: the reader below (``ChatCompletionsTransport.normalize_response``) reads
+        ``message.tool_calls`` only, so a dialect that answers with the legacy
+        ``message.function_call`` pair loses the call when a request runs without streaming —
+        which is exactly what happens once an adapter returns a final response for ``stream=True``
+        (``_disable_streaming``). Returning ``message`` unchanged is correct for every transport
+        whose provider already speaks the modern shape.
+        """
+        return message

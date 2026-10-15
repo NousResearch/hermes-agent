@@ -9,7 +9,7 @@ user's local history rather than a send queue.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
@@ -25,7 +25,7 @@ from hermes_cli.observability.shared_metrics_sender import (
 from hermes_cli.sqlite_util import write_txn
 
 INSTALL_ID = "12a73e97-4de9-4766-830d-9ca1192c0420"
-NOW = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
 ENDPOINT = "https://telemetry.test/v1/telemetry"
 
 
@@ -76,8 +76,8 @@ def store(tmp_path):
 
 def _grant_consent(
     store,
-    opened=datetime(2026, 8, 20, tzinfo=timezone.utc),
-    confirmed_through=datetime(2026, 10, 1, tzinfo=timezone.utc),
+    opened=datetime(2026, 8, 20, tzinfo=UTC),
+    confirmed_through=datetime(2026, 10, 1, tzinfo=UTC),
 ):
     """Open a consent window and heartbeat it forward, via the real writer."""
     with store._connection() as connection:
@@ -152,7 +152,7 @@ def _row(store, package_id):
 
 
 def _iso(moment):
-    return moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _sender(store, transport, **kwargs):
@@ -266,7 +266,7 @@ class TestConsentGate:
     def test_packages_from_before_opt_in_are_never_sent(self, store):
         # Consent opens on Aug 24; the "old" package's period predates it.
         _clear_consent(store)
-        _grant_consent(store, opened=datetime(2026, 8, 24, tzinfo=timezone.utc))
+        _grant_consent(store, opened=datetime(2026, 8, 24, tzinfo=UTC))
         _add_package(store, "old", "2026-08-20")
         _add_package(store, "new", "2026-08-26")
         transport = FakeTransport(FakeResponse(202))

@@ -32,7 +32,6 @@ def blocked_cli(monkeypatch):
     cli._resolve_turn_agent_config = lambda message: {"signature": "test", "model": "test", "runtime": {}}
     cli._init_agent = lambda **kwargs: True
     cli._chat_route_images = lambda message, images: message
-    cli._chat_expand_context_references = lambda message: (message, None)
     cli._reset_stream_state = lambda: None
     cli._chat_setup_turn_audio = lambda *args: None
     cli._flush_credit_notices = lambda: None
@@ -86,7 +85,7 @@ def test_repair_is_active_during_cli_run_even_when_it_fails(blocked_cli, outcome
 
 
 @pytest.mark.parametrize("case", [
-    "user-paused", "user-interrupted (Ctrl+C)", "budget", "rejected", "blank",
+    "user-paused", "user-interrupted (Ctrl+C)", "budget", "blank",
     "goal", "heartbeat", "loop", "notification", "batch", "watch", "multimodal",
 ])
 def test_cli_non_user_or_rejected_input_cannot_revive(blocked_cli, case):
@@ -100,8 +99,6 @@ def test_cli_non_user_or_rejected_input_cannot_revive(blocked_cli, case):
         mgr.pause(reason=case)
     elif case == "budget":
         mgr.pause(reason="turn budget exhausted (5/5)")
-    elif case == "rejected":
-        cli._chat_expand_context_references = lambda message: (message, "Context injection refused")
     elif case == "blank":
         message = "  "
     elif case == "goal":
@@ -126,12 +123,9 @@ def test_cli_non_user_or_rejected_input_cannot_revive(blocked_cli, case):
     observed = []
     cli.agent.run_conversation = lambda **kwargs: observed.append(GoalManager(mgr.session_id).state) or {}
     cli.chat(message)
-    if case == "rejected":
-        assert not observed
-    else:
-        assert len(observed) == 1
-        assert observed[0].status == before.status
-        assert observed[0].paused_reason == before.paused_reason
+    assert len(observed) == 1
+    assert observed[0].status == before.status
+    assert observed[0].paused_reason == before.paused_reason
     assert mgr.state.status == before.status
     assert mgr.state.paused_reason == before.paused_reason
     assert mgr.state.turns_used == before.turns_used

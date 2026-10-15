@@ -32,6 +32,28 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi))
 export const petOverlayClickThrough = (platform = process.platform) => platform !== 'linux'
 
 /**
+ * Whether the overlay window's 'closed' handler should tell the main renderer
+ * to pop the pet back in (#55920).
+ *
+ * The overlay going away on its own (⌘W, a display teardown) must echo back so
+ * the pet doesn't stay hidden. But when the app itself is quitting — the
+ * before-quit teardown closes the overlay, and on Windows/Linux so does the
+ * primary window's 'closed' handler — that echo is a bug: it runs popInPet(),
+ * which persists `$petOverlayActive=false`, so restorePetOverlay() on the next
+ * boot skips restoration and the pet silently reverts to in-window. The quit
+ * path must leave the persisted popped-out flag alone.
+ */
+export function shouldPopInOnOverlayClosed({
+  appQuitting,
+  mainWindowAlive
+}: {
+  appQuitting: boolean
+  mainWindowAlive: boolean
+}): boolean {
+  return !appQuitting && mainWindowAlive
+}
+
+/**
  * Keep the WHOLE rect inside `workArea`: size is capped to the work area, then
  * the origin is clamped so no edge crosses it.
  */

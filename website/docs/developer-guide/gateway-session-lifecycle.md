@@ -297,8 +297,7 @@ gateway at runtime, preserving prompt caching (the system prompt doesn't change 
 
 Inactivity and wall-clock time never rotate a conversation. `/new` and `/reset`
 create an explicit boundary; context compression continues to manage long histories.
-Legacy timer configuration is ignored. The existing `SessionResetPolicy` datatype
-is inert compatibility data, not a runtime policy.
+Legacy timer configuration is ignored.
 
 Explicit suspension still creates a boundary on the next inbound turn. Recovery
 respects explicit and historical finalized boundaries rather than reopening them.

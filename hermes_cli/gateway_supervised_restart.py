@@ -23,7 +23,7 @@ def gateway_declares_external_supervisor(pid: int, home: Path | None = None) -> 
     """True when the running gateway ``pid`` was launched for an external supervisor.
 
     The supervisor is SELF-declared by the gateway from its launch context: the control socket
-    ``identify`` answer (any ``supervisor`` other than ``"manual"`` — a custom systemd unit or
+    ``identify`` answer (any launch supervisor other than ``"manual"`` — a custom systemd unit or
     launchd agent sets INVOCATION_ID / the XPC name, so the gateway answers ``systemd``/``launchd``
     even though ``_installed_service_kind_for`` saw no canonical unit, and the same supervisor owns
     the respawn), OR the ``--external-supervisor`` argv marker read live (same marker
@@ -32,13 +32,14 @@ def gateway_declares_external_supervisor(pid: int, home: Path | None = None) -> 
     """
     if not pid or pid <= 1:
         return False
-    from gateway.control_socket import identify_gateway
+    from gateway.control_socket import identify_gateway, launch_supervisor
     from gateway.status import _get_process_hermes_home, read_runtime_status
     from hermes_cli.gateway import _capture_gateway_argv
 
     home = home or _get_process_hermes_home()
     identity = identify_gateway(home) or {}
-    if identity.get("pid") == pid and identity.get("supervisor") not in (None, "", "manual"):
+    # Not ``identity["supervisor"]``: the runtime protocol reports a manual gateway as "none".
+    if identity.get("pid") == pid and launch_supervisor(identity) not in (None, "manual"):
         return True
     argv = _capture_gateway_argv(pid)
     if argv is None:

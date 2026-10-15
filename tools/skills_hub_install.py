@@ -80,7 +80,7 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
     return dest
 
 
-def _category_skill_dirs(directory: Path) -> List[str]:
+def _category_skill_dirs(directory: Path) -> list[str]:
     """Names of non-hidden child dirs holding at least one active SKILL.md
     anywhere below (nested layouts like ``mlops/training/<skill>`` count).
 
@@ -142,7 +142,7 @@ def _check_install_target(install_dir: Path) -> None:
 
 def install_from_quarantine(
     quarantine_path: Path, skill_name: str, category: str, bundle: SkillBundle, scan_result: ScanResult,
-    scan_provenance: Optional[Dict[str, Any]] = None,
+    scan_provenance: Optional[dict[str, Any]] = None,
 ) -> Path:
     """Move a scanned skill from quarantine into the skills directory."""
     from tools.skills_hub import HubLockFile, _quarantine_dir, _skills_dir, append_audit_log
@@ -202,7 +202,7 @@ def install_from_quarantine(
     return install_dir
 
 
-def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
+def uninstall_skill(skill_name: str) -> tuple[bool, str]:
     """Remove a hub-installed skill. Refuses to remove builtins."""
     from tools.skills_hub import HubLockFile, append_audit_log
     lock = HubLockFile()
@@ -219,6 +219,8 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
         shutil.rmtree(install_path)
     lock.record_uninstall(skill_name)
     append_audit_log("UNINSTALL", skill_name, entry["source"], entry["trust_level"], "n/a", "user_request")
+    from hermes_cli.observability.shared_metrics_disabled import record_skill_removed
+    record_skill_removed(skill_name)
     return True, f"Uninstalled '{skill_name}' from {entry['install_path']}"
 
 
@@ -261,8 +263,8 @@ def _current_revision_or_empty(src, identifier: str) -> str:
 
 def check_for_skill_updates(
     name: Optional[str] = None, *, lock: Optional[HubLockFile] = None,
-    sources: Optional[List[SkillSource]] = None, auth: Optional[GitHubAuth] = None,
-) -> List[dict]:
+    sources: Optional[list[SkillSource]] = None, auth: Optional[GitHubAuth] = None,
+) -> list[dict]:
     """Check installed hub skills for upstream changes.
 
     Each entry is fetched ONLY from adapters matching its recorded source.
@@ -279,7 +281,7 @@ def check_for_skill_updates(
     if sources is None:
         sources = create_source_router(auth=auth)
 
-    results: List[dict] = []
+    results: list[dict] = []
     for entry in installed:
         identifier, source_name = entry.get("identifier", ""), entry.get("source", "")
         row = {"name": entry.get("name", ""), "identifier": identifier, "source": source_name}

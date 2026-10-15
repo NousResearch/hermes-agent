@@ -529,6 +529,49 @@ def test_github_calls_carry_the_configured_token_and_retry_anonymously_on_401(in
     assert github_authorizations(installation, url)[-2:] == ["Bearer ghp_fixture", None]
 
 
+def test_a_probe_without_inherited_env_still_sends_the_home_dotenv_token(installation, monkeypatch):
+    """The Desktop's update probe inherits a minimal environment with no GITHUB_TOKEN while the
+    token lives in ``<hermes home>/.env`` (#139087): the home dotenv must load before the
+    credential ladder reads, so the probe runs on the authenticated quota."""
+    from hermes_cli import env_loader, source_check
+
+    root, _linked, home, _base, head, responses, _requests, _git = installation
+    url = "/repos/fixture/fork/commits/main"
+    responses[url] = (200, head)
+    monkeypatch.setattr(source_check, "_dotenv_loaded", False)
+    loads = []
+
+    def home_dotenv(**_kwargs):
+        loads.append(1)
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_home_dotenv")  # what the home .env load does
+
+    monkeypatch.setattr(env_loader, "load_hermes_dotenv", home_dotenv)
+    assert source_check.check_for_updates(install_root=root, home=home)["behind"] == 0
+    assert github_authorizations(installation, url) == ["Bearer ghp_home_dotenv"]
+
+    # Once per process: a second check reuses the loaded environment, it does not reload.
+    assert source_check.check_for_updates(install_root=root, home=home, force=True)["behind"] == 0
+    assert loads == [1]
+
+
+def test_a_broken_dotenv_stack_degrades_to_anonymous_not_a_failed_check(installation, monkeypatch):
+    """A dotenv stack that cannot even import must not fail the update check: the request
+    falls back to anonymous, exactly the pre-fix behavior."""
+    from hermes_cli import env_loader, source_check
+
+    root, _linked, home, _base, head, responses, _requests, _git = installation
+    url = "/repos/fixture/fork/commits/main"
+    responses[url] = (200, head)
+    monkeypatch.setattr(source_check, "_dotenv_loaded", False)
+
+    def broken_dotenv(**_kwargs):
+        raise ImportError("dotenv install wiped")
+
+    monkeypatch.setattr(env_loader, "load_hermes_dotenv", broken_dotenv)
+    assert source_check.check_for_updates(install_root=root, home=home)["behind"] == 0
+    assert github_authorizations(installation, url) == [None]
+
+
 def test_branch_tip_failure_names_the_cause(installation):
     from hermes_cli.source_check import check_for_updates
     root, _linked, home, _base, _head, responses, _requests, _git = installation

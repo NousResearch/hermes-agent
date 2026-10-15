@@ -110,14 +110,36 @@ def _github_compare_behind(current_rev: str, target_rev: str, repository: str = 
     return ahead if isinstance(ahead, int) and not isinstance(ahead, bool) and ahead >= 0 else None
 
 
+_dotenv_loaded = False
+
+
+def _ensure_home_dotenv() -> None:
+    """Load ``<hermes home>/.env`` once, so a probe environment that does not inherit it (the
+    Desktop's update probe) still sends its configured GITHUB_TOKEN instead of running on the
+    anonymous 60/hour quota (#139087)."""
+    global _dotenv_loaded
+    if _dotenv_loaded:
+        return
+    _dotenv_loaded = True
+    try:
+        from hermes_cli.env_loader import load_hermes_dotenv
+        load_hermes_dotenv()
+    except Exception:
+        # Fail-open: a broken dotenv stack degrades to the anonymous quota — exactly the
+        # pre-fix behavior — never to a failed update check.
+        logger.debug("home dotenv unavailable to the update probe", exc_info=True)
+
+
 def _request(url: str, accept: str = "application/vnd.github+json") -> str:
     """GET an api.github.com resource with the credential ladder in hermes_cli.github_api.
 
-    A token GitHub rejects (401) drops this request to anonymous rather than
-    failing the check on a stale credential.
+    The home dotenv loads first (once per process): a probe environment that does not
+    inherit it still finds its configured token. A token GitHub rejects (401) drops this
+    request to anonymous rather than failing the check on a stale credential.
     """
     from hermes_cli.github_api import github_token
 
+    _ensure_home_dotenv()
     token = github_token()
     try:
         return _request_with(url, accept, token)

@@ -39,6 +39,18 @@ fallback_providers:
 
 Each entry requires both `provider` and `model`. Entries missing either field are ignored.
 
+A fallback entry can set `service_tier_override: normal` to remove inherited premium
+`service_tier` and `speed` selectors while that fallback is active. Omit the field or
+set it to `null` to leave the request policy unchanged. Other values are ignored with
+a warning.
+
+```yaml
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
+    service_tier_override: normal
+```
+
 When a rate-limit response names its reset time, the primary is benched until exactly then (a provider that says nothing gets the exponential 60 s → 4 h backoff). Optionally, skip the switch when the primary reopens soon:
 
 ```yaml

@@ -1823,7 +1823,8 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
                 runtime["_fallback_notice"] = pre_agent_fallback_notice(
                     requested or (jc.model_cfg.get("provider") if isinstance(jc.model_cfg, dict) else ""),
                     model, runtime.get("provider"), fb_model)
-                return runtime, fb_model
+                from agent.fallback_policy import runtime_with_fallback_service_tier_override
+                return runtime_with_fallback_service_tier_override(runtime, entry, log=logger), fb_model
             except Exception as fb_exc:
                 logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
         raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
@@ -2507,6 +2508,7 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         reasoning_config=setup.reasoning_config,
         prefill_messages=setup.prefill_messages,
         fallback_model=setup.fallback_model,
+        fallback_service_tier_override=runtime.get("fallback_service_tier_override"),
         credential_pool=setup.credential_pool,
         providers_allowed=pr.get("only"),
         providers_ignored=pr.get("ignore"),

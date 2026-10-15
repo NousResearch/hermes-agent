@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import run_agent  # Import bootstrap before the per-test home I/O guard is active.
 
 from cron import scheduler
 from cron.scheduler import _CronJobConfig, _resolve_job_runtime
@@ -166,6 +167,35 @@ def test_resolve_job_runtime_walks_the_chain_for_an_unpinned_job():
     with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve):
         runtime, model = _resolve_job_runtime(_job(), "free-job", jc)
     assert (runtime["provider"], model) == ("openrouter", "z-ai/glm-5.2")
+
+
+def test_cron_resolution_time_fallback_passes_selected_policy_into_constructor():
+    from cron.scheduler import _CronAgentSetup, _construct_cron_agent
+    entry = {**_CHAIN[0], "service_tier_override": "normal"}
+    cfg = {"fallback_providers": [entry]}
+    jc = _CronJobConfig(cfg=cfg, model="primary", model_cfg={}, cron_default_provider="")
+
+    def resolve(**kwargs):
+        if kwargs.get("requested") == "openrouter":
+            return _runtime("openrouter")
+        raise AuthError("no key")
+
+    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve):
+        runtime, model = _resolve_job_runtime(_job(), "cron-policy", jc)
+    setup = _CronAgentSetup(runtime=runtime, model=model, fallback_model=[entry], max_iterations=1,
+                            reasoning_config=None, prefill_messages=None, credential_pool=None)
+    captured = {}
+    def agent_factory(**kwargs):
+        captured.update(kwargs)
+        return object()
+    _construct_cron_agent(agent_factory, _job(), cfg, setup, workdir=None, session_id="s", session_db=None)
+    assert captured["fallback_service_tier_override"] == "normal"
+    assert captured["fallback_model"] == [entry]
+    from tests.agent.fallback_policy_wire import first_wire_from_runtime
+    wire, snapshot = first_wire_from_runtime(captured)
+    assert snapshot["fallback_service_tier_override"] == "normal"
+    assert "service_tier" not in wire and "speed" not in wire
+    assert "service_tier" not in wire["extra_body"] and "speed" not in wire["extra_body"]
 
 
 @pytest.mark.parametrize("pin", PINS)

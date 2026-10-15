@@ -103,6 +103,7 @@ def test_mid_voice_turn_reports_the_sessions_own_route(tmp_path, monkeypatch, se
         monkeypatch.setenv("HERMES_HOME", str(home))
         agent = _agent(home, main.base_url)
         agent.reasoning_config = {"enabled": True, "effort": "low"}
+        agent._active_fallback_service_tier_override = "normal"
         agent._voice_turn_pending = True
         begin_voice_turn_route(agent, [{"role": "user", "content": "hi"}], "system")
         try:
@@ -116,3 +117,43 @@ def test_mid_voice_turn_reports_the_sessions_own_route(tmp_path, monkeypatch, se
         finally:
             end_voice_turn_route(agent)
         assert _session_info(agent, {})["reasoning_effort"] == "low"
+        assert getattr(agent, "_active_fallback_service_tier_override", None) == "normal"
+
+
+@pytest.mark.parametrize("prior_policy,voice_mutation", [("normal", None), (None, "normal")])
+def test_separate_voice_route_isolates_and_restores_fallback_policy(
+    tmp_path, monkeypatch, prior_policy, voice_mutation,
+):
+    from agent.voice_turn_route import begin_voice_turn_route, end_voice_turn_route
+
+    with FakeLLMServer([]) as main, FakeLLMServer([]) as voice:
+        home = write_hermes_home(tmp_path / ".hermes", main.base_url, extra_config=(
+            "auxiliary:\n  voice_chat:\n    provider: custom\n"
+            f"    base_url: {voice.base_url}\n    model: voice-model\n    api_key: «redacted:sk-…»\n"
+        ))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        agent = _agent(home, main.base_url)
+        agent.request_overrides = {
+            "service_tier": "priority", "speed": "fast", "extra_body": {"store": False},
+        }
+        request = [{"role": "user", "content": "spoken question"}]
+        agent._active_fallback_service_tier_override = prior_policy
+        before = agent._build_api_kwargs(request)
+        assert before.get("service_tier") == (None if prior_policy else "priority")
+        agent._voice_turn_pending = True
+        begin_voice_turn_route(agent, request, "system")
+        try:
+            assert agent.model == "voice-model"
+            assert agent._active_fallback_service_tier_override is None
+            voice_wire = agent._build_api_kwargs(request)
+            assert voice_wire["service_tier"] == "priority"
+            assert voice_wire["speed"] == "fast"
+            assert voice_wire["extra_body"]["store"] is False
+            agent._active_fallback_service_tier_override = voice_mutation
+        finally:
+            end_voice_turn_route(agent)
+        assert agent.model == "fake-model"
+        assert agent._active_fallback_service_tier_override == prior_policy
+        restored_wire = agent._build_api_kwargs(request)
+        assert restored_wire.get("service_tier") == before.get("service_tier")
+        assert restored_wire.get("speed") == before.get("speed")

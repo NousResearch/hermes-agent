@@ -1191,5 +1191,6 @@ def resolve_runtime_with_fallback(config: Optional[dict[str, Any]], *, requested
             # mislabel it as an auth failure (#32790).
             logger.warning("Primary provider %s (%s). Falling back to %s/%s",
                            primary_failure_wording(primary_exc)[0], primary_exc, provider, model)
-            return runtime, entry
+            from agent.fallback_policy import runtime_with_fallback_service_tier_override
+            return runtime_with_fallback_service_tier_override(runtime, entry, log=logger), entry
         raise primary_exc

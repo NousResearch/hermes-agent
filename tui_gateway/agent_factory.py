@@ -529,7 +529,10 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
                 logging.getLogger(__name__).warning(
                     "Primary %s (%s), falling back to %s model %s",
                     primary_failure_wording(primary_exc)[0], primary_exc, fb_provider, fb_model)
-                return _RuntimeFallbackResolution(runtime, fb_model, True)
+                from agent.fallback_policy import runtime_with_fallback_service_tier_override
+                return _RuntimeFallbackResolution(
+                    runtime_with_fallback_service_tier_override(
+                        runtime, entry, log=logging.getLogger(__name__)), fb_model, True)
             except Exception:
                 continue
         raise
@@ -675,6 +678,7 @@ def _make_agent(
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
         # The resolved provider's request body (a custom entry's extra_body), as the CLI/cron/gateway pass it.
         request_overrides=runtime.get("request_overrides"),
+        fallback_service_tier_override=runtime.get("fallback_service_tier_override"),
         prefill_messages=_load_prefill_messages() or None, **_agent_cbs(sid))
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)

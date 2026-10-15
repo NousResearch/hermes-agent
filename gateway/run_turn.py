@@ -1901,7 +1901,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 # formatter cannot re-send a footer that already reached the chat. Never set on a
                 # refused/failed send: the completion path remains the delivery fallback.
                 if _footer_delivered:
-                    setattr(turn_ctx, "runtime_footer_already_delivered", True)
+                    turn_ctx.runtime_footer_already_delivered = True
         # Release deferred bg-review notifications: pop (no double-fire in base.py's finally) and call.
         _bg_cb = self._pop_post_delivery_callback(adapter, session_key, turn_ctx.run_generation)
         if callable(_bg_cb):

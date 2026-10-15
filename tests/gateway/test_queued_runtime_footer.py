@@ -141,7 +141,7 @@ async def test_queued_chain_delivers_one_configured_footer_and_carries_latency(
         "final_response": "tail reply", "model": "example/model-two", "messages": [],
         "history_offset": followup_offset,
     }
-    pending_event, chain = _queued_chain(
+    _pending_event, chain = _queued_chain(
         runner, turn_ctx, transport, response, result, followup_result=followup_result,
     )
     merged = await chain

@@ -4396,7 +4396,7 @@ class BasePlatformAdapter(ABC):
         try:
             _thread_metadata = _thread_metadata_for_event(event)
             # Policy reads stay in the routed profile; the send stays in the launch scope.
-            from hermes_state_runtime import named_turn_error
+            from gateway.session_controls import named_turn_error
             error_type, error_detail = named_turn_error(e, t("gateway.notify.turn_error_no_details"))
             with self._media_delivery_scope(event.source):
                 content = None if diagnostic_wake_muted(event) else self.warning_text(

@@ -238,27 +238,6 @@ def _one_line(value, limit):
     return text[:limit] or None
 
 
-def named_turn_error(exc, empty_detail: str) -> tuple[str, str]:
-    """Messaging copy for a failed turn, and the one log line for that notice.
-
-    A named ``invalid_params`` is ``(field: detail)`` in the notice, not the class
-    name. The log follows the create-path rule: warning when the raiser named the
-    check, debug for a bare reason code.
-    """
-    if isinstance(exc, RuntimeStoreError):
-        from gateway.session_controls import _log_refusal
-        _log_refusal(None, 'native.admit', exc)
-        field = exc.field or ''
-        detail = exc.detail or ''
-        if exc.reason == 'invalid_params' and (field or detail):
-            shown = field or 'unnamed field'
-            if detail:
-                shown = f'{shown}: {detail}'
-            return exc.reason, shown[:300]
-    text = str(exc)
-    return type(exc).__name__, (text[:300] if text else empty_detail)
-
-
 def _text(value):
     if not isinstance(value, str) or not value or len(value) > 1024:
         raise RuntimeStoreError('invalid_params')

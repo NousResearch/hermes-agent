@@ -1,0 +1,16 @@
+name: web-local
+repo: https://github.com/enzo-adami/hermes-plugin-web-local
+sha: cef74b40c3ff379a1d5c63264ef99e8f2c9c5529
+description: 'Keyless local web extract: fetches pages from this machine with httpx and reduces them to readable text with trafilatura. No API key, no third-party service. Extract-only; pair with any search provider.'
+maintainer: enzo-adami
+tier: community
+category: web
+requires_hermes: ">=0.22"
+docs_url: https://github.com/enzo-adami/hermes-plugin-web-local#readme
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

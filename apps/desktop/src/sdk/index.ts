@@ -21,7 +21,8 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
-import { capabilityScoped } from '@/api/client'
+import { capabilityScoped, getApiRequestConnection } from '@/api/client'
+import { mutateSessionFenced } from '@/api/sessions'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { syncWorkspaceRoute } from '@/app/routes'
@@ -56,11 +57,9 @@ import {
   openGatewayForAgent,
   openGatewayForProfile,
   requestGatewayForAgent,
-  requestGatewayForProfile,
   retainGatewayForAgent,
   retainGatewayForRelay,
-  retireLocalProfileGateways,
-  type SpawnPriority
+  retireLocalProfileGateways
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import {
@@ -108,11 +107,19 @@ import {
 import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
+import type { SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
+
 import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { i18nHost } from './i18n'
 import { planPluginOpenSession } from './plugin-open-session-plan'
-import { type PluginProfileRoute, pluginRouteStillRegistered } from './profile-route'
+import { awaitProfileActivation } from './profile-activation'
+import {
+  type PluginProfileRequestOptions,
+  type PluginProfileRoute,
+  pluginRouteStillRegistered,
+  requestPluginProfile
+} from './profile-request'
 import { sessionsHost } from './sessions'
 import { desktopSettings } from './settings'
 
@@ -239,72 +246,6 @@ const $busyBySession = computed($sessionStates, states => {
 })
 
 const $viewport = atom<ViewportRect>(readViewport())
-
-/** Options a plugin may attach to one `host.requestProfile` call. */
-export interface PluginProfileRequestOptions {
-  /** Tag the dial that may cold-spawn this route's backend. Default
-   *  'background'; an explicit user action passes 'foreground' so its spawn
-   *  takes the pool's reserved interactive slot (#102281 primitive). */
-  spawnPriority?: SpawnPriority
-}
-
-async function requestPluginProfile<T>(
-  route: PluginProfileRoute | string,
-  method: string,
-  params: Record<string, unknown>,
-  timeoutMs?: number,
-  options?: PluginProfileRequestOptions
-): Promise<T> {
-  const spawnPriority = options?.spawnPriority
-
-  // Preserve the exact call arity the pool tests pin: pass the deadline and the
-  // dial options only when the caller set them, so a plain routed RPC keeps its
-  // four-argument shape and a timeout-only caller its five-argument shape.
-  const dialProfile = (profile: string): Promise<T> =>
-    spawnPriority
-      ? requestGatewayForProfile<T>(profile, method, params, timeoutMs, undefined, { spawnPriority })
-      : timeoutMs === undefined
-        ? requestGatewayForProfile<T>(profile, method, params)
-        : requestGatewayForProfile<T>(profile, method, params, timeoutMs)
-
-  if (typeof route !== 'string') {
-    if (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim()) {
-      throw new Error('Profile route must include connectionId, profile, and targetProfile')
-    }
-
-    if (spawnPriority) {
-      return requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs, undefined, {
-        spawnPriority
-      })
-    }
-
-    return timeoutMs === undefined
-      ? requestGatewayForAgent<T>(route.connectionId, route.profile, method, params)
-      : requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs)
-  }
-
-  const getAgentRoster = window.hermesDesktop?.getAgentRoster
-
-  if (!getAgentRoster) {
-    return dialProfile(route)
-  }
-
-  const roster = await getAgentRoster()
-  const profile = route.trim() || 'default'
-  const soleLocalSource = roster.sources.length === 1 && roster.sources[0]?.kind === 'local'
-
-  // The string overload is compatibility-only. A sole local registry is the
-  // one topology where a profile name is intrinsically unambiguous, even when
-  // its live enumeration transiently failed. Any additional source requires a
-  // descriptor because an undialed/unreachable source may expose the same name.
-  if (soleLocalSource) {
-    return dialProfile(profile)
-  }
-
-  throw new Error(
-    `Profile "${profile}" requires a route descriptor from host.profileRoutes(); profile-only routing is limited to legacy/local profiles.`
-  )
-}
 
 if (typeof window !== 'undefined') {
   const refresh = () => $viewport.set(readViewport())
@@ -575,64 +516,6 @@ function waitForFocusedSessionHydration({
 
     check()
   })
-}
-
-// Wait for a profile switch, but never longer than the wake budget.
-//
-// ensureGatewayProfile awaits the store's dial, and HermesGateway.connect() has
-// no dial timeout of its own: a backend that accepts the socket and then never
-// completes the handshake leaves this promise pending for the life of the
-// window. That is not merely a slow open. waitForFocusedSessionHydration arms
-// the only timer on this path, and it is armed AFTER this await returns - so an
-// unbounded activation means the wake never settles at all, and the pane wedges
-// with no error, no Retry and no timeout (#89556: `ws accepted` in the gateway
-// log with no matching `ws closed`).
-//
-// The activation gets its OWN budget rather than sharing the hydration one. A
-// cold profile backend can legitimately spend most of the hydration budget
-// painting a large transcript - that race is already tight enough to lose
-// (#89617) - so charging activation to the same clock would turn a wedge into a
-// regression. The trade is that a wake that is slow in BOTH phases can now take
-// up to twice the budget before it surfaces; that is a maintainer call and is
-// called out in the PR rather than buried here.
-// The caller supplies the dial itself, because WHICH backend to open is a
-// routing decision (a workspace switch moves chrome; a plain bot navigation
-// only opens the gateway) while the deadline enforced here is the same either
-// way.
-async function awaitProfileActivation(
-  dial: () => Promise<void>,
-  targetProfile: string,
-  timeoutMs: number
-): Promise<void> {
-  const activation = dial()
-  let timer: number | undefined
-
-  try {
-    await Promise.race([
-      activation,
-      new Promise<never>((_resolve, reject) => {
-        // Same message shape as the hydration timeout on purpose: openSession's
-        // catch keys the core stranded-session surface off this prefix, and a
-        // wedged dial wants exactly that surface. The phase is distinguished in
-        // the [bot-wake] support log, not in the user-facing string.
-        timer = window.setTimeout(
-          () => reject(new Error(`Timed out loading ${targetProfile}'s session history.`)),
-          timeoutMs
-        )
-      })
-    ])
-  } finally {
-    if (timer !== undefined) {
-      window.clearTimeout(timer)
-    }
-  }
-
-  // No extra catch on the abandoned dial: an in-flight activation has no
-  // cancellation handle and keeps running after the budget expires, but
-  // Promise.race subscribes to every input, so a rejection that lands after the
-  // race has settled is already handled and cannot escape as an unhandled
-  // rejection. An explicit `activation.catch()` here was dead code - verified
-  // by mutation: removing it changed no test outcome.
 }
 
 export const host = {
@@ -1489,11 +1372,11 @@ export const host = {
     options?: PluginProfileRequestOptions
   ): Promise<T> => requestPluginProfile<T>(route, method, params, timeoutMs, options),
 
-  /** Pin a route's pooled gateway socket open across repeated `requestProfile`
+  /** Pin a route's gateway socket open across repeated `requestProfile`
    *  calls (#93594: the bot-relay drain loop was dialing and tearing down a
    *  fresh WebSocket per registered connection per tick). Returns a once-only
-   *  release. Local routes are exempt (no-op release) so the idle reaper can
-   *  still reclaim spawned local backends. Feature-detect on older desktops
+   *  release. Local routes are exempt (no-op release): the host gateway's
+   *  lifetime does not depend on renderer pins. Feature-detect on older desktops
    *  (`typeof host.retainProfileSocket === 'function'`). */
   retainProfileSocket: (route: PluginProfileRoute | string): (() => void) => {
     if (typeof route === 'string' || !route) {
@@ -1578,12 +1461,26 @@ export const host = {
       throw new Error('Persisted session updates require a profile and session id')
     }
 
-    return hermesApi<{ ok: boolean; hidden: boolean }>({
-      ...(route ? { connectionId: route.connectionId } : {}),
-      path: `/api/sessions/${encodeURIComponent(options.sessionId)}`,
-      method: 'PATCH',
-      body: { hidden: options.hidden, profile }
-    })
+    // Null keeps the window's v1 route (a remote primary stays remote).
+    const scope = { connectionId: route?.connectionId || getApiRequestConnection() }
+    const path = `/api/sessions/${encodeURIComponent(options.sessionId)}`
+    const payload = { hidden: options.hidden, profile }
+
+    return mutateSessionFenced(
+      JSON.stringify([scope, options.sessionId, payload]),
+      () =>
+        hermesApi<SessionMutationSnapshot>({
+          ...scope,
+          path: `${path}/mutation-snapshot?profile=${encodeURIComponent(profile)}`
+        }),
+      identity =>
+        hermesApi<{ ok: boolean; hidden: boolean }>({
+          ...scope,
+          path,
+          method: 'PATCH',
+          body: { ...payload, ...identity }
+        })
+    )
   },
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
@@ -1621,7 +1518,7 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
-export type { PluginProfileRoute } from './profile-route'
+export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
 
 // -- ui: the design language --------------------------------------------------
 
@@ -1973,6 +1870,7 @@ export {
   type TranscriptDirectiveProps
 } from '@/lib/transcript-directives'
 export { cn } from '@/lib/utils'
+export { gatewayActivationEpoch } from '@/store/gateway'
 /** THE unread store behind `SessionStatusDot`'s emerald dot. A plugin that
  *  learns out-of-band that a session produced something the user hasn't seen
  *  (a roster poll's activity watermark, say) writes HERE rather than keeping

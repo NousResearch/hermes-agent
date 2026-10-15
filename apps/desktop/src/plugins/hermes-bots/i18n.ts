@@ -23,25 +23,36 @@
  *    English where it is WRITTEN (`group-chat-parts.tsx`, `group-rounds.ts`);
  *    the places that RENDER the reader's own lines use `group.you` instead.
  *
- * Locales follow kanban: `en` / `ko` / `ja` / `zh` / `zh-hant`. Arabic falls through
- * the resolution chain (active locale → this plugin's `en` → the key) the
- * same way a missing string in any locale does. Nouns match core: ボット /
+ * Legacy Bot Mode copy covers en / ko / ja / zh / zh-hant. Canonical hosted
+ * groups also cover Arabic, Russian, French, German and Spanish; missing keys
+ * retain the official English fallback. Nouns match core
  * 机器人 / 機器人, プロファイル / 配置档案 / 設定檔, ゲートウェイ / 网关 / 閘道.
  */
 import { type PluginLocaleBundles, usePluginI18n } from '@hermes/plugin-sdk'
 import { useMemo } from 'react'
 
+import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { bind, type Bound } from './i18n-bind'
 import { en } from './i18n-en'
 import { ja } from './i18n-ja'
 import { ko } from './i18n-ko'
-import type { BotsMessages } from './i18n-types'
+import type { BotsMessages } from './i18n-messages'
 import { zh } from './i18n-zh'
 import { zhHant } from './i18n-zhHant'
 import { getPluginCtx } from './shared'
 
-/** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const BOTS_LOCALES: PluginLocaleBundles = { en, ko, ja, zh, 'zh-hant': zhHant }
+export const BOTS_LOCALES: PluginLocaleBundles = {
+  en,
+  ko,
+  ja,
+  zh,
+  'zh-hant': zhHant,
+  ar: { canonical: CANONICAL_GROUP_LOCALES.ar },
+  ru: { canonical: CANONICAL_GROUP_LOCALES.ru },
+  fr: { canonical: CANONICAL_GROUP_LOCALES.fr },
+  de: { canonical: CANONICAL_GROUP_LOCALES.de },
+  es: { canonical: CANONICAL_GROUP_LOCALES.es }
+}
 
 export type BotsText = Bound<BotsMessages>
 

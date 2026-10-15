@@ -1,7 +1,9 @@
+import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { en } from './i18n-en'
-import type { BotsMessages } from './i18n-types'
+import type { BotsMessages } from './i18n-messages'
 
 export const ko: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES.en, // New upstream group copy retains the official fallback.
   model: {
     customProvider: '공급자 (직접 입력)',
     customModel: '모델 (직접 입력)',

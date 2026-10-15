@@ -1,6 +1,8 @@
-import type { BotsMessages } from './i18n-types'
+import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
+import type { BotsMessages } from './i18n-messages'
 
 export const ja: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES.ja,
   editor: {
     fullConfigHint: 'すべての設定を使うには新しいゲートウェイが必要です（Hermes 更新後に再起動してください）。',
     liveCapabilities: '機能（即時適用 — スキル、ツール、MCP）',

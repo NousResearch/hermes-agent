@@ -1432,12 +1432,6 @@ export const koSettings: NonNullable<TranslationOverrides['settings']> = {
     yesUninstall: '제거 실행',
     options: { full: { title: '모두 제거' } }
   },
-  poolLimits: {
-    warmBotBackendsAria: '대기 중인 봇 백엔드',
-    warmBotBackendsTitle: '대기 중인 봇 백엔드',
-    backendIdleTimeoutAria: '백엔드 유휴 제한 시간(밀리초)',
-    backendIdleTimeoutTitle: '백엔드 유휴 제한 시간'
-  },
   customEndpoints: {
     ...settingsRiskCopyKo.customEndpoints,
     title: '사용자 지정 엔드포인트',

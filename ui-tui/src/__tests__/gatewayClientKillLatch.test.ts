@@ -1,102 +1,89 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// The race from issue #114987 lives only in spawn mode: kill() leaves
-// `this.proc` pointing at the child it just killed, so the late `exit` event
-// passes the identity guard, reaches handleTransportExit and is emitted to
-// the app — whose recovery subscriber answers with start(), which un-latches
-// `disposed` and spawns a replacement gateway onto the vanished PTY. These
-// tests drive that exact sequence with a fake child_process.spawn.
+// The race from issue #114987: kill() left the client's transport reference
+// in place, so the transport's late exit reached handleTransportExit →
+// emit('exit') → useMainApp's recovery subscriber → start(), which un-latched
+// `disposed` and spawned a replacement gateway onto a vanished PTY. The Ink
+// client now attaches to the unified gateway over a WebSocket after the
+// bootstrap grant, so the same three invariants are driven through a fake
+// socket: a killed transport's late close is identity-skipped, start() after
+// kill() is refused, and an unexpected close still recovers.
 
-const { fakeSpawn, FakeChildProcess } = vi.hoisted(() => {
-  class FakeStream {
+const { FakeWebSocket } = vi.hoisted(() => {
+  class FakeWebSocket {
+    static CONNECTING = 0
+    static OPEN = 1
+    static CLOSING = 2
+    static CLOSED = 3
+    static instances: FakeWebSocket[] = []
+
+    readyState = FakeWebSocket.CONNECTING
+    sent: string[] = []
+    readonly url: string
     private listeners = new Map<string, Array<(event: any) => void>>()
 
-    resume() {
-      return this
+    constructor(url: string) {
+      this.url = url
+      FakeWebSocket.instances.push(this)
     }
 
-    pause() {
-      return this
+    static reset() {
+      FakeWebSocket.instances = []
     }
 
-    write(_text: string) {
-      return true
-    }
-
-    on(type: string, callback: (event: any) => void) {
+    addEventListener(type: string, callback: (event: any) => void) {
       const entries = this.listeners.get(type) ?? []
 
       entries.push(callback)
       this.listeners.set(type, entries)
     }
 
-    removeListener(type: string, callback: (event: any) => void) {
+    removeEventListener(type: string, callback: (event: any) => void) {
       const entries = this.listeners.get(type)
 
-      if (!entries) {
-        return
+      if (entries) {
+        this.listeners.set(type, entries.filter(entry => entry !== callback))
       }
-
-      this.listeners.set(
-        type,
-        entries.filter(entry => entry !== callback)
-      )
     }
 
-    emit(type: string, ...args: unknown[]) {
+    send(payload: string) {
+      this.sent.push(payload)
+    }
+
+    /** What the client calls on an intentional shutdown; the real 'close' event lands later. */
+    close(_code = 1000) {
+      this.readyState = FakeWebSocket.CLOSING
+    }
+
+    open() {
+      this.readyState = FakeWebSocket.OPEN
+      this.emit('open', {})
+    }
+
+    /** The transport-side close event (late for a killed socket, unexpected for a live one). */
+    closed(code: number) {
+      this.readyState = FakeWebSocket.CLOSED
+      this.emit('close', { code })
+    }
+
+    private emit(type: string, event: any) {
       for (const callback of [...(this.listeners.get(type) ?? [])]) {
-        callback(...args)
+        callback(event)
       }
     }
   }
 
-  class FakeChildProcess {
-    static instances: FakeChildProcess[] = []
-
-    killed = false
-    exitCode: null | number = null
-    signalCode: null | string = null
-    pid = 4242
-    stdin = new FakeStream()
-    stdout = new FakeStream()
-    stderr = new FakeStream()
-    private listeners = new Map<string, Array<(event: any) => void>>()
-
-    constructor() {
-      FakeChildProcess.instances.push(this)
-    }
-
-    kill() {
-      this.killed = true
-
-      return true
-    }
-
-    on(type: string, callback: (event: any) => void) {
-      const entries = this.listeners.get(type) ?? []
-
-      entries.push(callback)
-      this.listeners.set(type, entries)
-    }
-
-    emit(type: string, ...args: unknown[]) {
-      for (const callback of [...(this.listeners.get(type) ?? [])]) {
-        callback(...args)
-      }
-    }
-  }
-
-  const fakeSpawn = vi.fn(() => new FakeChildProcess())
-
-  return { fakeSpawn, FakeChildProcess }
+  return { FakeWebSocket }
 })
 
-vi.mock('node:child_process', () => ({ spawn: fakeSpawn }))
-vi.mock('node:fs', () => ({ existsSync: vi.fn(() => false) }))
+vi.mock('undici', () => ({ WebSocket: FakeWebSocket }))
 
 import { GatewayClient } from '../gatewayClient.js'
 
-describe('GatewayClient spawn-mode kill latch (issue #114987)', () => {
+const grant = { url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }
+
+describe('GatewayClient kill latch (issue #114987)', () => {
+  const originalWebSocket = globalThis.WebSocket
   let originalGatewayUrl: string | undefined
   let originalSidecarUrl: string | undefined
 
@@ -105,11 +92,14 @@ describe('GatewayClient spawn-mode kill latch (issue #114987)', () => {
     originalSidecarUrl = process.env.HERMES_TUI_SIDECAR_URL
     delete process.env.HERMES_TUI_GATEWAY_URL
     delete process.env.HERMES_TUI_SIDECAR_URL
-    fakeSpawn.mockClear()
-    FakeChildProcess.instances.length = 0
+    FakeWebSocket.reset()
+    ;(globalThis as { WebSocket?: unknown }).WebSocket = FakeWebSocket as unknown as typeof WebSocket
+    vi.useFakeTimers()
   })
 
   afterEach(() => {
+    vi.useRealTimers()
+
     if (originalGatewayUrl === undefined) {
       delete process.env.HERMES_TUI_GATEWAY_URL
     } else {
@@ -122,12 +112,25 @@ describe('GatewayClient spawn-mode kill latch (issue #114987)', () => {
       process.env.HERMES_TUI_SIDECAR_URL = originalSidecarUrl
     }
 
-    fakeSpawn.mockClear()
-    FakeChildProcess.instances.length = 0
+    FakeWebSocket.reset()
+
+    if (originalWebSocket) {
+      globalThis.WebSocket = originalWebSocket
+    } else {
+      delete (globalThis as { WebSocket?: unknown }).WebSocket
+    }
   })
 
-  it('a killed child late exit does not respawn a replacement gateway', async () => {
-    const gw = new GatewayClient()
+  const startAndConnect = async (gw: GatewayClient) => {
+    gw.start()
+    gw.drain()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    FakeWebSocket.instances[0]!.open()
+  }
+
+  it('a killed transport late close does not respawn a replacement gateway', async () => {
+    const gw = new GatewayClient(async () => grant)
     const exits: Array<null | number> = []
 
     // The recovery subscriber useMainApp installs: an emitted 'exit' with a
@@ -140,34 +143,33 @@ describe('GatewayClient spawn-mode kill latch (issue #114987)', () => {
       }
     })
 
-    gw.start()
-    gw.drain()
-    await Promise.resolve()
-    expect(fakeSpawn).toHaveBeenCalledTimes(1)
+    await startAndConnect(gw)
 
-    // Intentional kill (graceful-exit cleanup, dead PTY): the reference must
-    // be detached before the kill so the late exit is identity-skipped and
-    // the recovery subscriber never sees an 'exit' to restart from.
+    // Intentional kill (graceful-exit cleanup, dead PTY): the reference is
+    // detached before close() so the late close is identity-skipped and the
+    // recovery subscriber never sees an 'exit' to restart from.
     gw.kill('graceful-exit-cleanup')
-    FakeChildProcess.instances[0]!.emit('exit', null, 'SIGTERM')
+    FakeWebSocket.instances[0]!.closed(1006)
+    await vi.advanceTimersByTimeAsync(60_000)
 
     expect(exits).toEqual([])
-    expect(fakeSpawn).toHaveBeenCalledTimes(1)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(vi.getTimerCount()).toBe(0)
   })
 
-  it('start() after kill() is refused even when called directly', () => {
-    const gw = new GatewayClient()
+  it('start() after kill() is refused even when called directly', async () => {
+    const gw = new GatewayClient(async () => grant)
 
-    gw.start()
-    expect(fakeSpawn).toHaveBeenCalledTimes(1)
+    await startAndConnect(gw)
 
     gw.kill('app.die')
     gw.start()
-    expect(fakeSpawn).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(FakeWebSocket.instances).toHaveLength(1)
   })
 
-  it('an unexpected child death still respawns through the recovery subscriber', async () => {
-    const gw = new GatewayClient()
+  it('an unexpected transport close still respawns through the recovery subscriber', async () => {
+    const gw = new GatewayClient(async () => grant)
     const exits: Array<null | number> = []
 
     gw.on('exit', code => {
@@ -178,14 +180,17 @@ describe('GatewayClient spawn-mode kill latch (issue #114987)', () => {
       }
     })
 
-    gw.start()
-    gw.drain()
-    await Promise.resolve()
+    await startAndConnect(gw)
 
-    // Crash while the TUI is alive: identity intact, exit must be emitted.
-    FakeChildProcess.instances[0]!.emit('exit', 1, null)
+    try {
+      // Crash while the TUI is alive: identity intact, exit must be emitted.
+      FakeWebSocket.instances[0]!.closed(1011)
+      await vi.advanceTimersByTimeAsync(0)
 
-    expect(exits).toEqual([1])
-    expect(fakeSpawn).toHaveBeenCalledTimes(2)
+      expect(exits).toEqual([1011])
+      expect(FakeWebSocket.instances).toHaveLength(2)
+    } finally {
+      gw.kill()
+    }
   })
 })

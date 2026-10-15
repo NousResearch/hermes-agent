@@ -1143,7 +1143,8 @@ export const koConversation: Pick<
     sudoSendFailed: 'sudo 비밀번호를 보낼 수 없습니다',
     secretSendFailed: '인증 정보를 보낼 수 없습니다',
     sudoTitle: '관리자 비밀번호',
-    sudoDesc: 'Hermes가 권한 명령을 실행하기 위해 sudo 비밀번호가 필요합니다. 로컬 에이전트에만 전송됩니다.',
+    sudoDesc:
+      'sudo 비밀번호를 입력하기 전에 실행할 명령을 확인하세요. 비밀번호는 해당 명령을 실행하는 에이전트로 전송되며, 이 세션 동안 임시 보관됩니다.',
     sudoPlaceholder: 'sudo 비밀번호',
     secretTitle: '인증 정보 필요',
     secretDesc: 'Hermes가 계속하기 위해 자격 증명이 필요합니다.',

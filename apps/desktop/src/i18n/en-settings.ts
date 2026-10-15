@@ -510,12 +510,6 @@ export const enSettings: Translations['settings'] = {
   fieldLabels: FIELD_LABELS,
   fieldDescriptions: FIELD_DESCRIPTIONS,
   uninstallSection: { ...settingsRiskCopyEn.uninstallSection, ...enUninstallSection },
-  poolLimits: {
-    warmBotBackendsAria: 'Warm bot backends',
-    warmBotBackendsTitle: 'Warm Bot Backends',
-    backendIdleTimeoutAria: 'Backend idle timeout in milliseconds',
-    backendIdleTimeoutTitle: 'Backend Idle Timeout'
-  },
   customEndpoints: {
     ...settingsRiskCopyEn.customEndpoints,
     active: 'Active',

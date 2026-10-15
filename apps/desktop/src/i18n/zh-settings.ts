@@ -794,12 +794,6 @@ export const zhSettings: NonNullable<TranslationOverrides['settings']> = {
       }
     }
   },
-  poolLimits: {
-    warmBotBackendsAria: '预热机器人后端',
-    warmBotBackendsTitle: '预热机器人后端',
-    backendIdleTimeoutAria: '后端空闲超时（毫秒）',
-    backendIdleTimeoutTitle: '后端空闲超时（毫秒）'
-  },
   customEndpoints: {
     ...settingsRiskCopyZh.customEndpoints,
     active: '已启用',

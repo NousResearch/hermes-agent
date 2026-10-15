@@ -1,6 +1,8 @@
-import type { BotsMessages } from './i18n-types'
+import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
+import type { BotsMessages } from './i18n-messages'
 
 export const en: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES.en,
   editor: {
     fullConfigHint: 'Full configuration needs a newer gateway (restart it after updating Hermes).',
     liveCapabilities: 'Capabilities (applies immediately — skills, tools, MCP)',

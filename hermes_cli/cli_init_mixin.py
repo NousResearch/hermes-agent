@@ -208,6 +208,9 @@ class CLIInitMixin:
             os.getenv("HERMES_MAX_ITERATIONS"),
         ))
         self.run_budget_seconds = run_budget if run_budget is not None else CLI_CONFIG["agent"].get("run_budget_seconds")
+        self._explicit_run_budget = run_budget  # `--run-budget`: session.create policy (the gateway runs the turn)
+        # The gateway builds the agent now: the explicit flag (not the resolved value) rides session.create.
+        self._explicit_max_turns = max_turns
 
     def _init_toolsets(self, toolsets):
         from cli import CLI_CONFIG, validate_toolset
@@ -239,6 +242,7 @@ class CLIInitMixin:
         if isinstance(cp_cfg, bool):
             cp_cfg = {"enabled": cp_cfg}
         self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
+        self._explicit_checkpoints = bool(checkpoints)
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 20)
         self.checkpoint_max_total_size_mb = cp_cfg.get("max_total_size_mb", 500)
         self.checkpoint_max_file_size_mb = cp_cfg.get("max_file_size_mb", 10)
@@ -263,6 +267,7 @@ class CLIInitMixin:
         from hermes_constants import resolve_reasoning_config
         self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
         self._explicit_reasoning_config = None
+        self._explicit_reasoning = None
         # --reasoning wins for this run only (never persisted); unparseable -> warn and ignore.
         if reasoning is not None and str(reasoning).strip():
             _cli_reasoning = _parse_reasoning_config(reasoning)
@@ -271,6 +276,7 @@ class CLIInitMixin:
             else:
                 self.reasoning_config = _cli_reasoning
                 self._explicit_reasoning_config = _cli_reasoning
+                self._explicit_reasoning = str(reasoning).strip()
         self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
 
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
@@ -320,8 +326,7 @@ class CLIInitMixin:
         self._init_ui_state()
 
     def _init_session_store(self):
-        """Open the session store early (so /title works before the first message) + opportunistic maintenance."""
-        from cli import _run_checkpoint_auto_maintenance, _run_state_db_auto_maintenance
+        """Open the session store early (so /title works before the first message)."""
         self._session_db = None
         self._session_db_unavailable = False
         try:
@@ -329,8 +334,8 @@ class CLIInitMixin:
             # path a moment later from the REPL thread, and a second writer repeats the full
             # open (the /proc-wide deleted-WAL scan, ~4k readlinks) while the render thread
             # holds the GIL — that repeat was the post-banner freeze before the first prompt.
-            from hermes_state_registry import acquire
-            self._session_db = acquire()
+            from hermes_cli.gateway_session_store import session_store
+            self._session_db = session_store()  # the gateway is the single writer
         except Exception as e:
             # Without a store the transcript is NOT persisted while the chat looks healthy,
             # so surface it prominently rather than only logging.
@@ -353,8 +358,64 @@ class CLIInitMixin:
             # Same automatic diagnostic the gateway gates for its home channel (run_notifications).
             from gateway.warning_notifications import render_notification
             render_notification(_present_store_warning, platform="cli")
-        _run_state_db_auto_maintenance(self._session_db)
-        _run_checkpoint_auto_maintenance()
+        # No state.db / checkpoint maintenance here: the gateway (the single writer) runs both.
+
+    def _ensure_gateway_session(self):
+        """Create (or resume) this CLI's gateway session and adopt the id it returns, before the banner
+        and the first turn. Idempotent; a store without the gateway facade (tests) is left alone."""
+        from hermes_cli.gateway_session_store import GatewaySessionStore
+        store = getattr(self, "_session_db", None)
+        if getattr(self, "_gateway_session_open", False) or not isinstance(store, GatewaySessionStore):
+            return
+        launch = {"model": self.model if getattr(self, "_explicit_model_override", False) else None,
+                  "provider": (self.requested_provider if getattr(self, "_explicit_model_override", False)
+                               and self.requested_provider not in {None, "", "auto"} else None),
+                  "api_key": getattr(self, "_explicit_api_key", None),
+                  "base_url": getattr(self, "_explicit_base_url", None),
+                  "toolsets": self.enabled_toolsets,
+                  # Main handed these to AIAgent; the gateway's agent gets them as creation policy.
+                  "reasoning": getattr(self, "_explicit_reasoning", None),
+                  "max_turns": getattr(self, "_explicit_max_turns", None),
+                  "checkpoints": getattr(self, "_explicit_checkpoints", False) or None,
+                  "pass_session_id": getattr(self, "pass_session_id", False) or None,
+                  "ignore_rules": getattr(self, "ignore_rules", False) or None,
+                  "run_budget": getattr(self, "_explicit_run_budget", None),
+                  "verbose": getattr(self, "verbose", False) or None}
+        # A resumed row this gateway has not imported yet (a legacy / in-process session) is imported
+        # under the active-session registry lock, which refuses while ANY live lease holds the id —
+        # including this process's own, claimed before the first turn. Hand the slot over around the
+        # attach, then re-claim it for the id the gateway returned (main's exclusivity is kept).
+        held = getattr(self, "_resumed", False) and getattr(self, "_active_session_lease", None) is not None
+        if held:
+            self._release_active_session()
+        sid = store.open_session(self, launch)
+        self._gateway_session_open = True
+        from hermes_cli.gateway_tools import bind_session
+        bind_session(self, store.connection)  # the session's processes, before _init_agent's chat proxy
+        if sid and sid != self.session_id:
+            self.session_id = sid
+            getattr(self, "_write_terminal_breadcrumb", lambda: None)()
+        if held and not self._claim_active_session("cli", stderr=True):
+            raise RuntimeError("session_already_owned")
+
+    def _new_session_id(self, now, *, branch_of=None, title=None):
+        """The id main mints for /new (``new_session_id``) and /branch (``mint_session_id``). On a gateway
+        store it is a session the gateway created: /new is a fresh ``session.create`` on the profile's
+        default model (an explicit -m was for the previous session only), /branch the child of
+        ``session.mutate branch``. Before this CLI opened its gateway session (or off the gateway) it is
+        main's local mint, which ``_ensure_gateway_session`` replaces on first use, as at startup."""
+        from hermes_cli.gateway_session_store import GatewaySessionStore
+        store = getattr(self, "_session_db", None)
+        if not isinstance(store, GatewaySessionStore) or not getattr(self, "_gateway_session_open", False):
+            from hermes_state_ids import new_session_id
+            return new_session_id(now)
+        if branch_of:
+            return store.branch(branch_of, title)
+        sid = store.create({"toolsets": getattr(self, "enabled_toolsets", None),
+                            "pass_session_id": getattr(self, "pass_session_id", False) or None,
+                            "ignore_rules": getattr(self, "ignore_rules", False) or None}, record_cwd=False)
+        self.session_id = sid
+        return sid
 
     def _init_ui_state(self):
         """Per-run mutable UI state; must exist before any chat() call since -q never goes through run()."""

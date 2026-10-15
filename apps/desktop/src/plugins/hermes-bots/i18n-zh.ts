@@ -1,6 +1,8 @@
-import type { BotsMessages } from './i18n-types'
+import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
+import type { BotsMessages } from './i18n-messages'
 
 export const zh: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES.zh,
   editor: {
     fullConfigHint: '完整配置需要更新网关（更新 Hermes 后请重启网关）。',
     liveCapabilities: '功能（立即生效 — 技能、工具、MCP）',

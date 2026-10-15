@@ -269,6 +269,14 @@ def _warn_context_length_fallback(model: str, base_url: str) -> None:
         )
 
 
+def is_invented_fallback_context(model: str, context_length: int) -> bool:
+    """True when ``context_length`` is the hard fallback invented for a model unknown to the
+    catalog — a catalog-listed model whose real window happens to equal the fallback is
+    ``False``. Display paths use this to keep the invented number from posing as a real limit."""
+    return (context_length == DEFAULT_FALLBACK_CONTEXT
+            and _longest_key_match(DEFAULT_CONTEXT_LENGTHS, str(model or "").lower()) is None)
+
+
 # Sessions, model switches and cron jobs reject models below this (too little working memory).
 MINIMUM_CONTEXT_LENGTH = 64_000
 # In-process (model, base_url) -> (result, monotonic_ts) memo for local probes: one

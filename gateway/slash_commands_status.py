@@ -380,6 +380,18 @@ class GatewayStatusCommandsMixin:
             # messaging platforms). Fail-open: rendering errors never break /context.
             breakdown = await asyncio.to_thread(self._context_breakdown_block, agent, source, expanded) if agent else []
             return "\n".join(lines + ([""] + breakdown if breakdown else []))
+        if used > 0:
+            # Window unresolved (the invented fallback was suppressed above): occupancy only,
+            # the same honesty /status shows — never a self-contradictory "100%" gauge.
+            lines = [
+                t("gateway.context.header"), "",
+                t("gateway.context.model", model=model_name or "?"),
+                t("gateway.status.context_used", used=mark + _fmt(used)),
+                "",
+            ]
+            lines += _context_compressor_lines(agent, ctx, used) if ctx is not None else [
+                t("gateway.context.detail_after_first")]
+            return "\n".join(lines)
         # Last resort: rough estimate from transcript
         try:
             history = await self.async_session_store.load_transcript(session_entry.session_id)
@@ -407,11 +419,18 @@ class GatewayStatusCommandsMixin:
             resolved = await self._resolve_route_context(source, model_name)
             if resolved is not None:
                 model_name = model_name or resolved.model
-                context_length = _int_value(resolved.context_length)
+                # Same guard /status uses: a window the resolver only invented (unknown model →
+                # DEFAULT_FALLBACK_CONTEXT) stays out of the gauge rather than posing as a limit.
+                if resolved.context_source != "default":
+                    context_length = _int_value(resolved.context_length)
         if not context_length and model_name:
-            from agent.model_metadata import get_model_context_length
+            from agent.model_metadata import get_model_context_length, is_invented_fallback_context
+
+            def _bare_context_lookup() -> int:
+                length = get_model_context_length(model_name)
+                return 0 if is_invented_fallback_context(model_name, length) else length
             context_length = _int_value(
-                await _quiet(lambda: asyncio.to_thread(get_model_context_length, model_name))
+                await _quiet(lambda: asyncio.to_thread(_bare_context_lookup))
             )
         return used, context_length, model_name
 

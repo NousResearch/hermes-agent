@@ -765,3 +765,80 @@ async def test_context_all_appends_expanded_listings():
     assert "hermes-agent" in result
     # Expanded view drops the hint
     assert "Use /context all" not in result
+
+
+@pytest.mark.asyncio
+async def test_context_command_hides_invented_fallback_window():
+    """A model label the resolver cannot size (e.g. a MoA preset name as agent.model) must not
+    render the invented 256K fallback as the window — /context falls back to occupancy only,
+    exactly like /status, instead of a self-contradictory "100%" gauge (#139492)."""
+    from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-context-fallback",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner._running_agents[session_entry.session_key] = _stub_agent(
+        model="default",
+        context_compressor=SimpleNamespace(
+            last_prompt_tokens=473_624,
+            context_length=0,
+            threshold_tokens=100_000,
+            threshold_percent=0.5,
+            compression_count=2,
+            _last_compression_savings_pct=63.0,
+        ),
+    )
+
+    with patch("gateway.run._load_gateway_config", return_value={}), patch(
+        "gateway.run._resolve_runtime_agent_kwargs", return_value={}
+    ), patch(
+        "agent.model_metadata.get_model_context_length", return_value=DEFAULT_FALLBACK_CONTEXT
+    ):
+        result = await runner._handle_context_command(_make_event("/context"))
+
+    assert f"{DEFAULT_FALLBACK_CONTEXT:,}" not in result
+    assert "Window:" not in result and "In use:" not in result
+    assert "473,624" in result  # the real occupancy figure survives
+
+
+@pytest.mark.asyncio
+async def test_context_command_keeps_catalog_window_matching_fallback_size():
+    """A catalog-listed model whose real window happens to equal the fallback size keeps its
+    gauge — only the invented window for an unknown model label is suppressed (#139492)."""
+    from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-context-catalog",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner._running_agents[session_entry.session_key] = _stub_agent(
+        model="grok-4",
+        context_compressor=SimpleNamespace(
+            last_prompt_tokens=4_321,
+            context_length=0,
+            threshold_tokens=100_000,
+            threshold_percent=0.5,
+            compression_count=0,
+            _last_compression_savings_pct=0.0,
+        ),
+    )
+
+    with patch("gateway.run._load_gateway_config", return_value={}), patch(
+        "gateway.run._resolve_runtime_agent_kwargs", return_value={}
+    ), patch(
+        "agent.model_metadata.get_model_context_length", return_value=DEFAULT_FALLBACK_CONTEXT
+    ):
+        result = await runner._handle_context_command(_make_event("/context"))
+
+    assert f"In use: 4,321 / {DEFAULT_FALLBACK_CONTEXT:,} (2%)" in result

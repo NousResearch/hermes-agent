@@ -7,9 +7,14 @@ import pytest
 from tools import approval
 
 
+def enable_audit(home, value=True):
+    (home / "config.yaml").write_text(f"approvals:\n  audit_log: {value}\n", encoding="utf-8")
+
+
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    enable_audit(tmp_path)
 
 
 def records(home):
@@ -34,7 +39,7 @@ def test_command_entry_points_log_without_changing_decision(tmp_path, monkeypatc
 
 def test_real_user_deny_is_logged_as_blocked(tmp_path, monkeypatch):
     monkeypatch.setattr(approval.approval_context, "_get_approval_config",
-                        lambda: {"deny": ["synthetic-forbidden"]})
+                        lambda: {"deny": ["synthetic-forbidden"], "audit_log": True})
     result = approval.check_all_command_guards("synthetic-forbidden", "local")
     assert result["approved"] is False
     assert result["user_deny"] is True
@@ -150,6 +155,7 @@ def test_profile_override_owns_log(tmp_path):
     from tools.approval_audit import log_approval_event
     owner = tmp_path / "owner"
     owner.mkdir()
+    enable_audit(owner)
     token = set_hermes_home_override(owner)
     try:
         log_approval_event("test", "test", "test", {})
@@ -157,3 +163,43 @@ def test_profile_override_owns_log(tmp_path):
         reset_hermes_home_override(token)
     assert records(owner)
     assert not (tmp_path / "logs/approvals.jsonl").exists()
+
+
+
+@pytest.mark.parametrize("config", [None, "false", "'yes'", "1"])
+def test_audit_is_off_unless_explicitly_true(tmp_path, monkeypatch, config):
+    """Absent, false or malformed: same decision, and nothing is written."""
+    if config is None:
+        (tmp_path / "config.yaml").unlink()
+    else:
+        enable_audit(tmp_path, config)
+    deny(monkeypatch)
+    result = approval.check_all_command_guards("synthetic command", "local")
+    assert result["approved"] is False and result["outcome"] == "denied"
+    assert not (tmp_path / "logs/approvals.jsonl").exists()
+
+
+def test_positional_and_named_arguments_are_both_recorded(tmp_path, monkeypatch):
+    deny(monkeypatch)
+    approval.check_dangerous_command("positional command", "local")
+    approval.check_dangerous_command(command="named command", env_type="local")
+    assert [r["command"] for r in records(tmp_path)] == ["positional command", "named command"]
+
+
+def test_guard_exception_propagates_without_a_record(tmp_path, monkeypatch):
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("guard failure")
+    monkeypatch.setattr(approval, "_floor_block", broken)
+    with pytest.raises(RuntimeError, match="guard failure"):
+        approval.check_all_command_guards("synthetic command", "local")
+    assert not (tmp_path / "logs/approvals.jsonl").exists()
+
+
+@pytest.mark.platforms("posix")
+def test_planted_fifo_is_refused_without_blocking(tmp_path):
+    import os
+    from tools.approval_audit import log_approval_event
+    (tmp_path / "logs").mkdir()
+    os.mkfifo(tmp_path / "logs/approvals.jsonl")
+    log_approval_event("test", "test", "test", {"approved": False})
+    assert (tmp_path / "logs/approvals.jsonl").is_fifo()

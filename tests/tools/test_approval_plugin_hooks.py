@@ -246,9 +246,7 @@ class TestSmartModeFiresHooks:
             result = guard(value, "local")
 
         assert result["approved"] is True
-        # Both observer and audit consumers must force redaction.
-        assert len(force_values) >= 2
-        assert all(force_values)
+        assert force_values == [True, True]
 
     @pytest.mark.parametrize("guard,value", [
         (check_all_command_guards, "rm -rf /tmp/smart-hook-crash"),

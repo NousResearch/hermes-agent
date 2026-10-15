@@ -446,9 +446,18 @@ class TestMessageStorage:
             tool_calls=[{"id": "c1", "type": "function", "function": {"name": "date", "arguments": "{}"}}],
             reasoning_content="",
         )
+        # A declared tool_call must be answered: an assistant message carrying
+        # tool_calls with no following tool result is rejected by the provider
+        # ("An assistant message with 'tool_calls' must be followed by tool
+        # messages responding to each 'tool_call_id'").  Persist the result so
+        # the fixture transcript is well-formed and this test exercises the
+        # reasoning_content round-trip only.
+        db.append_message(
+            "s1", role="tool", content="{}", tool_call_id="c1", tool_name="date"
+        )
 
         conv = db.get_messages_as_conversation("s1")
-        assert len(conv) == 1
+        assert len(conv) == 2
         assert "reasoning_content" in conv[0]
         assert conv[0]["reasoning_content"] == ""
 

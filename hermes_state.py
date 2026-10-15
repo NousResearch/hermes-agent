@@ -156,6 +156,89 @@ END;
 """
 
 
+def repair_tool_pair_adjacency(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return ``messages`` with every ``tool`` result attached to its declaring call.
+
+    Providers require strict adjacency:
+
+        assistant(tool_calls=[a, b]) → tool(a) → tool(b) → <next message>
+
+    A ``tool`` message that does not directly follow (or follow another ``tool``
+    message of) an ``assistant`` declaring its ``tool_call_id`` is rejected with
+    ``Messages with role 'tool' must be a response to a preceding message with
+    'tool_calls'``.  A persisted transcript can violate this in two ways:
+
+    1. The result is replayed *before* the assistant that declares it.  This
+       happens when the replayed order is derived from ``timestamp`` — a wall
+       clock value, which is not monotonic per session (NTP step, VM resume,
+       two writers).  Ordering by ``id`` avoids it; this function is the belt
+       and braces for transcripts already on disk.
+    2. The pair was damaged at write time: a result exists whose declaring
+       ``assistant`` row is missing, or a declared call has no result.
+
+    Orphan results are dropped and missing results are replaced by a stub, i.e.
+    the same trade-off ``ContextCompressor._sanitize_tool_pairs`` already makes
+    during compression — but applied to the resume path, where it is currently
+    missing, and keyed on adjacency instead of set membership.
+
+    A well-formed transcript is returned unchanged (the function is idempotent).
+    """
+    def _call_id(tc: Any) -> str:
+        if isinstance(tc, dict):
+            return tc.get("call_id") or tc.get("id") or ""
+        return getattr(tc, "call_id", "") or getattr(tc, "id", "") or ""
+
+    out: List[Dict[str, Any]] = []
+    dropped = stubbed = 0
+    i, n = 0, len(messages)
+    while i < n:
+        msg = messages[i]
+        role = msg.get("role")
+
+        # A `tool` message reached here was not consumed by a declaring
+        # assistant above it → orphaned result, drop it.
+        if role == "tool":
+            dropped += 1
+            i += 1
+            continue
+
+        if role == "assistant" and msg.get("tool_calls"):
+            declared = [_call_id(tc) for tc in msg["tool_calls"]]
+            results: Dict[str, Dict[str, Any]] = {}
+            j = i + 1
+            while j < n and messages[j].get("role") == "tool":
+                cid = messages[j].get("tool_call_id")
+                if cid in declared and cid not in results:
+                    results[cid] = messages[j]
+                else:
+                    # result for an unknown or already-answered call
+                    dropped += 1
+                j += 1
+            out.append(msg)
+            for cid in declared:
+                if cid in results:
+                    out.append(results[cid])
+                else:
+                    out.append({
+                        "role": "tool",
+                        "content": "[Result from earlier conversation — see context summary above]",
+                        "tool_call_id": cid,
+                    })
+                    stubbed += 1
+            i = j
+            continue
+
+        out.append(msg)
+        i += 1
+
+    if dropped or stubbed:
+        logger.warning(
+            "Repaired tool_call/tool_result pairing on load: dropped %d orphaned "
+            "result(s), inserted %d stub(s)", dropped, stubbed,
+        )
+    return out
+
+
 class SessionDB:
     """
     SQLite-backed session storage with FTS5 search.
@@ -1466,7 +1549,7 @@ class SessionDB:
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items "
-                f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY timestamp, id",
+                f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
 
@@ -1517,7 +1600,7 @@ class SessionDB:
             if include_ancestors and self._is_duplicate_replayed_user_message(messages, msg):
                 continue
             messages.append(msg)
-        return messages
+        return repair_tool_pair_adjacency(messages)
 
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
         if not session_id:

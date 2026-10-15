@@ -2312,9 +2312,8 @@ def _resolve_switch_context_length(agent, snapshot):
     """Resolve the destination context length (LM Studio preload first); returns ``(custom_providers, effective_len)``."""
     custom_providers = None
     try:
-        from hermes_cli.config import (
-            get_compatible_custom_providers, get_custom_provider_context_length, load_config
-        )
+        from hermes_cli.config import get_compatible_custom_providers, load_config
+        from agent.model_metadata import _config_override_context_length
         from agent.agent_init import config_context_length_for_runtime
         switch_cfg = load_config()
         custom_providers = get_compatible_custom_providers(switch_cfg)
@@ -2324,8 +2323,8 @@ def _resolve_switch_context_length(agent, snapshot):
         # construction, where the pin outranks custom_providers metadata (#116467).
         intent = config_context_length_for_runtime(agent, switch_cfg)
         if intent is None:
-            intent = get_custom_provider_context_length(
-                model=agent.model, base_url=agent.base_url, custom_providers=custom_providers
+            intent = _config_override_context_length(
+                agent.model, agent.base_url, agent.provider, custom_providers
             )
     except Exception:
         intent = None

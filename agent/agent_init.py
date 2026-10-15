@@ -1865,11 +1865,13 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
     agent._custom_providers = _custom_providers
     _merge_custom_provider_extra_body(agent, _custom_providers)
 
-    if _config_context_length is None and _custom_providers:
+    if _config_context_length is None:
         with suppress(Exception):
-            from hermes_cli.config import get_custom_provider_context_length
-            _cp_ctx_resolved = get_custom_provider_context_length(
-                model=agent.model, base_url=agent.base_url, custom_providers=_custom_providers
+            # Match metadata resolution: an explicit model override precedes an
+            # endpoint default, which must not be promoted into a stronger pin.
+            from agent.model_metadata import _config_override_context_length
+            _cp_ctx_resolved = _config_override_context_length(
+                agent.model, agent.base_url, agent.provider, _custom_providers
             )
             if _cp_ctx_resolved:
                 _config_context_length = int(_cp_ctx_resolved)

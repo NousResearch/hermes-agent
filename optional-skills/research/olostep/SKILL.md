@@ -1,202 +1,121 @@
 ---
 name: olostep
-description: Web search, scraping, and AI-powered answers via the Olostep cloud API. Search the web, fetch page content as Markdown, and get AI answers with citations using the Python SDK or REST API.
-version: 1.0.0
-author: Olostep
+description: Cloud web search, scraping and cited answers.
+version: 1.1.0
+author: Umer K. (umerkay), Zeeshan Adil (ZeeshanAdilButt)
 license: MIT
+platforms: [linux, macos, windows]
+required_environment_variables:
+  - name: OLOSTEP_API_KEY
+    prompt: Olostep API key
+    help: Create one at https://www.olostep.com/dashboard
+    required_for: all Olostep calls
 metadata:
   hermes:
     tags: [Web Search, Scraping, Research, AI Answers, Cloud API]
-    related_skills: [duckduckgo-search, domain-intel, scrapling]
-    homepage: https://www.olostep.com
-prerequisites:
-  commands: [python]
-  env: [OLOSTEP_API_KEY]
+    related_skills: [duckduckgo-search, scrapling]
 ---
 
-# Olostep
+# Olostep Skill
 
-[Olostep](https://www.olostep.com) is a cloud API for web search, URL scraping, and AI-powered research answers. No local browser required — all requests are cloud-based and return clean, structured data.
+[Olostep](https://www.olostep.com) is a cloud web data API. This skill covers three calls through the Python SDK: web search, scraping one URL to Markdown or HTML, and web-sourced answers with source URLs. It does not cover crawls, batches, maps or monitors.
 
 ## When to Use
 
-- Search the web and get a list of relevant links with titles and descriptions
-- Scrape a URL and get clean Markdown content without running a browser locally
-- Get an AI-generated answer to a research question with web sources
-- When scrapling is overkill (no browser needed, no anti-bot bypass required)
-- When you need cloud-based scraping that works without local browser install
-- Quick research tasks that need both web search and content extraction
+- The user asks for Olostep by name, or `web_search` / `web_extract` are not configured.
+- You need page content from a JavaScript-heavy or bot-protected page without a local browser.
+- You need an answer with source URLs, optionally in a fixed JSON shape.
+- Prefer `web_search` and `web_extract` for ordinary one-off lookups.
 
-## Installation
+## Prerequisites
+
+- `OLOSTEP_API_KEY` set (Hermes prompts for it on load).
+- The SDK: `pip install -U olostep` (checked against 1.2.2; older releases may lack `searches`).
+
+## How to Run
+
+Run the helper through the `terminal` tool. `SKILL_DIR` is the directory containing this SKILL.md.
 
 ```bash
-pip install olostep
+python SKILL_DIR/scripts/olostep_cli.py search "best python web frameworks" --limit 5
+python SKILL_DIR/scripts/olostep_cli.py scrape https://example.com --format markdown
+python SKILL_DIR/scripts/olostep_cli.py answer "Who wrote the latest Dune novel?"
 ```
 
-Get your API key at [https://www.olostep.com/dashboard](https://www.olostep.com/dashboard), then set it:
-
-```bash
-export OLOSTEP_API_KEY=your_key_here
-```
+`search` and `answer` print JSON. `scrape` prints the page content.
 
 ## Quick Reference
 
-| Task | Method | Returns |
-|------|--------|---------|
-| Web search | `requests.post /v1/searches` | `links[]` with title, url, description |
-| Scrape URL | `client.scrapes.create()` | `markdown_content` / `html_content` |
-| AI answer | `client.answers.create()` | `answer` (str) |
-| Async | `AsyncOlostep` | All above, async |
+| Task | SDK call | Read from the result |
+|------|----------|----------------------|
+| Search | `client.searches.create(query, limit=5)` | `result.links`, each with `title`, `url`, `description` |
+| Scrape | `client.scrapes.create(url_to_scrape=url, formats=["markdown"])` | `result.markdown_content` or `result.html_content` |
+| Answer | `client.answers.create(task=task, json_format={...})` | `result.json_content` and `result.sources` |
 
-## Python: Web Search
+Search also takes `include_domains`, `exclude_domains` and `scrape_options={"formats": ["markdown"]}` to embed page content in each link.
 
-Use the REST API directly (the Python SDK does not have a searches namespace):
+## Procedure
+
+1. Pick the call from the table above. Search to find pages, scrape to read one known URL, answer for a question that needs sources.
+2. Use the helper script for a single call. Use the SDK directly when you need options the script does not expose.
+3. Scrape in Python:
 
 ```python
-import requests
 import os
-
-api_key = os.getenv("OLOSTEP_API_KEY")
-headers = {
-    "Authorization": f"Bearer {api_key}",
-    "Content-Type": "application/json"
-}
-
-response = requests.post(
-    "https://api.olostep.com/v1/searches",
-    headers=headers,
-    json={"query": "best Python web scraping libraries"},
-    timeout=30,
-)
-data = response.json()
-
-for link in data["result"]["links"]:
-    print(f"{link['title']}")
-    print(f"  {link['url']}")
-    print(f"  {link['description']}\n")
-```
-
-## Python: Scrape a URL
-
-### Markdown Format
-
-```python
 from olostep import Olostep
-import os
 
-client = Olostep(api_key=os.getenv("OLOSTEP_API_KEY"))
-
-result = client.scrapes.create(
-    url="https://example.com",
-    formats=["markdown"]
-)
-
-if result.markdown_content:
-    print(result.markdown_content)
-else:
-    print("Could not convert to Markdown")
+client = Olostep(api_key=os.environ["OLOSTEP_API_KEY"])
+result = client.scrapes.create(url_to_scrape="https://example.com", formats=["markdown"])
+print(getattr(result, "markdown_content", None))
 ```
 
-### HTML Format
+4. Answers in Python. `json_content` is a JSON string, so parse it, and report `sources` with the answer:
 
 ```python
-from olostep import Olostep
-import os
+import json
 
-client = Olostep(api_key=os.getenv("OLOSTEP_API_KEY"))
-
-result = client.scrapes.create(
-    url="https://example.com",
-    formats=["html"]
+answer = client.answers.create(
+    task="What is the latest book by J.K. Rowling?",
+    json_format={"book_title": "", "author": "", "release_date": ""},
 )
-
-if result.html_content:
-    print(result.html_content)
-else:
-    print("Could not fetch HTML")
+data = json.loads(answer.json_content)
+print(data, answer.sources)
 ```
 
-### Both Formats
-
-```python
-result = client.scrapes.create(
-    url="https://example.com",
-    formats=["markdown", "html"]
-)
-
-# Use whichever format worked best
-content = result.markdown_content or result.html_content
-```
-
-## Python: AI Answers
-
-Get an AI-powered answer to a research question:
-
-```python
-from olostep import Olostep
-import os
-
-client = Olostep(api_key=os.getenv("OLOSTEP_API_KEY"))
-
-result = client.answers.create(
-    task="What is the capital of France and what are its major attractions?"
-)
-
-print(result.answer)
-```
-
-## Python: Async Usage
-
-Use `AsyncOlostep` for concurrent requests:
+5. Async variant, for several calls at once:
 
 ```python
 import asyncio
-import os
 from olostep import AsyncOlostep
 
 async def main():
-    async with AsyncOlostep(api_key=os.getenv("OLOSTEP_API_KEY")) as client:
-        # Scrape a URL
-        scrape_result = await client.scrapes.create(
-            url="https://example.com",
-            formats=["markdown"]
+    async with AsyncOlostep(api_key=os.environ["OLOSTEP_API_KEY"]) as client:
+        pages = await asyncio.gather(
+            client.scrapes.create(url_to_scrape="https://example.com", formats=["markdown"]),
+            client.scrapes.create(url_to_scrape="https://example.org", formats=["markdown"]),
         )
-        
-        # Get an AI answer
-        answer_result = await client.answers.create(
-            task="Summarize the content from example.com"
-        )
-        
-        print(scrape_result.markdown_content)
-        print(answer_result.answer)
+        return [getattr(p, "markdown_content", None) for p in pages]
 
 asyncio.run(main())
 ```
 
-## Error Handling
-
-```python
-from olostep import Olostep, Olostep_BaseError
-import os
-
-client = Olostep(api_key=os.getenv("OLOSTEP_API_KEY"))
-
-try:
-    result = client.scrapes.create(
-        url="https://example.com",
-        formats=["markdown"]
-    )
-except Olostep_BaseError as e:
-    print(f"Olostep error: {e}")
-except Exception as e:
-    print(f"Other error: {e}")
-```
+6. Catch `Olostep_BaseError` (from `olostep`) for API failures.
 
 ## Pitfalls
 
-- **`OLOSTEP_API_KEY` must be set** — all calls fail silently or raise `Olostep_BaseError` if the API key is missing or invalid
-- **The Python SDK does NOT have a `searches` namespace** — use `requests.post()` to call `/v1/searches` directly, do not try `client.searches`
-- **`formats=` must be a list, not a string** — `formats=["markdown"]` is correct, `formats="markdown"` will not work
-- **`result.markdown_content` may be `None`** — the page might not be convertible to Markdown; always check before using
-- **`answers.create()` takes `task=` not `query=`** — the parameter name is `task`, not `query` or `question`
-- **Cloud-based means latency** — expect 2-10 seconds per request depending on page complexity; not suitable for real-time applications with strict latency budgets
+- Scrape takes `url_to_scrape=`, as in the Olostep docs. The SDK also accepts `url=`, but passing both raises `ValueError`.
+- `formats` is a list: `["markdown"]`, not `"markdown"`.
+- The result only has the content attributes that came back, so `result.markdown_content` can raise `AttributeError`. Read it with `getattr(result, "markdown_content", None)`.
+- `answers.create` takes `task=` (not `query=`) and `json_format=` for structured output. Without `json_format`, `json_content` came back as `{"result": "<text>"}` in a live API check.
+- `json_content` is a string. `result.answer` is only an SDK alias for it and carries no citations, so use `result.sources`.
+- Fields the answer agent cannot find come back as `NOT_FOUND`. Do not present them as facts.
+- `sources` can be an empty list for simple factual questions. Say so instead of inventing citations.
+- `limit` on search must be between 1 and 25.
+
+## Verification
+
+```bash
+python SKILL_DIR/scripts/olostep_cli.py answer "What is the capital of France?"
+```
+
+Expect JSON with an `answer` containing "Paris" and a `sources` list. An `OLOSTEP_API_KEY is not set` message means the key is missing.

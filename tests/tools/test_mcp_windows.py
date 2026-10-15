@@ -102,9 +102,14 @@ def _endpoint(*, tls=None, sse=False):
             method = request["method"]
             results = {
                 "initialize": {"protocolVersion": request.get("params", {}).get("protocolVersion"),
-                               "serverInfo": {"name": "unity-fixture", "version": "1"}, "capabilities": {"tools": {}}},
+                               "serverInfo": {"name": "unity-fixture", "version": "1"}, "capabilities": {"tools": {}, "prompts": {}, "resources": {}}},
                 "tools/list": {"tools": [{"name": "unity_ping", "description": "fixture", "inputSchema": {"type": "object"}}]},
                 "tools/call": {"content": [{"type": "text", "text": "pong"}]},
+                "prompts/list": {"prompts": [{"name": "scene"}]},
+                "prompts/get": {"messages": [{"role": "user", "content": {"type": "text", "text": "scene prompt"}}]},
+                "resources/list": {"resources": [{"name": "scene", "uri": "scene://active"}]},
+                "resources/templates/list": {"resourceTemplates": []},
+                "resources/read": {"contents": [{"uri": "scene://active", "text": "scene data"}]},
                 "ping": {},
             }
             response = json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": results[method]}).encode()
@@ -225,6 +230,13 @@ async def test_real_mcp_probe_and_runtime_use_the_same_windows_route(monkeypatch
             assert [tool.name for tool in task._tools] == ["unity_ping"]
             result = await asyncio.wait_for(task.session.call_tool("unity_ping", {}), timeout=5)
             assert result.content[0].text == "pong"
+            prompts = await task.session.list_prompts()
+            assert prompts.prompts[0].name == "scene"
+            prompt = await task.session.get_prompt("scene")
+            assert prompt.messages[0].content.text == "scene prompt"
+            resources = await task.session.list_resources()
+            resource = await task.session.read_resource(str(resources.resources[0].uri))
+            assert resource.contents[0].text == "scene data"
             if transport == "http":
                 assert any(method == "HEAD" for method, _, _ in requests)
             assert all(headers["Host"] == "localhost:1" for _, _, headers in requests)

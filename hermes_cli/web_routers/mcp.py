@@ -480,6 +480,13 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     if entry is None:
         raise HTTPException(status_code=404, detail=f"No catalog entry '{name}'")
 
+    if body.network is not None:
+        from tools.mcp_windows import InvalidMcpNetworkError, validate_mcp_network_config
+        try:
+            validate_mcp_network_config({"url": entry.transport.url, "network": body.network})
+        except InvalidMcpNetworkError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     # Catalog credentials are a closed schema: configuring one MCP must not
     # become a generic write primitive for unrelated process environment.
     declared_env = {spec.name for spec in (entry.auth.env or [])}
@@ -516,7 +523,7 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     if entry.install is not None:
         action = _mcp_install_action_name(name)
         try:
-            _spawn_hermes_action(_profile_cli_args(effective_profile) + ["mcp", "install", name], action)
+            _spawn_hermes_action(_profile_cli_args(effective_profile) + ["mcp", "install", name] + (["--network", body.network] if body.network is not None else []), action)
         except HTTPException:
             raise
         except Exception as exc:
@@ -528,7 +535,7 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     try:
         await scoped_to_thread(
             effective_profile,
-            lambda: mcp_catalog.install_entry(entry, enable=body.enable, preloaded_env=body.env or None),
+            lambda: mcp_catalog.install_entry(entry, enable=body.enable, preloaded_env=body.env or None, **({"network": body.network} if body.network is not None else {})),
         )
     except HTTPException:
         raise

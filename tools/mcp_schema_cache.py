@@ -32,6 +32,7 @@ def config_fingerprint(config: dict) -> str:
         "args": config.get("args") or [],
         "url": config.get("url"),
         "transport": config.get("transport"),
+        "network": config.get("network", "auto"),
         "tools_include": sorted(tools_filter.get("include") or []),
         "tools_exclude": sorted(tools_filter.get("exclude") or [])}
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))

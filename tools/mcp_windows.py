@@ -249,6 +249,48 @@ async def _local_endpoint_available(host: str, port: int) -> bool:
     return True
 
 
+def validate_mcp_network_config(config: dict) -> None:
+    """Validate explicit routing intent without opening sockets or loading the SDK."""
+    if "network" not in config:
+        return
+    network = config["network"]
+    if not isinstance(network, str) or network not in {"auto", "local", "windows"}:
+        raise InvalidMcpNetworkError("MCP network must be auto, local, or windows")
+    if not config.get("url"):
+        raise InvalidMcpNetworkError("MCP network is only supported for HTTP/SSE servers, not stdio")
+    # Environment placeholders are resolved by the runtime loader, which also
+    # checks the final origin. Do not reject portable ${MCP_URL} configuration.
+    url = config["url"]
+    if network == "windows" and isinstance(url, str) and "${" not in url:
+        try:
+            endpoint = _loopback_endpoint(url)
+        except ValueError:
+            endpoint = None
+        if endpoint is None:
+            raise InvalidMcpNetworkError("network: windows requires an HTTP(S) loopback MCP URL")
+
+
+@contextlib.asynccontextmanager
+async def mcp_http_client(httpx, server_name: str, config: dict, **client_kwargs):
+    """Route standalone MCP OAuth clients exactly like the resource transport.
+
+    Each client owns its route. A cached OAuth provider must never retain a
+    closed Unix socket or a route bound to another connection's event loop.
+    Only the configured MCP origin is tunneled; external authorization servers
+    keep their normal destination. This does not forward arbitrary redirects.
+    """
+    from tools.mcp_tool_errors import _resolve_client_cert
+
+    verify = config.get("ssl_verify", True)
+    cert = _resolve_client_cert(server_name, config)
+    async with mcp_http_route(config["url"], network=config.get("network", "auto")) as route:
+        options = route.client_options(httpx, verify=verify, cert=cert) if route else {}
+        async with httpx.AsyncClient(
+            **client_kwargs, verify=verify, **({"cert": cert} if cert is not None else {}), **options
+        ) as client:
+            yield client
+
+
 def validate_mcp_network(url: str, network: str = "auto") -> None:
     """Reject unfulfillable explicit targets before any optional preflight."""
     if not isinstance(network, str) or network not in {"auto", "local", "windows"}:

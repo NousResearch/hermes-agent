@@ -42,8 +42,15 @@ def validate_servers(servers):
     from acp.schema import McpServerStdio, McpServerHttp, McpServerSse
     from pydantic import ValidationError
     kinds = {'stdio': McpServerStdio, 'http': McpServerHttp, 'sse': McpServerSse}
-    if not isinstance(servers, list) or len(servers) > 16 or len(_json(servers)) > 65536:
-        raise RuntimeStoreError('invalid_params')
+    if not isinstance(servers, list):
+        raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
+                                detail=f'must be a list, got {type(servers).__name__}')
+    if len(servers) > 16:
+        raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
+                                detail=f'at most 16 servers, got {len(servers)}')
+    if len(_json(servers)) > 65536:
+        raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
+                                detail='the serialized server list exceeds 65536 bytes')
     names = set()
     try:
         for spec in servers:
@@ -53,7 +60,8 @@ def validate_servers(servers):
                 raise ValueError('duplicate server')
             names.add(model.name)
     except (ValidationError, KeyError, AttributeError, TypeError, ValueError) as exc:
-        raise RuntimeStoreError('invalid_params') from exc
+        raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
+                                detail=f'unusable server spec: {str(exc)[:120]}') from exc
 
 
 def private_editor_request(request, private):

@@ -14,8 +14,14 @@ from hermes_state_keys import admission_fingerprint
 
 
 class RuntimeStoreError(ValueError):
-    def __init__(self, reason: str):
+    """A refusal by the state authority. ``reason`` is the bounded wire code (callers compare it as a
+    string); ``field`` and ``detail`` name the check that fired and why, so a client and the gateway
+    log can tell the reasons' many checks apart instead of reporting the bare code."""
+
+    def __init__(self, reason: str, *, field: str | None = None, detail: str | None = None):
         self.reason = reason
+        self.field = field
+        self.detail = detail
         super().__init__(reason)
 
 

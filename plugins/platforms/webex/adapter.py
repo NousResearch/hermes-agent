@@ -456,15 +456,22 @@ class WebexAdapter(BasePlatformAdapter):
             return SendResult(success=True)
 
         sent_ids = []
-        for chunk in split_message(message):
+        chunks = split_message(message)
+        for chunk in chunks:
             payload = self._build_text_payload(chat_id, chunk, metadata=metadata)
             if payload is None:
                 return SendResult(success=False, error="Missing room target")
             data = await self._api_post_json("messages", payload)
             if not data or not data.get("id"):
+                raw = dict(data) if data else {}
+                if sent_ids:
+                    raw.update(partial_overflow=True, delivered_chunks=len(sent_ids),
+                               total_chunks=len(chunks))
                 return SendResult(
                     success=False,
                     error=json.dumps(data) if data else "Webex send returned no data",
+                    message_id=sent_ids[-1] if sent_ids else None,
+                    continuation_message_ids=tuple(sent_ids[:-1]), raw_response=raw,
                 )
             sent_ids.append(str(data["id"]))
         return SendResult(
@@ -516,20 +523,32 @@ class WebexAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
-        payload = self._build_text_payload(chat_id, caption or "", metadata=metadata)
+        formatted_caption = self.format_message(caption or "")
+        caption_ids = ()
+        if utf8_length(formatted_caption) > MAX_MESSAGE_BYTES:
+            sent_caption = await self.send(chat_id, caption or "", reply_to=reply_to, metadata=metadata)
+            if not sent_caption.success:
+                return sent_caption
+            caption_ids = (*sent_caption.continuation_message_ids, sent_caption.message_id)
+            formatted_caption = ""
+            caption = None
+        payload = self._build_text_payload(chat_id, formatted_caption, metadata=metadata)
         if payload is None:
             return SendResult(success=False, error="Missing room target")
         payload["files"] = [image_url]
         data = await self._api_post_json("messages", payload)
         if data and data.get("id"):
             return SendResult(
-                success=True, message_id=str(data["id"]), raw_response=data
+                success=True, message_id=str(data["id"]), raw_response=data,
+                continuation_message_ids=caption_ids,
             )
         # Fall back to a plain text URL if the API rejects file-url delivery.
         text = f"{caption}\n{image_url}".strip() if caption else image_url
-        return await self.send(
+        result = await self.send(
             chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata
         )
+        result.continuation_message_ids = (*caption_ids, *result.continuation_message_ids)
+        return result
 
     async def send_image_file(
         self,
@@ -601,13 +620,22 @@ class WebexAdapter(BasePlatformAdapter):
         if not await asyncio.to_thread(path.exists):
             return SendResult(success=False, error=f"File not found: {file_path}")
 
+        formatted_caption = self.format_message(caption or "")
+        caption_ids = ()
+        if utf8_length(formatted_caption) > MAX_MESSAGE_BYTES:
+            sent_caption = await self.send(chat_id, caption or "", metadata=metadata)
+            if not sent_caption.success:
+                return sent_caption
+            caption_ids = (*sent_caption.continuation_message_ids, sent_caption.message_id)
+            formatted_caption = ""
+
         form = FormData()
         self._populate_target_fields(form, chat_id)
         parent_id = self._extract_parent_id(metadata)
         if parent_id:
             form.add_field("parentId", parent_id)
-        if caption:
-            form.add_field("markdown", self.format_message(caption))
+        if formatted_caption:
+            form.add_field("markdown", formatted_caption)
 
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         form.add_field(
@@ -620,10 +648,12 @@ class WebexAdapter(BasePlatformAdapter):
         data = await self._api_post_form("messages", form)
         if data and data.get("id"):
             return SendResult(
-                success=True, message_id=str(data["id"]), raw_response=data
+                success=True, message_id=str(data["id"]), raw_response=data,
+                continuation_message_ids=caption_ids,
             )
         return SendResult(
-            success=False, error=json.dumps(data or {"error": "upload failed"})
+            success=False, error=json.dumps(data or {"error": "upload failed"}),
+            continuation_message_ids=caption_ids,
         )
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:

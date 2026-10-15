@@ -475,9 +475,11 @@ files must register `standalone_sender_supports_media=True` and return
 `media_delivered=True` only after all requested attachments succeed. The flag
 defaults to false: accepting `media_files` for signature compatibility alone
 does not promise attachment delivery. Without the flag, attachment-only sends
-are refused before invoking the sender; text sends receive an omission warning.
+are refused before invoking the sender. Captioned sends retain the existing
+descriptor contract for older plugins: descriptors are forwarded, and a success
+without `media_delivered=True` receives an omission warning.
 Live adapters continue to use their native media methods independently of this
-standalone capability. Webex and Buzz provide media-capable examples.
+standalone capability. Webex, Buzz and Photon provide media-capable examples.
 
 ## Surfacing Env Vars in `hermes config`
 

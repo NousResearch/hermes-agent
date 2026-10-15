@@ -110,7 +110,8 @@ class PlatformEntry:
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
     # Explicit opt-in: accepting media_files for signature compatibility does not
     # mean the standalone sender uploads attachments. Successful uploads return
-    # media_delivered=True; live adapter media methods are checked independently.
+    # media_delivered=True. Captioned legacy sends retain receipt-based behavior;
+    # the opt-in also allows attachment-only sends. Live media checks are separate.
     standalone_sender_supports_media: bool = False
     # Every inbound event is produced by the service the adapter authenticated to with its own
     # credential (an event bus, not a person), so user allowlists and pairing do not apply. Never

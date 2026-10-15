@@ -572,8 +572,8 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
 
 async def _send_standalone_fallback(platform_name, pconfig, chat_id, chunk, *, thread_id=None,
                                      media_files=None, force_document=False):
-    """Only opted-in standalone senders receive attachments; parity kwargs alone
-    are also accepted by text-only senders and must not hide omitted files."""
+    """Opt-in protects attachment-only sends; captioned legacy senders retain
+    their descriptor contract and report completion through media_delivered."""
     from gateway.platform_registry import platform_registry
     entry = platform_registry.get(platform_name)
     sender = entry.standalone_sender_fn if entry else None
@@ -582,11 +582,10 @@ async def _send_standalone_fallback(platform_name, pconfig, chat_id, chunk, *, t
                           f"connected? For out-of-process delivery (e.g. cron in a separate process), the platform "
                           f"plugin must register a standalone_sender_fn on its PlatformEntry.")}
     warning = None
-    if media_files and getattr(entry, "standalone_sender_supports_media", False) is not True:
+    if media_files and not entry.standalone_sender_supports_media:
         if not chunk.strip():
             return {"error": f"Standalone {platform_name} delivery had only media attachments, which its sender cannot upload"}
-        warning = f"MEDIA attachments were omitted for {platform_name}; its standalone sender supports text only"
-        media_files = []
+        warning = f"MEDIA attachments were omitted for {platform_name}; its standalone sender did not confirm upload"
     try:
         result = await sender(pconfig, chat_id, chunk, thread_id=thread_id, media_files=media_files,
                               force_document=force_document)
@@ -596,7 +595,7 @@ async def _send_standalone_fallback(platform_name, pconfig, chat_id, chunk, *, t
         logger.debug("Plugin standalone send for %s raised", platform_name, exc_info=True)
         return {"error": f"Plugin standalone send failed: {_bounded_send_error(e)}"}
     if isinstance(result, dict) and (result.get("success") or result.get("error")):
-        if warning and result.get("success"):
+        if warning and result.get("success") and not result.get("media_delivered"):
             result["warnings"] = [*result.get("warnings", []), warning]
         return {**result, "error": _bounded_send_error(result["error"])} if result.get("error") else result
     return {"error": (f"Plugin standalone send for '{platform_name}' returned an invalid result: "

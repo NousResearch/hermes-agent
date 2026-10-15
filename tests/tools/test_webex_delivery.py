@@ -173,7 +173,25 @@ async def test_text_only_registry_sender_does_not_silently_drop_media(monkeypatc
     else:
         assert result["success"] is True
         assert "omitted" in result["warnings"][0]
-        assert not sender.await_args.kwargs["media_files"]
+        assert sender.await_args.kwargs["media_files"] == descriptors
+
+
+@pytest.mark.asyncio
+async def test_legacy_registered_media_sender_keeps_captioned_descriptor_contract(monkeypatch, media):
+    _path, descriptors = media
+    sender = AsyncMock(return_value={"success": True, "message_id": "media-id", "media_delivered": True})
+    entry = PlatformEntry(name="legacy-media", label="Legacy media", adapter_factory=lambda cfg: None,
+                          check_fn=lambda: True, standalone_sender_fn=sender)
+    get_entry = platform_registry.get
+    monkeypatch.setattr(platform_registry, "get", lambda name: entry if name == entry.name else get_entry(name))
+    monkeypatch.setattr(delivery, "_live_adapter", lambda _platform: (None, None))
+
+    result = await delivery._send_to_platform(
+        SimpleNamespace(value=entry.name), PlatformConfig(), "target", "Report", media_files=descriptors)
+
+    assert result["success"] is True
+    assert sender.await_args.kwargs["media_files"] == descriptors
+    assert "warnings" not in result
 
 
 @pytest.mark.asyncio

@@ -49,7 +49,9 @@ status display, gateway setup, and more.
   sender uploads the `(path, is_voice)` descriptors in `media_files` and returns
   `media_delivered=True` after all uploads succeed. It defaults to false because
   text-only senders also accept `media_files` for signature compatibility.
-  Live adapter media delivery is checked through its native media methods.
+  Captioned legacy sends still forward descriptors and use `media_delivered`
+  to distinguish completed uploads from omissions. Live adapter media delivery
+  is checked through its native media methods.
 - `plugin.yaml` `requires_env` / `optional_env` rich-dict entries —
   auto-populate `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` so the setup
   wizard surfaces proper descriptions, prompts, password flags, and URLs.

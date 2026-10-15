@@ -24,14 +24,20 @@ async def webex_http(monkeypatch):
         return web.json_response(messages[request.match_info["message_id"]])
 
     async def write_message(request):
-        payload = await request.json()
+        if request.content_type == "multipart/form-data":
+            payload = {}
+            async for part in await request.multipart():
+                body = bytes(await part.read())
+                payload[part.name] = body if part.filename else body.decode()
+        else:
+            payload = await request.json()
         requests.append((request.method, payload))
         if len(payload.get("markdown", "").encode("utf-8")) > 7439:
             return web.json_response({"message": "message exceeds 7439 bytes"}, status=400)
         message_id = request.match_info.get("message_id") or f"message-{len(messages)}"
         messages[message_id] = {**messages.get(message_id, {}), **payload, "id": message_id}
         first_sent.set()
-        return web.json_response(messages[message_id])
+        return web.json_response({"id": message_id})
 
     app = web.Application()
     app.router.add_get("/messages/{message_id}", get_message)
@@ -101,3 +107,56 @@ async def test_large_markdown_code_blocks_remain_balanced(webex_http):
         text = re.sub(r" \(\d+/\d+\)$", "", message["markdown"])
         assert text.startswith("```python\n") and text.endswith("```")
         assert len(message["markdown"].encode("utf-8")) <= 7439
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caption", ["漢" * 2500, "😀" * 2000], ids=["han", "emoji"])
+@pytest.mark.parametrize("media_kind", ["local_file", "image_url"])
+async def test_live_media_preserves_oversized_captions(webex_http, tmp_path, caption, media_kind):
+    adapter, requests, messages, _first_sent = webex_http
+    metadata = {"thread_id": "thread"}
+    if media_kind == "local_file":
+        path = tmp_path / "report.txt"
+        path.write_bytes(b"report contents")
+        result = await adapter.send_document("room", str(path), caption=caption, metadata=metadata)
+        assert result.success
+        assert messages[result.message_id]["files"] == b"report contents"
+    else:
+        result = await adapter.send_image("room", "https://example.com/image.png", caption=caption, metadata=metadata)
+        assert result.success
+        assert messages[result.message_id]["files"] == ["https://example.com/image.png"]
+
+    delivered_text = [message.get("markdown", "") for message in messages.values()]
+    assert "".join(re.sub(r" \(\d+/\d+\)$", "", chunk) for chunk in delivered_text) == caption
+    assert all(len(chunk.encode("utf-8")) <= 7439 for chunk in delivered_text)
+    assert all(message["roomId"] == "room" and message["parentId"] == "thread" for message in messages.values())
+    assert set(result.continuation_message_ids) | {result.message_id} == set(messages)
+    assert sum("files" in payload for _method, payload in requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_kind", ["local_file", "image_url"])
+async def test_live_media_stops_after_failed_caption_delivery(monkeypatch, tmp_path, media_kind):
+    requests = []
+
+    async def refuse(request):
+        requests.append(request.content_type)
+        await request.read()
+        return web.json_response({"message": "temporarily unavailable"}, status=503)
+
+    app = web.Application()
+    app.router.add_post("/messages", refuse)
+    async with TestServer(app) as server, aiohttp.ClientSession() as session:
+        monkeypatch.setattr("plugins.platforms.webex.adapter.API_BASE", str(server.make_url("/")).rstrip("/"))
+        adapter = WebexAdapter(PlatformConfig(token="token"))
+        adapter._session = session
+        caption = "漢" * 2500
+        if media_kind == "local_file":
+            path = tmp_path / "report.txt"
+            path.write_bytes(b"report contents")
+            result = await adapter.send_document("room", str(path), caption=caption, metadata={"thread_id": "thread"})
+        else:
+            result = await adapter.send_image("room", "https://example.com/image.png", caption=caption, metadata={"thread_id": "thread"})
+
+    assert result.success is False
+    assert requests == ["application/json"]

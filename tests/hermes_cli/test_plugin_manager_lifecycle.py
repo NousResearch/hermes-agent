@@ -147,7 +147,9 @@ def test_unload_profile_manager_waits_for_same_home_lookup(tmp_path, monkeypatch
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
 
-    home = (tmp_path / "profile").resolve()
+    home = (tmp_path / ".hermes" / "profiles" / "profile").resolve()
+    home.mkdir(parents=True)
+    (home / "config.yaml").touch()
     unload_started = threading.Event()
     release_unload = threading.Event()
     lookup_returned = threading.Event()
@@ -199,15 +201,15 @@ def test_profile_mutation_keeps_same_home_lookup_blocked_until_commit(
     import threading
 
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_cli.plugins_discovery import _delivery_manager
 
     plugins._reset_plugin_managers_for_tests()
     create_profile("race", no_alias=True, no_skills=True)
     profile_dir = get_profile_dir("race")
-    original_manager = None
     if manager_cached:
         token = set_hermes_home_override(profile_dir)
         try:
-            original_manager = plugins.get_plugin_manager()
+            plugins.get_plugin_manager()
         finally:
             reset_hermes_home_override(token)
     else:
@@ -219,8 +221,16 @@ def test_profile_mutation_keeps_same_home_lookup_blocked_until_commit(
     lookup_returned = threading.Event()
     unrelated_returned = threading.Event()
     lookup_result = []
+    lookup_errors = []
+    discovery_calls = []
     unrelated_result = []
     operation_errors = []
+
+    monkeypatch.setattr(
+        plugins.PluginManager,
+        "discover_and_load",
+        lambda manager: discovery_calls.append(manager),
+    )
 
     def hold_mutation():
         mutation_started.set()
@@ -289,7 +299,9 @@ def test_profile_mutation_keeps_same_home_lookup_blocked_until_commit(
     def lookup():
         token = set_hermes_home_override(profile_dir)
         try:
-            lookup_result.append(plugins.get_plugin_manager())
+            lookup_result.append(_delivery_manager())
+        except FileNotFoundError as exc:
+            lookup_errors.append(exc)
         finally:
             reset_hermes_home_override(token)
             lookup_returned.set()
@@ -325,7 +337,11 @@ def test_profile_mutation_keeps_same_home_lookup_blocked_until_commit(
     assert not looking.is_alive()
     assert not operation_errors
     assert lookup_returned.is_set()
-    assert lookup_result and lookup_result[0] is not original_manager
+    assert not lookup_result
+    assert len(lookup_errors) == 1
+    assert "no longer live" in str(lookup_errors[0])
+    assert not discovery_calls
+    assert profile_dir.resolve() not in plugins._plugin_managers_by_home
     assert unrelated_returned.is_set()
     assert unrelated_result
     plugins._reset_plugin_managers_for_tests()

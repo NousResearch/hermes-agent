@@ -295,10 +295,12 @@ def _profiles(authority, actor, home, params):
                     'message_count': target.get('message_count') or 0}
 
         # The named registry is not a recency window and canonical chats are hidden.
+        # Identity is the title alone, as session_bot's own delivery lookup treats it: a Bot Chat
+        # minted on the classic lane (chat_id == id, no local- prefix) is the same registry row.
         canonical = authority.db.get_session_by_title('Bot Chat')
         if (canonical and (canonical.get('user_id') == actor.subject
                            or 'session:operator' in actor.capabilities)
-                and str(canonical.get('chat_id') or '').startswith('local-') and not canonical.get('archived')):
+                and not canonical.get('archived')):
             row['canonical_session'] = summary(canonical)
         if 'session:operator' in actor.capabilities:
             owner_filter, owner_params = '', ()
@@ -307,8 +309,14 @@ def _profiles(authority, actor, home, params):
         with authority.db._lock:
             from hermes_state_sessions import INTERNAL_LISTING_SOURCES
             hidden_sources = ','.join('?' * len(INTERNAL_LISTING_SOURCES))
+            # Local lanes only: a gateway receipt (chat_id = local-<digest>) or a classic CLI/TUI
+            # mint (chat_id = id of the YYYYMMDD_HHMMSS_<hex> shape). Platform rows carry an
+            # external chat id, and api/room forks reuse their session id as chat_id under other
+            # shapes, so the classic arm stays pinned to the timestamp id.
+            classic_id = '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]_[0-9][0-9][0-9][0-9][0-9][0-9]_*'
             latest = authority.db._conn.execute(
-                f"SELECT id FROM sessions WHERE {owner_filter}chat_id LIKE 'local-%' AND archived=0 "
+                f"SELECT id FROM sessions WHERE {owner_filter}(chat_id LIKE 'local-%' "
+                f"OR (chat_id = id AND id GLOB '{classic_id}')) AND archived=0 "
                 f"AND COALESCE(source,'') NOT IN ({hidden_sources}) "
                 "ORDER BY COALESCE(last_activity_at,started_at) DESC LIMIT 1",
                 (*owner_params, *INTERNAL_LISTING_SOURCES)).fetchone()

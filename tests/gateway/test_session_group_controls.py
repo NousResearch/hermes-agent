@@ -140,3 +140,36 @@ def test_groups_list_pages_the_actor_visible_rooms(tmp_path):
                 break
             params = {'limit': 2, 'offset': page['next_offset']}
         assert pages == [['m1', 'm2'], ['m3']], pages
+
+
+def test_profiles_list_discovers_a_classic_lane_bot_chat(tmp_path, monkeypatch):
+    """#139227: a Bot Chat minted on the classic lane (chat_id == id of the YYYYMMDD_HHMMSS_<hex>
+    shape, no local- prefix) is the registry row session_bot's title lookup delivers to — the
+    roster's canonical_session and last_session discovery must resolve it too, while a fork row
+    that merely reuses its session id as chat_id (api_) stays out of the recency window."""
+    home = tmp_path / 'state'
+    home.mkdir()
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setenv('HOME', str(tmp_path / 'user'))
+    (home / 'config.yaml').write_text('model:\n  default: fixture-model\n  provider: custom\n')
+    with SessionDB(home / 'state.db') as db:
+        from gateway.session_identity import authenticated_subject
+        subject = authenticated_subject({'user_id': 'reader'})
+        db.create_session('20261006_105832_fa0db9', source='cli', user_id=subject,
+                          chat_id='20261006_105832_fa0db9')
+        db.set_session_title('20261006_105832_fa0db9', 'Bot Chat')
+        db.append_message('20261006_105832_fa0db9', 'user', 'classic lane canonical', timestamp=2000)
+        db.create_session('api_1760000000_abcd1234', source='api', user_id=subject,
+                          chat_id='api_1760000000_abcd1234')
+        db.append_message('api_1760000000_abcd1234', 'user', 'fork-shaped row', timestamp=9000)
+        authority = SimpleNamespace(profile_id=str(home), instance_id='owner', db=db, events={}, sessions={})
+
+        async def probe():
+            async def call(method, params=None, **identity):
+                connection = AuthorityConnection(authority, object(), {'user_id': 'reader', **identity})
+                return await connection.dispatch({'id': 'request', 'method': method, 'params': params or {}})
+            row = (await call('profiles.list', capabilities=['session:read']))['result']['profiles'][0]
+            assert row['canonical_session']['id'] == '20261006_105832_fa0db9'
+            assert row['canonical_session']['preview'] == 'classic lane canonical'
+            assert row['last_session']['id'] == '20261006_105832_fa0db9'
+        asyncio.run(probe())

@@ -18,8 +18,8 @@ _LOCKED = ("Login Data", "Login Data For Account", "Web Data")
 
 def _fake_profile(root):
     (root / "Default" / "Network").mkdir(parents=True)
-    (root / "Local State").write_text(json.dumps({"profile": {"last_used": "Default"}}))
-    (root / "Default" / "Preferences").write_text("{}")
+    (root / "Local State").write_text(json.dumps({"profile": {"last_used": "Default"}}), encoding="utf-8")
+    (root / "Default" / "Preferences").write_text("{}", encoding="utf-8")
     for name in ("Cookies", *_LOCKED):
         con = sqlite3.connect(root / "Default" / name)
         con.execute("create table t(x)")

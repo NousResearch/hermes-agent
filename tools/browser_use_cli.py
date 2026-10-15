@@ -36,6 +36,8 @@ _PRIVATE_BROWSER_SENTINEL = "_HERMES_BU_PRIVATE_BROWSER"
 # Internal route provenance: this exec resolved to a browser on the Bot Desktop display and must use
 # the same human-control lease fence as the built-in browser tools. Popped before launching the CLI.
 _BOT_DESKTOP_BROWSER_SENTINEL = "_HERMES_BU_BOT_DESKTOP_BROWSER"
+# Why the consented real profile could not load this call (the route fell back). Popped before launch.
+_REAL_PROFILE_FALLBACK_SENTINEL = "_HERMES_BU_REAL_PROFILE_FALLBACK"
 
 # Prepended to the model's code for named sessions on SHARED browsers (a /browser connect CDP override): the
 # harness daemon attaches to the first existing page at startup, so two fresh named daemons can land on the
@@ -543,8 +545,8 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     profile, hermes_cli.browser_connect) when consented. Two ways in: the effective backend is already local
     (no provider, CDP override, or legacy BU cloud config) → silent upgrade; or ``force_local`` (consent-gated
     ``local`` arg) → the user's browser even under a cloud backend. Operator overrides (BU_CDP_* env,
-    /browser connect, ``browser.cdp_url``) own the session either way. Fail closed: a launch error is
-    returned so a consented user is never silently downgraded."""
+    /browser connect, ``browser.cdp_url``) own the session either way. A launch error is returned;
+    ``_route_backend`` then falls back to the normal backend and reports it, never silently."""
     if not _real_profile_consented() or _has_cdp_env(env):
         return None
     try:
@@ -586,7 +588,7 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
 
 
 def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool,
-                   force_local_sidecar: bool = False) -> Optional[str]:
+                   force_local_sidecar: bool = False, real_profile: bool = True) -> Optional[str]:
     """Resolve where the harness connects; returns an error string or None. Real-profile consent runs
     BEFORE provider resolution so a hit short-circuits the cloud path via the BU_CDP_* env contract. Named
     sessions compose with the backend: BU_NAME namespaces the harness daemon (IPC socket, log, pid) and on
@@ -594,9 +596,13 @@ def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool,
 
     ``force_local_sidecar`` (a call carrying a private URL) declines the cloud provider for the hybrid local
     sidecar; unlike ``local`` (the consent-gated real-profile browser) it never touches the user's profile."""
-    rp_err = _resolve_real_profile_cdp(env, force_local=local)
+    # A real profile that can't load falls back to the normal backend: the reason rides out on
+    # the env sentinel (popped by browser_exec), and ``real_profile=False`` keeps that route on
+    # the fallback browser instead of swapping browsers mid-task once the profile frees up.
+    rp_err = _resolve_real_profile_cdp(env, force_local=local) if real_profile else None
     if rp_err:
-        return rp_err
+        logger.warning("browser_exec: real-profile unavailable, using the normal backend: %s", rp_err)
+        env[_REAL_PROFILE_FALLBACK_SENTINEL] = rp_err
     # local=True is only served by the real-profile route; consent off must not pretend.
     if local and not _has_cdp_env(env) and not _real_profile_consented():
         return ("local=true was requested but browser.use_real_profile is off. Enable it in config.yaml "
@@ -673,6 +679,8 @@ _driven_daemons: set = set()
 _driven_daemons_lock = threading.Lock()
 # Route cache key -> whether its last browser_exec ran on the hybrid local sidecar.
 _exec_route_is_sidecar: dict[str, bool] = {}
+# Route cache key -> the note from its real-profile fallback; that route stays on the fallback browser.
+_real_profile_fallback: dict[str, str] = {}
 
 
 def stop_harness_daemons() -> None:
@@ -688,6 +696,20 @@ def stop_harness_daemons() -> None:
     for name in names:
         with contextlib.suppress(OSError, subprocess.SubprocessError):
             _run_cli_killing_process_group([*cmd, "--reload"], "", {**env, "BU_NAME": name}, 15)
+
+
+def _route_exec(env: dict, session: str, task_id: Optional[str], local: bool, local_sidecar: bool,
+                route_key: str) -> tuple[Optional[str], dict]:
+    """``_route_backend`` for one browser_exec call, plus the result fields when the real profile
+    fell back this call. A route that fell back once stays on the fallback browser."""
+    route_err = _route_backend(env, session, task_id, local, force_local_sidecar=local_sidecar,
+                               real_profile=route_key not in _real_profile_fallback)
+    reason = env.pop(_REAL_PROFILE_FALLBACK_SENTINEL, None)
+    if not reason:
+        return route_err, {}
+    from tools.browser_tool_real_profile import real_profile_fallback_note
+    note = _real_profile_fallback[route_key] = real_profile_fallback_note(reason)
+    return route_err, {"real_profile_unavailable": note}
 
 
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
@@ -719,7 +741,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
-    route_err = _route_backend(env, session, task_id, bool(local), force_local_sidecar=local_sidecar)
+    route_err, rp_extra = _route_exec(env, session, task_id, bool(local), local_sidecar, route_key)
     if route_err:
         return tool_error(route_err)
     if local_sidecar:
@@ -782,6 +804,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         result["workspace"] = workspace
     if session:
         result["session"] = session
+    result.update(rp_extra)
     stderr = redact_sensitive_text((proc.stderr or "").strip(), force=True)
     if len(stderr) > _STDERR_CAP_CHARS:
         stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"

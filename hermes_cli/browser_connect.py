@@ -494,7 +494,8 @@ def _mirror_profile_auth(src: str, dst: str, source_profile: str) -> dict[str, s
         if session_db:
             failed[rel] = reason
         else:
-            logger.info("real-profile snapshot: skipped %s (%s); session cookies still copied", rel, reason)
+            why = "the running browser holds a write lock on it" if reason == _AUTH_DB_LOCKED else reason
+            logger.info("real-profile snapshot: skipped %s (%s); session cookies still copied", rel, why)
     return failed
 
 

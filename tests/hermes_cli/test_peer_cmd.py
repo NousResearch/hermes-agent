@@ -1,5 +1,6 @@
 """Tests for ``hermes peer`` — cross-machine bot-to-bot DMs."""
 
+import argparse
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -475,6 +476,37 @@ def test_run_starts_async_turn_with_canonical_session_and_idempotency(
     }
     assert _FakePeer.runs == [{"input": "long task", "session_id": "bc_existing"}]
     assert _FakePeer.run_idempotency_keys == ["ticket-123"]
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_new_run_skips_session_selection_and_reports_only_accepted_identity(
+    monkeypatch, capsys, fake_peer_server, as_json
+):
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "secret-key-123456")
+    monkeypatch.setattr(peer_cmd, "_ensure_bot_chat", lambda *args: pytest.fail("selected a titled session"))
+    parser = argparse.ArgumentParser()
+    peer_cmd.build_peer_parser(parser.add_subparsers())
+    argv = ["peer", "run", "spark", "task", "--new", "--idempotency-key", "new-task"]
+    if as_json:
+        argv.append("--json")
+
+    assert peer_cmd.cmd_peer(parser.parse_args(argv)) == 0
+    output = capsys.readouterr().out
+    if as_json:
+        assert json.loads(output) == {
+            "peer": "spark", "profile": None, "run_id": "run_1", "status": "started",
+            "idempotency_key": "new-task", "replayed": False,
+        }
+    else:
+        assert "run_1: started" in output and "idempotency_key: new-task" in output
+        assert "session_id" not in output
+    assert _FakePeer.sessions == []
+    assert _FakePeer.runs == [{"input": "task"}]
+    assert _FakePeer.run_idempotency_keys == ["new-task"]
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args(["peer", "dm", "spark", "task", "--new"])
+    assert error.value.code == 2
 
 
 def test_status_reads_async_run_output(monkeypatch, capsys, fake_peer_server):

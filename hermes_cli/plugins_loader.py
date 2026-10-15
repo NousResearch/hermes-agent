@@ -186,7 +186,11 @@ class _PluginSecretScope(Mapping[str, str]):
     """
 
     def __init__(self, home: Path):
+        import os
+        from agent.secret_scope import _is_process_home, is_multiplex_active
+
         self.home = home
+        self.launch_env = dict(os.environ) if _is_process_home(home) and not is_multiplex_active() else {}
 
     def _mapping(self) -> dict[str, str]:
         from agent.secret_scope import _is_process_home, build_profile_secret_scope, is_multiplex_active
@@ -196,7 +200,7 @@ class _PluginSecretScope(Mapping[str, str]):
             if not is_multiplex_active():
                 import os
                 return dict(os.environ)  # preserve the pre-multiplex launch precedence
-            return launch_secret_scope(self.home)
+            return launch_secret_scope(self.home, registration_env=self.launch_env)
         return build_profile_secret_scope(self.home)
 
     def __getitem__(self, key: str) -> str:

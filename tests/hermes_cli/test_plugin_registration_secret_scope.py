@@ -168,3 +168,39 @@ def test_discovered_worker_receives_new_plugin_source_after_registration(tmp_pat
         os.environ.pop("REVIEW_PLUGIN_SECRET", None)
         registry._reset_registry_for_tests()
         env_loader.reset_secret_source_cache()
+
+
+@pytest.mark.parametrize("capture_at_activation", [False, True])
+def test_launch_worker_does_not_capture_post_activation_ambient_values(tmp_path, monkeypatch, capture_at_activation):
+    from tui_gateway import launch_profile_policy
+
+    home = tmp_path / "launch"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    monkeypatch.setenv("PLUGIN_SCOPE_PROBE", "before-activation")
+    prior_mode = secret_scope.is_multiplex_active()
+    token = secret_scope.set_secret_scope(None)
+    manager = module = None
+    try:
+        secret_scope.set_multiplex_active(False)
+        manager, module = _load(home)
+        expected = "before-activation"
+        if capture_at_activation:
+            expected = "last-boot-injection"
+            monkeypatch.setenv("PLUGIN_SCOPE_PROBE", expected)
+            launch_profile_policy.activate_multi_profile_hosting()
+        else:
+            secret_scope.set_multiplex_active(True)
+        monkeypatch.setenv("PLUGIN_SCOPE_PROBE", "foreign-after-activation")
+        module.release.set()
+        assert module.done.wait(5)
+        assert module.seen == [(expected, str(manager.home_path))]
+    finally:
+        if module is not None:
+            module.release.set()
+            module.worker.join(5)
+            manager.unload()
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(prior_mode)

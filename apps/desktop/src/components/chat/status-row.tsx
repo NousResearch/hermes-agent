@@ -1,6 +1,14 @@
 import './status-stack.css'
 
-import { type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode, type Ref } from 'react'
+import {
+  type CSSProperties,
+  type KeyboardEvent,
+  type MouseEvent,
+  type PointerEvent,
+  type ReactNode,
+  type Ref,
+  useRef
+} from 'react'
 
 import { cn } from '@/lib/utils'
 
@@ -46,6 +54,20 @@ export function StatusRow({
   trailing,
   trailingVisible = false
 }: StatusRowProps) {
+  const gesture = useRef<{ x: number; y: number; dragged: boolean } | null>(null)
+
+  const startGesture = (event: MouseEvent | PointerEvent) => {
+    gesture.current = { x: event.clientX, y: event.clientY, dragged: false }
+  }
+
+  const moveGesture = (event: MouseEvent | PointerEvent) => {
+    const start = gesture.current
+
+    if (start && (event.clientX - start.x) ** 2 + (event.clientY - start.y) ** 2 > 16) {
+      start.dragged = true
+    }
+  }
+
   return (
     <div
       aria-expanded={expanded}
@@ -57,7 +79,31 @@ export function StatusRow({
       )}
       data-slot="status-row"
       data-status-icon={leading !== undefined ? '' : undefined}
-      onClick={onActivate}
+      onClick={
+        onActivate
+          ? event => {
+              const start = gesture.current
+              gesture.current = null
+              const selection = window.getSelection()
+
+              // Only the click completing a text-selection drag is suppressed;
+              // a later click can activate even if the browser keeps the selection.
+              if (
+                event.detail > 0 &&
+                start &&
+                (start.dragged || (event.clientX - start.x) ** 2 + (event.clientY - start.y) ** 2 > 16) &&
+                selection &&
+                !selection.isCollapsed &&
+                selection.rangeCount > 0 &&
+                selection.getRangeAt(0).intersectsNode(event.currentTarget)
+              ) {
+                return
+              }
+
+              onActivate(event)
+            }
+          : undefined
+      }
       onContextMenu={onContextMenu}
       onKeyDown={
         onActivate
@@ -69,6 +115,10 @@ export function StatusRow({
             }
           : undefined
       }
+      onMouseDown={onActivate ? startGesture : undefined}
+      onMouseMove={onActivate ? moveGesture : undefined}
+      onPointerDown={onActivate ? startGesture : undefined}
+      onPointerMove={onActivate ? moveGesture : undefined}
       ref={ref}
       role={onActivate ? 'button' : undefined}
       style={{ '--status-row-depth': depth } as CSSProperties}

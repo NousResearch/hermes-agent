@@ -501,8 +501,13 @@ ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
 # image these are shared, non-secret package metadata, read by UID 10000.
 # uv's environment locks are build-only and may be world-writable. Remove
 # them after all builds; never relax permissions on mutable PM/home state.
+# uv's cache tree scatters its own .lock files (cache root, per-sdist
+# build dirs) through /opt/hermes/uv-cache — sweep those too, they only
+# exist so concurrent build-time uv processes can flock them and the
+# runtime re-creates any it needs in the writable machine cache.
 RUN mkdir -p /opt/data && chmod 0644 /opt/hermes/tools/facts.json && \
-    rm -f /opt/hermes/.venv/.lock /opt/hermes/pm-runtime/.lock
+    rm -f /opt/hermes/.venv/.lock /opt/hermes/pm-runtime/.lock && \
+    find /opt/hermes/uv-cache -name .lock -delete
 # Build helpers use system Python above; TUI gateway children need the sealed runtime.
 ENV HERMES_PYTHON=/opt/hermes/.venv/bin/python
 VOLUME [ "/opt/data" ]

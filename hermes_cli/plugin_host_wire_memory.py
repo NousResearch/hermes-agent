@@ -155,6 +155,7 @@ def _encode_memory_observation_tuple(
         MAX_MEMORY_OBSERVATION_BATCH_BYTES,
         MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
         MAX_MEMORY_OBSERVATION_OPERATION_NODES,
+        MAX_MEMORY_OBSERVATIONS,
         MemoryObservation,
     )
 
@@ -165,7 +166,14 @@ def _encode_memory_observation_tuple(
         return None
     count = min(count, MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 1)
     budget = [MAX_MEMORY_OBSERVATION_OPERATION_NODES]
-    remaining_bytes = MAX_MEMORY_OBSERVATION_BATCH_BYTES - 2
+    # Manager normalization already caps the trusted tuple at 64 KiB and 16
+    # observations. ASCII-safe host JSON can expand UTF-8 by at most 3x; the
+    # per-record wrapper overhead is below 1 KiB per accepted observation.
+    remaining_bytes = (
+        MAX_MEMORY_OBSERVATION_BATCH_BYTES * 3
+        + MAX_MEMORY_OBSERVATIONS * 1024
+        - 2
+    )
     items = []
     for index in range(count):
         encoded = _encode_memory_observation(
@@ -174,7 +182,7 @@ def _encode_memory_observation_tuple(
         encoded_size = len(json.dumps(encoded, separators=(",", ":")).encode("utf-8"))
         encoded_size += bool(items)
         if encoded_size > remaining_bytes:
-            break
+            raise ValueError("MemoryObservationTuple exceeds plugin-host wire bound")
         items.append(encoded)
         remaining_bytes -= encoded_size
     return {

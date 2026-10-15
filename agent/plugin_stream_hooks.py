@@ -13,10 +13,8 @@ import logging
 import queue
 import sys
 import threading
-import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from agent.memory_provider import MemoryObservation, spawn_context_thread
@@ -28,39 +26,31 @@ logger = logging.getLogger(__name__)
 # wait for plugin code: when full, enqueue drops the oldest pending event.
 _QUEUE_SIZE = 1024
 _MAX_OBSERVER_EVENT_BYTES = 128 * 1024
-_MAX_OBSERVER_SPILL_BYTES = 16 * 1024 * 1024
+_MAX_OBSERVER_RETAINED_BYTES = 16 * 1024 * 1024
 _STOP = object()
 _FALLBACK_SCOPE = object()
 
 _discovery_scheduling_lock = threading.Lock()
 _scheduled_discovery: set[int] = set()
-_observer_spill_lock = threading.Lock()
-_observer_spill_bytes = 0
+_observer_retained_lock = threading.Lock()
+_observer_retained_bytes = 0
 
 
 @dataclass
-class _SpilledObserverText:
-    path: Path
+class _RetainedObserverText:
+    text: str
     size: int
     references: int
-    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def release(self) -> None:
-        global _observer_spill_bytes
-        with self.lock:
+        global _observer_retained_bytes
+        with _observer_retained_lock:
             if self.references <= 0:
                 return
             self.references -= 1
-            last_reference = self.references == 0
-        if not last_reference:
-            return
-        try:
-            self.path.unlink(missing_ok=True)
-        except OSError:
-            logger.warning("could not remove completed plugin observer spill: %s", self.path)
-            return
-        with _observer_spill_lock:
-            _observer_spill_bytes -= self.size
+            if self.references == 0:
+                _observer_retained_bytes -= self.size
+                self.text = ""
 
 
 @dataclass
@@ -77,50 +67,30 @@ class _ConsumerDispatcher:
 class _QueuedObserverEvent:
     payload: dict[str, Any]
     context: contextvars.Context
-    spilled_text: _SpilledObserverText | None = None
+    retained_text: _RetainedObserverText | None = None
 
 
 _dispatcher_lock = threading.Lock()
 _dispatchers: dict[tuple[object, str, int], _ConsumerDispatcher] = {}
 
 
-def _spill_observer_text(text: str, references: int) -> _SpilledObserverText | None:
-    global _observer_spill_bytes
-    size = len(text.encode("utf-8", errors="surrogatepass"))
-    with _observer_spill_lock:
+def _retain_observer_text(text: str, references: int) -> _RetainedObserverText | None:
+    global _observer_retained_bytes
+    size = sys.getsizeof(text)
+    with _observer_retained_lock:
         if (
             references < 1
-            or size > _MAX_OBSERVER_SPILL_BYTES
-            or _observer_spill_bytes + size > _MAX_OBSERVER_SPILL_BYTES
+            or size > _MAX_OBSERVER_RETAINED_BYTES
+            or _observer_retained_bytes + size > _MAX_OBSERVER_RETAINED_BYTES
         ):
             return None
-        _observer_spill_bytes += size
-    path: Path | None = None
-    try:
-        from hermes_constants import get_hermes_home
-        from tools.spill_safety import ensure_spill_dir, write_text_exclusive
-
-        spill_dir = ensure_spill_dir(get_hermes_home() / "cache" / "plugin-observer-spill")
-        path = spill_dir / f"{uuid.uuid4().hex}.txt"
-        write_text_exclusive(path, text, errors="surrogatepass")
-    except Exception:
-        if path is not None:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                logger.warning("could not remove incomplete plugin observer spill: %s", path)
-                return None
-        with _observer_spill_lock:
-            _observer_spill_bytes -= size
-        logger.debug("could not spill oversized plugin observer text", exc_info=True)
-        return None
-    assert path is not None
-    return _SpilledObserverText(path, size, references)
+        _observer_retained_bytes += size
+    return _RetainedObserverText(text, size, references)
 
 
-def _release_queued_spill(item: Any) -> None:
-    if isinstance(item, _QueuedObserverEvent) and item.spilled_text is not None:
-        item.spilled_text.release()
+def _release_queued_text(item: Any) -> None:
+    if isinstance(item, _QueuedObserverEvent) and item.retained_text is not None:
+        item.retained_text.release()
 
 
 def _callback_name(callback: Callable[..., Any]) -> str:
@@ -136,7 +106,7 @@ def _put_drop_oldest(events: queue.Queue[Any], item: Any) -> bool:
         try:
             evicted = events.get_nowait()
             events.task_done()
-            _release_queued_spill(evicted)
+            _release_queued_text(evicted)
         except queue.Empty:
             pass
     try:
@@ -161,14 +131,8 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
                 if dispatcher.retired:
                     continue
             payload = dict(item.payload)
-            if item.spilled_text is not None:
-                try:
-                    payload["final_text"] = item.spilled_text.path.read_text(
-                        encoding="utf-8", errors="surrogatepass"
-                    )
-                except OSError:
-                    logger.warning("could not read queued plugin observer spill: %s", item.spilled_text.path)
-                    continue
+            if item.retained_text is not None:
+                payload["final_text"] = item.retained_text.text
             payload.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
             try:
                 from hermes_cli.plugins_dispatch import PluginDispatchMixin
@@ -180,7 +144,14 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
                     dispatcher.callback,
                     payload,
                 )
-            except Exception as exc:
+            # Plugin SystemExit is isolated like other callback failures, rather than
+            # terminating this worker and stranding later retained payloads.
+            except (Exception, SystemExit) as exc:
+                if isinstance(exc, SystemExit):
+                    logger.debug(
+                        "plugin observer callback exited; continuing dispatcher",
+                        exc_info=True,
+                    )
                 # Fires once per streaming delta: a mis-declared callback fails identically every
                 # time, so it goes through the manager's warn-once reporter (#111922).
                 from hermes_cli.plugins import get_plugin_manager
@@ -195,7 +166,7 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
         finally:
             if payload is not None:
                 payload.clear()
-            _release_queued_spill(item)
+            _release_queued_text(item)
             dispatcher.events.task_done()
 
 
@@ -325,7 +296,7 @@ def _observer_payload_size(payload: dict[str, Any]) -> int | None:
         seen.add(id(value))
         if isinstance(value, MemoryObservation):
             children = (vars(value),)
-        elif isinstance(value, _SpilledObserverText):
+        elif isinstance(value, _RetainedObserverText):
             children = ()
         elif isinstance(value, dict):
             children = (child for pair in dict.items(value) for child in pair)
@@ -389,7 +360,7 @@ def _stop_dispatcher(
             try:
                 discarded = dispatcher.events.get_nowait()
                 dispatcher.events.task_done()
-                _release_queued_spill(discarded)
+                _release_queued_text(discarded)
             except queue.Empty:
                 break
     _put_drop_oldest(dispatcher.events, _STOP)
@@ -486,19 +457,19 @@ def _enqueue_plugin_observer_hook(
         if payload_size is None:
             return False
         dispatchers, stale = _dispatchers_for_scope(scope_key, hook_name, callbacks)
-        spilled_text = None
+        retained_text = None
         if payload_size > _MAX_OBSERVER_EVENT_BYTES:
             final_text = event_payload.get("final_text")
             if hook_name == "on_stream_end" and isinstance(final_text, str):
-                spilled_text = _spill_observer_text(final_text, len(dispatchers))
-                if spilled_text is not None:
+                retained_text = _retain_observer_text(final_text, len(dispatchers))
+                if retained_text is not None:
                     event_payload = dict(event_payload)
-                    event_payload["final_text"] = spilled_text
+                    event_payload["final_text"] = retained_text
                     payload_size = _observer_payload_size(event_payload)
-            if spilled_text is None or payload_size is None or payload_size > _MAX_OBSERVER_EVENT_BYTES:
-                if spilled_text is not None:
+            if retained_text is None or payload_size is None or payload_size > _MAX_OBSERVER_EVENT_BYTES:
+                if retained_text is not None:
                     for _ in dispatchers:
-                        spilled_text.release()
+                        retained_text.release()
                 logger.debug("plugin observer event dropped: payload exceeds size bound: %s", hook_name)
                 dispatchers = []
         for dispatcher in dispatchers:
@@ -508,12 +479,12 @@ def _enqueue_plugin_observer_hook(
             item = _QueuedObserverEvent(
                 payload=event_payload,
                 context=event_context.copy(),
-                spilled_text=spilled_text,
+                retained_text=retained_text,
             )
             if _put_drop_oldest(dispatcher.events, item):
                 queued = True
             else:
-                _release_queued_spill(item)
+                _release_queued_text(item)
                 logger.debug(
                     "plugin stream hook queue full after drop-oldest: %s callback=%s",
                     hook_name,
@@ -538,10 +509,10 @@ def enqueue_plugin_observer_hook(hook_name: str, **payload: Any) -> bool:
     The shared dispatcher keeps one daemon worker and bounded FIFO per
     registered callback. Ordinary payload graphs over
     ``_MAX_OBSERVER_EVENT_BYTES`` are dropped whole; oversized
-    ``on_stream_end.final_text`` is privately spilled and restored in full,
-    subject to the shared spill budget. ``put_nowait`` never waits for queue
-    capacity; a full queue drops its oldest pending event so a slow consumer
-    cannot delay the agent. Callback exceptions are isolated in the worker.
+    ``on_stream_end.final_text`` is retained by reference under a shared memory
+    budget and restored in full. ``put_nowait`` never waits for queue capacity;
+    a full queue drops its oldest pending event so a slow consumer cannot delay
+    the agent. Callback exceptions are isolated in the worker.
     """
     return _enqueue_plugin_observer_hook(hook_name, payload=payload)
 

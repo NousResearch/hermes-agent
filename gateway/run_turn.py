@@ -1832,7 +1832,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         _delivery_result = response if isinstance(response, dict) else (result or {})
         first_response = _delivery_result.get("final_response", "")
         footer = self._hmwa_runtime_footer_line(
-            _delivery_result, turn_ctx.source, turn_ctx.turn_seconds,
+            _delivery_result, turn_ctx.source, getattr(turn_ctx, "turn_seconds", 0.0) or 0.0,
         )
         _already_streamed = self._run_agent_stream_confirmed_final_delivery(
             _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
@@ -1901,7 +1901,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 # formatter cannot re-send a footer that already reached the chat. Never set on a
                 # refused/failed send: the completion path remains the delivery fallback.
                 if _footer_delivered:
-                    turn_ctx.runtime_footer_already_delivered = True
+                    setattr(turn_ctx, "runtime_footer_already_delivered", True)
         # Release deferred bg-review notifications: pop (no double-fire in base.py's finally) and call.
         _bg_cb = self._pop_post_delivery_callback(adapter, session_key, turn_ctx.run_generation)
         if callable(_bg_cb):
@@ -1968,7 +1968,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     "Discarding stale goal continuation for session %s — goal is no longer active",
                     session_key or "?",
                 )
-                if turn_ctx.runtime_footer_already_delivered:
+                if getattr(turn_ctx, "runtime_footer_already_delivered", False):
                     return {**result, "runtime_footer_already_delivered": True}
                 return result
             # Resolve the follow-up's session key BEFORE preparing the inbound text: native image
@@ -1984,7 +1984,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 event=pending_event, source=next_source, history=updated_history, session_key=next_session_key,
             )
             if next_message is None:
-                if turn_ctx.runtime_footer_already_delivered:
+                if getattr(turn_ctx, "runtime_footer_already_delivered", False):
                     return {**result, "runtime_footer_already_delivered": True}
                 return result
             from gateway.run_inbound import strip_discord_triggering_note
@@ -2069,10 +2069,11 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         # of the dicts the first-response lane marked. Propagate the delivery fact by value so the
         # terminal formatter's suppress check cannot miss it (and keep it absent on refusal paths,
         # where the ordinary completion send remains the footer fallback).
-        if turn_ctx.runtime_footer_already_delivered and isinstance(merged, dict):
+        if getattr(turn_ctx, "runtime_footer_already_delivered", False) and isinstance(merged, dict):
             merged["runtime_footer_already_delivered"] = True
-        if turn_ctx.turn_seconds and isinstance(merged, dict):
-            merged["queued_runtime_footer_seconds"] = turn_ctx.turn_seconds
+        _first_turn_seconds = getattr(turn_ctx, "turn_seconds", 0.0)
+        if _first_turn_seconds and isinstance(merged, dict):
+            merged["queued_runtime_footer_seconds"] = _first_turn_seconds
         # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
         # the adapter brackets against the event that OPENED the chain. Without this the terminal
         # reply is recorded under the first message's id, so a first reply that was refused (flood

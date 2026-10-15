@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react'
+import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
@@ -49,21 +49,27 @@ describe('SessionControlHeartbeatSection hidden-pane clock', () => {
 
   const headerText = (container: HTMLElement) => container.querySelector('.status-section-trigger')?.textContent ?? ''
 
-  it('hidden tile freezes the countdown', async () => {
-    const hidden = render(tree(false))
-    const initial = headerText(hidden.container)
+  it('a mounted card pauses while its pane is hidden and catches up the moment it is shown', async () => {
+    const view = render(tree(true))
+    const label = () => headerText(view.container)
 
-    await vi.advanceTimersByTimeAsync(5_000)
-    expect(headerText(hidden.container)).toBe(initial)
-    hidden.unmount()
-  })
+    const tickFor = (ms: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms)
+      })
 
-  it('visible tile keeps the countdown ticking', async () => {
-    const shown = render(tree(true))
-    const initial = headerText(shown.container)
+    const first = label()
+    await tickFor(3_000)
+    const shown = label()
+    expect(shown).not.toBe(first)
 
-    await vi.advanceTimersByTimeAsync(3_000)
-    expect(headerText(shown.container)).not.toBe(initial)
-    shown.unmount()
+    view.rerender(tree(false))
+    await tickFor(5_000)
+    expect(label()).toBe(shown) // hidden: no re-render, the label is frozen
+
+    view.rerender(tree(true))
+    await act(async () => {}) // re-shown: the clock is re-read at once, before the next tick
+    expect(label()).not.toBe(shown)
+    view.unmount()
   })
 })

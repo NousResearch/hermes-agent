@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import logging
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
@@ -23,6 +24,7 @@ __all__ = [
     "NO_LAZY_FETCH_ENV",
     "bounded_git_probe",
     "bounded_probe_run",
+    "detached_popen",
     "expose_pm_git",
     "noninteractive_git_env",
     "noninteractive_repo_git_env",
@@ -88,6 +90,8 @@ def harden_git_argv(args: Sequence[str]) -> list[str]:
 
 
 IS_WINDOWS = sys.platform == "win32"
+
+logger = logging.getLogger(__name__)
 
 # Private launcher-to-child metadata. This is diagnostic state, not user config.
 _WINDOWS_GATEWAY_BREAKAWAY_ENV = "_HERMES_GATEWAY_BREAKAWAY"
@@ -272,6 +276,36 @@ def windows_detach_popen_kwargs() -> dict:
     if IS_WINDOWS:
         return {"creationflags": windows_detach_flags()}
     return {"start_new_session": True}
+
+
+def detached_popen(args, **kwargs) -> subprocess.Popen:
+    """Start a detached child, retrying Windows breakaway denial without that flag.
+
+    A parent Job Object can reject ``CREATE_BREAKAWAY_FROM_JOB`` with
+    ``ERROR_ACCESS_DENIED`` even though the remaining detach flags are valid.
+    Retry exactly that condition once; all unrelated process-creation failures
+    retain their original error.
+    """
+    if not IS_WINDOWS:
+        return subprocess.Popen(args, start_new_session=True, **kwargs)
+
+    extra_flags = kwargs.pop("creationflags", 0)
+    try:
+        return subprocess.Popen(
+            args, creationflags=extra_flags | windows_detach_flags(), **kwargs
+        )
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 5:
+            raise
+        logger.warning(
+            "Detached spawn with CREATE_BREAKAWAY_FROM_JOB was access denied; "
+            "retrying without breakaway"
+        )
+        return subprocess.Popen(
+            args,
+            creationflags=extra_flags | windows_detach_flags_without_breakaway(),
+            **kwargs,
+        )
 
 
 # Read-only probes must never lazy-fetch. In a partial (blobless/treeless) clone a missing object makes

@@ -118,6 +118,9 @@ tools:
       - process_manage
       - cronjob_manage
       - manage_catalog
+    eager: []           # deferrable tools that are always sent directly
+    eager_learned_min_sessions: 10   # 0 turns usage learning off
+    eager_learned_max: 8
 ```
 
 The default `defer` list also includes the selected desktop GUI helpers listed
@@ -133,9 +136,29 @@ shipped curated set; the runtime fallback uses the same value.
 | `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
 | `listing_max_tokens` | `4000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
 | `defer` | Curated list | Tool names replaced by the bridge by default. The list may include cold built-in tools as well as MCP/plugin tools; an explicit list replaces it, and `[]` disables deferral for every tool. |
+| `eager` | `[]` | Deferrable tools that are always sent directly with their full schema. Wins over `defer`. |
+| `eager_learned_min_sessions` | `10` | A deferrable tool used in at least this many sessions of the last 14 days is also sent directly. `0` turns usage learning off. Range 0–10000. |
+| `eager_learned_max` | `8` | At most this many usage-learned tools are sent directly (the most used first); a tool whose schema is larger than about 6,000 characters stays deferred. `0` turns usage learning off. Range 0–50. |
 
 Per-call array caps are internal safety bounds, not configuration. Over-cap
 calls return an error so the model can retry with a smaller batch.
+
+### Eager and usage-learned tools
+
+A deferred tool costs a `tool_describe` round and a `tool_call` wrapper each
+time it is used, and smaller models tend to drop the wrapper's `name` once the
+arguments grow long. Tools you reach for constantly are therefore better sent
+directly. List them under `eager`, or let Hermes learn them: the session counts
+come read-only from the profile's `state.db` (tool results carry the real tool
+name, also for calls made through `tool_call`) and are cached in
+`cache/tool_usage_counts.json` for six hours, so the tools array changes at most
+that often and the prompt cache stays warm in between.
+
+When a single `tool_call` entry arrives without a `name`, Hermes calls the one
+deferrable tool whose schema fits its arguments (only declared properties, every
+required one present, enum values respected). When no tool or more than one
+tool fits, the error shows the expected `{"calls":[{"name":"<tool>","arguments":{...}}]}`
+shape so the model can retry.
 
 ### Why the listing exists
 

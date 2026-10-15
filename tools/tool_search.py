@@ -51,6 +51,12 @@ class ToolSearchConfig:
     listing_max_tokens: int = 4000  # budget = min(this, threshold_pct% of context)
     # None = curated default; an explicit list replaces it wholesale ([] = defer no core tools).
     defer_tools: Optional[frozenset] = None
+    # Always shown directly, never deferred (wins over ``defer``).
+    eager_tools: frozenset = frozenset()
+    # Also show directly the deferrable tools used in >= this many sessions of the last
+    # 14 days, at most ``eager_learned_max`` of them; 0 turns learning off.
+    eager_learned_min_sessions: int = 10
+    eager_learned_max: int = 8
 
     @property
     def effective_defer_tools(self) -> frozenset:
@@ -72,6 +78,7 @@ class ToolSearchConfig:
                 "(e.g. [todo_list, computer_use]; [] keeps every tool eager) - "
                 "using the curated default set.", defer_raw)
             defer_raw = None
+        eager_raw = raw.get("eager")
         return cls(
             enabled=_tri_state(raw.get("enabled", "auto")),
             threshold_pct=max(0.0, min(100.0, _safe_float(raw.get("threshold_pct"), 5.0))),
@@ -81,7 +88,11 @@ class ToolSearchConfig:
             listing=_tri_state(raw.get("listing", "auto")),
             listing_max_tokens=_clamped_int(raw.get("listing_max_tokens"), 4000, 200, 60000),
             defer_tools=(frozenset(str(n).strip() for n in defer_raw if str(n).strip())
-                         if isinstance(defer_raw, (list, tuple, set)) else None))
+                         if isinstance(defer_raw, (list, tuple, set)) else None),
+            eager_tools=(frozenset(str(n).strip() for n in eager_raw if str(n).strip())
+                         if isinstance(eager_raw, (list, tuple, set)) else frozenset()),
+            eager_learned_min_sessions=_clamped_int(raw.get("eager_learned_min_sessions"), 10, 0, 10000),
+            eager_learned_max=_clamped_int(raw.get("eager_learned_max"), 8, 0, 50))
 
 
 _TRI_STATE_ALIASES = {"true": "on", "1": "on", "yes": "on", "false": "off", "0": "off", "no": "off"}
@@ -167,15 +178,39 @@ def _tool_def_names(tool_defs: Iterable[dict[str, Any]]) -> Iterable[str]:
 
 
 def classify_tools(tool_defs: list[dict[str, Any]], defer_tools: Optional[frozenset] = None,
+                   eager_tools: frozenset = frozenset(),
                    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable); bridge tools are dropped (re-added
-    after classification)."""
+    after classification). ``eager_tools`` stay visible even when deferrable."""
     visible: list[dict[str, Any]] = []
     deferrable: list[dict[str, Any]] = []
     for td, name in zip(tool_defs, _tool_def_names(tool_defs)):
         if name not in BRIDGE_TOOL_NAMES:
-            (deferrable if is_deferrable_tool_name(name, defer_tools) else visible).append(td)
+            deferred = name not in eager_tools and is_deferrable_tool_name(name, defer_tools)
+            (deferrable if deferred else visible).append(td)
     return visible, deferrable
+
+
+_last_learned_eager: frozenset = frozenset()
+
+
+def _eager_for(config: ToolSearchConfig, tool_defs: list[dict[str, Any]]) -> frozenset:
+    """Configured eager tools plus the usage-learned ones among ``tool_defs``."""
+    if not config.eager_learned_min_sessions or not config.eager_learned_max:
+        return config.eager_tools
+    try:
+        from tools.tool_search_usage import learned_eager_tools
+        _, deferrable = classify_tools(tool_defs, config.effective_defer_tools)
+        learned = learned_eager_tools(deferrable, min_sessions=config.eager_learned_min_sessions,
+                                      max_tools=config.eager_learned_max)
+    except Exception:  # best-effort: usage learning must never break tool assembly
+        logger.debug("usage-learned eager tools unavailable", exc_info=True)
+        learned = frozenset()
+    global _last_learned_eager
+    if learned != _last_learned_eager:
+        _last_learned_eager = learned
+        logger.info("Usage-learned eager tools: %s", ", ".join(sorted(learned)) or "none")
+    return config.eager_tools | learned
 
 
 def _deferrable_in(tool_defs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -339,7 +374,8 @@ def assemble_tool_defs(tool_defs: list[dict[str, Any]], *, context_length: Optio
     config = config or load_config()
     incoming = [td for td, name in zip(tool_defs, _tool_def_names(tool_defs))
                 if name not in BRIDGE_TOOL_NAMES]
-    visible, deferrable = classify_tools(incoming, config.effective_defer_tools)
+    visible, deferrable = classify_tools(incoming, config.effective_defer_tools,
+                                         _eager_for(config, incoming))
     connections_granted = connections_in_scope(incoming)
     if not deferrable:
         if should_activate(config, 0, context_length, connections_granted=connections_granted):

@@ -2023,6 +2023,13 @@ DEFAULT_CONFIG = {
                 "show_tip", "desktop_project", "close_terminal",
                 "set_theme", "read_terminal", "read_window_below", "focus_pane",
             ],
+            # Deferrable tools always sent directly; wins over ``defer``.
+            "eager": [],
+            # Also send directly the deferrable tools used in at least this many sessions of the
+            # last 14 days (read from state.db, refreshed every 6 h so the tools array rarely
+            # changes), at most eager_learned_max of them and only small schemas. 0 = no learning.
+            "eager_learned_min_sessions": 10,
+            "eager_learned_max": 8,
         },
         # Remote connector discovery/lifecycle through the Nous tool gateway.
         # The flag is the user's off switch; availability additionally requires

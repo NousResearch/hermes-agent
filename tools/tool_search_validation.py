@@ -136,6 +136,43 @@ def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str
         return None
 
 
+def _schema_fits(schema: Optional[dict], args: dict[str, Any]) -> bool:
+    """``args`` uses only declared properties, has every required one, and matches enums."""
+    params = (schema or {}).get("parameters") or {}
+    props = params.get("properties") or {}
+    if not props or not set(args) <= set(props) or not set(params.get("required") or ()) <= set(args):
+        return False
+    return all(args[k] in spec["enum"] for k, spec in props.items()
+               if k in args and isinstance(spec, dict) and isinstance(spec.get("enum"), list)
+               and isinstance(args[k], (str, int, float, bool)))
+
+
+def _infer_unnamed_tool(raw_args: Any) -> str:
+    """The single deferrable tool whose schema fits ``raw_args``, for a call that lost its
+    'name' (small models drop it after long arguments); "" when none or several fit."""
+    if isinstance(raw_args, str):
+        try:
+            raw_args = json.loads(raw_args)
+        except json.JSONDecodeError:
+            return ""
+    if not isinstance(raw_args, dict) or not raw_args:
+        return ""
+    try:
+        from tools.registry import registry
+        from tools.tool_search import is_deferrable_tool_name, load_config_readonly
+        defer_tools = load_config_readonly().effective_defer_tools
+        fits = [n for n in registry.get_all_tool_names()
+                if n not in BRIDGE_TOOL_NAMES and is_deferrable_tool_name(n, defer_tools)
+                and _schema_fits(registry.get_schema(n), raw_args)]
+    except Exception:  # best-effort: a failed inference keeps the plain missing-name error
+        logger.debug("tool_call name inference skipped", exc_info=True)
+        return ""
+    if len(fits) != 1:
+        return ""
+    logger.info("tool_call entry without 'name' matched only %s; calling it", fits[0])
+    return fits[0]
+
+
 def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, Any]], Optional[str]]:
     """Normalize ``tool_call`` arguments into a ``calls[]`` list of entries.
 
@@ -167,9 +204,11 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
     for position, raw in enumerate(raw_calls):
         if not isinstance(raw, dict):
             return [], f"tool_call calls[{position}] must be an object with 'name' and 'arguments'"
-        name = str(raw.get("name") or "").strip()
+        name = str(raw.get("name") or "").strip() or (
+            _infer_unnamed_tool(raw.get("arguments")) if len(raw_calls) == 1 else "")
         if not name:
-            return [], f"tool_call calls[{position}] requires a 'name'"
+            return [], (f"tool_call calls[{position}] requires a 'name'. Put it before the arguments: "
+                        '{"calls":[{"name":"<tool>","arguments":{...}}]}')
         if name in BRIDGE_TOOL_NAMES:
             return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
         raw_args = raw.get("arguments")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
-from agent.credential_pool_timestamps import _parse_absolute_timestamp
+from agent.credential_pool_timestamps import _parse_absolute_timestamp, _singleton_predates_entry
 
 import logging
 import os
@@ -399,23 +399,6 @@ def _exhausted_ttl(
     if sole_credential and not is_billing:
         return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
     return base
-
-
-def _singleton_predates_entry(state: Any, entry: PooledCredential) -> bool:
-    """True only when the auth.json singleton is PROVABLY older than *entry*.
-
-    Both sides stamp ``last_refresh`` on every successful rotation. When
-    either side lacks a parseable stamp this returns False (cannot prove),
-    which keeps the historical adopt-on-difference behavior (#70111) intact
-    for legacy writers.
-    """
-    entry_ts = _parse_absolute_timestamp(entry.last_refresh)
-    if entry_ts is None:
-        return False
-    state_ts = _parse_absolute_timestamp(state.get("last_refresh") if isinstance(state, dict) else None)
-    if state_ts is None:
-        return False
-    return state_ts < entry_ts
 
 
 def _normalize_error_context(error_context: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -1139,6 +1122,16 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 return
             rows = auth_mod._entry_ids(written)
             self._persisted_token_pairs = auth_mod._token_pairs_by_id(written)
+            # Rows the write dropped carry removal tombstones recorded by a peer's
+            # ``hermes auth remove``; mirror the drop in memory or this process keeps
+            # selecting — and reflushing — the removed credential until it restarts
+            # (#138756).
+            gone = auth_mod.credential_pool_removal_ids(
+                self.provider, [e.id for e in self._entries if e.id not in rows])
+            if gone:
+                self._entries = [e for e in self._entries if e.id not in gone]
+                if self._current_id in gone:
+                    self._current_id = None
             for entry in self._entries:
                 row = rows.get(entry.id)
                 pair = self._persisted_token_pairs.get(entry.id, (None, None))

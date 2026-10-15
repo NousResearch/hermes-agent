@@ -90,3 +90,17 @@ def test_expired_tombstone_stops_filtering_and_is_dropped():
 def test_plain_write_creates_no_tombstone_section():
     write_credential_pool("openrouter", [_row("keep")])
     assert "credential_pool_removals" not in _auth_json()
+
+
+def test_removal_ids_read_back_unexpired_and_filtered():
+    from hermes_cli.auth import credential_pool_removal_ids
+
+    write_credential_pool("openrouter", [_row("keep")], removed_ids=["revoked", "other"])
+    store = _auth_json()
+    store["credential_pool_removals"]["openrouter"]["expired"] = time.time() - 8 * 24 * 3600
+    _auth_path().write_text(json.dumps(store))
+
+    assert credential_pool_removal_ids("openrouter") == {"revoked", "other"}
+    assert credential_pool_removal_ids("openrouter", ["revoked", "unrelated"]) == {"revoked"}
+    assert credential_pool_removal_ids("openrouter", []) == set()
+    assert credential_pool_removal_ids("absent-provider") == set()

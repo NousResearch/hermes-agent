@@ -14,7 +14,7 @@ import sqlite3
 from contextlib import closing
 from functools import partial
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from gateway.hosted_rooms_common import (
     DbPath, bounded_int, canonical_json, clock as _now, compact_json, connect, fenced_update as _fenced_update,
@@ -192,6 +192,12 @@ class RoomProbeUnavailableError(HostedRoomError):
     """Raised when a non-blocking ownership probe cannot read the room store."""
 
 class EventConflictError(HostedRoomError): """Raised when an event id is reused with different immutable content."""
+
+class EventCursorConflictError(HostedRoomError):
+    """Raised when new room events invalidate an uncommitted publication plan."""
+
+class EventAttachmentConflictError(EventCursorConflictError):
+    """A publication lost its file commitments; use the same fresh-plan retry."""
 
 class AuthorityConflictError(HostedRoomError):
     """Raised when a stale room authority attempts to mutate hosted state."""
@@ -807,6 +813,8 @@ def upsert_remote_run_receipt(db_path: DbPath, *, record: Mapping[str, Any], now
                    target_profile, task_id, execution_generation, run_id,
                    session_id, created_at, updated_at
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (*immutable, timestamp, timestamp))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, record["room_id"])
 
 
 def list_remote_run_receipts(
@@ -855,15 +863,21 @@ def _adopt_legacy_room(
 
 
 def create_room(
-    db_path: DbPath, *, room_id: Any, name: Any, members: Any, authority_gateway_id: Any, now: float | None = None
+    db_path: DbPath, *, room_id: Any, name: Any, members: Any, authority_gateway_id: Any, now: float | None = None,
+    admit: Callable[[sqlite3.Connection], Any] | None = None,
 ) -> dict[str, Any]:
-    """Create a room, or return the identical existing room idempotently."""
+    """Create a room, or return the identical existing room idempotently.
+
+    ``admit(conn)`` runs first inside the write transaction (after payload validation), so a
+    caller's side effect such as an owner claim commits only together with this create."""
     room_id = _room_id(room_id)
     name = _validate_room_name(name)
     normalized_members, members_json = _validate_members(members)
     authority_gateway_id = _actor_id(authority_gateway_id, "authority_gateway_id")
     now = _now(now)
     with _transaction(db_path, immediate=True) as conn:
+        if admit is not None:
+            admit(conn)
         if _is_retired(conn, room_id):
             raise RoomConflictError("room_id belongs to a disbanded room")
         existing = conn.execute(_SELECT_ROOM_WITH_BYTES, (room_id,)).fetchone()
@@ -941,11 +955,14 @@ def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now:
 
 def append_event(
     db_path: DbPath, *, room_id: Any, event_id: Any, kind: Any, actor: Any, payload: Any,
-    authority_gateway_id: Any = None, authority_epoch: Any = None, now: float | None = None) -> dict[str, Any]:
+    authority_gateway_id: Any = None, authority_epoch: Any = None, now: float | None = None,
+    expected_latest_seq: int | None = None) -> dict[str, Any]:
     """Append one immutable event and allocate its per-room sequence atomically; repeating an ``event_id``
     with identical content returns the original, different content fails closed."""
     room_id = _room_id(room_id)
     event_id = _event_id(event_id)
+    if expected_latest_seq is not None:
+        _bounded_int(expected_latest_seq, message="expected_latest_seq must be a nonnegative integer")
     kind = _validate_event_kind(kind)
     normalized_actor, actor_json = _validate_actor(actor, kind=kind)
     # Every admitted actor kind is room-scoped, so authority fields are always required.
@@ -968,6 +985,12 @@ def append_event(
                 FROM hosted_rooms WHERE room_id=? AND disbanded_at IS NULL""", (room_id,), room_id)
         _require_authority(room, authority_gateway_id, authority_epoch, "stale hosted room authority")
         seq = int(room["next_seq"])
+        if expected_latest_seq is not None and seq - 1 != expected_latest_seq:
+            raise EventCursorConflictError("room changed before event publication")
+        if kind in {"message.user", "message.member"}:
+            from gateway.hosted_room_attachments import retain_message_attachments
+            retain_message_attachments(conn, room_id=room_id, event_id=event_id,
+                                       manifest=json.loads(payload_json).get("attachments", []), now=now)
         event_bytes = _insert_event(
             conn, room, room_id, seq, event_id, kind, actor_json, authority_epoch, payload_json, now,
             allow_control=kind in _CONTROL_EVENT_KINDS)

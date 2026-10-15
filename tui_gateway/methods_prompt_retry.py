@@ -8,6 +8,7 @@ from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
 method = _registry.method
+_profile_scoped = _registry.profile_scoped
 
 _RETRY_FIELDS = (
     "_row_id", "role", "content", "api_content", "tool_calls", "tool_call_id",
@@ -99,6 +100,7 @@ def _claim_prompt_retry(rid, session, token):
 
 
 @method("prompt.retry")
+@_profile_scoped
 def _prompt_retry(rid, params):
     sid = params["session_id"]
     session, err = _sess_nowait(params, rid)
@@ -118,11 +120,14 @@ def _prompt_retry(rid, params):
         return err
     if not _restart_completed_failed_agent_build(sid, session, session.get("agent_ready")):
         _start_agent_build(sid, session)
-    from agent.memory_provider import spawn_context_thread
-    run_thread = spawn_context_thread(
-        target=lambda: _run_after_agent_ready(rid, sid, session, text, None, None, None, None), name=f"retry-{sid}")
-    session["_run_thread"] = run_thread
-    run_thread.start()
+    run_thread = _start_session_work(
+        lambda: _run_after_agent_ready(rid, sid, session, text, None, None, None, None),
+        name=f"retry-{sid}", session=session)
+    if run_thread is None:
+        with session["history_lock"]:
+            session["running"] = False
+            _clear_inflight_turn(session)
+        return _err(rid, 5035, "backend is retiring; reconnect to continue")
     return _ok(rid, {"status": "streaming"})
 
 

@@ -593,8 +593,9 @@ class HostedRoomRuntime:
                 transport.submit(
                     **_session_kw(profile, session_id), prompt=task["payload"]["prompt"],
                     task=attempt.identity, execution_generation=attempt.execution_generation,
-                    on_terminal=lambda receipt: self._on_terminal(binding, attempt, receipt),
-                    member_id=_member_id(task))
+                    **({"attachments": task["payload"]["attachments"]} if task["payload"].get("attachments") else {}),
+                    member_id=_member_id(task),
+                    on_terminal=lambda receipt: self._on_terminal(binding, attempt, receipt))
                 self._unavailable_route_retries.pop(
                     (task["identity"].room_id, _member_id(task)), None)
                 receipt = self._wait_for_terminal(

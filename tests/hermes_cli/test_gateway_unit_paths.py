@@ -27,6 +27,17 @@ def test_user_unit_dir_follows_the_account_home_not_a_profile_pinned_process_hom
     assert not unit_path.is_relative_to(process_home)
 
 
+def test_user_unit_dir_preserves_xdg_config_home_precedence(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_REAL_HOME", str(tmp_path / "account-home"))
+    monkeypatch.setenv("HOME", str(tmp_path / "foreign-home"))
+    config_home = tmp_path / "foreign-config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+
+    unit_path = gateway.get_systemd_unit_path(system=False)
+
+    assert unit_path.parent == config_home / "systemd" / "user"
+
+
 def test_bare_user_unit_pinning_this_custom_home_is_adopted_by_lifecycle_commands(tmp_path, monkeypatch):
     # A pre-#106611 install of a custom root left ``hermes-gateway.service`` (bare) pinning that root;
     # the recomputed ``hermes-gateway-<hash>`` name made it invisible and ``restart`` ran foreground.

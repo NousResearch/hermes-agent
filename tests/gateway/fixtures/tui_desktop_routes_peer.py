@@ -34,7 +34,7 @@ async def probe(mode):
 
     home = Path(os.environ['HERMES_HOME'])
     marker = home / 'quick-exec-ran'
-    (home / 'config.yaml').write_text(_CONFIG.format(marker=marker))
+    (home / 'config.yaml').write_text(_CONFIG.format(marker=marker), encoding='utf-8')
     runner = GatewayRunner()
     authority = await initialize_session_authority(runner, profile_id=str(home), instance_id='routes')
     api = await start_gateway_api(runner)
@@ -55,7 +55,7 @@ async def probe(mode):
             sid = created['result']['session_id']
             receipt = {'mode': mode, 'authenticated_ws': True}
             await MODES[mode](authority, ws, reader, sid, marker, receipt)
-            (home / 'receipt.json').write_text(json.dumps(receipt))
+            (home / 'receipt.json').write_text(json.dumps(receipt), encoding='utf-8')
     finally:
         await reader.close()
         await stop_gateway_api(api)
@@ -102,15 +102,19 @@ async def _control(authority, ws, reader, sid, marker, receipt):
         params = {'action': action, **({'args': args} if args else {})}
         return await rpc(ws, 'session.control', session_id=sid, **params)
 
-    for command in ('goal ship the owned fixture', 'loop every 10m CHECK_LOOP', 'heartbeat every 10m PING_HEARTBEAT'):
-        typed = await rpc(ws, 'slash.exec', session_id=sid, command=command)
-        assert 'result' in typed, (command, typed)
-    denied = await _call(reader, 'session.control', session_id=sid, action='goal.pause')
-    assert _error(denied) == 'permission_denied', denied
-    # Every other viewer of the session: what its card repaints from.
     updates = []
     authority.sessions[sid].event_stream.observers.add(
         lambda frame: frame['params']['type'] == 'session.control.update' and updates.append(frame['params']))
+    for command, kind in (('goal ship the owned fixture', 'goal'), ('loop every 10m CHECK_LOOP', 'loop'),
+                          ('heartbeat every 10m PING_HEARTBEAT', 'heartbeat')):
+        typed = await rpc(ws, 'slash.exec', session_id=sid, command=command)
+        assert 'result' in typed, (command, typed)
+        # A typed command repaints every viewer's cards too (Ink has no other refresh path).
+        assert updates and updates.pop()['payload']['control'][kind]['status'] == 'active', (command, updates)
+    denied = await _call(reader, 'session.control', session_id=sid, action='goal.pause')
+    assert _error(denied) == 'permission_denied', denied
+    # Every other viewer of the session: what its card repaints from.
+    updates.clear()
     for action, check in [
             ('goal.pause', lambda c: c['goal']['status'] == 'paused'),
             ('goal.resume', lambda c: c['goal']['status'] == 'active'),

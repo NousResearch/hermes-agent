@@ -91,7 +91,10 @@ class GatewayInboundHooksMixin:
             if _action == "rewrite":
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
-                    event = dataclasses.replace(event, text=_new_text)
+                    from gateway.session_ingress_context import carry_callback
+                    rewritten = dataclasses.replace(event, text=_new_text)
+                    carry_callback(event, rewritten)
+                    event = rewritten
                 break
             if _action == "allow":
                 break

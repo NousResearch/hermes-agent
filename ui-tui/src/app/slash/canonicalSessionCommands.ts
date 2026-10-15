@@ -3,6 +3,7 @@
 // `session.mutate` rename / rewind (`gateway/session_mutations.py`), the committed admission
 // result (`prompt.receipt include_result`) and the frozen launch policy (`session.info`).
 
+import { CANONICAL_REASONING_EFFORTS } from '../../domain/slash.js'
 import { usageFromTick } from '../../domain/usage.js'
 import { t } from '../../i18n/runtime.js'
 import { asRpcResult } from '../../lib/rpc.js'
@@ -115,26 +116,12 @@ export async function renameCanonicalSession(
   return mutation?.result ? String(mutation.result.title ?? title).trim() : undefined
 }
 
-// The levels `hermes_constants.parse_reasoning_effort` accepts; the display words are config.yaml writes.
-const REASONING_EFFORTS = new Set([
-  'none',
-  'false',
-  'disabled',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
-  'max',
-  'ultra'
-])
-
 /** Session-scope `/reasoning <level>`: the owner's revision-fenced `reasoning` mutation of the frozen
  * policy. False when the shared gateway has no verb for it (`--global`, a display word). */
 export function canonicalReasoning(payload: { scope?: string; value: string }, ctx: SlashRunCtx): boolean {
   const effort = payload.value.trim().toLowerCase()
 
-  if (payload.scope === 'global' || !REASONING_EFFORTS.has(effort)) {
+  if (payload.scope === 'global' || !CANONICAL_REASONING_EFFORTS.has(effort)) {
     return false
   }
 

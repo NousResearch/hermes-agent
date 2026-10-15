@@ -46,7 +46,7 @@ class CLIChatTurnMixin:
             return
         GatewayRunner._apply_fallback_chain_to_agent(agent, self._fallback_model)
 
-    def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
+    def chat(self, message, images: list | None = None, voice_input: bool = False) -> Optional[str]:
         """Run one user turn; returns the agent's response, or None on error.
 
         Input typed while the agent runs goes to ``_interrupt_queue`` (separate from
@@ -83,9 +83,7 @@ class CLIChatTurnMixin:
         message = self._chat_route_images(message, images)
 
         if isinstance(message, str) and not isinstance(message, TimelineNotification):
-            message, blocked = self._chat_expand_context_references(message)
-            if blocked is not None:
-                return blocked
+            # ``@`` references are expanded once, by the gateway, against this session's cwd.
             # Lone surrogates (rich-text clipboard paste) crash the OpenAI SDK's JSON serialization.
             from agent.message_sanitization import _sanitize_surrogates
             message = _sanitize_surrogates(message)
@@ -148,35 +146,6 @@ class CLIChatTurnMixin:
             turn.stop_event.set()
         if turn.tts_thread is not None and turn.tts_thread.is_alive():
             turn.tts_thread.join(timeout=5)
-
-    def _chat_expand_context_references(self, message: str):
-        """Expand ``@file:``/``@diff``/``@folder:`` references.
-
-        Returns ``(message, blocked)``; ``blocked`` is the refusal text to return instead
-        of running the turn when injection was refused, else None.
-        """
-        from cli import _DIM, _RST, _cprint
-        if "@" not in message:
-            return message, None
-        try:
-            from agent.context_references import preprocess_context_references
-            from agent.model_metadata import get_model_context_length
-            _ctx_len = get_model_context_length(
-                self.model, base_url=self.base_url or "", api_key=self.api_key or "",
-                provider=self.provider or "",
-                config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None)
-            _ctx_result = preprocess_context_references(message, cwd=os.getcwd(), context_length=_ctx_len)
-            if _ctx_result.expanded or _ctx_result.blocked:
-                if _ctx_result.references:
-                    _cprint(f"  {_DIM}{t('cli.chat.context_refs', count=len(_ctx_result.references), tokens=_ctx_result.injected_tokens)}{_RST}")
-                for w in _ctx_result.warnings:
-                    _cprint(f"  {_DIM}⚠ {w}{_RST}")
-                if _ctx_result.blocked:
-                    return message, ("\n".join(_ctx_result.warnings) or t("cli.chat.context_injection_refused"))
-                message = _ctx_result.message
-        except Exception as e:
-            logging.debug("@ context reference expansion failed: %s", e)
-        return message, None
 
     def _chat_route_images(self, message, images):
         """Attach images natively (vision model) or pre-describe them as text; returns the message to send.
@@ -257,14 +226,18 @@ class CLIChatTurnMixin:
             threading.Thread(target=self._voice_full_duplex_listener, daemon=True).start()
 
         # Streaming TTS: any working provider speaks sentence-by-sentence as tokens arrive.
+        # Availability is check_tts_requirements() ALONE: the speaker side picks its own
+        # output route per platform (PortAudio stream where usable, tempfile -> afplay on
+        # macOS — sounddevice is deliberately never imported for output on Darwin, see
+        # tts_tool_speaker._device_usable), so probing it here disabled streaming TTS on
+        # macOS via the bare except below (#84046).
         if self._voice_tts:
             try:
-                from tools.tts_tool import _import_sounddevice, check_tts_requirements
+                from tools.tts_tool import check_tts_requirements
                 from tools.tts_tool_speaker import stream_tts_to_speaker
-                _import_sounddevice()
                 turn.use_streaming_tts = check_tts_requirements()
             except Exception:
-                pass
+                logging.debug("streaming TTS arm check failed", exc_info=True)
 
         if turn.use_streaming_tts:
             turn.text_queue = queue.Queue()
@@ -327,6 +300,7 @@ class CLIChatTurnMixin:
             reset_current_session_key = None  # type: ignore[assignment]
             _approval_session_token = None
         agent_message = turn.voice_prefix + message if turn.voice_prefix else message
+        self.agent._voice_turn_pending = bool(turn.voice_prefix)  # auxiliary.voice_chat route
         # One-shot /model and /reload-skills notes; _prepend_note_to_message also handles
         # multimodal content-part lists (string concat raised TypeError with an image).
         for _note_attr in ("_pending_model_switch_note", "_pending_skills_reload_note"):
@@ -345,9 +319,6 @@ class CLIChatTurnMixin:
         _persist_clean_user_message = message if (turn.voice_prefix or agent_message != message) else None
         _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
         self._pending_one_turn_model_restore = None
-        # The user is at this terminal: approval and clarify prompts wait until answered or Ctrl+C.
-        from tools.approval_context import reset_prompts_wait_for_answer, set_prompts_wait_for_answer
-        _prompts_token = set_prompts_wait_for_answer()
         try:
             from agent.notification_presentation import notification_turn
             muted = getattr(turn, "mute_notification_reply", False)
@@ -398,7 +369,6 @@ class CLIChatTurnMixin:
                     reset_current_session_key(_approval_session_token)
                 except Exception:
                     pass
-            reset_prompts_wait_for_answer(_prompts_token)
 
     def _chat_monitor_agent_thread(self, turn, agent_thread):
         """Poll the interrupt queue while the agent thread runs; returns the interrupting message (or None)."""
@@ -448,8 +418,7 @@ class CLIChatTurnMixin:
                     _f.write(f"{time.strftime('%H:%M:%S')} interrupt fired: msg={str(interrupt_msg)[:60]!r}, "
                              f"children={len(self.agent._active_children)}, "
                              f"parent._interrupt={self.agent._interrupt_requested}\n")
-                    for _ci, _ch in enumerate(self.agent._active_children):
-                        _f.write(f"  child[{_ci}]._interrupt={_ch._interrupt_requested}\n")
+                    _f.writelines(f"  child[{_ci}]._interrupt={_ch._interrupt_requested}\n" for _ci, _ch in enumerate(self.agent._active_children))
             except Exception:
                 pass
             break
@@ -506,7 +475,8 @@ class CLIChatTurnMixin:
         # titling and the exit summary target the live child, not the ended parent.
         if (self.agent and getattr(self.agent, "session_id", None)
                 and self.agent.session_id != self.session_id):
-            self._transfer_session_yolo(self.session_id, self.agent.session_id)
+            from tools.approval_yolo import transfer_session_yolo
+            transfer_session_yolo(self.session_id, self.agent.session_id)
             self.session_id = self.agent.session_id
             self._write_terminal_breadcrumb()
             self._pending_title = None

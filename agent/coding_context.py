@@ -528,7 +528,13 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
         f"- Root: {root}",
     ]
     if git_root is not None:
-        branch, counts = _parse_status(_git(root, "status", "--porcelain=2", "--branch"))
+        # ``status`` hashes re-timestamped files through the repo-named clean filter; skip it when
+        # the filter overrides cannot be discovered rather than run it half-hardened.
+        from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+        status_env = noninteractive_repo_git_env(root)
+        status = "" if status_env is None else bounded_git_probe(
+            ["git", "-C", str(root), "status", "--porcelain=2", "--branch"], timeout=_GIT_TIMEOUT, env=status_env)
+        branch, counts = _parse_status(status)
         head = branch.get("head", "")
         if head == "(detached)":
             lines.append("- Branch: (detached HEAD)")
@@ -540,10 +546,15 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
 
         # Linked worktree: say so (branches/stashes are shared state) but do NOT expose
         # the primary tree path — a second absolute path makes the model run commands
-        # in the wrong directory.
+        # in the wrong directory. Derived from the session's own cwd, so every surface
+        # opened in a worktree (``hermes -w``, Ink, Desktop, ACP) gets the same guidance.
         git_dir, common_dir = _git(root, "rev-parse", "--git-dir"), _git(root, "rev-parse", "--git-common-dir")
         if git_dir and common_dir and Path(git_dir).resolve() != Path(common_dir).resolve():
-            lines.append("- Worktree: linked (git state shared with primary tree)")
+            on_branch = f" on branch {head}" if head and head != "(detached)" else ""
+            lines.append(
+                f"- Worktree: linked, isolated{on_branch} (git state shared with primary tree). Changes here do"
+                " not affect the main working tree or other agents; commit and push your changes, and open a"
+                " PR if appropriate.")
 
         dirty = [f"{n} {label}" for label, n in counts.items() if n]
         lines.append(f"- Status: {', '.join(dirty) if dirty else 'clean'}")

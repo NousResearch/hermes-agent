@@ -22,7 +22,7 @@ class _ClarifyEntry:
     clarify_id: str
     session_key: str
     question: str
-    choices: Optional[List[str]]
+    choices: Optional[list[str]]
     multi_select: bool = False
     # A prompt whose answer is a secret (vault master password, saved login,
     # one-time code). The reply is still read normally, but the adapter deletes
@@ -35,10 +35,10 @@ class _ClarifyEntry:
 
 
 _lock = threading.RLock()
-_entries: Dict[str, _ClarifyEntry] = {}  # clarify_id -> entry (button callbacks)
-_session_index: Dict[str, List[str]] = {}  # session_key -> [clarify_id] FIFO (text intercept, cleanup)
+_entries: dict[str, _ClarifyEntry] = {}  # clarify_id -> entry (button callbacks)
+_session_index: dict[str, list[str]] = {}  # session_key -> [clarify_id] FIFO (text intercept, cleanup)
 # Per-session notify callbacks (gateway -> adapter bridge); mirrors tools.approval. Tests clear it.
-_notify_cbs: Dict[str, Callable[[_ClarifyEntry], None]] = {}
+_notify_cbs: dict[str, Callable[[_ClarifyEntry], None]] = {}
 
 # Outcomes for typed clarify replies. Gateway cancels the pending prompt on
 # free prose (deadlock break) but keeps it armed for a retryable bad selection.
@@ -51,7 +51,7 @@ SKIPPED = "\x00skipped"
 CANCELLED = "\x00cancelled"
 
 
-def register(clarify_id: str, session_key: str, question: str, choices: Optional[List[str]],
+def register(clarify_id: str, session_key: str, question: str, choices: Optional[list[str]],
              multi_select: bool = False, secret: bool = False) -> _ClarifyEntry:
     """Register a pending clarify request; caller then blocks on ``wait_for_response``.
     Open-ended (no choices) entries start in text mode: the next message IS the response.
@@ -77,11 +77,20 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
         from tools.environments.base import touch_activity_if_due
     except Exception:  # pragma: no cover - optional
         touch_activity_if_due = None
+    from tools.interrupt import is_interrupted
     deadline = None if timeout is None or float(timeout) <= 0.0 else time.monotonic() + float(timeout)
     activity_state = {"last_touch": time.monotonic(), "start": time.monotonic()}
     while True:
         remaining = 1.0 if deadline is None else deadline - time.monotonic()
         if remaining <= 0 or entry.event.wait(timeout=min(1.0, remaining)):
+            break
+        if is_interrupted():
+            # /stop or gateway shutdown on this turn's thread: withdraw the prompt the way the
+            # approval wait does, or a planned stop sits out the whole clarify timeout and the
+            # turn is left started (unknown after restart). A real answer that won the race stays.
+            with _lock:
+                if not entry.event.is_set():
+                    entry.response = CANCELLED
             break
         # Periodic activity touch so the gateway's inactivity timeout doesn't kill the agent during long
         # code execution (#10807).
@@ -89,6 +98,7 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
             touch_activity_if_due(activity_state, "waiting for user clarify response")
     with _lock:
         _entries.pop(clarify_id, None)  # regardless of outcome
+        entry.event.set()  # Timeout also retires shared projections of this waiter.
         ids = _session_index.get(entry.session_key) or []
         if clarify_id in ids:
             ids.remove(clarify_id)
@@ -120,7 +130,7 @@ def get_pending_for_session(session_key: str, *, include_choice_prompts: bool = 
         return None
 
 
-def _match_label(text: str, choices: List[str]) -> Optional[str]:
+def _match_label(text: str, choices: list[str]) -> Optional[str]:
     """Stripped choice text matching ``text`` case-insensitively, ignoring the '(Recommended)'
     suffix the first choice carries by the time it reaches adapters; None if no match."""
     from tools.clarify_tool import strip_recommended
@@ -131,7 +141,7 @@ def _match_label(text: str, choices: List[str]) -> Optional[str]:
     return None
 
 
-def _split_tokens(text: str) -> Optional[List[str]]:
+def _split_tokens(text: str) -> Optional[list[str]]:
     """Comma-separated tokens, or space-separated all-numeric tokens ("1 3"); else None."""
     if "," in text:
         return [t.strip() for t in text.split(",") if t.strip()]
@@ -147,7 +157,7 @@ def _is_int(text: str) -> bool:
         return False
 
 
-def _selection_attempt_tokens(text: str, choices: Optional[List[str]] = None) -> Optional[List[str]]:
+def _selection_attempt_tokens(text: str, choices: Optional[list[str]] = None) -> Optional[list[str]]:
     """Tokens when ``text`` looks like a typed selection (bare int, comma list,
     all-numeric space list); None for free prose so the gateway can release the
     clarify. Comma-list labels may span up to the longest choice's word count."""
@@ -156,7 +166,7 @@ def _selection_attempt_tokens(text: str, choices: Optional[List[str]] = None) ->
         return None
     tokens = _split_tokens(stripped)
     if tokens is None:
-        digits = stripped[1:] if stripped.startswith("-") else stripped
+        digits = stripped.removeprefix("-")
         return [stripped] if digits.isdigit() or _is_int(stripped) else None
     if "," not in stripped or not tokens:
         return tokens or None
@@ -268,9 +278,9 @@ def clear_session(session_key: str) -> int:
 
 
 def resolve_clarify_timeout(config: dict) -> int:
-    """Clarify timeout (seconds) on messaging platforms: legacy ``clarify.timeout`` if explicitly set,
-    else ``agent.clarify_timeout``, else 3600. CLI, TUI and Desktop never time a clarify out — the user
-    is at the screen it is painted on. ``<= 0`` is kept verbatim (unlimited); non-numeric -> 3600."""
+    """Clarify timeout (seconds): legacy ``clarify.timeout`` if explicitly set, else
+    ``agent.clarify_timeout``, else 3600 — the single source of truth for every surface
+    (gateway, CLI, TUI). ``<= 0`` is kept verbatim (unlimited); non-numeric -> 3600."""
     raw = (config.get("clarify") or {}).get("timeout")
     if raw is None:
         raw = (config.get("agent") or {}).get("clarify_timeout", 3600)

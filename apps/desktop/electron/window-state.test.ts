@@ -166,6 +166,7 @@ test('computeWindowOptions recovers a legacy snapshot matching the full display 
   const displays = [
     { workArea: { x: 0, y: 0, width: 1920, height: 1040 }, bounds: { x: 0, y: 0, width: 1920, height: 1080 } }
   ]
+
   const saved = sanitizeWindowState({ x: 0, y: 0, width: 1920, height: 1080, isMaximized: false })
   assert.deepEqual(computeWindowOptions(saved, displays, 'win32'), { width: 1536, height: 832 })
 })

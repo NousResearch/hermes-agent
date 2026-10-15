@@ -140,7 +140,7 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
         future = Future()
         try:
             future.set_result(asyncio.run(coro))
-        except BaseException as e:  # noqa: BLE001
+        except BaseException as e:
             future.set_exception(e)
         return future
 

@@ -44,6 +44,7 @@ from agent.context_compressor import (
     SUMMARY_PREFIX,
     _template_visible_role,
 )
+import itertools
 
 
 @pytest.fixture()
@@ -234,7 +235,7 @@ class TestForcedUserGuardsStillWin:
         with patch.object(c, "_generate_summary", return_value=mocked):
             out = c.compress(messages, current_tokens=90_000)
 
-        for prev, cur in zip(out, out[1:]):
+        for prev, cur in itertools.pairwise(out):
             assert not (
                 prev.get("role") == "user" and cur.get("role") == "user"
             ), "compression introduced literal consecutive user-role messages"

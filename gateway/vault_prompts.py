@@ -21,7 +21,7 @@ the secret has been read, on platforms that support deletion.
 
 from __future__ import annotations
 
-from typing import Callable, Dict, Optional
+from typing import Callable, Optional
 
 from agent.vault_backends.unlock import (
     set_code_prompt_callback,
@@ -39,7 +39,7 @@ def _clean(value: Optional[str]) -> str:
     return (value or "").strip()
 
 
-def build_vault_prompt_callbacks(ask: VaultAsk) -> Dict[str, Callable]:
+def build_vault_prompt_callbacks(ask: VaultAsk) -> dict[str, Callable]:
     """Build the three vault prompt callbacks on top of ``ask``.
 
     ``ask(question, secret=True)`` must block until the user answers and return
@@ -59,7 +59,7 @@ def build_vault_prompt_callbacks(ask: VaultAsk) -> Dict[str, Callable]:
             secret=True, last=True,
         ))
 
-    def save_login_prompt(origin: str, site_label: str) -> Optional[Dict[str, str]]:
+    def save_login_prompt(origin: str, site_label: str) -> Optional[dict[str, str]]:
         """Identifier + password for the page currently open. Stored in the local
         vault bound to ``origin`` and filled into the page at once.
 

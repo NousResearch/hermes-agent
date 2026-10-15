@@ -4,6 +4,7 @@ import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
+import { serializeComposerQuotes } from '@/lib/quote-message'
 import { useSessionSlice } from '@/lib/use-session-slice'
 import { type ComposerAttachment, freezeComposerTransportPayload } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
@@ -111,7 +112,7 @@ export function useComposerQueue({
   sessionId
 }: UseComposerQueueArgs) {
   const { t } = useI18n()
-  const scope = useComposerScope()
+  const scope = useComposerScope(activeQueueSessionKey)
 
   // Per-session slice (edge): re-renders only when THIS session's queue changes,
   // not on cross-session queue churn (the plain atom's map ref changes on every
@@ -262,15 +263,16 @@ export function useComposerQueue({
 
   const queueCurrentDraft = useCallback(() => {
     const text = draftRef.current
+    const quotes = scope.quotes.$quotes.get()
 
-    if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
+    if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0 && quotes.length === 0)) {
       return false
     }
 
     // Slash commands cannot ride alongside attachments — the drain path would
     // reject the entry on every attempt (submitText warns + returns false) and
     // the queue would livelock. Refuse to enqueue it in the first place.
-    if (isSlashCommandText(text) && attachments.length) {
+    if (isSlashCommandText(text) && (attachments.length || quotes.length)) {
       notify({
         kind: 'warning',
         title: t.desktop.slashCommandIgnoredTitle,
@@ -289,14 +291,20 @@ export function useComposerQueue({
       return false
     }
 
+    // Pending quote cards serialize into the queued text the same way an idle
+    // submit would (see serializeComposerQuotes) — every path below sends the
+    // text as-is, with the quotes riding in front.
+    const quoteText = serializeComposerQuotes(quotes)
+    const outboundText = `${quoteText}${frozen.text}`
+
     // Canonical (gateway-owned) sessions admit busy input straight into the
     // durable gateway FIFO; the row comes back as a server-owned queue entry.
     // `fromQueue` submits skip the transport freeze, so send the frozen text.
     if (serverOwnsComposerQueue(sessionId ?? activeQueueSessionKey)) {
       return Promise.resolve(
-        onSubmit(frozen.frozenTransport ?? frozen.text, {
+        onSubmit(`${quoteText}${frozen.frozenTransport ?? frozen.text}`, {
           attachments: cloneAttachments(attachments),
-          ...(frozen.displayText ? { displayText: frozen.displayText } : {}),
+          ...(frozen.displayText ? { displayText: `${quoteText}${frozen.displayText}` } : {}),
           fromQueue: true,
           sessionId: sessionId ?? null,
           storedSessionId: activeQueueSessionKey
@@ -312,6 +320,10 @@ export function useComposerQueue({
             scope.attachments.removeOccurrences(attachments)
           }
 
+          if (quotes.length) {
+            scope.quotes.clear()
+          }
+
           return true
         })
         .catch(() => false)
@@ -319,10 +331,10 @@ export function useComposerQueue({
 
     if (
       !enqueueQueuedPrompt(activeQueueSessionKey, {
-        text: frozen.text,
+        text: outboundText,
         attachments,
-        ...(frozen.displayText ? { displayText: frozen.displayText } : {}),
-        ...(frozen.frozenTransport ? { frozenTransport: frozen.frozenTransport } : {})
+        ...(frozen.displayText ? { displayText: `${quoteText}${frozen.displayText}` } : {}),
+        ...(frozen.frozenTransport ? { frozenTransport: `${quoteText}${frozen.frozenTransport}` } : {})
       })
     ) {
       return false
@@ -332,10 +344,27 @@ export function useComposerQueue({
     // Queue entry retains blob: previews; revoke when the entry is discarded
     // or drained into a submit that takes ownership (see composer-queue).
     scope.attachments.clear({ retainPreviewUrls: true })
+
+    if (quotes.length) {
+      scope.quotes.clear()
+    }
+
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draftRef, scope.attachments, onSubmit, sessionId, t.composer])
+  }, [
+    activeQueueSessionKey,
+    attachments,
+    clearDraft,
+    draftRef,
+    onSubmit,
+    scope.attachments,
+    scope.quotes,
+    sessionId,
+    t.composer,
+    t.desktop.slashCommandIgnoredBody,
+    t.desktop.slashCommandIgnoredTitle
+  ])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited, from the

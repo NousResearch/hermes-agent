@@ -61,6 +61,7 @@ const INSERT_EVENT = 'hermes:composer-insert'
 const INSERT_REPLY_EVENT = 'hermes:composer-insert-reply'
 const ATTACH_IMAGES_EVENT = 'hermes:composer-attach-images'
 const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
+const QUOTE_ADD_EVENT = 'hermes:composer-quote-add'
 const SUBMIT_EVENT = 'hermes:composer-submit'
 const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
 const DICTATION_EVENT = 'hermes:composer-dictation'
@@ -397,6 +398,67 @@ export const requestComposerInsertRefs = (
 
 export const onComposerInsertRefsRequest = (handler: (detail: InsertRefsDetail) => void) =>
   subscribe<InsertRefsDetail>(INSERT_REFS_EVENT, handler)
+
+/** Park a quote card above a composer — the ChatGPT-style quote preview.
+ *  The structured sibling of {@link requestComposerInsert}: instead of pasting
+ *  blockquote text into the draft, the target composer holds the quote in its
+ *  pending-quote scope and renders a removable card above the input. */
+export interface QuoteAddDetail {
+  quote: { id: string; role: 'user' | 'assistant'; text: string; timestamp: string }
+  target: ComposerTarget
+  token?: number
+  /** Only one visible composer may claim a shared target. */
+  claimed?: boolean
+}
+
+export const requestComposerQuoteAdd = (
+  quote: QuoteAddDetail['quote'],
+  { target = 'active' }: { target?: ComposerTarget | 'active' } = {}
+) => {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent<QuoteAddDetail>(QUOTE_ADD_EVENT, { detail: { quote, target: resolve(target) } })
+    )
+  }
+}
+
+/** Acked quote add — resolves true when a mounted composer claimed the card
+ *  (and echoes back over {@link ackComposerInsert}, sharing the insert reply
+ *  channel). Resolves false when no surface answers within the settle window
+ *  (the edit composer addresses only text edits), so the caller can fall back
+ *  to a blockquote text insert instead of dropping the quote. */
+export const requestComposerQuoteAddAcked = (
+  quote: QuoteAddDetail['quote'],
+  { target = 'active' }: { target?: ComposerTarget | 'active' } = {}
+): Promise<boolean> => {
+  const pending = insertReplies
+
+  if (!pending || typeof window === 'undefined') {
+    return Promise.resolve(false)
+  }
+
+  const token = ++insertToken
+  const resolvedTarget = resolve(target)
+
+  return new Promise<boolean>(resolvePromise => {
+    pending.set(token, resolvePromise)
+
+    // Claim during the click; a deferred event could land after a session switch.
+    window.dispatchEvent(
+      new CustomEvent<QuoteAddDetail>(QUOTE_ADD_EVENT, { detail: { quote, target: resolvedTarget, token } })
+    )
+
+    window.setTimeout(() => {
+      if (pending.get(token) === resolvePromise) {
+        pending.delete(token)
+        resolvePromise(false)
+      }
+    }, INSERT_REPLY_TIMEOUT_MS)
+  })
+}
+
+export const onComposerQuoteAddRequest = (handler: (detail: QuoteAddDetail) => void) =>
+  subscribe<QuoteAddDetail>(QUOTE_ADD_EVENT, handler)
 
 // ── Draft read/write bus (plugin SDK `host.composer`) ─────────────────────
 //

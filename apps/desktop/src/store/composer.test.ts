@@ -394,6 +394,18 @@ describe('freezeComposerTransportPayload', () => {
     clearComposerTerminalSelections()
   })
 
+  it('treats @terminal labels inside quoted text as literal historical content', () => {
+    const quoted = '> [assistant 12:00]\n> example @terminal:old-shell:1\n\n请解释'
+    expect(freezeComposerTransportPayload(quoted, {}).missingLabels).toEqual([])
+    expect(freezeComposerTransportPayload(quoted, { 'old-shell:1': 'NEW UNRELATED OUTPUT' }).transportText).toBe(quoted)
+
+    const mixed = `${quoted}\nlook at @terminal:live-shell:1`
+    const frozen = freezeComposerTransportPayload(mixed, { 'live-shell:1': 'live output' })
+    expect(frozen.transportText).toContain('> example @terminal:old-shell:1')
+    expect(frozen.transportText).toContain('live output')
+    expect(frozen.missingLabels).toEqual([])
+  })
+
   it('leaves ordinary text unchanged', () => {
     const frozen = freezeComposerTransportPayload('just a question')
 

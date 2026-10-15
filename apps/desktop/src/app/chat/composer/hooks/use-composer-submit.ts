@@ -6,6 +6,7 @@ import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
+import { serializeComposerQuotes } from '@/lib/quote-message'
 import type { BusyInputMode } from '@/store/busy-input-mode'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import {
@@ -17,6 +18,7 @@ import {
 import { type ComposerDraftRetry, draftRetry } from '@/store/composer-draft-retry'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry, serverOwnsComposerQueue } from '@/store/composer-queue'
+import type { ComposerQuote } from '@/store/composer-quotes'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
 import { notify } from '@/store/notifications'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
@@ -99,7 +101,8 @@ export function useComposerSubmit({
   takeDraftRetry
 }: UseComposerSubmitArgs) {
   const paneVisible = usePaneVisible()
-  const scope = useComposerScope()
+  const rootScope = useComposerScope()
+  const scope = useComposerScope(activeQueueSessionKey)
   const surfaceId = useComposerSurfaceId()
   const { t } = useI18n()
   const copy = t.desktop
@@ -113,8 +116,15 @@ export function useComposerSubmit({
     text: string,
     attachments?: ComposerAttachment[],
     displayKind?: 'hidden',
-    target?: Parameters<ChatBarProps['onSubmit']>[1]
+    target?: Parameters<ChatBarProps['onSubmit']>[1],
+    pendingQuotes: readonly ComposerQuote[] = []
   ) => {
+    // Pending quote cards ride in front of the draft as markdown blockquote
+    // text — the same shape the transcript renders, so the model reads the
+    // quote exactly as the user saw it. Cards never enter the draft; a
+    // rejected send leaves them parked (only an accepted submit clears them).
+    const outboundText = pendingQuotes.length ? `${serializeComposerQuotes(pendingQuotes)}${text}` : text
+
     // A fresh chat's composer is keyed by its per-lifecycle fresh-draft key
     // (`__new__:<uuid>`), but the submit contract spells "no session yet" as
     // null: the create handoff below and the composer drift prong both key off
@@ -125,13 +135,25 @@ export function useComposerSubmit({
     let restoreScope = submittedScope
     const submittedAttachments = attachments ?? []
 
+    let submittedQuotes = scope.quotes
+
     // Only this operation's explicit session.create handoff may re-home a
     // pre-session submit. A null → stored render can also be user navigation.
     const assignment =
       submittedScope === null
         ? {
-            onComposerScopeAssigned: (scope: string) => {
-              restoreScope = scope
+            onComposerScopeAssigned: (assignedScope: string) => {
+              restoreScope = assignedScope
+              const assignedQuotes = rootScope.quotes.forSession(assignedScope)
+
+              for (const quote of submittedQuotes.$quotes.get()) {
+                if (!assignedQuotes.$quotes.get().some(existing => existing.id === quote.id)) {
+                  assignedQuotes.add(quote)
+                }
+              }
+
+              submittedQuotes.clear()
+              submittedQuotes = assignedQuotes
             }
           }
         : {}
@@ -156,7 +178,7 @@ export function useComposerSubmit({
     const rejected = displayKind ? () => {} : restore
 
     void Promise.resolve(
-      onSubmit(text, {
+      onSubmit(outboundText, {
         ...target,
         submission_id: submissionId,
         ...(attachments ? { attachments } : {}),
@@ -165,7 +187,20 @@ export function useComposerSubmit({
         ...(displayKind ? { displayKind } : {})
       })
     )
-      .then(accepted => void (accepted === false ? rejected() : clearSessionDraft(submittedScope)))
+      .then(accepted => {
+        if (accepted === false) {
+          rejected()
+
+          return
+        }
+
+        clearSessionDraft(submittedScope)
+
+        // A later selection may have added a new card while the send was pending.
+        for (const quote of pendingQuotes) {
+          submittedQuotes.remove(quote.id)
+        }
+      })
       .catch(rejected)
   }
 
@@ -248,6 +283,8 @@ export function useComposerSubmit({
 
   // Returns false when the submit was refused and must not refocus the input.
   const submitWhileBusy = (text: string, payloadPresent: boolean, blockingPrompt: boolean) => {
+    const pendingQuotes = scope.quotes.$quotes.get()
+
     // Slash commands should execute immediately even while the agent is
     // busy — they're client-side operations (/yolo, /skin, /new, /help,
     // etc.) or self-contained gateway RPCs (/status, /compress).  onSubmit
@@ -256,7 +293,7 @@ export function useComposerSubmit({
     // /send directives).  Queuing them would make every slash command wait
     // for the current turn to finish, which is how the TUI never behaves.
     if (isSlashCommandText(text)) {
-      if (attachments.length) {
+      if (attachments.length || pendingQuotes.length) {
         // Slash commands cannot ride alongside attachments — warn the user
         // instead of silently queuing the payload (which would then reach the
         // idle path and be submitted as plain text with no command execution).
@@ -273,13 +310,14 @@ export function useComposerSubmit({
       triggerHaptic('submit')
       clearDraft()
       dispatchSubmit(text, undefined, undefined, retry && { submission_id: retry.id })
-    } else if (!blockingPrompt && !attachments.length && text.trim()) {
+    } else if (!blockingPrompt && !attachments.length && !pendingQuotes.length && text.trim()) {
       // Busy Send follows the backend busy-input policy: interrupt redirects
       // the live turn (Cursor-style stop-and-correct), steer injects at the
       // next tool boundary, queue admits it as the next turn. If the turn
       // already ended, steerDraft re-queues so nothing is lost. Compaction is
       // the gateway's call: it answers `queued` under the compression lock.
       // Unloaded policy (null) must not turn an intended queue into an interrupt.
+      // Pending quote cards rule a steer out (the gateway cannot carry them).
       if (busyInputMode === 'queue') {
         queueCurrentDraft()
       } else if (busyInputMode !== null) {
@@ -321,9 +359,10 @@ export function useComposerSubmit({
     // /btw and /bg run beside the turn (snapshot / separate session) and touch
     // no parked card. With attachments the draft isn't routed as a slash
     // command, so it falls back to the ordinary-message behavior.
-    const isSideQuestion = !attachments.length && isSideTaskSlashCommand(text)
+    const pendingQuotes = scope.quotes.$quotes.get()
+    const isSideQuestion = !attachments.length && !pendingQuotes.length && isSideTaskSlashCommand(text)
     const routable = payloadPresent && !queueEdit && !isSideQuestion
-    const slashCommand = !attachments.length && SLASH_COMMAND_RE.test(text.trim())
+    const slashCommand = !attachments.length && !pendingQuotes.length && SLASH_COMMAND_RE.test(text.trim())
 
     // Like dispatchSubmit's restore: an answer that never reached the backend gives the words back.
     const answeredScope = draftScopeRef.current
@@ -336,7 +375,13 @@ export function useComposerSubmit({
       }
     }
 
-    if (routable && !attachments.length && !slashCommand && answerParkedCard(sessionId ?? '', text.trim(), restore)) {
+    if (
+      routable &&
+      !attachments.length &&
+      !pendingQuotes.length &&
+      !slashCommand &&
+      answerParkedCard(sessionId ?? '', text.trim(), restore)
+    ) {
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
@@ -392,7 +437,8 @@ export function useComposerSubmit({
     // descend, then Enter) is still the reference the user picked — promote it
     // on the way out so it attaches instead of submitting as inert text.
     const text = pathifyRefs(draftRef.current)
-    const payloadPresent = text.trim().length > 0 || attachments.length > 0
+    const pendingQuotes = scope.quotes.$quotes.get()
+    const payloadPresent = text.trim().length > 0 || attachments.length > 0 || pendingQuotes.length > 0
 
     const parked = answerParkedCardWithDraft(text, payloadPresent)
 
@@ -427,7 +473,7 @@ export function useComposerSubmit({
       // Keep blob: previews alive for the optimistic bubble; revoke when that
       // consumer is discarded/replaced (not here — clear would race the clone).
       scope.attachments.clear({ retainPreviewUrls: true })
-      dispatchSubmit(text, submittedAttachments, undefined, retry && { submission_id: retry.id })
+      dispatchSubmit(text, submittedAttachments, undefined, retry && { submission_id: retry.id }, pendingQuotes)
     }
 
     focusInput()
@@ -441,7 +487,13 @@ export function useComposerSubmit({
 
     // Guard on live editor state, not the render-lagged `canSteer`: a redirect
     // fired on a fast Enter must not be dropped because state hasn't synced.
-    if (!onSteer || !text || attachments.length > 0 || SLASH_COMMAND_RE.test(text)) {
+    if (
+      !onSteer ||
+      !text ||
+      attachments.length > 0 ||
+      scope.quotes.$quotes.get().length > 0 ||
+      SLASH_COMMAND_RE.test(text)
+    ) {
       return
     }
 

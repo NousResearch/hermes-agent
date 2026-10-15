@@ -3555,6 +3555,7 @@ export const en: Translations = {
     previewLabel: label => `Preview ${label}`,
     couldNotPreview: label => `Could not preview ${label}`,
     removeAttachment: label => `Remove ${label}`,
+    removeQuote: 'Remove quote',
     dictating: 'Dictating',
     preparingAudio: 'Preparing audio',
     speakingResponse: 'Speaking response',
@@ -4551,6 +4552,7 @@ export const en: Translations = {
 
   assistant: {
     thread: {
+      quoteMessage: 'Quote',
       loadingSession: 'Loading session',
       showEarlier: 'Show earlier messages',
       loadingResponse: 'Hermes is loading a response',

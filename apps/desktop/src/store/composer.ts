@@ -734,11 +734,20 @@ function unquoteRefValue(raw: string) {
   return (quoted ? raw.slice(1, -1) : raw).replace(/[,.;!?]+$/, '').trim()
 }
 
+function terminalRefMatches(draft: string) {
+  return Array.from(draft.matchAll(TERMINAL_REF_RE)).filter(match => {
+    const start = draft.lastIndexOf('\n', (match.index ?? 0) - 1) + 1
+
+    // Quoted historical tokens must not resolve against the live terminal map.
+    return !/^\s*>/.test(draft.slice(start, match.index))
+  })
+}
+
 function terminalLabelsFromDraft(draft: string) {
   const labels: string[] = []
   const seen = new Set<string>()
 
-  for (const match of draft.matchAll(TERMINAL_REF_RE)) {
+  for (const match of terminalRefMatches(draft)) {
     const label = unquoteRefValue(match[1] || '')
 
     if (!label || seen.has(label)) {
@@ -803,11 +812,17 @@ function terminalFence(text: string) {
 }
 
 function stripTerminalRefTokens(draft: string) {
-  return draft
-    .replace(new RegExp(TERMINAL_REF_RE.source, 'g'), '')
-    .replace(/[ \t]{2,}/g, ' ')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n[ \t]+/g, '\n')
+  let stripped = draft
+
+  for (const match of terminalRefMatches(draft).reverse()) {
+    const index = match.index ?? 0
+    stripped = stripped.slice(0, index) + stripped.slice(index + match[0].length)
+  }
+
+  return stripped
+    .split('\n')
+    .map(line => (/^\s*>/.test(line) ? line : line.replace(/[ \t]{2,}/g, ' ').trim()))
+    .join('\n')
     .trim()
 }
 

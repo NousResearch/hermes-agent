@@ -3039,6 +3039,7 @@ export interface Translations extends NoticeTranslations {
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string
     removeAttachment: (label: string) => string
+    removeQuote: string
     dictating: string
     preparingAudio: string
     speakingResponse: string
@@ -3976,6 +3977,7 @@ export interface Translations extends NoticeTranslations {
 
   assistant: {
     thread: {
+      quoteMessage: string
       loadingSession: string
       showEarlier: string
       loadingResponse: string

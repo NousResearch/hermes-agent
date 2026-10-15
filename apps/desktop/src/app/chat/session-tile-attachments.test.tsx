@@ -10,6 +10,7 @@ import {
   createComposerAttachmentOccurrenceId,
   createComposerAttachmentScope
 } from '@/store/composer'
+import { createComposerQuoteScope } from '@/store/composer-quotes'
 import { $connection, $sessions } from '@/store/session'
 import { $sessionStates, type SessionTileDelegate, setSessionTileDelegate } from '@/store/session-states'
 
@@ -103,6 +104,7 @@ function createScope(): ComposerScope {
     $awaitingInput: atom(false),
     $messages: atom([]),
     attachments: createComposerAttachmentScope(),
+    quotes: createComposerQuoteScope(),
     target: `tile:${STORED_ID}`
   }
 }

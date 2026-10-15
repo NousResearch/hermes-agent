@@ -1,5 +1,5 @@
 """Frozen, explicit local-client launch policy for the existing TurnRunner."""
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 import json
@@ -129,7 +129,7 @@ class LocalSessionPolicy:
         if (not self.follows_profile or self.source not in SURFACES or self.editor_mcp_json is not None
                 or 'toolsets' in json.loads(self.request_json)):
             return self.toolsets
-        return tuple(sorted(_resolve_toolsets({}, config, self.source, self.safe_mode)))
+        return tuple(sorted(_resolve_toolsets({}, config, self.source, self.safe_mode, self.cwd)))
 
     def current_reasoning_config(self, runner, session_key=None):
         """The next turn's reasoning: a typed session /reasoning (the messaging handler's override), else
@@ -282,7 +282,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
         # still targets this, and a later profile edit supersedes it.
         config.setdefault('model', {})['selection_profile'] = list(profile_target(config))
     _apply_launch_overrides(params, config)
-    enabled = _resolve_toolsets(params, config, source, safe_mode)
+    enabled = _resolve_toolsets(params, config, source, safe_mode, cwd)
     terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
     # The client's launch folder is a path on THIS host: a remote or container backend keeps its own
     # configured cwd unless the user picked this folder for the session.
@@ -379,8 +379,10 @@ def _apply_launch_overrides(params, config):
         config['agent'].pop('reasoning_overrides', None)
 
 
-def _resolve_toolsets(params, config, source, safe_mode):
-    """Validate explicit toolsets and return the session's enabled toolset set."""
+def _resolve_toolsets(params, config, source, safe_mode, cwd=None):
+    """Validate explicit toolsets and return the session's enabled toolset set. Without a pick, the
+    coding posture for *cwd* (``agent.coding_context: focus`` in a code workspace) replaces the
+    profile default on every interactive surface; the gateway decides it, never the client."""
     from hermes_cli.tools_config import _get_platform_tools
     from toolsets import validate_toolset
     explicit = params.get('toolsets')
@@ -396,7 +398,16 @@ def _resolve_toolsets(params, config, source, safe_mode):
         effective = {t for name in enabled for t in resolve_toolset(name)}
         if not requested <= effective:
             raise RuntimeStoreError('invalid_params')
-    elif source in {'tui', 'gui'}:
+    else:
+        selection = None
+        if cwd is not None:
+            # A detection failure keeps the profile default rather than refusing the session.
+            with suppress(Exception):
+                from agent.coding_context import coding_selection
+                selection = coding_selection(platform=SURFACES[source], cwd=cwd, config=config)
+        if selection is not None:
+            enabled = set(selection)
+    if explicit is None and source in {'tui', 'gui'}:
         # Same surface toolsets as the native TUI factory, without its env inference.
         # The fold-in lands after _get_platform_tools subtracted agent.disabled_toolsets, so
         # subtract again or `disabled_toolsets: [project]` is a no-op here (#54433).

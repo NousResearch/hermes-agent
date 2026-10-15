@@ -72,7 +72,10 @@ OpenAI API-to-local session affinity; those remain separate integration paths.
   The native local routing identity remains server-owned `Platform.LOCAL`; source never
   grants messaging/native trust. Default TUI selection folds in `project`; GUI folds in
   the client-surface toolsets (`project`, `desktop_ui`, `catalog`). GUI policy is
-  independent of `HERMES_DESKTOP` and of the attaching viewer's identity.
+  independent of `HERMES_DESKTOP` and of the attaching viewer's identity. Without explicit
+  `toolsets`, the gateway applies the coding posture (`agent.coding_context: focus` in a
+  code workspace, `agent/coding_context.py`) from the session's `cwd` on every interactive
+  surface; clients never send it as a pick.
 - Optional flat creation fields: `cwd` (existing absolute gateway-local directory),
   `model` (nonempty model identifier on the daemon's configured provider), and `toolsets`
   (explicit array of established toolset names, including an empty array). Unknown or

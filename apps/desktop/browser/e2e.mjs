@@ -95,6 +95,12 @@ try {
   const phoneFont = await phone.locator('[contenteditable="true"]').evaluate(element => Number.parseFloat(window.getComputedStyle(element).fontSize))
   if (phoneFont < 16) throw new Error('Touch composer risks Safari focus zoom below 16px.')
   if (await phone.evaluate(() => document.documentElement.scrollWidth > innerWidth)) throw new Error('Phone layout overflows horizontally.')
+  await phone.goto(`http://browser.localhost:${port}/#/profiles`)
+  const profileEditor = phone.locator('.cm-content[contenteditable="true"]').first()
+  await profileEditor.waitFor()
+  await profileEditor.click()
+  const profileFont = await profileEditor.evaluate(element => Number.parseFloat(window.getComputedStyle(element).fontSize))
+  if (profileFont < 16) throw new Error('Touch profile editor risks Safari focus zoom below 16px.')
   if (errors.length) throw new Error(errors.join('\n'))
   console.log('PASS: password login, cookie-authenticated gateway, streaming chat, tool calls, reload/resume, backend files, spectator popout, phone layout')
 } catch (error) {

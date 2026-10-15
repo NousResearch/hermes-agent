@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react'
 import { ArtifactPreview } from '../src/app/chat/right-rail/preview-artifact'
 import { LocalFilePreview } from '../src/app/chat/right-rail/preview-file'
 import type { PreviewPane as DesktopPreviewPane } from '../src/app/chat/right-rail/preview-pane'
+import { usePaneVisible } from '../src/components/pane-shell/pane-visibility'
+import { Button } from '../src/components/ui/button'
 import { useI18n } from '../src/i18n'
 
 import { sharedMessage } from './messages'
@@ -13,13 +15,34 @@ type PreviewPaneProps = ComponentProps<typeof DesktopPreviewPane>
 
 /** Browser guest content gets an opaque sandbox origin, never the backend's cookies. */
 export function PreviewPane({ target, onClose, reloadRequest = 0 }: PreviewPaneProps) {
-  if (target.kind === 'artifact') {return <ArtifactPreview onClose={onClose} target={target} />}
+  const { t } = useI18n()
+  const visible = usePaneVisible()
+  const [phone, setPhone] = useState(() => window.matchMedia('(max-width: 640px)').matches)
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 640px)')
+    const update = () => setPhone(query.matches)
+    query.addEventListener('change', update)
 
-  if (target.kind === 'file' && target.previewKind !== 'html') {
-    return <LocalFilePreview onClose={onClose} reloadKey={reloadRequest} target={target} />
-  }
+    return () => query.removeEventListener('change', update)
+  }, [])
+  useEffect(() => {
+    if (phone && visible && document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur()
+    }
+  }, [phone, target, visible])
 
-  return <BrowserFrame reloadRequest={reloadRequest} target={target} />
+  const content = target.kind === 'artifact' ? <ArtifactPreview onClose={onClose} target={target} /> :
+    target.kind === 'file' && target.previewKind !== 'html' ?
+      <LocalFilePreview onClose={onClose} reloadKey={reloadRequest} target={target} /> :
+      <BrowserFrame reloadRequest={reloadRequest} target={target} />
+
+  return <section className="browser-preview-surface" data-overlay-surface={phone && visible ? '' : undefined}>
+    {onClose && <div className="browser-preview-mobile-header">
+      <span className="min-w-0 flex-1 truncate">{target.label}</span>
+      <Button onClick={onClose} variant="ghost">{t.common.close}</Button>
+    </div>}
+    <div className="min-h-0 flex-1 overflow-auto">{content}</div>
+  </section>
 }
 
 function BrowserFrame({ target, reloadRequest }: Pick<PreviewPaneProps, 'target' | 'reloadRequest'>) {

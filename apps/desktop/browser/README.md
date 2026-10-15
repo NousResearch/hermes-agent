@@ -98,6 +98,10 @@ evaluating it before host installation. Overlapping configuration reads share a
 request within the same backend/profile/auth/timeout scope; results are not cached,
 and writes invalidate overlapping reads at both start and completion.
 
-On coarse-pointer touch devices the browser composer uses a 16px minimum font
+On coarse-pointer touch devices editable fields use a 16px minimum font
 size to prevent Safari focus zoom; larger user-selected text sizes remain intact.
-The mobile journey checks focused composer sizing and horizontal overflow.
+The mobile journey checks focused composer/profile editor sizing and horizontal
+overflow. At phone widths (640px and below), previews cover the viewport with a
+Close action and safe-area spacing instead of squeezing the chat into a split
+panel. Opening a phone preview dismisses input focus; its overlay blocks the
+chat's type-to-focus behavior until closed. Wider viewports keep docked previews.

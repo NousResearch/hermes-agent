@@ -122,8 +122,8 @@ def _locked(home: Path | str):
     root.parent.mkdir(parents=True, exist_ok=True)
     root.mkdir(mode=0o700, exist_ok=True)
     if os.name != "nt":
-        # NTFS has no POSIX mode: chmod rewrites the directory ACL, and the owner then gets
-        # Permission denied opening ``.lock`` below (the Telegram adapter crash-looped on it).
+        # Windows chmod only sets or clears the read-only attribute, so it adds nothing there:
+        # the owner-only DACL comes from mkdir's mode (CPython 3.13+) when it creates the dir.
         root.chmod(0o700)
     if created:
         # Only a fresh mailbox dir needs its parents durably linked; the live

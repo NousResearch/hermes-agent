@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   backgroundMaterialFor,
+  chatWindowSurfaceOptions,
   clampIntensity,
   DEFAULT_GLASS_MATERIAL,
   DEFAULT_GLASS_SCOPE,
@@ -26,6 +27,7 @@ import {
   glassSupportedOn,
   glassSurfaceKeep,
   hudFrostFor,
+  linuxTransparentWindows,
   normalizeBook,
   normalizeMaterial,
   normalizeMode,
@@ -42,6 +44,7 @@ import {
   translucencySupportedOn,
   vibrancyFor,
   windowBackgroundMaterialOptions,
+  windowBackingColor,
   windowBackingOptions,
   windowOpacityFor,
   windowOpacityOptions,
@@ -703,5 +706,36 @@ describe('resolving the book for the painted appearance', () => {
 
     expect(resolveTranslucency(book, 'light', false).mode).toBe('clear')
     expect(resolveTranslucency(book, 'dark', false).mode).toBe('clear')
+  })
+})
+
+describe('Linux transparent windows (opt-in)', () => {
+  const linux = { isMac: false, isWindows: false, glassSupported: false, themedColor: '#111111' }
+  // Linux: no native glass, so the default state is not glass.
+  const linuxState = defaultTranslucencyState('dark', false, false)
+
+  it('is on only for Linux with HERMES_DESKTOP_TRANSPARENT=1', () => {
+    expect(linuxTransparentWindows('linux', { HERMES_DESKTOP_TRANSPARENT: '1' })).toBe(true)
+    expect(linuxTransparentWindows('linux', {})).toBe(false)
+    expect(linuxTransparentWindows('linux', { HERMES_DESKTOP_TRANSPARENT: 'true' })).toBe(false)
+    expect(linuxTransparentWindows('darwin', { HERMES_DESKTOP_TRANSPARENT: '1' })).toBe(false)
+    expect(linuxTransparentWindows('win32', { HERMES_DESKTOP_TRANSPARENT: '1' })).toBe(false)
+  })
+
+  it('creates an opted-in window transparent with a clear backing, never faded', () => {
+    const options = chatWindowSurfaceOptions(linuxState, { ...linux, linuxTransparent: true })
+    expect(options).toEqual({ transparent: true, backgroundColor: '#00000000' })
+    expect(options).not.toHaveProperty('opacity')
+  })
+
+  it('leaves windows that did not opt in on the themed opaque backing', () => {
+    const options = chatWindowSurfaceOptions(linuxState, { ...linux, linuxTransparent: false })
+    expect(options).not.toHaveProperty('transparent')
+    expect(options).toMatchObject({ backgroundColor: '#111111' })
+  })
+
+  it('keeps the runtime backing clear for an opted-in window', () => {
+    expect(windowBackingColor(linuxState, '#111111', true)).toBe('#00000000')
+    expect(windowBackingColor(linuxState, '#111111', false)).toBe('#111111')
   })
 })

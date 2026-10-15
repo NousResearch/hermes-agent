@@ -331,9 +331,50 @@ def test_release_date_reads_the_stamp_commit_date(tmp_path):
     undated = stamp_dir("undated")
     assert read(undated) == "2026.9.24"
 
+    # No stamp: version_info falls through to live git for the executing
+    # checkout (the probe imports hermes_cli from it), so the banner dates
+    # the running HEAD instead of a literal from another build.
     unstamped = tmp_path / "unstamped"
     unstamped.mkdir()
-    assert read(unstamped) == "2026.9.24"
+    head_epoch = subprocess.run(
+        ["git", "-C", str(repo), "log", "-1", "--format=%ct", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    moment = datetime.fromtimestamp(int(head_epoch), tz=timezone.utc)
+    assert read(unstamped) == f"{moment.year}.{moment.month}.{moment.day}"
+
+
+def test_release_date_uses_the_git_commit_date_when_no_stamp_has_a_date(monkeypatch):
+    """An unstamped source/git install resolves its date from live git through
+    version_info (process-cached), formatting like the stamp path does."""
+    from datetime import datetime, timezone
+
+    import hermes_cli
+
+    monkeypatch.setattr(hermes_cli, "_release_date_cached", None)
+    monkeypatch.setattr(hermes_cli, "_read_release_stamp", lambda: {})
+    monkeypatch.setattr(
+        "hermes_cli.version_info.get_version_info",
+        lambda: VersionInfo(
+            "0.22.1", "0.22.1", 0, "f" * 40, "main", "git",
+            False, int(datetime(2026, 10, 14, 21, 56, 35, tzinfo=timezone.utc).timestamp()),
+        ),
+    )
+    assert hermes_cli._release_date() == "2026.10.14"
+
+
+def test_release_date_keeps_the_placeholder_when_no_source_has_a_date(monkeypatch):
+    """A tree with no stamp date and no git provenance reports no date rather
+    than a wrong one from another build."""
+    import hermes_cli
+
+    monkeypatch.setattr(hermes_cli, "_release_date_cached", None)
+    monkeypatch.setattr(hermes_cli, "_read_release_stamp", lambda: {})
+    monkeypatch.setattr(
+        "hermes_cli.version_info.get_version_info",
+        lambda: VersionInfo("unknown", "unknown", None, None, None, "unknown"),
+    )
+    assert hermes_cli._release_date() == "2026.9.24"
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="the blocking untracked scan uses a FIFO")

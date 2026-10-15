@@ -11,8 +11,8 @@ __release_date__: str
 # Stable releases are tag-based (scripts/release.py cuts them without a repo
 # commit), so nothing in the release flow bumps a checked-in date literal: the
 # stamp's commitDate -- the tagged commit's own date -- is the date a build
-# actually shipped (#135217). Unstamped dev checkouts have no release date to
-# report and keep this placeholder.
+# actually shipped (#135217). Only a tree with no date from the stamp or from
+# live git (no provenance at all) keeps this placeholder.
 _RELEASE_DATE_FALLBACK = "2026.9.24"
 
 
@@ -44,19 +44,37 @@ def _read_release_stamp() -> dict:
     return read_install_stamp(repo_root())
 
 
+_release_date_cached: str | None = None
+
+
 def _release_date() -> str:
-    """``YYYY.M.D`` for the stamp's commitDate, else the placeholder.
+    """``YYYY.M.D`` for the stamp's commitDate, else the git commit date, else the placeholder.
 
     Every stamp writer records commitDate (epoch seconds) for the commit it
     packaged -- the release tag's commit for a stable build -- formatted in UTC
-    without zero padding, matching how the literal has always read.
+    without zero padding, matching how the literal has always read. Unstamped
+    source/git installs (a dev clone, or a generation that has not published
+    its first stamp) resolve the same identity from live git through
+    version_info, which caches its git work process-wide -- this sits on the
+    startup-banner path. A stamped-but-undated build also lands there and
+    stays dateless: version_info reads the same stamp, finds no commitDate,
+    and does not fall through to git. Only a tree with no date from either
+    source keeps the placeholder.
     """
+    global _release_date_cached
+    if _release_date_cached is not None:
+        return _release_date_cached
     commit_date = _read_release_stamp().get("commitDate")
+    if not isinstance(commit_date, int):
+        from hermes_cli.version_info import get_version_info
+        commit_date = get_version_info().commit_date
     if isinstance(commit_date, int):
         from datetime import datetime, timezone
         moment = datetime.fromtimestamp(commit_date, tz=timezone.utc)
-        return f"{moment.year}.{moment.month}.{moment.day}"
-    return _RELEASE_DATE_FALLBACK
+        _release_date_cached = f"{moment.year}.{moment.month}.{moment.day}"
+    else:
+        _release_date_cached = _RELEASE_DATE_FALLBACK
+    return _release_date_cached
 
 
 def __getattr__(name: str) -> str:
@@ -65,9 +83,10 @@ def __getattr__(name: str) -> str:
     tests/compat/old_updater_surface.json freezes that import. In-tree code resolves
     identity through hermes_cli.version_info.get_version_info(); this reads only the
     install stamp -- never git -- and keeps the pre-stamp placeholder when a checkout
-    has no stamp. ``__release_date__`` reads the same stamp so every banner and
-    status surface reports the date the running build was tagged, not a checked-in
-    literal the tag-based release flow never bumps.
+    has no stamp. ``__release_date__`` reads the same stamp first, then falls back
+    to version_info's live-git date for unstamped source installs, so every banner
+    and status surface reports the date the running build was built from, not a
+    checked-in literal the tag-based release flow never bumps.
 
     Lazy because ``pm`` is not importable when this package loads: a venv
     editable-installed from a pre-PM tree maps only the top-level packages it knew

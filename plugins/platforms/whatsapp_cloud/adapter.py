@@ -263,6 +263,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         entries = set(entries or ())
         target = str(target).strip()
         if _BSUID_RE.fullmatch(target):
+            entries = self._normalize_allow_ids(entries)
             return target in entries or "*" in entries
         bare = next(iter(self._normalize_allow_ids({target})), target)
         return bare in self._normalize_allow_ids(entries) or super()._entry_matches(entries, target)

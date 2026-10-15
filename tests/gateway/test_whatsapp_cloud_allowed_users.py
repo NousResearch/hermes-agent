@@ -10,7 +10,7 @@ silently dropped every inbound message.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -146,3 +146,99 @@ def test_cloud_live_allowlist_denies_when_env_key_removed(monkeypatch):
     monkeypatch.delenv("WHATSAPP_CLOUD_ALLOWED_USERS", raising=False)
     assert adapter._live_dm_allow_from() == set()
     assert adapter._is_dm_allowed("15551234567") is False
+
+
+_CLOUD_ALLOWLIST_VARS = (
+    "WHATSAPP_CLOUD_ALLOW_FROM",
+    "WHATSAPP_CLOUD_ALLOWED_USERS",
+)
+_BSUID = "DE.1A2B3C4D5E6F7G"
+_OTHER_BSUID = "DE.1234567ABCDEFG"
+
+
+async def _dispatch_cloud_message(adapter, sender, wamid, *, button_id=None):
+    message = {"from": sender, "id": wamid, "type": "text", "text": {"body": "hello"}}
+    if button_id is not None:
+        message.update(type="interactive", interactive={
+            "type": "button_reply",
+            "button_reply": {"id": button_id, "title": "1"},
+        })
+    await adapter._dispatch_payload({
+        "object": "whatsapp_business_account",
+        "entry": [{"changes": [{"field": "messages", "value": {
+            "metadata": {"phone_number_id": "1234567890"},
+            "messages": [message],
+        }}]}],
+    })
+
+
+@pytest.mark.parametrize("env_var", _CLOUD_ALLOWLIST_VARS)
+@pytest.mark.asyncio
+async def test_suffixed_bsuid_live_allowlist_message_intake(monkeypatch, env_var):
+    adapter = _build_adapter(monkeypatch, {
+        env_var: f"{_BSUID}@s.whatsapp.net,+1 (555) 123-4567@s.whatsapp.net",
+    })
+    adapter.handle_message = AsyncMock()
+
+    async def expect_intake(sender, wamid, allowed):
+        adapter.handle_message.reset_mock()
+        await _dispatch_cloud_message(adapter, sender, wamid)
+        if allowed:
+            adapter.handle_message.assert_awaited_once()
+            assert adapter.handle_message.call_args.args[0].source.user_id == sender
+        else:
+            adapter.handle_message.assert_not_awaited()
+
+    await expect_intake(_BSUID, "initial", True)
+    await expect_intake(_OTHER_BSUID, "collision", False)
+    await expect_intake(_BSUID.replace("A", "a"), "case", False)
+    await expect_intake("1234567", "projection", False)
+    await expect_intake("15551234567", "phone", True)
+
+    monkeypatch.setenv(env_var, f"{_OTHER_BSUID}@s.whatsapp.net")
+    await expect_intake(_OTHER_BSUID, "update", True)
+    await expect_intake(_BSUID, "old", False)
+    await expect_intake("15551234567", "phone-revoked", False)
+    monkeypatch.setenv(env_var, "")
+    await expect_intake(_OTHER_BSUID, "empty", False)
+    monkeypatch.setenv(env_var, "*@s.whatsapp.net")
+    await expect_intake(_BSUID, "wildcard", True)
+    monkeypatch.delenv(env_var)
+    await expect_intake(_BSUID, "removed", False)
+
+
+@pytest.mark.parametrize("env_var", _CLOUD_ALLOWLIST_VARS)
+@pytest.mark.asyncio
+async def test_suffixed_bsuid_live_allowlist_interactive_dispatch(monkeypatch, env_var):
+    adapter = _build_adapter(monkeypatch, {env_var: f"{_BSUID}@s.whatsapp.net"})
+    adapter.handle_message = AsyncMock()
+    resolver = MagicMock(return_value=True)
+    monkeypatch.setattr("tools.clarify_gateway.resolve_gateway_clarify", resolver)
+
+    async def expect_tap(sender, prompt_id, allowed):
+        adapter._clarify_state[prompt_id] = "session"
+        resolver.reset_mock()
+        await _dispatch_cloud_message(
+            adapter, sender, prompt_id, button_id=f"cl:{prompt_id}:0",
+        )
+        if allowed:
+            resolver.assert_called_once_with(prompt_id, "1")
+            assert prompt_id not in adapter._clarify_state
+        else:
+            resolver.assert_not_called()
+            assert adapter._clarify_state[prompt_id] == "session"
+        adapter.handle_message.assert_not_awaited()
+
+    await expect_tap(_BSUID, "initial", True)
+    await expect_tap(_OTHER_BSUID, "collision", False)
+    await expect_tap("1234567", "projection", False)
+    await expect_tap(_BSUID.replace("A", "a"), "case", False)
+    monkeypatch.setenv(env_var, f"{_OTHER_BSUID}@s.whatsapp.net")
+    await expect_tap(_OTHER_BSUID, "update", True)
+    await expect_tap(_BSUID, "old", False)
+    monkeypatch.setenv(env_var, "")
+    await expect_tap(_OTHER_BSUID, "empty", False)
+    monkeypatch.setenv(env_var, f"{_OTHER_BSUID}@s.whatsapp.net")
+    await expect_tap(_OTHER_BSUID, "restored", True)
+    monkeypatch.delenv(env_var)
+    await expect_tap(_OTHER_BSUID, "removed", False)

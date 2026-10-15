@@ -39,7 +39,7 @@ def test_slash_diff_session_follows_the_sessions_checkpoint_policy(tmp_path):
                 assert 'a.txt' in diff['output'] and '+edited' in diff['output'], diff
                 # The profile leaves checkpoints off: a session launched without the flag still says so.
                 off = (await _git_rpc(ws, 'slash.exec', session_id=plain, command='diff session'))['result']
-                assert 'a.txt' not in off['output'], off
+                assert 'Checkpoints are not enabled' in off['output'], off
         asyncio.run(probe())
 
 
@@ -62,6 +62,8 @@ def test_project_skills_follow_the_sessions_repo_in_discovery_and_dispatch(tmp_p
                 # A session in another directory never sees the repo's skill.
                 foreign = (await rpc(ws, 'commands.catalog', session_id=other))['result']
                 assert '/repo-probe' not in foreign['skills'], foreign['skills']
+                elsewhere = (await rpc(ws, 'complete.slash', session_id=other, text='/repo-pr'))['result']['items']
+                assert not any(item['text'].lstrip('/').startswith('repo-probe') for item in elsewhere), elsewhere
                 refused = await rpc(ws, 'slash.exec', session_id=other, command='repo-probe hello')
                 assert refused['error']['message'] == 'unsupported_command', refused
         asyncio.run(probe())

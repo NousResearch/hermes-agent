@@ -4974,8 +4974,6 @@ async def _host_attach_or_none(replace: bool, force: bool = False) -> Optional[b
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False,
                         verbosity: Optional[int] = 0, force: bool = False, idle_exit: bool = False) -> bool:
     """Run the process lifecycle; the runner facade remains the public entrypoint."""
-    # A gateway owner must not inherit a delegated child write fence (#87650).
-    os.environ.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
     from gateway.run_bootstrap import start_gateway as bootstrap
     return await bootstrap(config, replace, verbosity, force, idle_exit)
 

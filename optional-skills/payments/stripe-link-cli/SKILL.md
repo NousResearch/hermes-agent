@@ -1,10 +1,10 @@
 ---
 name: stripe-link-cli
 description: Agent payments via Stripe Link — cards, SPT, approvals.
-version: 0.1.0
+version: 0.2.0
 author: Teknium (teknium1), Hermes Agent
 license: MIT
-platforms: [linux, macos]
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Payments, Stripe, Link, Checkout, MPP]
@@ -15,7 +15,7 @@ metadata:
 
 Wraps [@stripe/link-cli](https://github.com/stripe/link-cli) so Hermes can complete purchases on the user's behalf using one-time-use virtual cards or Shared Payment Tokens (SPT). Every spend is gated by an in-app approval in the Link mobile/web app — Hermes cannot self-approve.
 
-US-only at the moment (Link account requirement). Windows is not supported by the upstream CLI — this skill is gated `[linux, macos]`.
+US-only at the moment (Link account requirement). Works on Linux, macOS, and Windows (verified with link-cli 0.27.3 on Windows 11, Node 26; see the Windows notes under Pitfalls).
 
 ## When to Use
 
@@ -51,6 +51,8 @@ npm install -g @stripe/link-cli
 
 Or invoke ad-hoc via `npx @stripe/link-cli`. The skill below uses the installed `link-cli` form.
 
+npm may warn `install-scripts ... not yet covered by allowScripts` for `@stripe/link-cli`. That is harmless: the skipped postinstall only runs `npx skills add stripe/link-cli` to install a skill for other agents, so the CLI works without it.
+
 ## How to Run
 
 All commands run through the `terminal` tool. The CLI auto-detects non-TTY callers and emits compact `toon` output by default — fine for the model. Pass `--format json` if a step needs structured fields.
@@ -72,7 +74,9 @@ If not authenticated, log in with a clear client name (this label shows in the u
 link-cli auth login --client-name "Hermes" --interval 5 --timeout 300
 ```
 
-The `--interval`/`--timeout` form polls inline so the agent doesn't need to manage a `_next` step. Print the verification URL + phrase to the user and wait for the CLI to return.
+The `--interval`/`--timeout` form polls inline so the agent doesn't need to manage a `_next` step. Run it as a background process, read the `verification_url` + `phrase` from its first output lines, give them to the user, and wait for the CLI to return.
+
+**The device code expires after ~10 minutes regardless of `--timeout`.** When it expires, the CLI clears the pending login and keeps polling, then exits `0` with `authenticated: false` and no `pending:` field. That is not an error. Tell the user the link is good for about 10 minutes, and if it lapses start a fresh `auth login` and send the new URL.
 
 **Do not proceed past this step until `auth status` confirms login.**
 
@@ -112,7 +116,7 @@ link-cli spend-request create \
   --payment-method-id <pm_id> \
   --merchant-name "<name>" \
   --merchant-url "<url>" \
-  --context "<one sentence: what is being purchased and why>" \
+  --context "<what is being purchased, from whom, and why; at least 100 characters>" \
   --amount <cents> \
   --line-item "name:<item>,unit_amount:<cents>,quantity:1" \
   --total "type:total,display_text:Total,amount:<cents>" \
@@ -121,7 +125,15 @@ link-cli spend-request create \
 
 For MPP merchants add `--credential-type shared_payment_token`.
 
-`--request-approval` pings the user's Link app and polls until they approve or deny. The CLI exits non-zero on deny / timeout.
+`--context` must be at least 100 characters, because the user reads it on the approval screen. `--merchant-name` and `--merchant-url` are required for `card` requests. Itemize with repeated `--total` entries (`subtotal`, `shipping`, `tax`, `total`) so the approval screen matches the merchant's checkout.
+
+With `--request-approval`, the CLI (0.27.x) creates the request and returns right away with `status: pending_approval`, an `approval_url`, and a `_next` command:
+
+```
+link-cli spend-request retrieve <lsrq_id> --interval 2 --max-attempts 300
+```
+
+Give the user the `approval_url`, then run `_next` (in the background if your harness allows) to wait until the status leaves `pending_approval`. **The push notification does not always appear in the Link mobile app.** If the user can't see the request, have them open the `approval_url` directly while signed in to Link. The approval window is about 30 minutes (`approval_window_expires_at`). `_next` gives up after its attempt budget (about 10 minutes), so re-run it if the window is still open.
 
 ### 5. Retrieve the credential — SECURELY
 
@@ -135,6 +147,8 @@ link-cli spend-request retrieve <lsrq_id> \
 ```
 
 The file is written with `0600` perms; stdout shows only redacted fields (brand, last4, expiry) plus a `card_output_file` path.
+
+**Windows:** pass an absolute native path, e.g. `C:/Users/<user>/AppData/Local/hermes/cache/scratch/link-card.json`. Under git-bash, `$TMPDIR`/`/tmp` resolves to `C:\tmp` for Node and fails with `OUTPUT_FILE_WRITE_ERROR ... ENOENT`.
 
 ### 6. Use the credential
 
@@ -174,6 +188,9 @@ Then `hermes mcp list` should show `stripe-link`. The same approval rules apply 
 - **Multi-step `_next` commands.** Some commands return `_next.command` that must be executed to continue. When in doubt, prefer the inline-polling flags (`--interval`/`--timeout`).
 - **Output format defaults to `toon`** in non-TTY mode. Fine for prose, but if a downstream step needs to parse a specific field, pass `--format json`.
 - **Don't default to `card`.** The merchant-evaluation step (Section 2) exists because picking the wrong credential type fails the purchase silently or leaks more data than needed.
+- **Shopify storefront checkout resists browser automation.** Filling a one-time card into a Shopify checkout with a driven browser hit bot protection: a headless browser's "Pay now" was silently ignored, and a headed one got a CAPTCHA plus a Shop Pay prompt. Never try to solve CAPTCHAs. For Shopify merchants, prefer the `shop` optional skill (Shop CLI, UCP checkout with Shop Pay), or hand the final click to the user.
+- **`link-cli ucp ...` is account-gated.** `ucp catalog search` and `ucp checkout create` (even with `--test`) can return `403 Forbidden`, and `approval-policy retrieve` returns `403: This feature is not enabled on your account.` `auth upgrade` can't fix this, because the CLI defines no UCP scope (only `userinfo:read` and `payment_methods.agentic`). Report it to the user rather than retrying; access comes from Stripe (agent-spend@stripe.com).
+- **Report blocked checkouts.** `link-cli report --domain <host> --outcome blocked --spend-request-id <lsrq_id> --tag captcha --attempt-trace "<numbered steps>"` sends Stripe a structured outcome report. Keep buyer PII out of the trace.
 
 ## Verification
 

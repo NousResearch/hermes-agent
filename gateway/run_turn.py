@@ -1014,7 +1014,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         from gateway.session_policy import policy_for_source
         policy = policy_for_source(self, source)
         from gateway.session_authorities import active_authority
-        user_config = policy.config(active_authority(self)) if policy else _load_gateway_config()
+        user_config = policy.config(active_authority(self), secrets=False) if policy else _load_gateway_config()
         platform_key = policy.platform if policy else _platform_config_key(source.platform)
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         if policy:

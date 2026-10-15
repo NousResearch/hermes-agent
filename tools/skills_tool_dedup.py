@@ -1,14 +1,13 @@
 """skill_view repeat-view dedup registry: per-task cache of (skill name, file_path) ->
 (skill file mtime+size). A repeat view of an UNCHANGED file returns a short stub — the earlier
-tool result already carries the content verbatim. Cleared via ``reset_skill_view_dedup()`` on
-context compression AND on a committed proactive tool-result prune, because both replace the
-original content with a one-line marker.
+tool result already carries the content verbatim. Released via ``reset_skill_view_dedup()`` on
+context compression AND on a committed proactive tool-result prune, because both can replace the
+original content with a one-line marker; entries whose full result survives the rewrite are kept.
 """
 
 import json
 import os
 import threading
-from typing import Dict
 
 _skill_view_tracker: dict[str, dict[tuple, tuple]] = {}
 _skill_view_tracker_lock = threading.Lock()
@@ -81,10 +80,31 @@ def _check_skill_view_dedup(task_id, name, file_path) -> str | None:
     return None
 
 
-def reset_skill_view_dedup(task_id: str | None = None) -> None:
-    """Clear the dedup cache (all tasks when task_id is None); called on context compression."""
+def _surviving_skill_view_keys(messages: list) -> set[tuple[str, str]]:
+    """Dedup keys whose full skill_view result is still verbatim in *messages*."""
+    keys: set[tuple[str, str]] = set()
+    for msg in messages:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if msg.get("role") != "tool" or not isinstance(content, str) or '"_source_path"' not in content:
+            continue
+        try:
+            payload = json.loads(content)
+        except ValueError:
+            continue
+        if isinstance(payload, dict) and payload.get("success") and payload.get("content") is not None:
+            keys.add((str(payload.get("name") or ""), str(payload.get("file") or "")))
+    return keys
+
+
+def reset_skill_view_dedup(task_id: str | None = None, *, surviving_messages: list | None = None) -> None:
+    """Clear the dedup cache (all tasks when task_id is None) after a transcript rewrite.
+    With *surviving_messages*, keep the task's entries whose full result is still in them."""
     with _skill_view_tracker_lock:
         if task_id is None:
             _skill_view_tracker.clear()
-        else:
-            _skill_view_tracker.pop(str(task_id), None)
+            return
+        cache = _skill_view_tracker.pop(str(task_id), None)
+        if cache and surviving_messages:
+            surviving = _surviving_skill_view_keys(surviving_messages)
+            if kept := {key: fp for key, fp in cache.items() if key in surviving}:
+                _skill_view_tracker[str(task_id)] = kept

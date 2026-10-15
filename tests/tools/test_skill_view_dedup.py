@@ -125,3 +125,34 @@ class TestSkillViewDedup:
         repeat = _view("demo-dedup-skill")
         assert repeat.get("dedup") is True
         assert repeat.get("content_returned") is False
+
+
+class TestResetKeepsSurvivingResults:
+    """A transcript rewrite releases only the stubs whose full result it removed (#132177)."""
+
+    def _transcript(self, *bodies):
+        return [{"role": "tool", "tool_call_id": f"c{i}", "content": b} for i, b in enumerate(bodies)]
+
+    def test_surviving_full_result_keeps_stub(self, skills_home):
+        body = _skill_view_with_bump({"name": "demo-dedup-skill"}, task_id="t-svd")
+        reset_skill_view_dedup("t-svd", surviving_messages=self._transcript(body))
+        assert _view("demo-dedup-skill").get("dedup") is True
+
+    def test_demoted_result_serves_content_again(self, skills_home):
+        _view("demo-dedup-skill")
+        marker = "[skill_view] name=demo-dedup-skill (2,000 chars)"
+        reset_skill_view_dedup("t-svd", surviving_messages=self._transcript(marker))
+        assert "Step one" in _view("demo-dedup-skill").get("content", "")
+
+    def test_only_the_removed_file_is_released(self, skills_home):
+        main = _skill_view_with_bump({"name": "demo-dedup-skill"}, task_id="t-svd")
+        _view("demo-dedup-skill", file_path="references/guide.md")
+        reset_skill_view_dedup("t-svd", surviving_messages=self._transcript(main))
+        assert _view("demo-dedup-skill").get("dedup") is True
+        assert "Detailed reference" in _view("demo-dedup-skill", file_path="references/guide.md").get("content", "")
+
+    def test_stub_in_transcript_does_not_count_as_surviving(self, skills_home):
+        _view("demo-dedup-skill")
+        stub = _skill_view_with_bump({"name": "demo-dedup-skill"}, task_id="t-svd")
+        reset_skill_view_dedup("t-svd", surviving_messages=self._transcript(stub))
+        assert "Step one" in _view("demo-dedup-skill").get("content", "")

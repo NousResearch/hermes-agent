@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
 
 import pytest
@@ -194,6 +195,23 @@ def test_unreadable_marker_keeps_gateway_awake(hermes_home, monkeypatch):
 # --- dashboard side: the real handle_ws path touches the marker -------------
 
 
+def _drain_marker_writes(ws_mod) -> None:
+    """Wait for queued marker writes: the WS side hands them to a single worker thread."""
+    ws_mod._dashboard_client_touch_pool.submit(lambda: None).result(timeout=10)
+
+
+def _stub_ws_server(monkeypatch, ws_mod):
+    from tui_gateway import server
+
+    monkeypatch.setattr(server, "_start_backend_heartbeat_refresher", lambda: None)
+    monkeypatch.setattr(server, "_schedule_startup_orphan_sweep", lambda: None, raising=False)
+    monkeypatch.setattr(server, "resolve_skin", lambda: "default")
+    monkeypatch.setattr(server, "_ensure_skin_watcher", lambda: None)
+    monkeypatch.setattr(server, "register_live_transport", lambda *_a, **_k: None)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+    monkeypatch.setattr(ws_mod, "_dashboard_client_touched_at", 0.0)
+
+
 def test_handle_ws_connect_touches_marker(hermes_home, monkeypatch):
     from tui_gateway import server, ws as ws_mod
 
@@ -220,6 +238,7 @@ def test_handle_ws_connect_touches_marker(hermes_home, monkeypatch):
 
     assert s2z.dashboard_client_last_seen() is None
     asyncio.run(ws_mod.handle_ws(FakeWS()))
+    _drain_marker_writes(ws_mod)
     seen = s2z.dashboard_client_last_seen()
     assert seen is not None and abs(seen - time.time()) < 5
 
@@ -255,6 +274,8 @@ def test_handle_ws_inbound_frames_refresh_marker(hermes_home, monkeypatch):
             pass
 
         async def receive_text(self):
+            # Let the previous write land so coalescing does not merge frame touches.
+            _drain_marker_writes(ws_mod)
             if frames:
                 return frames.pop()
             raise ws_mod._WebSocketDisconnect()
@@ -263,6 +284,7 @@ def test_handle_ws_inbound_frames_refresh_marker(hermes_home, monkeypatch):
             pass
 
     asyncio.run(ws_mod.handle_ws(FakeWS()))
+    _drain_marker_writes(ws_mod)
     # 1 on connect + 1 per inbound frame.
     assert len(touches) == 3
     assert s2z.dashboard_client_last_seen() is not None
@@ -279,6 +301,105 @@ def test_note_activity_is_throttled(hermes_home, monkeypatch):
     ws_mod._note_dashboard_client_activity(force=True)
     ws_mod._note_dashboard_client_activity()
     ws_mod._note_dashboard_client_activity()
+    _drain_marker_writes(ws_mod)
     assert calls["n"] == 1
     ws_mod._note_dashboard_client_activity(force=True)
+    _drain_marker_writes(ws_mod)
     assert calls["n"] == 2
+
+
+class _QuickDisconnectWS:
+    def __init__(self):
+        self.sent: list[str] = []
+
+    async def accept(self):
+        pass
+
+    async def send_text(self, line):
+        self.sent.append(line)
+
+    async def receive_text(self):
+        from tui_gateway import ws as ws_mod
+        raise ws_mod._WebSocketDisconnect()
+
+    async def close(self):
+        pass
+
+
+def test_slow_marker_write_does_not_hold_the_connection(hermes_home, monkeypatch):
+    """#139011: the marker write is disk I/O. On the event loop a slow disk stalled the whole
+    gateway (and every managed-worker RPC, each of which opens a socket here); awaited, it would
+    still hold the connection that triggered it. It runs off the loop and nothing waits for it."""
+    from tui_gateway import ws as ws_mod
+
+    _stub_ws_server(monkeypatch, ws_mod)
+    loop_threads: list[int] = []
+    write_threads: list[int] = []
+    release, written = threading.Event(), threading.Event()
+
+    def _slow_touch(path=None):
+        write_threads.append(threading.get_ident())
+        release.wait(10)
+        written.set()
+        return True
+
+    monkeypatch.setattr(s2z, "touch_dashboard_client_heartbeat", _slow_touch)
+    fake = _QuickDisconnectWS()
+
+    async def _connect():
+        loop_threads.append(threading.get_ident())
+        await asyncio.wait_for(ws_mod.handle_ws(fake), timeout=5)
+
+    try:
+        asyncio.run(_connect())
+    finally:
+        release.set()
+    assert any("gateway.ready" in line for line in fake.sent)
+    assert written.wait(10)
+    assert write_threads and loop_threads[0] not in write_threads
+
+
+def test_stalled_marker_write_coalesces_later_touches(hermes_home, monkeypatch):
+    """Forced touches (one per accept) during a stalled write must not pile up behind it: the
+    marker is an mtime, so one pending write per path covers them all."""
+    from tui_gateway import ws as ws_mod
+
+    monkeypatch.setattr(ws_mod, "_dashboard_client_touched_at", 0.0)
+    started, release = threading.Event(), threading.Event()
+    calls = {"n": 0}
+
+    def _slow_touch(path=None):
+        calls["n"] += 1
+        started.set()
+        release.wait(10)
+        return True
+
+    monkeypatch.setattr(s2z, "touch_dashboard_client_heartbeat", _slow_touch)
+    try:
+        ws_mod._note_dashboard_client_activity(force=True)
+        assert started.wait(5)
+        for _ in range(20):
+            ws_mod._note_dashboard_client_activity(force=True)
+    finally:
+        release.set()
+    _drain_marker_writes(ws_mod)
+    # The in-flight write plus one queued follow-up, not 21 writes.
+    assert calls["n"] == 2
+
+
+def test_marker_write_lands_in_the_callers_profile_home(hermes_home, monkeypatch):
+    """The write runs on a worker thread, which does not inherit the caller's context-local
+    HERMES_HOME override; the marker must still land in the caller's home, not the launch home."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tui_gateway import ws as ws_mod
+
+    monkeypatch.setattr(ws_mod, "_dashboard_client_touched_at", 0.0)
+    served = hermes_home / "served-profile"
+    token = set_hermes_home_override(served)
+    try:
+        ws_mod._note_dashboard_client_activity(force=True)
+    finally:
+        reset_hermes_home_override(token)
+    _drain_marker_writes(ws_mod)
+    assert s2z.dashboard_client_last_seen(s2z.dashboard_client_heartbeat_path(served)) is not None
+    assert s2z.dashboard_client_last_seen() is None

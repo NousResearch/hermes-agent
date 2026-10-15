@@ -96,7 +96,7 @@ GEMINI4_THINKING_LEVELS: tuple[str, ...] = ("low", "medium", "high")
 #: Groq's OpenAI-compatible wire globally accepts only top-level reasoning_effort
 #: "none"/"default" (#75089) — EXCEPT its two GPT-OSS models, which have their own
 #: graded low/medium/high knob per Groq's own docs (console.groq.com/docs/reasoning)
-#: and 400 on "default" itself. Model-specific, not host-specific: #119xxx.
+#: and 400 on "default" itself. Model-specific; the custom profile also checks the api.groq.com host (#124103).
 GROQ_GPT_OSS_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 GROQ_GPT_OSS_MODEL_SLUGS: frozenset[str] = frozenset({"gpt-oss-20b", "gpt-oss-120b"})
 

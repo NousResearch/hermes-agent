@@ -78,6 +78,18 @@ export function isCronRunSession(storedSessionId: null | string | undefined): bo
   return isCronRunRow(cached) || LEGACY_CRON_RUN_SESSION_ID.test(id)
 }
 
+/**
+ * Whether a send to this session must re-check the cron write gate: it is a
+ * cron run by its cached row or legacy id, or a verdict was recorded when it
+ * was opened. The verdict keeps a `local-*` run gated after a sidebar refresh
+ * drops its row from the cached list.
+ */
+export function cronRunWriteGateApplies(storedSessionId: null | string | undefined): boolean {
+  const id = storedSessionId?.trim()
+
+  return Boolean(id) && (isCronRunSession(id) || hasCronRunVerdict(id))
+}
+
 function recordRunVerdict(run: CronRunRow): void {
   recordCronRunVerdict(run.id, !isResumableCronRun(run))
 }
@@ -129,7 +141,7 @@ export async function refreshCronRunWriteGate(
 ): Promise<boolean> {
   const id = storedSessionId?.trim()
 
-  if (!id || !(isCronRunSession(id) || hasCronRunVerdict(id))) {
+  if (!id || !cronRunWriteGateApplies(id)) {
     return false
   }
 

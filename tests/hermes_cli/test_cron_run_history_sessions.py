@@ -9,6 +9,7 @@ through the real routes in a temp default profile.
 """
 from datetime import timedelta
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -44,6 +45,11 @@ def owner(tmp_path, monkeypatch):
                                  epoch=begin_runtime_epoch(db, instance_id='test'))
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     runner.session_authority = authority
+    # Pin the configured zone so the output writer and the run-history reader resolve the same
+    # one, whatever the process's C-level zone (conftest sets TZ=UTC in the env without tzset).
+    utc = ZoneInfo('UTC')
+    monkeypatch.setattr(hermes_time, 'get_timezone', lambda: utc)
+    monkeypatch.setattr(cron_routes, '_get_timezone', lambda: utc)
     yield authority
     db.close()
 
@@ -131,7 +137,8 @@ async def test_detail_still_recognises_legacy_runs_and_leaves_other_sessions_alo
 
 
 @pytest.mark.asyncio
-async def test_a_fire_that_failed_beside_a_unified_run_keeps_its_own_row(owner, clock):
+@pytest.mark.parametrize('failed_fire_wrote_doc', [False, True])
+async def test_a_fire_that_failed_beside_a_unified_run_keeps_its_own_row(owner, clock, failed_fire_wrote_doc):
     """Output rows pair with sessions per execution: the next fire failing a minute later, before
     it created a session, is its own run, not swallowed by its neighbour's time window."""
     job = jobs.create_job(prompt='report', schedule='every 1m', deliver='local')['id']
@@ -144,12 +151,17 @@ async def test_a_fire_that_failed_beside_a_unified_run_keeps_its_own_row(owner, 
     second = executions.create_execution(job, source='test')['id']
     executions.mark_execution_running(second)
     clock['seconds'] = 70
+    if failed_fire_wrote_doc:
+        # Its doc also falls in the first run's grace window: it must stay the failed fire's row.
+        jobs.save_job_output(job, '# Cron Job: report\n\nscript failed')
     executions.finish_execution(second, success=False, error='owner_unavailable')
 
     runs = _runs(job)
 
-    assert [r['source'] for r in runs] == ['cron_output', 'cron']
-    assert runs[0]['title'].startswith('FAILED') and runs[0]['preview'] == 'owner_unavailable'
+    assert [r['source'] for r in runs] == ['cron_output', 'cron'], runs
+    assert runs[0]['title'].startswith('FAILED')
+    if not failed_fire_wrote_doc:
+        assert runs[0]['preview'] == 'owner_unavailable'
     assert (runs[1]['id'], runs[1]['cron_execution_id']) == (session_id, first)
 
 

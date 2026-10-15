@@ -585,9 +585,10 @@ def _reconcile_cron_runs(
     inside the time window (one that failed before it created a session) keeps
     its own row. An output doc never records its execution, only a window guess
     (``_execution_candidates``), so it pairs by time: a doc within
-    ``_SESSION_DOC_MATCH_SECONDS`` of a legacy session, or of a session whose
-    execution is one of its candidates, is that session's execution (a doc no
-    attempt claims is matched against every session). Doc rows matching no
+    ``_SESSION_DOC_MATCH_SECONDS`` of a legacy session, or of the session whose
+    execution is its likeliest writer (the newest candidate, whose ledger row the
+    doc already stands in for), is that session's execution (a doc no attempt
+    claims is matched against every session). Doc rows matching no
     session are distinct executions — script-only fires — and are kept. A session
     row must never be dropped in favor of a doc: the doc is the fallback
     representation.
@@ -601,7 +602,10 @@ def _reconcile_cron_runs(
         candidates = doc.get("_execution_candidates")
         execution_id = doc.get("_execution_id")
         if candidates:
-            window = legacy + [s for s in session_runs if s.get("cron_execution_id") in candidates]
+            # The likeliest writer is the doc's newest candidate, the attempt _list_cron_output_runs
+            # folded into it. When no unified session names that attempt, the doc is its only row:
+            # only a legacy session can still claim it by time.
+            window = legacy + [s for s in session_runs if s.get("cron_execution_id") == candidates[0]]
         elif candidates is None and execution_id:
             if execution_id in executions:
                 continue

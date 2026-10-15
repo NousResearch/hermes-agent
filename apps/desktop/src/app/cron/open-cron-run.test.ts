@@ -4,7 +4,13 @@ import { $cronRunReadOnlyVerdicts, isStoredTranscriptReadOnly } from '@/store/re
 import { $cronSessions, $sessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
-import { isResumableCronRun, openCronRun, reconcileCronRunVerdicts, refreshCronRunWriteGate } from './open-cron-run'
+import {
+  cronRunWriteGateApplies,
+  isResumableCronRun,
+  openCronRun,
+  reconcileCronRunVerdicts,
+  refreshCronRunWriteGate
+} from './open-cron-run'
 
 const NOW_MS = 1_800_000_000_000
 const NOW_S = NOW_MS / 1000
@@ -180,8 +186,20 @@ describe('refreshCronRunWriteGate — a unified-runtime run is known by its row,
     expect(isStoredTranscriptReadOnly(id)).toBe(true)
   })
 
+  it('keeps gating an opened run after a sidebar refresh drops its row from the cache', async () => {
+    $cronSessions.set([cachedRow('cron')])
+    openCronRun({ ...cachedRow('cron'), scheduler_owned: true }, vi.fn()) // opened live: writable
+    $cronSessions.set([]) // the latest page no longer lists it
+    const fetchRow = vi.fn(async () => ({ ended_at: null, last_active: 0, scheduler_owned: false, source: 'cron' }))
+
+    expect(cronRunWriteGateApplies(id)).toBe(true)
+    expect(await refreshCronRunWriteGate(id, fetchRow)).toBe(true) // its scheduler died since
+    expect(fetchRow).toHaveBeenCalledWith(id)
+  })
+
   it('never fetches for an ordinary session that also has a local id', async () => {
     $sessions.set([cachedRow('desktop')])
+    expect(cronRunWriteGateApplies(id)).toBe(false)
     const fetchRow = vi.fn()
 
     expect(await refreshCronRunWriteGate(id, fetchRow)).toBe(false)

@@ -138,6 +138,34 @@ def test_a_short_mcp_error_is_still_named():
     assert str(caught.value) == 'invalid_params'
 
 
+def test_an_mcp_schema_error_names_the_field_not_the_spec():
+    """Pydantic quotes the whole spec as ``input_value``, env values included. The detail
+    keeps the failing loc and its error type and drops the values."""
+    from gateway.session_local_mcp import validate_servers
+
+    secret = 'sk_live_' + 'Ab12Cd34' * 3
+    spec = {'type': 'stdio', 'name': 'local', 'command': 'echo',
+            'env': [{'name': 'API_KEY', 'value': secret}]}
+    with pytest.raises(RuntimeStoreError) as caught:
+        validate_servers([spec])
+    detail = caught.value.detail
+    assert caught.value.field == 'editor.mcp_servers'
+    assert 'args (missing)' in detail
+    assert secret not in detail and 'Ab12Cd34' not in detail and 'API_KEY' not in detail
+    assert REDACTED_KEY not in detail
+
+
+def test_an_mcp_schema_error_keeps_a_list_index_loc():
+    from gateway.session_local_mcp import validate_servers
+
+    spec = {'type': 'stdio', 'name': 'local', 'command': 'echo', 'args': [],
+            'env': [{'name': 'K', 'value': 123}]}
+    with pytest.raises(RuntimeStoreError) as caught:
+        validate_servers([spec])
+    assert 'env.0.value' in caught.value.detail
+    assert '123' not in caught.value.detail
+
+
 def test_a_safe_editor_key_is_still_named():
     from gateway.session_local_editor import validate_editor
 

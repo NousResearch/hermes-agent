@@ -224,9 +224,18 @@ def _atomic_output_path(final_path: Path, publish_path: Optional[Callable[[], Op
     ``publish_path`` picks the destination at publish time (default ``final_path``) so a caller
     can divert an incomplete archive elsewhere without ever touching ``final_path``; returning
     ``None`` discards the partial instead of publishing it.
+
+    The partial is pre-created **0600** rather than left to the process umask: a full backup
+    archives ``.env``, ``auth.json`` and ``secrets/``, and these files previously published
+    world-readable (0664), because ``zipfile`` opens by path with the default mode. Creating the
+    inode tightly first means the archive is unreadable at every instant — while it is being
+    written, after the rename, and in the ``*.incomplete.zip`` salvage — since ``os.replace``
+    preserves the mode and truncating an existing file does not change it.
     """
     partial_path = final_path.with_name(f".{final_path.name}.{os.getpid()}-{threading.get_ident()}.partial")
     partial_path.unlink(missing_ok=True)
+    with suppress(OSError):
+        os.close(os.open(partial_path, os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o600))
     try:
         yield partial_path
         destination = publish_path() if publish_path else final_path

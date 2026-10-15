@@ -219,7 +219,7 @@ class CodexAppServerClient:
         for _rid, pending in pending_items:
             pending.put_nowait(synthetic)
 
-    def __enter__(self) -> "CodexAppServerClient":
+    def __enter__(self) -> CodexAppServerClient:
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -364,6 +364,7 @@ def check_codex_binary(
         proc = subprocess.run(
             [codex_bin, "--version"], capture_output=True, text=True, encoding='utf-8', errors='replace',
             timeout=10, stdin=subprocess.DEVNULL,
+            check=False,
         )
     except FileNotFoundError:
         return False, f"codex CLI not found at {codex_bin!r}. Install with: npm i -g @openai/codex"

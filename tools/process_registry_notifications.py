@@ -52,6 +52,23 @@ def group_process_notifications(notifications):
 
 
 
+def is_child_process_notification(evt: dict) -> bool:
+    """Raw child process noise, not a delegation or work-closeout deliverable."""
+    if evt.get("type") in {"async_delegation", "async_delegation_work_closeout"}:
+        return False
+    return str(evt.get("owner_task_id") or evt.get("task_id") or "").startswith("sa-")
+
+
+def should_surface_notification(evt: dict, *, surface_child: bool | None = None) -> bool:
+    """Shared policy; callers must first enter the event's owning profile scope."""
+    if not is_child_process_notification(evt):
+        return True
+    if surface_child is None:
+        from tools.process_registry import ProcessRegistry
+        surface_child = ProcessRegistry._surface_child_process_notifications()
+    return surface_child
+
+
 def _format_age(seconds: float) -> str:
     """Human-friendly elapsed string ('18m', '2h3m', '45s')."""
     try:
@@ -67,7 +84,7 @@ def _format_age(seconds: float) -> str:
     return f"{h}h" + (f"{m}m" if m else "")
 
 
-def _model_not_found_patterns() -> "list[str]":
+def _model_not_found_patterns() -> list[str]:
     """Model-not-found phrases from ``agent.error_classifier`` (the failover path's
     own list, so nothing drifts); a minimal built-in set if the import fails.
 
@@ -103,7 +120,7 @@ def _delegation_model_not_found(results, config) -> bool:
     return any(model in text and any(p in text for p in patterns) for text in texts)
 
 
-def _delegation_model_not_found_notice(results) -> "list[str] | None":
+def _delegation_model_not_found_notice(results) -> list[str] | None:
     """Config-level model_not_found notice lines, or None (fail-open) — once per batch."""
     config = _delegation_config()
     if not _delegation_model_not_found(results, config):
@@ -133,13 +150,13 @@ def _is_truncated(entry: dict) -> bool:
     return bool(entry.get("truncated") or entry.get("exit_reason") == "max_iterations")
 
 
-def _notice_lines(results) -> "list[str]":
+def _notice_lines(results) -> list[str]:
     """Blank + model_not_found notice block, or [] when the notice does not apply."""
     notice = _delegation_model_not_found_notice(results)
     return ["", *notice] if notice else []
 
 
-def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_goal: bool) -> "list[str]":
+def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_goal: bool) -> list[str]:
     """Shared preamble: title, intro, blank, dispatch time, [goal], context/toolsets, role+model."""
     lines = [title, intro, ""]
     dispatched_at = evt.get("dispatched_at")
@@ -175,7 +192,7 @@ def _format_task_failure_notice(evt: dict, deleg_id: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
-def _recovery_lines(evt: dict) -> "list[str]":
+def _recovery_lines(evt: dict) -> list[str]:
     """Owner-died recovery diagnostics (``recover_abandoned_delegations``): last persisted
     status, per-task transcript paths, their verbatim tails and the owner's git state."""
     if not evt.get("last_known_status"):
@@ -318,10 +335,15 @@ def async_delegation_display_text(evt: dict) -> str:
         goal = goals[index] if 0 <= index < len(goals) else result.get("goal", "")
         titles.append(" ".join(str(goal or "Background task").split()))
     if len(results) == 1:
-        return f"Subagent Task {labels[0]}: {titles[0]}"
+        return f"Subagent Task {labels[0]}: {_short_title(titles[0])}"
     outcome = labels[0] if len(set(labels)) == 1 else "Finished with Issues"
     title = " ".join(str(evt.get("group") or "").split()) or "; ".join(titles)
-    return f"Subagent Tasks {outcome}: {title} ({len(results)} tasks)"
+    return f"Subagent Tasks {outcome}: {_short_title(title)} ({len(results)} tasks)"
+
+
+def _short_title(title: str) -> str:
+    # A goal is free text: the card's title stays one line (and within an admission's display limit).
+    return title[:197] + "..." if len(title) > 200 else title
 
 
 PROCESS_COMPLETE_DISPLAY_KIND = "process_complete"
@@ -381,7 +403,7 @@ class TimelineNotification(str):
                    "diagnostic" if diagnostic_process_event(event) else "result")
 
 
-def _delegation_attribution_line(evt: dict) -> "str | None":
+def _delegation_attribution_line(evt: dict) -> str | None:
     """One-line provenance for a subagent-owned process event, else None. Such a process
     outlives the child and lands in the PARENT conversation, which would otherwise see an
     anonymous output wall. Keyed on ``owner_task_id`` — ``task_id`` may be the session key."""
@@ -408,7 +430,7 @@ def _completion_status(evt: dict) -> str:
     return _REASON_STATUS.get(reason) or ("completed normally" if evt.get("exit_code", "?") == 0 else "exited")
 
 
-def format_process_notification(evt: dict) -> "str | None":
+def format_process_notification(evt: dict) -> str | None:
     """Format a completion_queue event into an ``[IMPORTANT: ...]`` message."""
     evt_type = evt.get("type", "completion")
     # watch_disabled and overflow events carry their own human-readable `message`;

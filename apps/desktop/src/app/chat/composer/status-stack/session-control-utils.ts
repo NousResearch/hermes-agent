@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
 
 import type { Translations } from '@/i18n'
 
@@ -14,6 +14,24 @@ export function useSessionValue<T>(store: SessionSliceStore<T>, sessionId: strin
   return useSyncExternalStore(subscribe, () => (sessionId ? store.get()[sessionId] : undefined))
 }
 
+/** Wall clock that re-renders once a second while ``active``, for the heartbeat and loop countdowns. */
+export function useCountdownClock(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!active) {
+      return
+    }
+
+    const tick = () => setNow(Date.now())
+    const interval = window.setInterval(tick, 1_000)
+
+    return () => window.clearInterval(interval)
+  }, [active])
+
+  return now
+}
+
 export interface ConfirmState {
   title: string
   description: string
@@ -22,43 +40,8 @@ export interface ConfirmState {
   onConfirm: () => Promise<void> | void
 }
 
-export function formatApproximateTime(targetTimestamp: number): string {
-  if (!targetTimestamp) {
-    return ''
-  }
-
-  const targetMs = targetTimestamp > 1e11 ? targetTimestamp : targetTimestamp * 1000
-  const diffMs = targetMs - Date.now()
-
-  if (diffMs <= 0) {
-    return '~0s'
-  }
-
-  const seconds = Math.round(diffMs / 1000)
-
-  if (seconds < 60) {
-    return `~${seconds}s`
-  }
-
-  const minutes = Math.round(seconds / 60)
-
-  if (minutes < 60) {
-    return `~${minutes}m`
-  }
-
-  const hours = Math.round(minutes / 60)
-
-  if (hours < 24) {
-    return `~${hours}h`
-  }
-
-  const days = Math.round(hours / 24)
-
-  return `~${days}d`
-}
-
 /** Formats a countdown precisely without exposing the user's local timezone. */
-export function formatHeartbeatCountdown(targetTimestamp: number, now = Date.now()): string {
+export function formatCountdown(targetTimestamp: number, now = Date.now()): string {
   const targetMs = targetTimestamp > 1e11 ? targetTimestamp : targetTimestamp * 1000
   const remainingSeconds = Math.max(0, Math.ceil((targetMs - now) / 1000))
   const days = Math.floor(remainingSeconds / 86_400)

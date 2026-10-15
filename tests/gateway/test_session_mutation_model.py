@@ -362,3 +362,33 @@ async def test_large_context_guard_reads_the_persisted_anchor_with_no_resident_a
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_unresolvable_pre_switch_route_does_not_kill_the_switch(tmp_path, monkeypatch):
+    """The pre-switch runtime lookup only feeds the current route's probe credential; a frozen
+    policy that can no longer re-resolve (the persisted bare ``custom`` placeholder, #138879)
+    must not crash session.mutate before the target is even looked at. The switch replaces the
+    dead route with the target's own config-resolved credentials."""
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from gateway.session_mutation_model import prepare_model
+    from gateway.session_policy import build_policy, restore_policy
+    from hermes_state import SessionDB
+    from hermes_cli import model_switch
+    from hermes_cli.auth import AuthError
+
+    def dead_frozen_route(**kwargs):
+        raise AuthError("provider 'custom' resolved without credentials (no endpoint or key configured).")
+    monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
+        success=True, new_model='b', target_provider='anthropic', provider_changed=True,
+        base_url='https://api.anthropic.com'))
+    with SessionDB(tmp_path / 'state.db') as db:
+        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db, runner=SimpleNamespace(
+            _resolve_session_agent_runtime=dead_frozen_route))
+        config = {'model': {'provider': 'custom', 'default': 'a'}}
+        policy = build_policy({'cwd': str(tmp_path), 'model': 'a'}, config)
+        prepared = {'snapshot': {'receipt': {'session_id': 'sid', 'policy': asdict(policy)}}}
+        switched = restore_policy((await prepare_model(authority, SimpleNamespace(source=None, route='r'),
+                                                       {'model': 'b', 'provider': 'anthropic'}, prepared))['policy'])
+        assert switched.model == 'b', 'an unresolvable pre-switch route blocked the model switch'

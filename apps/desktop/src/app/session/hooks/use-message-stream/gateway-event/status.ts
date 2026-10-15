@@ -1,6 +1,7 @@
 import { isSessionNotOwnedError } from '@/app/session/hooks/use-prompt-actions/utils'
 import { runtimeTranslations, translateNow } from '@/i18n'
 import { textPart } from '@/lib/chat-messages'
+import { MEMORY_RECALL_MESSAGE_ID_PREFIX } from '@/lib/chat-messages/recall'
 import { coerceGatewayText } from '@/lib/chat-runtime'
 import type { ErrorSurface } from '@/lib/error-surface'
 import { errorCardText } from '@/lib/error-surface-copy'
@@ -138,7 +139,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
           messages: [
             ...state.messages,
             {
-              id: `memory-recall-${crypto.randomUUID()}`,
+              id: `${MEMORY_RECALL_MESSAGE_ID_PREFIX}${crypto.randomUUID()}`,
               role: 'system',
               parts: [textPart(text, occurredAt)],
               timestamp: occurredAt

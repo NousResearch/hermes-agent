@@ -1,5 +1,6 @@
 import { attachmentTolerantUserText, sameAttachmentTurn } from './attachment-turn'
 import { chatMessageText } from './parts'
+import { isMemoryRecallMessageId } from './recall'
 import type { ChatMessage, ChatMessagePart } from './types'
 
 const validTimelineBoundary = (value: unknown): value is number =>
@@ -209,7 +210,7 @@ function reconcileLocalAssistantTimeline(nextMessages: ChatMessage[], currentMes
         recallsByAssistantId.set(message.id, recalls)
         recalls = []
       }
-    } else if (message.role === 'system' && message.id.startsWith('memory-recall-') && !nextIds.has(message.id)) {
+    } else if (message.role === 'system' && isMemoryRecallMessageId(message.id) && !nextIds.has(message.id)) {
       recalls.push(message)
     }
   }

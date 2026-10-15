@@ -1823,6 +1823,108 @@ class SessionMessagesMixin:
     # ========================================================================= Rewind (soft-delete) — see
     # /rewind slash command + issue #21910
     # =========================================================================
+    def restore_compacted_prefix(
+        self, session_id: str, target_message_id: int, *,
+        user_ordinal: Optional[int] = None, confirm_empty: bool = False,
+        confirm_deep: bool = False, enforce_deep: bool = False,
+    ):
+        """Atomically restore the durable prefix before an in-place-compacted user turn.
+
+        This is an explicit checkpoint rewind, not ordinary model resume. Only the
+        current display generation is eligible; abandoned rewind rows and foreign
+        rows are never candidates. The target is re-resolved inside the write
+        transaction so a concurrent compaction/rewind cannot retarget the cut.
+        """
+        from agent.context_compressor import history_before_user_originated_turn, user_originated_turn_view
+        from hermes_state_errors import CheckpointRestoreRejected
+
+        def _do(conn):
+            target = conn.execute(
+                "SELECT active, compacted FROM messages WHERE session_id = ? AND id = ?",
+                (session_id, target_message_id),
+            ).fetchone()
+            if target is None or target["active"] or not target["compacted"]:
+                return None
+
+            self._check_transcript_write_guards(
+                conn, session_id, None,
+                reject_active_turn_lease=True,
+                reject_active_compression_lock=True,
+            )
+            displayed = self._display_messages_from_conn(conn, session_id)
+            if displayed is None:
+                return None
+
+            targets = [
+                (index, message)
+                for index, message in enumerate(displayed)
+                if user_originated_turn_view(message) is not None
+            ]
+            match = next(
+                (
+                    (ordinal, index)
+                    for ordinal, (index, message) in enumerate(targets)
+                    if message.get("id") == target_message_id
+                ),
+                None,
+            )
+            if match is None:
+                return None
+            ordinal, index = match
+            if user_ordinal is not None and user_ordinal != ordinal:
+                raise CheckpointRestoreRejected(
+                    "ordinal", "checkpoint user ordinal does not match the durable target"
+                )
+
+            prefix, _ = history_before_user_originated_turn(displayed, index)
+            archived_user_turns = len(targets) - ordinal
+            archived_messages = len(displayed) - index
+            if not prefix and not confirm_empty:
+                raise CheckpointRestoreRejected(
+                    "empty", "truncation would erase the entire session transcript"
+                )
+            if archived_user_turns > 1 and enforce_deep and not confirm_deep:
+                raise CheckpointRestoreRejected(
+                    "deep", "truncation would archive later user turns"
+                )
+
+            old_survivor_ids = [
+                message.get("id")
+                for message in displayed[:index]
+                if isinstance(message.get("id"), int)
+            ]
+            conn.execute(
+                "UPDATE messages SET active = 0, compacted = 0 "
+                "WHERE session_id = ? AND (active = 1 OR compacted = 1)",
+                (session_id,),
+            )
+            count, tool_calls = self._insert_message_rows(conn, session_id, prefix)
+            conn.execute(
+                f"{_SET_COUNTERS_SQL}, rewind_count = COALESCE(rewind_count, 0) + 1 WHERE id = ?",
+                (count, tool_calls, session_id),
+            )
+
+            row_ids = {str(message["id"]): None for message in displayed if isinstance(message.get("id"), int)}
+            for old_id, message in zip(old_survivor_ids, prefix):
+                row_ids[str(old_id)] = message.get("_row_id")
+
+            active = conn.execute(
+                f"SELECT {self._CONVERSATION_ROW_COLUMNS} FROM messages "
+                "WHERE session_id = ? AND active = 1 ORDER BY id",
+                (session_id,),
+            ).fetchall()
+            history = self._rows_to_conversation(
+                active,
+                session_id=session_id,
+                include_ancestors=False,
+                repair_alternation=True,
+                include_row_ids=True,
+                include_summary_markers=True,
+            )
+            return history, row_ids, archived_user_turns, archived_messages
+
+        return self._execute_write(_do)
+
     def get_active_message_ids(self, session_id: str) -> list[int]:
         """Ordered physical active ids for rewind CAS checks (includes legacy harness rows projections omit)."""
         return [int(row[0]) for row in self._read_all(_ACTIVE_IDS_SQL, (session_id,))]

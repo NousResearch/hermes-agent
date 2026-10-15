@@ -64,6 +64,24 @@ def _make_stream_iterator(chunks, decode_gap_s=_DECODE_GAP_S):
         yield chunk
 
 
+def _anthropic_event(event_type, **fields):
+    return SimpleNamespace(type=event_type, **fields)
+
+
+def _anthropic_text_delta(text):
+    return _anthropic_event(
+        "content_block_delta", delta=SimpleNamespace(type="text_delta", text=text)
+    )
+
+
+def _make_anthropic_event_iterator(events, decode_gap_s=_DECODE_GAP_S):
+    """Anthropic Messages stream events with the same real decode gap as above."""
+    for index, event in enumerate(events):
+        if index:
+            time.sleep(decode_gap_s)
+        yield event
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""
@@ -287,6 +305,83 @@ class TestStreamHelperStashesFirstChunkAt:
         response = agent._interruptible_streaming_api_call({})
 
         assert response.choices[0].message.content == "partial text"
+        assert agent._last_api_decode_seconds is None
+
+
+# ── anthropic_messages wire (native Messages stream) ─────────────────────
+
+
+def _anthropic_stream_cm(final_message, events):
+    stream = MagicMock()
+    stream.__iter__ = MagicMock(return_value=_make_anthropic_event_iterator(events))
+    stream.get_final_message = MagicMock(return_value=final_message)
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=stream)
+    cm.__exit__ = MagicMock(return_value=False)
+    return cm
+
+
+class TestAnthropicStreamDecodeWindow:
+    """The decode window on the native Anthropic Messages stream is closed only
+    by a confirmed message_stop (the terminal frame of that wire)."""
+
+    @staticmethod
+    def _wire_agent(agent):
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        agent._anthropic_client = MagicMock()
+        agent._create_request_anthropic_client = lambda *a, **k: agent._anthropic_client
+        return agent
+
+    def test_message_stop_terminaton_closes_the_decode_window(self, agent):
+        """A normal termination (message_stop after the last delta, final message
+        processed) measures this call's own decode window."""
+        agent = self._wire_agent(agent)
+        completed = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="Hello world")],
+            stop_reason="end_turn",
+        )
+        agent._anthropic_client.messages.stream.return_value = _anthropic_stream_cm(
+            completed,
+            [
+                _anthropic_event("message_start"),
+                _anthropic_text_delta("Hello"),
+                _anthropic_text_delta(" world"),
+                _anthropic_event("message_stop"),
+            ],
+        )
+
+        response = agent._interruptible_streaming_api_call({"model": "claude-test"})
+
+        assert response is completed
+        decode_seconds = agent._last_api_decode_seconds
+        assert isinstance(decode_seconds, float)
+        assert _MIN_MEASURED_S <= decode_seconds < 1.0
+
+    def test_eof_before_message_stop_leaves_the_window_unmeasured(self, agent):
+        """A stream that ends before message_stop delivered deltas but never a
+        confirmed terminal: the opened window stays unmeasured — the delivered
+        partial is the stub fallback, never a measured speed."""
+        agent = self._wire_agent(agent)
+        delivered = []
+        agent.stream_delta_callback = delivered.append
+        partial = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="HALF-ANSWER")],
+            stop_reason="end_turn",
+        )
+        agent._anthropic_client.messages.stream.return_value = _anthropic_stream_cm(
+            partial,
+            [_anthropic_event("message_start"), _anthropic_text_delta("HALF-ANSWER")],
+        )
+
+        response = agent._interruptible_streaming_api_call({"model": "claude-test"})
+
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        # The first text delta opened the window (it was delivered) and the
+        # stream still never closed it: no speed for an unconfirmed response.
+        assert delivered == ["HALF-ANSWER"]
         assert agent._last_api_decode_seconds is None
 
 

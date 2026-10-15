@@ -768,8 +768,7 @@ def test_prefetch_observation_lazily_discovers_consumer_and_delivers_digest(
         context=context,
         observations=(_observation(),),
     )
-    token = set_hermes_home_override(home)
-    try:
+    def emit() -> None:
         MemoryManager._emit_prefetch_observation(
             result,
             query="question",
@@ -777,7 +776,14 @@ def test_prefetch_observation_lazily_discovers_consumer_and_delivers_digest(
             task_id="task",
             turn_id="turn",
         )
-        assert discovered.is_set()
+
+    token = set_hermes_home_override(home)
+    try:
+        emit()
+        assert discovered.wait(timeout=5.0)
+        # The event that first triggered asynchronous discovery may be dropped;
+        # later prefetches see the lazily registered callback.
+        emit()
         assert delivered.wait(timeout=5.0)
     finally:
         reset_hermes_home_override(token)
@@ -1880,3 +1886,37 @@ def test_ordered_valid_observations_unaffected_by_shared_operation_budget(
     assert [item.payload["note"] for item in result.observations] == [
         f"item-{i}" for i in range(5)
     ]
+
+
+def test_eof_after_63_malformed_candidates_preserves_next_provider_slot(monkeypatch):
+    _disable_hook(monkeypatch)
+    _stub_direct_prefetch(monkeypatch)
+    manager = MemoryManager()
+    manager.add_provider(
+        StructuredMemoryProvider(
+            name="builtin",
+            result=MemoryPrefetchResult(
+                context="builtin context",
+                observations=tuple(
+                    MemoryObservation(
+                        source_kind="", schema="fixture", version=1, payload={}
+                    )
+                    for _ in range(MAX_MEMORY_OBSERVATIONS * 4 - 1)
+                ),
+            ),
+        )
+    )
+    manager.add_provider(
+        StructuredMemoryProvider(
+            name="next-provider",
+            result=MemoryPrefetchResult(
+                context="external context",
+                observations=(_observation({"source": "next-provider"}),),
+            ),
+        )
+    )
+
+    result = manager.prefetch_all_result("question")
+
+    assert result.context == "builtin context\n\nexternal context"
+    assert [item.payload for item in result.observations] == [{"source": "next-provider"}]

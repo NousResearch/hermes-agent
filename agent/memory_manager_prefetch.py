@@ -49,7 +49,9 @@ def _builtin_dict_fields(value: dict, names: tuple[str, ...]) -> dict[str, Any]:
 def coerce_prefetch_result(raw_result: Any) -> Any:
     """Restore dict-shaped structured results without calling mapping overrides."""
     if isinstance(raw_result, dict):
-        fields = _builtin_dict_fields(raw_result, ("context", "observations"))
+        fields = _builtin_dict_fields(
+            raw_result, ("context", "observations", "_wire_truncated")
+        )
         if "context" not in fields:
             return raw_result
         raw_context: Any = fields["context"]
@@ -59,6 +61,7 @@ def coerce_prefetch_result(raw_result: Any) -> Any:
         return MemoryPrefetchResult(
             context=raw_context,
             observations=raw_observations,
+            _wire_truncated=fields.get("_wire_truncated") is True,
         )
     return raw_result
 
@@ -216,8 +219,6 @@ def _normalize_observations(
             len(observations) >= remaining_count
             or observation_bytes >= remaining_bytes
         )
-        if inspected_budget is not None:
-            inspected_budget[0] -= 1
         try:
             candidate = next(iterator)
         except StopIteration:
@@ -230,6 +231,9 @@ def _normalize_observations(
                 exc_info=True,
             )
             break
+        # EOF is not an inspected candidate and must not spend the shared slot.
+        if inspected_budget is not None:
+            inspected_budget[0] -= 1
         if at_limit:
             truncated_reason = (
                 "count" if len(observations) >= remaining_count else "bytes"
@@ -291,10 +295,13 @@ def normalize_prefetch_result(
         traversal_budget=traversal_budget,
         inspected_budget=inspected_budget,
     )
+    if raw_result._wire_truncated and truncated_reason is None:
+        truncated_reason = "wire"
     return _NormalizedPrefetchResult(
         MemoryPrefetchResult(
             context=context,
             observations=observations,
+            _wire_truncated=raw_result._wire_truncated,
         ),
         sizes,
         truncated_reason,

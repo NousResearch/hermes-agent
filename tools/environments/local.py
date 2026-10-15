@@ -499,7 +499,7 @@ def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -
     if not target or not _is_routed_home(target):
         return env
     launch_home = get_routing_process_hermes_home()
-    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+    from hermes_cli.config_terminal_env import TERMINAL_CONFIG_ENV_MAP
     # Folded strip: on Windows the env block is case-insensitive, so residue
     # stored under a variant casing is the same variable and must go too. The
     # selection folds the same way so a lowercase ``path`` in .env is still

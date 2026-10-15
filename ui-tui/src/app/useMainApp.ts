@@ -392,6 +392,10 @@ export function useMainApp(gw: GatewayClient) {
     }
 
     return selection.subscribe(() => {
+      if (!getUiState().copyOnSelect) {
+        return
+      }
+
       if (!selection.hasSelection()) {
         return
       }

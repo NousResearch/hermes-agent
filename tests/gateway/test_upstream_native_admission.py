@@ -125,3 +125,46 @@ async def test_upstream_authorized_a2a_input_admits_durally_with_provenance(
     )[-1]["payload"]
     assert payload["text"] == "a2a task from a bearer-authenticated peer"
     assert payload["native_text_v1"]["provenance"]["platform"] == "a2a"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("forge", [False, True])
+async def test_same_principal_without_adapter_declaration_is_refused_by_native_admission(
+    tmp_path, monkeypatch, forge
+):
+    """The A2A peer admitted above, through real native admission on an adapter that does not
+    declare ``authorization_is_upstream``, is still refused. A declaration stamped on the event's
+    source (``forge``) changes nothing: only the adapter object is read."""
+    from gateway.session_authority import SessionAuthority, initialize_session_authority
+    from gateway.session_ingress_context import native_callback, register_transport_home
+    from hermes_constants import get_hermes_home
+    from plugins.platforms.a2a.adapter import A2AAdapter
+
+    class UndeclaredAdapter(A2AAdapter):
+        @property
+        def authorization_is_upstream(self) -> bool:
+            return False
+
+    _clear_authz_env(monkeypatch)
+    monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
+    runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    adapter = UndeclaredAdapter(PlatformConfig(enabled=True))
+    runner.adapters = {Platform("a2a"): adapter}
+    authority = await initialize_session_authority(
+        runner, profile_id="default", instance_id="a2a-undeclared"
+    )
+    register_transport_home(runner, None, get_hermes_home())
+    source = adapter.build_source(
+        chat_id="ctx-1",
+        chat_name="a2a:peer",
+        chat_type="dm",
+        user_id="peer",
+        user_name="peer",
+    )
+    if forge:
+        vars(source)["authorization_is_upstream"] = True
+    event = _fresh_native_event(source, text="a2a task from a bearer-authenticated peer")
+    with native_callback(runner, event, get_hermes_home()):
+        with pytest.raises(RuntimeStoreError, match="permission_denied") as refused:
+            await authority.admit_native(event)
+    assert refused.value.field == "user_not_authorized"

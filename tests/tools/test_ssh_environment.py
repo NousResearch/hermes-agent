@@ -154,19 +154,20 @@ class TestControlSocketPath:
     _SSH_CONTROLMASTER_SUFFIX = 17
     _MAX_SUN_PATH = 103
 
-    def test_fits_under_macos_socket_limit_with_ipv6_host(self, monkeypatch):
-        """A realistic macOS $TMPDIR + IPv6 host must still produce a
-        control socket path that fits once SSH appends its ControlMaster
-        suffix (see issue #11840)."""
-        # Simulate the macOS $TMPDIR shape from the issue traceback —
-        # 48 bytes, the typical length of ``/var/folders/XX/YYYYYYYYY/T``.
-        fake_tmp = "/var/folders/2t/wbkw5yb158jc3zhswgl7tz9c0000gn/T"
+    @pytest.mark.parametrize("fake_tmp", [
+        # macOS $TMPDIR shape from #11840: ``/var/folders/XX/YYYYYYYYY/T``.
+        "/var/folders/2t/wbkw5yb158jc3zhswgl7tz9c0000gn/T",
+        # Named-profile scratch TMPDIR from #133436.
+        "/home/raffymontemayor/.hermes/profiles/video-agent/cache/scratch",
+    ], ids=["macos-tmpdir", "profile-scratch"])
+    def test_fits_under_macos_socket_limit_with_ipv6_host(self, monkeypatch, fake_tmp):
+        """A deep $TMPDIR + IPv6 host must still produce a control socket
+        path that fits once SSH appends its ControlMaster suffix
+        (issues #11840, #133436)."""
         monkeypatch.setattr("tools.environments.ssh.tempfile.gettempdir",
                             lambda: fake_tmp)
-        # The simulated path doesn't exist on the test host — skip the
-        # real mkdir so __init__ can proceed.
-        from pathlib import Path as _Path
-        monkeypatch.setattr(_Path, "mkdir", lambda *a, **k: None)
+        # Path arithmetic only: never create the control dir on the test host.
+        monkeypatch.setattr("tools.environments.ssh.ensure_owned_private_dir", os.fspath)
 
         env = SSHEnvironment(
             host="9373:9b91:4480:558d:708e:e601:24e8:d8d0",

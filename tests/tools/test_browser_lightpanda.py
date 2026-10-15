@@ -326,7 +326,7 @@ class TestEngineOverride:
              patch("os.open", return_value=99), \
              patch("os.close"), \
              patch("os.unlink"), \
-             patch("os.makedirs"), \
+             patch("tools.spill_safety.ensure_owned_private_dir"), \
              patch("builtins.open", MagicMock(return_value=MagicMock(
                  __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value='{"success": true, "data": {}}'))),
                  __exit__=MagicMock(return_value=False),
@@ -374,7 +374,7 @@ class TestEngineOverride:
              patch("os.open", return_value=99), \
              patch("os.close"), \
              patch("os.unlink"), \
-             patch("os.makedirs"), \
+             patch("tools.spill_safety.ensure_owned_private_dir"), \
              patch("builtins.open", MagicMock(return_value=MagicMock(
                  __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=mock_stdout))),
                  __exit__=MagicMock(return_value=False),
@@ -433,7 +433,7 @@ class TestEngineOverride:
              patch("os.open", return_value=99), \
              patch("os.close"), \
              patch("os.unlink"), \
-             patch("os.makedirs"), \
+             patch("tools.spill_safety.ensure_owned_private_dir"), \
              patch("builtins.open", MagicMock(return_value=MagicMock(
                  __enter__=MagicMock(return_value=MagicMock(read=MagicMock(return_value=mock_stdout))),
                  __exit__=MagicMock(return_value=False),

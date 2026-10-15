@@ -1,9 +1,15 @@
+import time
 from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from agent.codex_runtime import run_codex_stream
+
+# Seconds the fake stream spends decoding between its first delta and its terminal frame.
+_DECODE_GAP_S = 0.05
+# A sleep can wake a few ms early on Windows, so the window lower bound stays loose.
+_MIN_MEASURED_S = 0.04
 
 
 def _agent() -> SimpleNamespace:
@@ -26,6 +32,8 @@ def _completed_events():
         "response": {"id": "fixture", "status": "in_progress"},
     }
     yield {"type": "response.output_text.delta", "delta": "Yes."}
+    # Decode gap: the terminal frame lands after this stream's own decode seconds.
+    time.sleep(_DECODE_GAP_S)
     yield {
         "type": "response.completed",
         "response": {"id": "fixture", "status": "completed"},
@@ -55,6 +63,87 @@ def test_codex_stream_records_first_lifecycle_event_before_text(monkeypatch):
     assert result.status == "completed"
     assert attempts == 2
     assert agent._last_api_first_chunk_at == 100.0
+    # The decode window opened at the first output delta and closed at the
+    # terminal event — measured seconds, never an empty-default zero.
+    decode_seconds = result.decode_seconds
+    assert isinstance(decode_seconds, float)
+    assert _MIN_MEASURED_S <= decode_seconds < 1.0
+    # The measured window is handed to the usage recording path on success only.
+    assert agent._last_api_decode_seconds == decode_seconds
+
+
+def test_codex_reasoning_delta_opens_the_decode_window(monkeypatch):
+    """Reasoning output is real model output: a reasoning delta starts the
+    window even when no visible text delta ever arrives."""
+    agent = _agent()
+
+    def events():
+        yield {
+            "type": "response.created",
+            "response": {"id": "fixture", "status": "in_progress"},
+        }
+        yield {
+            "type": "response.output_item.added",
+            "item": {"type": "reasoning", "id": "r1"},
+        }
+        yield {
+            "type": "response.reasoning_text.delta",
+            "item_id": "r1",
+            "index": 0,
+            "offset": 0,
+            "delta": "thinking",
+        }
+        yield {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "reasoning",
+                "id": "r1",
+                "summary": [{"type": "summary_text", "text": "thinking"}],
+            },
+        }
+        # Decode gap: the terminal frame lands after this stream's own decode
+        # seconds, measured from the reasoning delta that opened the window.
+        time.sleep(_DECODE_GAP_S)
+        yield {
+            "type": "response.completed",
+            "response": {"id": "fixture", "status": "completed"},
+        }
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=lambda **_: events()))
+
+    result = run_codex_stream(
+        agent, {"model": "timing-fixture", "input": "Think."}, client=client
+    )
+
+    decode_seconds = result.decode_seconds
+    assert isinstance(decode_seconds, float)
+    assert _MIN_MEASURED_S <= decode_seconds < 1.0
+    assert agent._last_api_decode_seconds == decode_seconds
+
+
+def test_codex_stream_without_output_keeps_decode_window_unmeasured(monkeypatch):
+    """A stream that ends without any output delta measured nothing: the
+    window stays None rather than a fabricated near-instant speed."""
+    agent = _agent()
+
+    def events():
+        yield {
+            "type": "response.created",
+            "response": {"id": "fixture", "status": "in_progress"},
+        }
+        yield {
+            "type": "response.completed",
+            "response": {"id": "fixture", "status": "incomplete"},
+        }
+
+    client = SimpleNamespace(responses=SimpleNamespace(create=lambda **_: events()))
+
+    result = run_codex_stream(
+        agent, {"model": "timing-fixture", "input": "Quiet."}, client=client
+    )
+
+    assert result.decode_seconds is None
+    assert agent._last_api_decode_seconds is None
 
 
 @pytest.mark.parametrize("retire_before_event", [False, True])

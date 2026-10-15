@@ -2748,6 +2748,9 @@ class _StreamingCall(StreamingWaitMonitor):
         self._request_cancelled = {"value": False}
         self.first_delta_fired = {"done": False}
         self.deltas_were_sent = {"yes": False}  # for the partial-delivery fallback
+        # Arrival of the call's first real-data delta (text/reasoning/tool start), stamped
+        # ahead of display routing; the decode window is measured from this stamp.
+        self._decode_first_delta_at = None
         self.provider_tool_in_flight = {"yes": False}
         # Last REAL chunk; the monitor detects SSE-ping-only connections with it.
         self.last_chunk_time = {"t": time.time()}
@@ -2849,9 +2852,22 @@ class _StreamingCall(StreamingWaitMonitor):
         )
 
     def _fire_first_delta(self):
-        if not self.first_delta_fired["done"] and self.on_first_delta:
-            self.first_delta_fired["done"] = True
-            self._quiet(self.on_first_delta)
+        if not self.first_delta_fired["done"]:
+            # Decode start: stamp the arrival before anything a display callback might do.
+            if self._decode_first_delta_at is None:
+                self._decode_first_delta_at = time.monotonic()
+            if self.on_first_delta:
+                self.first_delta_fired["done"] = True
+                self._quiet(self.on_first_delta)
+
+    def _record_decode_seconds(self, *, counted: bool = True) -> None:
+        """Close this call's decode window: first real-data delta → the terminal response
+        for this model call was processed. Unmeasured calls (no token arrived, interrupt,
+        runaway cut, relay-replayed output) leave the attribute None so the usage path
+        appends a None decode entry — a fabricated speed is forbidden."""
+        first = self._decode_first_delta_at
+        if counted and first is not None:
+            self.agent._last_api_decode_seconds = time.monotonic() - first
 
     def _emit_text(self, text: str) -> None:
         self._fire_first_delta()
@@ -3225,6 +3241,9 @@ class _StreamingCall(StreamingWaitMonitor):
         if runaway:
             # Cut, not finished: the length path ends the turn on this mark instead of continuing.
             response._runaway_repetition = True
+        # Decode window: the terminal response was processed. Runaway cut and interrupt
+        # deliveries never measured a clean window — leave them unmeasured.
+        self._record_decode_seconds(counted=not runaway and not self.agent._interrupt_requested)
         return response
 
     def _log_runaway_cut(self, channel: str) -> None:
@@ -3494,6 +3513,10 @@ class _StreamingCall(StreamingWaitMonitor):
             message._runaway_repetition = True  # same hand-off as the chat_completions wire
             return message
         if base_final_message is not None:
+            # Decode window: message_stop (the terminal frame) was confirmed and the final
+            # message processed. Relay-modified output stays unmeasured.
+            if not stream.output_modified:
+                self._record_decode_seconds()
             self._check_anthropic_message(base_final_message, tool_drop=False)
             if not stream.output_modified:
                 return self._check_anthropic_message(base_final_message)
@@ -3616,6 +3639,7 @@ class _StreamingCall(StreamingWaitMonitor):
                 self._quiet(self.agent._reset_stream_delivery_tracking)
                 self.deltas_were_sent["yes"] = False
                 self.first_delta_fired["done"] = False
+                self._decode_first_delta_at = None  # retry must not inherit pre-retry stamps
         if self.deltas_were_sent["yes"]:
             # Died AFTER tokens were delivered: normally no retry (would duplicate
             # text). Exception: a tool call in flight — aborting discards it, so
@@ -3632,6 +3656,7 @@ class _StreamingCall(StreamingWaitMonitor):
             self._quiet(self.agent._reset_stream_delivery_tracking)
             self.deltas_were_sent["yes"] = False
             self.first_delta_fired["done"] = False
+            self._decode_first_delta_at = None  # retry must not inherit pre-retry stamps
             self._retry_after_drop(e, attempt, max_retries, mid_tool_call=True, reason="stream_mid_tool_retry_cleanup")
             return True
 

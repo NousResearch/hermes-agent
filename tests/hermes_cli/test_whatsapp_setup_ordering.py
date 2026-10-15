@@ -138,3 +138,112 @@ def test_existing_pairing_skip_branch_enables_whatsapp(isolated_home, monkeypatc
 
     # The skip-rebar branch should have set the env var on its way out.
     assert _env_value(isolated_home, "WHATSAPP_ENABLED") == "true"
+
+
+def test_repair_fails_gracefully_when_session_dir_locked(isolated_home, monkeypatch):
+    """When session_dir cannot be deleted (e.g. locked files on Windows),
+    cmd_whatsapp must NOT report 'Session cleared', must tell the operator
+    to stop the gateway, and must abort without setting WHATSAPP_ENABLED.
+    """
+    import shutil
+    from hermes_cli.main_platform_setup import cmd_whatsapp
+
+    session = isolated_home / "whatsapp" / "session"
+    session.mkdir(parents=True)
+    (session / "creds.json").write_text("{\"key\":\"value\"}")
+    monkeypatch.setenv("WHATSAPP_MODE", "bot")
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
+
+    # mode already set; users set (prompt: update allowed users? -> "n"); re-pair? -> "y"
+    inputs = iter(["n", "y"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs, "n"))
+    monkeypatch.setattr("hermes_cli.main._require_tty", lambda *_a, **_kw: None)
+    monkeypatch.setattr("hermes_cli.main_platform_setup._whatsapp_install_bridge", lambda _bd: True)
+    monkeypatch.setattr("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile", lambda _p: None)
+
+    # Simulate Windows PermissionError during rmtree
+    def fake_rmtree(_path, **_kwargs):
+        raise PermissionError(13, "Access is denied: session.json")
+
+    monkeypatch.setattr(shutil, "rmtree", fake_rmtree)
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cmd_whatsapp(MagicMock())
+
+    out = buf.getvalue()
+    assert "Cannot clear session directory" in out
+    assert "stop the gateway before re-pairing" in out
+    assert "Session cleared" not in out
+    assert "WhatsApp paired successfully!" not in out
+    assert _env_value(isolated_home, "WHATSAPP_ENABLED") is None
+
+
+def test_repair_kills_stale_bridge_by_pidfile(isolated_home, monkeypatch):
+    """When re-pairing an existing session, cmd_whatsapp must invoke
+    _kill_stale_bridge_by_pidfile for that specific profile's session_dir.
+    """
+    from hermes_cli.main_platform_setup import cmd_whatsapp
+
+    session = isolated_home / "whatsapp" / "session"
+    session.mkdir(parents=True)
+    (session / "creds.json").write_text("{\"key\":\"value\"}")
+    monkeypatch.setenv("WHATSAPP_MODE", "bot")
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
+
+    # users update prompt -> "n"; re-pair prompt -> "y"
+    inputs = iter(["n", "y"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs, "n"))
+    monkeypatch.setattr("hermes_cli.main._require_tty", lambda *_a, **_kw: None)
+    monkeypatch.setattr("hermes_cli.main_platform_setup._whatsapp_install_bridge", lambda _bd: True)
+    monkeypatch.setattr("hermes_constants.find_node_executable", lambda _n: "/usr/bin/node")
+
+    killed_paths = []
+    monkeypatch.setattr(
+        "plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile",
+        lambda p: killed_paths.append(p),
+    )
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *_a, **_kw: MagicMock(returncode=0, stderr=""),
+    )
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cmd_whatsapp(MagicMock())
+
+    assert len(killed_paths) == 1
+    assert killed_paths[0] == session
+
+
+def test_pairing_refuses_empty_creds_json(isolated_home, monkeypatch):
+    """If pairing completes but leaves a 0-byte/empty creds.json,
+    cmd_whatsapp must refuse it and not enable WhatsApp.
+    """
+    from hermes_cli.main_platform_setup import cmd_whatsapp
+
+    monkeypatch.setenv("WHATSAPP_MODE", "bot")
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+    monkeypatch.setattr("hermes_cli.main._require_tty", lambda *_a, **_kw: None)
+    monkeypatch.setattr("hermes_cli.main_platform_setup._whatsapp_install_bridge", lambda _bd: True)
+    monkeypatch.setattr("hermes_constants.find_node_executable", lambda _n: "/usr/bin/node")
+
+    # Subprocess runs --pair-only and creates an empty 0-byte creds.json
+    def fake_subprocess_run(*_a, **_kw):
+        session = isolated_home / "whatsapp" / "session"
+        session.mkdir(parents=True, exist_ok=True)
+        (session / "creds.json").write_text("")  # empty
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr("subprocess.run", fake_subprocess_run)
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        cmd_whatsapp(MagicMock())
+
+    out = buf.getvalue()
+    assert "Pairing may not have completed" in out
+    assert _env_value(isolated_home, "WHATSAPP_ENABLED") is None
+
+

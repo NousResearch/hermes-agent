@@ -5,6 +5,8 @@ programs. Manager-loaded values take precedence over filenames and disk copies.
 """
 from __future__ import annotations
 
+import ast
+import json
 import os
 from pathlib import Path
 import re
@@ -54,21 +56,51 @@ def verify_home(home: Path, configured: str) -> None:
     raise ValueError("profile_mismatch")
 
 
+def _runtime_module(python: str, source: str) -> str | None:
+    """The module an inline ``-I -c`` source runs when it is ``_launchers.runtime_command``'s bootstrap
+    byte for byte (``installation_command`` persists it when there is no store Python); else None."""
+    from hermes_cli._launchers import runtime_command
+    literal = re.search(r"""sys\.path\.insert\(0, ('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")\); """, source)
+    try:
+        root = Path(ast.literal_eval(literal[1])) if literal else None
+        return next((module for module in ("hermes_cli.stderr_timestamp", "hermes_cli.main")
+                     if root and runtime_command(root, module=module, python=python)[3] == source), None)
+    except (ValueError, SyntaxError, OSError, RuntimeError):
+        return None
+
+
+def _launch_module(argv: list[str]) -> tuple[str, list[str]] | None:
+    """``(module, its argv)`` for the module launches the installer persists: ``python -m``, the source
+    launcher's ``--run-module``, or the inline bootstrap. None for anything else."""
+    executable = Path(argv[0]).name.lower() if argv else ""
+    if re.fullmatch(r"python(?:w|\d+(?:\.\d+)*)?(?:\.exe)?", executable):
+        if argv[1:2] == ["-m"] and len(argv) > 2:
+            return argv[2], argv[3:]
+        if argv[1:3] == ["-I", "-c"] and len(argv) > 3 and (module := _runtime_module(argv[0], argv[3])):
+            return module, argv[4:]
+    elif executable in {"hermes", "hermes.exe"} and argv[1:2] == ["--run-module"] and len(argv) > 2:
+        return argv[2], argv[3:]
+    return None
+
+
 def verify_gateway_argv(argv: list[str], home: Path) -> None:
     from gateway.status import looks_like_gateway_command_line
 
     # The installer wraps launchd stderr with this fixed, non-shell module.
-    if len(argv) > 7 and argv[1:4] == ["-m", "hermes_cli.stderr_timestamp", "--error-log"] and argv[5] == "--":
-        if not re.fullmatch(r"python(?:w|\d+(?:\.\d+)*)?(?:\.exe)?", Path(argv[0]).name.lower()):
+    wrapper = _launch_module(argv)
+    if wrapper is not None and wrapper[0] == "hermes_cli.stderr_timestamp":
+        args = wrapper[1]
+        if len(args) < 4 or args[0] != "--error-log" or args[2] != "--":
             _unverified()
-        argv = argv[6:]
+        argv = args[3:]
     if not argv or not looks_like_gateway_command_line(subprocess_command(argv)):
         _unverified()
     executable = Path(argv[0]).name.lower()
     if re.fullmatch(r"python(?:w|\d+(?:\.\d+)*)?(?:\.exe)?", executable):
-        if argv[1:3] != ["-m", "hermes_cli.main"]:
+        entry = _launch_module(argv)
+        if entry is None or entry[0] != "hermes_cli.main":
             _unverified()
-        args = argv[3:]
+        args = entry[1]
     elif executable in {"hermes", "hermes.exe"}:
         args = argv[1:]
     else:
@@ -168,6 +200,33 @@ def verify_systemd(props: dict[str, str], manager_env: str, home: Path, *, syste
     verify_gateway_argv(argv, home)
 
 
+# The launchd job's Local Network wrapper (gateway_launchd.launchd_program_arguments, #71206) runs ONE shell
+# string through JXA's $.system(). Only that exact template is unwrapped, and only when the shell string
+# re-serializes byte for byte from its own tokens: no operator, substitution or second command rides along.
+_LAUNCHD_JXA = re.compile(
+    r'ObjC\.import\("stdlib"\); const status=\$\.system\(("(?:[^"\\]|\\.)*")\); const signal=status & 127; '
+    r'\$\.exit\(status === -1 \? 1 : signal === 0 \? \(status >> 8\) & 255 : 128 \+ signal\);')
+
+
+def _launchd_command(argv: list[str]) -> list[str]:
+    if argv[:1] != ["/usr/bin/osascript"]:
+        return argv
+    match = _LAUNCHD_JXA.fullmatch(argv[4]) if len(argv) == 5 and argv[1:4] == ["-l", "JavaScript", "-e"] else None
+    if match is None:
+        _unverified()
+    try:
+        shell = json.loads(match[1])
+        tokens = shlex.split(shell)
+    except ValueError:
+        _unverified()
+    if len(tokens) < 6 or tokens[0] != "exec" or tokens[-4] != ">>" or tokens[-2] != "2>>":
+        _unverified()
+    command = tokens[1:-4]
+    if shell != f"exec {shlex.join(command)} >> {shlex.quote(tokens[-3])} 2>> {shlex.quote(tokens[-1])}":
+        _unverified()
+    return command
+
+
 def verify_launchd_loaded(output: str, home: Path, *, uid: int, username: str) -> None:
     # Only the job's own blocks, never inherited/default environments or a
     # different job embedded in launchctl diagnostic text.
@@ -196,7 +255,7 @@ def verify_launchd_loaded(output: str, home: Path, *, uid: int, username: str) -
     programs = re.findall(r"^\tprogram = (.+)$", output, re.MULTILINE)
     if len(programs) != 1 or not argv or programs[0] != argv[0]:
         _unverified()
-    verify_gateway_argv(argv, home)
+    verify_gateway_argv(_launchd_command(argv), home)
 
 
 def verify_launchd_plist(definition: dict, label: str, home: Path) -> None:
@@ -215,7 +274,7 @@ def verify_launchd_plist(definition: dict, label: str, home: Path) -> None:
         _unverified()
     if definition.get("Program", argv[0] if argv else None) != (argv[0] if argv else None):
         _unverified()
-    verify_gateway_argv(argv, home)
+    verify_gateway_argv(_launchd_command(argv), home)
     if home.parent.name != "profiles" and not env.get("HERMES_SUPERVISED_CHILD"):
         _unverified()
 

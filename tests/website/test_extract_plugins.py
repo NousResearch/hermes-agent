@@ -242,6 +242,7 @@ def test_script_exits_zero_as_subprocess_when_catalog_missing(tmp_path):
         capture_output=True,
         text=True,
         timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert (out_dir / "plugins.json").exists()

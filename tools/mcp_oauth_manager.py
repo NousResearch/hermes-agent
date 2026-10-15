@@ -38,7 +38,7 @@ class _ProviderEntry:
     provider: Optional[Any] = None
     last_mtime_ns: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    pending_401: dict[str, "asyncio.Future[bool]"] = field(default_factory=dict)
+    pending_401: dict[str, asyncio.Future[bool]] = field(default_factory=dict)
 
 
 class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
@@ -206,6 +206,38 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         except Exception as exc:  # pragma: no cover — must not throw
             self._log_nonfatal("invalid_client detection", exc)
 
+    async def _maybe_reject_fabricated_registration(self, outgoing: Any) -> None:
+        """Refuse to send the SDK's *fabricated* dynamic client registration (#78190).
+
+        When the discovered authorization-server metadata (RFC 8414) has no ``registration_endpoint``,
+        ``create_client_registration_request`` (mcp/client/auth/utils.py) guesses ``POST {origin}/register``.
+        Providers without RFC 7591 DCR — Google's hosted Gmail/Drive MCP servers among them — answer with an
+        opaque 404 and the gateway burns its reconnect ladder on an unrecoverable failure. Their supported
+        path is a pre-registered client (``oauth.client_id`` / ``client_secret``), so raise that guidance
+        instead of sending the request.
+
+        Fires only when the metadata WAS discovered and lacks the endpoint, and the request is a POST to the
+        exact guessed URL. Undiscovered metadata (a WAF-blocked fetch) keeps the SDK's guess, so a real
+        ``/register`` still works and the discovery-context error (#113771) still explains a failure.
+        """
+        meta = getattr(self.context, "oauth_metadata", None)
+        if meta is None or getattr(meta, "registration_endpoint", None) or getattr(outgoing, "method", None) != "POST":
+            return
+        from urllib.parse import urljoin
+        url = outgoing.url
+        # Same URL type as the request (httpx or httpx2), so default-port handling matches on both sides.
+        expected = type(url)(urljoin(self.context.get_authorization_base_url(self.context.server_url), "/register"))
+        if (url.scheme, url.host, url.port, url.path) != (expected.scheme, expected.host, expected.port, expected.path):
+            return
+        from mcp.client.auth.oauth2 import OAuthRegistrationError
+        name = self._hermes_server_name
+        raise OAuthRegistrationError(
+            f"MCP OAuth '{name}': this provider does not support automatic client registration (its authorization "
+            f"server advertises no registration_endpoint), so the SDK's fallback would POST {expected} and fail "
+            "(Google's hosted Gmail/Drive MCP servers and similar providers return 404 for it). Create an OAuth "
+            "client for this provider and add it under config.yaml mcp_servers.<name>.oauth (client_id, "
+            f"client_secret), then run `hermes mcp login {name}`.")
+
     async def async_auth_flow(self, request):  # type: ignore[override]
         try:  # pre-flow hook: reload from disk if it changed (non-fatal on error)
             await get_manager().invalidate_if_disk_changed(self._hermes_server_name, hermes_home=self._hermes_home)
@@ -234,6 +266,12 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                     sent_access_token = tokens.access_token if tokens is not None else None
                     self.context.lock.release()
                     resource_lock_released = True
+                else:
+                    try:  # refuse the SDK's guessed DCR POST before it hits the network
+                        await self._maybe_reject_fabricated_registration(outgoing)
+                    except Exception:
+                        await inner.aclose()  # release the SDK's context.lock now, not at GC
+                        raise
                 incoming = yield outgoing
                 if resource_lock_released:
                     await self.context.lock.acquire()
@@ -364,7 +402,7 @@ class MCPOAuthManager:
                 return False
             # `_initialized` is private SDK API but stable across the pinned versions (>=1.26.0).
             if hasattr(entry.provider, "_initialized"):
-                entry.provider._initialized = False  # noqa: SLF001
+                entry.provider._initialized = False
             logger.info("MCP OAuth '%s': tokens file changed (mtime %d -> %d), forcing reload", server_name, old, mtime_ns)
             return True
 

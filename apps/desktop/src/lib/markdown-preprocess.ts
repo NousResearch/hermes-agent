@@ -212,6 +212,7 @@ const SOURCE_LIST_ENTRY_RE = /^[ \t]*(?:[-*+][ \t]+)?\[((?:\d+(?:\s*,\s*\d+)*))\
 // section — the same toggle the bundled skill uses to drop fenced code from
 // a draft's prose.
 const FENCE_TOGGLE_RE = /^[ \t]*(?:```|~~~)/
+
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
 // `[todo](~/todo.md)`, `[log](C:\logs\run.txt)`. Negative lookbehind keeps

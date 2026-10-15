@@ -7,7 +7,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { Check, Copy, Maximize, RefreshCw, X, ZoomIn, ZoomOut } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
-import { useZoomPan } from './use-zoom-pan'
+import { FIT_MIN_SCALE, useZoomPan } from './use-zoom-pan'
 
 interface ZoomableProps {
   /** Inline content; also the default full-view content. */
@@ -69,8 +69,11 @@ function ZoomPanViewer({
   onOpenChange: (open: boolean) => void
   open: boolean
 }) {
-  const { panning, ref, reset, stageProps, style, zoomIn, zoomOut } = useZoomPan<HTMLDivElement>({
-    enabled: open
+  // minScale: a wide diagram's fitted view can shrink far below the default
+  // zoom-out floor; the fit (not the clamp) owns how small the view gets.
+  const { panning, ref, reset, setContentEl, stageProps, style, zoomIn, zoomOut } = useZoomPan<HTMLDivElement>({
+    enabled: open,
+    minScale: FIT_MIN_SCALE
   })
 
   useEffect(() => {
@@ -95,7 +98,7 @@ function ZoomPanViewer({
           {...stageProps}
         >
           <div className="absolute inset-0 grid place-items-center">
-            <div className="origin-center" style={style}>
+            <div className="origin-center" ref={setContentEl} style={style}>
               {children}
             </div>
           </div>

@@ -166,8 +166,8 @@ def rasterize_svg_data_url(url: str) -> Optional[str]:
         raw = base64.b64decode(payload) if ";base64" in header.lower() else unquote(payload).encode()
     except Exception:
         return None
-    out_dir = get_hermes_dir("cache/vision", "temp_vision_images")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    from tools.vision_tools import _secure_cache_dir, _write_private_bytes
+    out_dir = _secure_cache_dir("cache/vision", "temp_vision_images")
     stem = out_dir / f"inline_{uuid.uuid4()}"
     svg_path, png_path = stem.with_suffix(".svg"), stem.with_suffix(".png")
     try:
@@ -189,8 +189,8 @@ def _normalize_to_supported_image(
     Pillow-readable rasters (BMP, TIFF) re-encode to PNG."""
     if detected_mime in _supported_media_types():
         return image_path, detected_mime, None
-    out_dir = get_hermes_dir("cache/vision", "temp_vision_images")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    from tools.vision_tools import _secure_cache_dir
+    out_dir = _secure_cache_dir("cache/vision", "temp_vision_images")
     out_path = out_dir / f"converted_{uuid.uuid4()}.png"
     if detected_mime == "image/svg+xml":
         if _rasterize_svg_to_png(image_path, out_path):

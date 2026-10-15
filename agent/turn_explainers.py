@@ -31,7 +31,7 @@ def empty_response_explanation(model: str = "") -> str:
 
 
 # Exact ``turn_exit_reason`` → catalog key of the explanation body (prefixed with the no-reply marker).
-_EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
+_EXIT_REASON_EXPLANATIONS: dict[str, str] = {
     "empty_response_exhausted": "explainer.empty_response",
     "all_retries_exhausted_no_response": "explainer.exit.all_retries_exhausted_no_response",
     "partial_stream_recovery": "explainer.exit.partial_stream_recovery",
@@ -112,7 +112,7 @@ class TurnExplainersMixin:
     """File-mutation failure footer + turn-completion explainer (see module docstring)."""
 
     def _record_file_mutation_result(
-        self, tool_name: str, args: Dict[str, Any], result: Any, is_error: bool,
+        self, tool_name: str, args: dict[str, Any], result: Any, is_error: bool,
         *, task_id: Optional[str] = None,
     ) -> None:
         """Record a ``write_file`` / ``patch`` outcome for the turn-end verifier.
@@ -164,7 +164,7 @@ class TurnExplainersMixin:
                     state.pop(path, None)
 
     @staticmethod
-    def _file_mutations_still_failed(failed: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    def _file_mutations_still_failed(failed: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
         """Drop entries whose target changed on disk since the failed call.
 
         The recorder only sees write_file/patch receipts; a terminal redirect or an
@@ -208,7 +208,7 @@ class TurnExplainersMixin:
         return cls._FOOTER_PATH_RE.sub(lambda m: f"`{m.group(0)}`", text)
 
     @classmethod
-    def _format_file_mutation_failure_footer(cls, failed: Dict[str, Dict[str, Any]]) -> str:
+    def _format_file_mutation_failure_footer(cls, failed: dict[str, dict[str, Any]]) -> str:
         """Render the per-turn failed-mutation dict as a user-facing footer.
 
         Up to 10 paths with their first error preview, then an overflow count; "" when nothing failed.
@@ -259,7 +259,7 @@ class TurnExplainersMixin:
             # Copy-pasteable, so pin every `hermes` command to the profile whose store failed:
             # a multi-profile backend (Desktop serve) hosts sessions whose state.db is NOT the
             # process default, and a bare `hermes` follows active_profile (#105887).
-            fill: Dict[str, str] = {
+            fill: dict[str, str] = {
                 "home": display_hermes_home(), "profile_arg": profile_cli_selector(),
                 "recovery_docs": STORAGE_RECOVERY_DOCS_URL, "db_path": "", "backups_dir": "",
             }

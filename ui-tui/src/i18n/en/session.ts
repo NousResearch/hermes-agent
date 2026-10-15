@@ -25,11 +25,15 @@ export const sessionEn = {
       approvalNeeded: 'approval needed',
       sudoPasswordNeeded: 'sudo password needed',
       secretInputNeeded: 'secret input needed',
-      unlockVault: (displayName: string) => `unlock ${displayName}`
+      unlockVault: (displayName: string) => `unlock ${displayName}`,
+      saveLogin: (site: string) => `save login for ${site}`,
+      verificationCode: (site: string) => `verification code for ${site}`
     },
     // Shared by the rpc wrapper (useMainApp) and the lifecycle paths; `error: ` prefix stays literal.
     common: {
-      invalidResponse: (method: string) => `invalid response: ${method}`
+      invalidResponse: (method: string) => `invalid response: ${method}`,
+      // useSubmission.interpolate: a `{!cmd}` that could not run refuses the whole submit.
+      interpolationFailed: (message: string) => `not sent: {!…} could not run (${message}) — input retained`
     },
     lifecycle: {
       newLiveSessionStarted: 'new live session started',
@@ -68,6 +72,8 @@ export const sessionEn = {
       sudoCancelled: 'sudo cancelled',
       secretCancelled: 'secret entry cancelled',
       vaultStaysLocked: (displayName: string) => `${displayName} stays locked`,
+      loginNotSaved: (site: string) => `login for ${site} not saved`,
+      codeSkipped: (site: string) => `verification code for ${site} skipped`,
       failedToOpenEditor: 'failed to open editor',
       failedToOpenEditorWith: (message: string) => `failed to open editor: ${message}`,
       yoloNeedsSession: 'yolo needs an active session',

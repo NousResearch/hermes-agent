@@ -37,7 +37,7 @@ class TurnContext:
     agent_holder: list = field(default_factory=lambda: [None])
     _LONG_TOOL_THRESHOLD_S: float = 30.0
     _cleanup_progress: bool = False
-    _cleanup_msg_ids: List[str] = field(default_factory=list)
+    _cleanup_msg_ids: list[str] = field(default_factory=list)
     _progress_metadata: Optional[dict] = None
     _progress_reply_to: Optional[Any] = None
     message: Optional[str] = None  # the only rebindable field
@@ -64,6 +64,7 @@ class TurnContext:
     persist_user_display_metadata: Optional[dict] = None
     user_config: Any = None
     mute_notification_reply: bool = False
+    voice_turn: bool = False  # a voice-note turn: runs on auxiliary.voice_chat
     enabled_toolsets: Any = None
     disabled_toolsets: Any = None
     log_mode_enabled: bool = False
@@ -85,6 +86,12 @@ class TurnContext:
     _status_adapter: Any = None
     _status_chat_id: Any = None
     _status_thread_metadata: Optional[dict] = None
+    # Footer latency measured across run_sync by _run_agent_inner (0.0 only before the worker runs).
+    turn_started_monotonic: Optional[float] = None
+    turn_seconds: float = 0.0
+    # Chain-shared footer-delivery fact: recursive queued follow-ups return different
+    # result dicts, while the outer TurnContext is shared down the whole chain.
+    runtime_footer_already_delivered: bool = False
     # bound TurnRunner callbacks read via ctx
     progress_callback: Optional[Callable] = None
     voice_ack_callback: Optional[Callable] = None

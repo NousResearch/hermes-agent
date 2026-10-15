@@ -201,6 +201,26 @@ export interface PooledRemoteEntry<TConnection extends RemoteConnectionDescripto
   connectionPromise?: null | Promise<TConnection>
   process?: unknown
   remoteBaseUrl?: null | string
+  /** Explicit producer identity when several entries share one authenticated remote. */
+  sharedProbeKey?: null | string
+}
+
+function pooledRemoteFailureKey(poolKey: string, entry: PooledRemoteEntry): string {
+  const baseUrl = String(entry.remoteBaseUrl).replace(/\/+$/, '')
+  const explicit = String(entry.sharedProbeKey ?? '').trim()
+
+  if (explicit) {
+    return `shared:${explicit}:${baseUrl}`
+  }
+
+  // Registry-owned pool keys are `conn:<connection-id>::<profile>`. That
+  // connection id is already the producer-owned identity for URL/cloud
+  // descriptors. Legacy/plain profile keys stay independent. SSH forwards
+  // normally expose distinct loopback ports, so their normalized base URLs do
+  // not collapse merely because they share a registry connection.
+  const scoped = /^conn:([^:]+)::/.exec(poolKey)
+
+  return scoped ? `shared:${scoped[1]}:${baseUrl}` : `profile:${poolKey}:${baseUrl}`
 }
 
 export interface RevalidatePooledRemoteBackendsOptions<TConnection extends RemoteConnectionDescriptor> {
@@ -218,8 +238,9 @@ export interface RevalidatePooledRemoteBackendsOptions<TConnection extends Remot
  * signals its host's death. Without this the pool serves a descriptor for an
  * unreachable host indefinitely.
  *
- * Entries share the primary's failure policy, keyed per base URL, so a profile
- * pointing at the same host as another does not burn the streak twice as fast.
+ * Entries with one producer-owned identity share a probe and failure streak.
+ * Same-URL descriptors without that identity remain independent because they
+ * can represent different tunnels or credentials.
  */
 export async function revalidatePooledRemoteBackends<TConnection extends RemoteConnectionDescriptor>({
   entries,
@@ -229,34 +250,71 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
   tracker
 }: RevalidatePooledRemoteBackendsOptions<TConnection>): Promise<{ dropped: string[] }> {
   const remotes = [...entries].filter(([, entry]) => !entry.process && entry.remoteBaseUrl)
+  const probeGroups = new Map<string, typeof remotes>()
   const dropped: string[] = []
 
-  await Promise.all(
-    remotes.map(async ([profile, entry]) => {
-      const baseUrl = String(entry.remoteBaseUrl).replace(/\/+$/, '')
+  for (const [poolKey, entry] of remotes) {
+    const failureKey = pooledRemoteFailureKey(poolKey, entry)
+    const group = probeGroups.get(failureKey) ?? []
 
-      try {
+    group.push([poolKey, entry])
+    probeGroups.set(failureKey, group)
+  }
+
+  await Promise.all(
+    [...probeGroups].map(async ([failureKey, members]) => {
+      const availablePoolKeys: string[] = []
+      let connection: TConnection | null = null
+
+      for (const [poolKey, entry] of members) {
         if (!entry.connectionPromise) {
-          throw new Error('Remote backend descriptor is unavailable.')
+          log(`Pooled remote backend for profile "${poolKey}" has no connection descriptor; dropping stale entry.`)
+          stopBackend(poolKey)
+          dropped.push(poolKey)
+
+          continue
         }
 
-        const connection = await entry.connectionPromise
+        try {
+          const resolved = await entry.connectionPromise
+
+          connection ??= resolved
+          availablePoolKeys.push(poolKey)
+        } catch {
+          log(
+            `Pooled remote backend for profile "${poolKey}" has an unavailable connection descriptor; dropping stale entry.`
+          )
+          stopBackend(poolKey)
+          dropped.push(poolKey)
+        }
+      }
+
+      if (!connection) {
+        return
+      }
+
+      const representative = availablePoolKeys[0]
+
+      try {
         await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
-        tracker.recordSuccess(baseUrl)
+        tracker.recordSuccess(failureKey)
       } catch {
-        const failure = tracker.recordFailure(baseUrl)
+        const failure = tracker.recordFailure(failureKey)
 
         if (!failure.shouldReset) {
           log(
-            `Pooled remote backend for profile "${profile}" failed liveness probe (${failure.failures}/${REMOTE_LIVENESS_FAILURE_LIMIT}); keeping descriptor for retry.`
+            `Pooled remote backend for profile "${representative}" failed liveness probe (${failure.failures}/${REMOTE_LIVENESS_FAILURE_LIMIT}); keeping descriptor for retry.`
           )
 
           return
         }
 
-        log(`Pooled remote backend for profile "${profile}" failed liveness probe; dropping stale descriptor.`)
-        stopBackend(profile)
-        dropped.push(profile)
+        log(`Pooled remote backend for profile "${representative}" failed liveness probe; dropping stale descriptor.`)
+
+        for (const poolKey of availablePoolKeys) {
+          stopBackend(poolKey)
+          dropped.push(poolKey)
+        }
       }
     })
   )
@@ -308,7 +366,7 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
 
   await Promise.all(
     remotes.map(async ([poolKey, entry]) => {
-      const baseUrl = String(entry.remoteBaseUrl).replace(/\/+$/, '')
+      const failureKey = pooledRemoteFailureKey(poolKey, entry)
 
       try {
         if (!entry.connectionPromise) {
@@ -317,7 +375,7 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
 
         const connection = await entry.connectionPromise
         await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
-        tracker.recordSuccess(baseUrl)
+        tracker.recordSuccess(failureKey)
 
         return
       } catch (probeError) {
@@ -342,7 +400,7 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
       retired.push(poolKey)
       // The rebuilt tunnel must start from a clean failure state; stale
       // pre-sleep failures should not count against the fresh descriptor.
-      tracker.recordSuccess(baseUrl)
+      tracker.recordSuccess(failureKey)
 
       try {
         await rebuild(poolKey)

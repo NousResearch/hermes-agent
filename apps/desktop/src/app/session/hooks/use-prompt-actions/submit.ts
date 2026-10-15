@@ -27,6 +27,7 @@ import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { consumePendingCredentialWarning, requestDesktopOnboarding } from '@/store/onboarding'
 import { trackPendingSubmission } from '@/store/pending-submissions'
 import { isCronRunReadOnly, isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
+import { syncShowReasoningForSession } from '@/store/reasoning-disclosure'
 import {
   $activeSessionId,
   $sessions,
@@ -1098,6 +1099,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // the durable session even when no recovery was needed. The explicit
         // target only: a drain must never recover into the chat on screen.
         const recoverStoredSessionId = targetStoredSessionId
+
+        // Effects mirror this on session activation and preference changes,
+        // but the first submit can run before React commits that effect.
+        // Fail open: an old gateway or transient sync failure must not block a
+        // user message.
+        await syncShowReasoningForSession(requestGateway, liveSessionId).catch(() => undefined)
 
         try {
           // A bot's chat is a tile scoped to the `bots` workspace; the primary chat is Sessions mode.

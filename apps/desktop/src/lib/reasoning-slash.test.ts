@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { resolveDesktopCommand } from '@/lib/desktop-slash-commands'
 import { applyReasoningSlashResult, reasoningSlashParams } from '@/lib/reasoning-slash'
-import { $showReasoning, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
+import { $showReasoning, setShowReasoningFromConfig, syncShowReasoningForSession } from '@/store/reasoning-disclosure'
 
 // `/reasoning hide` typed into the Desktop composer must gate Thinking blocks
 // in the transcript immediately (#111761, #49664): the renderer mirrors the
@@ -32,5 +32,27 @@ describe('/reasoning slash command', () => {
     expect($showReasoning.get()).toBe(false)
     applyReasoningSlashResult('show')
     expect($showReasoning.get()).toBe(true)
+  })
+
+  it('syncs the display preference to an active gateway session', async () => {
+    const request = vi.fn(async () => ({}))
+
+    setShowReasoningFromConfig(false)
+    await syncShowReasoningForSession(request, 'runtime-1')
+
+    expect(request).toHaveBeenCalledWith('config.set', {
+      key: 'show_reasoning',
+      session_id: 'runtime-1',
+      value: '0'
+    })
+
+    setShowReasoningFromConfig(true)
+    await syncShowReasoningForSession(request, 'runtime-2')
+
+    expect(request).toHaveBeenLastCalledWith('config.set', {
+      key: 'show_reasoning',
+      session_id: 'runtime-2',
+      value: '1'
+    })
   })
 })

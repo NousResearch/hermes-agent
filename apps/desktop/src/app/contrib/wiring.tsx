@@ -70,6 +70,7 @@ import {
   normalizeProfileKey
 } from '@/store/profile'
 import { $newProjectSessionRequest, $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
+import { $showReasoning, syncShowReasoningForSession } from '@/store/reasoning-disclosure'
 import { $backendRestartRequest, $routeRequest } from '@/store/recovery-requests'
 import {
   $activeSessionId,
@@ -317,6 +318,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const gatewayState = useStore($gatewayState)
   const activeSessionId = useStore($activeSessionId)
+  const showReasoning = useStore($showReasoning)
   const currentCwd = useStore($currentCwd)
 
   useRouteRequestNavigation(navigate)
@@ -420,6 +422,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     },
     [dispatchSessionRpc]
   )
+
+  // The backend only installs a live reasoning sink when this runtime's
+  // session flag is set.  Re-send it on activation and after a Settings
+  // change; the request router keeps a foreign session on its owner gateway.
+  useEffect(() => {
+    if (!activeSessionId) {
+      return
+    }
+
+    void syncShowReasoningForSession(requestGateway, activeSessionId).catch(() => undefined)
+  }, [activeSessionId, requestGateway, showReasoning])
 
   const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =
     useSessionListActions({ profileScope })

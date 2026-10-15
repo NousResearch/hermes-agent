@@ -29,3 +29,15 @@ export const $showReasoning = atom(true)
 export function setShowReasoningFromConfig(value: unknown): void {
   $showReasoning.set(!(value === false || value === 'false' || value === 0))
 }
+
+/** The gateway's live reasoning sink is session-scoped, unlike this preference. */
+export function syncShowReasoningForSession(
+  request: (method: string, params: Record<string, unknown>) => Promise<unknown>,
+  sessionId: string
+): Promise<unknown> {
+  return request('config.set', {
+    key: 'show_reasoning',
+    session_id: sessionId,
+    value: $showReasoning.get() ? '1' : '0'
+  })
+}

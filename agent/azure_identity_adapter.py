@@ -18,7 +18,7 @@ import logging
 import os
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -75,18 +75,30 @@ def reset_credential_cache() -> None:
 
 @dataclass(frozen=True)
 class EntraIdentityConfig:
-    """Hermes-managed Entra knobs; everything else (tenant, SP secret, federated token file, authority...) flows
-    through azure-identity's standard ``AZURE_*`` env vars. ``exclude_interactive_browser`` keeps probes
+    """Entra source, token scope and optional CLI account selectors. Default-chain identity
+    settings (SP secret, federated token file, authority...) use the profile's standard ``AZURE_*`` vars. ``exclude_interactive_browser`` keeps probes
     non-interactive (the setup wizard never writes it). Frozen: hashable for ``lru_cache``, picklable for workers."""
 
     scope: str = SCOPE_AI_AZURE_DEFAULT
     exclude_interactive_browser: bool = True
+    credential_source: Literal["default", "azure_cli"] = "default"
+    tenant_id: str = ""
+    subscription: str = ""
 
     def __post_init__(self) -> None:
+        if self.credential_source not in ("default", "azure_cli"):
+            raise ValueError("Unknown Entra credential source. Choose default or azure_cli.")
+        for key in ("tenant_id", "subscription"):
+            object.__setattr__(self, key, str(getattr(self, key) or "").strip())
+        if self.credential_source == "default" and (self.tenant_id or self.subscription):
+            raise ValueError("Entra tenant_id and subscription selectors require the azure_cli credential source.")
         object.__setattr__(self, "scope", str(self.scope or "").strip() or SCOPE_AI_AZURE_DEFAULT)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"scope": self.scope, "exclude_interactive_browser": self.exclude_interactive_browser}
+        data = {"scope": self.scope, "exclude_interactive_browser": self.exclude_interactive_browser}
+        if self.credential_source == "azure_cli":
+            data.update(credential_source=self.credential_source, tenant_id=self.tenant_id, subscription=self.subscription)
+        return data
 
     @classmethod
     def from_dict(cls, data: Optional[dict[str, Any]], *, default_scope: Optional[str] = None) -> EntraIdentityConfig:
@@ -94,6 +106,9 @@ class EntraIdentityConfig:
         return cls(
             scope=str(data.get("scope") or "").strip() or default_scope or SCOPE_AI_AZURE_DEFAULT,
             exclude_interactive_browser=bool(data.get("exclude_interactive_browser", True)),
+            credential_source=data.get("credential_source", "default"),
+            tenant_id=data.get("tenant_id", "") if data.get("credential_source") == "azure_cli" else "",
+            subscription=data.get("subscription", "") if data.get("credential_source") == "azure_cli" else "",
         )
 
 
@@ -103,6 +118,8 @@ def _default_chain_credential(config: EntraIdentityConfig) -> Any:
     one ``model.entra.*`` block at a time. Only Hermes knobs are passed as kwargs; the rest comes from ``AZURE_*``
     env vars."""
     ai = _require_azure_identity()
+    if config.credential_source == "azure_cli":
+        return ai.AzureCliCredential(tenant_id=config.tenant_id, subscription=config.subscription or None)
     # SDK default already excludes the browser; only pass the kwarg when opting in.
     kwargs = {} if config.exclude_interactive_browser else {"exclude_interactive_browser_credential": False}
     return ai.DefaultAzureCredential(**kwargs)
@@ -128,6 +145,9 @@ _AMBIENT_CHAIN_REFUSAL = (
 
 def _scoped_credential(ai: Any, config: EntraIdentityConfig) -> Any:
     from agent.secret_scope import current_secret_scope, is_multiplex_active
+    if config.credential_source == "azure_cli":
+        # Explicit profile opt-in to this host's CLI cache. Do not try env or managed identity.
+        return ai.AzureCliCredential(tenant_id=config.tenant_id, subscription=config.subscription or None)
     scope = current_secret_scope() or {}
     read = lambda name: (scope.get(name) or "").strip()
     tenant, client = read("AZURE_TENANT_ID"), read("AZURE_CLIENT_ID")
@@ -146,8 +166,7 @@ def _scoped_credential(ai: Any, config: EntraIdentityConfig) -> Any:
 
 
 def build_credential(config: EntraIdentityConfig) -> Any:
-    """Cached Entra credential: the process-wide default chain when unscoped, the routed profile's own
-    credential (built from its secret scope) under a HERMES_HOME override."""
+    """Cache by Entra settings and home; an explicit CLI source uses only this host's CLI login."""
     from hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is None:
         return _default_chain_credential(config)
@@ -265,13 +284,16 @@ def describe_active_credential(config: Optional[EntraIdentityConfig] = None, *, 
     info["scope"] = config.scope
     if tenant := _scoped_env("AZURE_TENANT_ID"):
         info["tenant_id_env"] = tenant
-    info["env_sources"] = [label for label, present in _ENV_SOURCE_CHECKS if present()]
+    info["env_sources"] = (["Azure CLI"] if config.credential_source == "azure_cli"
+                           else [label for label, present in _ENV_SOURCE_CHECKS if present()])
+    if config.credential_source == "azure_cli":
+        info["hint"] = "Run az login on the machine running this profile; check the selected tenant and subscription."
     result = _probe_token(config, timeout_seconds)
     if result is None:
         info["error"] = f"Token probe timed out after {timeout_seconds:.0f}s"
-        info["hint"] = ("DefaultAzureCredential can be slow when the token service is unreachable "
+        info.setdefault("hint", ("DefaultAzureCredential can be slow when the token service is unreachable "
                         "or when az login state is stale. Try `az login` or set "
-                        "AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_CLIENT_SECRET.")
+                        "AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_CLIENT_SECRET."))
         return info
     if "error" in result:
         info["error"] = result["error"]

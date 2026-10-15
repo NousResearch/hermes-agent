@@ -3,8 +3,7 @@ import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
 import type { CustomEndpoint, CustomEndpointCredentialSource, CustomEndpointUpdate } from '@/types/hermes'
 
-export type EndpointCredential =
-  { kind: 'api_key'; apiKey: string } | { kind: 'command'; command: string } | { kind: 'azure_cli' }
+export type EndpointCredential = { kind: 'api_key'; apiKey: string } | { kind: 'command'; command: string }
 
 function emptyCredential(kind: CustomEndpointCredentialSource): EndpointCredential {
   switch (kind) {
@@ -13,9 +12,6 @@ function emptyCredential(kind: CustomEndpointCredentialSource): EndpointCredenti
 
     case 'command':
       return { kind, command: '' }
-
-    case 'azure_cli':
-      return { kind }
     default: {
       const exhaustive: never = kind
 
@@ -37,9 +33,6 @@ export function credentialPayload(
 
     case 'command':
       return { credential_source: credential.kind, key_cmd: credential.command.trim() || undefined }
-
-    case 'azure_cli':
-      return { credential_source: credential.kind }
     default: {
       const exhaustive: never = credential
 
@@ -61,7 +54,6 @@ export function EndpointCredentials({ credential, editing, onChange }: EndpointC
 
   const options: { id: CustomEndpointCredentialSource; label: string }[] = [
     { id: 'api_key', label: ce.fields.apiKey },
-    { id: 'azure_cli', label: copy.azureCli },
     { id: 'command', label: copy.command }
   ]
 
@@ -99,7 +91,6 @@ export function EndpointCredentials({ credential, editing, onChange }: EndpointC
           <p>{copy.commandHint}</p>
         </>
       )}
-      {credential.kind === 'azure_cli' && <p>{copy.azureCliHint}</p>}
     </fieldset>
   )
 }

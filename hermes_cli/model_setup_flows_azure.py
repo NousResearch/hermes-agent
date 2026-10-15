@@ -14,7 +14,8 @@ from hermes_cli.model_setup_flows_common import _HTTP, _ask, _commit_model_confi
 
 
 def _azure_mode_label(mode: str) -> str:
-    return "OpenAI-style" if mode == "chat_completions" else "Anthropic-style"
+    return {"chat_completions": "OpenAI-style", "codex_responses": "Responses API",
+            "anthropic_messages": "Anthropic-style"}.get(mode, mode)
 
 
 @dataclass
@@ -46,7 +47,7 @@ def _azure_entra_preflight(current_entra: dict):
     when the user cancelled; ``False`` when the adapter is missing (fall back to API key)."""
     try:
         from agent.azure_identity_adapter import (
-            EntraIdentityConfig, SCOPE_AI_AZURE_DEFAULT, build_token_provider, describe_active_credential,
+            EntraIdentityConfig, build_token_provider, describe_active_credential,
             has_azure_identity_installed)
     except ImportError as exc:
         _say("", f"⚠ Could not import azure-identity adapter: {exc}", "  Falling back to API key auth.")
@@ -60,16 +61,26 @@ def _azure_entra_preflight(current_entra: dict):
              f"    {install_hint('azure-identity')}",
              "  Then restart Hermes.")
 
-    # Only the optional scope override is persisted; identity selection (tenant,
-    # user-assigned MI, workload identity, SP) stays in AZURE_* SDK env vars.
-    entra_overrides: dict = {}
-    _persisted_scope_override = str(current_entra.get("scope") or "").strip()
-    entra_scope = _persisted_scope_override or SCOPE_AI_AZURE_DEFAULT
-    if _persisted_scope_override:
-        entra_overrides["scope"] = _persisted_scope_override
-
-    _say("", "◐ Probing Microsoft Entra ID credential chain (up to 10s)...")
-    _config = EntraIdentityConfig(scope=entra_scope)
+    _say("", "Entra credential source:",
+         "  1. Default credential chain (profile Azure credentials / managed identity)",
+         "  2. Azure CLI login (uses this machine's az login session; no fallback)")
+    default_source = "2" if current_entra.get("credential_source") == "azure_cli" else "1"
+    choice = _ask(f"Credential source [1/2] ({default_source}): ", raw=True)
+    if choice is None:
+        return None
+    entra_overrides = {k: current_entra[k] for k in ("scope",) if current_entra.get(k)}
+    if (choice or default_source) == "2":
+        entra_overrides["credential_source"] = "azure_cli"
+        for key, label in (("tenant_id", "Tenant ID"), ("subscription", "Subscription name or ID")):
+            value = _ask(f"{label} [{current_entra.get(key) or 'Azure CLI default'}]: ", raw=True)
+            if value is None:
+                return None
+            selected = value or current_entra.get(key)
+            if selected:
+                entra_overrides[key] = selected
+    _config = EntraIdentityConfig.from_dict(entra_overrides)
+    entra_scope = _config.scope
+    _say("", "◐ Probing Microsoft Entra ID credentials (up to 10s)...")
     info = describe_active_credential(config=_config, timeout_seconds=10.0)
     if info.get("ok"):
         env_sources = info.get("env_sources") or []
@@ -148,6 +159,30 @@ def _azure_detect_transport(effective_url: str, effective_key: str, token_provid
     return ("anthropic_messages" if (mode_choice or default_choice) == "2" else "chat_completions"), discovered_models
 
 
+def _azure_endpoint(current: _AzureCurrent) -> str | None:
+    """Prompt and validate the Foundry endpoint before requesting credentials."""
+    from hermes_cli import azure_detect
+
+    _placeholder = current.base_url or (
+        "e.g. https://<resource>.openai.azure.com/openai/v1 or https://<resource>.services.ai.azure.com/anthropic")
+    base_url = _ask(f"API endpoint URL [{_placeholder}]: ")
+    if base_url is None:
+        return
+    try:
+        effective_url = azure_detect.normalize_foundry_base_url(base_url or current.base_url, current.api_mode)
+    except ValueError:
+        print("Invalid endpoint URL. Enter an http:// or https:// URL with a valid host.")
+        return
+    if not effective_url:
+        print("No endpoint URL provided. Cancelled.")
+        return
+    if not effective_url.startswith(_HTTP):
+        print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
+        return
+
+    return effective_url
+
+
 def _model_flow_azure_foundry(config, current_model=""):
     """Azure Foundry: endpoint, auth mode, API mode, model. Two transports (OpenAI-style
     ``/v1/chat/completions``, Anthropic-style ``/v1/messages``) and two auth modes: API key
@@ -174,17 +209,8 @@ def _model_flow_azure_foundry(config, current_model=""):
     print()
 
     # Step 1: endpoint URL
-    _placeholder = cur.base_url or (
-        "e.g. https://<resource>.openai.azure.com/openai/v1 or https://<resource>.services.ai.azure.com/anthropic")
-    base_url = _ask(f"API endpoint URL [{_placeholder}]: ")
-    if base_url is None:
-        return
-    effective_url = (base_url or cur.base_url).rstrip("/")
-    if not effective_url:
-        print("No endpoint URL provided. Cancelled.")
-        return
-    if not effective_url.startswith(_HTTP):
-        print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
+    effective_url = _azure_endpoint(cur)
+    if effective_url is None:
         return
 
     # Step 2: authentication mode
@@ -248,8 +274,8 @@ def _model_flow_azure_foundry(config, current_model=""):
     model["default"] = effective_model
     model["auth_mode"] = "entra_id" if use_entra else "api_key"
     clear_model_endpoint_credentials(model, clear_api_mode=False)
-    # Persist only a non-default Entra scope so config.yaml stays tidy.
-    clean_entra = {k: v for k in ("scope",) if (v := entra_overrides.get(k))}
+    # Store the explicit source and account selectors without persisting tokens.
+    clean_entra = dict(entra_overrides)
     if use_entra and clean_entra:
         model["entra"] = clean_entra
     else:

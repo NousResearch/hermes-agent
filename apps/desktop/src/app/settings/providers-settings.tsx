@@ -29,6 +29,7 @@ import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth 
 import { $settingsRequestProfile } from '@/store/settings-scope'
 import type { EnvVarInfo, OAuthProvider } from '@/types/hermes'
 
+import { AzureFoundrySettings } from './azure-foundry-settings'
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
 import { CustomEndpointsSettings } from './custom-endpoints-settings'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
@@ -568,13 +569,31 @@ export function ProvidersSettings({
               <div className="grid gap-2">
                 {visibleGroups.map(group => (
                   <div className="scroll-mt-6 rounded-[6px]" id={providerKeyElementId(group.name)} key={group.name}>
-                    <ProviderKeyRows
-                      expanded={openProvider === group.name}
-                      group={group}
-                      onExpand={() => setOpenProvider(group.name)}
-                      onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
-                      rowProps={rowProps}
-                    />
+                    {group.primary[1].provider === 'azure-foundry' ? (
+                      <AzureFoundrySettings
+                        expanded={openProvider === group.name}
+                        fallback={
+                          <ProviderKeyRows
+                            expanded={openProvider === group.name}
+                            group={group}
+                            onExpand={() => setOpenProvider(group.name)}
+                            onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
+                            rowProps={rowProps}
+                          />
+                        }
+                        onConfigSaved={onConfigSaved}
+                        onMainModelChanged={onMainModelChanged}
+                        onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
+                      />
+                    ) : (
+                      <ProviderKeyRows
+                        expanded={openProvider === group.name}
+                        group={group}
+                        onExpand={() => setOpenProvider(group.name)}
+                        onToggle={() => setOpenProvider(prev => (prev === group.name ? null : group.name))}
+                        rowProps={rowProps}
+                      />
+                    )}
                   </div>
                 ))}
               </div>

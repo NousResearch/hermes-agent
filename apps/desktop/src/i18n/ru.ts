@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { customEndpointCredentials } from './custom_endpoint_credentials'
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { foundryTranslations } from './foundry'
 import { ruBoot } from './ru_boot'
 import { ruCatalog, ruSkillDeepLink } from './ru_catalog'
 import { ruClarify } from './ru_clarify'
@@ -374,6 +375,7 @@ export const ruOverrides = {
         }
       }
     },
+    foundry: foundryTranslations['ru'],
     customEndpoints: { credentials: customEndpointCredentials.ru },
     subpages: ruSettingsSubpages,
     closeSettings: 'Закрыть настройки',

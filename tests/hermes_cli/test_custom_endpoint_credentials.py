@@ -63,7 +63,7 @@ def client(monkeypatch):
 
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize(("source", "catalog_status", "legacy"), [
-    ("command", 200, False), ("azure_cli", 200, False), ("azure_cli", 404, False), ("azure_cli", 403, False), ("command", 200, True),
+    ("command", 200, False), ("command", 404, False), ("command", 403, False), ("command", 200, True),
 ])
 def test_command_credential_test_save_and_runtime_use_bot_profile(client, tmp_path, monkeypatch, source, catalog_status, legacy):
     from hermes_cli.profiles import get_profile_dir
@@ -78,10 +78,6 @@ def test_command_credential_test_save_and_runtime_use_bot_profile(client, tmp_pa
     helper = tmp_path / "credential.py"
     helper.write_text('import os, json, time\nprint(json.dumps({"access_token": os.environ["TEST_BOT_TOKEN"], "expires_on": int(time.time()) + 3600}))\n')
     command = f"{shlex.quote(sys.executable)} {shlex.quote(str(helper))}"
-    az = tmp_path / "az"
-    az.write_text(f'#!/bin/sh\nexec {command} "$@"\n')
-    az.chmod(0o700)
-    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
     route = "/api/providers/custom-endpoints"
     with endpoint_server(catalog_status) as (base_url, received, requests, server):
         payload = {"id": "foundry-local", "name": "Foundry local", "base_url": base_url,
@@ -193,46 +189,6 @@ def test_azure_epoch_expiry_controls_command_cache(remaining):
     else:
         assert source() == "token"
         assert 3500 < source._expires_at - time.monotonic() < 3600
-
-
-@pytest.mark.platforms("posix")
-@pytest.mark.parametrize(("base_url", "expected"), [
-    ("https://resource.services.ai.azure.com/api/projects/project", "https://resource.services.ai.azure.com/api/projects/project/openai/v1"),
-    ("https://resource.services.ai.azure.com/api/projects/project/", "https://resource.services.ai.azure.com/api/projects/project/openai/v1"),
-    ("https://resource.services.ai.azure.com/api/projects/project/openai/v1", "https://resource.services.ai.azure.com/api/projects/project/openai/v1"),
-    ("https://resource.services.ai.azure.com", "https://resource.services.ai.azure.com/openai/v1"),
-    ("https://resource.openai.azure.com/openai/v1", "https://resource.openai.azure.com/openai/v1"),
-    ("https://example.com/api/projects/project", "https://example.com/api/projects/project"),
-    ("https://resource.services.ai.azure.com.example.com/api/projects/project", "https://resource.services.ai.azure.com.example.com/api/projects/project"),
-])
-def test_foundry_url_test_and_save_use_same_inference_base(client, monkeypatch, base_url, expected):
-    import httpx
-    from hermes_cli.config import read_raw_config
-    from hermes_cli.runtime_provider import resolve_runtime_provider
-    from hermes_cli.web_routers import config_env
-
-    requested = []
-
-    def endpoint(request):
-        requested.append(str(request.url))
-        if request.method == "GET":
-            return httpx.Response(404)
-        return httpx.Response(200 if str(request.url) == expected + "/responses" else 400, json={})
-
-    monkeypatch.setattr(config_env, "_endpoint_probe_client", lambda *_args: httpx.AsyncClient(transport=httpx.MockTransport(endpoint)))
-    payload = {"id": "project", "name": "Project", "base_url": base_url, "model": "deployment",
-               "api_mode": "codex_responses", "credential_source": "command",
-               "key_cmd": f'{shlex.quote(sys.executable)} -c {shlex.quote("print(12345)")}'}
-    route = "/api/providers/custom-endpoints"
-    # Save must also handle a pasted project URL when Test has never run.
-    saved = client.post(route, json=payload)
-    assert saved.status_code == 200, saved.text
-    assert read_raw_config()["providers"]["project"]["base_url"] == expected
-    assert resolve_runtime_provider(requested="custom:project", target_model="deployment")["base_url"] == expected
-    tested = client.post(route + "/validate", json=payload)
-    assert tested.json()["ok"], tested.json()
-    assert tested.json()["resolved_base_url"] == expected
-    assert requested[-1] == expected + "/responses"
 
 
 @pytest.mark.platforms("posix")

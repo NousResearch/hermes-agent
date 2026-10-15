@@ -9,6 +9,7 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
+import type { FoundryTranslations } from './foundry'
 import type { AppTourTranslations } from './types_app_tour'
 import type { BillingTranslations } from './types_billing'
 import type { BootTranslations } from './types_boot'
@@ -924,6 +925,7 @@ export interface Translations extends NoticeTranslations {
     fieldDescriptions: Record<string, string>
     uninstallSection: UninstallSectionTranslations
     memoryLayers: MemoryLayersTranslations
+    foundry: FoundryTranslations
     customEndpoints: CustomEndpointsTranslations
     computerUse: {
       accessibility: string

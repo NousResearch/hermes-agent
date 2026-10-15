@@ -6,18 +6,11 @@ from fastapi import HTTPException
 
 from hermes_cli.web_models import CustomEndpointUpdate
 
-CredentialSource = Literal["api_key", "command", "azure_cli"]
-# Project only UTC epoch expiry. Azure's older expiresOn is in the host's local timezone.
-AZURE_CLI_KEY_CMD = (
-    'az account get-access-token --scope https://ai.azure.com/.default '
-    '--query "{access_token:accessToken,expires_on:expires_on}" --output json --only-show-errors'
-)
+CredentialSource = Literal["api_key", "command"]
 
 
 def credential_source(entry: dict[str, Any]) -> CredentialSource:
     command = str(entry.get("key_cmd") or "").strip()
-    if command == AZURE_CLI_KEY_CMD:
-        return "azure_cli"
     return "command" if command else "api_key"
 
 
@@ -35,10 +28,7 @@ def select_credentials(entry: dict[str, Any], body: CustomEndpointUpdate) -> dic
         return selected
     if body.api_key and body.api_key.strip():
         raise HTTPException(400, "Choose either an API key or a credential command.")
-    if source == "azure_cli":
-        command = AZURE_CLI_KEY_CMD
-    else:
-        command = command or str(entry.get("key_cmd") or "").strip()
+    command = command or str(entry.get("key_cmd") or "").strip()
     if not command:
         raise HTTPException(400, "Enter a credential command first.")
     selected["key_cmd"] = command
@@ -53,7 +43,6 @@ def probe_headers(body: CustomEndpointUpdate) -> dict[str, str]:
     Test uses the same named-provider resolver as chat. Never swallow a helper failure and
     retry anonymously; helper stdout, stderr and command text may all contain credentials.
     """
-    from agent.command_token_source import CommandTokenError
     from hermes_cli.config import load_config
     from hermes_cli.web_routers.config_env import _pop_legacy_custom_provider, _resolve_custom_endpoint_entry
     from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
@@ -77,27 +66,8 @@ def probe_headers(body: CustomEndpointUpdate) -> dict[str, str]:
         requested_provider=f"custom:{endpoint_id}", explicit_api_key=body.api_key,
         target_model=body.model, config=cfg,
     )
-    if credential_source(entry) == "azure_cli":
-        from hermes_platform.resolver import LookupContext, locate_command
-        from tools.environments.local import served_profile_child_env
-
-        child_env = served_profile_child_env(inherit_credentials=True)
-        context = LookupContext(path=child_env.get("PATH"), pathext=child_env.get("PATHEXT"))
-        if not locate_command("az", context).command:
-            raise CommandTokenError(
-                "Azure CLI (az) was not found on the machine running this profile. "
-                "Install it there and restart Hermes so it can find az on PATH."
-            )
     key = runtime["api_key"] if runtime else ""
-    try:
-        token = key() if callable(key) else key
-    except CommandTokenError as exc:
-        if credential_source(entry) == "azure_cli":
-            raise CommandTokenError(
-                "Azure CLI could not provide a token. Install Azure CLI and run az login "
-                "on the machine running this profile, then test again."
-            ) from exc
-        raise
+    token = key() if callable(key) else key
     import httpx
 
     headers = httpx.Headers({"Accept": "application/json"})

@@ -73,18 +73,6 @@ const EMPTY_FORM: EndpointForm = {
   name: ''
 }
 
-function nextFoundryEndpointId(endpoints: CustomEndpoint[]): string {
-  const ids = new Set(endpoints.map(endpoint => endpoint.id.toLowerCase()))
-  let id = 'foundry-local'
-  let suffix = 2
-
-  while (ids.has(id)) {
-    id = `foundry-local-${suffix++}`
-  }
-
-  return id
-}
-
 function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
   return {
     credential: credentialFromEndpoint(endpoint),
@@ -497,14 +485,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
               onChange={credential =>
                 setForm(current => ({
                   ...current,
-                  credential,
-                  ...(credential.kind === 'azure_cli'
-                    ? {
-                        apiMode: 'codex_responses',
-                        name: current.name || 'Microsoft Foundry',
-                        id: current.id || nextFoundryEndpointId(endpoints)
-                      }
-                    : {})
+                  credential
                 }))
               }
             />

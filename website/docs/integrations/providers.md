@@ -1343,57 +1343,18 @@ An entry keyed like a built-in provider (`openrouter:`, `Anthropic:`, `deepseek:
 Earlier releases sent the built-in's env key (for example `DEEPSEEK_API_KEY`) to a key-less `providers.deepseek` entry on any address. Now that key stays on the built-in's own host. If such an entry now gets `401`, add `key_env: DEEPSEEK_API_KEY` (use your provider's variable) to the entry. Hermes logs one warning per entry naming the remedy when this happens. Pooled keys added before addresses were recorded (`hermes auth add`, the dashboard) for a built-in's pool belong to the built-in's own address. To use one on the entry's host, re-add it with `hermes auth add <name>` while the entry is configured.
 :::
 
-#### Azure CLI login in Desktop
+#### Credentials in Desktop
 
-To use your local Azure CLI account with Microsoft Foundry, open **Settings → Custom
-Endpoints** and select the target bot in **Applies to**. Choose **Azure CLI login**
-under **Authentication**. Hermes fills in the provider ID `foundry-local` and selects
-**Responses API**. Enter the resource's inference endpoint, such as
-`https://RESOURCE.openai.azure.com/openai/v1`, and your deployment name as the default
-model. You can also paste a Foundry project endpoint such as
-`https://RESOURCE.services.ai.azure.com/api/projects/PROJECT`; Test and Save add
-`/openai/v1` while preserving the project path. Click **Test**, then **Save**.
+For Microsoft Foundry, use the built-in provider under **Settings → Providers → API
+Keys → Microsoft Foundry**. Its Microsoft Entra ID option supports Azure CLI login,
+with optional tenant and subscription selection. See the [Foundry setup guide](../guides/azure-foundry.md#azure-cli-login-in-desktop).
 
-Azure can return HTTP 401 or 403 when the signed-in account lacks inference
-permissions. For OpenAI deployments, verify that the account has **Cognitive Services
-OpenAI User** on the resource serving the deployment. New role assignments can take
-up to five minutes to take effect. The provider's error message can also identify
-network restrictions. A project endpoint can require permissions beyond those needed
-for direct resource-level model inference. See [Azure OpenAI keyless authentication](https://learn.microsoft.com/azure/ai-foundry/openai/how-to/managed-identity).
-
-Install Azure CLI and run `az login` on the machine running the Hermes backend first.
-For a remote gateway, that means the gateway host. Hermes requests the
-`https://ai.azure.com/.default` scope through the existing `key_cmd` mechanism. It
-refreshes tokens before expiry and never saves the tokens. This uses the account
-selected in Azure CLI; it does not enable the ambient `DefaultAzureCredential` chain
-across bot profiles.
-
-For multiple Azure accounts, select the intended account with `az account set` before testing.
-
-The endpoint belongs to the profile selected in **Applies to**. Configure each existing
-bot there. **Use for new chats** changes that profile's default; an existing chat with
-a saved model choice still needs its model selector changed to `foundry-local`.
-
-For another token helper, choose **Credential command** in the same form. Leave the
-command field blank when editing to keep the saved command. Choosing **API Key**
-removes the saved command so it cannot override the new key.
-
-For a headless gateway, the equivalent profile configuration is:
-
-```yaml
-model:
-  provider: custom:foundry-local
-  default: YOUR_DEPLOYMENT
-providers:
-  foundry-local:
-    base_url: https://RESOURCE.openai.azure.com/openai/v1
-    api_mode: codex_responses
-    key_cmd: >-
-      az account get-access-token --scope https://ai.azure.com/.default
-      --query "{access_token:accessToken,expires_on:expires_on}" --output json --only-show-errors
-    models:
-      YOUR_DEPLOYMENT: {}
-```
+For any custom endpoint, choose **Credential command** under **Authentication** to
+configure `key_cmd` without editing YAML. The command runs on the machine hosting the
+selected profile. Leave its input blank when editing to keep the saved command.
+Choosing **API Key** removes the command from that endpoint's configuration. Test
+requires successful inference when a credential command is selected, including for
+services that do not expose a model catalogue.
 
 #### Command-minted credentials (`key_cmd`)
 

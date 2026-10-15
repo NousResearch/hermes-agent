@@ -32,7 +32,8 @@ hermes model
 # → Choose Authentication:
 #     1. API key
 #     2. Microsoft Entra ID  (managed identity / workload identity / az login)
-# → (Entra) Hermes probes DefaultAzureCredential; on success it never asks for a key
+# → (Entra) choose Default credential chain or Azure CLI login
+# → (Azure CLI) optionally specify tenant and subscription; Hermes probes the chosen source
 # → (API key) Enter your API key
 # Hermes probes the endpoint and auto-detects transport + models
 # → Pick a model from the list (or type a deployment name manually)
@@ -122,13 +123,70 @@ model:
     scope: https://ai.azure.com/.default        # only when overriding the default
 ```
 
-Hermes only manages one Entra-specific knob in `config.yaml`:
+Hermes stores non-secret Entra settings under `model.entra`:
 
-- **`scope`** — the OAuth resource scope. Defaults to Microsoft's documented inference scope (`https://ai.azure.com/.default`). Override only if your resource was provisioned against a non-standard audience.
+- `credential_source`: `default` for the existing chain, or `azure_cli` to use only
+  Azure CLI. The default remains `default`.
+- `tenant_id` and `subscription`: optional selectors for `azure_cli`. Subscription
+  accepts a name or ID. Omitting these uses Azure CLI's selected account.
+- `scope`: the token scope, defaulting to `https://ai.azure.com/.default`.
 
-Everything else (tenant, service principal secret, federated token file, sovereign cloud authority, broker preferences) is read by `azure-identity` directly from the standard `AZURE_*` environment variables — see the [credential resolution order](#credential-resolution-order) below. Set those in `~/.hermes/.env` or your deployment environment, exactly as Microsoft's SDK reference describes.
+The default chain continues to use standard `AZURE_*` settings for service principals,
+workload identity and managed identity. In multiplexed Desktop and gateway processes,
+profiles must supply their own Azure identity settings or explicitly select Azure CLI.
+The ambient credential-chain refusal remains in place.
 
-No secrets land in `~/.hermes/.env` for Entra mode — `azure-identity` caches tokens in-process (and where available, in your OS keychain / `~/.IdentityService`).
+### Azure CLI login in Desktop
+
+1. Install Azure CLI and run `az login` on the machine running the Hermes backend.
+   For a remote connection, this is the gateway host.
+2. Open **Settings → Providers → API Keys → Microsoft Foundry**. Select the bot profile
+   under **Applies to**.
+3. Enter your inference endpoint and deployment name. Hermes sends that deployment
+   name as `model`; no `custom:` prefix is needed.
+4. Select **Microsoft Entra ID → Azure CLI login**. Under **Advanced settings**, optionally
+   enter a tenant ID, subscription name or ID, and token scope. Select the API mode
+   your deployment supports, such as **Responses API**.
+5. Click **Test**, then **Save and use**. This sets Foundry as the provider for new
+   chats in that profile. Existing chats with a saved model selection may need their
+   model selector updated.
+
+You can paste an Azure resource or Foundry project URL. For OpenAI modes, Hermes adds
+`/openai/v1` to recognized Azure resource/project URLs while preserving the project path.
+Explicit inference paths are preserved.
+
+The equivalent profile configuration is:
+
+```yaml
+model:
+  provider: azure-foundry
+  default: YOUR_DEPLOYMENT_NAME
+  base_url: https://RESOURCE.services.ai.azure.com/openai/v1
+  api_mode: codex_responses
+  auth_mode: entra_id
+  entra:
+    credential_source: azure_cli
+    tenant_id: YOUR_TENANT_ID          # optional
+    subscription: YOUR_SUBSCRIPTION_ID # optional; a name also works
+```
+
+Hermes uses Azure's `AzureCliCredential` and bearer-token provider to acquire and
+refresh tokens. It never stores access tokens in config.yaml. A failed CLI credential
+does not fall back to another identity. If the login session expires, run `az login`
+again. Profiles selecting Azure CLI share the host's CLI login context; tenant and
+subscription selectors do not create separate login caches. See [AzureCliCredential](https://learn.microsoft.com/python/api/azure-identity/azure.identity.azureclicredential).
+
+On a local laptop, this normally authenticates as your developer account. For managed
+identity, run Hermes on a supported Azure host and use the existing managed identity
+path. A user-assigned identity can be selected with `AZURE_CLIENT_ID` in that profile.
+`az login --identity` requires a host configured for managed identity. See [managed
+identity authentication](https://learn.microsoft.com/cli/azure/authenticate-azure-cli-managed-identity).
+
+An HTTP 401 or 403 can indicate missing inference permissions or a resource network
+restriction. Check the provider's error returned by **Test**. For an OpenAI deployment,
+the signed-in principal needs the applicable data permissions, such as those in the
+**Cognitive Services OpenAI User** role on the serving resource. Role changes can take
+time to propagate. See [Azure OpenAI keyless authentication](https://learn.microsoft.com/azure/ai-foundry/openai/how-to/managed-identity).
 
 ### Credential resolution order
 

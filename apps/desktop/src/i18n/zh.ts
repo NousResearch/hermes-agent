@@ -2,6 +2,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { foundryTranslations } from './foundry'
 import { introZh } from './intro-zh'
 import { zhCatalog, zhSkillDeepLink } from './zh_catalog'
 import { zhClarify } from './zh_clarify'
@@ -1174,6 +1175,7 @@ export const zhOverrides = {
         }
       }
     },
+    foundry: foundryTranslations['zh'],
     customEndpoints: zhCustomEndpoints,
     computerUse: {
       accessibility: '辅助功能',

@@ -318,7 +318,7 @@ def _probe_azure_entra() -> ProbeResult:
                      "Then restart Hermes."], label=label)
     entra_cfg = model_cfg.get("entra") or {}
     scope = (str(entra_cfg.get("scope") or "").strip() if isinstance(entra_cfg, dict) else "") or SCOPE_AI_AZURE_DEFAULT
-    info = describe_active_credential(config=EntraIdentityConfig(scope=scope), timeout_seconds=10.0)
+    info = describe_active_credential(config=EntraIdentityConfig.from_dict(entra_cfg if isinstance(entra_cfg, dict) else {}), timeout_seconds=10.0)
     if info.get("ok"):
         tag = ", ".join(info.get("env_sources") or []) or "default credential chain"
         return _row(name, "ok", f"({tag}, scope={scope})", label=label)

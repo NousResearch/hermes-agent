@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { customEndpointCredentials } from './custom_endpoint_credentials'
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { foundryTranslations } from './foundry'
 import { introJa } from './intro-ja'
 import { jaBoot } from './ja_boot'
 import { jaCatalog, jaSkillDeepLink } from './ja_catalog'
@@ -317,6 +318,7 @@ export const jaOverrides = {
         }
       }
     },
+    foundry: foundryTranslations['ja'],
     customEndpoints: { credentials: customEndpointCredentials.ja },
     subpages: jaSettingsSubpages,
     plugins: jaPluginSettings.plugins,

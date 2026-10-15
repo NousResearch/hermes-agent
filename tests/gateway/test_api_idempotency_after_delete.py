@@ -79,3 +79,55 @@ async def test_deleted_session_idempotency_key_does_not_run_again(api, owner):
         assert status == 200, fresh
         assert _content(fresh) == 'answer new body'
     assert calls == ['same body', 'new body']
+
+
+def _strip_api_request_keys(db):
+    """A store deleted before the api-request pointer existed has only the terminal admission."""
+    from hermes_state_terminal import API_REQUEST_BACKFILL_KEY, API_REQUEST_PREFIX
+    db._execute_write(lambda conn: conn.execute(
+        'DELETE FROM state_meta WHERE key GLOB ? OR key=?',
+        (API_REQUEST_PREFIX + '*', API_REQUEST_BACKFILL_KEY)))
+
+
+@pytest.mark.asyncio
+async def test_preexisting_terminal_tombstone_blocks_another_session(api, owner):
+    """A delete from before the api-request key still consumes the Idempotency-Key.
+
+    Same-session replay uses the older identity tombstone. Another session must get
+    409, not a second execution, because the terminal-admission row is still there.
+    """
+    from gateway.platforms.api_server_response_admissions import _request_admission_rows
+    from hermes_state_terminal import ADMISSION_PREFIX
+    calls = []
+    api._api_key = _API_KEY
+    _execute(owner, calls)
+    async with TestClient(TestServer(_app(api))) as client:
+        status, first = await _post(client, 'session-a')
+        assert status == 200, first
+        original = _content(first)
+        with owner.db._read_ctx() as conn:
+            request_id = conn.execute(
+                "SELECT request_id FROM session_admissions WHERE target_session_id='session-a'").fetchone()[0]
+        deleted = await client.delete(
+            '/api/sessions/session-a', headers={'Authorization': 'Bearer ' + _API_KEY})
+        assert deleted.status == 200, await deleted.text()
+        _strip_api_request_keys(owner.db)
+        with owner.db._read_ctx() as conn:
+            assert conn.execute(
+                "SELECT 1 FROM state_meta WHERE key GLOB ?", (ADMISSION_PREFIX + '*',)).fetchone()
+        assert _request_admission_rows(owner.db, request_id), request_id
+
+        status, same = await _post(client, 'session-a')
+        assert status == 200, same
+        assert _content(same) == original
+        assert owner.db.get_session('session-a') is None
+        assert calls == ['same body']
+
+        status, again = await _post(client, 'session-b')
+        assert status == 409, again
+        assert again['error']['code'] == 'admission_conflict'
+        from hermes_state_terminal import api_request_key
+        with owner.db._read_ctx() as conn:
+            assert conn.execute('SELECT 1 FROM state_meta WHERE key=?',
+                                (api_request_key(request_id),)).fetchone()
+    assert calls == ['same body']

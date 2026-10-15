@@ -68,10 +68,87 @@ def api_request_key(request_id):
         canonical_target='api', payload={'request': request_id})
 
 
+# Set once a database's existing terminal-admission rows have been projected onto the pointer.
+# Not a schema version: the rows already live in ``state_meta``.
+API_REQUEST_BACKFILL_KEY = 'gateway.api_request.backfill.v1'
+
+
+def terminal_api_admissions(conn, request_id=None):
+    """API rows in ``gateway.terminal_admission.v1.*``, the tombstone the responses door already reads.
+
+    ``request_id`` limits the scan to one Idempotency-Key. Omitting it returns every API
+    terminal admission, for the one-time pointer backfill.
+    """
+    sql = ("SELECT value FROM state_meta WHERE key GLOB ? "
+           "AND json_extract(value, '$.principal_id')='api'")
+    params = [ADMISSION_PREFIX + '*']
+    if request_id is not None:
+        sql += " AND json_extract(value, '$.request_id')=?"
+        params.append(request_id)
+    return [json.loads(row[0]) for row in conn.execute(sql, params)]
+
+
+def _pointer_from_terminal(row):
+    pointer = {'target_session_id': row.get('target_session_id'), 'admission_id': row.get('admission_id')}
+    if row.get('retired_at') is not None:
+        pointer['retired_at'] = row['retired_at']
+    return pointer
+
+
 def consumed_api_request(conn, request_id):
+    """The consumed-request pointer, or the terminal-admission row when that pointer was never written.
+
+    Deletes from before the pointer still have ``gateway.terminal_admission.v1.*``. That is the
+    same scan ``_request_admission_rows`` uses; a miss here is not a fresh request.
+    """
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                          (api_request_key(request_id),)).fetchone()
-    return json.loads(saved[0]) if saved else None
+    if saved:
+        return json.loads(saved[0])
+    rows = terminal_api_admissions(conn, request_id)
+    if not rows:
+        return None
+    if len({row.get('target_session_id') for row in rows}) > 1:
+        raise RuntimeStoreError('admission_conflict')
+    newest = max(rows, key=_retired_rank)
+    return _pointer_from_terminal(newest)
+
+
+def _retired_rank(row):
+    retired_at = row.get('retired_at')
+    return float('-inf') if retired_at is None else float(retired_at)
+
+
+def _backfill_consumed_api_requests(conn):
+    """Project unexpired API terminal admissions onto the pointer. First writer wins."""
+    if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (API_REQUEST_BACKFILL_KEY,)).fetchone():
+        return 0
+    import time
+    from hermes_state_mutation_retirement import RETRY_HORIZON_S
+    cutoff = time.time() - RETRY_HORIZON_S
+    rows = [row for row in terminal_api_admissions(conn)
+            if row.get('request_id') and row.get('admission_id')
+            and (row.get('retired_at') is None or float(row['retired_at']) >= cutoff)]
+    for row in sorted(rows, key=_retired_rank, reverse=True):
+        conn.execute(
+            'INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING',
+            (api_request_key(row['request_id']), _json(_pointer_from_terminal(row))))
+    conn.execute(
+        'INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING',
+        (API_REQUEST_BACKFILL_KEY, _json({'backfilled_at': time.time()})))
+    return len(rows)
+
+
+def backfill_consumed_api_requests(db):
+    """One write per store: existing terminal admissions gain a request-id pointer.
+
+    ``ON CONFLICT DO NOTHING`` so an older tombstone cannot replace a key this process
+    already recorded for a newer delete. A read of the marker skips the scan afterwards.
+    """
+    with db._read_ctx() as conn:
+        if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (API_REQUEST_BACKFILL_KEY,)).fetchone():
+            return 0
+    return db._execute_write(_backfill_consumed_api_requests)
 
 
 def replay_consumed_api_request(conn, *, principal_id, session_id, request_id, digest):

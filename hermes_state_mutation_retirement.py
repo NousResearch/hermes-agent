@@ -228,10 +228,11 @@ def prune_retired_tombstones(conn, older_than=RETRY_HORIZON_S):
     the retired-session marker. Tombstones written before ``retired_at`` existed are stamped now
     and age from this pass."""
     from hermes_state_terminal import (
-        ADMISSION_PREFIX, API_REQUEST_PREFIX, RESULT_PREFIX, WORKER_PREFIX, api_request_key,
-        consumed_api_request, identity_key)
+        ADMISSION_PREFIX, API_REQUEST_PREFIX, RESULT_PREFIX, WORKER_PREFIX, _backfill_consumed_api_requests,
+        api_request_key, consumed_api_request, identity_key)
     prefixes = (ADMISSION_PREFIX, WORKER_PREFIX, RETIRED_PREFIX, API_REQUEST_PREFIX)
     now = time.time()
+    _backfill_consumed_api_requests(conn)
     for prefix in prefixes:
         conn.execute("UPDATE state_meta SET value=json_set(value, '$.retired_at', ?) WHERE key GLOB ? "
                      "AND json_valid(value) AND json_extract(value, '$.retired_at') IS NULL", (now, prefix + '*'))

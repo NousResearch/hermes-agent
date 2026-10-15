@@ -250,7 +250,10 @@ def admit_api_steps(adapter, **kwargs):
 
 
 def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs):
-    from hermes_state_terminal import retry_terminal_admission
+    from hermes_state_terminal import backfill_consumed_api_requests, retry_terminal_admission
+    # Project terminal admissions left by deletes from before the request-id pointer, once,
+    # so this read and later ones see the same consumed key.
+    backfill_consumed_api_requests(authority.db)
     row = retry_terminal_admission(authority.db, epoch=authority.epoch, principal_id='api',
         session_id=sid, request_id=request_id, payload=payload)
     if row is not None:

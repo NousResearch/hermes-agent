@@ -16,15 +16,11 @@ def request_binding(adapter, request, durable_key):
 
 def _request_admission_rows(db, request_id):
     """A lost derivative pointer cannot erase accepted identity on retirement."""
-    from hermes_state_terminal import ADMISSION_PREFIX
+    from hermes_state_terminal import terminal_api_admissions
     with db._read_ctx() as conn:
         rows = [dict(row) for row in conn.execute(
             "SELECT * FROM session_admissions WHERE principal_id='api' AND request_id=?", (request_id,))]
-        retired = conn.execute(
-            "SELECT value FROM state_meta WHERE key GLOB ? "
-            "AND json_extract(value, '$.principal_id')='api' AND json_extract(value, '$.request_id')=?",
-            (ADMISSION_PREFIX + '*', request_id))
-        rows.extend(json.loads(row[0]) for row in retired)
+        rows.extend(terminal_api_admissions(conn, request_id))
     return rows
 
 

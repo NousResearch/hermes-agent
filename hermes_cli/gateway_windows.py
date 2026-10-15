@@ -58,7 +58,10 @@ _TASK_LOGON_DELAY = "PT30S"
 _TASK_RESTART_INTERVAL = "PT1M"
 _TASK_RESTART_COUNT = 999
 
-_GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
+# PYTHONIOENCODING only covers stdio streams; without PYTHONUTF8=1 the gateway's Python 3.11 tree
+# keeps locale.getpreferredencoding() (cp936 on a zh-CN host), so every subprocess reader thread and
+# plugin import that decodes UTF-8 child output dies with UnicodeDecodeError (#127633).
+_GATEWAY_ENV = (("PYTHONIOENCODING", "utf-8"), ("PYTHONUTF8", "1"), ("HERMES_GATEWAY_DETACHED", "1"), ("HERMES_SUPERVISED_CHILD", "1"))
 
 
 def _schtasks_encoding() -> str:
@@ -745,7 +748,9 @@ def windowless_gateway_restart_spec(run_argv: list[str], home: str | None = None
         hermes_home = str(Path(home or _hermes_home()).resolve())
     except Exception:
         hermes_home = ""
-    env_overlay: dict[str, str] = {"PYTHONIOENCODING": "utf-8", "HERMES_GATEWAY_DETACHED": "1", "VIRTUAL_ENV": str(venv_dir)}
+    # PYTHONUTF8 matches _GATEWAY_ENV: PYTHONIOENCODING alone leaves the respawned gateway's
+    # preferred encoding at the ANSI code page (#127633).
+    env_overlay: dict[str, str] = {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "HERMES_GATEWAY_DETACHED": "1", "VIRTUAL_ENV": str(venv_dir)}
     if hermes_home:
         env_overlay["HERMES_HOME"] = hermes_home
     _prepend_pythonpath(env_overlay, [str(PROJECT_ROOT), *extra_pythonpath])

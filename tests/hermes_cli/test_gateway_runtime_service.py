@@ -185,6 +185,32 @@ def test_task_xml_binds_actual_action_and_principal(case, reason, tmp_path):
         verify_windows_task(xml, home, user, 'S-1-5-21-123')
 
 
+def test_generated_vbs_with_pythonutf8_passes_task_verification(tmp_path, monkeypatch):
+    """The generated .vbs launcher exports PYTHONUTF8 (#127633); the identity verifier's env
+    whitelist must accept that key, or every freshly installed launcher would read as drifted
+    and the Scheduled-Task drift check could never settle. Locks generator and verifier together
+    against the real production render, not a hand-copied template. ``sys.executable`` (a POSIX
+    path on this host) keeps ``verify_gateway_argv``'s interpreter-name check meaningful off
+    Windows; the env-key grammar under test is path-style agnostic."""
+    from hermes_cli import gateway_windows
+    from hermes_cli.gateway_runtime_service_identity import verify_windows_task
+
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (sys.executable, Path(r"C:\venv"), []),
+    )
+    home = tmp_path / 'home'
+    home.mkdir()
+    script = home / 'Hermes_Gateway.vbs'
+    script.write_text(gateway_windows._build_gateway_vbs_script(
+        sys.executable, str(home), str(home), ""), encoding='utf-8')
+    assert 'env.Item("PYTHONUTF8") = "1"' in script.read_text(encoding='utf-8')
+    user = 'DOMAIN\\owner'
+    xml = gateway_windows._build_scheduled_task_xml('Hermes_Gateway', script, user)
+    verify_windows_task(xml, home, user, 'S-1-5-21-123')
+
+
 @pytest.mark.platforms("macos")
 @pytest.mark.parametrize("case,reason", [("loaded_good_disk_wrong", None), ("loaded_wrong_disk_good", "profile_mismatch"), ("bootstrap", None)])
 def test_native_launchd_checks_loaded_job_before_disk(case, reason, tmp_path, monkeypatch):

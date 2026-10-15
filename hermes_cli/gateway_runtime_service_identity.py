@@ -248,10 +248,10 @@ def _vbs_identity(script: str) -> tuple[str, list[str]]:
     env = {}
     index = 5
     while index < len(lines):
-        match = re.fullmatch(r'env.Item\("([A-Z_]+)"\) = (' + literal + ')', lines[index])
+        match = re.fullmatch(r'env.Item\("([A-Z_][A-Z0-9_]*)"\) = (' + literal + ')', lines[index])
         if not match:
             break
-        if match[1] not in {"HERMES_HOME", "HERMES_SUPERVISED_CHILD", "HERMES_GATEWAY_DETACHED", "PYTHONIOENCODING", "VIRTUAL_ENV"} or match[1] in env:
+        if match[1] not in {"HERMES_HOME", "HERMES_SUPERVISED_CHILD", "HERMES_GATEWAY_DETACHED", "PYTHONIOENCODING", "PYTHONUTF8", "VIRTUAL_ENV"} or match[1] in env:
             _unverified()
         env[match[1]] = match[2][1:-1].replace('""', '"')
         index += 1

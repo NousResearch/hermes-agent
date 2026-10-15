@@ -105,19 +105,28 @@ def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
     from hermes_cli.source_check import _github_compare, source_git_env
 
     def run(*args):
-        return subprocess.run(
-            [*git_cmd, *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env(), check=False)
+        try:
+            return subprocess.run(
+                [*git_cmd, *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env(), check=False)
+        except subprocess.TimeoutExpired:
+            # git < 2.44 ignores GIT_NO_LAZY_FETCH, so a release commit missing from a
+            # partial clone turns this probe into a history download that outlives the
+            # timeout. No verdict: fall through to the GitHub comparison below (#138716).
+            return None
 
-    head = run("rev-parse", "HEAD").stdout.strip()
-    if not _SHA.fullmatch(head):
+    head = run("rev-parse", "HEAD")
+    if head is None or not _SHA.fullmatch(head := head.stdout.strip()):
         return None
-    ancestry = run("merge-base", "--is-ancestor", commit, head).returncode
-    if ancestry == 0:
-        return head
-    # A shallow boundary makes exit 1 a guess; full history makes it proof.
-    if ancestry == 1 and run("rev-parse", "--is-shallow-repository").stdout.strip() == "false":
-        return None
+    ancestry = run("merge-base", "--is-ancestor", commit, head)
+    if ancestry is not None:
+        if ancestry.returncode == 0:
+            return head
+        # A shallow boundary makes exit 1 a guess; full history makes it proof.
+        if ancestry.returncode == 1:
+            shallow = run("rev-parse", "--is-shallow-repository")
+            if shallow is not None and shallow.stdout.strip() == "false":
+                return None
     status = (_github_compare(commit, head, repository) or {}).get("status")
     return None if status in ("behind", "diverged") else head
 

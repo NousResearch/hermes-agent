@@ -49,3 +49,31 @@ def test_full_history_behind_release_is_proof(history, tmp_path, monkeypatch):
     monkeypatch.setattr(source_check, "_github_compare", lambda *a, **k: pytest.fail("no network on proof"))
     assert source_releases._head_containing(["git"], clone, shas[2], "o/r") is None
     assert source_releases._head_containing(["git"], clone, shas[0], "o/r") == shas[0]
+
+
+def test_hung_merge_base_falls_back_to_compare(history, tmp_path, monkeypatch):
+    # git < 2.44 ignores GIT_NO_LAZY_FETCH: a release commit missing from a partial
+    # clone starts a history download and the probe times out (#138716). That is no
+    # verdict — the GitHub comparison decides, instead of aborting the whole update.
+    origin, shas = history
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", str(origin), str(clone))
+    real_run = subprocess.run
+
+    def lazy_fetch_hang(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and "merge-base" in cmd:
+            raise subprocess.TimeoutExpired(cmd, 10)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(source_releases.subprocess, "run", lazy_fetch_hang)
+
+    def compare(status):
+        return lambda *a, **k: {"status": status} if status else None
+
+    monkeypatch.setattr(source_check, "_github_compare", compare("behind"))
+    assert source_releases._head_containing(["git"], clone, shas[0], "o/r") is None
+    monkeypatch.setattr(source_check, "_github_compare", compare("ahead"))
+    assert source_releases._head_containing(["git"], clone, shas[0], "o/r") == shas[2]
+    # GitHub unreachable too: the conservative unknown case keeps HEAD.
+    monkeypatch.setattr(source_check, "_github_compare", compare(None))
+    assert source_releases._head_containing(["git"], clone, shas[0], "o/r") == shas[2]

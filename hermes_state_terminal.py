@@ -195,6 +195,14 @@ def retry_terminal_admission(db, *, epoch, principal_id, session_id, request_id,
         retired = conn.execute('SELECT 1 FROM state_meta WHERE key=?',
                                (RETIRED_PREFIX + session_id,)).fetchone()
         if not retired:
+            # A live admission for this session is its own replay, even when an older delete
+            # already consumed the same request id (the pre-upgrade double execution). The
+            # live-row path checks the digest. A session with no row still consults the tombstone.
+            live = conn.execute(
+                'SELECT 1 FROM session_admissions WHERE principal_id=? AND target_session_id=? AND request_id=?',
+                (principal_id, session_id, request_id)).fetchone()
+            if live is not None:
+                return None
             return replay_consumed_api_request(
                 conn, principal_id=principal_id, session_id=session_id,
                 request_id=request_id, digest=digest)

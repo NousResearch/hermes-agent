@@ -229,7 +229,7 @@ def prune_retired_tombstones(conn, older_than=RETRY_HORIZON_S):
     and age from this pass."""
     from hermes_state_terminal import (
         ADMISSION_PREFIX, API_REQUEST_PREFIX, RESULT_PREFIX, WORKER_PREFIX, _backfill_consumed_api_requests,
-        api_request_key, consumed_api_request, identity_key)
+        api_request_key, identity_key)
     prefixes = (ADMISSION_PREFIX, WORKER_PREFIX, RETIRED_PREFIX, API_REQUEST_PREFIX)
     now = time.time()
     _backfill_consumed_api_requests(conn)
@@ -243,9 +243,14 @@ def prune_retired_tombstones(conn, older_than=RETRY_HORIZON_S):
         keys = [key, RESULT_PREFIX + row['admission_id'],
                 identity_key(row['principal_id'], row['target_session_id'], row['request_id'])]
         if row.get('principal_id') == 'api':
-            pointer = consumed_api_request(conn, row['request_id'])
-            if pointer and pointer.get('admission_id') == row['admission_id']:
-                keys.append(api_request_key(row['request_id']))
+            # Point-read only. The admit-time lookup raises when several expired tombstones
+            # share a request id and no pointer was written; that must not abort this sweep.
+            pointer_key = api_request_key(row['request_id'])
+            saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (pointer_key,)).fetchone()
+            if saved is not None:
+                pointer = json.loads(saved[0])
+                if isinstance(pointer, dict) and pointer.get('admission_id') == row['admission_id']:
+                    keys.append(pointer_key)
         conn.execute(f"DELETE FROM state_meta WHERE key IN ({','.join('?' * len(keys))})", tuple(keys))
     for prefix in prefixes[1:]:
         conn.execute(f'DELETE FROM state_meta WHERE key GLOB ? AND {_EXPIRED}', (prefix + '*', cutoff))

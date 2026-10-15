@@ -303,8 +303,12 @@ def test_complete_task_rejects_artifact_swapped_to_symlink_before_open(
 
 
 @pytest.mark.platforms("posix")
-def test_source_parent_swapped_after_confinement_is_not_copied(tmp_path, monkeypatch):
-    """O_NOFOLLOW guards only the leaf; a swapped parent must not redirect the read."""
+@pytest.mark.parametrize("dir_fd", [True, False])
+def test_source_parent_swapped_after_confinement_is_not_copied(tmp_path, monkeypatch, dir_fd):
+    """O_NOFOLLOW guards only the leaf; a swapped parent must not redirect the read,
+    with pinned descriptors or with the path-based fallback's check after open."""
+    if not dir_fd:
+        monkeypatch.setattr(kba, "_attachment_dir_fd_supported", lambda: False)
     root = tmp_path.resolve()
     workspace = root / "workspace"
     parent = workspace / "inputs"

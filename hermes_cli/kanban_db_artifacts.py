@@ -378,7 +378,7 @@ def _open_workspace_source(workspace_root: Path, source: Path) -> int:
         | getattr(os, "O_CLOEXEC", 0)
     )
     if not _attachment_dir_fd_supported():
-        return os.open(source, flags)
+        return _open_source_checked_after_open(workspace_root, source, flags)
     directory_flags = (
         os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
     )
@@ -391,6 +391,32 @@ def _open_workspace_source(workspace_root: Path, source: Path) -> int:
         return os.open(source.name, flags, dir_fd=current_fd)
     finally:
         os.close(current_fd)
+
+
+def _open_source_checked_after_open(workspace_root: Path, source: Path, flags: int) -> int:
+    """Path-based open for platforms without descriptor-relative IO (Windows).
+
+    Refusing every artifact there would remove the feature it protects.
+    Instead the opened descriptor must still be the file that the confined
+    path names after the open: a parent swapped beforehand resolves outside
+    the workspace or to another inode. On Windows a directory holding an
+    open file cannot be renamed, so the path cannot be swapped back while
+    the descriptor is held.
+    """
+    fd = os.open(source, flags)
+    try:
+        opened = os.fstat(fd)
+        current = source.resolve(strict=True)
+        named = os.stat(current, follow_symlinks=False)
+        if (
+            not current.is_relative_to(workspace_root)
+            or (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino)
+        ):
+            raise OSError(f"workspace source changed while it was opened: {source}")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
 
 def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> Path:

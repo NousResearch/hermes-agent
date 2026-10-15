@@ -873,7 +873,7 @@ _STATUS_TO_FAILOVER_REASON = {
     403: FailoverReason.auth,
 }
 _USAGE_LIMIT_REASON_TOKENS = ("usage_limit_reached", "gousagelimit")
-_USAGE_LIMIT_MESSAGE_TOKENS = ("usage limit reached", "usage limit has been reached")
+_USAGE_LIMIT_MESSAGE_TOKENS = ("usage limit reached", "usage limit has been reached", "limit exhausted")  # z.ai 1310 weekly/monthly cap: rotate now
 
 
 def _failed_credential_identity(agent, pool) -> tuple[Optional[str], Optional[str]]:

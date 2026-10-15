@@ -135,7 +135,7 @@ class SessionMaintenanceMixin:
         emit_session_deleted(self, removed_ids, reason="ghost_prune", sessions_dir=sessions_dir)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
-        for sid in removed_ids if sessions_dir else ():
+        for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return len(removed_ids)
 
@@ -407,13 +407,6 @@ class SessionMaintenanceMixin:
             self._remove_session_files(sessions_dir, sid)
         if deleted_ids is not None:
             deleted_ids.extend(removed_ids)
-        # Drop per-session delegate budget entries for all pruned sessions.
-        try:
-            from tools.delegate_tool import cleanup_session_budget
-            for sid in removed_ids:
-                cleanup_session_budget(sid)
-        except Exception:
-            pass
         return count
 
     def _page_pragmas(self, names: tuple[str, ...], fail_msg: str) -> Optional[list]:

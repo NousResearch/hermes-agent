@@ -178,7 +178,7 @@ _DEFAULT_MAX_CHILDREN_PER_SESSION = 10
 # agent's id() is used as a process-local fallback for tests / non-session callers.
 # Protected by _session_children_lock.
 _session_children_lock = threading.Lock()
-_session_children_counts: Dict[str, int] = {}
+_session_children_counts: dict[str, int] = {}
 
 
 def _get_max_children_per_session() -> int:
@@ -206,33 +206,32 @@ def _session_budget_key(parent_agent) -> str:
     return f"__parent_id_{id(parent_agent)}"
 
 
-def _reserve_session_children_budget(parent_agent, n_tasks: int) -> Optional[str]:
+def _reserve_session_children_budget(parent_agent, n_tasks: int) -> tuple[int, Optional[str]]:
     """Reserve `n_tasks` slots in the parent session's children budget.
 
-    Returns None on success, or a user-facing error string if the cap would be
-    exceeded. Thread-safe.
+    Returns the reserved count and an optional user-facing error. Thread-safe.
     """
     if n_tasks <= 0:
-        return None
+        return 0, None
     # Late-import from the facade so monkeypatching tools.delegate_tool._get_max_children_per_session
     # is the seam (AGENTS.md: "Patch where production reads").
     from tools.delegate_tool import _get_max_children_per_session
     cap = _get_max_children_per_session()
     if cap == 0:
-        return None
+        return 0, None
     key = _session_budget_key(parent_agent)
     with _session_children_lock:
         current = _session_children_counts.get(key, 0)
         if current + n_tasks > cap:
-            return (
+            return 0, (
                 f"Session children cap reached ({current}/{cap} subagents already "
                 f"dispatched in this session). This delegate_task request would add "
                 f"{n_tasks} more, which exceeds the configured limit. "
                 f"Raise delegation.max_children_per_session in config.yaml to allow "
-                f"more subagents per session, or batch work into fewer calls."
+                f"more subagents per session, or complete the remaining work without spawning more."
             )
         _session_children_counts[key] = current + n_tasks
-    return None
+    return n_tasks, None
 
 
 def _release_session_children_budget(parent_agent, n_tasks: int) -> None:

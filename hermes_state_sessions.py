@@ -1631,7 +1631,9 @@ class SessionSessionsMixin:
         """Remove ``<id>.json``/``.jsonl``, the legacy ``session_<id>.json`` snapshot, and gateway
         ``request_dump_<id>_*.json``; OSError is swallowed so a filesystem hiccup never blocks a
         DB operation. Every historical writer name is swept because a "deleted" session's snapshot
-        can carry plaintext secrets (#20334, #60207)."""
+        can carry plaintext secrets (#20334, #60207). Also retire the deleted session's delegation budget."""
+        from tools.delegate_tool_config import cleanup_session_budget
+        cleanup_session_budget(session_id)
         if sessions_dir is None:
             return
         targets = [sessions_dir / f"{session_id}{suffix}" for suffix in (".json", ".jsonl")]
@@ -1768,16 +1770,6 @@ class SessionSessionsMixin:
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
-        # Drop the per-session delegate budget entry so the module-level
-        # dict in tools.delegate_tool does not grow unbounded in long-
-        # running gateway processes. Lazy import + try/except keeps this
-        # layer decoupled from the tools layer.
-        try:
-            from tools.delegate_tool import cleanup_session_budget
-            for sid in removed_ids:
-                cleanup_session_budget(sid)
-        except Exception:
-            pass
         return bool(deleted)
 
     def discard_unadmitted_session(self, session_id: str) -> bool:
@@ -1930,13 +1922,6 @@ class SessionSessionsMixin:
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
-        # Drop per-session delegate budget entries for all deleted sessions.
-        try:
-            from tools.delegate_tool import cleanup_session_budget
-            for sid in removed_ids:
-                cleanup_session_budget(sid)
-        except Exception:
-            pass
         return count
 
     # Shared by count_empty_sessions / delete_empty_sessions so badge and sweep agree. message_count
@@ -1981,13 +1966,6 @@ class SessionSessionsMixin:
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
-        # Drop per-session delegate budget entries for all deleted sessions.
-        try:
-            from tools.delegate_tool import cleanup_session_budget
-            for sid in removed_ids:
-                cleanup_session_budget(sid)
-        except Exception:
-            pass
         return count
 
     def archive_sessions(

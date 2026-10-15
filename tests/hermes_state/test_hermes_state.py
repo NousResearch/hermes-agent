@@ -89,15 +89,6 @@ class _NoTrigramConnection(sqlite3.Connection):
         return super().cursor(factory or _NoTrigramCursor)
 
 
-@pytest.fixture()
-def db(tmp_path):
-    """Create a SessionDB with a temp database file."""
-    db_path = tmp_path / "test_state.db"
-    session_db = SessionDB(db_path=db_path)
-    yield session_db
-    session_db.close()
-
-
 @pytest.fixture(autouse=True)
 def _no_fts_rebuild_throttle(monkeypatch):
     """Zero the FTS-rebuild inter-chunk throttle for every test in this file.

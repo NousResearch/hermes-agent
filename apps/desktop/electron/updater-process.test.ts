@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import type { SpawnOptions } from 'node:child_process'
+import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 
 import { test } from 'vitest'
@@ -7,6 +9,7 @@ import { test } from 'vitest'
 import {
   collectRelaunchArgs,
   describeUpdaterHandoffFailure,
+  launcherInstallDirectory,
   MARKER_SELF_ADOPT_EPOCH_MS,
   observeUpdaterHandoff,
   resolvePosixScriptHandoff,
@@ -477,3 +480,33 @@ test('observeUpdaterHandoff settles ok for children without an event interface',
 
   assert.equal(outcome.ok, true)
 })
+
+test.skipIf(process.platform === 'win32')('launcherInstallDirectory returns the root the launcher reports', async () => {
+  const dir = await realpathMkdtemp('launcher-install-')
+  const reported = await fs.realpath(await fs.mkdir(path.join(dir, 'hermes-agent')).then(() => path.join(dir, 'hermes-agent')))
+  const launcher = await writeLauncher(dir, `printf 'Hermes Agent v0.22.1\\nInstall directory: ${reported}\\n'`)
+
+  assert.equal(launcherInstallDirectory(launcher), reported)
+})
+
+test.skipIf(process.platform === 'win32')('launcherInstallDirectory stays null when the launcher reports nothing', async () => {
+  const dir = await realpathMkdtemp('launcher-install-')
+
+  for (const body of ["printf 'Hermes Agent v0.22.1\\n'", 'exit 3']) {
+    const launcher = await writeLauncher(dir, body)
+
+    assert.equal(launcherInstallDirectory(launcher), null)
+  }
+})
+
+async function realpathMkdtemp(prefix: string): Promise<string> {
+  return fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)))
+}
+
+/** A POSIX script stands in for the installation launcher's --version boundary. */
+async function writeLauncher(dir: string, body: string): Promise<string> {
+  const file = path.join(dir, 'hermes')
+  await fs.writeFile(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 })
+
+  return file
+}

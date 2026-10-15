@@ -754,3 +754,232 @@ class TestModelToolsIntegration:
         assert discord_admin_tool is not None, "discord_admin should be in the schema"
         actions = discord_admin_tool["function"]["parameters"]["properties"]["action"]["enum"]
         assert actions == ["list_guilds", "server_info"]
+
+
+# ---------------------------------------------------------------------------
+# Actions: channel / role / server management (create_role, edit_channel*, ...)
+# ---------------------------------------------------------------------------
+
+class TestCreateRole:
+    @patch("tools.discord_tool._discord_request")
+    def test_default_call_omits_unset_booleans(self, mock_req, monkeypatch):
+        """hoist/mentionable must not be sent as null — Discord answers 400."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        mock_req.return_value = {"id": "900", "name": "R"}
+        result = json.loads(discord_admin_handler(action="create_role", guild_id="1", name="R"))
+        assert result["success"] is True
+        body = mock_req.call_args.kwargs["body"]
+        assert body == {"name": "R"}
+        assert "hoist" not in body
+        assert "mentionable" not in body
+
+    @patch("tools.discord_tool._discord_request")
+    def test_provided_booleans_and_color_are_sent(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        mock_req.return_value = {"id": "901", "name": "R"}
+        result = json.loads(discord_admin_handler(
+            action="create_role", guild_id="1", name="R",
+            hoist=True, mentionable=False, color="#FF5733"))
+        assert result["success"] is True
+        assert mock_req.call_args.kwargs["body"] == {
+            "name": "R", "hoist": True, "mentionable": False, "color": 0xFF5733}
+
+
+class TestEditChannelPermissions:
+    @patch("tools.discord_tool._discord_request")
+    def test_neither_allow_nor_deny_is_refused(self, mock_req, monkeypatch):
+        """Default call must not reset an existing overwrite to no permissions."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        result = json.loads(discord_admin_handler(
+            action="edit_channel_permissions", channel_id="1", overwrite_id="2"))
+        assert result["success"] is False
+        assert "allow" in result["error"] and "deny" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_omitted_side_keeps_existing_value(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        mock_req.return_value = {
+            "permission_overwrites": [{"id": "2", "type": 0, "allow": "0", "deny": "1024"}]}
+        result = json.loads(discord_admin_handler(
+            action="edit_channel_permissions", channel_id="1", overwrite_id="2",
+            deny="VIEW_CHANNEL"))
+        assert result["success"] is True
+        assert [c.args[0] for c in mock_req.call_args_list] == ["GET", "PUT"]
+        assert mock_req.call_args_list[1].args[1] == "/channels/1/permissions/2"
+        # VIEW_CHANNEL=0x400 allowed, existing deny (READ_MESSAGE_HISTORY=1024) untouched
+        assert mock_req.call_args_list[1].kwargs["body"] == {
+            "allow": "0", "deny": "1024", "type": 0}
+
+    @patch("tools.discord_tool._discord_request")
+    def test_both_sides_sent_without_extra_lookup(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        mock_req.return_value = {}
+        result = json.loads(discord_admin_handler(
+            action="edit_channel_permissions", channel_id="1", overwrite_id="2",
+            allow="VIEW_CHANNEL", deny="SEND_MESSAGES"))
+        assert result["success"] is True
+        assert mock_req.call_count == 1
+        assert mock_req.call_args.kwargs["body"] == {"allow": "1024", "deny": "2048", "type": 0}
+
+    @patch("tools.discord_tool._discord_request")
+    def test_missing_overwrite_defaults_side_to_zero(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        mock_req.return_value = {"permission_overwrites": []}
+        result = json.loads(discord_admin_handler(
+            action="edit_channel_permissions", channel_id="1", overwrite_id="2",
+            allow="VIEW_CHANNEL"))
+        assert result["success"] is True
+        assert mock_req.call_args_list[1].kwargs["body"] == {
+            "allow": "1024", "deny": "0", "type": 0}
+
+    @patch("tools.discord_tool._discord_request")
+    def test_unknown_permission_name_is_rejected(self, mock_req, monkeypatch):
+        """A typo must fail loudly instead of answering success: true."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        result = json.loads(discord_admin_handler(
+            action="edit_channel_permissions", channel_id="1", overwrite_id="2",
+            deny="SEND_MESSGES"))
+        assert result["success"] is False
+        assert "SEND_MESSGES" in result["error"]
+        mock_req.assert_not_called()
+
+
+class TestCreateChannel:
+    @patch("tools.discord_tool._discord_request")
+    def test_text_channel_with_topic(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        mock_req.return_value = {"id": "300", "name": "general", "type": 0}
+        result = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="1", name="general", topic="Hi"))
+        assert result["success"] is True
+        mock_req.assert_called_once_with(
+            "POST", "/guilds/1/channels", "tok",
+            body={"name": "general", "type": 0, "topic": "Hi"})
+
+    @patch("tools.discord_tool._discord_request")
+    def test_unknown_channel_type_is_rejected(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        result = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="1", name="x", channel_type="stageish"))
+        assert result["success"] is False
+        assert "stageish" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_topic_rejected_on_voice_channel(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        result = json.loads(discord_admin_handler(
+            action="create_channel", guild_id="1", name="voice",
+            channel_type="voice", topic="Hi"))
+        assert result["success"] is False
+        assert "topic" in result["error"]
+        mock_req.assert_not_called()
+
+    def test_channel_type_table_matches_names(self):
+        from tools.discord_tool import _CHANNEL_TYPES, _CHANNEL_TYPE_NAMES
+        assert set(_CHANNEL_TYPES) == {"text", "voice", "category", "announcement", "forum"}
+        assert all(_CHANNEL_TYPE_NAMES[tid] == name for name, tid in _CHANNEL_TYPES.items())
+
+
+class TestEditChannel:
+    @patch("tools.discord_tool._discord_request")
+    def test_only_provided_fields_are_sent(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        mock_req.return_value = {"id": "300", "name": "renamed"}
+        result = json.loads(discord_admin_handler(
+            action="edit_channel", channel_id="300", name="renamed"))
+        assert result["success"] is True
+        mock_req.assert_called_once_with(
+            "PATCH", "/channels/300", "tok", body={"name": "renamed"})
+
+    @patch("tools.discord_tool._discord_request")
+    def test_no_fields_is_an_error(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        result = json.loads(discord_admin_handler(action="edit_channel", channel_id="300"))
+        assert result["success"] is False
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_topic_rejected_on_voice_channel(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        mock_req.return_value = {"id": "300", "type": 2}
+        result = json.loads(discord_admin_handler(
+            action="edit_channel", channel_id="300", topic="Hi"))
+        assert result["success"] is False
+        assert "topic" in result["error"]
+        mock_req.assert_called_once_with("GET", "/channels/300", "tok")
+
+    @patch("tools.discord_tool._discord_request")
+    def test_topic_sent_on_text_channel(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        mock_req.side_effect = [{"id": "300", "type": 0}, {"id": "300", "name": "general"}]
+        result = json.loads(discord_admin_handler(
+            action="edit_channel", channel_id="300", topic="Hi"))
+        assert result["success"] is True
+        assert [c.args[0] for c in mock_req.call_args_list] == ["GET", "PATCH"]
+        assert mock_req.call_args_list[1].kwargs["body"] == {"topic": "Hi"}
+
+
+class TestDeleteChannel:
+    @patch("tools.discord_tool._discord_request")
+    def test_delete_channel(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        mock_req.return_value = None
+        result = json.loads(discord_admin_handler(action="delete_channel", channel_id="300"))
+        assert result["success"] is True
+        mock_req.assert_called_once_with("DELETE", "/channels/300", "tok")
+
+
+class TestEditRole:
+    @patch("tools.discord_tool._discord_request")
+    def test_only_provided_fields_are_sent(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        mock_req.return_value = {"id": "7", "name": "renamed"}
+        result = json.loads(discord_admin_handler(
+            action="edit_role", guild_id="1", role_id="7", name="renamed", hoist=True))
+        assert result["success"] is True
+        mock_req.assert_called_once_with(
+            "PATCH", "/guilds/1/roles/7", "tok", body={"name": "renamed", "hoist": True})
+
+    @patch("tools.discord_tool._discord_request")
+    def test_no_fields_is_an_error(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        result = json.loads(discord_admin_handler(action="edit_role", guild_id="1", role_id="7"))
+        assert result["success"] is False
+        mock_req.assert_not_called()
+
+
+class TestEditServer:
+    @patch("tools.discord_tool._discord_request")
+    def test_only_provided_fields_are_sent(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        mock_req.return_value = {"name": "New Name"}
+        result = json.loads(discord_admin_handler(
+            action="edit_server", guild_id="1", verification_level=2))
+        assert result["success"] is True
+        mock_req.assert_called_once_with(
+            "PATCH", "/guilds/1", "tok", body={"verification_level": 2})
+
+    @patch("tools.discord_tool._discord_request")
+    def test_no_fields_is_an_error(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        result = json.loads(discord_admin_handler(action="edit_server", guild_id="1"))
+        assert result["success"] is False
+        mock_req.assert_not_called()
+
+
+class TestEditRole403Hint:
+    @patch("tools.discord_tool._discord_request")
+    def test_hint_does_not_repeat_itself(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"server_actions": ""}},
+        )
+        mock_req.side_effect = DiscordAPIError(403, '{"message":"Missing Permissions"}')
+        result = json.loads(discord_admin_handler(
+            action="edit_role", guild_id="1", role_id="7", name="x"))
+        hint = result["error"]
+        assert "MANAGE_ROLES" in hint
+        assert hint.count("highest role") == 1

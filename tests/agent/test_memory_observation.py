@@ -1175,6 +1175,46 @@ def test_operation_budget_bounds_provider_traversal_and_preserves_later_context(
     assert len(warnings) == 1
 
 
+def test_wire_truncation_exhausts_later_provider_observations_but_keeps_context(
+    monkeypatch, caplog
+):
+    from hermes_cli.plugin_host_wire import decode, encode
+
+    _disable_hook(monkeypatch)
+    _stub_direct_prefetch(monkeypatch)
+    raw = MemoryPrefetchResult(
+        context="hosted provider context",
+        observations=tuple(
+            _observation({"text": "x" * 3910})
+            for _ in range(MAX_MEMORY_OBSERVATIONS)
+        ),
+    )
+    hosted = decode(encode(raw))
+    assert hosted._wire_truncated is True
+    hosted_prefix_size = len(hosted.observations)
+    manager = MemoryManager()
+    manager.add_provider(
+        StructuredMemoryProvider(name="builtin", result=hosted)
+    )
+    manager.add_provider(
+        StructuredMemoryProvider(
+            name="external",
+            result=MemoryPrefetchResult(
+                context="later provider context",
+                observations=(_observation({"later": True}),),
+            ),
+        )
+    )
+
+    with caplog.at_level("WARNING", logger="agent.memory_manager"):
+        result = manager.prefetch_all_result("question")
+
+    assert result.context == "hosted provider context\n\nlater provider context"
+    assert len(result.observations) == hosted_prefix_size
+    assert all(item.provider == "builtin" for item in result.observations)
+    assert "plugin-host wire batch bound" in caplog.text
+
+
 def test_memory_manager_module_identity_survives_fresh_agent_fixture():
     """A fresh-agent fixture must not strand this module's imported class.
 

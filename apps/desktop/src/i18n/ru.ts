@@ -2044,6 +2044,8 @@ export const ruOverrides = {
       labelPlaceholder: 'напр. рабочий аккаунт GitHub',
       labelRequired: 'Нужно указать название.',
       originField: 'Домен сайта',
+      originPlaceholder: 'https://github.com',
+      originPlaceholderCheckout: 'https://shop.example.com',
       originInvalid: 'Введите корректный URL вида https://example.com.',
       identifierTypeField: 'Тип идентификатора',
       identifierTypes: {
@@ -3129,6 +3131,7 @@ export const ruOverrides = {
       description:
         'Сеансы этого профиля будут выполняться на удалённом Hermes, который вы укажете, а не на этом компьютере.',
       urlLabel: 'Удалённый адрес',
+      urlPlaceholder: 'https://hermes.example.com',
       urlInvalid: 'Введите полный адрес, начинающийся с http:// или https://',
       tokenLabel: 'Токен доступа',
       tokenPlaceholder: 'Вставьте токен удалённого сеанса',

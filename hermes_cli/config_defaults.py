@@ -761,7 +761,9 @@ DEFAULT_CONFIG = {
         "vision": _aux(120, download_timeout=30),
         # Separate video analysis backend. Unset/auto fields inherit from auxiliary.vision at
         # resolve time so vision-only configs keep today's routing (#132701 / #27313).
-        "video": _aux(180),
+        # timeout intentionally omitted: deep-merge would pin 180 forever and defeat vision
+        # timeout inheritance (teknium review on #31107; confirmed on #132720).
+        "video": {k: v for k, v in _aux(180).items() if k != "timeout"},
         # web_extract and session_search no longer use an aux LLM; leftover blocks in user config
         # are ignored. Compression: raise timeout for local models. no_progress_timeout
         # (Codex/Responses streams only): seconds without a substantive event before the stream

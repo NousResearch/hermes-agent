@@ -30,6 +30,26 @@ def test_aux_call_kwargs_vision_default_unchanged():
     assert kw["model"] == "m"
 
 
+def test_aux_call_kwargs_inherits_vision_timeout_when_video_omits(monkeypatch):
+    """Unset video.timeout must inherit vision (deep-merge must not pin 180)."""
+
+    def fake_cfg(*keys, default=None):
+        section = keys[0] if keys else None
+        if section == "video":
+            return {"provider": "auto", "model": ""}
+        if section == "vision":
+            return {"timeout": 300, "temperature": 0.2}
+        return {} if default is None else default
+
+    monkeypatch.setattr("tools.vision_tools._cfg_auxiliary", fake_cfg)
+    kw = _aux_call_kwargs(
+        [{"role": "user", "content": "x"}], None, 180.0, min_timeout=180.0, task="video"
+    )
+    assert kw["task"] == "video"
+    assert kw["timeout"] == 300.0
+    assert kw["temperature"] == 0.2
+
+
 def test_video_resolves_dedicated_provider(monkeypatch):
     def fake_task_config(task: str):
         if task == "video":
@@ -62,9 +82,10 @@ def test_video_inherits_vision_when_unset(monkeypatch):
     assert model == "local-vision"
 
 
-def test_config_defaults_registers_video():
+def test_config_defaults_registers_video_without_timeout():
+    """Omitting timeout keeps deep-merge from defeating vision inheritance (#31107)."""
     from hermes_cli.config_defaults import DEFAULT_CONFIG
 
     video = DEFAULT_CONFIG["auxiliary"]["video"]
     assert video["provider"] == "auto"
-    assert video["timeout"] == 180
+    assert "timeout" not in video

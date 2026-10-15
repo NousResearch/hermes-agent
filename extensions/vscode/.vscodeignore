@@ -1,0 +1,6 @@
+node_modules/
+src/
+.gitignore
+tsconfig.json
+*.ts
+!out/**

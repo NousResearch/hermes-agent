@@ -675,16 +675,32 @@ def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
     return _cloud_stale_timeout_for(agent, api_kwargs)
 
 
+def run_budget_deadline(agent) -> Optional[float]:
+    """Wall-clock time the current run's --run-budget runs out, or None with no active budget."""
+    run_budget = getattr(agent, "run_budget_seconds", None)
+    started = getattr(agent, "_run_budget_started_at", None)
+    if not run_budget or not started:
+        return None
+    return float(started) + float(run_budget)
+
+
 def cap_to_run_budget(agent, timeout: float) -> float:
     """Cap an IMPLICIT stale timeout at half the remaining --run-budget (>= 60s), so one hung
     call can't outlive the run and the wrap-up notice stays reachable (#97968). Shared by the
     streaming and non-streaming resolvers; callers skip it for explicit user settings."""
-    run_budget = getattr(agent, "run_budget_seconds", None)
-    started = getattr(agent, "_run_budget_started_at", None)
-    if not run_budget or not started:
+    deadline = run_budget_deadline(agent)
+    if deadline is None:
         return timeout
-    remaining = float(run_budget) - (time.time() - float(started))
-    return min(timeout, max(60.0, remaining * 0.5))
+    return min(timeout, max(60.0, (deadline - time.time()) * 0.5))
+
+
+def _live_stream_deadline(agent) -> Optional[float]:
+    """The run deadline a stream opened now must stop producing at (#127773). None when no
+    budget is set, or when the deadline already passed: that call is the run's one grace call
+    (the preflight gate allows exactly one), which gets to finish its answer. Silence is left to
+    the stale timeout, so a local model still prefilling at the deadline keeps its full grace."""
+    deadline = run_budget_deadline(agent)
+    return deadline if deadline is not None and time.time() < deadline else None
 
 
 def _cloud_stale_timeout_for(agent, api_kwargs: dict) -> float:
@@ -3063,6 +3079,8 @@ class _StreamingCall(StreamingWaitMonitor):
         # field is persisted either way and need not mirror the details.
         detail_watch = RunawayStreamWatch()
         runaway = None
+        deadline = _live_stream_deadline(self.agent)
+        budget_spent = False
 
         def _open_stream(next_api_kwargs: dict[str, Any]):
             timeout = _httpx.Timeout(connect=conn_cap, read=read_timeout, write=base_timeout, pool=conn_cap)
@@ -3099,6 +3117,10 @@ class _StreamingCall(StreamingWaitMonitor):
             self._count_chunk(_diag, chunk)
             if self.agent._interrupt_requested:
                 _close_half_read_stream("interrupt_stream_close_failed")
+                break
+            if deadline is not None and time.time() >= deadline:
+                budget_spent = True
+                _close_half_read_stream("run_budget_stream_close_failed")
                 break
             if not self._stream_attempt_is_active(stream_attempt_id):
                 self._discard_stale_stream_chunk(stream_attempt_id, chunk)
@@ -3218,13 +3240,16 @@ class _StreamingCall(StreamingWaitMonitor):
         if stream.final_response is not None:
             return self._adopt_final_response(stream.final_response)
         response = self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
-            "length" if runaway else finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
+            "length" if runaway or budget_spent else finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
             refusal_parts=refusal_parts)
         carriers.apply(response)
         if runaway:
             # Cut, not finished: the length path ends the turn on this mark instead of continuing.
             response._runaway_repetition = True
+        if budget_spent:
+            # Cut, not finished: the length path ends the turn on this mark and keeps the text.
+            response._run_budget_spent = True
         return response
 
     def _log_runaway_cut(self, channel: str) -> None:
@@ -3401,6 +3426,8 @@ class _StreamingCall(StreamingWaitMonitor):
         base_final_message = None
         text_watch, thinking_watch = RunawayStreamWatch(), RunawayStreamWatch()
         runaway = None
+        deadline = _live_stream_deadline(self.agent)
+        budget_spent = False
 
         from agent import relay_llm
         from agent.anthropic_adapter import normalize_stream_usage, sanitize_anthropic_kwargs
@@ -3434,6 +3461,9 @@ class _StreamingCall(StreamingWaitMonitor):
                 self._count_chunk(_diag, event)
                 if self.agent._interrupt_requested:
                     break
+                if deadline is not None and time.time() >= deadline:
+                    budget_spent = True
+                    break
                 event_type = getattr(event, "type", None)
                 if event_type == "message_stop":
                     saw_message_stop = True
@@ -3464,7 +3494,7 @@ class _StreamingCall(StreamingWaitMonitor):
                             runaway = "reasoning"
                             break
             raw_stream = _stream_context["stream"]
-            if not self.agent._interrupt_requested and raw_stream is not None and not runaway:
+            if not self.agent._interrupt_requested and raw_stream is not None and not runaway and not budget_spent:
                 if not saw_message_stop:
                     raise EmptyStreamError(
                         "Anthropic Messages stream ended before message_stop (possible upstream stream drop)."
@@ -3492,6 +3522,15 @@ class _StreamingCall(StreamingWaitMonitor):
             message = accumulator.response(_stream_context["stream"].current_message_snapshot)
             message.stop_reason = "max_tokens"
             message._runaway_repetition = True  # same hand-off as the chat_completions wire
+            return message
+        if budget_spent:
+            # No message_stop, so no final message: the SDK's snapshot is what streamed so far.
+            message = accumulator.response(_stream_context["stream"].current_message_snapshot)
+            # Cut before any block started: an empty content list reads as an invalid response
+            # and would be retried past the deadline.
+            message.content = message.content or [SimpleNamespace(type="text", text="")]
+            message.stop_reason = "max_tokens"
+            message._run_budget_spent = True  # same hand-off as the chat_completions wire
             return message
         if base_final_message is not None:
             self._check_anthropic_message(base_final_message, tool_drop=False)

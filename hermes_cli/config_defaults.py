@@ -80,8 +80,9 @@ DEFAULT_CONFIG = {
         # null = off; set a ratio strictly between 0 and 1 (for example, 0.75).
         "budget_warning_ratio": None,
         # Wall-clock budget (seconds) per run. null = off. When set: one-time wrap-up notice at 80%
-        # elapsed; implicit provider stale timeouts capped to remaining budget. CLI equivalent:
-        # `hermes chat --run-budget N`.
+        # elapsed; implicit provider stale timeouts capped to remaining budget; at the deadline a
+        # still-streaming response stops (text kept) and, after one grace call, no model call
+        # starts. CLI equivalent: `hermes chat --run-budget N`.
         "run_budget_seconds": None,
         # Gateway inactivity timeout (seconds). Only fires when the agent is completely idle — not
         # while calling tools or receiving API responses. 0 = unlimited.

@@ -181,6 +181,30 @@ def partial_result(
     return result
 
 
+def end_turn_at_run_budget(
+    agent: Any, messages: List[Dict[str, Any]], conversation_history: Any, api_call_count: int,
+    effective_task_id: Any, partial: str = "",
+) -> Dict[str, Any]:
+    """Terminal result for a turn the --run-budget deadline stopped (#127773): the text the model
+    had streamed stays the reply, followed by a notice; nothing is continued or retried."""
+    budget = f"{float(agent.run_budget_seconds):g}s"
+    notice = f"⏱️ **Run budget reached** — the {budget} run budget ran out " + (
+        "while the model was still writing, so this response is incomplete." if partial
+        else "before the model finished, so the turn stopped here."
+    )
+    agent._vprint(f"{agent.log_prefix}⏱️  Run budget of {budget} reached — ending the turn.", force=True, diagnostic=True)
+    # A tool result (or the user's message, when the budget ran out before the first call) must
+    # not stay the tail: the next user row would break alternation.
+    if not partial and messages and isinstance(messages[-1], dict) and messages[-1].get("role") in ("tool", "user"):
+        append_message(messages, {"role": "assistant", "content": notice})
+    agent._cleanup_task_resources(effective_task_id)
+    agent._persist_session(messages, conversation_history)
+    return stamp_failure(partial_result(
+        messages, api_call_count, f"{partial}\n\n{notice}" if partial else notice,
+        f"Run budget of {budget} reached before the model finished",
+    ), "truncated", False)
+
+
 @dataclass
 class TruncationVerdict:
     """Outcome of ``recover_from_truncation``.
@@ -471,6 +495,17 @@ def recover_from_truncation(
         line, user_response, error = _REPETITION_STREAM_CUT
         agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
         return st.end_turn(user_response, error)
+    if getattr(response, "_run_budget_spent", False):
+        # The streaming call stopped at the run deadline: keep what streamed (with this turn's
+        # earlier continuation fragments) as one assistant row and end the turn there.
+        _cut_msg = normalize_response_for_agent(agent, response)
+        partial = collapse_continuation_trail(
+            agent, messages, current_turn_user_idx, finish_reason="length",
+            parts=[*st.truncated_response_parts, (getattr(_cut_msg, "content", None) or "", st.is_stub)],
+        )
+        agent._ephemeral_reasoning_off = False
+        return st.done("return", end_turn_at_run_budget(
+            agent, st.messages, conversation_history, api_call_count, effective_task_id, partial))
     st.window_filled = _prompt_filled_window(agent, response)
     if st.is_stub and getattr(response, "_clean_eof", False):
         _banner = ("Response truncated — server ended the stream without ever sending finish_reason "

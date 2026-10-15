@@ -1,4 +1,5 @@
-"""Pre-API pressure gate for the conversation turn loop: the Ollama runtime-context floor,
+"""Pre-API pressure gate for the conversation turn loop: the --run-budget deadline stop, the
+Ollama runtime-context floor,
 the provider-overflow re-check arming, the insufficient-progress blocker (compares fully
 assembled requests, not raw ``messages``) and the call into
 ``turn_preflight.run_preflight_compression``. Nothing here imports
@@ -7,6 +8,7 @@ assembled requests, not raw ``messages``) and the call into
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import suppress
 from typing import Any
 
@@ -42,6 +44,25 @@ def run_preflight_gate(
         _provider_overflow_recovery_pending=_provider_overflow_recovery_pending,
         _last_preflight_pressure=None,
     )
+
+    # --run-budget deadline (#127773). Past it, the model gets one more call, the way the
+    # iteration budget keeps a grace call: it carries the wrap-up notice when the deadline passed
+    # inside a tool, and is the run's chance to answer. A later call does not start.
+    from agent.chat_completion_helpers import run_budget_deadline
+    _deadline = run_budget_deadline(agent)
+    if _deadline is not None and time.time() >= _deadline:
+        if not getattr(agent, "_run_budget_grace_used", False):
+            agent._run_budget_grace_used = True
+        else:
+            from agent.turn_truncation import end_turn_at_run_budget
+            v.api_call_count -= 1
+            agent._api_call_count = v.api_call_count
+            with suppress(Exception):
+                agent.iteration_budget.refund()
+            v.result = end_turn_at_run_budget(
+                agent, messages, conversation_history, v.api_call_count, effective_task_id)
+            v.action = "return"
+            return v
 
     _runtime_context_error = _ollama_context_limit_error(agent, request_pressure_tokens)
     if _runtime_context_error:

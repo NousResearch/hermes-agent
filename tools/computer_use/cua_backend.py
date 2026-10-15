@@ -285,7 +285,10 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         if sandbox_mcp_invocation() is not None:
             contract = {"ready": True}
         else:
-            if not os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip():
+            from tools.computer_use.cua_backend_driver import computer_use_target, is_windows_driver
+            windows_host = sys.platform == "linux" and (
+                computer_use_target() == "windows" or is_windows_driver(resolve_cua_driver_cmd()))
+            if not os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() and not windows_host:
                 from pm import ensure
                 ensure("cua-driver")
             contract = cua_driver_runtime_contract_status()

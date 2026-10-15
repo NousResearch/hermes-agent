@@ -11,7 +11,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from gateway.config import UNAUTHORIZED_DM_BEHAVIORS, Platform, PlatformConfig, _coerce_dict, _dict_slot, _normalize_choice
 
@@ -301,7 +301,8 @@ def _apply_managed_extra(authored: dict, managed: dict, platforms_data: dict) ->
     return hook_pins
 
 
-def _authored_wins(extra: dict, block: dict, plat_name: str, *, toplevel: bool, warned: Optional[set] = None) -> dict:
+def _authored_wins(extra: dict, block: dict, plat_name: str, *, toplevel: bool,
+                   warned: Optional[set] = None, warn_conflicts: bool = True) -> dict:
     """Effective ``<plat>:`` block for YAML→extra/env bridging: *block* (top-level or
     nested) overlaid with the keys the user authored in ``platforms.<plat>.extra``.
 
@@ -317,7 +318,7 @@ def _authored_wins(extra: dict, block: dict, plat_name: str, *, toplevel: bool, 
     def overlay_onto(source: dict) -> dict:
         overlay = {k: extra[k] for k in source if k in extra}
         for key, value in overlay.items():
-            if source[key] != value and (plat_name, key) not in warned:
+            if warn_conflicts and source[key] != value and (plat_name, key) not in warned:
                 warned.add((plat_name, key))
                 logger.warning(
                     "%s set in both %s and platforms.%s.extra; platforms.%s.extra took precedence",
@@ -339,7 +340,7 @@ def _authored_wins(extra: dict, block: dict, plat_name: str, *, toplevel: bool, 
 
 def bridge_platform_shared_keys(
     yaml_cfg: dict, gateway_platforms: Any, gw_data: dict, platforms_data: dict, targets: list,
-    warned: Optional[set] = None, authored: Optional[dict] = None,
+    warned: Optional[set] = None, authored: Optional[dict] = None, *, warn_conflicts: bool = True,
 ) -> None:
     """Copy shared keys (allow_from, require_mention, …) from each platform's YAML section into ``extra``.
 
@@ -359,7 +360,8 @@ def bridge_platform_shared_keys(
         # An authored ``platforms.<plat>.extra`` key beats the same key in the (top-level or
         # nested) block, so the shared-key bridge works on the effective block.
         effective = _authored_wins(
-            authored.get(plat.value, {}), platform_cfg, plat.value, toplevel=cfg_toplevel, warned=warned)
+            authored.get(plat.value, {}), platform_cfg, plat.value, toplevel=cfg_toplevel,
+            warned=warned, warn_conflicts=warn_conflicts)
         bridged = _bridged_keys(plat, effective, gw_data, root_block=cfg_toplevel)
         has_channel_overrides = "channel_overrides" in platform_cfg
         if has_channel_overrides and isinstance(platform_cfg.get("channel_overrides"), dict):
@@ -379,6 +381,32 @@ def bridge_platform_shared_keys(
             plat_data["enabled"] = platform_cfg["enabled"]
             extra["_enabled_explicit"] = True
         extra.update(bridged)
+
+
+def effective_platform_extra(yaml_cfg: dict, platform: Platform, *, managed: Optional[dict] = None,
+                             seed_extra: Optional[Callable[[dict, dict], dict]] = None) -> dict:
+    """Pure YAML-to-extra resolution for a live policy reader, without discovery or env bridges.
+
+    Reuse the startup merge, managed pins, authored ownership and shared-key bridge. A platform
+    may supply its pure hook value selector via *seed_extra*; never pass an env-writing hook.
+    Startup continues to warn about conflicts; per-message reads are deliberately silent.
+    """
+    gateway_section = yaml_cfg.get("gateway")
+    gateway_platforms = gateway_section.get("platforms") if isinstance(gateway_section, dict) else None
+    data: dict = {}
+    platforms = merge_platform_sections(yaml_cfg, gateway_section, data)
+    authored = snapshot_authored_extra(platforms)
+    managed_extra = _apply_managed_extra(authored, managed or {}, platforms)
+    bridge_platform_shared_keys(yaml_cfg, gateway_platforms, data, platforms, [platform],
+                                authored=authored, warn_conflicts=False)
+    if seed_extra is not None:
+        block, toplevel = platform_section(yaml_cfg, platform.value, gateway_platforms)
+        if isinstance(block, dict):
+            effective = _authored_wins(authored.get(platform.value, {}), block, platform.value,
+                                       toplevel=toplevel, warn_conflicts=False)
+            effective.update(managed_extra.get(platform.value, {}))
+            _dict_slot(_dict_slot(platforms, platform.value), "extra").update(seed_extra(yaml_cfg, effective))
+    return PlatformConfig.from_dict(platforms.get(platform.value)).extra
 
 
 def apply_plugin_yaml_hooks(

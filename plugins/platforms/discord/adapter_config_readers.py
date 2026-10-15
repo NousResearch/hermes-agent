@@ -5,6 +5,24 @@ Re-exported from ``plugins.platforms.discord.adapter`` (callers and tests import
 from typing import Any, Optional
 
 
+def _discord_yaml_gates(yaml_cfg: dict, discord_cfg: dict) -> dict:
+    """Pure gate extras for the Discord YAML hook, AFTER loader ownership resolution."""
+    platforms = yaml_cfg.get("platforms")
+    platform = platforms.get("discord") if isinstance(platforms, dict) else None
+    extra = platform.get("extra") if isinstance(platform, dict) else None
+    extra = extra if isinstance(extra, dict) else {}
+    gates = {}
+    for key in ("allow_from", "allowed_roles", "allow_all_users", "allow_bots", "approval_mentions"):
+        value = discord_cfg[key] if key in discord_cfg else extra.get(key)
+        if value is not None:
+            if key in ("allow_all_users", "allow_bots"):
+                value = str(value).lower()
+            elif key != "approval_mentions":
+                value = ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
+            gates[key] = value
+    return gates
+
+
 def _read_dm_role_auth_guild() -> Optional[int]:
     """Return the guild ID opted-in for DM role-based auth, or None (secure default). Read from
     config.yaml ``discord.dm_role_auth_guild`` only (behavioral, not a secret); int or numeric string."""

@@ -1201,7 +1201,8 @@ class VoiceReceiver:
 
 
 from plugins.platforms.discord.adapter_config_readers import (
-    _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout, _read_dm_role_auth_guild)
+    _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout,
+    _read_dm_role_auth_guild, _discord_yaml_gates)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -7277,8 +7278,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     The adapter reads ``DISCORD_*`` via ``os.getenv()`` at ~50 sites, so this hook owns YAML→env;
     ``extra`` stays the per-adapter truth for liveness (multiplex isolation). Returns liveness settings.
 
-    Implements the ``apply_yaml_config_fn`` contract (#24836). Mirrors the legacy ``discord_cfg`` block that
-    used to live in ``gateway/config.py::load_gateway_config()`` before this migration.
+    Implements ``apply_yaml_config_fn`` (#24836); gate selection is pure for live policy reads.
     """
     # Every env write is first-writer-wins (an explicit env var beats YAML) and is skipped for a
     # profile-scoped multiplex load: a secondary profile's settings must never land in process-global
@@ -7293,17 +7293,10 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         if key in discord_cfg:
             seeded_extra[key] = discord_cfg[key]  # original type: the shared-key loop seeds bools as bools
             _env_default(env_key, str(discord_cfg[key]).lower())
-    platforms_cfg = yaml_cfg.get("platforms")
-    platform_extra_cfg = {}
-    if isinstance(platforms_cfg, dict):
-        discord_platform_cfg = platforms_cfg.get("discord")
-        if isinstance(discord_platform_cfg, dict):
-            candidate_extra = discord_platform_cfg.get("extra")
-            if isinstance(candidate_extra, dict):
-                platform_extra_cfg = candidate_extra
+    gate_cfg = _discord_yaml_gates(yaml_cfg, discord_cfg)
 
     def _gate(key: str, env_key: str, *, from_platform_extra: bool, lower: bool = False) -> None:
-        value = discord_cfg[key] if key in discord_cfg else (platform_extra_cfg.get(key) if from_platform_extra else None)
+        value = gate_cfg.get(key) if from_platform_extra else discord_cfg.get(key)
         if value is None:
             return
         text = str(value).lower() if lower else _csv(value)
@@ -7314,10 +7307,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     _gate("allowed_roles", "DISCORD_ALLOWED_ROLES", from_platform_extra=True)
     _gate("allow_all_users", "DISCORD_ALLOW_ALL_USERS", from_platform_extra=True, lower=True)
     _gate("allow_bots", "DISCORD_ALLOW_BOTS", from_platform_extra=True, lower=True)
-    approval_mentions_cfg = (
-        discord_cfg["approval_mentions"] if "approval_mentions" in discord_cfg
-        else platform_extra_cfg.get("approval_mentions")
-    )
+    approval_mentions_cfg = gate_cfg.get("approval_mentions")
     if approval_mentions_cfg is not None:
         seeded_extra["approval_mentions"] = approval_mentions_cfg
         _env_default("DISCORD_APPROVAL_MENTIONS", str(approval_mentions_cfg).lower())

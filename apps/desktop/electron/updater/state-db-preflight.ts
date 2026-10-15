@@ -17,6 +17,10 @@ interface StateDbPreflight {
 }
 
 // Synchronous by design: the caller must not stop the backend before the snapshot.
+// Large SQLite files can take minutes to copy on a cold disk; this is a safety
+// ceiling, not a throughput budget.
+const STATE_DB_PREFLIGHT_TIMEOUT_MS = 5 * 60_000
+
 export function preflightStateDb({ python, script, home, log, launcher = null }: StateDbPreflight): void {
   try {
     const command: string | null = launcher ?? python
@@ -44,7 +48,7 @@ export function preflightStateDb({ python, script, home, log, launcher = null }:
         : args,
       hiddenWindowsChildOptions({
         encoding: 'utf8',
-        timeout: 30_000,
+        timeout: STATE_DB_PREFLIGHT_TIMEOUT_MS,
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsVerbatimArguments: viaCmd
       })

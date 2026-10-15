@@ -915,9 +915,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       void rpc('wake.start', { surface: 'tui' }).catch(() => undefined)
     }
 
-    // Before the first session the gateway uses the same workspace it seeds a new session with;
-    // useMainApp reloads it bound to each session once one is live.
-    void loadSlashCatalog(rpc, getUiState().sid, setCatalog)
+    // The pre-session catalog; useSlashCatalog owns every session-bound load, reconnects included.
+    if (!getUiState().sid) {
+      void loadSlashCatalog(rpc, null, setCatalog)
+    }
 
     // Keep the recovery target until resume succeeds, including across a second
     // disconnect during setup or history loading. Recovery never resends the prompt.

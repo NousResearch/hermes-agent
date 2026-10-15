@@ -4070,12 +4070,19 @@ def _route_codex_compaction(
 
 def _refresh_main_credential(agent: Any) -> None:
     """Re-resolve a rotating Anthropic OAuth token so the summary call never carries a revoked one."""
-    if getattr(agent, "api_mode", None) != "anthropic_messages":
-        return
-    refresh = getattr(agent, "_try_refresh_anthropic_client_credentials", None)
-    if callable(refresh):
-        with _swallow("pre-compression credential refresh failed: %s"):
-            refresh()
+    if getattr(agent, "api_mode", None) == "anthropic_messages":
+        refresh = getattr(agent, "_try_refresh_anthropic_client_credentials", None)
+        if callable(refresh):
+            with _swallow("pre-compression credential refresh failed: %s"):
+                refresh()
+    # Equality-gated holder moves miss a snapshot that already diverged (#138469).
+    cc = getattr(agent, "context_compressor", None)
+    adopt = getattr(cc, "_adopt_main_api_key", None)
+    if callable(adopt):
+        adopt(
+            getattr(agent, "api_key", None) or getattr(agent, "_anthropic_api_key", None),
+            provider=str(getattr(agent, "provider", "") or ""),
+        )
 
 
 def _announce_compression_start(

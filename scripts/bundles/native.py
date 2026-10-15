@@ -277,7 +277,7 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
     relativize_links(out)
     from scripts.bundles.bytecode import bake_bytecode
     baked = bake_bytecode(out, python_bin)
-    print(f"✓ baked bytecode ({baked['modules']} modules, unchecked-hash, read-only caches)")
+    print(f"✓ baked bytecode ({baked['modules']} modules, unchecked-hash, owner-writable caches)")
     inputs = AgentInputs(
         project=repo_dir / "pyproject.toml", code=repo_dir, repo="hermes-agent",
         placement="contained", target=current_target(), python=python_bin,

@@ -46,17 +46,19 @@ def test_authority_route_admits_a_member_turn_with_its_file(hosted_owner, tmp_pa
                                  authorize=lambda *args: True)
     runtime = HostedRoomRuntime(
         db_path=room_db, rooms=[binding], rpc=rpc, turn_lock=lambda _profile: _NullLock(),
-        lease_ttl_seconds=0.4, poll_interval_seconds=0.01)
+        poll_interval_seconds=0.01)
 
     runtime.start()
     try:
         _wait_for(lambda: rpc.callbacks or runtime.status()["last_error"] is not None)
+        last_error = runtime.status()["last_error"]
+        status = state.get_task(room_db, identity)["status"]
     finally:
         assert runtime.stop(timeout=5.0)
 
     # Admitted with the bytes resolved, and still running: no refusal on this route.
-    assert runtime.status()["last_error"] is None
-    assert state.get_task(room_db, identity)["status"] == "running"
+    assert last_error is None
+    assert status == "running"
     sid = rpc.resolve_exact(profile="default", title="Group: room", source="bot_room")["session_id"]
     rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
     assert len(rows) == 1

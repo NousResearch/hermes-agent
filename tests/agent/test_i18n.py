@@ -43,9 +43,20 @@ def test_catalog_keys_match_english(lang: str):
     en_keys = set(_flatten(_load_raw("en")).keys())
     lang_keys = set(_flatten(_load_raw(lang)).keys())
     missing = en_keys - lang_keys
-    extra = lang_keys - en_keys
+    # The command registry owns its English descriptions; locale-specific
+    # overrides are optional and deliberately absent from the baseline YAML.
+    extra = {key for key in lang_keys - en_keys if not key.startswith("command_descriptions.")}
     assert not missing, f"{lang}.yaml missing keys: {sorted(missing)}"
     assert not extra, f"{lang}.yaml has keys not in en.yaml: {sorted(extra)}"
+
+
+def test_command_description_overrides_reference_live_commands():
+    from hermes_cli.commands import COMMAND_REGISTRY
+
+    commands = {command.name for command in COMMAND_REGISTRY}
+    for lang in i18n.SUPPORTED_LANGUAGES:
+        overrides = _load_raw(lang).get("command_descriptions", {})
+        assert set(overrides) - {"alias_label"} <= commands, lang
 
 
 @pytest.mark.parametrize("lang", list(i18n.SUPPORTED_LANGUAGES))

@@ -1695,7 +1695,8 @@ class SessionSessionsMixin:
         are orphaned. Optional expected ids fence delegate drift; expected display snapshots fence
         transcript drift. Both checks run inside the same write transaction as deletion.
         With ``exclude_active_write_guards``, raises :class:`SessionActiveWriteGuardError` if the row
-        is protected by an active turn lease or compression lock.
+        is protected by an active turn lease or compression lock; a background review's lease is
+        asked to yield instead (the delete removes its replay basis), as a rewind does.
 
         With ``include_compression_chain=True`` the whole compression chain the session belongs to
         is deleted with it (root and every continuation) — the dashboard delete endpoints use this
@@ -1713,6 +1714,7 @@ class SessionSessionsMixin:
             ) > 0
         removed_ids: list[str] = []
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
+        from hermes_state_messages import REVIEW_LEASE_YIELD
         def _do(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 return False
@@ -1724,7 +1726,10 @@ class SessionSessionsMixin:
                 [*scope, *_collect_delegate_child_ids(conn, scope)]
                 if exclude_active_write_guards or expected_ids is not None else None
             )
-            if exclude_active_write_guards and self._guarded_ids(conn, target_ids):
+            # A background review's lease is asked to yield (the delete removes its replay basis);
+            # any other guard refuses, and that rollback lifts the stamp with the refusal.
+            if exclude_active_write_guards and self._guarded_ids(
+                    conn, target_ids, review_lease_policy=REVIEW_LEASE_YIELD):
                 # Delegate children cascade with the root, so a guard on any of them refuses too.
                 raise SessionActiveWriteGuardError(
                     f"session '{session_id}' (or a delegate child) has an active turn lease or compression lock"
@@ -1832,6 +1837,7 @@ class SessionSessionsMixin:
         if not unique_ids:
             return 0
         removed_ids: list[str] = []
+        from hermes_state_messages import REVIEW_LEASE_IGNORE, REVIEW_LEASE_YIELD
         def _do(conn):
             existing = [row["id"] for chunk in _id_chunks(unique_ids) for row in conn.execute(
                 f"SELECT id FROM sessions WHERE id IN ({_session_ids_placeholders(chunk)})", chunk,
@@ -1855,20 +1861,24 @@ class SessionSessionsMixin:
                 # expansion is on, a guard on ANY lineage member keeps its selected root: deleting
                 # a torn chain would re-surface it (the root re-projects onto a surviving link).
                 # One batched check first; per-root attribution only when something is guarded.
+                # A background review's lease keeps nothing: attribution sees through it, and the
+                # rows that go ask their reviews to yield below (the delete removes the fork's replay
+                # basis), so a kept root's review is never asked to yield for a delete that did not happen.
+                live = {"review_lease_policy": REVIEW_LEASE_IGNORE}
                 active_ids: set = set()
-                if self._guarded_ids(conn, guard_pool):
+                if self._guarded_ids(conn, guard_pool, **live):
                     if include_compression_chain:
                         for sid in existing:
                             member_lineage = set(self._expand_compression_lineage(conn, [sid]))
                             member_lineage.add(sid)
                             if self._guarded_ids(conn, [*member_lineage,
-                                    *_collect_delegate_child_ids(conn, list(member_lineage))]):
+                                    *_collect_delegate_child_ids(conn, list(member_lineage))], **live):
                                 active_ids.add(sid)
                     else:
                         active_ids = {
                             sid for sid in existing
                             if self._guarded_ids(conn, [*(members := expand([sid])),
-                                                        *_collect_delegate_child_ids(conn, members)])
+                                                        *_collect_delegate_child_ids(conn, members)], **live)
                         }
                 existing = [sid for sid in existing if sid not in active_ids]
                 if skipped_ids is not None:
@@ -1876,6 +1886,8 @@ class SessionSessionsMixin:
                 if not existing:
                     return 0
                 expanded = expand(existing)
+                self._guarded_ids(conn, [*expanded, *_collect_delegate_child_ids(conn, expanded)],
+                                  review_lease_policy=REVIEW_LEASE_YIELD)
             from hermes_state_mutation_retirement import retire_sessions
             retire_sessions(conn, expanded)
             removed_ids.extend(_delete_delegate_children(conn, expanded))

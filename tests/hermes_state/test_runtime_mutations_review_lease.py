@@ -5,8 +5,10 @@ snapshot with persistence disabled, so its lease can never justify answering a u
 ``session_busy`` for the review's lifetime. The canonical receipts carry the same policy the
 storage facade applies (``hermes_state_messages.REVIEW_LEASE_*``): a rewind asks the holder to
 yield (the rewrite invalidated its replay basis); a reset or branch publishes a new physical
-target and leaves the review beside the closed transcript; a delete spares the row exactly as
-the maintenance sweep does. A foreground holder still refuses every one of them.
+target and leaves the review beside the closed transcript; a delete removes the fork's replay
+basis outright and asks it to yield the same way, over the canonical receipt and the facade's
+``delete_session`` alike (only a maintenance probe spares a review-held row). A foreground holder
+still refuses every one of them.
 """
 
 import os
@@ -94,16 +96,130 @@ def test_rewind_still_refuses_a_foreground_holder_without_stamping_it(tmp_path):
         )
 
 
-def test_delete_spares_a_background_review_holder_without_asking_it_to_yield(tmp_path):
+def test_delete_asks_a_background_review_holder_to_yield_and_proceeds(tmp_path):
+    """A user deleting the conversation right after a turn must not be told the session is
+    busy by invisible background work: the fork reviews an immutable snapshot with
+    persistence disabled, so the delete loses nothing it would protect, and it removes the
+    fork's replay basis outright, so the fork is asked to yield (it stops on its next renewal
+    tick and releases the row itself; the lease table carries no foreign key to sessions)."""
     with SessionDB(db_path=tmp_path / "state.db") as db:
         _three_rows(db)
         holder = _review_holder()
         assert db.try_acquire_session_turn_lease("s", holder, ttl_seconds=60)
         epoch = rt.begin_runtime_epoch(db, instance_id="owner")
+        receipt = _mutate(db, epoch, "s", "delete", {}, "delete")
+        assert "s" in receipt["deleted_ids"]
+        assert db.get_session("s") is None
+        assert (
+            db.session_turn_lease_yield_reason("s", holder)
+            == review_admission.REASON_PREEMPTED_BY_TRANSCRIPT_EDIT
+        )
+        # Asked to yield, never reclaimed: the fork's own exit releases the row.
+        assert db.refresh_session_turn_lease("s", holder, ttl_seconds=60) is True
+
+
+def test_delete_still_refuses_a_foreground_holder_without_stamping_it(tmp_path):
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        _three_rows(db)
+        holder = _foreground_holder()
+        assert db.try_acquire_session_turn_lease("s", holder, ttl_seconds=60)
+        epoch = rt.begin_runtime_epoch(db, instance_id="owner")
         with pytest.raises(MUTATION_GUARD_REFUSALS):
             _mutate(db, epoch, "s", "delete", {}, "delete")
         assert db.get_session("s") is not None
+        assert (
+            db._read_one("SELECT yield_requested_at FROM session_turn_leases")[0]
+            is None
+        )
+
+
+def test_facade_delete_asks_a_background_review_holder_to_yield_and_proceeds(tmp_path):
+    """``hermes sessions delete``, the dashboard and the TUI delete through the facade with
+    ``exclude_active_write_guards``: the same rule, while a prune sweep still spares the row."""
+    from hermes_state_errors import SessionActiveWriteGuardError
+
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        _three_rows(db)
+        holder = _review_holder()
+        assert db.try_acquire_session_turn_lease("s", holder, ttl_seconds=60)
+        assert db.delete_session("s", exclude_active_write_guards=True) is True
+        assert db.get_session("s") is None
+        assert (
+            db.session_turn_lease_yield_reason("s", holder)
+            == review_admission.REASON_PREEMPTED_BY_TRANSCRIPT_EDIT
+        )
+        db.release_session_turn_lease("s", holder)
+
+        _three_rows(db, "fg")
+        assert db.try_acquire_session_turn_lease(
+            "fg", _foreground_holder(), ttl_seconds=60
+        )
+        with pytest.raises(SessionActiveWriteGuardError):
+            db.delete_session("fg", exclude_active_write_guards=True)
+        assert db.get_session("fg") is not None
+
+
+def test_facade_delete_refused_by_a_foreground_guard_leaves_the_review_unstamped(
+    tmp_path,
+):
+    """A delegate child's live turn still refuses the parent's delete, and the refusal rolls
+    the whole write back, yield stamp included: the review of a row that stays is never asked
+    to yield for a delete that did not happen."""
+    from hermes_state_errors import SessionActiveWriteGuardError
+
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        _three_rows(db)
+        db.create_session(
+            "child",
+            source="test",
+            parent_session_id="s",
+            model_config={"_delegate_from": "s"},
+        )
+        holder = _review_holder()
+        assert db.try_acquire_session_turn_lease("s", holder, ttl_seconds=60)
+        assert db.try_acquire_session_turn_lease(
+            "child", _foreground_holder(), ttl_seconds=60
+        )
+        with pytest.raises(SessionActiveWriteGuardError):
+            db.delete_session("s", exclude_active_write_guards=True)
+        assert db.get_session("s") is not None
         assert db.session_turn_lease_yield_requested("s", holder) is False
+
+
+def test_bulk_delete_asks_only_the_reviews_of_the_rows_it_removes_to_yield(tmp_path):
+    """The dashboard's bulk delete skips a root a foreground guard keeps (here a delegate
+    child's live turn) and removes the rest in the same transaction: the review of a removed
+    row is asked to yield, the review of a kept row is left alone (its replay basis stands)."""
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        _three_rows(db, "gone")
+        _three_rows(db, "kept")
+        db.create_session(
+            "kept-child",
+            source="test",
+            parent_session_id="kept",
+            model_config={"_delegate_from": "kept"},
+        )
+        gone_review, kept_review = _review_holder("gone"), _review_holder("kept")
+        assert db.try_acquire_session_turn_lease("gone", gone_review, ttl_seconds=60)
+        assert db.try_acquire_session_turn_lease("kept", kept_review, ttl_seconds=60)
+        assert db.try_acquire_session_turn_lease(
+            "kept-child", _foreground_holder(), ttl_seconds=60
+        )
+        skipped: list[str] = []
+        assert (
+            db.delete_sessions(
+                ["gone", "kept"], exclude_active_write_guards=True, skipped_ids=skipped
+            )
+            == 1
+        )
+        assert skipped == ["kept"]
+        assert db.get_session("gone") is None
+        assert db.get_session("kept") is not None
+        assert (
+            db.session_turn_lease_yield_reason("gone", gone_review)
+            == review_admission.REASON_PREEMPTED_BY_TRANSCRIPT_EDIT
+        )
+        assert db.session_turn_lease_yield_requested("kept", kept_review) is False
 
 
 def test_reset_publishes_a_new_target_beside_a_background_review(tmp_path):

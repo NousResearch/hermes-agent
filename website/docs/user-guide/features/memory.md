@@ -454,8 +454,10 @@ cause that stamped it (`review_preempted_by_transcript_edit`), never a
 cross-process preemption. A detached delegation delivery is an append after the
 review's snapshot: it lands without asking. A deferred review stopped by either
 yield is dropped rather than requeued (`review_dropped_after_lease_yield`): its
-snapshot no longer describes the transcript. Maintenance sweeps and automatic
-pruning spare a review-held session like any live lease. `/refine` is exempt
+snapshot no longer describes the transcript. Deleting the conversation asks the
+review to yield the same way (the delete removes what it was reviewing) and
+proceeds at once; only maintenance sweeps and automatic pruning spare a
+review-held session like any live lease. `/refine` is exempt
 from the replay and input bounds below but NOT from this exclusion: while a
 turn in another process owns the session, the requested review is skipped and a
 notice says so.

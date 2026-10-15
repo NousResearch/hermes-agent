@@ -2,12 +2,18 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
+import { ruBoot } from './ru_boot'
+import { ruClarify } from './ru_clarify'
+import { ruConnectors } from './ru_connectors'
+import { ruFirstRun } from './ru_first_run'
 import { ruModelMenu } from './ru_model_menu'
 import { ruNotices } from './ru_notices'
 import { ruOnboarding } from './ru_onboarding'
 import { ruPluginSettings } from './ru_plugins'
 import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
+import { ruThemePicker } from './ru_theme_picker'
+import { ruUpdateChannel } from './ru_update_channel'
 
 // RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
 // RU_NOUN: (count, one, few, many) — формы род. множественного
@@ -31,41 +37,10 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 }
 
 export const ruOverrides = {
+  connectors: ruConnectors.connectors,
   sharedMetrics: ruSharedMetrics,
-  sessionImport: {
-    title: 'Продолжить из другого приложения',
-    subtitle: 'Перенесите разговор в Hermes и продолжите с того места, где остановились.',
-    action: 'Импортировать сессию',
-    readingFrom: 'Читаем с',
-    connectedComputer: 'подключённого компьютера',
-    destination: 'Импорт в',
-    all: 'Все',
-    search: 'Поиск по загруженным сессиям',
-    scanning: 'Поиск разговоров',
-    scanError: 'Не удалось найти сессии',
-    scanHelp: 'Проверьте подключение к серверу и повторите попытку. Старому серверу может требоваться обновление.',
-    empty: 'Разговоров пока нет',
-    emptyHelp: 'Здесь появятся сессии Claude Code и Codex с этого сервера.',
-    noMatches: 'Совпадений нет',
-    searchHelp: 'Попробуйте другой заголовок или папку либо загрузите ещё сессии.',
-    skipped: 'Некоторые журналы пусты, недоступны или слишком велики для просмотра.',
-    more: 'Загрузить ещё сессии',
-    messages: 'сообщений',
-    choose: 'Разговор, который стоит продолжить',
-    chooseHelp: 'Выберите сессию, чтобы прочитать историю перед импортом в Hermes.',
-    previewLoading: 'Открываем просмотр',
-    previewError: 'Просмотр недоступен',
-    previewHelp: 'Исходный файл мог переместиться или измениться. Обновите список и повторите попытку.',
-    previewLimit: 'Просмотр сокращён для удобства чтения. Импортируется весь разговор.',
-    you: 'Вы',
-    snapshot: 'Этот разговор уже есть в Hermes. Откройте существующую копию, чтобы продолжить.',
-    copyNotice:
-      'Копируется текст разговора. Исходные файлы не меняются. Вывод инструментов и рассуждения не переносятся.',
-    importing: 'Импорт…',
-    open: 'Открыть в Hermes',
-    continue: 'Продолжить в Hermes',
-    importError: 'Не удалось импортировать разговор.'
-  },
+  firstRun: ruFirstRun,
+  sessionImport: ruConnectors.sessionImport,
   common: {
     apply: 'Применить',
     back: 'Назад',
@@ -127,56 +102,7 @@ export const ruOverrides = {
     pathCopied: 'Путь скопирован',
     revealMissing: 'Этой папки нет на этом компьютере'
   },
-  boot: {
-    ready: 'Hermes Desktop готов',
-    desktopBootFailedWithMessage: message => `Не удалось запустить приложение: ${message}`,
-    steps: {
-      connectingGateway: 'Подключение к шлюзу',
-      loadingSettings: 'Загрузка настроек Hermes',
-      loadingSessions: 'Загрузка последних сеансов',
-      retryingRemoteBackend: 'Переподключение к удалённому бэкенду Hermes…',
-      startingDesktopConnection: 'Запуск подключения приложения',
-      startingHermesDesktop: 'Запуск Hermes Desktop…'
-    },
-    errors: {
-      backgroundExited: 'Фоновый процесс Hermes завершён.',
-      backgroundExitedDuringStartup: 'Фоновый процесс Hermes завершился при запуске.',
-      backendStopped: 'Бэкенд остановлен',
-      desktopBootFailed: 'Не удалось запустить приложение',
-      gatewayConnectionLost: 'Соединение с шлюзом потеряно',
-      gatewaySignInRequired: 'Требуется вход в шлюз',
-      ipcBridgeUnavailable: 'IPC-мост приложения недоступен.'
-    },
-    failure: {
-      title: 'Hermes не удалось запустить',
-      description:
-        'Фоновый шлюз не запустился. Попробуйте один из шагов восстановления ниже. Ничто из этого не удаляет ваши чаты и настройки.',
-      remoteTitle: 'Требуется вход в удалённый шлюз',
-      remoteDescription:
-        'Сессия удалённого шлюза истекла. Войдите снова, чтобы переподключиться. Ничто из этого не удаляет ваши чаты и настройки.',
-      retry: 'Повторить',
-      repairInstall: 'Восстановить установку',
-      useLocalGateway: 'Использовать локальный шлюз',
-      gatewaySettings: 'Настройки шлюза',
-      back: 'Назад',
-      openLogs: 'Открыть журналы',
-      repairHint: 'Восстановление перезапускает установщик — на чистой машине это может занять несколько минут.',
-      remoteSignInHint: signInLabel =>
-        `Выход из сохранённой сессии удалённого браузера, затем открытие ${signInLabel}. Чтобы перейти на встроенный бэкенд, используйте локальный шлюз.`,
-      signOutAndSignIn: 'Выйти и войти',
-      remoteFailureHint: 'Проверьте URL шлюза и вход в настройках шлюза или переключитесь на локальный шлюз.',
-      hideRecentLogs: 'Скрыть недавние журналы',
-      showRecentLogs: 'Показать недавние журналы',
-      signedInTitle: 'Вы вошли в систему',
-      signedInMessage: 'Переподключение к удалённому шлюзу…',
-      signInIncompleteTitle: 'Вход не завершён',
-      signInIncompleteMessage: 'Окно входа закрылось до завершения аутентификации.',
-      signInFailed: 'Не удалось войти',
-      signInToRemoteGateway: 'Войти в удалённый шлюз',
-      signInWithProvider: provider => `Войти через ${provider}`,
-      identityProvider: 'вашему провайдеру аутентификации'
-    }
-  },
+  boot: ruBoot.boot,
   notifications: {
     sharedProfileWarning:
       'Другая установка Hermes использует этот профиль. Обе установки используют общие настройки и данные, поэтому изменения могут конфликтовать. Можно продолжить работу или закрыть другую установку перед внесением изменений.',
@@ -991,9 +917,7 @@ export const ruOverrides = {
           'Когда Hermes обновляет себя из приложения (без запроса в терминале), сохранять локальные правки исходников (stash) или выбрасывать (discard). Обновления из терминала всегда спрашивают.'
       }
     }),
-    about: {
-      updates: 'Обновления'
-    },
+    about: { updates: 'Обновления', channel: ruUpdateChannel },
     config: {
       minimizeToTrayTitle: 'Сворачивать в трей',
       minimizeToTrayDesc:
@@ -1036,13 +960,7 @@ export const ruOverrides = {
       attachmentSizeLabel: 'Макс. размер превью / загрузки изображений в мегабайтах',
       voiceShortcutHintTitle: 'Горячая клавиша записи голоса',
       voiceShortcutHintDesc:
-        'Настройте горячую клавишу записи голоса в разделе «Настройки → Горячие клавиши» («Начать / остановить голосовой диалог»). Параметр voice.record_key действует только в CLI и TUI.',
-      developerTitle: 'Для разработчиков',
-      resetOnboardingTitle: 'Сбросить первоначальную настройку',
-      resetOnboardingDesc:
-        'Удалить чаты настройки, пересоздать профиль настройки и снова запустить первоначальную настройку. Ваши профили, чаты и плагины сохранятся.',
-      resetOnboardingAction: 'Сбросить',
-      resetOnboardingFailed: 'Не удалось сбросить первоначальную настройку'
+        'Настройте горячую клавишу записи голоса в разделе «Настройки → Горячие клавиши» («Начать / остановить голосовой диалог»). Параметр voice.record_key действует только в CLI и TUI.'
     },
     hudModifier: {
       title: 'Вызов HUD коротким нажатием',
@@ -2686,20 +2604,6 @@ export const ruOverrides = {
     },
     markAllRead: 'Отметить все как прочитанные'
   },
-  handoffTour: {
-    profileTitle: 'Первая задача выполняется в профиле по умолчанию',
-    profileText:
-      'Эта панель переключает профили. Сейчас подсвечен default — там сессия задачи. Другой — профиль настройки, там приветственный чат.',
-    sessionsTitle: 'У каждого профиля свои сессии',
-    sessionsText:
-      'Этот список относится к профилю default. «Новая сессия» создаёт её в выбранном профиле. Переключите профиль на панели — и список сменится.',
-    stayTitle: 'Hermes в одном клике',
-    stayText:
-      'Переключитесь на профиль настройки и откройте «Добро пожаловать в Hermes», когда понадобится помощь. Он остаётся там.',
-    localTitle: 'Этот компьютер может запускать модели локально',
-    localText: (model: string) =>
-      `${model} подходит для вашего оборудования. Работает бесплатно, а чаты не покидают ваш компьютер. Выберите её здесь, в меню моделей, когда захотите.`
-  },
   composer: {
     message: 'Сообщение',
     wakingProfile: profile => `Пробуждаем ${profile}…`,
@@ -2728,6 +2632,7 @@ export const ruOverrides = {
     openDirective: 'Открыть',
     queueMessage: 'Вставить сообщение в очередь',
     steer: 'Направить текущий запуск',
+    redirect: 'Перенаправить текущий запуск',
     stop: 'Стоп',
     send: 'Отправить',
     speaking: 'Говорит',
@@ -2855,12 +2760,6 @@ export const ruOverrides = {
     editingQueuedInComposer: 'Редактирование хода в очереди в композере',
     restoredDraftNotice: 'Восстановлено ваше неотправленное сообщение',
     restoredDraftUndo: 'Отменить',
-    localSetup: {
-      title: 'Это может работать на вашем компьютере',
-      text: (model: string) =>
-        `${model} подходит для этого компьютера. Бесплатно, а чаты остаются на вашем компьютере.`,
-      action: 'Показать'
-    },
     queueEdit: 'Изменить',
     queueExpand: 'Раскрыть',
     queueCollapse: 'Свернуть',
@@ -2868,6 +2767,12 @@ export const ruOverrides = {
     queueSteer: 'Направить — изменить текущий ход сейчас',
     queueSend: 'Отправить',
     queueDelete: 'Удалить',
+    queueLostNote: 'Ход потерян при перезапуске',
+    restoreImageDraft: 'Восстановить черновик с изображением',
+    queueCancelFailed: 'Не удалось удалить ход из очереди',
+    queueLostDiscard: 'Отбросить',
+    queueLostDiscardTip:
+      'Шлюз перезапустился посреди хода и не может его завершить. Отбросьте его, чтобы очередь продолжилась.',
     queueResume: 'Продолжить',
     queueResumeTip: 'Приостановлено стопом — продолжить отправку ходов из очереди',
     queueStuckTitle: 'Сообщение из очереди не отправлено',
@@ -3785,49 +3690,8 @@ export const ruOverrides = {
         `Это добавит паттерн «${pattern}» в ваш постоянный список разрешений (~/.hermes/config.yaml). Hermes больше не будет спрашивать о подобных командах — ни в этом сеансе, ни в будущем.`,
       alwaysAllow: 'Всегда разрешать'
     },
-    clarify: {
-      notReady: 'Запрос уточнения ещё не готов',
-      gatewayDisconnected: 'Шлюз Hermes не подключён',
-      sendFailed: 'Не удалось отправить ответ на уточнение',
-      loadingQuestion: 'Загрузка вопроса…',
-      other: 'Другое (введите ответ)',
-      placeholder: 'Введите ваш ответ…',
-      skip: 'Пропустить',
-      skipped: 'Пропущено',
-      noAnswer: 'Нет ответа',
-      confirmAndContinueLabel: 'Подтвердить и продолжить',
-      singleSelectHint: 'Выберите один',
-      multiSelectHint: 'Выберите все подходящие',
-      oneQuestion: '1 вопрос',
-      questionProgress: (answered, total) => `Ответ дан на ${answered} из ${total}`,
-      notDelivered:
-        'Этот вопрос не дошёл до приложения, поэтому ответить здесь нельзя. Нажмите «Стоп», чтобы завершить ход, и ответьте в чате.'
-    },
-    setupChoose: {
-      kinds: {
-        accent: 'Акцентный цвет',
-        connectors: 'Приложения',
-        layout: 'Раскладка',
-        plugins: 'Плагины',
-        theme: 'Оформление'
-      },
-      loading: 'Загружаю варианты…',
-      unavailable: 'Этот список сейчас недоступен. Ответьте в чате.',
-      findApp: 'Найти приложение',
-      customColor: 'Свой цвет',
-      plugin: 'Плагин',
-      startsLater: 'Мы настроим это, когда вы начнёте.'
-    },
-    startChat: {
-      starting: title => `Запускаю «${title}»…`,
-      startingUntitled: 'Запускаю чат…',
-      untitled: 'Новый чат',
-      notStarted: 'Чат не запустился',
-      retry: 'Повторить',
-      inProfile: profile => `В ${profile}`,
-      open: 'Открыть',
-      openFailed: 'Не удалось открыть чат'
-    },
+    clarify: ruClarify,
+    themePicker: ruThemePicker,
     catalogInstall: {
       preparing: 'Готовим установку…',
       install: 'Установить',
@@ -3970,12 +3834,6 @@ export const ruOverrides = {
           pending: 'Ищу в истории сеансов',
           pendingAction: 'Ищу'
         },
-        setup_choose: {
-          done: 'Задан вопрос о настройке',
-          pending: 'Задаю вопрос о настройке',
-          pendingAction: 'Спрашиваю'
-        },
-        start_chat: { done: 'Чат запущен', pending: 'Запускаю чат', pendingAction: 'Запускаю' },
         terminal: { done: 'Команда выполнена', pending: 'Выполняю команду', pendingAction: 'Выполняю' },
         todo: { done: 'Todo обновлены', pending: 'Обновляю todo', pendingAction: 'Обновляю' },
         vision_analyze: {

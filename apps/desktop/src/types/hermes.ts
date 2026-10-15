@@ -489,6 +489,7 @@ export interface HermesConfig {
     personality?: string
     skin?: string
     interim_assistant_messages?: boolean
+    busy_input_mode?: string
     timestamps?: boolean
     tool_progress?: boolean | string
   }
@@ -838,12 +839,18 @@ export interface SessionResumeResult {
 }
 
 export interface SessionRuntimeInfo {
+  stored_session_id?: string
+  pending_submissions?: unknown
+  /** Canonical snapshot only: the session replay epoch and event sequence its pending set reflects. */
+  replay_epoch?: string
+  last_sequence?: number
   approval_mode?: 'manual' | 'off' | 'smart'
   branch?: string
   config_warning?: string
   credential_warning?: string
   cwd?: string
   desktop_contract?: number
+  desktop_protocol?: string
   fast?: boolean
   install_warning?: string
   model?: string
@@ -1108,6 +1115,7 @@ export interface AutomationBlueprint {
 }
 
 export interface ProfileCreatePayload {
+  soul?: string
   clone_all?: boolean
   clone_from?: null | string
   clone_from_default?: boolean
@@ -1494,8 +1502,8 @@ export interface LocalCatalogModel {
   native_context_label: string
   recommended: boolean
   /** Why the resolver picked this entry (recommended rows only):
-   *  product-default | best-quality-resident | speed-gated-quality | fastest-resident |
-   *  least-painful-spilled. Renders as the Recommended badge's tooltip. */
+   *  product-default | best-quality-resident | speed-gated-quality.
+   *  Renders as the Recommended badge's tooltip. */
   recommended_reason?: string | null
   downloaded: boolean
   downloaded_model_id?: string | null
@@ -1596,6 +1604,13 @@ export interface BackendUpdateCheckResponse {
   current_version: string
   behind: number | null
   update_available: boolean
+  /** A stable release this build already contains: applying it moves back. */
+  rollback_to?: null | string
+  /** Update-available only; absent on older backends. */
+  channel?: string
+  branch?: null | string
+  /** Stable: the release version the update installs, e.g. `0.22.0`. */
+  source_version?: null | string
   can_apply: boolean
   update_command: string | null
   message: string | null

@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -63,7 +63,7 @@ def _format_updated_at(value: Any) -> str | None:
     if value is None or (isinstance(value, str) and value.strip()):
         return value
     try:
-        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+        return datetime.fromtimestamp(float(value), tz=UTC).isoformat()
     except Exception:
         return None
 
@@ -74,7 +74,7 @@ def _updated_at_sort_key(value: Any) -> float:
     raw = str(value).strip() if value is not None else ""
     if not raw:
         return float("-inf")
-    for parse in (lambda s: datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp(), float):
+    for parse in (lambda s: datetime.fromisoformat(s).timestamp(), float):
         try:
             return parse(raw)
         except Exception:
@@ -210,13 +210,7 @@ class SessionManager:
     def list_sessions(self, cwd: str | None = None) -> list[dict[str, Any]]:
         """Return lightweight info dicts for all sessions (memory + database)."""
         normalized_cwd = _normalize_cwd_for_compare(cwd) if cwd else None
-        db = self._get_db()
-        persisted_rows: dict[str, dict[str, Any]] = {}
-        try:
-            for row in (db.list_sessions_rich(source="acp", limit=1000) if db is not None else ()):
-                persisted_rows[str(row["id"])] = dict(row)
-        except Exception:
-            logger.debug("Failed to load ACP sessions from DB", exc_info=True)
+        persisted_rows = self._catalog_rows()
 
         def _matches(session_cwd: str) -> bool:
             return not normalized_cwd or _normalize_cwd_for_compare(session_cwd) == normalized_cwd
@@ -248,6 +242,13 @@ class SessionManager:
 
         results.sort(key=lambda item: _updated_at_sort_key(item.get("updated_at")), reverse=True)
         return results
+
+    def _catalog_rows(self) -> dict[str, dict[str, Any]]:
+        from acp_adapter.catalog import read_catalog_rows
+        from pathlib import Path
+
+        path = Path(self._db_instance.db_path) if self._db_instance is not None else get_hermes_home() / "state.db"
+        return read_catalog_rows(path)
 
     def update_cwd(self, session_id: str, cwd: str) -> Optional[SessionState]:
         """Update the working directory for a session and its tool overrides."""

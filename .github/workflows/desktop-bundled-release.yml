@@ -11,6 +11,9 @@ name: Desktop Bundled Release
 # publication and Store submission require the accepted cross-platform candidate):
 #
 #   build-win32 (win32-x64 + win32-arm64)   → stage packages + receipts to R2
+#     Stable runs pick which Windows packages these build: `skip-signed` builds
+#     only the unsigned Store variant (no Azure signing), `skip-store` only the
+#     signed bundled one.
 #   build-darwin (darwin-arm64 + darwin-x64) → sign + notarize + stage
 #     dmg/zip/blockmap + per-arch feed inputs to the R2 tag archive
 #   build-linux                              → DISABLED for now (dummy skips)
@@ -103,7 +106,15 @@ on:
         type: string
         default: 'darwin-arm64,darwin-x64,win32-arm64,win32-x64,win32-bundle,linux-x64,linux-arm64,termux'
       skip-tests:
-        description: 'Stable candidates only: build and stage without native smokes or in-build test suites (the claim skipped tests).'
+        description: 'Stable candidates only: build and stage without native smokes or in-build test suites (the claim has no smoke lane).'
+        type: boolean
+        default: false
+      skip-signed:
+        description: 'Stable candidates only: build no signed Windows package (the claim has no windows lane). Needs no Azure signing.'
+        type: boolean
+        default: false
+      skip-store:
+        description: 'Stable only: build no Microsoft Store bundle and submit none (the claim has no windows-store lane).'
         type: boolean
         default: false
     outputs:
@@ -600,7 +611,7 @@ jobs:
       # Signing vars the build only warns and ships UNSIGNED binaries, which
       # is right for a fork or a local build and wrong for a release.
       - name: Require Azure signing when publishing
-        if: inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != ''
+        if: inputs.skip-signed != true && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
         shell: bash
         env:
           AZURE_SIGN_ENDPOINT: ${{ vars.AZURE_SIGN_ENDPOINT }}
@@ -620,7 +631,7 @@ jobs:
           fi
 
       - name: Azure login (OIDC)
-        if: vars.AZURE_CLIENT_ID != ''
+        if: vars.AZURE_CLIENT_ID != '' && inputs.skip-signed != true
         uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -628,7 +639,7 @@ jobs:
           allow-no-subscriptions: true
 
       - name: Mint federated token for the signing dlib
-        if: vars.AZURE_CLIENT_ID != ''
+        if: vars.AZURE_CLIENT_ID != '' && inputs.skip-signed != true
         shell: bash
         run: |
           file="$RUNNER_TEMP/azure-federated-token"
@@ -644,20 +655,26 @@ jobs:
       - name: Build and package
         shell: powershell
         timeout-minutes: 900
+        # A Store-only build gets no signing vars: after-pack and electron-builder sign payload binaries
+        # whenever they are set, and this job skips the Azure login that would let them.
         env:
           HERMES_BUNDLE_ENV_JSON: ${{ inputs.bundle_env }}
           PYTHONUTF8: '1'
-          AZURE_SIGN_ENDPOINT: ${{ vars.AZURE_SIGN_ENDPOINT }}
-          AZURE_SIGN_ACCOUNT: ${{ vars.AZURE_SIGN_ACCOUNT }}
-          AZURE_SIGN_PROFILE: ${{ vars.AZURE_SIGN_PROFILE }}
-          AZURE_SIGN_PUBLISHER: ${{ vars.AZURE_SIGN_PUBLISHER }}
-          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SIGN_ENDPOINT: ${{ inputs.skip-signed != true && vars.AZURE_SIGN_ENDPOINT || '' }}
+          AZURE_SIGN_ACCOUNT: ${{ inputs.skip-signed != true && vars.AZURE_SIGN_ACCOUNT || '' }}
+          AZURE_SIGN_PROFILE: ${{ inputs.skip-signed != true && vars.AZURE_SIGN_PROFILE || '' }}
+          AZURE_SIGN_PUBLISHER: ${{ inputs.skip-signed != true && vars.AZURE_SIGN_PUBLISHER || '' }}
+          AZURE_CLIENT_ID: ${{ inputs.skip-signed != true && vars.AZURE_CLIENT_ID || '' }}
+          AZURE_TENANT_ID: ${{ inputs.skip-signed != true && vars.AZURE_TENANT_ID || '' }}
           AZURE_TOKEN_CREDENTIALS: prod
+          SKIP_SIGNED: ${{ inputs.skip-signed }}
+          SKIP_STORE: ${{ inputs.skip-store }}
         run: |
-          python scripts/bundles/desktop.py --prepared "$env:RUNNER_TEMP/desktop-job/prepared.json" --variant bundled
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not $env:CHANNEL_BUILD -and -not $env:HERMES_BUILD_COMMIT -and $env:HERMES_PAYLOAD_TAG -notlike "*+canary.*") {
+          if ($env:SKIP_SIGNED -ne 'true') {
+              python scripts/bundles/desktop.py --prepared "$env:RUNNER_TEMP/desktop-job/prepared.json" --variant bundled
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if ($env:SKIP_STORE -ne 'true' -and -not $env:CHANNEL_BUILD -and -not $env:HERMES_BUILD_COMMIT -and $env:HERMES_PAYLOAD_TAG -notlike "*+canary.*") {
               python scripts/bundles/desktop.py --prepared "$env:RUNNER_TEMP/desktop-job/prepared.json" --variant store
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
@@ -716,11 +733,13 @@ jobs:
           TARGET: ${{ matrix.target.label }}
           RELEASE_PHASE: ${{ inputs.release-phase }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+          SKIP_SIGNED: ${{ inputs.skip-signed }}
         # The tag archive is the handoff, never an update feed. The receipt
         # appears after the selected packages (including Store on stable) upload.
+        # A Store-only candidate has no signed package to describe, so no metadata.
         run: |
           args=(--include '*.msix')
-          if [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == *+canary.* ]]; }; then
+          if [ "$SKIP_SIGNED" != true ] && { [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == *+canary.* ]]; }; }; then
             python -m scripts.bundles.release_artifacts record --platform windows --arch "${TARGET##*-}" \
               --root apps/desktop/release --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
               --out "apps/desktop/release/metadata-windows-${TARGET##*-}.json"
@@ -1344,7 +1363,7 @@ jobs:
     if: >-
       !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.build-darwin-arm64.result == 'success' && needs.validate.outputs.darwin-arm64 == 'true'
-      && needs.stage-receipt-darwin-arm64.result == 'success'
+      && (inputs.release-phase != 'candidate' || needs.stage-receipt-darwin-arm64.result == 'success')
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
       && inputs.skip-tests != true
@@ -1377,7 +1396,7 @@ jobs:
     if: >-
       !cancelled() && needs.validate.result == 'success' && needs.validate.outputs.sha != ''
       && needs.build-darwin-x64.result == 'success' && needs.validate.outputs.darwin-x64 == 'true'
-      && needs.stage-receipt-darwin-x64.result == 'success'
+      && (inputs.release-phase != 'candidate' || needs.stage-receipt-darwin-x64.result == 'success')
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
       && inputs.skip-tests != true
@@ -1413,6 +1432,7 @@ jobs:
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
       && inputs.skip-tests != true
+      && inputs.skip-signed != true
     permissions:
       contents: read
     uses: ./.github/workflows/desktop-bundle-smoke.yml
@@ -1441,6 +1461,7 @@ jobs:
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && (inputs.upload_release == true || inputs.release-phase == 'candidate' || inputs.build_commit != '' || inputs.channel != '')
       && inputs.skip-tests != true
+      && inputs.skip-signed != true
     permissions:
       contents: read
     uses: ./.github/workflows/desktop-bundle-smoke.yml
@@ -1581,6 +1602,7 @@ jobs:
           fi
 
       - name: Azure login (OIDC)
+        if: inputs.skip-signed != true
         uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -1588,6 +1610,7 @@ jobs:
           allow-no-subscriptions: true
 
       - name: Mint federated token for the signing dlib
+        if: inputs.skip-signed != true
         shell: bash
         run: |
           file="$RUNNER_TEMP/azure-federated-token"
@@ -1604,6 +1627,8 @@ jobs:
         shell: bash
         env:
           RELEASE_PHASE: ${{ inputs.release-phase }}
+          SKIP_SIGNED: ${{ inputs.skip-signed }}
+          SKIP_STORE: ${{ inputs.skip-store }}
           AZURE_TOKEN_CREDENTIALS: prod
           AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
@@ -1620,8 +1645,10 @@ jobs:
           fi
           args=()
           if [ "$RELEASE_PHASE" = candidate ]; then args+=(--candidate); fi
-          node scripts/stage-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG" --variant bundled "${args[@]}"
-          if [ "$RELEASE_PHASE" = candidate ]; then
+          if [ "$SKIP_SIGNED" != true ]; then
+            node scripts/stage-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG" --variant bundled "${args[@]}"
+          fi
+          if [ "$RELEASE_PHASE" = candidate ] && [ "$SKIP_STORE" != true ]; then
             node scripts/bundle-store-msixbundle.mjs --tag "$HERMES_PAYLOAD_TAG"
           fi
 
@@ -1645,8 +1672,8 @@ jobs:
       - name: Stage the stable win32-bundle receipt
         # Same receipt-before-smoke contract as the darwin arches (decision 11):
         # the bundle and its per-arch metadata are staged and digest-verified;
-        # acceptance still blocks publication.
-        if: inputs.release-phase == 'candidate'
+        # acceptance still blocks publication. A Store-only candidate has no signed bundle to receipt.
+        if: inputs.release-phase == 'candidate' && inputs.skip-signed != true
         id: receipt
         env:
           RELEASE_TAG: ${{ inputs.tag }}
@@ -2109,6 +2136,7 @@ jobs:
           from pathlib import Path
           from scripts.releases.handoff import fetch
           from scripts.releases.semver import is_valid_version
+          from scripts.releases.stable import release_line_contains
           tag = os.environ['PREVIOUS_TAG']
           if not tag.startswith('v') or not is_valid_version(tag[1:]):
               raise ValueError('Invalid previous release tag')
@@ -2118,7 +2146,8 @@ jobs:
           if release['tagName'] != tag or release['isDraft']:
               raise ValueError('Previous package must come from a published release')
           commit = subprocess.check_output(['git', 'rev-parse', '--verify', f'refs/tags/{tag}^{{commit}}'], text=True).strip()
-          subprocess.run(['git', 'merge-base', '--is-ancestor', commit, 'origin/main'], check=True)
+          if not subprocess.check_output(release_line_contains(commit, 'origin'), text=True).strip():
+              raise ValueError('Previous package must come from main or a release/* branch')
           fetch(tag, commit, ['termux'], Path('termux-build/previous'), ['deb/*.deb'])
           PY
 
@@ -2406,6 +2435,7 @@ jobs:
     timeout-minutes: 90
     env:
       RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
       HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       CANDIDATE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
@@ -2425,12 +2455,16 @@ jobs:
   stable-store:
     name: Submit the verified Store package
     needs: [validate, stable-publish]
-    if: inputs.release-phase == 'publish'
+    if: inputs.release-phase == 'publish' && inputs.skip-store != true
+    # The Store is not a release gate: a failed submission leaves the release publishable
+    # and the summary names the Store package for a manual Partner Center upload.
+    continue-on-error: true
     runs-on: windows-latest-32-core
     environment: release-signing
     timeout-minutes: 60
     env:
       RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
       HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
       CANDIDATE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
@@ -2461,6 +2495,16 @@ jobs:
           # Auto-publish stays off: the submission is committed with
           # targetPublishMode Manual and is released by the publication pass.
           python -m scripts.releases.store submit "${files[0]}"
+      - name: Name the Store package for a manual upload
+        if: failure()
+        shell: bash
+        run: |
+          name=$(cd verified 2>/dev/null && ls Store-*.msixbundle 2>/dev/null | head -1)
+          base="${CLOUDFLARE_R2_PUBLIC_URL%/}/releases/tag/$HERMES_ARCHIVE_TAG"
+          url="$base/${name:-handoff-windows-universal.json}"
+          msg="Store submission failed; the release is still publishable. Upload this package in Partner Center: $url"
+          echo "::warning title=Microsoft Store::$msg"
+          { echo "## Microsoft Store: manual upload needed"; echo; echo "$msg"; } >> "$GITHUB_STEP_SUMMARY"
 
   stable-phase-result:
     name: Stable bundle phase completed
@@ -2491,6 +2535,7 @@ jobs:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
           RELEASE_PHASE: ${{ inputs.release-phase }}
           SKIP_TESTS: ${{ inputs.skip-tests }}
+          SKIP_SIGNED: ${{ inputs.skip-signed }}
         run: |
           python - <<'PY'
           import json, os
@@ -2500,7 +2545,8 @@ jobs:
           outputs = needs['validate'].get('outputs', {})
           selected = {group: outputs.get(group) == 'true' for group in JOB_GROUPS}
           require_success(needs, phase_jobs(selected, os.environ['RELEASE_PHASE'],
-                                            skip_tests=os.environ['SKIP_TESTS'] == 'true'))
+                                            skip_tests=os.environ['SKIP_TESTS'] == 'true',
+                                            skip_signed=os.environ['SKIP_SIGNED'] == 'true'))
           PY
 
   publish-canary:

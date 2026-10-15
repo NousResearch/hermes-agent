@@ -302,9 +302,9 @@ def browser_cdp(method: str, params: Optional[dict[str, Any]] = None, target_id:
     safe_timeout = max(1.0, min(safe_timeout, 300.0))
     try:
         result = _run_async(_cdp_call(endpoint, method, call_params, target_id, safe_timeout))
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         return tool_error(f"CDP call timed out after {safe_timeout}s: {exc}", method=method)
-    except (TimeoutError, RuntimeError) as exc:
+    except RuntimeError as exc:
         return tool_error(str(exc), method=method)
     except WebSocketException as exc:
         return tool_error(f"WebSocket error talking to CDP at {endpoint}: {exc}. The browser may have "

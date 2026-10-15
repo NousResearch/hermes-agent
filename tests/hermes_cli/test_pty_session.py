@@ -373,7 +373,7 @@ async def _two_idle_sessions_first_close_gated(reg):
     bridges = []
     for i in range(2):
         bridge = FakeBridge([b""])
-        s = PtySession("k%d" % i, bridge, buffer_cap=1024, read_timeout=0.01)
+        s = PtySession(f'k{i:d}', bridge, buffer_cap=1024, read_timeout=0.01)
         await s.start()
         s.detach(None)                        # unattached, last_detached_at set
         reg._sessions[s.key] = s

@@ -114,6 +114,7 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         subprocess.run(
             ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
             capture_output=True,
+            check=False,
         )
         proc.wait()
 

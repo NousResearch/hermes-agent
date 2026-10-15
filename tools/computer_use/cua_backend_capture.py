@@ -211,7 +211,7 @@ class _CaptureMixin:
         return next((matched for matched in tiers if matched), [])
 
     def _resolve_capture_windows(self, mode: str, app: Optional[str], pid: Optional[int],
-                                 window_id: Optional[int]) -> "list[dict[str, Any]] | CaptureResult":
+                                 window_id: Optional[int]) -> list[dict[str, Any]] | CaptureResult:
         """Candidate windows for capture(), or a failed CaptureResult."""
         if pid is not None or window_id is not None:
             # An exact pid/window pair is both the stable capture_after target and the escape hatch when

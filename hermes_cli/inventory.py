@@ -7,6 +7,7 @@ from contextvars import copy_context
 from dataclasses import dataclass, replace
 from threading import Lock, Thread, current_thread
 from typing import Any, Optional
+from datetime import UTC
 
 _pricing_prewarm_lock = Lock()
 _pricing_prewarm_threads: dict[tuple[str, tuple[tuple[str, str], ...]], Thread] = {}
@@ -27,7 +28,7 @@ class ConfigContext:
     def with_overrides(
         self, *, current_provider: Optional[str] = None, current_model: Optional[str] = None,
         current_base_url: Optional[str] = None,
-    ) -> "ConfigContext":
+    ) -> ConfigContext:
         """Copy with TRUTHY overrides applied: the TUI reads agent attributes that may be empty strings
         before an agent is spawned — empties must not clobber the disk-config values."""
         overrides = (("current_provider", current_provider), ("current_model", current_model),
@@ -265,7 +266,7 @@ def _apply_limits(rows: list[dict]) -> None:
     from hermes_cli.auth import read_credential_pool
 
     def iso(epoch: float) -> str:
-        return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+        return datetime.fromtimestamp(epoch, UTC).isoformat()
 
     pooled = {slug for slug, entries in read_credential_pool().items() if entries}
     for row in rows:
@@ -361,7 +362,7 @@ _EXHAUSTED_WINDOW_PERCENT = 100.0
 def _iso_from_epoch(epoch: float) -> str:
     from datetime import datetime, timezone
 
-    return datetime.fromtimestamp(float(epoch), timezone.utc).isoformat()
+    return datetime.fromtimestamp(float(epoch), UTC).isoformat()
 
 
 def _pool_usage_accounts(slug: str, wire_windows, account_resets_at,
@@ -540,6 +541,7 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
     is deliberately NOT forwarded — it under-reports levels that work."""
+    from agent.codex_service_tiers import ultrafast_offered
     from hermes_cli.models import model_supports_ultrafast, resolve_fast_mode_overrides
 
     try:
@@ -564,7 +566,8 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
             fast = resolve_fast_mode_overrides(
                 model, provider=slug, base_url=row.get("api_url")) is not None
             entry: dict[str, Any] = {"fast": fast, "reasoning": reasoning}
-            if fast and model_supports_ultrafast(model):
+            if fast and model_supports_ultrafast(model) and ultrafast_offered(
+                    model, provider=slug, base_url=row.get("api_url")):
                 entry["ultrafast"] = True
 
             if reasoning and read_reasoning_catalog is not None:
@@ -955,7 +958,7 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
                 row["unavailable_models"] = []
 
 
-def _local_runtime_row(ctx: "ConfigContext") -> dict | None:
+def _local_runtime_row(ctx: ConfigContext) -> dict | None:
     """The ``llamacpp`` row from staged GGUFs (``None`` when none) — downloaded models must be selectable
     before the server runs (selection starts it via the runtime_provider seam). The row's id comes from
     the provider registry's own definition, never a local literal: a row the resolver can't resolve is

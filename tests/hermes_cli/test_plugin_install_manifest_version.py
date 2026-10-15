@@ -85,3 +85,21 @@ def test_manifest_version_above_shared_support_is_refused_cleanly(
 
     assert not (home / "plugins" / "demo").exists()
     assert not (home / "plugins" / ".install-metadata.json").exists()
+
+
+def test_a_linked_plugin_slot_is_already_installed_not_a_bad_manifest(monkeypatch, tmp_path):
+    """A provider's own installer can leave ``plugins/<name>`` as a link into a venv (mnemosyne-hermes
+    did). The catalog install must say the slot is taken, not record ``manifest_invalid``."""
+    from hermes_cli import plugins_cmd
+
+    monkeypatch.setattr(plugins_cmd, "_scan_on_install_enabled", lambda: False)
+    repo = _plugin_repo(tmp_path, {"name": "demo", "version": "1.0.0"})
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "plugins").mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+    (home / "plugins" / "demo").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+
+    with pytest.raises(plugins_cmd.PluginOperationError, match="already installed outside the catalog") as exc:
+        plugins_cmd._install_plugin_core(repo.as_uri(), force=False)
+    assert exc.value.failure_class == "already_installed"

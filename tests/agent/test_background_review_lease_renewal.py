@@ -67,7 +67,7 @@ def _lines(caplog, slug: str) -> list[str]:
 def test_review_lease_authority_is_its_own_ttl(tmp_path):
     """The lock arithmetic runs against the REVIEW row's 60s TTL, never the foreground's 300s:
     the deadline starts at the admitted row's expiry and only a successful renewal moves it."""
-    db, lease, run, _interrupted = _review_lease(tmp_path)
+    _db, lease, _run, _interrupted = _review_lease(tmp_path)
     try:
         now = time.time()
         assert now < lease._authority_deadline <= now + REVIEW_LEASE_TTL_SECONDS

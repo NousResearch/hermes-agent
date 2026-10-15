@@ -2302,7 +2302,7 @@ def test_transcript_edit_yield_is_logged_with_its_own_cause_and_recorded_on_the_
     the cross-process slug counts only foreground turns from other processes — and the run
     remembers the yield for the requeue policy. A detached delegation delivery is an append
     after the snapshot: it neither stamps the row nor stops the fork."""
-    path, foreground_db, lease, run, interrupted, _fg = _shared_review_lease(tmp_path)
+    _path, foreground_db, lease, run, interrupted, _fg = _shared_review_lease(tmp_path)
     user_row_id = foreground_db.append_message("shared-session", "user", "ask")
     foreground_db.append_message("shared-session", "assistant", "reply")
 
@@ -2341,7 +2341,7 @@ def test_review_lease_loss_is_logged_once_and_stops_the_fork(tmp_path, caplog, y
     sweep, or a TTL that elapsed with no renewal) and another process may now own the session:
     the fork is fenced and hard-interrupted exactly like a yield, the loss is logged ONCE with
     the hashed owner, and the tick keeps running as the escalation clock."""
-    path, foreground_db, lease, run, interrupted, fg = _shared_review_lease(tmp_path)
+    _path, foreground_db, lease, run, interrupted, fg = _shared_review_lease(tmp_path)
     if yielded:
         assert not foreground_db.try_acquire_session_turn_lease(
             "shared-session", fg, ttl_seconds=5, preempt_background_review=True

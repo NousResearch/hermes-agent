@@ -180,7 +180,6 @@ class _ReviewTurnLease(DurableTurnLease):
             REASON_LEASE_RENEWAL_LOCKED,
             record_yield=False,
         )
-        return None
 
     def _stop_fork(self, reason: str, slug: str, *, record_yield: bool = True) -> None:
         """Fence the run and hard-interrupt the fork, once; starts the escalation clock. With

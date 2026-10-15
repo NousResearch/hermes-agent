@@ -154,7 +154,7 @@ class GatewayBusySessionMixin:
         return promoted[0]
 
     def _restore_dequeued_event(
-        self, session_key: str, adapter: Any, pending_event: "MessageEvent"
+        self, session_key: str, adapter: Any, pending_event: MessageEvent
     ) -> None:
         """Put a just-dequeued event back at the head of the queue (a leftover /steer runs first).
 
@@ -164,7 +164,7 @@ class GatewayBusySessionMixin:
         dequeue and this restore is fenced here, never left to run beside the restored turn.
         """
 
-        def _queue_head_insert(event: "MessageEvent") -> None:
+        def _queue_head_insert(event: MessageEvent) -> None:
             overflow = self._overflow_queue(session_key)
             if overflow is None:
                 overflow = self._session_state(session_key).conversation.queued_events

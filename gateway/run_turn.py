@@ -112,7 +112,7 @@ class _GatewayReviewAdmission:
     @classmethod
     async def begin(
         cls, owner: Any, session_id: str, profile_key: str
-    ) -> "_GatewayReviewAdmission":
+    ) -> _GatewayReviewAdmission:
         from agent import review_admission
         from agent.background_review import (
             cancel_background_review_for_live_turn,
@@ -191,7 +191,7 @@ class _GatewayReviewAdmission:
                 self._candidate = candidate
 
     def adopt_candidate(
-        self, candidate: dict[str, Any], owner: "_GatewayReviewAdmission"
+        self, candidate: dict[str, Any], owner: _GatewayReviewAdmission
     ) -> bool:
         """Carry a nested turn's confirmed candidate until this turn's ownership is released.
 
@@ -227,7 +227,7 @@ class _GatewayReviewAdmission:
         *,
         delivery_succeeded: bool,
         cause: Optional[str] = None,
-        outer: Optional["_GatewayReviewAdmission"] = None,
+        outer: Optional[_GatewayReviewAdmission] = None,
     ) -> Optional[threading.Thread]:
         """Release once; start the latest candidate only after a successful terminal delivery.
 

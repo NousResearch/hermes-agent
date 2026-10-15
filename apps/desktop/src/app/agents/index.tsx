@@ -24,6 +24,8 @@ import {
 
 import { Panel, PanelEmpty, PanelHeader } from '../overlays/panel'
 
+import { useSubagentRosterReconciliation } from './use-subagent-roster-reconciliation'
+
 // Mirrors statusGlyph() in tool-fallback.tsx so subagent rows speak the
 // same visual vocabulary as the chat tool blocks.
 function statusGlyph(status: SubagentStatus, a: Translations['agents']): ReactNode {
@@ -85,6 +87,7 @@ export function AgentsView({ onClose }: AgentsViewProps) {
   const { t } = useI18n()
   const subagentsBySession = useStore($subagentsBySession)
   const activeSessionId = useStore($activeSessionId)
+  useSubagentRosterReconciliation()
 
   // Aggregate every session for live work, terminal rows only for the
   // session the user is in — matching the status-bar indicator, so a subagent

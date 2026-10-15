@@ -28,6 +28,18 @@ def profile_surfaces_server_timings(agent) -> bool:
     return bool(getattr(profile, "surfaces_server_timings", False))
 
 
+def chunk_server_timings(chunk):
+    """The server ``timings`` block off a stream chunk, or None. llama-server attaches ``timings`` to the final
+    SSE chunk (alongside usage); the OpenAI SDK parses unknown top-level fields into ``model_extra``. Never
+    raises on foreign chunk shapes."""
+    extra = getattr(chunk, "model_extra", None)
+    if isinstance(extra, dict):
+        timings = extra.get("timings")
+        if isinstance(timings, dict):
+            return timings
+    return None
+
+
 def capture_server_timings(agent, response: Any) -> None:
     """Record the server's own generation speed off a completed response as ``agent.last_server_tps``.
 

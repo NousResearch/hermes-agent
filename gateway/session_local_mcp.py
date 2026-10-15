@@ -38,6 +38,24 @@ def fingerprint(servers):
     return hashlib.sha256(_json(servers).encode()).hexdigest()
 
 
+def _spec_problem(exc):
+    """Why a server spec is unusable, without the spec's values.
+
+    Pydantic's message quotes ``input_value``, which can be the whole spec with its env values,
+    so a schema error is its failing locs and error types. Any other message is one line, and
+    only when it may be echoed."""
+    from pydantic import ValidationError
+    from hermes_state_runtime import classify_loc, publish_client_value
+    if not isinstance(exc, ValidationError):
+        return publish_client_value(' '.join(str(exc).split()))
+    problems = []
+    for error in exc.errors(include_url=False, include_input=False)[:3]:
+        loc = classify_loc('.'.join(str(part) for part in error.get('loc') or ())) or 'spec'
+        kind = classify_loc(str(error.get('type') or '')) or 'invalid'
+        problems.append(f'{loc} ({kind})')
+    return ', '.join(problems)
+
+
 def validate_servers(servers):
     from acp.schema import McpServerStdio, McpServerHttp, McpServerSse
     from pydantic import ValidationError
@@ -60,11 +78,8 @@ def validate_servers(servers):
                 raise ValueError('duplicate server')
             names.add(model.name)
     except (ValidationError, KeyError, AttributeError, TypeError, ValueError) as exc:
-        # The validator's message quotes the spec. A long or secret-shaped spec is not
-        # echoed; the field still says which check refused.
-        from hermes_state_runtime import publish_client_value
         raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
-                                detail=f'unusable server spec: {publish_client_value(str(exc))}') from exc
+                                detail=f'unusable server spec: {_spec_problem(exc)}') from exc
 
 
 def private_editor_request(request, private):

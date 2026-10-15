@@ -8,7 +8,7 @@ import random
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
 
@@ -60,8 +60,8 @@ def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     if when is None:  # older stdlib returns None instead of raising
         return None
     if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
-    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+        when = when.replace(tzinfo=UTC)
+    return max(0.0, (when - datetime.now(UTC)).total_seconds())
 
 
 # Free-text "reset" grammars providers put in error bodies, tried in order. One table so the
@@ -79,12 +79,12 @@ _RETRY_AFTER_SECONDS_RE = re.compile(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?
 _RESETS_IN_SECONDS_FIELD_RE = re.compile(r"resets_in_seconds\W{1,4}(\d+(?:\.\d+)?)", re.IGNORECASE)
 
 
-def _quota_reset_seconds(m: "re.Match[str]") -> float:
+def _quota_reset_seconds(m: re.Match[str]) -> float:
     value = float(m.group(1))
     return value / 1000.0 if m.group(2).lower() == "ms" else value
 
 
-def _resets_in_seconds(m: "re.Match[str]") -> Optional[float]:
+def _resets_in_seconds(m: re.Match[str]) -> Optional[float]:
     if not any(m.groups()):  # "resets in" with no unit-bearing number: not this grammar
         return None
     return float(m.group(1) or 0) * 3600 + float(m.group(2) or 0) * 60 + float(m.group(3) or 0)
@@ -172,3 +172,24 @@ def zai_coding_overload_retry_ceiling(short_attempts: int = _ZAI_CODING_OVERLOAD
     because the loop gives up when ``retry_count >= ceiling`` BEFORE computing the attempt's
     backoff (the default ``api_max_retries`` of 3 equals ``short_attempts``)."""
     return short_attempts + len(_ZAI_CODING_OVERLOAD_LONG_BACKOFF) + 1
+
+
+# A wait longer than this is one a person feels: a non-rate-limit Retry-After this long is announced
+# when it starts, and on the Nous free tier an attended session ends the turn instead of sitting through it.
+LIVE_RETRY_WAIT_CAP_S = 60.0
+# Anthropic Tier 1 input-token buckets reset in ~171s, so a 120s cap re-tripped the limit; 600s
+# covers realistic provider windows while still rejecting pathological values (#26293).
+RETRY_AFTER_CAP_S = 600.0
+
+
+def provider_retry_after_seconds(error: Any) -> Optional[float]:
+    """Provider-declared cooldown: the ``Retry-After`` header, else a ``retry_after`` body field
+    (top level or nested under ``error``). None when absent, unparseable or zero: a zero or expired
+    cooldown carries no usable wait, and treating it as one would hot-loop the provider."""
+    value = parse_retry_after_seconds(getattr(getattr(error, "response", None), "headers", None))
+    if value is None:
+        body = getattr(error, "body", None)
+        if isinstance(body, dict):
+            nested = body.get("error")
+            value = parse_retry_after_seconds((nested if isinstance(nested, dict) else body).get("retry_after"))
+    return value if value is not None and value > 0 else None

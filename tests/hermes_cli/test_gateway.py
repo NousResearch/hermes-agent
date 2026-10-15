@@ -9,7 +9,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-import hermes_cli.gateway as gateway
+from hermes_cli import gateway
 
 
 _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
@@ -91,8 +91,7 @@ def _run_native_windows_gateway_start_diag(
     completed = subprocess.run(
         [sys.executable, "-c", script],
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         creationflags=windows_detach_flags_without_breakaway(),
         text=True,
         encoding="utf-8",
@@ -203,8 +202,7 @@ def test_gateway_run_subprocess_preserves_daemon_exit_codes(
         completed = subprocess.run(
             [sys.executable, "-c", script],
             stdin=stdin,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             env=env,
             timeout=30,
@@ -262,9 +260,10 @@ def _run_status_with_snapshot(monkeypatch, snapshot) -> str:
     monkeypatch.setattr(gateway, "_installed_service_kind_for", lambda probe: None)
     monkeypatch.setattr(gateway, "named_profile_served_by_running_multiplexer", lambda: False)
     for name in ("_print_runtime_health", "_print_multiplex_standalone_reason", "_print_served_ingress_urls",
-                 "_print_duplicate_credential_warnings", "_print_other_profiles_gateway_status",
-                 "_print_standalone_by_config"):
+                 "_print_duplicate_credential_warnings", "_print_other_profiles_gateway_status"):
         monkeypatch.setattr(gateway, name, lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.gateway_status_notes.print_standalone_by_config", lambda: None)
+    monkeypatch.setattr("hermes_cli.gateway_status_notes._incompatible_owner_verdict", lambda: None)
     buf = io.StringIO()
     with redirect_stdout(buf):
         gateway._cmd_status(SimpleNamespace(deep=False, full=False, system=False))
@@ -557,7 +556,7 @@ class TestStopProfileGateway:
     @pytest.mark.platforms("windows")
     def test_windows_stop_drains_marker_before_force_termination(self, monkeypatch):
         """Windows must let the marker watcher run before escalating (#112750)."""
-        import hermes_cli.gateway_windows as gateway_windows
+        from hermes_cli import gateway_windows
 
         pid = 12345
         calls = []
@@ -584,7 +583,7 @@ class TestStopProfileGateway:
     @pytest.mark.platforms("windows")
     def test_windows_stop_force_terminates_only_after_drain_timeout(self, monkeypatch):
         """A wedged Windows gateway still has a bounded force-stop fallback (#112750)."""
-        import hermes_cli.gateway_windows as gateway_windows
+        from hermes_cli import gateway_windows
 
         pid = 12345
         calls = []
@@ -615,8 +614,8 @@ class TestStopProfileGateway:
         a PID recycled during the wait shows a different start time, so ``terminate_pid``'s mismatch
         refusal fires instead of killing an unrelated process. Reading it at kill time is a vacuous
         self-comparison."""
-        import gateway.status as status
-        import hermes_cli.gateway_windows as gateway_windows
+        from gateway import status
+        from hermes_cli import gateway_windows
 
         pid = 4242
         calls = []
@@ -850,7 +849,6 @@ class TestReapUnsupervisedGatewayOrphansWindows:
 
         def failing_validation(*a, cleanup_stale=True, **k):
             probe_kwargs.append(cleanup_stale)
-            return None
 
         monkeypatch.setattr(
             "gateway.status.get_running_pid", failing_validation
@@ -989,7 +987,7 @@ def test_find_windows_gateway_services_ignores_task_scheduler_ancestor(monkeypat
     gateway's supervisor, so a task-launched gateway is a plain process (#97208); the same tree under a
     Hermes-owned service (by binary path) stays SCM-supervised."""
     import psutil
-    import hermes_cli.gateway_windows as gateway_windows
+    from hermes_cli import gateway_windows
 
     monkeypatch.setattr(gateway_windows, "hermes_service_roots", lambda: (r"C:\hermes\hermes-agent",))
     profile = SimpleNamespace(profile="default", pid=18480, create_time=18480.0)
@@ -1137,7 +1135,7 @@ def test_install_if_missing_only_installs_when_no_service_exists(monkeypatch, in
     monkeypatch.setattr(gateway, "_guard_named_profile_under_multiplexer", lambda force: None)
     monkeypatch.setattr(gateway, "_service_mgmt_blocked", lambda: False)
     monkeypatch.setattr(gateway, "_service_backend", lambda: "launchd")
-    monkeypatch.setattr(gateway, "launchd_install", lambda force, start_now: installs.append(force))
+    monkeypatch.setattr(gateway, "launchd_install", lambda force, start_now, force_unit_path=False: installs.append(force))
 
     gateway._cmd_install(SimpleNamespace(if_missing=True, force=False, system=False, run_as_user=None))
 

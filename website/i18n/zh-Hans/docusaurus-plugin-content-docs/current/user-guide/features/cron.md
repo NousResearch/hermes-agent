@@ -273,7 +273,7 @@ Hermes 会在执行器或调度提供程序分派之前，将每次已领取的 
 | `"mattermost"` | Mattermost 主频道 | |
 | `"email"` | 邮件 | |
 | `"sms"` | 通过 Twilio 发送 SMS | |
-| `"homeassistant"` | Home Assistant | |
+| `"homeassistant"` | Home Assistant（插件） | 使用 `HASS_HOME_CHANNEL`；需要 [`homeassistant` 插件](../messaging/homeassistant.md) |
 | `"dingtalk"` | 钉钉 | |
 | `"feishu"` | 飞书/Lark | |
 | `"wecom"` | 企业微信 | |

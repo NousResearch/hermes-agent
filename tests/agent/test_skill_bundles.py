@@ -186,7 +186,7 @@ class TestBuildBundleInvocationMessage:
 
         result = build_bundle_invocation_message("/combo", platform="telegram")
         assert result is not None
-        msg, loaded, missing = result
+        msg, loaded, _missing = result
         assert loaded == ["skill-a"]
         assert "SECRET DISABLED CONTENT." not in msg
         assert "skill-b" in msg  # called out in the disabled-skipped header line
@@ -229,7 +229,7 @@ class TestSaveAndDeleteBundle:
 
 
     def test_delete_removes_file(self, bundles_env):
-        bundles_dir, _ = bundles_env
+        _bundles_dir, _ = bundles_env
         save_bundle("doomed", ["s1"])
         assert get_bundle("doomed") is not None
         delete_bundle("doomed")

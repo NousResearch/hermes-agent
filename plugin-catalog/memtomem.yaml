@@ -1,22 +1,14 @@
 name: memtomem
 repo: https://github.com/memtomem/memtomem
-sha: 8fc62753ef95f14848d61cd502e1bef09bfd2757
+sha: 592865456cf7670311648fbc619bbb876d002a1e
 subdir: packages/memtomem-hermes-plugin
-version: "0.1.1"
-description: "Markdown-first long-term memory shared across your coding agents: a local memtomem MCP
-  server plus six memory skills (index, recall, remember, search, setup, status). Notes live in
-  ~/.memtomem and are searchable from Hermes, Claude Code, Codex CLI and Kimi Code. Runs at user
-  scope. Disclosure — the server is launched with `uvx --python 3.12` and downloaded from PyPI
-  (memtomem[onnx]==0.6.6) on first start, with Python 3.12 if uv cannot find one; it runs as a
-  stdio MCP server for the session and reads the directories you ask it to index. With a fresh
-  BM25-only configuration nothing else leaves the machine; an existing memtomem configuration may
-  enable Hugging Face model downloads, a remote embedding or LLM provider, Cohere reranking or
-  search webhooks."
+version: "0.1.4"
+description: "Markdown-first long-term memory shared across your coding agents: a local memtomem MCP server plus six memory skills (index, recall, remember, search, setup, status). Notes live in ~/.memtomem and are searchable from Hermes, Claude Code, Codex CLI and Kimi Code. Runs at user scope. Disclosure — the server is launched with `uvx --python 3.12` and downloaded from PyPI (memtomem[onnx]==0.6.8) on first start, with Python 3.12 if uv cannot find one; it runs as a stdio MCP server for the session and reads the directories you ask it to index. With a fresh BM25-only configuration nothing else leaves the machine; an existing memtomem configuration may enable Hugging Face model downloads, a remote embedding or LLM provider, Cohere reranking or search webhooks. At startup the server also reads the nearest .env found upward from its installed location inside uv's cache (normally ~/.env), setting variables not already present, outside Hermes's MCP environment filtering."
 maintainer: memtomem
 tier: community
-category: memory
+category: general
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/memtomem/memtomem/tree/8fc62753ef95f14848d61cd502e1bef09bfd2757/packages/memtomem-hermes-plugin
+docs_url: https://github.com/memtomem/memtomem/tree/592865456cf7670311648fbc619bbb876d002a1e/packages/memtomem-hermes-plugin
 capabilities:
   provides_tools: []
   provides_hooks: []

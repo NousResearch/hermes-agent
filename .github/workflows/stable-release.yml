@@ -1,12 +1,14 @@
 name: Stable Release
 run-name: Stable release ${{ inputs.tag }}
 
-# Dispatch on the tag so reusable workflows and github.sha identify the same tree.
+# Dispatch on the default branch, like canary: workflows and scripts come from main and
+# Actions caches live in main's scope. The claim tag is an input. Admission resolves it to
+# a commit and every lane that tests or builds the payload is passed that commit.
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Exact annotated claim tag, matching the selected workflow ref
+        description: Exact annotated claim tag. Admission resolves it to the commit under test
         required: true
         type: string
       baseline-manifest:
@@ -45,8 +47,11 @@ jobs:
       version: ${{ steps.admit.outputs.version }}
       release-id: ${{ steps.admit.outputs.release-id }}
       release-epoch: ${{ steps.admit.outputs.release-epoch }}
-      skip-bundles: ${{ steps.admit.outputs.skip-bundles }}
-      skip-tests: ${{ steps.admit.outputs.skip-tests }}
+      # The claim's lanes (scripts/releases/lanes.py): `lanes` is one flag per lane and `jobs`
+      # one run flag per lane-controlled job. Every job's `if` reads its own `jobs` entry, so the
+      # lane table alone decides what runs and what the gates expect to have skipped.
+      lanes: ${{ steps.admit.outputs.lanes }}
+      jobs: ${{ steps.admit.outputs.jobs }}
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
@@ -64,7 +69,7 @@ jobs:
   ci:
     name: Full CI pipeline
     needs: admit
-    if: needs.admit.outputs.skip-tests != 'true'
+    if: fromJSON(needs.admit.outputs.jobs)['ci']
     permissions:
       contents: read
       pull-requests: write
@@ -72,6 +77,7 @@ jobs:
       security-events: write
     uses: ./.github/workflows/ci.yaml
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       release: true
 
   docker:
@@ -81,62 +87,64 @@ jobs:
     # tests still runs this job with its tests off. It builds alongside the
     # gates; only the acceptance join waits for CI.
     if: >-
-      !cancelled() && needs.admit.result == 'success'
+      !cancelled() && needs.admit.result == 'success' && fromJSON(needs.admit.outputs.jobs)['docker']
     uses: ./.github/workflows/docker.yml
     secrets: inherit
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       release-phase: test
-      skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
-      tag: ${{ needs.admit.outputs.tag }}
+      skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes)['docker-tests'] }}
+      tag: ${{ needs.admit.outputs.claim-tag }}
       version: ${{ needs.admit.outputs.version }}
 
   nix:
     needs: admit
     # The claim's policy removes it, not a gate it happens to need.
-    if: needs.admit.outputs.skip-tests != 'true'
+    if: fromJSON(needs.admit.outputs.jobs)['nix']
     uses: ./.github/workflows/nix.yml
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       release: true
       version: ${{ needs.admit.outputs.version }}
 
   pm-bundle:
     needs: admit
-    # Bundle acceptance is a test of bundles, so either claim flag removes it.
-    if: >-
-      needs.admit.outputs.skip-bundles != 'true'
-      && needs.admit.outputs.skip-tests != 'true'
+    if: fromJSON(needs.admit.outputs.jobs)['pm-bundle']
     uses: ./.github/workflows/pm-bundle.yml
     with:
       release: true
-      ref: ${{ github.sha }}
+      ref: ${{ needs.admit.outputs.commit }}
 
   termux-checks:
     needs: admit
-    if: needs.admit.outputs.skip-tests != 'true'
+    if: fromJSON(needs.admit.outputs.jobs)['termux-checks']
     permissions:
       contents: read
       actions: read
     uses: ./.github/workflows/termux-verify.yml
     secrets: inherit
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       release: true
 
   windows-live:
     needs: admit
-    if: needs.admit.outputs.skip-tests != 'true'
+    if: fromJSON(needs.admit.outputs.jobs)['windows-live']
     uses: ./.github/workflows/windows-venv-e2e.yml
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       release: true
 
   install-e2e:
     name: Install and update E2E
     needs: admit
-    if: needs.admit.outputs.skip-tests != 'true'
+    if: fromJSON(needs.admit.outputs.jobs)['install-e2e']
     permissions:
       contents: read
       actions: read
     uses: ./.github/workflows/install-e2e.yml
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       release: true
       route: all
       tag-count: '3'
@@ -147,7 +155,7 @@ jobs:
     needs: admit
     # Starts with the gates; the acceptance join is what requires CI.
     if: >-
-      !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
+      !cancelled() && needs.admit.result == 'success' && fromJSON(needs.admit.outputs.jobs)['candidates-darwin-arm64']
     permissions:
       contents: write
       actions: read
@@ -161,14 +169,16 @@ jobs:
       claim-object: ${{ needs.admit.outputs.claim-object }}
       release-phase: candidate
       jobs: darwin-arm64
-      skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
+      skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
 
   candidates-darwin-x64:
     name: Build signed release candidates (darwin-x64)
     needs: admit
     # Starts with the gates; the acceptance join is what requires CI.
+    # macOS Intel is off by default: unsupported on main, and its macos-15-intel
+    # runner adds over an hour to the release.
     if: >-
-      !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
+      !cancelled() && needs.admit.result == 'success' && fromJSON(needs.admit.outputs.jobs)['candidates-darwin-x64']
     permissions:
       contents: write
       actions: read
@@ -182,14 +192,14 @@ jobs:
       claim-object: ${{ needs.admit.outputs.claim-object }}
       release-phase: candidate
       jobs: darwin-x64
-      skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
+      skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
 
   candidates-win32-arm64:
     name: Build signed release candidates (win32-arm64)
     needs: admit
     # Starts with the gates; the acceptance join is what requires CI.
     if: >-
-      !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
+      !cancelled() && needs.admit.result == 'success' && fromJSON(needs.admit.outputs.jobs)['candidates-win32-arm64']
     permissions:
       contents: write
       actions: read
@@ -203,14 +213,16 @@ jobs:
       claim-object: ${{ needs.admit.outputs.claim-object }}
       release-phase: candidate
       jobs: win32-arm64
-      skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
+      skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
+      skip-signed: ${{ !fromJSON(needs.admit.outputs.lanes).windows }}
+      skip-store: ${{ !fromJSON(needs.admit.outputs.lanes)['windows-store'] }}
 
   candidates-win32-x64:
     name: Build signed release candidates (win32-x64)
     needs: admit
     # Starts with the gates; the acceptance join is what requires CI.
     if: >-
-      !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
+      !cancelled() && needs.admit.result == 'success' && fromJSON(needs.admit.outputs.jobs)['candidates-win32-x64']
     permissions:
       contents: write
       actions: read
@@ -224,14 +236,16 @@ jobs:
       claim-object: ${{ needs.admit.outputs.claim-object }}
       release-phase: candidate
       jobs: win32-x64
-      skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
+      skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
+      skip-signed: ${{ !fromJSON(needs.admit.outputs.lanes).windows }}
+      skip-store: ${{ !fromJSON(needs.admit.outputs.lanes)['windows-store'] }}
 
   candidates-win32-bundle:
     name: Build signed release candidates (win32-bundle)
     needs: [admit, candidates-win32-arm64, candidates-win32-x64]
     # Starts with the gates; the acceptance join is what requires CI.
     if: >-
-      !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
+      !cancelled() && needs.admit.result == 'success' && fromJSON(needs.admit.outputs.jobs)['candidates-win32-bundle']
       && needs.candidates-win32-arm64.result == 'success'
       && needs.candidates-win32-x64.result == 'success'
     permissions:
@@ -247,14 +261,17 @@ jobs:
       claim-object: ${{ needs.admit.outputs.claim-object }}
       release-phase: candidate
       jobs: win32-bundle
-      skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
+      skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
+      skip-signed: ${{ !fromJSON(needs.admit.outputs.lanes).windows }}
+      skip-store: ${{ !fromJSON(needs.admit.outputs.lanes)['windows-store'] }}
 
   candidates-termux:
     name: Build signed release candidates (termux)
     needs: admit
     # Starts with the gates; the acceptance join is what requires CI.
+    # Termux is off by default.
     if: >-
-      !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
+      !cancelled() && needs.admit.result == 'success' && fromJSON(needs.admit.outputs.jobs)['candidates-termux']
     permissions:
       contents: write
       actions: read
@@ -268,17 +285,18 @@ jobs:
       claim-object: ${{ needs.admit.outputs.claim-object }}
       release-phase: candidate
       jobs: termux
-      skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
+      skip-tests: ${{ !fromJSON(needs.admit.outputs.lanes).smoke }}
 
   transitions-darwin-arm64:
     name: Pin actual OLD and NEW signed packages (darwin-arm64)
     needs: [admit, candidates-darwin-arm64]
-    if: needs.admit.outputs.skip-tests != 'true'
+    if: fromJSON(needs.admit.outputs.jobs)['transitions-darwin-arm64']
     runs-on: ubuntu-24.04
     environment: release-signing
     outputs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
+      baseline: ${{ steps.plan.outputs.baseline }}
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
@@ -307,12 +325,13 @@ jobs:
   transitions-darwin-x64:
     name: Pin actual OLD and NEW signed packages (darwin-x64)
     needs: [admit, candidates-darwin-x64]
-    if: needs.admit.outputs.skip-tests != 'true'
+    if: fromJSON(needs.admit.outputs.jobs)['transitions-darwin-x64']
     runs-on: ubuntu-24.04
     environment: release-signing
     outputs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
+      baseline: ${{ steps.plan.outputs.baseline }}
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
@@ -341,12 +360,13 @@ jobs:
   transitions-win32:
     name: Pin actual OLD and NEW signed packages (win32)
     needs: [admit, candidates-win32-bundle]
-    if: needs.admit.outputs.skip-tests != 'true'
+    if: fromJSON(needs.admit.outputs.jobs)['transitions-win32']
     runs-on: ubuntu-24.04
     environment: release-signing
     outputs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
+      baseline: ${{ steps.plan.outputs.baseline }}
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
@@ -378,7 +398,7 @@ jobs:
     # The recorded smoke results are the calls' own workflow results: a
     # call's stable-phase-result fails when its smokes fail, so a failed
     # smoke fails this job's RELEASE_NEEDS check and stages no manifest.
-    if: always() && needs.admit.outputs.skip-bundles != 'true'
+    if: always() && fromJSON(needs.admit.outputs.jobs)['candidate-manifest']
     needs: [admit, candidates-darwin-arm64, candidates-darwin-x64, candidates-win32-arm64,
             candidates-win32-x64, candidates-win32-bundle, candidates-termux]
     runs-on: ubuntu-24.04
@@ -411,12 +431,15 @@ jobs:
 
   windows-packaged:
     name: Windows signed-package acceptance
-    needs: transitions-win32
+    needs: [admit, transitions-win32]
+    # Without a published stable baseline there is no OLD package to upgrade from.
+    if: fromJSON(needs.admit.outputs.jobs)['windows-packaged'] && needs.transitions-win32.outputs.baseline != 'none'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.transitions-win32.outputs.windows) }}
     uses: ./.github/workflows/install-e2e-windows-run.yml
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       install-method: packaged-app
       update-method: open-app-update
       install-ref: ${{ matrix.old }}
@@ -427,12 +450,15 @@ jobs:
 
   macos-packaged-arm64:
     name: macOS arm64 signed-package acceptance
-    needs: transitions-darwin-arm64
+    needs: [admit, transitions-darwin-arm64]
+    # Without a published stable baseline there is no OLD package to upgrade from.
+    if: fromJSON(needs.admit.outputs.jobs)['macos-packaged-arm64'] && needs.transitions-darwin-arm64.outputs.baseline != 'none'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.transitions-darwin-arm64.outputs.macos) }}
     uses: ./.github/workflows/install-e2e-macos-run.yml
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       install-method: packaged-app
       update-method: open-app-update
       install-ref: ${{ matrix.old }}
@@ -443,12 +469,15 @@ jobs:
 
   macos-packaged-x64:
     name: macOS x64 signed-package acceptance
-    needs: transitions-darwin-x64
+    needs: [admit, transitions-darwin-x64]
+    # Without a published stable baseline there is no OLD package to upgrade from.
+    if: fromJSON(needs.admit.outputs.jobs)['macos-packaged-x64'] && needs.transitions-darwin-x64.outputs.baseline != 'none'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.transitions-darwin-x64.outputs.macos) }}
     uses: ./.github/workflows/install-e2e-macos-run.yml
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       install-method: packaged-app
       update-method: open-app-update
       install-ref: ${{ matrix.old }}
@@ -460,7 +489,7 @@ jobs:
   bootstrap-version:
     name: Bootstrap installer release identity
     needs: admit
-    if: needs.admit.outputs.skip-tests != 'true'
+    if: fromJSON(needs.admit.outputs.jobs)['bootstrap-version']
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
@@ -511,25 +540,31 @@ jobs:
       - run: python -m scripts.releases.stable gate admit ci docker nix pm-bundle termux-checks windows-live install-e2e candidates-darwin-arm64 candidates-darwin-x64 candidates-win32-arm64 candidates-win32-x64 candidates-win32-bundle candidates-termux candidate-manifest transitions-darwin-arm64 transitions-darwin-x64 transitions-win32 windows-packaged macos-packaged-arm64 macos-packaged-x64 bootstrap-version
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
-          SKIP_BUNDLES: ${{ needs.admit.outputs.skip-bundles }}
-          SKIP_TESTS: ${{ needs.admit.outputs.skip-tests }}
+          LANES: ${{ needs.admit.outputs.lanes }}
 
   publish-docker:
     name: Publish tested Docker image
     # B5: this job pushes only the immutable attempt-ref image tags; the
     # stable/latest aliases move in the ordered publication pass.
     needs: [admit, docker]
+    if: fromJSON(needs.admit.outputs.jobs)['publish-docker']
     uses: ./.github/workflows/docker.yml
     secrets: inherit
     with:
+      commit: ${{ needs.admit.outputs.commit }}
       release-phase: publish
-      tag: ${{ needs.admit.outputs.tag }}
+      tag: ${{ needs.admit.outputs.claim-tag }}
       version: ${{ needs.admit.outputs.version }}
 
   publish-bundles:
     name: Publish tested bundle artifacts
     needs: [admit, acceptance, candidate-manifest]
-    if: needs.admit.outputs.skip-bundles != 'true'
+    # acceptance's own needs include signed-package arms that skip when there is no published
+    # baseline (the first bundled release). Without !cancelled() that skip propagates here and
+    # publication then refuses publish-bundles=skipped. acceptance itself is the gate.
+    if: >-
+      !cancelled() && fromJSON(needs.admit.outputs.jobs)['publish-bundles']
+      && needs.acceptance.result == 'success' && needs.candidate-manifest.result == 'success'
     permissions:
       contents: write
       actions: read
@@ -543,6 +578,7 @@ jobs:
       claim-object: ${{ needs.admit.outputs.claim-object }}
       release-phase: publish
       manifest-sha256: ${{ needs.candidate-manifest.outputs.manifest-sha256 }}
+      skip-store: ${{ !fromJSON(needs.admit.outputs.lanes)['windows-store'] }}
 
   publication:
     name: All artifact publication succeeded
@@ -559,8 +595,7 @@ jobs:
       - run: python -m scripts.releases.stable gate acceptance publish-docker publish-bundles
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
-          SKIP_BUNDLES: ${{ needs.admit.outputs.skip-bundles }}
-          SKIP_TESTS: ${{ needs.admit.outputs.skip-tests }}
+          LANES: ${{ needs.admit.outputs.lanes }}
 
   complete:
     name: Stable release is green
@@ -588,10 +623,9 @@ jobs:
       - run: python -m scripts.releases.stable gate admit ci docker acceptance candidate-manifest publication publish-docker
         env:
           RELEASE_NEEDS: ${{ toJSON(needs) }}
-          SKIP_BUNDLES: ${{ needs.admit.outputs.skip-bundles }}
-          SKIP_TESTS: ${{ needs.admit.outputs.skip-tests }}
+          LANES: ${{ needs.admit.outputs.lanes }}
       - name: Validate the accepted candidate archive
-        if: needs.admit.outputs.skip-bundles != 'true'
+        if: fromJSON(needs.admit.outputs.lanes).bundles
         run: python -m scripts.releases.stable complete
         env:
           RELEASE_TAG: ${{ needs.admit.outputs.tag }}
@@ -605,16 +639,31 @@ jobs:
           CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
           CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
       - name: Render the admitted candidate smoke results
-        if: needs.admit.outputs.skip-bundles != 'true'
+        if: fromJSON(needs.admit.outputs.lanes).bundles
+        # The builds table is presentation: a render failure warns and the release still
+        # publishes (rc.14-v0.21.7 passed every gate, then died here on missing env).
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.admit.outputs.tag }}
+          RELEASE_CLAIM_TAG: ${{ needs.admit.outputs.claim-tag }}
           RELEASE_COMMIT: ${{ needs.admit.outputs.commit }}
           CANDIDATE_MANIFEST_SHA256: ${{ needs.candidate-manifest.outputs.manifest-sha256 }}
+          DESKTOP_CHANNEL: ${{ fromJSON(needs.admit.outputs.lanes)['desktop-channel'] }}
+          # It lists the archive and writes the tag page, and the shared channel page when the
+          # release built every desktop package the channel serves.
+          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+          CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
         run: |
+          args=()
+          if [ "$DESKTOP_CHANNEL" != true ]; then args+=(--no-channel-page); fi
           python scripts/render-builds-table.py --tag "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --archive "$RELEASE_CLAIM_TAG" \
-            --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" --candidate-commit "$RELEASE_COMMIT"
+            --candidate-manifest-sha256 "$CANDIDATE_MANIFEST_SHA256" --candidate-commit "$RELEASE_COMMIT" \
+            "${args[@]}"
       - name: Set up Docker Buildx for ordered alias promotion
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Log in to Docker Hub for ordered alias promotion
@@ -623,7 +672,8 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Reconcile ordered stable publication
-        run: python -m scripts.releases.sequencer
+        # The macOS feed merge parses YAML (hermes_yaml -> ruamel); the node toolchain has none.
+        run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.releases.sequencer
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_VERSION: ''

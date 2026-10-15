@@ -219,9 +219,8 @@ class LogSnapshot:
 
 def _primary_log_path(log_name: str) -> Optional[Path]:
     """Where *log_name* would live if present. Doesn't check existence."""
-    from hermes_cli.logs import LOG_FILES
-    filename = LOG_FILES.get(log_name)
-    return (get_hermes_home() / "logs" / filename) if filename else None
+    from hermes_cli.logs import log_file_path
+    return log_file_path(log_name)  # update/handoff: the ROOT home's, whatever profile is active
 
 
 # Logs written by a client process, invisible to a remote/docker/SSH backend running `debug
@@ -423,7 +422,7 @@ def build_nous_bundle(bundle: dict[str, str], redact: bool = True) -> bytes:
     """Gzip a :func:`collect_share_bundle` mapping into the Nous envelope (shape parsed by the
     discord-support viewer — keep it stable)."""
     envelope = {"format": _NOUS_BUNDLE_FORMAT, "redacted": bool(redact),
-                "created": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "created": datetime.datetime.now(datetime.UTC).isoformat(),
                 "files": bundle}
     return gzip.compress(json.dumps(envelope).encode("utf-8"))
 
@@ -592,9 +591,11 @@ def _run_debug_share_nous(args, *, log_lines: int, redact: bool) -> None:
     try:
         res = share_to_nous(build_nous_bundle(bundle, redact=redact))
     except Exception as exc:
+        from pm.network import edge_block
+
         error = redact_debug_support_text(exc)
-        print(f"\nNous upload failed: {error}\n"
-              "\nThe Nous diagnostics service may be unavailable or not yet provisioned.\n"
+        cause = edge_block(exc) or "The Nous diagnostics service may be unavailable or not yet provisioned"
+        print(f"\nNous upload failed: {error}\n\n{cause}.\n"
               "Run `hermes debug share --local` to print the report instead, "
               "or `hermes debug share` to upload to a public paste service.\n", file=sys.stderr)
         sys.exit(1)

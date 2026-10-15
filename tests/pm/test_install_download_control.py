@@ -18,7 +18,7 @@ from pm.install import ensure, stage_only
 from pm.lock import Facts, Lockfile
 from pm.package import Package
 from pm.store import tree_digest
-from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
+from tests.pm._range_server import RangeHandler, dl_server, url
 
 
 class ComponentPackage(Package):

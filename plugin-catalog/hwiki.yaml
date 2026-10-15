@@ -1,0 +1,20 @@
+name: hwiki
+repo: https://github.com/ottosulin/hwiki
+sha: d1961956eaafbd64fef71cb7135d475efcc8f954
+version: "1.0.0"
+description: "Markdown wiki as Hermes long-term memory: plain files you and the agent edit together (Obsidian-compatible, git-versionable), local SQLite FTS5 search with optional qmd hybrid retrieval. Inspired by the Karpathy LLM wiki. Disclosure — reads every Markdown file under the wiki folder you set (wiki_path, outside HERMES_HOME; untrusted_dirs, default raw/, excluded) and injects up to ~1,400 characters of matching excerpts into each turn; the agent appends dated notes only under <wiki>/<memory_dir> (default wiki/memory), and additions to Hermes's built-in memory are mirrored there by default (mirror_builtin_memory), so they land in a folder you may commit or sync; keeps an index at HERMES_HOME/hwiki-index.sqlite and config in HERMES_HOME/hwiki.json, and adds the wiki folder to hermes backup. Cron and subagent runs get read-only recall. No network with the default fts5 backend; the optional qmd backend runs the separately installed qmd CLI (npm @tobilu/qmd, Node ≥22), whose vector modes download local models (~0.3–1.6 GB)."
+maintainer: ottosulin
+tier: community
+category: memory
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/ottosulin/hwiki
+readme: true
+capabilities:
+  provides_tools:
+  - wiki_memory_search
+  - wiki_memory_read
+  - wiki_memory_write
+  - wiki_memory_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

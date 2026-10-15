@@ -11,6 +11,7 @@ import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStor
 import { $petBox } from '../app/petFlashStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
+import { $voicePartial } from '../app/voicePartialStore.js'
 import { INLINE_MODE, NATIVE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { placeholder } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
@@ -23,6 +24,7 @@ import {
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
 import { composerPromptText } from '../lib/prompt.js'
+import { sessionLabel } from '../lib/sessionLabel.js'
 import { ActiveWidgetSlot, AmbientDock, AmbientRail, useAmbientRailWidth } from '../sdk/host.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
@@ -42,6 +44,12 @@ import { type InputCursorSnapshot, TextInput, type TextInputMouseApi } from './t
 
 // Box geometry, kept here so the transcript's reservation math matches the
 // rendered overlay exactly.
+
+/** Blank-input hint: live STT text while dictating (stt.streaming) always wins; else a rotating
+ *  placeholder on a fresh transcript, or the busy hint. */
+const composerHint = (voicePartial: string, freshTranscript: boolean, busyHint: string) =>
+  voicePartial || (freshTranscript ? placeholder() : busyHint)
+
 const PET_BOTTOM = 3 // rows the pet floats above the screen bottom (over the composer)
 const PET_PAD_LEFT = 2
 const PET_RIGHT = 1
@@ -209,7 +217,7 @@ const TranscriptPane = memo(function TranscriptPane({
                   <SessionPanel
                     info={row.msg.info}
                     maxWidth={Math.max(1, composer.cols - 2)}
-                    sid={ui.sid}
+                    sid={sessionLabel(ui.sid)}
                     t={ui.theme}
                   />
                 )}
@@ -304,6 +312,7 @@ const ComposerPane = memo(function ComposerPane({
   nativeMode: boolean
 }) {
   const ui = useStore($uiState)
+  const voicePartial = useStore($voicePartial)
   const T = useT()
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
@@ -462,7 +471,7 @@ const ComposerPane = memo(function ComposerPane({
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composer.empty ? placeholder() : ui.busy ? T.composer.interruptHint : ''}
+                  placeholder={composerHint(voicePartial, composer.empty, ui.busy ? T.composer.interruptHint : '')}
                   // Exactly the "(and N more toolsets…)" tone. `muted` is a
                   // MID-luminance family tone, so it reads receded on both
                   // poles even when polarity detection is wrong (transparent

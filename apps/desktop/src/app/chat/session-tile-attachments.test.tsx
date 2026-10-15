@@ -137,7 +137,7 @@ describe('session tile attachment occurrence ownership', () => {
     const original = makeAttachment()
     const attach = deferred<{ attached: boolean; path: string }>()
 
-    requestGateway.mockImplementation(async (method: string) => {
+    requestGateway.mockImplementation(async (method: string, params: Record<string, unknown>) => {
       if (method === 'image.attach_bytes') {
         return attach.promise
       }
@@ -146,7 +146,7 @@ describe('session tile attachment occurrence ownership', () => {
         throw new Error('submit failed after staging')
       }
 
-      return {}
+      return method === 'prompt.submit' ? { admission_id: params.submission_id, status: 'started' } : {}
     })
 
     scope.attachments.add(original)
@@ -183,7 +183,7 @@ describe('session tile attachment occurrence ownership', () => {
     const replacement = makeAttachment()
     const attach = deferred<{ attached: boolean; path: string }>()
 
-    requestGateway.mockImplementation(async (method: string) => {
+    requestGateway.mockImplementation(async (method: string, params: Record<string, unknown>) => {
       if (method === 'image.attach_bytes') {
         return attach.promise
       }
@@ -192,7 +192,7 @@ describe('session tile attachment occurrence ownership', () => {
         throw new Error('submit failed after staging')
       }
 
-      return {}
+      return method === 'prompt.submit' ? { admission_id: params.submission_id, status: 'started' } : {}
     })
 
     scope.attachments.add(original)
@@ -225,12 +225,12 @@ describe('session tile attachment occurrence ownership', () => {
     const replacement = makeAttachment()
     const attach = deferred<{ attached: boolean; path: string }>()
 
-    requestGateway.mockImplementation(async (method: string) => {
+    requestGateway.mockImplementation(async (method: string, params: Record<string, unknown>) => {
       if (method === 'image.attach_bytes') {
         return attach.promise
       }
 
-      return {}
+      return method === 'prompt.submit' ? { admission_id: params.submission_id, status: 'started' } : {}
     })
 
     scope.attachments.add(original)
@@ -262,12 +262,14 @@ describe('session tile attachment occurrence ownership', () => {
     const replacement = makeUrlAttachment('new')
     const submit = deferred<Record<string, never>>()
 
-    requestGateway.mockImplementation(async (method: string) => {
+    requestGateway.mockImplementation(async (method: string, params: Record<string, unknown>) => {
       if (method === 'prompt.submit') {
-        return submit.promise
+        await submit.promise
+
+        return { admission_id: params.submission_id, status: 'started' }
       }
 
-      return {}
+      return method === 'prompt.submit' ? { admission_id: params.submission_id, status: 'started' } : {}
     })
 
     scope.attachments.add(original)
@@ -299,7 +301,7 @@ describe('session tile attachment occurrence ownership', () => {
     const scope = createScope()
     const original = makeFileAttachment()
 
-    requestGateway.mockImplementation(async (method: string) => {
+    requestGateway.mockImplementation(async (method: string, params: Record<string, unknown>) => {
       if (method === 'file.attach') {
         return {
           attached: true,
@@ -308,7 +310,7 @@ describe('session tile attachment occurrence ownership', () => {
         }
       }
 
-      return {}
+      return method === 'prompt.submit' ? { admission_id: params.submission_id, status: 'started' } : {}
     })
 
     scope.attachments.add(original)

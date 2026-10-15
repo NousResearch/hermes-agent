@@ -664,7 +664,7 @@ class MemoryManager:
                             "observation count)",
                             MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
                         )
-                        observation_budget_exhausted = True
+                    observation_budget_exhausted = True
             except Exception as e:  # health: allow BLE001 -- providers are isolated plugin boundaries
                 logger.debug(
                     "Memory provider '%s' prefetch failed (non-fatal): %s",

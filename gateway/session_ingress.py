@@ -23,6 +23,10 @@ async def admit_message(authority, event):
     try:
         receipt = await authority.admit_native(event)
     except RuntimeStoreError as exc:
+        if exc.reason == 'invalid_params' and getattr(exc, 'field', None):
+            # Refused before commit (_validate_native): name the clause instead of a generic turn error.
+            return (f'⚠️ Hermes refused this message ({exc.reason}: {exc.field}), so it was not saved '
+                    'or answered. Ask the operator to check gateway.log.')
         if exc.reason != 'queue_full':
             raise
         # Nothing was committed (main's busy-queue cap): say so instead of a generic turn error.

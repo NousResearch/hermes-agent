@@ -9,11 +9,14 @@ from copy import copy, deepcopy
 from dataclasses import replace
 from datetime import datetime
 import json
+import logging
 
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 from gateway.session_ingress_media import capture_native_media, restore_native_media
 from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger(__name__)
 
 _EVENT_FIELDS = (
     'user_id', 'user_name', 'message_id', 'platform_update_id',
@@ -63,40 +66,71 @@ def _adapter_event(event, **changes):
     return replace(event, **changes) if changes else event
 
 
+def _refuse(event, reason, clause):
+    """Name the refused clause in gateway.log and on the error; the wire reason stays stable."""
+    source = event.source
+    logger.warning('Native admission refused: %s (%s) platform=%s chat=%s message=%s', reason, clause,
+                   getattr(getattr(source, 'platform', None), 'value', None), getattr(source, 'chat_id', None),
+                   event.message_id)
+    raise RuntimeStoreError(reason, field=clause)
+
+
+def _media_clause(event):
+    urls, types, inlined = event.media_urls, event.media_types, event.media_text_inlined
+    if not isinstance(urls, list) or not all(isinstance(item, str) for item in urls):
+        return 'media_urls'
+    if not isinstance(types, list) or not all(isinstance(item, str) for item in types):
+        return 'media_types'
+    if not isinstance(inlined, list) or not all(item is None or type(item) is bool for item in inlined):
+        return 'media_text_inlined'
+    if len(types) not in (0, len(urls)):
+        return 'media_types_length'
+    if len(inlined) not in (0, len(urls)):
+        return 'media_text_inlined_length'
+    return None
+
+
 def _validate_native(runner, event, provenance=None, fresh_roles=False):
     source = event.source
-    if (source is None or not isinstance(event.text, str)
-            or not isinstance(event.message_type, MessageType)
-            # The ingress router's own classifier: ``/tmp/x is broken`` is text, not a command.
-            or event.message_type == MessageType.COMMAND or event.get_command()
-            or event.internal or _native_metadata(event) is None or event.prompt_response
-            or (source.role_authorized and not fresh_roles)
-            or (source.delivered_via_upstream_relay and not (provenance and 'relay' in provenance))
-            or source.profile_route_rejected
-            or (getattr(source, '_authorization_profile_home', None) is not None and provenance is None)
-            or (getattr(runner.config, 'multiplex_profiles', False) and provenance is None)):
-        raise RuntimeStoreError('invalid_params')
+    # First failing clause wins, in the order (and with the short-circuits) of the original check.
+    clauses = (
+        ('source', lambda: source is None),
+        ('text', lambda: not isinstance(event.text, str)),
+        ('message_type', lambda: not isinstance(event.message_type, MessageType)),
+        # The ingress router's own classifier: ``/tmp/x is broken`` is text, not a command.
+        ('command', lambda: event.message_type == MessageType.COMMAND or event.get_command()),
+        ('internal', lambda: event.internal),
+        ('metadata', lambda: _native_metadata(event) is None),
+        ('prompt_response', lambda: event.prompt_response),
+        ('role_authorized_without_fresh_roles', lambda: source.role_authorized and not fresh_roles),
+        ('upstream_relay_without_provenance',
+         lambda: source.delivered_via_upstream_relay and not (provenance and 'relay' in provenance)),
+        ('profile_route_rejected', lambda: source.profile_route_rejected),
+        ('authorization_home_without_provenance',
+         lambda: getattr(source, '_authorization_profile_home', None) is not None and provenance is None),
+        ('multiplex_without_provenance',
+         lambda: getattr(runner.config, 'multiplex_profiles', False) and provenance is None),
+    )
+    for clause, failed in clauses:
+        if failed():
+            _refuse(event, 'invalid_params', clause)
     if provenance is not None:
         from gateway.session_ingress_context import restore_provenance
         restore_provenance(runner, source, provenance)
     delegated = fresh_roles or bool(provenance and 'relay' in provenance)
     if not runner._is_user_authorized_for_source(source, allow_adapter_delegation=delegated):
-        raise RuntimeStoreError('permission_denied')
-    if (any(value is not None and not isinstance(value, str)
-            for value in (event.channel_prompt, event.channel_context))
-            or event.reply_expected is not None and type(event.reply_expected) is not bool):
-        raise RuntimeStoreError('invalid_params')
+        _refuse(event, 'permission_denied', 'user_not_authorized')
+    for name in ('channel_prompt', 'channel_context'):
+        if getattr(event, name) is not None and not isinstance(getattr(event, name), str):
+            _refuse(event, 'invalid_params', name)
+    if event.reply_expected is not None and type(event.reply_expected) is not bool:
+        _refuse(event, 'invalid_params', 'reply_expected')
     skill = event.auto_skill
     if not (skill is None or isinstance(skill, str)
             or isinstance(skill, list) and all(isinstance(item, str) for item in skill)):
-        raise RuntimeStoreError('invalid_params')
-    if (not isinstance(event.media_urls, list) or not all(isinstance(item, str) for item in event.media_urls)
-            or not isinstance(event.media_types, list) or not all(isinstance(item, str) for item in event.media_types)
-            or not isinstance(event.media_text_inlined, list)
-            or not all(item is None or type(item) is bool for item in event.media_text_inlined)
-            or len(event.media_types) not in (0, len(event.media_urls))
-            or len(event.media_text_inlined) not in (0, len(event.media_urls))):
-        raise RuntimeStoreError('invalid_params')
+        _refuse(event, 'invalid_params', 'auto_skill')
+    if (clause := _media_clause(event)) is not None:
+        _refuse(event, 'invalid_params', clause)
     encoded_source = source.to_dict()
     encoded_source['is_bot'] = source.is_bot
     restored_source = SessionSource.from_dict(encoded_source)
@@ -105,7 +139,7 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
         restore_provenance(runner, restored_source, provenance)
     adapter = runner._adapter_for_source(source)
     if adapter is None or runner._adapter_for_source(restored_source) is not adapter:
-        raise RuntimeStoreError('not_found')
+        _refuse(event, 'not_found', 'adapter' if adapter is None else 'adapter_mismatch')
     return encoded_source
 
 

@@ -427,7 +427,7 @@ def _ensure_windows_gateway_venv_imports() -> None:
         return
 
     project_root = Path(__file__).resolve().parent.parent
-    from pm.environments import committed_venv
+    from pm.environments import committed_venv, venv_python_version
 
     # A PM install's store Python was already activated onto the committed generation by
     # hermes_bootstrap; overlaying the leftover pre-PM venv loads a foreign ABI (#122183).
@@ -450,9 +450,9 @@ def _ensure_windows_gateway_venv_imports() -> None:
         seen.add(venv_key)
 
         site_packages = resolved_venv / "Lib" / "site-packages"
-        if not site_packages.exists():
+        # Missing, or built for another Python: its compiled modules crash this one (#139085).
+        if not site_packages.exists() or venv_python_version(resolved_venv) != sys.version_info[:2]:
             continue
-
         project_entry = str(project_root)
         site_entry = str(site_packages)
         if project_entry not in sys.path:

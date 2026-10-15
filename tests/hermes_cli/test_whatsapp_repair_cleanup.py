@@ -24,7 +24,7 @@ def pairing_wizard(tmp_path, monkeypatch):
     (bridge / "node_modules").mkdir()
     monkeypatch.setattr(whatsapp_common, "resolve_whatsapp_bridge_dir", lambda: bridge)
     monkeypatch.setattr(hermes_constants, "find_node_executable", lambda _: "node")
-    monkeypatch.setattr(hermes_constants, "with_hermes_node_path", lambda: {})
+    monkeypatch.setattr(hermes_constants, "with_hermes_node_path", dict)
     values = {"WHATSAPP_MODE": "bot", "WHATSAPP_ALLOWED_USERS": "15551234567"}
     monkeypatch.setattr(config, "get_env_value", values.get)
     monkeypatch.setattr(config, "save_env_value", values.__setitem__)
@@ -73,3 +73,23 @@ def test_unlocked_repair_clears_old_state_and_pairs(pairing_wizard, capsys):
     assert len(pairing_wizard.launches) == 1
     assert pairing_wizard.values["WHATSAPP_ENABLED"] == "true"
     assert "Session cleared" in capsys.readouterr().out
+
+
+def test_recreation_failure_stops_pairing(pairing_wizard, monkeypatch, capsys):
+    session = pairing_wizard.creds.parent
+    original_mkdir = Path.mkdir
+
+    def refuse_recreation(path, *args, **kwargs):
+        if path == session and not path.exists():
+            raise PermissionError("session recreation denied")
+        return original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", refuse_recreation)
+    with pytest.raises(SystemExit) as stopped:
+        pairing_wizard.run()
+    assert stopped.value.code == 1
+    captured = capsys.readouterr()
+    assert "Session cleared" not in captured.out
+    assert "session recreation denied" in captured.err
+    assert pairing_wizard.launches == []
+    assert "WHATSAPP_ENABLED" not in pairing_wizard.values

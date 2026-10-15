@@ -1,6 +1,6 @@
 name: ms-decision-provider
 repo: https://github.com/guglxni/ms-decision-provider
-sha: f82d9bf5203496eb8a9ab7a7740a7909ab2c04cc
+sha: a28887362a55f9b4b03362568760ce6d0ae903e5
 description: >-
   Microsoft-Decision-1 (Azure AI Foundry System One) decision provider for bounded
   agent decisions. Registers typed-decision tools (decision_noul, decision_choice,

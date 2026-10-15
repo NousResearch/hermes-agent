@@ -99,9 +99,11 @@ def _analyze_screenshot_with_aux_llm(screenshot_path: Path, question: str) -> st
         f"or CAPTCHAs, describe what type they are and what action might be needed. "
         f"Focus on answering the user's specific question."
     )
+    from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
     _screenshot_bytes = screenshot_path.read_bytes()
     _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
-    data_url = f"data:image/png;base64,{_screenshot_b64}"
+    _mime = _detect_image_mime_type_from_bytes(_screenshot_bytes) or "image/png"
+    data_url = f"data:{_mime};base64,{_screenshot_b64}"
     vision_model = _bt._get_vision_model()
     _bt.logger.debug("browser_vision: analysing screenshot (%d bytes)", len(_screenshot_bytes))
 

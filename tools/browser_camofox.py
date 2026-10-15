@@ -569,6 +569,8 @@ def camofox_vision(question: str, annotate: bool = False, task_id: Optional[str]
         resp = _get_raw(_tab_path(session, "screenshot"), params=_user_params(session))
         screenshot_path = _save_screenshot(resp.content)
         img_b64 = base64.b64encode(resp.content).decode("utf-8")
+        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
+        img_mime = _detect_image_mime_type_from_bytes(resp.content) or "image/png"
         annotation_context = ""
         if annotate:
             try:
@@ -585,7 +587,7 @@ def camofox_vision(question: str, annotate: bool = False, task_id: Optional[str]
         response = call_llm(
             messages=[{"role": "user", "content": [
                 {"type": "text", "text": vision_prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}}]}],
+                {"type": "image_url", "image_url": {"url": f"data:{img_mime};base64,{img_b64}"}}]}],
             task="vision", temperature=temperature, timeout=timeout)
         analysis = (response.choices[0].message.content or "").strip() if response.choices else ""
         # Redact secrets the vision LLM may have read from the screenshot.

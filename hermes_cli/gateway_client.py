@@ -147,14 +147,16 @@ class GatewayClient:
             self.pending.pop(rid, None)
 
 
-def _session_ticket(home: Path, endpoint, *, purpose="interactive", scope=None) -> str:
+def _session_ticket(home: Path, endpoint, *, purpose="interactive", scope=None, subject=None) -> str:
     from hermes_cli.gateway_runtime import control_home_for
     from hermes_cli.gateway_runtime_discovery import connect_private, _identify_response
     # A served secondary's ticket is minted by the multiplexer's socket, bound to the secondary.
     home = control_home_for(home, endpoint)
+    # ``subject`` names the principal a same-user caller acts for (the standalone dashboard's
+    # authenticated user) instead of the socket UID; the owner's peer gate stays the boundary.
     request = json.dumps({"protocol": 1, "id": 1, "verb": "session-ticket", "params": {
         "profile_id": endpoint.profile_id, "instance_id": endpoint.instance_id, "purpose": purpose,
-        **({"scope": scope} if scope else {}),
+        **({"scope": scope} if scope else {}), **({"subject": subject} if subject else {}),
     }}).encode() + b"\n"
     if os.name == "nt":
         from gateway.runtime_bootstrap_windows import query_runtime_control
@@ -182,9 +184,11 @@ def _session_ticket(home: Path, endpoint, *, purpose="interactive", scope=None) 
 
 
 @asynccontextmanager
-async def connect_gateway(endpoint=None):
+async def connect_gateway(endpoint=None, subject=None):
     """Attach to this home's owner. ``endpoint``: an already-discovered ready owner to dial as-is
-    (maintenance that must never start a gateway); default ensures one, starting it if needed."""
+    (maintenance that must never start a gateway); default ensures one, starting it if needed.
+    ``subject``: mint the ticket for this principal (the caller's authenticated dashboard user)
+    rather than the socket identity; only a peer the owner already trusts may name one."""
     from websockets.asyncio.client import connect
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_runtime import ensure_gateway_runtime
@@ -193,7 +197,8 @@ async def connect_gateway(endpoint=None):
     remote = "" if endpoint is not None else os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip()
     protocols = None
     if endpoint is not None:
-        ticket = await asyncio.to_thread(_session_ticket, get_hermes_home().resolve(), endpoint)
+        ticket = await asyncio.to_thread(_session_ticket, get_hermes_home().resolve(), endpoint,
+                                         subject=subject)
         url, protocols = gateway_ws_target(endpoint, ticket)
     elif remote:
         parsed = urlsplit(remote)

@@ -179,7 +179,7 @@ def _mutate_offline_store(profile, actor, params):
     return _with_session_maintenance(profile, run)
 
 
-async def _mutate_via_gateway_owner(profile, params):
+async def _mutate_via_gateway_owner(profile, actor, params):
     """Forward a standalone dashboard mutation to the live gateway owner.
 
     While a gateway serves the same home, a separately launched ``hermes
@@ -188,6 +188,11 @@ async def _mutate_via_gateway_owner(profile, params):
     dies on a bare 409 (#138915). The owner exposes the same revision-fenced
     verb over the control socket; with no discoverable owner (or a dial that
     died under us) return None so the caller falls back to the offline store.
+
+    The ticket is minted for the dashboard's authenticated principal, not the
+    socket UID: ``authorize_history`` compares the actor subject against the
+    row's stored owner, so a cold row owned by a dashboard account only takes
+    the mutation when the forward acts as that account.
     """
     from hermes_cli.gateway_client import GatewayClientError, connect_gateway
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
@@ -207,7 +212,7 @@ async def _mutate_via_gateway_owner(profile, params):
     if params.get('expected_generation') is not None:
         call['expected_generation'] = params['expected_generation']
     try:
-        async with connect_gateway(endpoint=endpoint) as client:
+        async with connect_gateway(endpoint=endpoint, subject=actor.subject) as client:
             return await client.rpc('session.mutate', **call)
     except GatewayClientError:
         raise
@@ -241,7 +246,7 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         if authority is None:
             # A live gateway owner answers first; only an owner-less home takes
             # the offline store (whose reservation loses to that same owner).
-            result = await _mutate_via_gateway_owner(profile, params)
+            result = await _mutate_via_gateway_owner(profile, actor, params)
             if result is None:
                 result = await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
         else:

@@ -330,11 +330,18 @@ class GatewayControlServer:
             raise PermissionError("invalid bootstrap envelope")
         params = request.get("params")
         if (not isinstance(params, dict) or not {"profile_id", "instance_id", "purpose"} <= set(params)
-                or set(params) - {"profile_id", "instance_id", "purpose", "scope"}):
+                or set(params) - {"profile_id", "instance_id", "purpose", "scope", "subject"}):
             raise PermissionError("invalid bootstrap parameters")
         if params["instance_id"] != self.ticket_store.instance_id:
             raise PermissionError("stale runtime instance")
-        ticket = self.ticket_store.mint(profile_id=params["profile_id"], subject=peer_subject,
+        # A verified same-user peer may name the principal it acts for (a standalone dashboard
+        # forwarding a mutation for its authenticated user, #138915): the socket's peer gate
+        # stays the trust boundary — the forwarded subject only relabels who that same peer is,
+        # it never admits a less-verified caller. Anything shaped wrong fails closed.
+        subject = params.get("subject", peer_subject)
+        if not isinstance(subject, str) or not subject or len(subject) > 256:
+            raise PermissionError("invalid bootstrap subject")
+        ticket = self.ticket_store.mint(profile_id=params["profile_id"], subject=subject,
                                        purpose=params["purpose"], scope=params.get("scope", "profile"))
         return {"ticket": ticket, "expires_in_seconds": 30,
                 "instance_id": self.ticket_store.instance_id,

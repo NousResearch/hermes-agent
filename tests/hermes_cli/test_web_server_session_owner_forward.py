@@ -45,8 +45,9 @@ async def test_standalone_mutation_forwards_to_the_live_owner(tmp_path, monkeypa
             return {'session_id': params['session_id'], 'operation': 'delete', 'revision': 1}
 
     @asynccontextmanager
-    async def fake_connect(endpoint=None):
+    async def fake_connect(endpoint=None, subject=None):
         calls['endpoint'] = endpoint
+        calls['subject'] = subject
         yield FakeClient()
 
     offline = []
@@ -63,6 +64,9 @@ async def test_standalone_mutation_forwards_to_the_live_owner(tmp_path, monkeypa
     # Discovery resolved the selected home's owner; the offline store never opened.
     assert seen['home'] == tmp_path.resolve()
     assert calls['endpoint'] == 'owner-endpoint'
+    # The ticket names the dashboard's authenticated principal — the socket UID would be
+    # refused by authorize_history on any row that stores an owner.
+    assert calls['subject'] == 'auth:v1:["oidc","https://idp.example","user-a"]'
     method, params = calls['rpc']
     assert method == 'session.mutate'
     assert params == {'session_id': 'session-1', 'request_id': 'req-1', 'expected_revision': 0,
@@ -103,7 +107,7 @@ async def test_owner_dial_failure_falls_back_to_the_offline_store(tmp_path, monk
     _discover(monkeypatch, 'owner-endpoint')
 
     @asynccontextmanager
-    async def dying_connect(endpoint=None):
+    async def dying_connect(endpoint=None, subject=None):
         raise FileNotFoundError('owner control socket vanished')
         yield  # pragma: no cover
 
@@ -130,7 +134,7 @@ async def test_owner_refusal_maps_to_the_matching_http_status(tmp_path, monkeypa
     _discover(monkeypatch, 'owner-endpoint')
 
     @asynccontextmanager
-    async def refusing_connect(endpoint=None):
+    async def refusing_connect(endpoint=None, subject=None):
         class Refuser:
             async def rpc(self, method, **params):
                 raise GatewayClientError('permission_denied')

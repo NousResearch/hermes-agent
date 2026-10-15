@@ -1,10 +1,10 @@
 """Profile-scoped setup for the built-in Microsoft Foundry provider."""
 
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Literal, Optional, Self
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent.azure_identity_adapter import EntraIdentityConfig, materialize_bearer_for_http
 from hermes_cli.config import (
@@ -35,6 +35,11 @@ class CliCredential(_StrictModel):
     tenant_id: str = ""
     subscription: str = ""
 
+    @model_validator(mode="after")
+    def validate_account(self) -> Self:
+        EntraIdentityConfig.from_dict(self.model_dump())
+        return self
+
 
 class ApiKeyAuth(_StrictModel):
     kind: Literal["api_key"] = "api_key"
@@ -62,7 +67,8 @@ def _settings(cfg: dict) -> dict:
         entra = EntraIdentityConfig.from_dict(model.get("entra"))
         source = {"credential_source": entra.credential_source, "scope": entra.scope}
         if entra.credential_source == "azure_cli":
-            source.update(tenant_id=entra.tenant_id, subscription=entra.subscription)
+            source.update({key: value for key, value in (("tenant_id", entra.tenant_id),
+                                                          ("subscription", entra.subscription)) if value})
         auth = {"kind": "entra_id", "entra": source}
     return {
         "base_url": model.get("base_url") or get_env_value("AZURE_FOUNDRY_BASE_URL") or "",

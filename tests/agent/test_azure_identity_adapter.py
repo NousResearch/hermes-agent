@@ -494,16 +494,16 @@ def test_explicit_cli_source_has_account_scoped_cache_and_no_fallback(fake_azure
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
     monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
-    selected = EntraIdentityConfig(credential_source="azure_cli", tenant_id="tenant-a", subscription="sub-a")
+    selected = EntraIdentityConfig(credential_source="azure_cli", tenant_id="tenant-a")
     assert EntraIdentityConfig.from_dict(selected.to_dict()) == selected
     token = set_hermes_home_override(tmp_path / "bot")
     try:
         first = build_credential(selected)
-        assert first.kwargs == {"tenant_id": "tenant-a", "subscription": "sub-a"}
+        assert first.kwargs == {"tenant_id": "tenant-a", "subscription": None}
         assert build_credential(selected) is first
-        second = build_credential(EntraIdentityConfig(credential_source="azure_cli", tenant_id="tenant-b", subscription="sub-b"))
+        second = build_credential(EntraIdentityConfig(credential_source="azure_cli", subscription="sub-b"))
         assert second is not first
-        assert second.kwargs == {"tenant_id": "tenant-b", "subscription": "sub-b"}
+        assert second.kwargs == {"tenant_id": "", "subscription": "sub-b"}
         assert "CLI not signed in" in _probe_token(selected, 5.0)["error"]
         with pytest.raises(RuntimeError, match="refused for this profile"):
             build_credential(EntraIdentityConfig())
@@ -513,3 +513,10 @@ def test_explicit_cli_source_has_account_scoped_cache_and_no_fallback(fake_azure
     # A standalone process uses the same explicit CLI source, not DefaultAzureCredential.
     assert build_credential(selected).kind == "azure_cli"
     assert fake_azure_identity.credential_count == 0
+
+
+def test_cli_account_selectors_are_mutually_exclusive():
+    from agent.azure_identity_adapter import EntraIdentityConfig
+
+    with pytest.raises(ValueError, match="tenant or a subscription selector, not both"):
+        EntraIdentityConfig.from_dict({"credential_source": "azure_cli", "tenant_id": "tenant", "subscription": "subscription"})

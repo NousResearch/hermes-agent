@@ -76,7 +76,7 @@ export function FoundryFields({ busy, form, settings, setForm, submit, removeKey
               updateCredential(
                 credential_source === 'default'
                   ? { credential_source, scope: credential.scope }
-                  : { credential_source, scope: credential.scope, tenant_id: '', subscription: '' }
+                  : { credential_source, scope: credential.scope }
               )
             }
             options={[
@@ -92,24 +92,7 @@ export function FoundryFields({ busy, form, settings, setForm, submit, removeKey
         <summary className="cursor-pointer">{copy.advanced}</summary>
         <div className="mt-3 grid gap-3">
           {credential?.credential_source === 'azure_cli' && (
-            <>
-              <label className="grid gap-1.5">
-                {copy.tenant}
-                <Input
-                  onChange={event => updateCredential({ ...credential, tenant_id: event.target.value })}
-                  placeholder={copy.cliDefault}
-                  value={credential.tenant_id}
-                />
-              </label>
-              <label className="grid gap-1.5">
-                {copy.subscription}
-                <Input
-                  onChange={event => updateCredential({ ...credential, subscription: event.target.value })}
-                  placeholder={copy.cliDefault}
-                  value={credential.subscription}
-                />
-              </label>
-            </>
+            <FoundryCliAccountFields credential={credential} onChange={updateCredential} />
           )}
           {credential && (
             <label className="grid gap-1.5">
@@ -172,5 +155,64 @@ export function FoundryFields({ busy, form, settings, setForm, submit, removeKey
       </div>
       <p>{copy.profileHint}</p>
     </fieldset>
+  )
+}
+
+function FoundryCliAccountFields({
+  credential,
+  onChange
+}: {
+  credential: Extract<FoundryCredential, { credential_source: 'azure_cli' }>
+  onChange: (credential: FoundryCredential) => void
+}) {
+  const { t } = useI18n()
+  const copy = t.settings.foundry
+  const base = { credential_source: 'azure_cli', scope: credential.scope } satisfies FoundryCredential
+  const selection = 'tenant_id' in credential ? 'tenant' : 'subscription' in credential ? 'subscription' : 'default'
+
+  return (
+    <>
+      <fieldset className="grid min-w-0 gap-1.5">
+        <legend className="mb-1.5">{copy.cliAccount}</legend>
+        <SegmentedControl
+          className="w-full max-w-full"
+          value={selection}
+          options={[
+            { id: 'default', label: copy.cliDefault },
+            { id: 'tenant', label: copy.tenant },
+            { id: 'subscription', label: copy.subscription }
+          ]}
+          onChange={choice =>
+            onChange(
+              choice === 'tenant'
+                ? { ...base, tenant_id: '' }
+                : choice === 'subscription'
+                  ? { ...base, subscription: '' }
+                  : base
+            )
+          }
+        />
+      </fieldset>
+      {selection === 'tenant' && (
+        <label className="grid gap-1.5">
+          {copy.tenant}
+          <Input
+            value={credential.tenant_id ?? ''}
+            placeholder={copy.cliDefault}
+            onChange={event => onChange({ ...base, tenant_id: event.target.value })}
+          />
+        </label>
+      )}
+      {selection === 'subscription' && (
+        <label className="grid gap-1.5">
+          {copy.subscription}
+          <Input
+            value={credential.subscription ?? ''}
+            placeholder={copy.cliDefault}
+            onChange={event => onChange({ ...base, subscription: event.target.value })}
+          />
+        </label>
+      )}
+    </>
   )
 }

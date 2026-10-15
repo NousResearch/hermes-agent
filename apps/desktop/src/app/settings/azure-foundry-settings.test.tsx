@@ -62,7 +62,10 @@ it('offers CLI within Entra and sends account selectors to the same bot for test
   fireEvent.click(screen.getByRole('button', { name: 'Azure CLI login' }))
   expect(screen.queryByLabelText('API Key')).toBeNull()
   fireEvent.click(screen.getByText('Advanced settings'))
+  fireEvent.click(screen.getByRole('button', { name: 'Tenant ID' }))
   fireEvent.change(screen.getByLabelText('Tenant ID'), { target: { value: 'my-tenant' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Subscription name or ID' }))
+  expect(screen.queryByLabelText('Tenant ID')).toBeNull()
   fireEvent.change(screen.getByLabelText('Subscription name or ID'), { target: { value: 'my-subscription' } })
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Test' })))
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save and use' })))
@@ -73,7 +76,7 @@ it('offers CLI within Entra and sends account selectors to the same bot for test
     api_mode: 'codex_responses',
     auth: {
       kind: 'entra_id',
-      entra: { credential_source: 'azure_cli', scope: '', tenant_id: 'my-tenant', subscription: 'my-subscription' }
+      entra: { credential_source: 'azure_cli', scope: '', subscription: 'my-subscription' }
     }
   }
 

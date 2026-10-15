@@ -79,6 +79,9 @@ def test_cli_test_save_and_inference_use_selected_profile(client, tmp_path, monk
     payload = {"base_url": f"http://127.0.0.1:{server.server_port}/v1", "model": "my-deployment",
                "api_mode": "codex_responses", "auth": {"kind": "entra_id", "entra": {
                    "credential_source": "azure_cli", "tenant_id": "tenant-selected", "subscription": "subscription-selected", "scope": ""}}}
+    selector = "tenant_id" if profile == "default" else "subscription"
+    selected_value = "tenant-selected" if selector == "tenant_id" else "subscription-selected"
+    payload["auth"]["entra"].pop("subscription" if selector == "tenant_id" else "tenant_id")
     reset_credential_cache()
     try:
         tested = client.post(f"/api/providers/azure-foundry/validate?profile={profile}", json=payload)
@@ -87,21 +90,22 @@ def test_cli_test_save_and_inference_use_selected_profile(client, tmp_path, monk
         assert saved.status_code == 200, saved.text
         assert saved.json()["auth"]["entra"]["credential_source"] == "azure_cli"
         assert "cli-token" not in saved.text
-        assert client.get(route).json()["auth"]["entra"]["subscription"] == "subscription-selected"
+        assert client.get(route).json()["auth"]["entra"][selector] == selected_value
         with _config_profile_scope(profile):
             model = read_raw_config()["model"]
             assert model["provider"] == "azure-foundry"
-            assert model["entra"]["tenant_id"] == "tenant-selected"
+            assert model["entra"][selector] == selected_value
             runtime = resolve_runtime_provider(requested="azure-foundry", target_model="my-deployment")
-            assert runtime["entra"]["subscription"] == "subscription-selected"
+            assert runtime["entra"][selector] == selected_value
             with OpenAI(api_key=runtime["api_key"], base_url=runtime["base_url"], max_retries=0) as inference:
                 inference.responses.create(model="my-deployment", input="hi")
         assert len(requests) == 2
         assert all(path == "/v1/responses" and auth == "Bearer cli-token" and body["model"] == "my-deployment"
                    for path, auth, body in requests)
         for args in map(json.loads, arguments.read_text().splitlines()):
-            assert args[args.index("--tenant") + 1] == "tenant-selected"
-            assert args[args.index("--subscription") + 1] == "subscription-selected"
+            flag = "--tenant" if selector == "tenant_id" else "--subscription"
+            assert args[args.index(flag) + 1] == selected_value
+            assert ("--subscription" if selector == "tenant_id" else "--tenant") not in args
         assert "cli-token" not in (home / "config.yaml").read_text()
         # Reset the cached bearer and make the CLI fail. A valid launch SP must not be tried.
         helper.write_text('import sys\nprint("sensitive-cli-output", file=sys.stderr)\nsys.exit(1)\n')
@@ -197,3 +201,17 @@ def test_unreachable_inference_is_an_actionable_test_failure(client, monkeypatch
     assert result.json()["ok"] is False
     assert "Could not validate the inference route" in result.json()["message"]
     assert "private-key" not in result.text
+
+
+def test_mixed_account_selectors_are_rejected_before_test_or_save(client):
+    from hermes_cli.config import read_raw_config
+
+    before = read_raw_config()
+    payload = {"base_url": "https://resource.services.ai.azure.com/openai/v1", "model": "deployment",
+               "api_mode": "codex_responses", "auth": {"kind": "entra_id", "entra": {
+                   "credential_source": "azure_cli", "tenant_id": "tenant", "subscription": "subscription"}}}
+    for method, route in ((client.put, "/api/providers/azure-foundry"), (client.post, "/api/providers/azure-foundry/validate")):
+        result = method(route + "?profile=default", json=payload)
+        assert result.status_code == 422, result.text
+        assert "not both" in result.text
+    assert read_raw_config() == before

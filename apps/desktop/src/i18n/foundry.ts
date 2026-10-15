@@ -10,6 +10,7 @@ export interface FoundryTranslations {
   advanced: string
   tenant: string
   subscription: string
+  cliAccount: string
   cliDefault: string
   scope: string
   saveAndUse: string
@@ -31,6 +32,7 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     advanced: 'Advanced settings',
     tenant: 'Tenant ID',
     subscription: 'Subscription name or ID',
+    cliAccount: 'Azure CLI account',
     cliDefault: 'Azure CLI default',
     scope: 'Token scope',
     saveAndUse: 'Save and use',
@@ -50,6 +52,7 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     advanced: 'Erweiterte Einstellungen',
     tenant: 'Mandanten-ID',
     subscription: 'Abonnementname oder -ID',
+    cliAccount: 'Azure-CLI-Konto',
     cliDefault: 'Azure-CLI-Standard',
     scope: 'Token-Gültigkeitsbereich',
     saveAndUse: 'Speichern und verwenden',
@@ -69,6 +72,7 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     advanced: 'Paramètres avancés',
     tenant: 'ID du locataire',
     subscription: 'Nom ou ID de l’abonnement',
+    cliAccount: 'Compte Azure CLI',
     cliDefault: 'Valeur par défaut d’Azure CLI',
     scope: 'Étendue du jeton',
     saveAndUse: 'Enregistrer et utiliser',
@@ -88,6 +92,7 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     advanced: 'Configuración avanzada',
     tenant: 'ID del inquilino',
     subscription: 'Nombre o ID de la suscripción',
+    cliAccount: 'Cuenta de Azure CLI',
     cliDefault: 'Predeterminado de Azure CLI',
     scope: 'Ámbito del token',
     saveAndUse: 'Guardar y usar',
@@ -106,6 +111,7 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     advanced: '高级设置',
     tenant: '租户 ID',
     subscription: '订阅名称或 ID',
+    cliAccount: 'Azure CLI 账户',
     cliDefault: 'Azure CLI 默认值',
     scope: '令牌范围',
     saveAndUse: '保存并使用',
@@ -124,6 +130,7 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     advanced: '進階設定',
     tenant: '租用戶 ID',
     subscription: '訂閱名稱或 ID',
+    cliAccount: 'Azure CLI 帳戶',
     cliDefault: 'Azure CLI 預設值',
     scope: '權杖範圍',
     saveAndUse: '儲存並使用',
@@ -143,6 +150,7 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     advanced: '詳細設定',
     tenant: 'テナント ID',
     subscription: 'サブスクリプション名または ID',
+    cliAccount: 'Azure CLI アカウント',
     cliDefault: 'Azure CLI の既定値',
     scope: 'トークンスコープ',
     saveAndUse: '保存して使用',
@@ -162,6 +170,7 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     advanced: 'Дополнительные настройки',
     tenant: 'ID арендатора',
     subscription: 'Имя или ID подписки',
+    cliAccount: 'Учётная запись Azure CLI',
     cliDefault: 'По умолчанию в Azure CLI',
     scope: 'Область токена',
     saveAndUse: 'Сохранить и использовать',
@@ -181,6 +190,7 @@ export const foundryTranslations: Record<BundledLocale, FoundryTranslations> = {
     advanced: 'إعدادات متقدمة',
     tenant: 'معرّف المستأجر',
     subscription: 'اسم الاشتراك أو معرّفه',
+    cliAccount: 'حساب Azure CLI',
     cliDefault: 'إعداد Azure CLI الافتراضي',
     scope: 'نطاق الرمز',
     saveAndUse: 'حفظ واستخدام',

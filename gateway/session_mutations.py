@@ -141,6 +141,20 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
                                 commit_lock=commit_lock)
 
 
+def _runtime_owns_authority(authority) -> bool:
+    """Whether *authority* is one of its own runner's authorities, so one process coordinates
+    both writes of a delete: the receipt commit to ``authority.db`` and the routing retire
+    through the runner store's routing index. Raw ``db_path`` equality only ever holds for the
+    launch home — the routing index is pinned to the launch home for every profile (#66887) —
+    so a multiplexed secondary profile's store never compares equal and each of its deletes
+    was refused with ``runtime_coordination_required`` (#138826)."""
+    runner = getattr(authority, 'runner', None)
+    registry = getattr(runner, 'session_authorities', None)
+    if registry is not None:
+        return any(a is authority for a in registry)
+    return getattr(runner, 'session_authority', None) is authority
+
+
 async def write_mutation(authority, ref, params, editor_servers, *, principal_id, authorize_write=None,
                          commit_lock=None):
     """The writer phase of ``session.mutate``, and of the admission-start editor MCP re-freeze
@@ -161,7 +175,7 @@ async def write_mutation(authority, ref, params, editor_servers, *, principal_id
         if operation == 'delete':
             store = getattr(authority.runner, 'session_store', None)
             if store is not None and (store._routing_db is None
-                    or store._routing_db.db_path != authority.db.db_path):
+                    or not _runtime_owns_authority(authority)):
                 raise RuntimeStoreError('runtime_coordination_required')
         if operation in {'rewind', 'reset'} and not callable(getattr(authority.runner, '_evict_cached_agent', None)):
             raise RuntimeStoreError('runtime_coordination_required')

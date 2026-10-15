@@ -318,3 +318,112 @@ class TestSymlinkSealedLaunchers:
         assert (link_dir / "hermes").read_text(encoding="utf-8-sig") == "#!/bin/sh\n# pipx launcher\n"
         assert os.readlink(link_dir / "hermes-agent") == str(other)
         assert sorted(result["written"]) == ["hermes-acp"]
+
+
+class TestWindowsUserBinPathRegistration:
+    """The User PATH is per-user shared state: only the host's durable install
+    may register its bin. A launch that merely borrows the checkout, or one
+    whose ``HERMES_HOME`` points at a disposable tree that owns itself (a
+    rehearsal sandbox, an orchestrator's per-task home) still publishes its own
+    bin, but must leave the host's `hermes` resolution alone (#135037)."""
+
+    @pytest.fixture
+    def registry(self, tmp_path, monkeypatch):
+        """The platform-default home relocated under tmp_path, with launcher
+        publication stubbed and the registry write spied -- the injected seams
+        discriminate on every OS; the real winreg write is Windows-only."""
+        from hermes_constants import _get_platform_default_hermes_home
+
+        monkeypatch.setenv("HERMES_DATA_DIR_SUFFIX", "-path-registration")
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        native = _get_platform_default_hermes_home()
+        registered = []
+        monkeypatch.setattr(
+            _launchers,
+            "ensure_install_launchers",
+            lambda _root, out: [
+                str(Path(out) / name) for name in _launchers.WINDOWS_BIN_LAUNCHERS
+            ],
+        )
+        monkeypatch.setattr(
+            _launchers,
+            "_register_windows_user_path",
+            lambda entry: registered.append(Path(entry)) or "added",
+        )
+        return native, registered
+
+    @staticmethod
+    def _home_owning_its_checkout(tmp_path: Path) -> tuple[Path, Path]:
+        """A home with the checkout and its committed install state inside it
+        -- the sandbox that installed the agent into its own tree."""
+        from pm.environments import install_key
+
+        foreign = tmp_path / "sandbox-home"
+        root = foreign / "hermes-agent"
+        root.mkdir(parents=True)
+        state = foreign / "installs" / install_key(root)
+        state.mkdir(parents=True)
+        (state / "facts.json").write_text("{}", encoding="utf-8")
+        return foreign, root
+
+    def test_a_self_owning_foreign_home_never_registers(
+        self, registry, tmp_path, monkeypatch
+    ):
+        """The temp-home incident: ``owning_home_root`` stays None (the tree
+        owns itself), so the discriminator must be the resolved root itself --
+        a per-task home piles one PATH entry per run until the value truncates."""
+        _native, registered = registry
+        foreign, root = self._home_owning_its_checkout(tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(foreign))
+        result = _launchers._expose_windows_user_bin(root, create=True)
+        assert result["skipped"] == "foreign-home"
+        # the host's `hermes` resolution is untouched
+        assert registered == []
+        # the sandbox's own bin is still published for its own children
+        assert (foreign / "bin").is_dir()
+
+    def test_a_borrowing_launch_never_registers_the_shared_user_path(
+        self, registry, tmp_path, monkeypatch
+    ):
+        """An owner home that committed install state for the checkout, plus a
+        foreign active home borrowing it."""
+        _native, registered = registry
+        _owner_home, root = self._home_owning_its_checkout(tmp_path)
+        borrower_home = tmp_path / "borrower-home"
+        borrower_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(borrower_home))
+        result = _launchers._expose_windows_user_bin(root, create=True)
+        assert result == {
+            "ok": True,
+            "skipped": "borrowed-root",
+            "written": list(_launchers.WINDOWS_BIN_LAUNCHERS),
+        }
+        # the host's `hermes` resolution keeps pointing at the owner
+        assert registered == []
+        # the borrower's own bin is still published
+        assert (borrower_home / "bin").is_dir()
+
+    def test_the_platform_default_home_still_registers_its_bin(
+        self, registry, tmp_path
+    ):
+        native, registered = registry
+        root = tmp_path / "checkout"
+        root.mkdir()
+        result = _launchers._expose_windows_user_bin(root, create=True)
+        assert result["path"] == "added"
+        assert registered == [native / "bin"]
+
+    def test_a_profile_of_the_default_home_still_registers(
+        self, registry, tmp_path, monkeypatch
+    ):
+        """A profile under the default home resolves to the default root and
+        keeps registering -- the gate must not over-block real profiles."""
+        native, registered = registry
+        monkeypatch.setenv("HERMES_HOME", str(native / "profiles" / "work"))
+        root = tmp_path / "checkout"
+        root.mkdir()
+        result = _launchers._expose_windows_user_bin(root, create=True)
+        assert result["path"] == "added"
+        assert registered == [native / "bin"]

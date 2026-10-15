@@ -74,23 +74,39 @@ class ProcessCheckpointMixin:
                 if extra_entries:
                     tracked_ids = {item.get("session_id") for item in entries}
                     entries.extend(item for item in extra_entries if item.get("session_id") not in tracked_ids)
+                known = {*self._running, *self._finished}
             from hermes_constants import mkdir_under_hermes_home
             from tools.skill_usage import skill_file_lock
             from utils import atomic_json_write
             path = _checkpoint_path()
             mkdir_under_hermes_home(path.parent)  # the lock file must not resurrect a deleted profile
             # Read-merge-write under a cross-process lock: rewriting the whole file with only this
-            # process's jobs erased the gateway's crash-recovery entries whenever a CLI spawned.
+            # process's jobs erased the gateway's crash-recovery entries whenever a CLI spawned, and
+            # a managed worker's output-log handoff is its only path to the next interpreter.
             with skill_file_lock(path.with_name(path.name + ".lock")):
                 try:
                     on_disk = json.loads(path.read_text(encoding="utf-8-sig"))
                 except (OSError, ValueError):
                     on_disk = []
-                kept = [e for e in on_disk
-                        if not _written_by(e, writer, lenient=False) and _entry_key(e) not in consumed]
+                kept = [e for e in on_disk if isinstance(e, dict)
+                        and not _written_by(e, writer, lenient=False) and _entry_key(e) not in consumed
+                        and self._foreign_entry_pending(e, known)]
                 atomic_json_write(path, kept + entries)
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
+
+    def _foreign_entry_pending(self, entry: dict[str, Any], known) -> bool:
+        """Whether another writer's entry still waits for recovery. A worker handoff (output log)
+        stays only while its log decides an outcome: the log exists, this registry never tracked
+        it, and the process is alive (same start time) or its recorded exit is waiting to be read."""
+        from pathlib import Path
+        from tools.process_registry_output_log import _exit_path, adoptable_log
+        if not entry.get("output_log"):
+            return True
+        log = adoptable_log(entry.get("output_log"))
+        return bool(log) and entry.get("session_id") not in known and Path(log).exists() and (
+            _exit_path(log).exists()
+            or self._detached_host_fate(entry.get("pid"), entry.get("host_start_time")) == "running")
 
     def recover_from_checkpoint(self) -> int:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many
@@ -99,6 +115,7 @@ class ProcessCheckpointMixin:
             ProcessSession, _CHECKPOINT_FIELDS, _checkpoint_path,
             _CHECKPOINT_DEFAULTS, _WATCHER_ROUTE_KEYS, _stop_systemd_unit,
         )
+        from tools.process_registry_output_log import adoptable_log
 
         checkpoint_path = _checkpoint_path()
         if not checkpoint_path.exists():
@@ -145,6 +162,11 @@ class ProcessCheckpointMixin:
             # completion. A positive mismatch means the number was recycled:
             # do not adopt it and do not signal it.
             fate = self._detached_host_fate(pid, entry.get("host_start_time"))
+            # A worker spawn's output log and recorded exit outlive both the spawner and the PID,
+            # so its reader decides the outcome (a recycled PID is never signalled: fate != running).
+            log = adoptable_log(entry.get("output_log"))
+            if log:
+                fate = "running"
             if fate == "reused":
                 logger.info(
                     "Not recovering session %s: pid %d is alive but its "
@@ -166,10 +188,15 @@ class ProcessCheckpointMixin:
                 command=entry.get("command", "unknown"),
                 owner_task_id=entry.get("owner_task_id", "") or entry.get("task_id", ""),
                 started_at=entry.get("started_at", time.time()))
-            # detached: can't read output, but can report status + kill
+            # detached: no Popen handle, but can report status + kill; a worker spawn's output log
+            # (and recorded exit) outlives its spawner, so tail it from the start.
+            fields["output_log"] = log
             session = ProcessSession(id=entry["session_id"], detached=True, **fields)
-            with self._lock:
-                self._running[session.id] = session
+            if session.output_log:
+                self._track_started(session, self._log_reader_loop, f"proc-log-reader-{session.id}")
+            else:
+                with self._lock:
+                    self._running[session.id] = session
             recovered += 1
             logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
             # Re-enqueue watcher so gateway can resume notifications

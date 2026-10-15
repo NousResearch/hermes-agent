@@ -102,6 +102,7 @@ def _gate(tmp_path: Path, origin: Path, entries: list[Path],
         # CI runs the step from the hermes-agent checkout; `-I` must ignore this.
         "PYTHONPATH": str(ROOT),
         "GIT_TERMINAL_PROMPT": "0",
+        "GITHUB_WORKSPACE": str(ROOT),
         "GIT_CONFIG_COUNT": "1",
         "GIT_CONFIG_KEY_0": f"url.{origin.as_uri()}.insteadOf",
         "GIT_CONFIG_VALUE_0": REPO_URL,
@@ -156,6 +157,18 @@ def _self_updater_in_spaced_dir(tp, origin, sha):
     return _entry(tp, "evil.yaml", _commit(origin)), "self-updating code"
 
 
+def _bundled_native_binary(tp, origin, sha):
+    # A PE binary committed in the plugin tree (README rule 17). Header, not ext.
+    (origin / "plugin" / "runtime").mkdir()
+    (origin / "plugin" / "runtime" / "host.exe").write_bytes(b"MZ\x90\x00" + b"\x00" * 64)
+    return _entry(tp, "evil.yaml", _commit(origin)), "unscannable executable payload"
+
+
+def _committed_bytecode(tp, origin, sha):
+    (origin / "plugin" / "mod.pyc").write_bytes(b"\x00" * 16)
+    return _entry(tp, "evil.yaml", _commit(origin)), "unscannable executable payload"
+
+
 def _log_forging_filename(tp, origin, sha):
     (origin / "plugin" / "evil\n::error::forged.js").write_text(
         "releases/latest writeFile(", encoding="utf-8")
@@ -176,6 +189,7 @@ def _shadowed_parser_import(tp, origin, sha):
 @pytest.mark.parametrize("case", [
     _traversal_subdir, _symlinked_subdir, _symlink_behind_in_clone_link, _tag_object_sha,
     _newline_sha, _log_forging_repo, _symlinked_entry_file, _self_updater_in_spaced_dir,
+    _bundled_native_binary, _committed_bytecode,
     _log_forging_filename, _shadowed_parser_import,
 ], ids=lambda f: f.__name__.lstrip("_"))
 def test_bypass_fails_the_gate(tmp_path, origin, case):

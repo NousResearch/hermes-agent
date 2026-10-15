@@ -7,6 +7,8 @@ import secrets
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from tests.gateway.test_managed_turn_contract import assignment
 
 BASE_URL = 'https://api.minimax.io/anthropic'
@@ -26,13 +28,15 @@ def _minimax_frame(tmp_path, monkeypatch, api_key=None):
     return {**frame, 'policy': policy, 'api_key': api_key}
 
 
-def _execute(frame, monkeypatch):
+def _execute(frame, monkeypatch, base=object, built=None):
     from agent import managed_worker as worker
-    built = {}
+    built = {} if built is None else built
 
-    class Agent:
+    class Agent(base):
         def __init__(self, **kwargs):
             built.update(kwargs)
+            if base is not object:
+                super().__init__(**kwargs)
             self.session_prompt_tokens = self.session_completion_tokens = 0
         def run_conversation(self, text, **kwargs):
             return {'final_response': 'ok', 'completed': True}
@@ -115,3 +119,58 @@ def test_primary_auth_failure_never_borrows_a_fallback_providers_key(tmp_path, m
     monkeypatch.setattr('hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', lambda **kw: None)
     built = _execute(_minimax_frame(tmp_path, monkeypatch), monkeypatch)
     assert calls and built['api_key'] is None
+
+
+def _kanban_failures():
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.auth import AuthError
+    from hermes_cli.auth_constants import CODEX_RATE_LIMITED_CODE
+    return [(AuthError('quota', provider='openai-codex', code=CODEX_RATE_LIMITED_CODE), kb.KANBAN_RATE_LIMIT_EXIT_CODE),
+            (AuthError('relogin', provider='nous', relogin_required=True), kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE)]
+
+
+@pytest.mark.parametrize('error, expected', _kanban_failures())
+def test_keyless_worker_credential_failure_keeps_the_kanban_start_exit(tmp_path, monkeypatch, error, expected):
+    """An AuthError from the key-less worker's own route resolution goes through the worker's real
+    start-failure path (``execute`` -> ``_construct_agent`` -> ``record_start_failure``): a quota wall
+    books 75, a re-login 78, and the agent is never built."""
+    from gateway import session_kanban
+    from tests.gateway.test_kanban_result_exit import _bound_claim
+    path, context = _bound_claim(tmp_path / 'kanban', monkeypatch)
+    frame = _minimax_frame(tmp_path, monkeypatch)
+    frame = {**frame, 'policy': {**frame['policy'], 'kanban_json': json.dumps(context)}}
+
+    def resolve(**kwargs):
+        raise error
+    monkeypatch.setattr('hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', resolve)
+    # Only the HERMES_KANBAN_* environment binding is skipped (it writes os.environ directly).
+    monkeypatch.setattr(session_kanban, 'bind_worker_context', lambda frame: None)
+    built = {}
+    with pytest.raises(type(error)):
+        _execute(frame, monkeypatch, built=built)
+    assert built == {}
+    assert session_kanban.worker_exit_code(path, context) == expected
+
+
+def test_keyless_worker_on_a_fallback_never_sends_its_key_to_the_primary_endpoint(tmp_path, monkeypatch):
+    """Resolution landing on a configured fallback: the real agent's primary (MiniMax, Anthropic
+    protocol) client is built without the fallback provider's key. Asserted where the HTTP client
+    is constructed; this does not drive a turn through the fallback."""
+    fallback_key = 'fake-fallback-' + secrets.token_hex(8)
+    monkeypatch.delenv(KEY_ENV, raising=False)
+    monkeypatch.setattr('hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', lambda **kw: None)
+    monkeypatch.setattr('hermes_cli.runtime_provider.resolve_runtime_with_fallback', lambda config, **kw: (
+        {'provider': 'openrouter', 'api_key': fallback_key, 'base_url': 'https://openrouter.ai/api/v1'},
+        {'provider': 'openrouter', 'model': 'fallback-model'}))
+    clients = []
+
+    def build_anthropic_client(api_key, base_url=None, timeout=None, **kwargs):
+        clients.append((api_key, base_url))
+        return SimpleNamespace()
+    monkeypatch.setattr('agent.anthropic_adapter.build_anthropic_client', build_anthropic_client)
+    from run_agent import AIAgent
+    built = _execute(_minimax_frame(tmp_path, monkeypatch), monkeypatch, base=AIAgent)
+    primary = [key for key, base_url in clients if base_url == BASE_URL]
+    assert primary and fallback_key not in primary
+    assert all(fallback_key != key for key, _ in clients)
+    assert built['api_key'] is None

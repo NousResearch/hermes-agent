@@ -665,11 +665,8 @@ class GatewayBusySessionMixin:
         """Route exact approval words or an explicit final-line command before busy handling."""
         if not event.allow_gateway_control:
             return None
-        try:
-            from tools.approval import has_blocking_approval
-            if not has_blocking_approval(session_key):
-                return None
-        except Exception:
+        from tools.approval import has_blocking_approval
+        if not has_blocking_approval(session_key):
             return None
 
         full_text = (event.text or "").strip()

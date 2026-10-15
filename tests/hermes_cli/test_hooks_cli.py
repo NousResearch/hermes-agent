@@ -202,6 +202,48 @@ class TestHooksDoctor:
         assert "skipped JSON smoke test" in out
 
 
+_MISSING_HOOK = "hooks:\n  pre_tool_call:\n    - matcher: terminal\n      command: {missing}\n"
+
+
+@pytest.mark.parametrize("config_text, expected", [
+    (_MISSING_HOOK, 1),
+    (_MISSING_HOOK + "notify:\n  channels: [slack\n", 2),  # unrelated YAML error hides every hook
+    ("hooks:\n  pre_tool_call: 42\n", 1),  # malformed entry the parser skips
+], ids=["missing-script", "unreadable-config", "malformed-entry"])
+def test_doctor_process_exit_status_is_never_a_pass_for_a_hook_it_could_not_vouch_for(
+        tmp_path, config_text, expected):
+    """`hermes hooks doctor` is the check an operator scripts before trusting a hook (#90047). It
+    exited 0 on "N issue(s) found", and on a config it could not read or a hook entry the parser
+    dropped it said "nothing to check" and exited 0 too. Run as a real process, since the status
+    was lost on its way out of the `hermes hooks` entry point."""
+    import os
+    import subprocess
+    import sys
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        config_text.format(missing=tmp_path / "gone" / "guard.py"), encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "hooks", "doctor"],
+        cwd=Path(__file__).resolve().parents[2], env={**os.environ, "HERMES_HOME": str(home)},
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=90,
+    )
+    assert result.returncode == expected, result.stdout + result.stderr
+
+
+def test_doctor_exit_status_is_success_for_a_healthy_hook(tmp_path):
+    from hermes_cli.main import cmd_hooks
+
+    script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\n'\n")
+    shell_hooks._record_approval("on_session_start", str(script))
+    cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
+    with patch("hermes_cli.config.load_config", return_value=cfg), redirect_stdout(io.StringIO()) as out:
+        rc = cmd_hooks(SimpleNamespace(hooks_action="doctor"))
+    assert "All shell hooks look healthy." in out.getvalue()
+    assert not rc
+
+
 def test_print_run_result_shows_decision_for_error_and_timeout():
     """A failing hook's decision must be printed, not hidden by early returns (#115968).
 

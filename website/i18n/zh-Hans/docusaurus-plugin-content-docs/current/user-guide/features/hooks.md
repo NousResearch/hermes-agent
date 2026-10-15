@@ -1358,7 +1358,7 @@ printf '{}\n'
 | `hermes hooks list` | 列出已配置的 hook，包含 matcher、超时和授权状态 |
 | `hermes hooks test <event> [--for-tool X] [--payload-file F]` | 对合成载荷触发所有匹配的 hook 并打印解析后的响应 |
 | `hermes hooks revoke <command>` | 删除所有匹配 `<command>` 的允许列表条目（下次重启后生效） |
-| `hermes hooks doctor` | 对每个已配置的 hook 检查：执行位、允许列表状态、mtime 漂移、JSON 输出有效性和大致执行时间 |
+| `hermes hooks doctor` | 对每个已配置的 hook 检查：执行位、允许列表状态、mtime 漂移、JSON 输出有效性和大致执行时间；同时报告因格式错误而被跳过的 `hooks:` 条目。健康或未配置时退出码为 `0`，任一检查失败时为 `1`，`config.yaml` 无法读取（因此未检查任何 hook）时为 `2`。它在你运行它的 shell 中检查；作为服务运行的 gateway 可能看到不同的文件系统和 `HERMES_HOME` |
 
 ### 安全性
 

@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 
-def hooks_command(args) -> None:
-    """Entry point for ``hermes hooks`` — dispatches to the requested action."""
+def hooks_command(args):
+    """Entry point for ``hermes hooks`` — dispatches to the requested action; returns its exit code."""
     sub = getattr(args, "hooks_action", None)
     if not sub:
         print("Usage: hermes hooks {list|test|revoke|doctor}")
@@ -17,8 +17,8 @@ def hooks_command(args) -> None:
     handler = _ACTIONS.get(sub)
     if handler is None:
         print(f"Unknown hooks subcommand: {sub}")
-        return
-    handler(args)
+        return 1
+    return handler(args)
 
 
 # ---------------------------------------------------------------------------
@@ -268,21 +268,59 @@ def _cmd_revoke(args) -> None:
     )
 
 
-def _cmd_doctor(_args) -> None:
-    from hermes_cli.config import load_config
+def _cmd_doctor(_args) -> int:
+    """0 healthy or nothing configured, 1 when any check fails, 2 when config.yaml could not be read
+    so nothing was checked; a script can gate on it (#90047)."""
+    from hermes_cli.config import get_config_path, load_config
+    from hermes_cli.config_read_errors import FailedConfigRead
     from agent import shell_hooks
 
-    specs = shell_hooks.iter_configured_hooks(load_config())
-    if not specs:
+    cfg = load_config()
+    if isinstance(cfg, FailedConfigRead):
+        # The fallback (defaults or a last good copy) is not the file the user wrote, so its hooks
+        # prove nothing; "nothing configured" here read as a pass while every hook was hidden.
+        print(f"Could not read {get_config_path()}, so no hook was checked. "
+              "Fix it (`hermes config check`) and re-run.")
+        return 2
+    specs, entry_problems = _configured_hooks_with_warnings(cfg, shell_hooks)
+    if not specs and not entry_problems:
         print("No shell hooks configured — nothing to check.")
-        return
-    print(f"Checking {len(specs)} configured shell hook(s)...\n")
-    problems = 0
+        return 0
+    for msg in entry_problems:
+        print(f"  ✗ config: {msg}")
+    if entry_problems:
+        print()
+    problems = len(entry_problems)
+    if specs:
+        print(f"Checking {len(specs)} configured shell hook(s)...\n")
     for spec in specs:
         print(f"  [{spec.event}] {spec.command}")
         problems += _doctor_one(spec, shell_hooks)
         print()
     print(f"{problems} issue(s) found.  Fix before relying on these hooks." if problems else "All shell hooks look healthy.")
+    # A gateway running as a service can see a different filesystem and HERMES_HOME, so a hook that is
+    # green here can still be unreachable, or unapproved, where it actually fires.
+    print("Checked from this shell. A gateway running as a service may resolve these paths and "
+          "approvals differently; `fail_closed: true` makes a blocking hook refuse instead of failing open.")
+    return 1 if problems else 0
+
+
+def _configured_hooks_with_warnings(cfg, shell_hooks):
+    """Parsed specs plus the parser's warnings. The parser warn-and-skips a malformed entry (so the
+    gateway never crashes on one), which left doctor reporting "nothing configured" for a hook that
+    will never fire; those warnings only reach the log, so collect them here as doctor problems."""
+    import logging
+
+    warnings: List[str] = []
+    collector = logging.Handler(logging.WARNING)
+    collector.emit = lambda record: warnings.append(record.getMessage())
+    parser_log = logging.getLogger(shell_hooks.__name__)
+    parser_log.addHandler(collector)
+    try:
+        specs = shell_hooks.iter_configured_hooks(cfg)
+    finally:
+        parser_log.removeHandler(collector)
+    return specs, warnings
 
 
 def _doctor_one(spec, shell_hooks) -> int:

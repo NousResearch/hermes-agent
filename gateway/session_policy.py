@@ -222,14 +222,17 @@ def profile_target(config):
     return (model.strip() if isinstance(model, str) else ''), ''
 
 
+def model_route(block):
+    """``(provider, endpoint)`` identity of a ``model:`` block: what an endpoint-bound credential belongs to."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    block = block if isinstance(block, dict) else {}
+    return str(block.get('provider') or '').strip().lower(), normalize_route_base_url(block.get('base_url'))
+
+
 def _held_pick(frozen, live):
     """A pick that still holds keeps its selection; on the profile's own endpoint the rest of the
     ``model:`` block (a rotated key included) is the profile's. Another endpoint never gets it."""
-    from hermes_cli.route_identity import normalize_route_base_url
-
-    def route(block):
-        return str(block.get('provider') or '').strip().lower(), normalize_route_base_url(block.get('base_url'))
-    if route(frozen) != route(live):
+    if model_route(frozen) != model_route(live):
         return frozen
     return {**{k: v for k, v in live.items() if k not in SELECTION_KEYS},
             **{k: frozen[k] for k in SELECTION_KEYS if k in frozen}}
@@ -611,6 +614,15 @@ def launch_key(authority, policy):
     return value
 
 
+def route_launch_key(authority, policy, config):
+    """The launch key a turn on *config* (the route it runs, a followed profile's included) sends.
+    A launch key authenticates the frozen route it was bound with: once the followed profile
+    supersedes that pick and moves to another endpoint, the key stays behind with its route."""
+    if model_route(policy.config().get('model')) != model_route(config.get('model')):
+        return None
+    return launch_key(authority, policy)
+
+
 def restore_policy(data):
     """Reject incomplete private policy rather than rebuilding from current defaults."""
     try:
@@ -691,6 +703,18 @@ def policy_scope(policy, *, authority=None):
         reset_terminal_scope(terminal_token)
         cwd_token.var.reset(cwd_token)
         _TURN_PROFILE.reset(profile_token)
+
+
+@contextmanager
+def profile_read_scope(policy, authority):
+    """Hold ONE read of a following session's profile for every resolution inside, as a turn's
+    ``policy_scope`` does, without that scope's workspace and terminal setup (a session control
+    reads the route, it runs nothing)."""
+    token = _TURN_PROFILE.set((policy, policy.read_profile(authority)))
+    try:
+        yield
+    finally:
+        _TURN_PROFILE.reset(token)
 
 
 def active_policy():

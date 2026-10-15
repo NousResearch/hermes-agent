@@ -39,20 +39,23 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
-def _resolve_policy_agent_runtime(runner, policy) -> tuple[str, dict]:
+def _resolve_policy_agent_runtime(runner, policy, *, fallback=True) -> tuple[str, dict]:
     """``_resolve_session_agent_runtime`` for a session bound to a launch policy: the route's FROZEN
-    config and launch credential, walking its own fallback chain on an AuthError. Module-level so
-    tests that bind the method onto bare namespaces still reach it."""
+    config and launch credential, walking its own fallback chain on an AuthError unless
+    ``fallback=False`` (a session control asking which route the session itself runs). Module-level
+    so tests that bind the method onto bare namespaces still reach it."""
     from gateway.run import _runtime_agent_kwargs
-    from gateway.session_policy import launch_key
-    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_with_fallback
+    from gateway.session_policy import route_launch_key
+    from hermes_cli.runtime_provider import (
+        frozen_runtime_config, resolve_runtime_provider, resolve_runtime_with_fallback,
+    )
     from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
     from gateway.session_authorities import active_authority
     authority = active_authority(runner)
     # A follow_profile_config session's route is the profile's current one, model and endpoint from one read.
     frozen, model = policy.effective(authority)
     provider = (frozen.get('model') or {}).get('provider')
-    key = launch_key(authority, policy)
+    key = route_launch_key(authority, policy, frozen)
     launch_url = json.loads(policy.request_json).get('base_url')
     if launch_url:
         # The creation request is immutable identity, not the current selection: once a canonical
@@ -76,8 +79,12 @@ def _resolve_policy_agent_runtime(runner, policy) -> tuple[str, dict]:
             # route's own ``fallback_providers`` before the turn is refused. Only a launch URL is
             # explicit (classic one-shot parity): the frozen ``model.base_url`` is resolved by
             # the provider chain, which keeps the credential pool an explicit URL would drop.
-            runtime, fallback_entry = resolve_runtime_with_fallback(frozen, requested=provider,
-                explicit_api_key=key, explicit_base_url=launch_url, target_model=model)
+            if fallback:
+                runtime, fallback_entry = resolve_runtime_with_fallback(frozen, requested=provider,
+                    explicit_api_key=key, explicit_base_url=launch_url, target_model=model)
+            else:
+                runtime, fallback_entry = resolve_runtime_provider(requested=provider, target_model=model,
+                    explicit_base_url=launch_url, explicit_api_key=key), None
         else:
             fallback_entry = None
     if fallback_entry is not None:
@@ -119,12 +126,13 @@ def _recover_or_remember_model(runner, skey, model):
 class GatewayTurnPrepareMixin:
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
-        user_config: Optional[dict] = None,
+        user_config: Optional[dict] = None, fallback: bool = True,
     ) -> tuple[str, dict]:
         """Resolve model/runtime for a session.
 
         Priority (highest first): session ``/model`` → ``channel_overrides`` → global config/env
-        (``_resolve_gateway_model(user_config)`` and default provider resolution)."""
+        (``_resolve_gateway_model(user_config)`` and default provider resolution). ``fallback=False``
+        keeps a launch-policy session on its own route (see ``_resolve_policy_agent_runtime``)."""
         from gateway.run import (
             _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
             _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
@@ -135,7 +143,7 @@ class GatewayTurnPrepareMixin:
         self._pre_agent_fallback_notice = None
         policy = policy_for_source(self, source) if source is not None else None
         if policy is not None:
-            return _resolve_policy_agent_runtime(self, policy)
+            return _resolve_policy_agent_runtime(self, policy, fallback=fallback)
         skey = self._resolve_session_key_or_none(source, session_key)
         model = _resolve_gateway_model(user_config)
         if skey:

@@ -86,12 +86,11 @@ class TurnContext:
     _status_adapter: Any = None
     _status_chat_id: Any = None
     _status_thread_metadata: Optional[dict] = None
-    # Footer latency measured across run_sync by _run_agent_inner (0.0 only before the worker runs).
+    # Footer latency measured across run_sync by _run_agent_inner; None until measured.
     turn_started_monotonic: Optional[float] = None
-    turn_seconds: float = 0.0
-    # Chain-shared footer-delivery fact: recursive queued follow-ups return different
-    # result dicts, while the outer TurnContext is shared down the whole chain.
-    runtime_footer_already_delivered: bool = False
+    turn_seconds: Optional[float] = None
+    # Delivery receipt for THIS turn's queued first response, owned by its response dict.
+    queued_footer_delivery: Optional[dict[str, Any]] = None
     # bound TurnRunner callbacks read via ctx
     progress_callback: Optional[Callable] = None
     voice_ack_callback: Optional[Callable] = None

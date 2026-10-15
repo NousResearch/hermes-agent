@@ -57,15 +57,20 @@ def load_state() -> dict[str, Any]:
     return base
 
 
-def save_state(data: dict[str, Any]) -> None:
+def save_state(data: dict[str, Any]) -> bool:
+    """Persist the state file; ``False`` (logged at WARNING) when the write fails, so
+    callers that must confirm a flag landed (``set_paused``) can fail visibly instead
+    of reporting success for a write that never reached disk (#139438)."""
     try:
         atomic_json_write(_state_file(), data, indent=2, sort_keys=True)
     except Exception as e:
-        logger.debug("Failed to save curator state: %s", e, exc_info=True)
+        logger.warning("Failed to save curator state: %s", e, exc_info=True)
+        return False
+    return True
 
 
-def set_paused(paused: bool) -> None:
-    save_state({**load_state(), "paused": bool(paused)})
+def set_paused(paused: bool) -> bool:
+    return save_state({**load_state(), "paused": bool(paused)})
 
 
 def is_paused() -> bool:

@@ -98,14 +98,6 @@ def _release_db(db) -> None:
         release_or_close(db)
 
 
-def _branch_title(db, parent_key: str) -> str:
-    """Next title in the parent's lineage (mirrors the TUI /branch naming)."""
-    current = db.get_session_title(parent_key) or "branch"
-    if hasattr(db, "get_next_title_in_lineage"):
-        return db.get_next_title_in_lineage(current)
-    return f"{current} (branch)"
-
-
 def _cwd_info(session: dict, cwd: str, branch=None) -> dict:
     """session.info after a cwd change: the full agent view, or the lazy shape."""
     if (agent := session.get("agent")) is not None:
@@ -282,7 +274,7 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         from hermes_state_errors import is_disk_full_error
         if compensate and not is_disk_full_error(exc):
             try:
-                db.delete_session(new_key)
+                db.discard_unadmitted_session(new_key)
             except Exception:
                 logger.debug("branch seed compensation delete failed for %s", new_key, exc_info=True)
         raise
@@ -324,7 +316,7 @@ def _seed_row(record: dict) -> None:
     if not record.get("_branch_seed_persisted"):
         with contextlib.suppress(Exception), _session_db(record) as db:
             if db is not None:
-                db.delete_session(key)
+                db.discard_unadmitted_session(key)
         return
     try:
         if title := record.get("pending_title"):
@@ -1180,6 +1172,7 @@ def _(rid, params: dict, session: dict) -> dict:
 @method("session.delete")
 def _(rid, params: dict) -> dict:
     """Delete a stored session + transcripts; refused while live here (FK trips on the agent's next flush)."""
+    from agent.onboarding_record import delete_chat
     from hermes_state_errors import SessionActiveWriteGuardError  # body runs on server.py globals
 
     if not (target := params.get("session_id", "")):
@@ -1195,7 +1188,8 @@ def _(rid, params: dict) -> dict:
             return _db_unavailable_error(rid, code=5036)
         try:
             home = Path(profile_home) if profile_home is not None else get_hermes_home()
-            deleted = db.delete_session(target, sessions_dir=home / "sessions", exclude_active_write_guards=True)
+            deleted = delete_chat(db, target, lambda: db.delete_session(
+                target, sessions_dir=home / "sessions", exclude_active_write_guards=True))
         except SessionActiveWriteGuardError:
             return _err(rid, 4023, "cannot delete an active session")
         except Exception as e:

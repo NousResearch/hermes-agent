@@ -172,6 +172,36 @@ def test_unknown_trust_value_disables_package(tmp_path: Path) -> None:
         load_agent_plugin(tmp_path, tmp_path / "data")
 
 
+@pytest.mark.parametrize("transport", ["stdio", "streamable-http"])
+def test_server_timeout_is_opt_in_and_scoped_to_its_server(tmp_path: Path, transport: str) -> None:
+    from tools.mcp_tool_common import _resolve_tool_timeout
+
+    server = {"type": "stdio", "command": "python"} if transport == "stdio" else {
+        "type": "streamable-http", "url": "https://mcp.example.com/mcp"}
+    _write_json(tmp_path / "mcp.json", {
+        "$schema": MCP_SCHEMA_V1, "mcpServers": {"slow": server, "ordinary": server}})
+    for settings in ({}, {"timeout": 1000, "trust": "untrusted"}, {}):
+        _write_json(tmp_path / "plugin.json", _manifest(extensions={
+            "com.nousresearch.hermes": {"servers": {"slow": settings}}} if settings else {}))
+        package = load_agent_plugin(tmp_path, tmp_path / "data")
+        assert "timeout" not in package.mcp_servers["ordinary"]
+        assert "slow" not in package.server_declarations
+        if settings:
+            assert _resolve_tool_timeout(package.mcp_servers["slow"]) == 1000
+            assert package.mcp_servers["slow"]["trust"] == "untrusted"
+        else:
+            assert "timeout" not in package.mcp_servers["slow"]
+
+
+@pytest.mark.parametrize("timeout", [True, None, "1000", 0, -1, float("inf"), float("nan")])
+def test_server_timeout_rejects_invalid_deadlines(tmp_path: Path, timeout: object) -> None:
+    _remote_package(tmp_path)
+    _write_json(tmp_path / "plugin.json", _manifest(extensions={
+        "com.nousresearch.hermes": {"servers": {"trade": {"timeout": timeout}}}}))
+    with pytest.raises(AgentPluginError, match="timeout must be"):
+        load_agent_plugin(tmp_path, tmp_path / "data")
+
+
 def test_unknown_fields_and_non_object_extensions_are_nonfatal(tmp_path: Path) -> None:
     _write_json(
         tmp_path / "plugin.json",

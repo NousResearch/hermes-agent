@@ -292,6 +292,106 @@ class TestLazyFirstUseConnect:
 
         mock_dereg.assert_called_once_with("mcp_playwright_tool_x", scope=None)
 
+    def test_lazy_connect_keeps_foreign_owned_cached_name(self):
+        # A cached manifest name another toolset acquired before the first live
+        # connect is not this server's phantom: the cleanup must leave the foreign
+        # registration alone while still dropping names mcp-playwright owns.
+        from tools.registry import registry
+
+        foreign_tool = "mcp_playwright_tool_x"
+        owned_phantom = "mcp_playwright_tool_z"
+        registry.register(
+            name=foreign_tool,
+            toolset="other_toolset",
+            schema={"name": foreign_tool, "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *a, **k: "{}",
+        )
+        registry.register(
+            name=owned_phantom,
+            toolset="mcp-playwright",
+            schema={"name": owned_phantom, "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *a, **k: "{}",
+        )
+        try:
+            mcp._lazy_server_configs["playwright"] = {"command": "npx", "lazy": True}
+            mcp._lazy_server_fingerprints["playwright"] = "stale-fp"
+            mcp._lazy_server_tool_names["playwright"] = [
+                foreign_tool, owned_phantom, "mcp_playwright_tool_y"]
+
+            connected = SimpleNamespace(
+                session=MagicMock(),
+                _registered_tool_names=["mcp_playwright_tool_y"],
+            )
+
+            def _fake_run(coro_or_factory, timeout=30):
+                mcp._servers["playwright"] = connected
+                coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+                coro.close()
+                return ["mcp_playwright_tool_y"]
+
+            with patch.object(_mcp_loop, "_ensure_mcp_loop"), \
+                 patch.object(_mcp_loop, "_run_on_mcp_loop", side_effect=_fake_run):
+                assert _mcp_discovery._ensure_lazy_server_connected("playwright") is True
+
+            assert registry.get_toolset_for_tool(foreign_tool) == "other_toolset"
+            assert registry.snapshot_registration(owned_phantom) is None
+        finally:
+            registry.deregister(foreign_tool, scope=None)
+            registry.deregister(owned_phantom, scope=None)
+
+    def test_forget_lazy_server_keeps_foreign_owned_cached_name(self):
+        # _forget_lazy_server drops the same cached manifest when the config entry is
+        # removed; a name a foreign toolset owns must survive that sweep too.
+        from tools.registry import registry
+
+        foreign_tool = "mcp_playwright_tool_x"
+        registry.register(
+            name=foreign_tool,
+            toolset="other_toolset",
+            schema={"name": foreign_tool, "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *a, **k: "{}",
+        )
+        try:
+            mcp._lazy_server_configs["playwright"] = {"command": "npx", "lazy": True}
+            mcp._lazy_server_tool_names["playwright"] = [foreign_tool]
+
+            _mcp_discovery._forget_lazy_server("playwright")
+
+            assert registry.get_toolset_for_tool(foreign_tool) == "other_toolset"
+            assert "playwright" not in mcp._lazy_server_tool_names
+        finally:
+            registry.deregister(foreign_tool, scope=None)
+
+    def test_remove_server_scope_keeps_foreign_overlay_entry(self):
+        # Removing one profile's overlay for a shared connection must only drop the
+        # entries mcp-<srv> owns in that scope's slot, not a foreign override of the
+        # same name.
+        from tools.registry import registry
+
+        foreign_scoped = "mcp_srv_tool_x"
+        owned_scoped = "mcp_srv_tool_y"
+        schema = {"name": "t", "parameters": {"type": "object", "properties": {}}}
+        registry.register(foreign_scoped, "mcp-srv", dict(schema, name=foreign_scoped),
+                          lambda *a, **k: "{}", scope=None)
+        registry.register(foreign_scoped, "other_toolset", dict(schema, name=foreign_scoped),
+                          lambda *a, **k: "{}", override=True, scope="p1")
+        registry.register(owned_scoped, "mcp-srv", dict(schema, name=owned_scoped),
+                          lambda *a, **k: "{}", scope=None)
+        registry.register(owned_scoped, "mcp-srv", dict(schema, name=owned_scoped),
+                          lambda *a, **k: "{}", scope="p1")
+        try:
+            _mcp_registration._remove_server_scope("srv", "p1")
+
+            assert registry.snapshot_registration(foreign_scoped, scope="p1") is not None
+            assert registry.get_toolset_for_tool(foreign_scoped) in ("mcp-srv", "other_toolset")
+            assert registry.snapshot_registration(owned_scoped, scope="p1") is None
+            assert registry.snapshot_registration(owned_scoped, scope=None) is not None
+        finally:
+            registry.deregister(foreign_scoped, scope="p1")
+            registry.deregister(foreign_scoped, scope=None)
+            registry.deregister(owned_scoped, scope="p1")
+            registry.deregister(owned_scoped, scope=None)
+
     def test_lazy_connect_failure_records_cooldown(self):
         mcp._lazy_server_configs["playwright"] = {"command": "npx", "lazy": True}
 

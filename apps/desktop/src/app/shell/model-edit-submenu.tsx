@@ -104,7 +104,7 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
   // submenu is ever open. Keep this wrapper hook-free and render the body as
   // a CHILD of SubContent so Radix's Presence gate leaves it unrendered until
   // the sub actually opens — eagerly running the body's hooks/JSX for every
-  // row made opening the menu itself lag on large catalogs.
+  //row made opening the menu itself lag on large catalogs.
   return (
     <DropdownMenuSubContent className="w-52 p-0" sideOffset={4}>
       <ModelOptionsContent {...props} />
@@ -117,16 +117,20 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
  *  keyboard navigation skips it. */
 function ModelPricingSection({ pricing }: { pricing: ModelPricing }) {
   return (
-    <dl>
-      <div>
-        <dt>Input</dt>
-        <dd>{pricing.input}</dd>
-      </div>
-      <div>
-        <dt>Output</dt>
-        <dd>{pricing.output}</dd>
-      </div>
-    </dl>
+    <>
+      <DropdownMenuSeparator className="mx-0" />
+      <DropdownMenuLabel className={dropdownMenuSectionLabel}>Pricing · per 1M tokens</DropdownMenuLabel>
+      <dl>
+        <div>
+          <dt>Input</dt>
+          <dd>{pricing.input}</dd>
+        </div>
+        <div>
+          <dt>Output</dt>
+          <dd>{pricing.output}</dd>
+        </div>
+      </dl>
+    </>
   )
 }
 

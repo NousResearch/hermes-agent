@@ -147,4 +147,15 @@ describe('ModelEditSubmenu pricing section', () => {
     expect(screen.getByText('Output')).toBeTruthy()
     expect(screen.getByText('$15.00')).toBeTruthy()
   })
+
+  it('labels the section like the other submenu sections', () => {
+    renderSubmenu({
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      pricing: { free: false, input: '$3.00', output: '$15.00' },
+      reasoning: true
+    })
+
+    expect(screen.getByText('Pricing · per 1M tokens')).toBeTruthy()
+  })
 })

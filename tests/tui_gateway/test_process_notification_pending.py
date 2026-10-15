@@ -141,12 +141,14 @@ def test_completion_pending_survives_public_exit_dequeue_and_busy_turn(delivery,
     assert registry.completion_queue.qsize() == 1  # busy requeue is NOT acceptance
     session["running"] = False
 
-    def accepted(_rid, _sid, target, text):
+    def accepted(_rid, sid, target, text, **_kwargs):
         assert "finished" in str(text)
         assert rows()[proc.id]["notification_pending"] is True
         target["running"] = False
         if settlement == "dispatch_error":
             raise RuntimeError("bounded test dispatch failure")
+        server._emit("message.start", sid)  # an accepted turn starts its message, as _run_prompt_submit does
+        return True  # the execution gate accepted the turn
 
     monkeypatch.setattr(server, "_run_prompt_submit", accepted)
 
@@ -296,10 +298,12 @@ def test_watch_pending_bridges_first_hit_until_each_notice_is_settled(delivery, 
     assert rows()[proc.id]["status"] == "exited"
     assert rows()[proc.id]["notification_pending"] is True
 
-    def accepted(_rid, _sid, target, text):
+    def accepted(_rid, sid, target, text, **_kwargs):
         assert "READY" in str(text)
         assert rows()[proc.id]["notification_pending"] is True
         target["running"] = False
+        server._emit("message.start", sid)  # an accepted turn starts its message, as _run_prompt_submit does
+        return True  # the execution gate accepted the turn
 
     monkeypatch.setattr(server, "_run_prompt_submit", accepted)
     session["running"] = True

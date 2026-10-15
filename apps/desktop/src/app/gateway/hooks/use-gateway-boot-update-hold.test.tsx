@@ -66,7 +66,6 @@ function fakeDesktop() {
     onPowerResume: vi.fn(unsubscribe),
     revalidateConnection: vi.fn(async () => ({ ok: true, rebuilt: false })),
     onWindowStateChanged: vi.fn(unsubscribe),
-    touchBackend: vi.fn(async () => undefined),
     profile: { get: vi.fn(async () => ({ profile: 'default' })) }
   }
 }

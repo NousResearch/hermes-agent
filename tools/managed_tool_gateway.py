@@ -37,7 +37,7 @@ def auth_json_path():
 
 
 def _read_nous_provider_state() -> Optional[dict]:
-    """The profile's Nous state, or None. A free-tier identity counts only while the free tier is on:
+    """The profile's Nous state, or None. A free-tier identity counts only while guests are allowed:
     with ``nous.guest: false`` it is invisible here, so no cached or refreshed token of it is ever
     attached to a request.
 
@@ -51,9 +51,9 @@ def _read_nous_provider_state() -> Optional[dict]:
         nous_provider = get_provider_auth_state("nous")
         if not isinstance(nous_provider, dict):
             return None
-        from hermes_cli.anon_auth import guest_enabled, is_guest_state
+        from hermes_cli.anon_auth import guest_allowed, is_guest_state
 
-        if is_guest_state(nous_provider) and not guest_enabled():
+        if is_guest_state(nous_provider) and not guest_allowed():
             return None
         return nous_provider
     except Exception:
@@ -86,7 +86,7 @@ def read_nous_access_token() -> Optional[str]:
     """Read a Nous Subscriber OAuth access token from auth store or env override.
 
     A read: with no Nous identity there is no bearer and the answer is None. The free-tier identity
-    is created by the boot bootstrap (``hermes_cli.free_tier_bootstrap``), never on a token-read
+    is created by the boot bootstrap or the first hosted connector action, never on a token-read
     path (NS-845 Q1.2). A retired free-tier credential IS replaced here, once: that is the explicit
     dead-credential rule, shared with inference.
     """

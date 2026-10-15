@@ -74,6 +74,22 @@ export function readLocalSetupEligibility(): Promise<Eligibility> {
   return cached && !cached.transient ? Promise.resolve(cached) : refreshLocalSetupEligibility()
 }
 
+/** The answer once a connection is up: before that there is no machine to read, so it waits for one. */
+export function readConnectedLocalSetupEligibility(): Promise<Eligibility> {
+  if ($connection.get()?.mode) {
+    return readLocalSetupEligibility()
+  }
+
+  return new Promise(resolve => {
+    const stop = $connection.listen(connection => {
+      if (connection?.mode) {
+        stop()
+        resolve(readLocalSetupEligibility())
+      }
+    })
+  })
+}
+
 /** Read again, keeping the current answer on screen until the new one lands. */
 export function refreshLocalSetupEligibility(): Promise<Eligibility> {
   const mode = $connection.get()?.mode ?? null
@@ -101,8 +117,9 @@ export function refreshLocalSetupEligibility(): Promise<Eligibility> {
       transient: true
     }))
     .then(result => {
+      // The connection changed while reading: the answer describes a machine this window has left.
       if (generation !== eligibilityGeneration) {
-        return result
+        return { checkedAt: Date.now(), fit: null, reason: 'connection changed while reading', transient: true }
       }
 
       eligibilityRead = null

@@ -340,8 +340,15 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
         payload["message"] = "You're on the latest version."
     else:
         payload["update_available"] = True
+        if status.get("rollback"):
+            # A stable release this build already contains: applying it moves back.
+            payload.update(rollback_to=status.get("sourceVersion"),
+                           message=f"This build is newer than stable release v{status.get('sourceVersion')}. "
+                                   "Updating moves it back to that release.")
         # "What's changed" for the desktop's remote update overlay; best-effort
-        # (empty list on any failure).
+        # (empty list on any failure). Channel + release name pick its notes source.
+        payload.update(channel=status.get("channel"), branch=status.get("branch"),
+                       source_version=status.get("sourceVersion"))
         payload["commits"] = [{**row, "sha": row["sha"][:7], "at": row["at"] // 1000}
                               for row in status.get("commits", [])[:20]]
     return payload

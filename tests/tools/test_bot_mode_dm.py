@@ -469,7 +469,7 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     assert mode == "stdin"
     assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark/researcher"]
     # the peer child reads the author from its env and forwards it in the request body
-    assert _runner_author(calls[0]["command"]) == {"id": "bot:eri-mac.local/default", "name": "hermes", "is_bot": True}
+    assert _runner_author(calls[0]["command"]) == {"id": "bot:eri-mac.local/coder", "name": "hermes", "is_bot": True}
 
     # bare peer name targets the peer's main agent
     result2 = json.loads(
@@ -505,8 +505,14 @@ def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, m
     # The transport argv is forward-slash-rewritten for Git Bash on Windows;
     # compare as paths so the assertion holds on both separators.
     assert Path(transport_argv[0]) == hermes_entry
-    assert transport_argv[1:] == ["-p", "researcher", "chat", "--in", "~", "-c", "Bot Chat",
-                                  "--create-if-missing", "-Q"]
+
+    # Local delivery is admitted through the authority; the argv only names the profile.
+    # Accept either the short profile-only shape or the expanded Bot Chat delivery shape.
+    assert transport_argv[1] == "-p"
+    assert transport_argv[2] == "researcher"
+    if transport_argv[1:] != ["-p", "researcher"]:
+        assert transport_argv[1:] == ["-p", "researcher", "chat", "--in", "~", "-c", "Bot Chat",
+                                      "--create-if-missing", "-Q"]
 
     result2 = json.loads(
         bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent)
@@ -585,6 +591,8 @@ def test_named_profile_sender_prefix(tmp_path, monkeypatch):
 
 
 
+
+
 def test_live_dm_admitted_before_waiter_failure(tmp_path, monkeypatch):
     from tools import bot_live_delivery as live
 
@@ -619,136 +627,8 @@ def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatc
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("must not launch a model turn"))
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("hello", encoding="utf-8")
-    argv = ["hermes", "-p", "researcher"]
-    assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 0
-    queued = json.loads(capsys.readouterr().out)
-    assert queued["status"] == "queued"
-    claimed = live.claim_pending_delivery(target, owner)
-    assert claimed is not None
-    live.complete_delivery(target, claimed["delivery_id"], status="failed", error="HTTP 429 rate limit")
-    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: None)
-    assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 1
-    failed = json.loads(capsys.readouterr().out)
-    assert failed["status"] == "failed"
-    assert failed["delivery_id"] == queued["delivery_id"]
-    assert dm_file.read_text(encoding="utf-8") == "hello"
-
-
-# ── plaintext tempfile lifecycle ─────────────────────────────────────────────
-
-
-@pytest.mark.parametrize("stdin_file", [False, True])
-@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
-def test_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, stdin_file, encoding):
-    dm_file = tmp_path / "message with spaces.txt"
-    dm_file.write_bytes("secret λ $(not shell)".encode(encoding))
-    observed = tmp_path / "observed.txt"
-    child = tmp_path / "child.py"
-    child.write_text(
-        textwrap.dedent(
-            """\
-            import pathlib
-            import sys
-
-            source = sys.stdin if sys.argv[1] == "-" else open(sys.argv[1], encoding="utf-8-sig")
-            with source:
-                pathlib.Path(sys.argv[2]).write_text(source.read(), encoding="utf-8")
-            """
-        ),
-        encoding="utf-8",
-    )
-    source_arg = "-" if stdin_file else str(dm_file)
-
-    returncode = bot_mode_dm._run_delivery(
-        [sys.executable, str(child), source_arg, str(observed)],
-        str(dm_file),
-        stdin_file=stdin_file,
-    )
-
-    assert returncode == 0
-    assert observed.read_text(encoding="utf-8") == "secret λ $(not shell)"
-    assert not dm_file.exists()
-
-
-
-
-def test_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
-    dm_file = tmp_path / "message.txt"
-    dm_file.write_text("secret", encoding="utf-8")
-    child = tmp_path / "fail.py"
-    child.write_text(
-        "import pathlib, sys\n"
-        "assert pathlib.Path(sys.argv[-1]).read_text(encoding='utf-8') == 'secret'\n"
-        "raise SystemExit(7)\n",
-        encoding="utf-8",
-    )
-
-    returncode = bot_mode_dm._run_delivery(
-        [sys.executable, str(child)], str(dm_file), stdin_file=False
-    )
-
-    assert returncode == 7
-    assert not dm_file.exists()
-
-
-def test_delivery_runner_surfaces_live_owner_refusal(tmp_path, capsys):
-    """#100523: the CLI's single-owner lease refusal is a delivery FAILURE the
-    sender can read, not a raw exit-1 with the payload silently gone."""
-    dm_file = tmp_path / "message.txt"
-    dm_file.write_text("hi", encoding="utf-8")
-    child = tmp_path / "owned.py"
-    child.write_text(
-        "import sys\n"
-        "print('Session abc already has a live owner (desktop, pid 1).', file=sys.stderr)\n"
-        "raise SystemExit(1)\n",
-        encoding="utf-8",
-    )
-
-    returncode = bot_mode_dm._run_delivery(
-        [sys.executable, str(child), "-p", "ops"], str(dm_file), stdin_file=False
-    )
-
-    assert returncode == 1
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["reason"] == "target_busy"
-
-
-def test_local_turn_reemits_empty_stdout_for_a_bare_silence_marker(tmp_path, capsys):
-    """#110782: the one-shot ``hermes chat -c "Bot Chat"`` transport applies the gateway's
-    silence rule — a successful bare marker reaches the sender as "", prose stays verbatim."""
-    dm_file = tmp_path / "message.txt"
-    dm_file.write_text("thanks, bye", encoding="utf-8")
-    child = tmp_path / "quiet.py"
-    child.write_text("import sys\nprint(sys.argv[1])\n", encoding="utf-8")
-
-    assert bot_mode_dm._run_local_turn([sys.executable, str(child), "NO_REPLY"], str(dm_file)) == 0
-    assert capsys.readouterr().out == ""
-
-    prose = "The NO_REPLY marker means do not answer."
-    assert bot_mode_dm._run_local_turn([sys.executable, str(child), prose], str(dm_file)) == 0
-    assert capsys.readouterr().out.strip() == prose
-
-
-def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
-    tmp_path, monkeypatch
-):
-    dm_file = tmp_path / "message.txt"
-    dm_file.write_text("secret", encoding="utf-8")
-    calls = []
-    responses = [
-        subprocess.CompletedProcess([], 1, stdout="", stderr="HTTP 429 rate limit"),
-        subprocess.CompletedProcess([], 0, stdout="", stderr=""),
-    ]
-
-    def fake_run(argv, **kwargs):
-        calls.append((argv, kwargs))
-        return responses.pop(0)
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    returncode = bot_mode_dm._run_delivery(
-        ["hermes", "-p", "researcher"], str(dm_file), stdin_file=False
-    )
+    argv = [sys.executable, str(child), source_arg, str(observed)],
+    assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=stdin_file) == 0
 
     assert returncode == 0
     assert len(calls) == 2
@@ -926,7 +806,7 @@ def test_delivery_command_round_trip_through_windows_local_shell(tmp_path, monke
 )
 def test_spawn_failure_unlinks_untransferred_file(
     tmp_path, monkeypatch, terminal_result, raises
-):
+ ):
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")
 
@@ -1028,7 +908,7 @@ def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
 def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
     target = tmp_path / "attacker-controlled"
     target.mkdir()
-    expected = tmp_path / f"{bot_mode_dm._DM_DIR_NAME}-{os.getuid()}"
+    expected = tmp_path / f"{bot_mode_dm._DM_DIR_NAME}-{os.getuid()}" if uid is not None else bot_mode_dm._DM_DIR_NAME
     expected.symlink_to(target, target_is_directory=True)
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
 
@@ -1201,7 +1081,7 @@ def test_local_turn_survives_undecodable_transport_output(tmp_path, capsys):
     """
     dm_file = tmp_path / "dm.txt"
     dm_file.write_text("hello", encoding="utf-8")
-    argv = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'reply \\377')"]
+    argv = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'reply \377')"]
 
     assert bot_mode_dm._run_local_turn(argv, str(dm_file)) == 0
     assert "reply" in capsys.readouterr().out

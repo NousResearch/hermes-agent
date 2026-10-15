@@ -461,8 +461,9 @@ def cron_run_scheduler_owned(session: dict[str, Any], profile: Optional[str] = N
     The session-detail endpoint stamps this so a client re-checking a run it
     already has open (a restored tab, a send) gets the same answer as the runs list.
     A unified-runtime run's ``local-*`` id says nothing, so the caller stamps the
-    row's ``cron_job_id`` / ``cron_execution_id`` (``SessionDB.cron_run_identity``)
-    first; a legacy ``cron_{job_id}_{timestamp}`` id still names its job.
+    row's ``cron_job_id`` / ``cron_execution_id`` (``SessionDB.cron_run_identity``,
+    which also resolves a compression continuation to its run) first; a legacy
+    ``cron_{job_id}_{timestamp}`` id still names its job.
     """
     if session.get("source") != "cron":
         return None
@@ -481,9 +482,12 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
     Agent runs are ordinary ``source='cron'`` sessions: a legacy
     ``cron_{job_id}_{timestamp}`` id, or a unified-runtime ``local-*`` id bound to
     this job by its scheduler admission. Backed by ``SessionDB.list_cron_job_runs``
-    — bounded index range scans, so cost scales with this job's runs, not total
-    cron history. Script-only (no_agent) jobs never write sessions; their
-    per-fire output docs (``_list_cron_output_runs``) fill the gaps. The two
+    — bounded index range scans, so cost scales with this job's runs (and the
+    chain depth of those that compressed), not total cron history. A run that
+    compressed is served at its live tip, so its ``ended_at`` and ownership are
+    the run's, not its first segment's. Script-only (no_agent) jobs never write
+    sessions; their per-fire output docs (``_list_cron_output_runs``) fill the
+    gaps. The two
     representations are reconciled PER EXECUTION, not by branch: a job can
     switch modes without changing its id (update_job supports no_agent on an
     existing record), so a surviving historical agent session must not hide

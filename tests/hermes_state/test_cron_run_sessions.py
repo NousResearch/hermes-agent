@@ -12,6 +12,7 @@ import pytest
 from cron import jobs
 from gateway import session_cron
 from hermes_state import SessionDB
+from hermes_state_ids import new_session_id
 from hermes_state_runtime import RuntimeStoreError
 from tests.fakes.cron_owner import admit_fire, cron_owner
 
@@ -22,6 +23,19 @@ def owner(tmp_path, monkeypatch):
     authority = cron_owner(tmp_path, monkeypatch)
     yield authority
     authority.db.close()
+
+
+def compress(db, session_id):
+    """One context-compression rotation as the agent publishes it (``agent/conversation_compression.py``):
+    under the segment's lease the segment closes ``compression`` and a continuation carries the run on."""
+    holder = f'compressor:{session_id}'
+    assert db.try_acquire_compression_lock(session_id, holder)
+    child = new_session_id()
+    db.publish_compression_child(
+        parent_session_id=session_id, child_session_id=child, source=db.get_session(session_id)['source'],
+        messages=[{'role': 'user', 'content': f'summary of {session_id}'}], compression_lock_holder=holder)
+    db.release_compression_lock(session_id, holder)
+    return child
 
 
 @pytest.mark.asyncio
@@ -47,6 +61,37 @@ async def test_unified_runs_are_listed_with_legacy_runs_and_only_for_their_job(o
     assert beta_runs[0].get('cron_execution_id') == beta_fire
     assert alpha_runs[0]['preview'] == f'run {alpha}'
     assert [r['id'] for r in db.list_cron_job_runs(alpha, limit=1, offset=1)] == [legacy]
+
+
+@pytest.mark.asyncio
+async def test_a_compressed_run_is_one_row_at_its_tip_and_each_segment_names_the_run(owner):
+    """Only a run's first segment carries its admission (or legacy id); a run that compressed goes on
+    in continuations. History lists it once, at its live tip, keeping the run's start and identity,
+    and every segment resolves to that run. A /branch copy is the user's own conversation."""
+    db = owner.db
+    job = jobs.create_job(prompt='report', schedule='every 1h', deliver='local')['id']
+    old_job = jobs.create_job(prompt='old report', schedule='every 1h', deliver='local')['id']
+    run_id, fire = await admit_fire(owner, job)
+    middle = compress(db, run_id)
+    tip = compress(db, middle)
+    branch = new_session_id()
+    db.create_session(branch, source='cron', parent_session_id=run_id, model_config={'_branched_from': run_id})
+    legacy = f'cron_{old_job}_20261011_120000'
+    db.create_session(legacy, source='cron')
+    legacy_tip = legacy
+    for _ in range(101):  # deeper than the resume walk's 100-hop bound; the list reaches its tip
+        legacy_tip = compress(db, legacy_tip)
+
+    [run] = db.list_cron_job_runs(job)
+    [legacy_run] = db.list_cron_job_runs(old_job)
+
+    assert (run['id'], run['ended_at'], run['started_at']) == (tip, None, db.get_session(run_id)['started_at'])
+    assert (run['cron_job_id'], run['cron_execution_id'], run['_lineage_ids']) == (job, fire, [run_id, middle, tip])
+    assert (legacy_run['id'], legacy_run['cron_job_id'], legacy_run['cron_execution_id']) == (legacy_tip, old_job, None)
+    for segment in (run_id, middle, tip):
+        assert db.cron_run_identity(segment) == {'cron_job_id': job, 'cron_execution_id': fire}
+    assert db.cron_run_identity(legacy_tip) == {'cron_job_id': old_job, 'cron_execution_id': None}
+    assert db.cron_run_identity(branch) is None
 
 
 @pytest.mark.asyncio

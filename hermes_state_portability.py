@@ -21,7 +21,9 @@ from hermes_state_keys import (
     prefix_range,
 )
 from hermes_state_local import POLICY_PREFIX
-from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
+from hermes_state_common import (
+    SCHEMA_SQL, _non_continuation_child_sql, _shape_preview, _sql_preview_raw, _sql_session_last_active)
+from hermes_state_compression import _CHAIN_CAP
 from hermes_state_messages import _parse_tool_calls, _tool_calls_count
 import itertools
 
@@ -115,6 +117,15 @@ _CRON_RUN_IDS_SQL = (
 _CRON_EXECUTION_SQL = (
     "(SELECT substr(request_id, length(:request_lo) + 1) FROM session_admissions"
     f" WHERE target_session_id = s.id AND {_CRON_ADMISSION_SQL} LIMIT 1)")
+# The first segment of the run a compression continuation belongs to: up the continuation edges
+# (fork markers bound to the edge's parent, as prune and delete walk them), bounded like the
+# forward walk so every segment the runs list can reach resolves back.
+_COMPRESSION_ROOT_SQL = (
+    "WITH RECURSIVE up(id, depth) AS (SELECT ?, 0 UNION ALL SELECT p.id, up.depth + 1 FROM up"
+    " JOIN sessions c ON c.id = up.id JOIN sessions p ON p.id = c.parent_session_id"
+    f" WHERE p.end_reason = 'compression'\n{_non_continuation_child_sql('c.', 'p.id')}"
+    f"  AND up.depth < {_CHAIN_CAP})"
+    " SELECT id FROM up ORDER BY depth DESC LIMIT 1")
 
 
 def _export_timings(messages: list[dict[str, Any]], session_id: Optional[str] = None) -> dict[str, Any]:
@@ -254,11 +265,14 @@ class SessionPortabilityMixin:
         must not change (exact-retry recovery re-derives it), but the scheduler principal admitted
         each under ``cron:<job>:<execution>``: a range of ``idx_session_admissions_cron_request``.
         Both scans scale with this job's runs, never with total cron history or with every local
-        session's policy receipt, and skip ``list_sessions_rich``'s compression-chain CTE.
+        session's policy receipt, and skip ``list_sessions_rich``'s CTE over every seed's chain.
 
-        Limitation (legacy runs had it too): only a run's FIRST session is listed. A run that
-        compressed continues in a child session this does not return, and the row's liveness
-        (``scheduler_owned``) and detail identity follow that first session, not the tip."""
+        Only a run's first segment carries that id or admission, yet a run whose context compressed
+        goes on in a continuation, which the scheduler finalizes. Each row is projected onto its
+        live tip as a sessions-list row is (``_project_compression_tips``: the tip's id,
+        ``ended_at``, title and transcript fields; the run's ``started_at`` and identity kept;
+        ``_lineage_ids`` naming every segment), so liveness and navigation follow the run. Only
+        the rows of this page that compressed walk their chain."""
         prefix, prefix_hi = prefix_range(f"cron_{job_id}_")
         request_lo, request_hi = cron_request_range(job_id)
         query = _rich_select(
@@ -268,18 +282,22 @@ class SessionPortabilityMixin:
         )
         rows = self._read_rows(query, {"prefix": prefix, "prefix_hi": prefix_hi, "request_lo": request_lo,
                                        "request_hi": request_hi, "job_id": job_id, "limit": limit, "offset": offset})
-        return [{**self._rich_row(row), "cron_job_id": job_id} for row in rows]
+        runs = [{**self._rich_row(row), "cron_job_id": job_id} for row in rows]
+        return self._project_compression_tips(runs, compact_rows=False)
 
     def cron_run_identity(self, session_id: str) -> Optional[dict[str, Any]]:
         """``{"cron_job_id", "cron_execution_id"}`` of a cron run session, else None: a legacy id
         names its job (no execution), a unified-runtime run is one probe of its scheduler admission
-        (and, when its request id is ambiguous, of the job its creation receipt's policy names)."""
-        legacy_job = legacy_cron_run_job(session_id)
+        (and, when its request id is ambiguous, of the job its creation receipt's policy names).
+        A compression continuation is the same run, so a segment resolves through its compression
+        root (``_COMPRESSION_ROOT_SQL``), never across a branch, delegate or reset edge."""
+        run_session_id = self._read_rows(_COMPRESSION_ROOT_SQL, (session_id,))[0]["id"]
+        legacy_job = legacy_cron_run_job(run_session_id)
         if legacy_job is not None:
             return {"cron_job_id": legacy_job, "cron_execution_id": None}
         rows = self._read_rows(
             "SELECT request_id, " + _CRON_POLICY_JOB_SQL + " AS policy_job FROM session_admissions"
-            " WHERE principal_id = ? AND target_session_id = ? ORDER BY seq LIMIT 1", (CRON_PRINCIPAL_ID, session_id))
+            " WHERE principal_id = ? AND target_session_id = ? ORDER BY seq LIMIT 1", (CRON_PRINCIPAL_ID, run_session_id))
         run = None
         if rows:
             run = cron_run_from_request(rows[0]["request_id"])

@@ -487,7 +487,11 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
         self._smtp_security = _normalize_security(setting("EMAIL_SMTP_SECURITY", "smtp_security"), default="tls" if self._smtp_port == 465 else "starttls")
         self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
-        self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
+        # Gmail needs a longer default poll cadence (20-55s security delay per IMAP op from
+        # datacenter IPs); every other host keeps the historical 15s, so no silent 4x latency
+        # change for all deployments (review #91746, item 4).
+        _gmail_default = 60 if "gmail" in self._imap_host.lower() else 15
+        self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", _gmail_default)
         # A single Gmail poll cycle can take ~200s: back off exponentially after fetch
         # failures instead of tearing the adapter down.
         self._poll_backoff: float = 0.0
@@ -702,6 +706,14 @@ class EmailAdapter(BasePlatformAdapter):
                 "[Email] IMAP fetch failed (%s); backing off %.0fs before next poll",
                 err, self._poll_backoff,
             )
+            if self._consecutive_failures >= 10:
+                # Escalate through the fatal hook only after N consecutive failures (review
+                # #91746, item 2): a permanently broken mailbox (expired app password, IMAP
+                # disabled) must surface in the platform status instead of degrading to log
+                # lines, while a single Gmail stall still only costs one poll interval.
+                self._set_fatal_error("email_imap_fetch_failed", err, retryable=True)
+                await self._notify_fatal_error()
+                self._consecutive_failures = 0
             return False
         # Actual success: clear failure state for the next poll.
         self._consecutive_failures = 0

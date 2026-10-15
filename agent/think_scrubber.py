@@ -56,13 +56,21 @@ class StreamingThinkScrubber:
         self._last_emitted_ended_newline: bool = True
         # Reasoning text the most recent feed() stripped from inside think blocks (tags excluded).
         self.last_hidden: str = ""
+        self._after_orphan_close: bool = False
 
     def _emit(self, out: list[str], text: str) -> None:
         """Append visible prose to *out* (orphan close tags stripped) and track the newline flag."""
+        matches = tuple(self._ORPHAN_CLOSE_RE.finditer(text)) if "</" in text else ()
+        self._after_orphan_close = bool(matches and matches[-1].end() == len(text))
+        trailing_orphan_had_newline = bool(
+            self._after_orphan_close and "\n" in matches[-1].group()
+        )
         text = self._strip_orphan_close_tags(text)
         if text:
             out.append(text)
             self._last_emitted_ended_newline = text.endswith("\n")
+        if trailing_orphan_had_newline:
+            self._last_emitted_ended_newline = True
 
     def feed(self, text: str) -> str:
         """Feed one delta; return the scrubbed visible portion ("" when it is all reasoning or held back)."""
@@ -71,6 +79,17 @@ class StreamingThinkScrubber:
             return ""
         buf = self._buf + text
         self._buf = ""
+        if self._after_orphan_close:
+            # The complete-string scrubber consumes whitespace after an orphan close tag.
+            # Continue that match only into immediately following transport chunks.
+            stripped = buf.lstrip(" \t\n\r")
+            if "\n" in buf[:len(buf) - len(stripped)]:
+                # The removed newline still establishes a reasoning-block boundary.
+                self._last_emitted_ended_newline = True
+            buf = stripped
+            if not buf:
+                return ""
+            self._after_orphan_close = False
         out: list[str] = []
         hidden: list[str] = []
 
@@ -95,10 +114,14 @@ class StreamingThinkScrubber:
                 self._emit(out, buf[:pair[0]])
                 # Pair tags are exact ``<name>``/``</name>``: inner text sits between them.
                 hidden.append(buf[buf.index(">", pair[0]) + 1:buf.rindex("<", pair[0], pair[1])])
+                # The paired tag is a non-whitespace boundary in this same chunk.
+                self._after_orphan_close = False
                 buf = buf[pair[1]:]
                 continue
             if open_idx != -1:
                 self._emit(out, buf[:open_idx])
+                # The opening tag is a non-whitespace boundary in this same chunk.
+                self._after_orphan_close = False
                 self._in_block = True
                 buf = buf[open_idx + open_len:]
                 continue
@@ -126,6 +149,7 @@ class StreamingThinkScrubber:
         self._buf = ""
         self._in_block = False
         self._last_emitted_ended_newline = True
+        self._after_orphan_close = False
         return self._strip_orphan_close_tags(tail) if tail else ""
 
     # ── internal helpers ───────────────────────────────────────────────

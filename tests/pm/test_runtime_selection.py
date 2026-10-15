@@ -190,6 +190,96 @@ def test_boot_never_activates_the_pre_pm_venv(tmp_path, monkeypatch, interpreter
     assert result.stdout.strip().startswith(expected), result.stdout
 
 
+@pytest.mark.parametrize("interpreter", ["store", "venv"])
+def test_boot_refuses_generation_built_for_another_interpreter(tmp_path, monkeypatch, interpreter):
+    """A committed generation compiled for a different Python must never land on this
+    interpreter's sys.path: the ABI mismatch surfaces far away (MCP servers parking,
+    cron losing ruamel) instead of at selection, where the real cause is visible."""
+    import os
+    import subprocess
+    import sys
+    from pm import environments as runtime_paths
+
+    base_python = getattr(sys, "_base_executable", sys.executable)
+    base_prefix = Path(sys.base_prefix).resolve()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(base_prefix.parent))
+    root = tmp_path / "repo"
+    state = runtime_paths.install_state_dir(root)
+    generation = state / "environments" / "mismatched" / "venv"
+    generation.mkdir(parents=True)
+    (generation / "pyvenv.cfg").write_text("home = test\nversion = 9.9.0\n")
+    site = generation / "lib" / "python9.9" / "site-packages"
+    site.mkdir(parents=True)
+    (site / "probe_package.py").write_text("version = 'mismatched'")
+    (state / "facts.json").write_text(json.dumps({
+        "schema": 1, "packages": {"venv": {"environment": str(generation)}},
+    }))
+    python = base_python
+    if interpreter == "venv":
+        subprocess.run([base_python, "-m", "venv", "--without-pip", str(tmp_path / "dev")], check=True, timeout=60)
+        python = str(runtime_paths.venv_python(tmp_path / "dev"))
+    repo = Path(__file__).resolve().parents[2]
+    code = (
+        "import sys, importlib.util; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
+        "from pm.environments import activate_dependencies\n"
+        "try:\n    activate_dependencies(Path(sys.argv[2]))\n"
+        "except RuntimeError as exc:\n    print('refused:', exc); raise SystemExit(0)\n"
+        "print('mismatched importable:', importlib.util.find_spec('probe_package') is not None)"
+    )
+    result = subprocess.run([python, "-I", "-c", code, str(repo), str(root)], env=dict(os.environ),
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    expected = ("refused: the committed dependency environment was built for Python 9.9"
+                if interpreter == "store" else "mismatched importable: False")
+    assert result.stdout.strip().startswith(expected), result.stdout
+
+
+@pytest.mark.parametrize("interpreter", ["store", "venv"])
+def test_boot_refuses_sealed_payload_built_for_another_interpreter(tmp_path, monkeypatch, interpreter):
+    """A sealed payload's venv is frozen at build time, so booting it under a different
+    interpreter is routine, not a race. The `else` (no install-state-dir) arm of
+    activate_dependencies must refuse it the same way the committed-generation arm does,
+    not select payload_venv() onto sys.path unverified."""
+    import os
+    import subprocess
+    import sys
+    from pm import environments as runtime_paths
+
+    base_python = getattr(sys, "_base_executable", sys.executable)
+    base_prefix = Path(sys.base_prefix).resolve()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(base_prefix.parent))
+    payload = tmp_path / "payload"
+    root = payload / "hermes-agent"
+    root.mkdir(parents=True)
+    venv = payload / "shipped"
+    (venv / "pyvenv.cfg").parent.mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = test\nversion = 9.9.0\n")
+    site = venv / "lib" / "python9.9" / "site-packages"
+    site.mkdir(parents=True)
+    (site / "probe_package.py").write_text("version = 'mismatched'")
+    (payload / "manifest.json").write_text(json.dumps({"repo": "hermes-agent", "venv": "shipped"}))
+    python = base_python
+    if interpreter == "venv":
+        subprocess.run([base_python, "-m", "venv", "--without-pip", str(tmp_path / "dev")], check=True, timeout=60)
+        python = str(runtime_paths.venv_python(tmp_path / "dev"))
+    repo = Path(__file__).resolve().parents[2]
+    code = (
+        "import sys, importlib.util; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
+        "from pm.environments import activate_dependencies\n"
+        "try:\n    activate_dependencies(Path(sys.argv[2]))\n"
+        "except RuntimeError as exc:\n    print('refused:', exc); raise SystemExit(0)\n"
+        "print('mismatched importable:', importlib.util.find_spec('probe_package') is not None)"
+    )
+    result = subprocess.run([python, "-I", "-c", code, str(repo), str(root)], env=dict(os.environ),
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    expected = ("refused: the committed dependency environment was built for Python 9.9"
+                if interpreter == "store" else "mismatched importable: False")
+    assert result.stdout.strip().startswith(expected), result.stdout
+
+
 @pytest.mark.parametrize("data", [[], {"packages": []}, {"packages": {"venv": []}}])
 def test_malformed_selection_has_actionable_error(tmp_path, monkeypatch, data):
     from pm import environments as runtime_paths

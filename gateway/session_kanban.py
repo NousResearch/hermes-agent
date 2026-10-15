@@ -130,7 +130,7 @@ async def run_task(connection, params):
     await tracked_write(authority, admit_claim)
     await connection.resume(ref, {})
     receipt = await authority.submit(connection.actor, Submission(request_id, ref,
-        {'text': f'work kanban task {params["task_id"]}'}, 'queue'))
+        {'text': f'work kanban task {params["task_id"]}', 'finite': True}, 'queue'))
     return {'session_id': ref.session_id, 'receipt': asdict(receipt)}
 
 

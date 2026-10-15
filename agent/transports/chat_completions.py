@@ -317,6 +317,60 @@ def _has_replayable_thought_signature(extra_content: Any) -> bool:
         candidate = google.get("thought_signature")
     return isinstance(candidate, str) and bool(candidate.strip())
 
+# Google-allowed bypass value for Gemini functionCall parts that carry no genuine
+# thoughtSignature — e.g. tool calls made by a non-Gemini model earlier in a
+# mixed-provider (fallback) session, or issued by a non-signing upstream.
+# Gemini 3 thinking models reject replayed history without any signature
+# (HTTP 400 INVALID_ARGUMENT); this sentinel is the documented escape hatch.
+# On the OpenAI-compatible wire it MUST travel as
+# ``extra_content.google.thought_signature`` — the documented replay shape
+# (ai.google.dev/gemini-api/docs/thought-signatures#openai). A top-level
+# ``thought_signature`` tool_call field is ignored by the upstream and does NOT
+# satisfy validation (proven 2026-09-03: the same real history 400s with the
+# top-level field, 200s with the extra_content shape). Emitted ONLY for
+# Gemini-family targets — strict OpenAI-compatible providers reject unknown
+# tool_call fields, hence the Gemini-family gate. Mirrors the native path's
+# ``_SKIP_SIGNATURE`` (agent/gemini_native_adapter.py,
+# ``_translate_tool_call_to_gemini``).
+_GEMINI_MISSING_SIGNATURE_SENTINEL = "skip_thought_signature_validator"
+
+
+def _tool_call_has_signature(tc: dict[str, Any]) -> bool:
+    """True when a tool_call already carries replayable signature material.
+
+    Covers the wire ``thought_signature`` / native ``thoughtSignature`` tool_call
+    fields plus the persisted ``extra_content`` shapes
+    (``{"google": {"thought_signature": ...}}`` and the string shorthand),
+    mirroring ``gemini_native_adapter._tool_call_extra_signature``.
+    """
+    for key in ("thought_signature", "thoughtSignature"):
+        value = tc.get(key)
+        if isinstance(value, str) and value:
+            return True
+    extra = tc.get("extra_content")
+    if isinstance(extra, dict):
+        google = extra.get("google") or extra.get("thought_signature")
+        if isinstance(google, dict):
+            return any(
+                isinstance(google.get(key), str) and google.get(key)
+                for key in ("thought_signature", "thoughtSignature")
+            )
+        if isinstance(google, str) and google:
+            return True
+    return False
+
+
+def _sentinel_extra_content(existing: Any) -> dict[str, Any]:
+    """``extra_content`` with the missing-signature sentinel merged into ``google.thought_signature``.
+
+    Copy-on-write: neither ``existing`` nor its nested dicts are mutated.
+    """
+    merged_extra = dict(existing) if isinstance(existing, dict) else {}
+    merged_google = dict(merged_extra.get("google")) if isinstance(merged_extra.get("google"), dict) else {}
+    merged_google["thought_signature"] = _GEMINI_MISSING_SIGNATURE_SENTINEL
+    merged_extra["google"] = merged_google
+    return merged_extra
+
 
 def _attr_or_model_extra(obj: Any, name: str) -> Any:
     """``obj.<name>``, else the same key from pydantic ``model_extra`` (some SDKs park fields there)."""
@@ -439,6 +493,7 @@ def _mistral_tool_id(key: str) -> str:
 def _sanitize_message(
     msg: Any, strip_extra_content: bool, strip_reasoning: frozenset = frozenset(),
     native_reasoning_details_type: str | None = None, *, mistral_tool_ids: bool = False,
+    wants_thought_signature: bool = False,
 ) -> dict | None:
     """Sanitized copy of ``msg``, or None when nothing needs stripping.
 
@@ -493,18 +548,23 @@ def _sanitize_message(
             if not isinstance(tc, dict):
                 continue
             keys = [k for k in _STRIP_TC_KEYS if k in tc]
-            if "extra_content" in tc and (
-                strip_extra_content or not _has_replayable_thought_signature(tc["extra_content"])
-            ):
-                keys.append("extra_content")
+            if "extra_content" in tc:
+                if strip_extra_content:
+                    keys.append("extra_content")
+                elif not wants_thought_signature and not _has_replayable_thought_signature(tc["extra_content"]):
+                    keys.append("extra_content")
             key = coalesce_tool_call_id(tc) if mistral_tool_ids else ""
             mapped = _mistral_tool_id(key) if key else None
-            if keys or (mapped is not None and mapped != tc.get("id")):
+            needs_sig = wants_thought_signature and not _tool_call_has_signature(tc)
+            if keys or needs_sig or (mapped is not None and mapped != tc.get("id")):
                 if copied_tool_calls is None:
                     copied_tool_calls = list(tool_calls)
-                copied_tool_calls[tc_idx] = {k: v for k, v in tc.items() if k not in keys}
+                copied_tc = {k: v for k, v in tc.items() if k not in keys} if keys else dict(tc)
+                if needs_sig:
+                    copied_tc["extra_content"] = _sentinel_extra_content(copied_tc.get("extra_content"))
                 if mapped is not None:
-                    copied_tool_calls[tc_idx]["id"] = mapped
+                    copied_tc["id"] = mapped
+                copied_tool_calls[tc_idx] = copied_tc
         if copied_tool_calls is not None:
             out_msg["tool_calls"] = copied_tool_calls
     return out_msg if strip_keys or remapped or copied_tool_calls is not None else None
@@ -536,8 +596,10 @@ class ChatCompletionsTransport(ProviderTransport):
             carriers = carriers | {"reasoning_details"}
         strip_reasoning = frozenset({"reasoning_content", "reasoning", "reasoning_details"}) - carriers
         mistral_ids = _route_requires_mistral_tool_ids(provider, kwargs.get("model"), kwargs.get("base_url"))
+        wants_thought_signature = not strip_extra_content
         sanitized_pairs = [(m, _sanitize_message(m, strip_extra_content, strip_reasoning, native_type,
-                                                 mistral_tool_ids=mistral_ids))
+                                                 mistral_tool_ids=mistral_ids,
+                                                 wants_thought_signature=wants_thought_signature))
                            for m in messages]
         if all(s is None for _, s in sanitized_pairs):
             return messages

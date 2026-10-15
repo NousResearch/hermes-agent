@@ -31,6 +31,7 @@ from typing import Any, Iterable, Optional
 
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
 from toolsets import get_toolset_names
+from hermes_cli.kanban_governance import GovernanceBudgetExceeded
 
 _log = logging.getLogger(__name__)
 
@@ -1181,104 +1182,244 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
     return cleaned
 
 
-def create_task(
-    conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
-    assignee: Optional[str] = None, created_by: Optional[str] = None,
-    workspace_kind: Optional[str] = None, workspace_path: Optional[str] = None,
-    branch_name: Optional[str] = None, tenant: Optional[str] = None, priority: int = 0,
-    parents: Iterable[str] = (), triage: bool = False, idempotency_key: Optional[str] = None,
-    max_runtime_seconds: Optional[int] = None, skills: Optional[Iterable[str]] = None,
-    max_retries: Optional[int] = None, model_override: Optional[str] = None,
-    provider_override: Optional[str] = None, reasoning_effort: Optional[str] = None,
-    goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
-    session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
-    project_source_task_id: Optional[str] = None,
-    creator_task_id: Optional[str] = None,
-    completion_contract: Optional[str] = None,
-) -> str:
-    """Create a task (optionally under ``parents``); returns its id.
-
-    Status: ``ready`` unless a parent is not ``done`` (``todo``); ``triage=True``
-    forces ``triage``; ``initial_status="blocked"`` parks it for human ops.
-    ``idempotency_key``: an existing non-archived task with the key is returned
-    instead of a duplicate. ``max_runtime_seconds``: cap before the dispatcher
-    SIGTERMs and re-queues. ``model_override``/``provider_override`` pin the
-    worker model (provider requires model); ``reasoning_effort`` is independent.
-    ``creator_task_id``: inherit durable session/subscriptions independently of
-    dependency edges; an explicit ``session_id`` still wins.
-    ``project_source_task_id``: cross-profile fallback when ``project_id`` is not
-    in the active profile's projects.db — see ``_resolve_project_link``.
-    ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
-    an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
-    """
-    from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
-    from hermes_cli.kanban_pr_acceptance import validate_contract
-
-    completion_contract = validate_contract(completion_contract)
-    model_override, provider_override = _validate_model_override(model_override, provider_override)
-    reasoning_effort = normalize_reasoning_effort(reasoning_effort)
-    assignee = _canonical_assignee(assignee)
-    if not title or not title.strip():
-        raise ValueError("title is required")
-    if initial_status not in VALID_INITIAL_STATUSES:
-        raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
-    # A project-scoped board anchors every new task to its project's repo
-    # (deterministic worktree + branch) without each surface repeating it.
-    # An explicit ``scratch`` (or ``project_id=""``) is a request for no project:
-    # it must not be upgraded to a worktree in the board's repo (#106342).
-    if project_id is None and workspace_kind != "scratch":
+def _resolve_board_slug(conn: Optional[sqlite3.Connection], board: Optional[str]) -> str:
+    if board:
+        return _slug_or_default(board)
+    if conn is not None:
         try:
-            project_id = (_board_meta_for(board).get("project_id") or "").strip() or None
+            rows = conn.execute("PRAGMA database_list").fetchall()
+            for row in rows:
+                if row[1] == "main" and row[2]:
+                    db_file = Path(row[2])
+                    if db_file.parent.parent.name == "boards":
+                        return db_file.parent.name
         except Exception:
             pass
-    if workspace_kind is None:
-        workspace_kind = "scratch"
-    if workspace_kind not in VALID_WORKSPACE_KINDS:
-        raise ValueError(
-            f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
-            f"got {workspace_kind!r}"
-        )
-    if branch_name is not None:
-        branch_name = str(branch_name).strip() or None
-    if branch_name and workspace_kind != "worktree":
-        raise ValueError("branch_name is only valid for worktree workspaces")
+    return _slug_or_default(None)
 
-    project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
-        conn, project_id, project_source_task_id, workspace_kind, workspace_path
+
+@dataclass
+class GraphMutationResult:
+    mutation_id: str
+    status: str  # "COMMITTED" or "IDEMPOTENT_REPLAY"
+    created_task_ids: list[str]
+    task_id_map: dict[str, str]
+    created_edge_count: int
+    consumed_budget: int
+    total_consumed_budget: int
+
+
+def commit_graph_mutation(
+    conn: sqlite3.Connection,
+    board_id: Optional[str] = None,
+    mutation_plan: Optional[dict[str, Any]] = None,
+    governance_context: Optional[dict[str, Any]] = None,
+) -> GraphMutationResult:
+    """Canonical atomic persistence writer for task graph mutations.
+
+    Executes all task creations, edge linkages, state changes, and budget updates
+    under a single IMMEDIATE write transaction. If budget or policy check fails,
+    zero tasks and zero edges are committed, and a durable denial event is logged.
+    """
+    from hermes_cli.kanban_governance import (
+        is_governance_enabled,
+        load_governance_policy,
+        ensure_governance_schema,
+        ensure_governance_budget_schema,
+        GovernanceBudgetExceeded,
+        GovernancePolicyError,
+        GovernancePolicyMissing,
     )
-    parents = tuple(p for p in parents if p)
-    skills_list = _normalize_task_skills(skills)
 
-    # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
-    # race may insert twice, the next lookup stabilises on the newest.
-    if idempotency_key:
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1", (idempotency_key,),
+    ensure_governance_schema(conn)
+    ensure_governance_budget_schema(conn)
+    board_slug = _resolve_board_slug(conn, board_id)
+
+    plan = mutation_plan or {}
+    mutation_id = str(plan.get("mutation_id") or f"mut_{secrets.token_hex(8)}")
+    reason = str(plan.get("reason") or "graph_mutation")
+    create_tasks = list(plan.get("create_tasks") or [])
+    create_edges = list(plan.get("create_edges") or [])
+    state_changes = list(plan.get("state_changes") or [])
+    comments = list(plan.get("comments") or [])
+    events = list(plan.get("events") or [])
+
+    gov_ctx = governance_context or {}
+    actor = str(gov_ctx.get("actor") or "unknown")
+    ingress = str(gov_ctx.get("ingress") or "db_api")
+
+    # Idempotency check: replay of identical mutation_id returns previous result
+    row = conn.execute(
+        "SELECT task_count, created_task_ids FROM governance_mutations WHERE mutation_id = ?",
+        (mutation_id,),
+    ).fetchone()
+    if row:
+        tids = json.loads(row[1])
+        ledger_row = conn.execute(
+            "SELECT cumulative_tasks FROM governance_budget_ledger WHERE board_slug = ?",
+            (board_slug,),
         ).fetchone()
-        if row:
-            return row["id"]
+        total_budget = ledger_row[0] if ledger_row else len(tids)
+        return GraphMutationResult(
+            mutation_id=mutation_id,
+            status="IDEMPOTENT_REPLAY",
+            created_task_ids=tids,
+            task_id_map={tid: tid for tid in tids},
+            created_edge_count=0,
+            consumed_budget=0,
+            total_consumed_budget=total_budget,
+        )
 
-    now = int(time.time())
+    requested_count = len(create_tasks)
+    denial_to_record: Optional[dict[str, Any]] = None
 
-    # Only persistent kinds inherit the board ``default_workdir``: a scratch
-    # task inheriting it would point cleanup at the user's source tree.
-    if workspace_path is None and project_repo is None and workspace_kind in {"dir", "worktree"}:
-        board_default = _board_meta_for(board).get("default_workdir")
-        if board_default:
-            workspace_path = str(board_default)
+    try:
+        with write_txn(conn, allow_nested=True):
+            current_consumed = 0
+            # Machine-enforced governance check (PEP) under write lock
+            if is_governance_enabled(conn=conn, board_slug=board_slug):
+                try:
+                    loaded = load_governance_policy(conn=conn, board_slug=board_slug)
+                except GovernancePolicyError as exc:
+                    denial_to_record = {
+                        "kind": "policy",
+                        "exc": exc,
+                    }
+                    raise
 
-    # Retry once on the extremely unlikely id collision.
-    for attempt in range(2):
-        task_id = _new_task_id()
-        try:
-            # allow_nested: graph builders compose create_task under one outer
-            # commit so the dispatcher never sees a half-built graph.
-            with write_txn(conn, allow_nested=True):
-                task_status, tenant = initial_task_state(conn, parents, initial_status, triage, tenant)
-                # Project worktree: fresh dir under the repo + deterministic
-                # branch, instead of the random ``wt/<id>`` worker fallback.
+                if loaded is None:
+                    exc = GovernancePolicyMissing("Governance is required but no policy could be resolved.")
+                    denial_to_record = {"kind": "policy", "exc": exc}
+                    raise exc
+
+                policy, policy_hash, _ = loaded
+                budget = policy.get("budget") or {}
+                max_total_tasks = budget.get("max_total_tasks")
+
+                if max_total_tasks is not None:
+                    ledger_row = conn.execute(
+                        "SELECT cumulative_tasks FROM governance_budget_ledger WHERE board_slug = ?",
+                        (board_slug,),
+                    ).fetchone()
+                    persisted_tasks = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+                    current_consumed = max(persisted_tasks, ledger_row[0] if ledger_row else 0)
+
+                    if current_consumed + requested_count > int(max_total_tasks):
+                        event_id = f"gov_denial_{secrets.token_hex(6)}"
+                        permitted_next = policy.get("enforcement", {}).get("permitted_next_actions")
+                        semantic_state = policy.get("enforcement", {}).get("semantic_state", "BLOCKED_BUDGET_EXHAUSTED")
+                        exc = GovernanceBudgetExceeded(
+                            f"GOVERNANCE DENIAL: budget exhausted ({current_consumed} + {requested_count} > {max_total_tasks} tasks)",
+                            code="BUDGET_EXHAUSTED",
+                            policy_id=str(policy.get("policy_id", "governance_policy")),
+                            policy_hash=policy_hash,
+                            actor=actor,
+                            ingress=ingress,
+                            observed_task_count=current_consumed,
+                            configured_limit=int(max_total_tasks),
+                            permitted_next_actions=permitted_next,
+                            semantic_state=semantic_state,
+                            event_id=event_id,
+                        )
+                        denial_to_record = {
+                            "kind": "budget",
+                            "exc": exc,
+                            "policy_id": str(policy.get("policy_id", "governance_policy")),
+                            "policy_hash": policy_hash,
+                            "event_id": event_id,
+                            "current_consumed": current_consumed,
+                            "configured_limit": int(max_total_tasks),
+                            "details": {
+                                "requested_count": requested_count,
+                                "plan_reason": reason,
+                                "mutation_id": mutation_id,
+                                "details": gov_ctx.get("details", {}),
+                            },
+                        }
+                        raise exc
+            else:
+                ledger_row = conn.execute(
+                    "SELECT cumulative_tasks FROM governance_budget_ledger WHERE board_slug = ?",
+                    (board_slug,),
+                ).fetchone()
+                persisted_tasks = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+                current_consumed = max(persisted_tasks, ledger_row[0] if ledger_row else 0)
+
+            # Insert tasks
+            now = int(time.time())
+            task_id_map: dict[str, str] = {}
+            created_task_ids: list[str] = []
+
+            for task_spec in create_tasks:
+                task_id = _new_task_id()
+                temp_id = str(task_spec.get("temp_id") or task_id)
+                task_id_map[temp_id] = task_id
+                task_id_map[task_id] = task_id
+                created_task_ids.append(task_id)
+
+                title = str(task_spec.get("title") or "").strip()
+                if not title:
+                    raise ValueError("title is required")
+                body = task_spec.get("body")
+                assignee = _canonical_assignee(task_spec.get("assignee"))
+                task_status = task_spec.get("status")
+                initial_status = task_spec.get("initial_status", "running")
+                triage = bool(task_spec.get("triage", False))
+                task_parents = list(task_spec.get("parents") or [])
+                priority = int(task_spec.get("priority") or 0)
+                created_by = task_spec.get("created_by") or actor
+                workspace_kind = task_spec.get("workspace_kind")
+                workspace_path = task_spec.get("workspace_path")
+                branch_name = task_spec.get("branch_name")
+                project_id = task_spec.get("project_id")
+                project_source_task_id = task_spec.get("project_source_task_id")
+                board_meta = _board_meta_for(board_slug)
+                if project_id is None and workspace_kind != "scratch":
+                    project_id = (board_meta.get("project_id") or "").strip() or None
+                if workspace_kind is None:
+                    workspace_kind = "scratch"
+                if workspace_kind not in VALID_WORKSPACE_KINDS:
+                    raise ValueError(
+                        f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
+                        f"got {workspace_kind!r}"
+                    )
+                if branch_name is not None:
+                    branch_name = str(branch_name).strip() or None
+                if branch_name and workspace_kind != "worktree":
+                    raise ValueError("branch_name is only valid for worktree workspaces")
+                if workspace_path is None and project_id is None and workspace_kind in {"dir", "worktree"}:
+                    board_default = board_meta.get("default_workdir")
+                    if board_default:
+                        workspace_path = str(board_default)
+                tenant = task_spec.get("tenant")
+                idempotency_key = task_spec.get("idempotency_key")
+                max_runtime_seconds = task_spec.get("max_runtime_seconds")
+                skills = task_spec.get("skills")
+                max_retries = task_spec.get("max_retries")
+                model_override = task_spec.get("model_override")
+                provider_override = task_spec.get("provider_override")
+                reasoning_effort = task_spec.get("reasoning_effort")
+                goal_mode = bool(task_spec.get("goal_mode", False))
+                goal_max_turns = task_spec.get("goal_max_turns")
+                session_id = task_spec.get("session_id")
+                completion_contract = task_spec.get("completion_contract")
+                creator_task_id = task_spec.get("creator_task_id")
+
+                from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
+                from hermes_cli.kanban_pr_acceptance import validate_contract
+
+                completion_contract = validate_contract(completion_contract)
+                model_override, provider_override = _validate_model_override(model_override, provider_override)
+                reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+                skills_list = _normalize_task_skills(skills)
+
+                resolved_parents: tuple[str, ...] = tuple(str(task_id_map.get(p, p)) for p in task_parents if p)
+                if task_status is None:
+                    task_status, tenant = initial_task_state(conn, resolved_parents, initial_status, triage, tenant)
+
+                project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
+                    conn, project_id, project_source_task_id, workspace_kind, workspace_path
+                )
                 if project_obj is not None and workspace_kind == "worktree":
                     if project_repo and not workspace_path:
                         workspace_path = os.path.join(project_repo, ".worktrees", task_id)
@@ -1294,21 +1435,24 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract, block_kind
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        task_id, title.strip(), body, assignee, task_status, priority,
+                        task_id, title, body, assignee, task_status, priority,
                         created_by, now, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         _opt_int(max_runtime_seconds),
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        "needs_input" if task_status == "blocked" else None,
                     ),
                 )
-                for pid in parents:
-                    _link(conn, pid, task_id)
+
+                for p in resolved_parents:
+                    _link(conn, p, task_id)
+
                 _append_event(
                     conn,
                     task_id,
@@ -1316,7 +1460,7 @@ def create_task(
                     {
                         "assignee": assignee,
                         "status": task_status,
-                        "parents": list(parents),
+                        "parents": list(resolved_parents),
                         "creator_task_id": creator_task_id,
                         "tenant": tenant,
                         "workspace_kind": workspace_kind,
@@ -1334,12 +1478,10 @@ def create_task(
                         conn,
                         task_id,
                         "blocked",
-                        {"reason": "initial_status", "status": "blocked", "actor": created_by or "user"},
+                        {"reason": "initial_status", "status": "blocked", "kind": "needs_input", "actor": created_by or "user"},
                     )
                 if task_status == "todo":
-                    # Parked behind an open parent: record why, exactly as
-                    # link_tasks does, so the board never shows an unexplained todo.
-                    gating = [p for p in parents if _task_status(conn, p) not in ("done", "archived")]
+                    gating = [p for p in resolved_parents if _task_status(conn, p) not in ("done", "archived")]
                     if gating:
                         _append_event(
                             conn,
@@ -1347,14 +1489,200 @@ def create_task(
                             "dependency_wait",
                             {"reason": "parent_not_done", "parent": gating[0]},
                         )
-                # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
-                _inherit_notify_subs(conn, task_id, parents, created_at=now)
-            return task_id
-        except sqlite3.IntegrityError:
-            if attempt == 1:
-                raise
-    raise RuntimeError("unreachable")
+                _inherit_notify_subs(conn, task_id, list(resolved_parents), created_at=now)
+
+            # Insert edges from create_edges
+            edge_count = 0
+            for edge in create_edges:
+                p_raw = edge.get("from") or edge.get("parent")
+                c_raw = edge.get("to") or edge.get("child")
+                p_id = task_id_map.get(p_raw, p_raw)
+                c_id = task_id_map.get(c_raw, c_raw)
+                if p_id and c_id:
+                    _link(conn, p_id, c_id)
+                    _append_event(conn, c_id, "linked", {"parent": p_id, "child": c_id})
+                    edge_count += 1
+
+            # State changes
+            for sc in state_changes:
+                target_id = task_id_map.get(sc.get("task_id"), sc.get("task_id"))
+                sets = []
+                params = []
+                if "status" in sc and sc["status"] is not None:
+                    sets.append("status = ?")
+                    params.append(str(sc["status"]))
+                if "assignee" in sc and sc["assignee"] is not None:
+                    sets.append("assignee = ?")
+                    params.append(_canonical_assignee(sc["assignee"]))
+                if sets and target_id:
+                    params.append(target_id)
+                    conn.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", tuple(params))
+
+            # Comments
+            for comm in comments:
+                target_id = task_id_map.get(comm.get("task_id"), comm.get("task_id"))
+                c_author = comm.get("author") or actor
+                c_body = comm.get("body") or comm.get("content") or ""
+                for t_id, r_id in task_id_map.items():
+                    c_body = c_body.replace(f"{{{t_id}}}", r_id)
+                c_body = c_body.replace("{child_ids}", ", ".join(created_task_ids))
+                if target_id and c_body:
+                    _insert_comment(conn, target_id, c_author, c_body, now)
+
+            # Events
+            for ev in events:
+                target_id = task_id_map.get(ev.get("task_id"), ev.get("task_id"))
+                kind = ev.get("kind")
+                payload = dict(ev.get("payload") or {})
+                if "child_ids" in payload:
+                    payload["child_ids"] = [task_id_map.get(cid, cid) for cid in payload["child_ids"]]
+                else:
+                    payload["child_ids"] = created_task_ids
+                if target_id and kind:
+                    _append_event(conn, target_id, kind, payload)
+
+            # Update cumulative budget ledger
+            new_cumulative = current_consumed + requested_count
+            conn.execute(
+                """
+                INSERT INTO governance_budget_ledger (board_slug, cumulative_tasks, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(board_slug) DO UPDATE SET
+                    cumulative_tasks = excluded.cumulative_tasks,
+                    updated_at = excluded.updated_at
+                """,
+                (board_slug, new_cumulative, now),
+            )
+
+            # Record mutation idempotency record
+            conn.execute(
+                """
+                INSERT INTO governance_mutations (mutation_id, board_slug, task_count, created_task_ids, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (mutation_id, board_slug, requested_count, json.dumps(created_task_ids), now),
+            )
+
+            return GraphMutationResult(
+                mutation_id=mutation_id,
+                status="COMMITTED",
+                created_task_ids=created_task_ids,
+                task_id_map=task_id_map,
+                created_edge_count=edge_count,
+                consumed_budget=requested_count,
+                total_consumed_budget=new_cumulative,
+            )
+
+    except Exception:
+        if denial_to_record and denial_to_record.get("kind") == "budget":
+            d = denial_to_record
+            try:
+                with write_txn(conn, allow_nested=True):
+                    ensure_governance_schema(conn)
+                    now = int(time.time())
+                    conn.execute(
+                        """
+                        INSERT INTO governance_events (
+                            event_id, policy_id, policy_hash, actor, ingress,
+                            requested_operation, decision, reason_code,
+                            observed_task_count, configured_limit, details_json, timestamp
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            d["event_id"],
+                            d["policy_id"],
+                            d["policy_hash"],
+                            actor,
+                            ingress,
+                            reason,
+                            "DENY",
+                            "BUDGET_EXHAUSTED",
+                            d["current_consumed"],
+                            d["configured_limit"],
+                            json.dumps(d["details"], ensure_ascii=False),
+                            now,
+                        ),
+                    )
+            except Exception as exc_log:
+                _log.warning("Could not persist budget denial event after rollback: %s", exc_log)
+        raise
+
+
+def create_task(
+    conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
+    assignee: Optional[str] = None, created_by: Optional[str] = None,
+    workspace_kind: Optional[str] = None, workspace_path: Optional[str] = None,
+    branch_name: Optional[str] = None, tenant: Optional[str] = None, priority: int = 0,
+    parents: Iterable[str] = (), triage: bool = False, idempotency_key: Optional[str] = None,
+    max_runtime_seconds: Optional[int] = None, skills: Optional[Iterable[str]] = None,
+    max_retries: Optional[int] = None, model_override: Optional[str] = None,
+    provider_override: Optional[str] = None, reasoning_effort: Optional[str] = None,
+    goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
+    session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
+    project_source_task_id: Optional[str] = None,
+    creator_task_id: Optional[str] = None,
+    completion_contract: Optional[str] = None,
+    ingress: str = "db_api",
+) -> str:
+    """Create a task (optionally under ``parents``); returns its id.
+
+    Constructs a single-task mutation plan and delegates to commit_graph_mutation,
+    the canonical atomic persistence writer.
+    """
+    if not title or not title.strip():
+        raise ValueError("title is required")
+    if initial_status not in VALID_INITIAL_STATUSES:
+        raise ValueError(f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}")
+
+    if idempotency_key:
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE idempotency_key = ? "
+            "AND status != 'archived' "
+            "ORDER BY created_at DESC LIMIT 1", (idempotency_key,),
+        ).fetchone()
+        if row:
+            return row["id"]
+
+    task_spec = {
+        "title": title.strip(),
+        "body": body,
+        "assignee": assignee,
+        "created_by": created_by,
+        "workspace_kind": workspace_kind,
+        "workspace_path": workspace_path,
+        "branch_name": branch_name,
+        "tenant": tenant,
+        "priority": priority,
+        "parents": list(parents),
+        "triage": triage,
+        "idempotency_key": idempotency_key,
+        "max_runtime_seconds": max_runtime_seconds,
+        "skills": skills,
+        "max_retries": max_retries,
+        "model_override": model_override,
+        "provider_override": provider_override,
+        "reasoning_effort": reasoning_effort,
+        "goal_mode": goal_mode,
+        "goal_max_turns": goal_max_turns,
+        "initial_status": initial_status,
+        "session_id": session_id,
+        "project_id": project_id,
+        "project_source_task_id": project_source_task_id,
+        "creator_task_id": creator_task_id,
+        "completion_contract": completion_contract,
+    }
+    mutation_plan = {
+        "reason": "kanban_create",
+        "create_tasks": [task_spec],
+    }
+    gov_ctx = {
+        "actor": created_by or "unknown",
+        "ingress": ingress,
+        "details": {"title": title, "assignee": assignee, "parents": list(parents)},
+    }
+    res = commit_graph_mutation(conn, board_id=board, mutation_plan=mutation_plan, governance_context=gov_ctx)
+    return res.created_task_ids[0]
 
 
 def _board_meta_for(board: Optional[str]) -> dict:

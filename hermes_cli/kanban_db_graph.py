@@ -94,14 +94,13 @@ def decompose_triage_task(
     """Fan a triage task out into children and move the root to ``todo``; the root
     waits on every child and wakes (``ready``) when all are done.
 
-    ``children``: dicts of ``title`` (required), ``body``, ``assignee``,
-    ``parents`` (indices into this list), optional workspace overrides.
-    Returns child ids in input order, or None when the root is missing / not
-    in triage, or has already decomposed. Atomic: malformed entries abort fan-out.
+    Pure plan producer: validates triage preconditions, constructs a mutation plan,
+    and delegates to commit_graph_mutation under strict governance constraints.
     """
     from hermes_cli.kanban_db import (
-        _canonical_assignee, _link, _append_event, _insert_comment,
-        write_txn, recompute_ready,
+        _canonical_assignee,
+        commit_graph_mutation,
+        recompute_ready,
     )
 
     if not children:
@@ -110,60 +109,89 @@ def decompose_triage_task(
         root_assignee = _canonical_assignee(root_assignee)
     _validate_children_graph(children)
 
-    # ONE txn so the fan-out is atomic; helpers that open their own write_txn
-    # (create_task, link_tasks, add_comment) must not be called in here.
-    now = int(time.time())
-    with write_txn(conn):
-        root_row = conn.execute(
-            "SELECT id, status, tenant, workspace_kind, workspace_path "
-            "FROM tasks WHERE id = ?", (task_id,),
-        ).fetchone()
-        if root_row is None or root_row["status"] != "triage":
-            return None
-        # Dependency links alone do not imply lineage. The completion event is
-        # committed with the graph, and survives re-triage or unlinking.
-        if conn.execute(
-            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'decomposed' LIMIT 1",
-            (task_id,),
-        ).fetchone():
-            return None
-        child_ids = [
-            _insert_decomposed_child(conn, task_id, root_row, child, author, now)
-            for child in children
-        ]
-        # Sibling edges within the decomposed graph.
-        for idx, child in enumerate(children):
-            for p_idx in child.get("parents") or []:
-                parent_id, child_id = child_ids[p_idx], child_ids[idx]
-                _link(conn, parent_id, child_id)
-                _append_event(conn, child_id, "linked", {"parent": parent_id, "child": child_id})
-        # Root waits for the whole graph: link it under EVERY child (simpler
-        # than computing leaves; cycle-free since the root is only ever a child).
-        for cid in child_ids:
-            _link(conn, cid, task_id)
-        # Flip the root triage -> todo, assignee -> orchestrator.
-        sets = ["status = 'todo'"]
-        params: list[Any] = []
-        if root_assignee is not None:
-            sets.append("assignee = ?")
-            params.append(root_assignee)
-        params.append(task_id)
-        conn.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", tuple(params))
-        if author and author.strip():
-            _insert_comment(
-                conn, task_id, author.strip(),
-                "Decomposed into " + ", ".join(child_ids)
-                + ". Root will wake when all children complete.",
-                now,
-            )
-        _append_event(
-            conn, task_id, "decomposed", {"child_ids": child_ids, "root_assignee": root_assignee},
-        )
-    # Outside the txn (own IMMEDIATE txn). ``auto_promote=False`` leaves the
-    # children in ``todo`` for manual-review-first workflows.
+    # Check root preconditions
+    root_row = conn.execute(
+        "SELECT id, status, tenant, workspace_kind, workspace_path "
+        "FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if root_row is None or root_row["status"] != "triage":
+        return None
+    if conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'decomposed' LIMIT 1",
+        (task_id,),
+    ).fetchone():
+        return None
+
+    root_ws_kind = root_row["workspace_kind"] or "scratch"
+    tasks_to_create = []
+    for idx, child in enumerate(children):
+        child_ws_kind = child.get("workspace_kind") or root_ws_kind
+        if child.get("workspace_path"):
+            child_ws_path = child.get("workspace_path")
+        elif child_ws_kind == "worktree":
+            child_ws_path = None
+        elif child_ws_kind == root_ws_kind:
+            child_ws_path = root_row["workspace_path"]
+        else:
+            child_ws_path = None
+        tasks_to_create.append({
+            "temp_id": f"child_{idx}",
+            "title": child["title"].strip(),
+            "body": child.get("body") if isinstance(child.get("body"), str) else None,
+            "assignee": _canonical_assignee(child.get("assignee")),
+            "workspace_kind": child_ws_kind,
+            "workspace_path": child_ws_path,
+            "tenant": root_row["tenant"],
+            "status": "todo",
+            "created_by": author or "decomposer",
+            "creator_task_id": task_id,
+        })
+
+    edges_to_create = []
+    for idx, child in enumerate(children):
+        for p_idx in (child.get("parents") or []):
+            edges_to_create.append({"from": f"child_{p_idx}", "to": f"child_{idx}"})
+    for idx in range(len(children)):
+        edges_to_create.append({"from": f"child_{idx}", "to": task_id})
+
+    state_changes = [{
+        "task_id": task_id,
+        "status": "todo",
+        "assignee": root_assignee,
+    }]
+
+    comments = []
+    if author and author.strip():
+        comments.append({
+            "task_id": task_id,
+            "author": author.strip(),
+            "body": "Decomposed into {child_ids}. Root will wake when all children complete.",
+        })
+
+    events = [{
+        "task_id": task_id,
+        "kind": "decomposed",
+        "payload": {"root_assignee": root_assignee},
+    }]
+
+    plan = {
+        "reason": "decompose_triage_task",
+        "create_tasks": tasks_to_create,
+        "create_edges": edges_to_create,
+        "state_changes": state_changes,
+        "comments": comments,
+        "events": events,
+    }
+    gov_ctx = {
+        "actor": author or "decomposer",
+        "ingress": "graph_api",
+        "details": {"root_task_id": task_id, "children_count": len(children)},
+    }
+
+    res = commit_graph_mutation(conn, board_id=None, mutation_plan=plan, governance_context=gov_ctx)
     if auto_promote:
         recompute_ready(conn)
-    return child_ids
+    return res.created_task_ids
 
 
 def _insert_decomposed_child(

@@ -105,6 +105,74 @@ class TestChatCompletionsBasic:
 
 
 
+    def _msg_with_extra_content(self):
+        return [
+            {"role": "assistant", "content": "ok",
+             "tool_calls": [{"id": "call_1", "type": "function",
+                             "extra_content": {"google": {"thought_signature": "SIG_123"}},
+                             "function": {"name": "t", "arguments": "{}"}}]},
+        ]
+
+    def _msg_with_sigless_tool_call(self):
+        return [
+            {"role": "assistant", "content": "ok",
+             "tool_calls": [{"id": "call_1", "type": "function",
+                             "function": {"name": "t", "arguments": "{}"}}]},
+        ]
+
+    def test_convert_messages_injects_sentinel_for_gemini_target(self, transport):
+        """Sig-less tool calls replayed to a Gemini target must carry the
+        ``skip_thought_signature_validator`` bypass in the documented
+        ``extra_content`` replay shape, or the upstream rejects the whole
+        history with 400 INVALID_ARGUMENT."""
+        msgs = self._msg_with_sigless_tool_call()
+        result = transport.convert_messages(msgs, model="gemini-3.7-flash")
+        assert result is not msgs
+        assert result[0]["tool_calls"][0]["extra_content"] == {
+            "google": {"thought_signature": "skip_thought_signature_validator"}
+        }
+        # Original history untouched (copy-on-write)
+        assert "extra_content" not in msgs[0]["tool_calls"][0]
+
+    def test_convert_messages_sentinel_preserves_existing_extra_content(self, transport):
+        """Merging the sentinel must not clobber sibling keys inside an
+        existing ``extra_content`` mapping (nor mutate the original)."""
+        msgs = [
+            {"role": "assistant", "content": "ok",
+             "tool_calls": [{"id": "call_1", "type": "function",
+                             "extra_content": {"google": {"other": "keep"},
+                                               "vendor": {"x": 1}},
+                             "function": {"name": "t", "arguments": "{}"}}]},
+        ]
+        result = transport.convert_messages(msgs, model="gemini-3.7-flash")
+        assert result[0]["tool_calls"][0]["extra_content"] == {
+            "google": {"other": "keep",
+                       "thought_signature": "skip_thought_signature_validator"},
+            "vendor": {"x": 1},
+        }
+        assert msgs[0]["tool_calls"][0]["extra_content"] == {
+            "google": {"other": "keep"}, "vendor": {"x": 1}
+        }
+
+    def test_convert_messages_keeps_real_signature_untouched(self, transport):
+        """A tool call that already carries signature material must pass
+        through untouched — no sentinel stapled on top."""
+        msgs = self._msg_with_extra_content()
+        result = transport.convert_messages(msgs, model="gemini-3.7-flash")
+        assert result is msgs
+        assert "thought_signature" not in result[0]["tool_calls"][0]
+        assert result[0]["tool_calls"][0]["extra_content"] == {
+            "google": {"thought_signature": "SIG_123"}
+        }
+
+    def test_convert_messages_no_sentinel_for_strict_provider(self, transport):
+        """Non-Gemini targets must never see the sentinel — strict
+        OpenAI-compatible providers reject unknown tool_call fields."""
+        msgs = self._msg_with_sigless_tool_call()
+        result = transport.convert_messages(msgs, model="gpt-4o")
+        assert result is msgs
+        assert "extra_content" not in result[0]["tool_calls"][0]
+
 
 
 
@@ -433,6 +501,14 @@ class TestChatCompletionsBuildKwargs:
             provider_profile=ProviderProfile(name="_t", fixed_temperature=OMIT_TEMPERATURE),
         )
         assert "temperature" not in kw
+
+    def test_omit_temperature_for_gemini(self, transport):
+        """Gemini 3.6+ and upcoming Gemini models omit temperature per Google deprecation."""
+        from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
+        assert _fixed_temperature_for_model("gemini-3.6-flash") is OMIT_TEMPERATURE
+        assert _fixed_temperature_for_model("gemini-3.7-flash") is OMIT_TEMPERATURE
+        assert _fixed_temperature_for_model("gemini-3.8-flash-high") is OMIT_TEMPERATURE
+        assert _fixed_temperature_for_model("gemini-4-argon") is OMIT_TEMPERATURE
 
 
 class TestChatCompletionsKimi:

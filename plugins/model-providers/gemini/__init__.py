@@ -7,7 +7,7 @@ profile carries auth/endpoint metadata and the thinking_config translation hook.
 from typing import Any
 
 from providers import register_provider
-from providers.base import ProviderProfile
+from providers.base import ProviderProfile, OMIT_TEMPERATURE
 
 
 class GeminiProfile(ProviderProfile):
@@ -42,6 +42,7 @@ gemini = GeminiProfile(
     env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
     base_url="https://generativelanguage.googleapis.com/v1beta", auth_type="api_key",
     default_aux_model="gemini-3.6-flash",
+    fixed_temperature=OMIT_TEMPERATURE,
 )
 
 register_provider(gemini)

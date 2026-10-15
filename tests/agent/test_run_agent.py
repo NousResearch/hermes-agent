@@ -2738,6 +2738,69 @@ class TestHandleMaxIterations:
         ]
         assert len(orphan_ids) == 0, f"Orphan tool result still present: {orphan_ids}"
 
+    def test_summary_injects_sentinel_for_gemini_target(self, agent):
+        """The summary path hand-builds messages and calls
+        chat.completions.create() directly, bypassing the transport — sig-less
+        tool calls replayed to a Gemini 3 thinking model must still get the
+        ``skip_thought_signature_validator`` sentinel there, or the upstream
+        rejects the whole history with 400 INVALID_ARGUMENT."""
+        resp = _mock_response(content="Summary of work done.")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        agent.model = "gemini-3.7-flash"
+        messages = [
+            {"role": "user", "content": "Analyze something"},
+            # Sig-less assistant tool call (e.g. made by a non-Gemini model
+            # earlier in a mixed-provider session) + its result.
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "call_1", "type": "function",
+                             "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+
+        result = agent._handle_max_iterations(messages, 120)
+
+        assert result == "Summary of work done."
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        sent_calls = [
+            tc for m in kwargs.get("messages", [])
+            if m.get("role") == "assistant"
+            for tc in (m.get("tool_calls") or [])
+        ]
+        assert sent_calls, "assistant tool_call lost from the summary request"
+        assert sent_calls[0]["extra_content"] == {
+            "google": {"thought_signature": "skip_thought_signature_validator"}
+        }
+        # Durable history untouched (the sanitizer builds new dicts)
+        assert "extra_content" not in messages[1]["tool_calls"][0]
+
+    def test_summary_no_sentinel_for_strict_provider(self, agent):
+        """Non-Gemini targets must never see the sentinel — strict
+        OpenAI-compatible providers reject unknown tool_call fields."""
+        resp = _mock_response(content="Summary of work done.")
+        agent.client.chat.completions.create.return_value = resp
+        agent._cached_system_prompt = "You are helpful."
+        agent.model = "mistralai/mistral-large"
+        messages = [
+            {"role": "user", "content": "Analyze something"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "call_1", "type": "function",
+                             "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+
+        result = agent._handle_max_iterations(messages, 120)
+
+        assert result == "Summary of work done."
+        kwargs = agent.client.chat.completions.create.call_args.kwargs
+        sent_calls = [
+            tc for m in kwargs.get("messages", [])
+            if m.get("role") == "assistant"
+            for tc in (m.get("tool_calls") or [])
+        ]
+        assert sent_calls
+        assert "extra_content" not in sent_calls[0]
+
 
     def test_summary_strips_strict_schema_foreign_fields(self, agent):
         """Regression: the max-iterations summary request must NOT carry

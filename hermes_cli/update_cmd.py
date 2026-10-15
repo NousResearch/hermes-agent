@@ -1820,6 +1820,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print("  (removed .git/index.lock left by a git that was killed)")
     _check.clear_git_debris(_m().PROJECT_ROOT)
 
+    repo_root = _m().PROJECT_ROOT
+    if (repo_root / ".git").exists():
+        from hermes_cli.update_local_commit_guard import enforce_local_main_commit_guard
+
+        enforce_local_main_commit_guard(repo_root)
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 

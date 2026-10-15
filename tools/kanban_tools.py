@@ -1130,23 +1130,41 @@ def _handle_create(args: dict, **kw) -> str:
         if project_id is None and workspace_kind is None and workspace_path is None:
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
-        new_tid = kb.create_task(
-            conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
-            parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
-            priority=_opt_int(args.get("priority"), 0),
-            workspace_kind=workspace_kind, workspace_path=workspace_path, project_id=project_id,
-            # Board-project inheritance must read the board this call opened, not the
-            # session's current board.
-            board=args.get("board"),
-            project_source_task_id=project_source_task_id, triage=triage,
-            creator_task_id=self_tid,
-            idempotency_key=args.get("idempotency_key"),
-            max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
-            model_override=model_override, provider_override=provider_override,
-            goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
-            completion_contract=args.get("completion_contract"),
-            initial_status=str(args.get("initial_status") or "running"),
-            created_by=_persisted_identity(), session_id=session_id)
+        try:
+            new_tid = kb.create_task(
+                conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
+                parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
+                priority=_opt_int(args.get("priority"), 0),
+                workspace_kind=workspace_kind, workspace_path=workspace_path, project_id=project_id,
+                # Board-project inheritance must read the board this call opened, not the
+                # session's current board.
+                board=args.get("board"),
+                project_source_task_id=project_source_task_id, triage=triage,
+                creator_task_id=self_tid,
+                idempotency_key=args.get("idempotency_key"),
+                max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
+                model_override=model_override, provider_override=provider_override,
+                goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
+                completion_contract=args.get("completion_contract"),
+                initial_status=str(args.get("initial_status") or "running"),
+                created_by=_persisted_identity(), session_id=session_id,
+                ingress="tool")
+        except kb.GovernanceBudgetExceeded as exc:
+            return tool_error(
+                exc.message,
+                code=exc.code,
+                reason_code=exc.code,
+                policy_id=exc.policy_id,
+                policy_hash=exc.policy_hash,
+                actor=exc.actor,
+                ingress=exc.ingress,
+                terminal_mode="GOVERNANCE_LOCKED",
+                semantic_state=getattr(exc, "semantic_state", "BLOCKED_BUDGET_EXHAUSTED"),
+                permitted_next_actions=exc.permitted_next_actions,
+                observed_task_count=exc.observed_task_count,
+                configured_limit=exc.configured_limit,
+                event_id=exc.event_id,
+            )
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}

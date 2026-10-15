@@ -2157,6 +2157,17 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         substitute_api_content(api_msg)
         if needs_sanitize:
             agent._sanitize_tool_calls_for_strict_api(api_msg, model=sanitize_model)
+            # Mirror of the transport's missing-signature sentinel: this path
+            # hand-builds messages and calls chat.completions.create() directly,
+            # bypassing ChatCompletionsTransport.convert_messages(). Sig-less
+            # tool calls replayed to a Gemini 3 thinking model 400 there too.
+            from agent.transports.chat_completions import (
+                _model_consumes_thought_signature, _sentinel_extra_content, _tool_call_has_signature,
+            )
+            if _model_consumes_thought_signature(sanitize_model):
+                for tc in api_msg.get("tool_calls") or ():
+                    if isinstance(tc, dict) and not _tool_call_has_signature(tc):
+                        tc["extra_content"] = _sentinel_extra_content(tc.get("extra_content"))
         api_messages.append(api_msg)
 
     effective_system = agent._cached_system_prompt or ""

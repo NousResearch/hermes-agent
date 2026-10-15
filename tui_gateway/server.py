@@ -390,6 +390,9 @@ def _load_interim_assistant_messages() -> bool:
     return is_truthy_value(_display_cfg().get("interim_assistant_messages", True))
 
 
+from .session_reaper import _flush_sessions_before_exit, _stop_turns_before_exit
+from .methods_voice import _release_gateway_wake_owner
+
 def _shutdown_sessions() -> None:
     # Durable-first: flush transcripts (bounded budget) BEFORE the slow teardown so a supervisor SIGKILL can't lose them.
     for step in (_flush_sessions_before_exit, _release_gateway_wake_owner, _stop_turns_before_exit):

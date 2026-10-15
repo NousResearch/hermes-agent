@@ -175,3 +175,19 @@ def test_created_with_initial_status_blocked_is_not_promoted_by_recompute_ready(
         assert promoted == 0
         assert kb.get_task(conn, child_id).status == "blocked"
 
+
+def test_initial_block_is_typed_and_survives_assignment(kanban_home: Path) -> None:
+    """A non-dispatch reminder must remain gated even after owner changes."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="human-review reminder", initial_status="blocked")
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.block_kind == "needs_input"
+        event = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='blocked' ORDER BY id DESC LIMIT 1", (tid,)
+        ).fetchone()
+        assert 'needs_input' in event[0]
+        kb.assign_task(conn, tid, "default")
+        assert kb.recompute_ready(conn) == 0
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status == "blocked"
+

@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest'
 
 import { TRANSLATIONS } from './catalog'
-import { DEFAULT_LOCALE, isLocale, isSupportedLocaleValue, LOCALE_OPTIONS, normalizeLocale } from './languages'
+import { DEFAULT_LOCALE, isLocale, isSupportedLocaleValue, LOCALE_OPTIONS, localeConfigValue, normalizeLocale } from './languages'
+import { pl } from './pl'
 
 describe('desktop i18n languages', () => {
   it('normalizes supported locale aliases', () => {
     expect(normalizeLocale('en')).toBe('en')
     expect(normalizeLocale('EN-US')).toBe('en')
+    expect(normalizeLocale('pl')).toBe('pl')
+    expect(normalizeLocale('PL-PL')).toBe('pl')
+    expect(normalizeLocale(' pl_pl ')).toBe('pl')
+    expect(normalizeLocale('Polski')).toBe('pl')
     expect(normalizeLocale('zh')).toBe('zh')
     expect(normalizeLocale('zh-CN')).toBe('zh')
     expect(normalizeLocale('zh-Hans')).toBe('zh')
@@ -48,6 +53,7 @@ describe('desktop i18n languages', () => {
     expect(isSupportedLocaleValue('zh-TW')).toBe(true)
     expect(isSupportedLocaleValue('ja-JP')).toBe(true)
     expect(isSupportedLocaleValue('ru-RU')).toBe(true)
+    expect(isSupportedLocaleValue('pl-PL')).toBe(true)
     expect(isSupportedLocaleValue('de-DE')).toBe(true)
     expect(isSupportedLocaleValue('it')).toBe(false)
     expect(isLocale('zh-CN')).toBe(false)
@@ -68,5 +74,28 @@ describe('desktop i18n languages', () => {
     }
 
     expect(Object.keys(TRANSLATIONS).sort()).toEqual(LOCALE_OPTIONS.map(option => option.id).sort())
+  })
+
+  it('returns the persisted config value for supported locales', () => {
+    expect(localeConfigValue('en')).toBe('en')
+    expect(localeConfigValue('zh')).toBe('zh')
+    expect(localeConfigValue('zh-hant')).toBe('zh-hant')
+    expect(localeConfigValue('ja')).toBe('ja')
+    expect(localeConfigValue('ar')).toBe('ar')
+    expect(localeConfigValue('ru')).toBe('ru')
+    expect(localeConfigValue('pl')).toBe('pl')
+  })
+
+  it('keeps reviewed Polish copy localized and plural-aware', () => {
+    expect(pl.common.save).toBe('Zapisz')
+    expect(pl.common.cancel).toBe('Anuluj')
+    expect(pl.language.label).toBe('Język')
+    expect(pl.notifications.more(1)).toContain('1 kolejne powiadomienie')
+    expect(pl.notifications.more(2)).toContain('2 kolejne powiadomienia')
+    expect(pl.notifications.more(5)).toContain('5 kolejnych powiadomień')
+    expect(pl.cron.count(1)).toBe('1 zadanie')
+    expect(pl.cron.count(2)).toBe('2 zadania')
+    expect(pl.cron.count(5)).toBe('5 zadań')
+    expect(pl.fileMenu.deleteTitle('Sesja')).toBe('Usunąć Sesja?')
   })
 })

@@ -26,7 +26,7 @@ import type { UninstallSectionTranslations } from './types_uninstall_section'
 import type { UpdateChannelCopy } from './types_update_channel'
 
 /** The locales compiled into the app (`TRANSLATIONS`). */
-export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
+export type BundledLocale = 'en' | 'pl' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
 
 /** Any language id the app can render: a bundled locale, or one a plugin /
  *  the backend registered at runtime (`registerAppLocale`). Lowercase
@@ -1446,6 +1446,8 @@ export interface Translations extends NoticeTranslations {
       updateTitle: string
       updateDetail: (next: string, current: string) => string
       updateAction: string
+      /** Toast when a newer local engine build is available. */
+      updateToast?: (next: string) => string
       updating: string
       upToDateTitle: string
       upToDateDetail: (tag: string, backend: string) => string

@@ -146,7 +146,7 @@ describe('I18nProvider', () => {
 
   it('promotes a saved pack-only language once its pack registers, then drops back when it is removed', async () => {
     const configClient: I18nConfigClient = {
-      getConfig: vi.fn().mockResolvedValue({ display: { language: 'pl' } }),
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'it' } }),
       saveConfig: vi.fn()
     }
 
@@ -160,19 +160,19 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('locale').textContent).toBe('en')
 
     const dispose = registerAppLocale(
-      'pl',
-      { endonym: 'Polski', translations: { language: { label: 'Język' } } },
+      'it',
+      { endonym: 'Italiano', translations: { language: { label: 'Lingua' } } },
       'backend'
     )
 
     try {
-      await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('pl'))
-      expect(screen.getByTestId('label').textContent).toBe('Język')
+      await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('it'))
+      expect(screen.getByTestId('label').textContent).toBe('Lingua')
       // Unregistered keys fall back to English, never to the raw key.
       expect(screen.getByTestId('save').textContent).toBe(TRANSLATIONS.en.common.save)
       // The provider writes <html lang> in a passive effect after the render
       // commits, so it can trail the rendered locale under load.
-      await waitFor(() => expect(document.documentElement.lang).toBe('pl'))
+      await waitFor(() => expect(document.documentElement.lang).toBe('it'))
       expect(configClient.saveConfig).not.toHaveBeenCalled()
     } finally {
       dispose()
@@ -181,7 +181,7 @@ describe('I18nProvider', () => {
     // The pack is gone (profile switch): strings fall back to English while the
     // chosen id stays put for the next sync.
     await waitFor(() => expect(screen.getByTestId('label').textContent).toBe('Language'))
-    expect(screen.getByTestId('locale').textContent).toBe('pl')
+    expect(screen.getByTestId('locale').textContent).toBe('it')
   })
 
   it('mirrors a registered language’s direction onto the document', async () => {

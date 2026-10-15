@@ -22,6 +22,12 @@ export const LOCALE_OPTIONS = [
     configValue: 'en'
   },
   {
+    id: 'pl',
+    name: 'Polski',
+    englishName: 'Polish',
+    configValue: 'pl'
+  },
+  {
     id: 'zh',
     name: LOCALE_ENDONYMS.zh,
     englishName: 'Simplified Chinese',
@@ -134,6 +140,11 @@ const LOCALE_ALIASES: Record<string, BundledLocale> = {
   en: 'en',
   'en-us': 'en',
   en_us: 'en',
+  pl: 'pl',
+  'pl-pl': 'pl',
+  pl_pl: 'pl',
+  polish: 'pl',
+  polski: 'pl',
   zh: 'zh',
   'zh-cn': 'zh',
   zh_cn: 'zh',

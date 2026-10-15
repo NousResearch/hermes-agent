@@ -26,39 +26,39 @@ afterEach(() => {
 
 describe('registerAppLocale', () => {
   it('layers a partial pack over English for a new language and falls back per key', () => {
-    registerAppLocale('pl', {
-      endonym: 'Polski',
-      translations: { common: { save: 'Zapisz' } }
+    registerAppLocale('it', {
+      endonym: 'Italiano',
+      translations: { common: { save: 'Salva' } }
     })
 
-    const pl = resolveTranslations('pl')
+    const it = resolveTranslations('it')
 
-    expect(pl.common.save).toBe('Zapisz')
-    expect(pl.common.cancel).toBe(TRANSLATIONS.en.common.cancel)
-    expect(pl.language.label).toBe(TRANSLATIONS.en.language.label)
+    expect(it.common.save).toBe('Salva')
+    expect(it.common.cancel).toBe(TRANSLATIONS.en.common.cancel)
+    expect(it.language.label).toBe(TRANSLATIONS.en.language.label)
   })
 
   it('wraps a pack string over a function-valued English entry into a positional formatter', () => {
-    registerAppLocale('pl', {
+    registerAppLocale('it', {
       translations: {
-        'connectorsPage.searchPlaceholder': '{0} wyników',
-        'connectorsPage.card.fact.toolsSomeOn': '{1} z {0} narzędzi'
+        'connectorsPage.searchPlaceholder': '{0} risultati',
+        'connectorsPage.card.fact.toolsSomeOn': '{1} di {0} strumenti'
       }
     })
 
-    const pl = resolveTranslations('pl')
+    const it = resolveTranslations('it')
 
-    expect(pl.connectorsPage.searchPlaceholder(3)).toBe('3 wyników')
-    expect(pl.connectorsPage.card.fact.toolsSomeOn(10, 4)).toBe('4 z 10 narzędzi')
-    expect(typeof pl.connectorsPage.card.fact.toolsSomeOn).toBe('function')
+    expect(it.connectorsPage.searchPlaceholder(3)).toBe('3 risultati')
+    expect(it.connectorsPage.card.fact.toolsSomeOn(10, 4)).toBe('4 di 10 strumenti')
+    expect(typeof it.connectorsPage.card.fact.toolsSomeOn).toBe('function')
   })
 
   it('keeps dotted leaf keys (keybinds.actions) addressable from a flat pack', () => {
-    registerAppLocale('pl', { translations: { 'keybinds.actions.session.new': 'Nowa sesja' } })
+    registerAppLocale('it', { translations: { 'keybinds.actions.session.new': 'Nuova sessione' } })
 
-    const actions = resolveTranslations('pl').keybinds.actions
+    const actions = resolveTranslations('it').keybinds.actions
 
-    expect(actions['session.new']).toBe('Nowa sesja')
+    expect(actions['session.new']).toBe('Nuova sessione')
     expect(actions['nav.settings']).toBe(TRANSLATIONS.en.keybinds.actions['nav.settings'])
   })
 
@@ -74,27 +74,27 @@ describe('registerAppLocale', () => {
 
   it('lets a later source win per key and drops exactly its own layer on dispose', () => {
     const disposeBackend = registerAppLocale(
-      'pl',
-      { translations: { common: { save: 'Zapisz', cancel: 'Anuluj' } } },
+      'it',
+      { translations: { common: { save: 'Salva', cancel: 'Annulla' } } },
       'backend'
     )
 
     const disposePlugin = registerAppLocale(
-      'pl',
-      { translations: { common: { save: 'Zachowaj' } } },
-      'plugin:hermes-lang-pl'
+      'it',
+      { translations: { common: { save: 'Mantieni' } } },
+      'plugin:hermes-lang-it'
     )
 
-    expect(resolveTranslations('pl').common.save).toBe('Zachowaj')
-    expect(resolveTranslations('pl').common.cancel).toBe('Anuluj')
+    expect(resolveTranslations('it').common.save).toBe('Mantieni')
+    expect(resolveTranslations('it').common.cancel).toBe('Annulla')
 
     disposePlugin()
-    expect(resolveTranslations('pl').common.save).toBe('Zapisz')
-    expect(isRegisteredLocale('pl')).toBe(true)
+    expect(resolveTranslations('it').common.save).toBe('Salva')
+    expect(isRegisteredLocale('it')).toBe(true)
 
     disposeBackend()
-    expect(isRegisteredLocale('pl')).toBe(false)
-    expect(resolveTranslations('pl').common.save).toBe(TRANSLATIONS.en.common.save)
+    expect(isRegisteredLocale('it')).toBe(false)
+    expect(resolveTranslations('it').common.save).toBe(TRANSLATIONS.en.common.save)
   })
 
   it('bumps the version on every change so translators re-resolve, and memoizes between', () => {
@@ -139,17 +139,17 @@ describe('registerAppLocale', () => {
 
 describe('languages + registry', () => {
   it('accepts a registered id as a locale and its config value, still mapping aliases first', () => {
-    expect(isLocale('pl')).toBe(false)
-    expect(normalizeLocale('pl')).toBe('en')
-    expect(localeConfigValue('pl')).toBe('en')
+    expect(isLocale('it')).toBe(false)
+    expect(normalizeLocale('it')).toBe('en')
+    expect(localeConfigValue('it')).toBe('en')
 
-    registerAppLocale('pl', { endonym: 'Polski' })
+    registerAppLocale('it', { endonym: 'Italiano' })
 
-    expect(isLocale('pl')).toBe(true)
-    expect(isSupportedLocaleValue('PL')).toBe(true)
-    expect(normalizeLocale('pl_PL')).toBe('en')
-    expect(normalizeLocale('PL')).toBe('pl')
-    expect(localeConfigValue('pl')).toBe('pl')
+    expect(isLocale('it')).toBe(true)
+    expect(isSupportedLocaleValue('IT')).toBe(true)
+    expect(normalizeLocale('it_IT')).toBe('en')
+    expect(normalizeLocale('IT')).toBe('it')
+    expect(localeConfigValue('it')).toBe('it')
     expect(normalizeLocale('zh-TW')).toBe('zh-hant')
   })
 
@@ -160,13 +160,12 @@ describe('languages + registry', () => {
     const options = languageOptions()
     const ids = options.map(option => option.id)
 
-    expect(ids.slice(0, 9)).toEqual(Object.keys(TRANSLATIONS))
-    expect(ids.slice(9)).toEqual(['he', 'pl'])
-    expect(options.find(option => option.id === 'pl')).toMatchObject({
-      endonym: 'Polski',
-      englishName: 'Polish',
-      rtl: false,
-      source: 'backend'
+    expect(ids.slice(0, 10)).toEqual(Object.keys(TRANSLATIONS))
+    expect(ids.slice(10)).toEqual(['he'])
+    expect(options.find(option => option.id === 'he')).toMatchObject({
+      endonym: 'עברית',
+      rtl: true,
+      source: 'plugin:hermes-lang-he'
     })
     expect(options.find(option => option.id === 'he')).toMatchObject({ rtl: true, source: 'plugin:hermes-lang-he' })
     expect(options.find(option => option.id === 'ar')?.rtl).toBe(true)

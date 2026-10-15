@@ -36,13 +36,17 @@ def _is_silence_narration(content: Optional[str]) -> bool:
     return bool(stripped) and len(stripped) <= 64 and bool(_SILENCE_NARRATION.match(stripped))
 
 
-class PartialDeliveryError(RuntimeError):
-    """A split send failed after earlier chunks were delivered (``raw_response["partial_overflow"]``).
-    Callers must not fall back to re-sending the whole payload: the recipient already has the head."""
+class DeliveryError(RuntimeError):
+    """A failed routed send with its adapter receipt for safe fallback decisions."""
 
     def __init__(self, message: str, result: Any):
         super().__init__(message)
         self.result = result
+
+
+class PartialDeliveryError(DeliveryError):
+    """A split send failed after earlier chunks were delivered (``raw_response["partial_overflow"]``).
+    Callers must not fall back to re-sending the whole payload: the recipient already has the head."""
 
 
 @dataclass(frozen=True)
@@ -330,5 +334,5 @@ class DeliveryRouter:
             from gateway.platforms.base import BasePlatformAdapter
             if BasePlatformAdapter._is_partial_delivery(result):
                 raise PartialDeliveryError(error, result)
-            raise RuntimeError(error or f"{target.platform.value} delivery failed")
+            raise DeliveryError(error or f"{target.platform.value} delivery failed", result)
         return result

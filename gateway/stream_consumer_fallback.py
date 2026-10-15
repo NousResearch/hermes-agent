@@ -315,6 +315,12 @@ class StreamFallbackMixin:
             return  # a new message is exactly the re-addressing the egress guard refused
         if not self._fallback_final_send:
             await self._try_strip_cursor()
+        receipt = self._source_receipt
+        if receipt and (receipt["confirmed_end"] or receipt["attempted_end"]) and self._accumulated.startswith(receipt["source"][:receipt["attempted_end"]]):
+            # A split first-send may have acknowledged its head without ever
+            # setting _last_sent_text. Let the source receipt own the suffix.
+            await self._send_source_suffix(self._clean_for_display(self._accumulated), final=False)
+            return
         visible = self._fallback_prefix or self._visible_prefix()
         tail = self._accumulated
         if visible and tail.startswith(visible):

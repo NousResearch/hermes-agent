@@ -22,6 +22,7 @@ from typing import Optional
 from utils import env_var_enabled, is_truthy_value
 from agent.i18n import t
 from tools import approval_context
+from tools.approval_audit import audited
 from tools.approval_context import (
     _get_session_platform, _is_cron_approval_context,
     _is_gateway_approval_context, _is_interactive_cli, _is_single_query_approval_context,
@@ -1092,6 +1093,7 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
     return _user_deny_block(command)
 
 
+@audited("command")
 def check_dangerous_command(command: str, env_type: str,
                             approval_callback=None,
                             has_host_access: bool = False) -> dict:
@@ -1118,6 +1120,7 @@ def check_dangerous_command(command: str, env_type: str,
     )
 
 
+@audited("tool", always=True)
 def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", approval_callback=None) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
@@ -1148,6 +1151,7 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
 
 # --- Combined pre-exec guard (floors + dangerous command detection) ------------------------------------------------
 
+@audited("terminal")
 def check_all_command_guards(command: str, env_type: str,
                              approval_callback=None,
                              has_host_access: bool = False) -> dict:
@@ -1200,6 +1204,7 @@ _EXECUTE_CODE_DESCRIPTION = (
 )
 
 
+@audited("execute_code")
 def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = False) -> dict:
     """Approve an execute_code script before its child process is spawned.
 

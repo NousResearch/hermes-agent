@@ -4,8 +4,8 @@ Unlock: ``op signin --raw`` with the master password on stdin (desktop-app
 integration or account-level auth) mints an ``OP_SESSION_<account>`` token.
 A configured service-account token skips the prompt entirely (headless).
 List: ``op item list --categories Login --format json`` → title, urls,
-username. Resolve: ``op item get <id> --vault <vault-id> ...``, selecting the
-item's vault from fresh listing metadata (required for service accounts).
+username, vault. Resolve: ``op item get <id> --vault <vault-id> ...`` (service
+accounts reject an item read without a vault query).
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ class OnePasswordLoginBackend(LoginBackend):
         from agent.secret_scope import get_secret
         env_name = str(self.cfg.get("service_account_token_env") or "OP_SERVICE_ACCOUNT_TOKEN")
         self._service_token = get_secret(env_name, "") or ""
+        self._item_vaults: dict[str, str] = {}  # item id -> vault id from the latest ``item list``
 
     # ── auth ────────────────────────────────────────────────────────────────
 
@@ -92,7 +93,9 @@ class OnePasswordLoginBackend(LoginBackend):
                        timeout_message="op timed out", stdin=subprocess.DEVNULL)
         if proc.returncode != 0:
             err = _scrub(proc.stderr or "")
-            if "session" in err.lower() or "sign in" in err.lower() or "not signed in" in err.lower():
+            # A service account never holds a session, so an auth failure there is not a lock to undo:
+            # surface op's own error instead of an unlock prompt that reports "already unlocked".
+            if not self._service_token and any(w in err.lower() for w in ("session", "sign in", "not signed in")):
                 _unlock.lock(self.name)
                 raise UnlockRequired(self)
             raise RuntimeError(f"op failed: {err[:200]}")
@@ -104,7 +107,11 @@ class OnePasswordLoginBackend(LoginBackend):
             return []
         raw = json.loads(self._run("item", "list", "--categories", "Login", "--format", "json") or "[]")
         out: list[VaultItemMeta] = []
+        self._item_vaults = {}
         for item in raw if isinstance(raw, list) else []:
+            vault = item.get("vault") or {}
+            if item.get("id"):
+                self._item_vaults[str(item["id"])] = str(vault.get("id") or "") if isinstance(vault, dict) else ""
             urls = [str(u["href"]) for u in item.get("urls") or [] if isinstance(u, dict) and u.get("href")]
             origins = _all_origins(urls)
             if not origins:
@@ -120,29 +127,17 @@ class OnePasswordLoginBackend(LoginBackend):
     def get_meta(self, handle: str) -> Optional[VaultItemMeta]:
         return next((m for m in self.list_items() if m.id == handle), None)
 
-    def _item_selector(self, handle: str) -> List[str]:
-        # Keep existing op:<item-id> handles valid, including across backend instances.
-        # Resolve from fresh metadata rather than caching a vault or guessing the first one.
-        if not handle.startswith(self.prefix):
-            raise ValueError("Invalid 1Password login handle")
+    def _item_selector(self, handle: str) -> list[str]:
+        """``op item get`` target for a listed login. A service account must name the item's vault
+        (``--vault``) and ``item list`` reports it, so the vault comes from the same listing that
+        proved the handle is a Login item; a handle nothing listed is refused before any secret read."""
         item_id = handle[len(self.prefix):]
-        if not item_id or not item_id[0].isalnum() or not all(
-            c.isascii() and (c.isalnum() or c == "-") for c in item_id
-        ):
-            raise ValueError("Invalid 1Password login handle")
-        raw = json.loads(self._run("item", "list", "--categories", "Login", "--format", "json") or "[]")
-        if not isinstance(raw, list):
-            raise RuntimeError("Invalid 1Password login metadata")
-        matches = [item for item in raw if isinstance(item, dict) and item.get("id") == item_id]
-        if len(matches) != 1:
-            raise RuntimeError("1Password login is missing or ambiguous; list logins again")
-        vault = matches[0].get("vault")
-        vault_id = vault.get("id") if isinstance(vault, dict) else None
-        if isinstance(vault_id, str) and vault_id:
-            return [item_id, "--vault", vault_id]
-        if self._service_token:
-            raise RuntimeError("1Password login metadata is missing its vault ID; list logins again")
-        return [item_id]
+        if item_id not in self._item_vaults:
+            self.list_items()
+        if item_id not in self._item_vaults:
+            raise RuntimeError("1Password login not found; list logins again")
+        vault_id = self._item_vaults[item_id]
+        return [item_id, "--vault", vault_id] if vault_id else [item_id]
 
     def resolve_password(self, handle: str) -> str:
         return self._run("item", "get", *self._item_selector(handle),

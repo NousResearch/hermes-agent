@@ -165,6 +165,7 @@ def _as_schtasks_exports(xml):
     ("extra_action", "service_identity_unverified"), ("disabled", "service_disabled"),
     ("unknown_script", "service_identity_unverified"), ("malformed_xml", "service_identity_unverified"),
     ("schtasks_export", None), ("elevated", "service_identity_unverified"),
+    ("empty_run_level", "service_identity_unverified"), ("empty_enabled", "service_disabled"),
 ])
 def test_task_xml_binds_actual_action_and_principal(case, reason, tmp_path):
     from hermes_cli.gateway_runtime_service_identity import verify_windows_task
@@ -178,6 +179,10 @@ def test_task_xml_binds_actual_action_and_principal(case, reason, tmp_path):
         xml = _as_schtasks_exports(xml)
     if case == 'elevated':  # an explicit non-default value is still refused
         xml = xml.replace('<RunLevel>LeastPrivilege</RunLevel>', '<RunLevel>HighestAvailable</RunLevel>')
+    if case == 'empty_run_level':  # present but empty is not "absent": still refused
+        xml = xml.replace('<RunLevel>LeastPrivilege</RunLevel>', '<RunLevel></RunLevel>')
+    if case == 'empty_enabled':
+        xml = xml.replace('<Enabled>true</Enabled>\n    <Hidden>', '<Enabled></Enabled>\n    <Hidden>')
     if case == 'wrong_user':
         xml = xml.replace(user, 'DOMAIN\\other')
     if case == 'missing_user':

@@ -231,6 +231,7 @@ class PluginContext:
     def __init__(self, manifest: PluginManifest, manager: PluginManager):
         self.manifest = manifest
         self._manager = manager
+        self._worker_scope_lock = threading.RLock()
         self._llm: Any = None  # lazy; tests preseed it (see ``llm``)
         # Set when this context's load overran ``plugins.load_timeout_seconds``: the abandoned worker may
         # still be running register(), and nothing it registers from then on may reach a registry.
@@ -413,17 +414,15 @@ class PluginContext:
         logger.debug("Plugin %s registered on_unload callback", self.manifest.name)
         return handle
 
+    def worker_scope(self, *, timeout: float = 5.0):
+        """Acquire a reload-fenced scope for cooperative, profile-bound worker threads."""
+        from hermes_cli.plugin_workers import context_worker_scope
+        return context_worker_scope(self, self._manager.home_path, timeout=timeout)
+
     def spawn_task(self, coro, *, name: Optional[str] = None) -> asyncio.Task:
         """Spawn a supervised asyncio task; unload/force reload cancels it. Needs a running loop."""
-        if not asyncio.iscoroutine(coro):
-            raise TypeError("spawn_task expects a coroutine")
-        loop = asyncio.get_running_loop()
-        task_name = name or f"plugin:{self.plugin_id}:task"
-        task = loop.create_task(coro, name=task_name)
-        handle = self._track("background_task", task_name, lambda: task.done() or task.cancel())
-        task.add_done_callback(lambda _t: handle.dispose())
-        logger.debug("Plugin %s spawned supervised task: %s", self.manifest.name, task_name)
-        return task
+        from hermes_cli.plugin_workers import spawn_task
+        return spawn_task(self, coro, name=name)
 
     def register_approval_transport(self, name: str, present_fn: Callable) -> None:
         """Register a human approval transport, inactive until ``security.approval.transport:

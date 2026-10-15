@@ -116,6 +116,16 @@ class PluginHost:
         with self._lock:
             if self.alive:
                 return self._channel  # type: ignore[return-value]
+            # A lost pipe does not prove process exit. Fence stale proxies and reap
+            # the old host before admitting any replacement plugin worker.
+            self._stopping = True
+            self._generation += 1
+            if self._channel is not None:
+                self._channel.close("host replacement")
+            if self._proc is not None:
+                if self._proc.poll() is None:
+                    self._proc.kill()
+                self._proc.wait(timeout=_SHUTDOWN_GRACE_SECS)
             self._stopping = False
             argv = self._argv()
             proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -123,7 +133,6 @@ class PluginHost:
                                     bufsize=0)
             threading.Thread(target=_pump_stderr, args=(proc, self._home.name), daemon=True,
                              name=f"plugin-host-{proc.pid}-stderr").start()
-            self._generation += 1
             channel = Channel(proc.stdout, proc.stdin, self._handle,  # type: ignore[arg-type]
                               name=f"plugin-host[{proc.pid}]",
                               on_close=functools.partial(self._on_channel_close, self._generation),

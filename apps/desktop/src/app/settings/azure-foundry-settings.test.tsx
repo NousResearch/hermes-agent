@@ -20,7 +20,7 @@ const calls = vi.hoisted(() => ({
 }))
 vi.mock('@/hermes', () => ({
   deleteEnvVar: calls.remove,
-  discoverFoundryModels: calls.discover,
+  discoverFoundryDeployments: calls.discover,
   getFoundrySettings: calls.get,
   saveFoundrySettings: calls.save,
   validateFoundrySettings: calls.test
@@ -52,7 +52,7 @@ beforeEach(() => {
   calls.remove.mockResolvedValue({ ok: true })
   calls.get.mockResolvedValue(saved)
   calls.save.mockImplementation(async payload => ({ ...payload, is_current: true, api_key_set: false }))
-  calls.discover.mockResolvedValue({ models: ['deployment-alias', 'another-model'] })
+  calls.discover.mockResolvedValue({ deployments: ['deployment-alias', 'another-model'] })
   calls.test.mockResolvedValue({ ok: true, reachable: true, message: '' })
 })
 afterEach(cleanup)
@@ -69,10 +69,11 @@ it('offers CLI within Entra and sends account selectors to the same bot for test
   fireEvent.click(await screen.findByRole('option', { name: 'Azure CLI login' }))
   expect(screen.queryByLabelText('API Key')).toBeNull()
   fireEvent.click(screen.getByText('Advanced settings'))
-  fireEvent.click(screen.getByRole('button', { name: 'Tenant ID' }))
   fireEvent.change(screen.getByLabelText('Tenant ID'), { target: { value: 'my-tenant' } })
-  fireEvent.click(screen.getByRole('button', { name: 'Subscription name or ID' }))
-  expect(screen.queryByLabelText('Tenant ID')).toBeNull()
+  expect(screen.getByLabelText('Subscription name or ID')).toHaveProperty('disabled', true)
+  expect(screen.getByLabelText('Token scope')).toBeTruthy()
+  fireEvent.change(screen.getByLabelText('Tenant ID'), { target: { value: '' } })
+  expect(screen.getByLabelText('Subscription name or ID')).toHaveProperty('disabled', false)
   fireEvent.change(screen.getByLabelText('Subscription name or ID'), { target: { value: 'my-subscription' } })
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Test' })))
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save and use' })))
@@ -142,12 +143,12 @@ it('uses the old API-key card only when the backend lacks the route', async () =
 it('removes the saved API key through the existing confirmation and scoped credential API', async () => {
   render(surface())
   await screen.findByPlaceholderText('Leave blank to keep current key')
-  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Refresh models' })))
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Refresh deployments' })))
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Remove' })))
   expect(calls.confirm).toHaveBeenCalledWith(expect.objectContaining({ destructive: true }))
   expect(calls.remove).toHaveBeenCalledWith('AZURE_FOUNDRY_API_KEY', { connectionId: 'local', profile: 'bot-a' })
   await waitFor(() => expect(screen.queryByPlaceholderText('Leave blank to keep current key')).toBeNull())
-  fireEvent.focus(screen.getByLabelText('Deployment name'))
+  fireEvent.click(screen.getByRole('button', { name: 'Show options' }))
   expect(screen.queryByText('another-model')).toBeNull()
   expect(calls.save).not.toHaveBeenCalled()
 })
@@ -160,7 +161,7 @@ it('discovers with unsaved credentials without a deployment or a configuration w
   })
   render(surface())
   await screen.findByRole('combobox', { name: 'Get credentials from' })
-  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Refresh models' })))
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Refresh deployments' })))
   expect(calls.discover).toHaveBeenCalledWith(
     expect.objectContaining({
       model: '',
@@ -168,7 +169,7 @@ it('discovers with unsaved credentials without a deployment or a configuration w
     }),
     { connectionId: 'local', profile: 'bot-a' }
   )
-  fireEvent.focus(screen.getByLabelText('Deployment name'))
+  fireEvent.click(screen.getByRole('button', { name: 'Show options' }))
   fireEvent.click(await screen.findByText('another-model'))
   expect(screen.getByDisplayValue('another-model')).toBeTruthy()
   expect(calls.save).not.toHaveBeenCalled()
@@ -181,12 +182,12 @@ it('preserves automatic credentials and permits manual deployment entry when lis
     ...saved,
     auth: { kind: 'entra_id', entra: { credential_source: 'default', scope: '' } }
   })
-  calls.discover.mockResolvedValue({ models: [] })
+  calls.discover.mockResolvedValue({ deployments: [] })
   render(surface())
   await screen.findByText('Automatic Azure credentials')
-  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Refresh models' })))
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Refresh deployments' })))
   expect(calls.notify).toHaveBeenCalledWith(
-    expect.objectContaining({ kind: 'warning', message: expect.stringContaining('Enter your deployment name') })
+    expect.objectContaining({ kind: 'warning', message: expect.stringContaining('Enter a deployment name') })
   )
   fireEvent.change(screen.getByLabelText('Deployment name'), { target: { value: 'manual-deployment' } })
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save and use' })))
@@ -200,7 +201,7 @@ it('preserves automatic credentials and permits manual deployment entry when lis
 })
 
 it('discards discovery results after switching profiles', async () => {
-  let finish: (data: { models: string[] }) => void = () => {
+  let finish: (data: { deployments: string[] }) => void = () => {
     throw new Error('Discovery not started')
   }
   calls.discover.mockImplementation(
@@ -211,11 +212,11 @@ it('discards discovery results after switching profiles', async () => {
   )
   render(surface())
   await screen.findByDisplayValue('deployment-alias')
-  fireEvent.click(screen.getByRole('button', { name: 'Refresh models' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh deployments' }))
   await act(() => profileState.set('bot-b'))
   await screen.findByDisplayValue('deployment-alias')
-  await act(() => finish({ models: ['old-profile-model'] }))
-  fireEvent.focus(screen.getByLabelText('Deployment name'))
+  await act(() => finish({ deployments: ['old-profile-model'] }))
+  fireEvent.click(screen.getByRole('button', { name: 'Show options' }))
   expect(screen.queryByText('old-profile-model')).toBeNull()
   expect(calls.notify).not.toHaveBeenCalled()
 })

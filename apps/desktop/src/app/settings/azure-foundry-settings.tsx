@@ -4,7 +4,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import {
   deleteEnvVar,
-  discoverFoundryModels,
+  discoverFoundryDeployments,
   type FoundrySettings,
   type FoundryUpdate,
   getFoundrySettings,
@@ -60,7 +60,7 @@ function FoundryCard({
   const [form, setForm] = useState<FoundryUpdate | null>(null)
   const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error' | 'unsupported'>('loading')
   const [busy, setBusy] = useState<'test' | 'save' | 'remove' | 'discover' | null>(null)
-  const [discovery, setDiscovery] = useState<{ connection: string; models: string[] } | null>(null)
+  const [discovery, setDiscovery] = useState<{ connection: string; deployments: string[] } | null>(null)
   const [attempt, setAttempt] = useState(0)
   const mounted = useRef(false)
 
@@ -144,7 +144,7 @@ function FoundryCard({
   }
 
   const discoveryKey = form && JSON.stringify({ base_url: form.base_url, api_mode: form.api_mode, auth: form.auth })
-  const models = discovery?.connection === discoveryKey ? discovery.models : []
+  const deployments = discovery?.connection === discoveryKey ? discovery.deployments : []
 
   async function discover() {
     if (!form || !discoveryKey) {
@@ -152,17 +152,17 @@ function FoundryCard({
     }
     setBusy('discover')
     try {
-      const result = await discoverFoundryModels(form, scope)
+      const result = await discoverFoundryDeployments(form, scope)
       if (!mounted.current) {
         return
       }
-      setDiscovery({ connection: discoveryKey, models: result.models })
-      if (!result.models.length) {
-        notify({ kind: 'warning', message: copy.modelsUnavailable })
+      setDiscovery({ connection: discoveryKey, deployments: result.deployments })
+      if (!result.deployments.length) {
+        notify({ kind: 'warning', message: copy.deploymentsUnavailable })
       }
     } catch (error) {
       if (mounted.current) {
-        notifyError(error, copy.modelsUnavailable)
+        notifyError(error, copy.deploymentsUnavailable)
       }
     } finally {
       if (mounted.current) {
@@ -231,7 +231,7 @@ function FoundryCard({
       )}
       {expanded && loadState === 'ready' && form && (
         <FoundryFields
-          models={models}
+          deployments={deployments}
           discover={() => void discover()}
           removeKey={() => void removeKey()}
           busy={busy}

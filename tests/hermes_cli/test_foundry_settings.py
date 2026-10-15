@@ -67,7 +67,7 @@ def test_cli_test_save_and_inference_use_selected_profile(client, tmp_path, monk
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(b'{"data":[{"id":"my-deployment"}]}')
+            self.wfile.write(b'{"value":[{"name":"my-deployment","modelName":"catalog-name","type":"ModelDeployment"}]}')
 
         def do_POST(self):
             requests.append((self.path, self.headers.get("Authorization"),
@@ -84,7 +84,7 @@ def test_cli_test_save_and_inference_use_selected_profile(client, tmp_path, monk
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     route = f"/api/providers/azure-foundry?profile={profile}"
-    payload = {"base_url": f"http://127.0.0.1:{server.server_port}/v1", "model": "my-deployment",
+    payload = {"base_url": f"http://127.0.0.1:{server.server_port}/api/projects/test/openai/v1", "model": "my-deployment",
                "api_mode": "codex_responses", "auth": {"kind": "entra_id", "entra": {
                    "credential_source": "azure_cli", "tenant_id": "tenant-selected", "subscription": "subscription-selected", "scope": ""}}}
     selector = "tenant_id" if profile == "default" else "subscription"
@@ -93,10 +93,10 @@ def test_cli_test_save_and_inference_use_selected_profile(client, tmp_path, monk
     reset_credential_cache()
     try:
         before = (home / "config.yaml").read_text()
-        discovered = client.post(f"/api/providers/azure-foundry/models?profile={profile}", json={**payload, "model": ""})
+        discovered = client.post(f"/api/providers/azure-foundry/deployments?profile={profile}", json={**payload, "model": ""})
         assert discovered.status_code == 200, discovered.text
-        assert discovered.json() == {"models": ["my-deployment"]}
-        assert model_requests == [("/v1/models", "Bearer cli-token", None)]
+        assert discovered.json() == {"deployments": ["my-deployment"]}
+        assert model_requests == [("/api/projects/test/deployments?api-version=v1", "Bearer cli-token", None)]
         assert (home / "config.yaml").read_text() == before
         tested = client.post(f"/api/providers/azure-foundry/validate?profile={profile}", json=payload)
         assert tested.status_code == 200 and tested.json()["ok"], tested.text
@@ -114,7 +114,7 @@ def test_cli_test_save_and_inference_use_selected_profile(client, tmp_path, monk
             with OpenAI(api_key=runtime["api_key"], base_url=runtime["base_url"], max_retries=0) as inference:
                 inference.responses.create(model="my-deployment", input="hi")
         assert len(requests) == 2
-        assert all(path == "/v1/responses" and auth == "Bearer cli-token" and body["model"] == "my-deployment"
+        assert all(path == "/api/projects/test/openai/v1/responses" and auth == "Bearer cli-token" and body["model"] == "my-deployment"
                    for path, auth, body in requests)
         for args in map(json.loads, arguments.read_text().splitlines()):
             flag = "--tenant" if selector == "tenant_id" else "--subscription"
@@ -172,7 +172,7 @@ def test_bad_endpoint_never_overwrites_settings(client, base):
     before = read_raw_config()
     payload = {"base_url": base, "model": "deployment", "api_mode": "codex_responses",
                "auth": {"kind": "entra_id", "entra": {"credential_source": "azure_cli"}}}
-    for method, route in ((client.put, "/api/providers/azure-foundry"), (client.post, "/api/providers/azure-foundry/validate"), (client.post, "/api/providers/azure-foundry/models")):
+    for method, route in ((client.put, "/api/providers/azure-foundry"), (client.post, "/api/providers/azure-foundry/validate"), (client.post, "/api/providers/azure-foundry/deployments")):
         result = method(route + "?profile=default", json=payload)
         assert result.status_code == 400, result.text
     assert read_raw_config() == before
@@ -224,7 +224,7 @@ def test_mixed_account_selectors_are_rejected_before_test_or_save(client):
     payload = {"base_url": "https://resource.services.ai.azure.com/openai/v1", "model": "deployment",
                "api_mode": "codex_responses", "auth": {"kind": "entra_id", "entra": {
                    "credential_source": "azure_cli", "tenant_id": "tenant", "subscription": "subscription"}}}
-    for method, route in ((client.put, "/api/providers/azure-foundry"), (client.post, "/api/providers/azure-foundry/validate"), (client.post, "/api/providers/azure-foundry/models")):
+    for method, route in ((client.put, "/api/providers/azure-foundry"), (client.post, "/api/providers/azure-foundry/validate"), (client.post, "/api/providers/azure-foundry/deployments")):
         result = method(route + "?profile=default", json=payload)
         assert result.status_code == 422, result.text
         assert "not both" in result.text
@@ -243,7 +243,7 @@ def test_discovery_failure_does_not_leak_credentials_or_save(client, monkeypatch
     payload = {"base_url": "https://resource.services.ai.azure.com/openai/v1", "model": "", "api_mode": "codex_responses",
                "auth": {"kind": "entra_id", "entra": {"credential_source": "azure_cli"}}}
     before = read_raw_config()
-    result = client.post("/api/providers/azure-foundry/models?profile=default", json=payload)
+    result = client.post("/api/providers/azure-foundry/deployments?profile=default", json=payload)
     assert result.status_code == 400
     assert "az login" in result.text
     assert "secret-cli-output" not in result.text
@@ -251,15 +251,15 @@ def test_discovery_failure_does_not_leak_credentials_or_save(client, monkeypatch
 
 
 def test_unavailable_model_listing_keeps_manual_setup_possible(client, monkeypatch):
-    from hermes_cli import azure_detect
+    from hermes_cli import azure_foundry_deployments
     from hermes_cli.config import read_raw_config
 
-    monkeypatch.setattr(azure_detect, "_probe_openai_models", lambda *_: (False, []))
+    monkeypatch.setattr(azure_foundry_deployments, "discover_deployments", lambda *_: [])
     payload = {"base_url": "https://resource.services.ai.azure.com/openai/v1", "model": "", "api_mode": "codex_responses",
                "auth": {"kind": "api_key", "api_key": "private-key"}}
     before = read_raw_config()
-    listed = client.post("/api/providers/azure-foundry/models?profile=default", json=payload)
-    assert listed.json() == {"models": []}
+    listed = client.post("/api/providers/azure-foundry/deployments?profile=default", json=payload)
+    assert listed.json() == {"deployments": []}
     assert read_raw_config() == before
     saved = client.put("/api/providers/azure-foundry?profile=default", json={**payload, "model": "manual-deployment"})
     assert saved.status_code == 200

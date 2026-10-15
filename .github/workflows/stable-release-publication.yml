@@ -53,7 +53,8 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Reconcile stable drafts and protected heads
-        run: python -m scripts.releases.sequencer
+        # The macOS feed merge parses YAML (hermes_yaml -> ruamel); the node toolchain has none.
+        run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.releases.sequencer
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_VERSION: ${{ inputs.version || '' }}

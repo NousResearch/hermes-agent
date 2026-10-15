@@ -39,6 +39,7 @@ runpy.run_path(sys.argv[0], run_name='__main__')
             result = subprocess.run(
                 [sys.executable, "-I", "-S", "-c", runner, str(script), str(home)],
                 capture_output=True, text=True, timeout=20,
+                check=False,
             )
             assert result.returncode == 0, result.stderr
             backup = Path(json.loads(result.stdout)["path"])
@@ -49,7 +50,7 @@ runpy.run_path(sys.argv[0], run_name='__main__')
     writer.close()
     previous = sorted(home.glob("state.db.pre-update-emergency-*.bak"))
     db.write_bytes(b"broken database")
-    result = subprocess.run([sys.executable, "-I", "-S", str(script), str(home)], capture_output=True, text=True, timeout=20)
+    result = subprocess.run([sys.executable, "-I", "-S", str(script), str(home)], capture_output=True, text=True, timeout=20, check=False)
     assert result.returncode != 0
     assert sorted(home.glob("state.db.pre-update-emergency-*.bak")) == previous
     assert not list(home.glob("*.partial"))

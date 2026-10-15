@@ -47,8 +47,20 @@ logger = logging.getLogger(__name__)
 
 
 class ServerRequest:
-    __slots__ = ("id", "sid", "method", "params", "event", "result", "answered", "created_at",
-                 "qids", "locked", "on_result", "declined")
+    __slots__ = (
+        "answered",
+        "created_at",
+        "declined",
+        "event",
+        "id",
+        "locked",
+        "method",
+        "on_result",
+        "params",
+        "qids",
+        "result",
+        "sid",
+    )
 
     def __init__(self, sid: str, method: str, params: dict, *, qids: list[str] | None = None,
                  on_result: Callable[[dict | None], None] | None = None) -> None:
@@ -86,14 +98,14 @@ _open: dict[str, ServerRequest] = {}
 # Frame sinks, bound by ``bind_sinks`` from server.py at import time (like the method_ctx split
 # modules): importing server back from here would pick a different module object under the test
 # fixtures that patch ``sys.modules`` around the server import.
-_write: Callable[[dict], Any] = lambda frame: None  # noqa: E731
-_emit: Callable[[str, str, dict], Any] = lambda event, sid, payload: None  # noqa: E731
+_write: Callable[[dict], Any] = lambda frame: None
+_emit: Callable[[str, str, dict], Any] = lambda event, sid, payload: None
 # ``answerable(sid)``: False only when every client attached to the session is a build that never
 # advertised handling server→client requests (session_transports.py::_session_client_answers_requests).
-_answerable: Callable[[str], bool] = lambda sid: True  # noqa: E731
+_answerable: Callable[[str], bool] = lambda sid: True
 # ``clients(sid)``: the attached client transports that answer server→client requests — the set whose
 # unanimous NOT_SHOWN_CODE decline settles a window-owned request (session_transports.py).
-_clients: Callable[[str], list] = lambda sid: []  # noqa: E731
+_clients: Callable[[str], list] = lambda sid: []
 
 # Error code a client answers when none of its windows shows the request's session, and the refusal the
 # tool reports once every attached client said so. Mirrored in apps/desktop server-requests.ts.
@@ -313,13 +325,14 @@ def lock_answer(request_id: str, question_id: str, answer: str | None) -> list[s
     return remaining
 
 
-def cancel(sid: str | None = None, reason: str = "interrupted") -> int:
+def cancel(sid: str | None = None, reason: str = "interrupted", *, method: str | None = None) -> int:
     """Withdraw open requests — only *sid*'s (session.interrupt must not touch other sessions'), or
-    every one when *sid* is None (shutdown). Blocked waits return None (a batch returns its locked
-    answers with ``outcome: cancelled``); queue-backed requests run ``on_result(None)`` so their
-    owner can settle. Returns the number withdrawn."""
+    every one when *sid* is None (shutdown); *method* narrows it to one request kind. Blocked waits
+    return None (a batch returns its locked answers with ``outcome: cancelled``); queue-backed requests
+    run ``on_result(None)`` so their owner can settle. Returns the number withdrawn."""
     with _lock:
-        targets = [req for req in _open.values() if sid is None or req.sid == sid]
+        targets = [req for req in _open.values()
+                   if (sid is None or req.sid == sid) and (method is None or req.method == method)]
         for req in targets:
             _open.pop(req.id, None)
             if req.qids is not None:

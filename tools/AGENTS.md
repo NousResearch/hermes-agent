@@ -15,7 +15,10 @@ manual import list. A tool that is a whole package (`tools/connectors/`) registe
 is a library by construction, and the package needs an `__init__.py` or discovery skips it with a
 warning (setuptools would drop it from the wheel). The registry handles schema collection, dispatch (`handle_function_call()`),
 availability (`check_fn`, TTL-cached process-wide), and error wrapping. **All handlers return a JSON
-string.**
+string**, except a tool that hands the model pixels: it may return the multimodal envelope
+`{"_multimodal": True, "content": [text, image_url…], "text_summary": str}` (`registry._normalize_handler_result`
+accepts exactly that shape). Its image path goes through `vision_tools._native_tool_result_images` — never a
+private vision check.
 
 ## Adding a core tool (2 files) — only when the user is explicitly contributing a core tool
 
@@ -68,7 +71,7 @@ Rules for tool code:
 
 Single `TOOLSETS` dict. Keys today: `browser, clarify, code_execution, cronjob, debugging,
 delegation, discord, discord_admin, feishu_doc, feishu_drive, file, image_gen,
-kanban, memory, messaging, moa, rl, safe, search, session_search, skills, spotify, terminal, todo,
+kanban, memory, messaging, moa, rl, safe, search, session_search, skills, terminal, todo,
 tts, video, vision, web, yuanbao` (don't assert the list in tests). Per-platform enable/disable via
 `hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. `browser_exec`
 replaces the other browser tools when `browser.backend` is `browser-use`.
@@ -108,8 +111,8 @@ _record_scope_trust` keys trust on the home; a secondary never adopts the launch
 for a same-named server, and `mcp_tool_handlers.py::_trust_gate_check` consults the calling
 session's profile.
 
-**Background-process teardown signals the parent first.** `process_registry.py::ProcessRegistry.
-_terminate_host_pid` snapshots the descendants, SIGTERMs only the recorded parent, waits
+**Background-process teardown signals the parent first.** `process_registry_termination.py::
+ProcessTerminationMixin._terminate_host_pid` snapshots the descendants, SIGTERMs only the recorded parent, waits
 `terminal.daemon_term_grace_seconds` for it to exit and reap its own children, then SIGTERMs the
 snapshot survivors and SIGKILLs whatever ignored both (so a supervisor that reaps its tree — a
 Chromium/Electron browser reaping its zygotes, a shell trap — exits cleanly, while a shell whose

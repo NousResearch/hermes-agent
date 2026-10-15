@@ -391,9 +391,6 @@ export const arChat = {
     sessionUnavailable: 'الجلسة غير متاحة',
     createSessionFailed: 'فشل إنشاء الجلسة',
     promptFailed: 'فشل إرسال الرسالة',
-    staleSessionTitle: 'المحادثة غير محدّثة',
-    staleSessionBody:
-      'كانت هذه النافذة متأخرة عن عرض آخر لنفس المحادثة. تم تحميل أحدث الرسائل. أعد الإرسال إذا كنت لا تزال تريد ذلك.',
     providerCredentialRequired: 'مطلوب اعتماد المزود',
     emptySlashCommand: 'أمر slash فارغ',
     slashCommandIgnoredTitle: 'لم يتم إرسال الأمر',
@@ -522,11 +519,6 @@ export const arChat = {
         title: 'يتوفر تحديث للمحرك المحلي',
         text: 'حدّث المحرك الذي يشغّل نماذجك المحلية. قد تنقطع الطلبات المحلية الجارية.',
         action: 'التحديث الآن'
-      },
-      'local-setup': {
-        title: 'هذا الجهاز يمكنه تشغيل النماذج محليًا',
-        text: 'عتادك قادر على تشغيل نموذج محلي. تبقى محادثاتك على جهازك ولا تكلف شيئًا.',
-        action: 'إعداد الآن'
       },
       'right-pane': {
         title: 'لوحة العمل',

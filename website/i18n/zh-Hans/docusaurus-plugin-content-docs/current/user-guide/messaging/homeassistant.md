@@ -7,7 +7,7 @@ sidebar_position: 5
 
 # Home Assistant 集成
 
-Hermes Agent 通过[插件目录](../features/plugins.md)中的官方 **`homeassistant` 插件**与 [Home Assistant](https://www.home-assistant.io/) 集成。该插件由 Nous Research 在 [NousResearch/hermes-homeassistant](https://github.com/NousResearch/hermes-homeassistant) 中维护，不再属于 Hermes 核心。它提供两部分功能：
+Hermes Agent 通过[插件目录](../features/plugins.md)中的官方 **`homeassistant` 插件**与 [Home Assistant](https://www.home-assistant.io/) 集成。该插件由 Nous Research 在 [NousResearch/hermes-official-plugins](https://github.com/NousResearch/hermes-official-plugins/tree/main/homeassistant) 中维护，不再属于 Hermes 核心。它提供两部分功能：
 
 1. **Gateway 平台** — 通过 WebSocket 订阅实时状态变更并响应事件
 2. **智能家居工具** — 四个可供 LLM 调用的工具（`homeassistant` 工具集），通过 REST API 查询和控制设备

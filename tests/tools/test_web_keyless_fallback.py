@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.web_tools as web_tools
+from tools import web_tools
 from agent import web_search_registry as registry
 from plugins.web import keyless_mcp
 from plugins.web.exa.provider import ExaWebSearchProvider
@@ -101,7 +101,7 @@ class TestParseMcpBody:
         response.status_code = 200
         response.headers["Content-Type"] = "text/event-stream"
         response.encoding = "ISO-8859-1"  # what the adapter picks for text/* without a charset
-        response._content = f"event: message\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+        response._content = f"event: message\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
         assert "\x85" in response.text  # the vendor body really does decode to mojibake via .text
         with patch.object(requests, "post", return_value=response):
             text = keyless_mcp.mcp_call(keyless_mcp.EXA_MCP_URL, "web_search_exa", {"query": title})
@@ -140,13 +140,36 @@ class TestParseMcpBody:
         response.status_code = 429
         response.headers["Content-Type"] = "text/plain"
         response.encoding = "ISO-8859-1"  # what the adapter picks for text/* without a charset
-        response._content = "请求过多".encode("utf-8")
+        response._content = "请求过多".encode()
         with patch.object(requests, "post", return_value=response), patch.object(requests, "get", return_value=response):
             with pytest.raises(keyless_mcp.KeylessMCPError, match="请求过多"):
                 if call == "mcp":
                     keyless_mcp.mcp_call(keyless_mcp.EXA_MCP_URL, "web_search_exa", {"query": "q"})
                 else:
                     keyless_mcp._keenable_request("get", "/v1/search/public")
+
+    def test_keenable_error_keeps_status_and_reason(self):
+        import requests
+
+        response = requests.Response()
+        response.status_code = 403
+        response.headers["Content-Type"] = "text/plain; charset=utf-8"
+        response._content = b"anonymous access disabled"
+        with patch.object(requests, "post", return_value=response):
+            with pytest.raises(keyless_mcp.KeylessMCPError, match="^HTTP 403: anonymous access disabled$"):
+                keyless_mcp._keenable_request("post", "/v1/search/public", json={"query": "q"})
+
+    def test_keyless_firecrawl_error_keeps_status_and_reason(self, monkeypatch):
+        import httpx
+
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        def _forbidden(url, **_kwargs):
+            return httpx.Response(403, text="your IP address looks suspicious\n", request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(firecrawl_provider.httpx, "post", _forbidden)
+        with pytest.raises(httpx.HTTPStatusError, match="^HTTP 403: your IP address looks suspicious$"):
+            firecrawl_provider._KeylessFirecrawlClient().search(query="q", limit=1)
 
 
 class TestExaTextParsing:
@@ -521,6 +544,16 @@ class TestKeylessFailover:
             ("FORBIDDEN", False),
             ("extract failed for 'forbidden kingdom trailer': connection timeout", False),
             ("HTTP 400: malformed request", False),
+            ("HTTP 402: free credits exhausted", True),
+            ("HTTP 503: upstream unavailable", True),
+            ("HTTP 404: not found", False),
+            ("Keyless Firecrawl search failed: HTTP 403: your IP address looks suspicious", True),
+            # A terminal error that echoes the query is judged by the status it starts with.
+            ("HTTP 400: invalid query 'http 503'", False),
+            ("HTTP 422: query contains 'status=500'", False),
+            ("search failed for 'HTTP 503 error codes': timeout", False),
+            ("error: 500 results max exceeded", False),
+            ("Keyless Exa search failed: HTTP 400: invalid query 'http 403'", False),
             ("", False),
         ],
     )

@@ -335,7 +335,7 @@ def test_env_probe_run_hides_console_window(monkeypatch):
     monkeypatch.setattr(env_probe, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
     monkeypatch.setattr(env_probe.subprocess, "run", fake_run)
 
-    rc, out, err = env_probe._run(["python3", "--version"], timeout=1.0)
+    rc, _out, _err = env_probe._run(["python3", "--version"], timeout=1.0)
 
     assert rc == 0
     spawns = _spawns(captured, "python3", "--version")

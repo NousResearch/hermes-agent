@@ -128,7 +128,7 @@ class HomeIOGuard:
         resolved = _normcase(os.path.realpath(absolute))
         for app in apps:
             if _within(absolute, app) or _within(resolved, app):
-                import pytest  # noqa: PLC0415
+                import pytest
                 # pytest.fail, not AssertionError: removal helpers catch Exception and would log
                 # the refusal as a warning while the test passed.
                 pytest.fail(f"TEST BUG: changing the REAL installed Hermes desktop app: {value}\n"

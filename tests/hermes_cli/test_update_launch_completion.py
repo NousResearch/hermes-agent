@@ -35,12 +35,14 @@ def completion_tail(monkeypatch):
 
     spawned = Spawned()
 
-    def call(command, **kwargs):
+    def run(command, **kwargs):
         spawned.append(command)
         spawned.kwargs = kwargs
-        return spawned.exit_code
+        return subprocess.CompletedProcess(command, spawned.exit_code)
 
-    monkeypatch.setattr(venv_sync.subprocess, "call", call)
+    from hermes_cli import update_custody
+
+    monkeypatch.setattr(update_custody, "run", run)
     return spawned
 
 
@@ -298,7 +300,7 @@ def test_relaunch_keeps_invocation_and_checkout_imports(tmp_path, mode):
         argv[0] = "-c"
         orig = [sys.executable, "-c", "import entry", *argv[1:]]
     command = venv_sync.relaunch_command(Path(sys.executable), root, argv, orig, module)
-    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == ["from checkout", argv[1:]]
 
@@ -374,7 +376,7 @@ def test_relaunch_runs_zip_launchers_and_preserves_interpreter_options(tmp_path)
         archive.writestr("__main__.py", "import json,sys; print(json.dumps([sys.argv[1:], sys.stdout.write_through, sys.flags.utf8_mode]))")
     original = [sys.executable, "-u", "-X", "utf8", str(launcher), "arg with spaces"]
     command = venv_sync.relaunch_command(Path(sys.executable), tmp_path, [str(launcher), "arg with spaces"], original, "__main__")
-    result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == [["arg with spaces"], True, 1]
 

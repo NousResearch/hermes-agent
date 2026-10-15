@@ -78,9 +78,14 @@ export const applyCompletion = (value: string, rowText: string, compReplace: num
 export const completionToApplyOnSubmit = (
   value: string,
   rowText: string | undefined,
-  compReplace: number
+  compReplace: number,
+  isLocalCommand: (name: string) => boolean = () => false
 ): string | null => {
-  if (!rowText) {
+  // The gateway does not know TUI-local commands, so its fuzzy list can rank another command
+  // above one typed in full (`/connectors` matches a description word of `/login`).
+  const typed = value.trim()
+
+  if (!rowText || (/^\/[\w-]+$/.test(typed) && isLocalCommand(typed.slice(1)))) {
     return null
   }
 

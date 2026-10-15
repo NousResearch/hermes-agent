@@ -33,24 +33,24 @@ class _CapturingEngine(ContextEngine):
     last_prompt_tokens = 0
 
     def __init__(self) -> None:
-        self.captured: Dict[str, Any] = {}
+        self.captured: dict[str, Any] = {}
 
     @property
     def name(self) -> str:
         return "capturing"
 
-    def update_from_response(self, usage: Dict[str, Any]) -> None:
+    def update_from_response(self, usage: dict[str, Any]) -> None:
         pass
 
-    def should_compress(self, prompt_tokens: int = None) -> bool:
+    def should_compress(self, prompt_tokens: int | None = None) -> bool:
         return False
 
     def compress(
         self,
-        messages: List[Dict[str, Any]],
-        current_tokens: int = None,
-        focus_topic: str = None,
-    ) -> List[Dict[str, Any]]:
+        messages: list[dict[str, Any]],
+        current_tokens: int | None = None,
+        focus_topic: str | None = None,
+    ) -> list[dict[str, Any]]:
         return messages
 
     def on_turn_complete(self, messages, usage=None, **kwargs):

@@ -391,7 +391,7 @@ class TestStatusEndpointTopology:
 
         from gateway.status import GatewayLiveness
         import hermes_cli.web_routers.status as status_router
-        import hermes_cli.web_server_profiles as web_server_profiles
+        from hermes_cli import web_server_profiles
 
         home = tmp_path / ".hermes"  # the shipped default root: basename != profile id
         home.mkdir()

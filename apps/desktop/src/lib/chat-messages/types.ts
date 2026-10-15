@@ -73,13 +73,6 @@ export type ChatMessage = {
   serverRowSpan?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
-  /** Backend-authored transcript notice rather than a message any view sent: a
-   *  model switch, an auto-continue, a background-process completion. It renders
-   *  on the timeline like any other system row but belongs to no view, so the
-   *  stale-transcript compare must not count it (see
-   *  `messagesIfTranscriptBehind`) — counting it made one model switch report a
-   *  second window ahead and refuse every send. */
-  systemNotice?: boolean
 }
 
 export type GatewayEventPayload = {
@@ -151,7 +144,7 @@ export type GatewayEventPayload = {
   // approval server request (dangerous command / execute_code) — session-keyed
   command?: string
   description?: string
-  // False when a tirith content-security warning forbids a permanent allow.
+  // False when the backend forbids a permanent allow.
   allow_permanent?: boolean
   smart_denied?: boolean
   // secret.request (skill credential capture)
@@ -172,8 +165,6 @@ export type GatewayEventPayload = {
   kind?: string
   // pane.reveal (agent focusing a desktop pane via the focus_pane tool)
   pane?: string
-  // layout.apply (agent applying a layout preset via the apply_layout tool)
-  preset?: string
   // tour.request (tour tool — agent-guided driver.js walkthrough). `action`
   // and `steps` name the tour verb and step list; `surface` picks the app's
   // own DOM vs the preview pane's guest page. tip.show (tip tool — one accent

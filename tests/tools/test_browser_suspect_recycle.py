@@ -198,7 +198,7 @@ class TestWedgedDaemonTreeKill:
         bt._last_active_session_key[TASK] = TASK
 
         daemon_pid = 5150
-        socket_dir = tmp_path / "agent-browser-wedged-session"
+        socket_dir = tmp_path / bt_lifecycle._socket_dir_for_session("wedged-session").rsplit("/", 1)[-1]
         socket_dir.mkdir()
         (socket_dir / "wedged-session.pid").write_text(str(daemon_pid))
 

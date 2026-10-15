@@ -4,6 +4,7 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 """
 
 import contextlib
+import hashlib
 import os
 import shutil
 import signal
@@ -12,7 +13,7 @@ import threading
 import time
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from tools.browser_tool_origin import origin as _bt
@@ -196,6 +197,38 @@ def _human_holds_shared_browser(task_id: str) -> bool:
     if not session_info:
         return False
     return _session.human_holds_shared_browser(session_info)
+
+
+def _socket_dir_for_session(session_name: str) -> str:
+    """Return the compact, deterministic socket directory for a session."""
+    session_digest = hashlib.sha256(session_name.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_digest}")
+
+
+def _recover_session_name(socket_dir: str, tracked_names: Iterable[str] = ()) -> str:
+    """Recover the real session name from durable markers before using the compact digest.
+
+    The owner marker is best-effort, so a process can leave only ``<session>.pid`` after
+    marker creation fails.  A tracked full name is also authoritative for a live session;
+    both prevent the reaper from treating a compact directory's digest as its session name.
+    """
+    try:
+        with os.scandir(socket_dir) as entries:
+            names = [entry.name for entry in entries]
+            for name in names:
+                if name.endswith(".owner_pid"):
+                    return name[:-len(".owner_pid")]
+            pid_names = [name[:-len(".pid")] for name in names if name.endswith(".pid")]
+            if pid_names:
+                return pid_names[0]
+    except OSError:
+        pass
+
+    directory_name = os.path.basename(socket_dir).removeprefix("agent-browser-")
+    for session_name in tracked_names:
+        if session_name and _socket_dir_for_session(session_name) == socket_dir:
+            return session_name
+    return directory_name
 
 
 def _write_owner_pid(socket_dir: str, session_name: str) -> None:
@@ -387,11 +420,7 @@ def _reap_orphaned_browser_sessions():
     _best_effort("Lightpanda orphan reap", _reap_lp)
 
     tmpdir = _bt._socket_safe_tmpdir()
-    socket_dirs = []
-    # The shared real-profile attach daemon is named, not ``<prefix>_<hex>``; list it explicitly.
-    for prefix in ("agent-browser-h_*", "agent-browser-cdp_*", "agent-browser-hermes_*",
-                   f"agent-browser-{_bt._REAL_PROFILE_SESSION}"):
-        socket_dirs += glob.glob(os.path.join(tmpdir, prefix))
+    socket_dirs = glob.glob(os.path.join(tmpdir, "agent-browser-*"))
     if not socket_dirs:
         return
 
@@ -404,7 +433,7 @@ def _reap_orphaned_browser_sessions():
 
     reaped = 0
     for socket_dir in socket_dirs:
-        session_name = os.path.basename(socket_dir).removeprefix("agent-browser-")
+        session_name = _recover_session_name(socket_dir, tracked_names)
         if session_name and _reap_socket_dir(socket_dir, session_name, tracked_names):
             reaped += 1
 
@@ -673,7 +702,7 @@ def _release_session_resources(task_id: str, session_info: dict[str, Any]) -> No
 
     session_name = session_info.get("session_name", "")
     if session_name:
-        socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_name}")
+        socket_dir = _socket_dir_for_session(session_name)
         if os.path.exists(socket_dir):
             _kill_verified_daemon(socket_dir, session_name)
             shutil.rmtree(socket_dir, ignore_errors=True)

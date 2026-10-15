@@ -50,7 +50,7 @@ def _drive(tmp_path, monkeypatch, scenario):
     log = tmp_path / "log"
     scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
     shim = tmp_path / "bin"
-    shim.mkdir()
+    shim.mkdir(exist_ok=True)
     gh = shim / "gh"
     gh.write_text(
         f"#!{sys.executable}\n"

@@ -121,7 +121,7 @@ def test_status_tracks_preset_spill_and_restored_window(client, tmp_path, monkey
     def router_response(running, route, **kwargs):
         if route == "/models":
             return {"data": [{"id": model_id, "status": {"value": "loaded"}}]}
-        assert route == f"/props?model={model_id}"
+        assert route == f"/props?model={model_id}&autoload=false"
         return {"default_generation_settings": {"n_ctx": server_window}}
 
     monkeypatch.setattr(local_models, "_router_request", router_response)

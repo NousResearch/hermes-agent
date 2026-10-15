@@ -7,25 +7,6 @@ import {
   revokeAttachmentPreviewUrls,
   revokeDiscardedAttachmentPreviews
 } from './composer'
-import { $connection } from './session'
-import { knownOwnerForSession } from './session-states'
-
-/** Local owner routes use canonical admission; remote legacy queues stay local. */
-export function serverOwnsComposerQueue(sessionId: string | null | undefined): boolean {
-  const owner = knownOwnerForSession(sessionId)
-
-  if (owner && typeof owner === 'object' && owner.mode) {
-    return owner.mode === 'local'
-  }
-
-  const connection = $connection.get()
-
-  if (owner && typeof owner === 'object' && owner.connectionId !== connection?.connectionId) {
-    return false
-  }
-
-  return Boolean(connection?.wsUrl && new URL(connection.wsUrl).searchParams.has('native_dial'))
-}
 
 export interface RemoveQueuedPromptOptions {
   /**
@@ -37,7 +18,6 @@ export interface RemoveQueuedPromptOptions {
 
 export interface QueuedPromptEntry {
   id: string
-  serverStatus?: string
   text: string
   /** What the queue panel and the sent bubble show, when it differs from the
    *  text the agent receives. A queued `/skill` invocation carries the whole
@@ -59,8 +39,6 @@ export interface QueuedPromptEntry {
 }
 
 export interface EnqueueQueuedPromptPayload {
-  /** Stable id to reuse (a canonical submission id), else one is minted. */
-  id?: string
   text: string
   attachments: ComposerAttachment[]
   displayText?: string
@@ -161,10 +139,10 @@ const toPersistedEntry = (entry: QueuedPromptEntry): QueuedPromptEntry => {
 /** Whether a queued entry can ride a mid-turn redirect: text-only, non-empty,
  *  not a slash command — the same gate `steerDraft` applies to the live draft
  *  (attachments can't ride a redirect; slash commands execute, not steer). */
-export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'text' | 'serverStatus'>): boolean => {
+export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'text'>): boolean => {
   const text = entry.text.trim()
 
-  return !entry.serverStatus && Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
+  return Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
 }
 
 type QueueState = Record<string, QueuedPromptEntry[]>
@@ -291,11 +269,6 @@ const mutateSession = (sid: string, op: (queue: QueuedPromptEntry[]) => null | Q
   return true
 }
 
-/** Replace one session's queue wholesale (canonical receipt reconciliation),
- *  through the same live-merge path as every other mutation. */
-export const writeSessionQueue = (sid: string, queue: QueuedPromptEntry[]): boolean =>
-  mutateSession(sid, () => queue)
-
 if (typeof window !== 'undefined') {
   // Cross-window sync (#46732): every desktop window boots the queue atom from
   // the same localStorage key. The `storage` event fires in every window EXCEPT
@@ -357,7 +330,7 @@ export const enqueueQueuedPrompt = (
   }
 
   const entry: QueuedPromptEntry = {
-    id: payload.id ?? nextId(),
+    id: nextId(),
     text: payload.text,
     ...(payload.displayText ? { displayText: payload.displayText } : {}),
     ...(payload.displayKind ? { displayKind: payload.displayKind } : {}),
@@ -416,10 +389,8 @@ export const removeQueuedPrompt = (
 
   let removed: QueuedPromptEntry | undefined
 
-  // Server-owned (admitted) rows retire through the gateway, never locally.
-
   mutateSession(sid, queue => {
-    removed = queue.find(e => e.id === id && !e.serverStatus)
+    removed = queue.find(e => e.id === id)
 
     return removed ? queue.filter(e => e.id !== id) : null
   })

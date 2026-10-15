@@ -18,7 +18,6 @@ class Session:
     expires_at: int  # unix seconds; the access_token's exp claim
     access_token: str
     refresh_token: str
-    issuer: str = ""  # Verified issuer; empty for non-federated providers.
 
 
 @dataclass(frozen=True)

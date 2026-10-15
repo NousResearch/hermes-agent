@@ -92,16 +92,9 @@ def kanban_task_id() -> Optional[str]:
     return task_id or None
 
 
-def _resolve_task_id(task_id: Optional[str]) -> Optional[str]:
-    """An explicit carrier id (managed worker frame) wins; ``None`` reads the env pin."""
-    if task_id is None:
-        return kanban_task_id()
-    return task_id.strip() or None
-
-
-def kanban_turn_recovery_enabled(task_id: Optional[str] = None) -> bool:
-    """On when a worker task id is carried and the attempt budget is non-zero."""
-    if _resolve_task_id(task_id) is None:
+def kanban_turn_recovery_enabled() -> bool:
+    """On when ``HERMES_KANBAN_TASK`` is set and the attempt budget is non-zero."""
+    if kanban_task_id() is None:
         return False
     return max_recovery_attempts() > 0
 
@@ -137,7 +130,7 @@ def _turn_exit_is_terminal(result: dict) -> bool:
     return reason.startswith(_TERMINAL_TURN_EXIT_PREFIXES)
 
 
-def should_recover_turn(result: Any, *, attempt: int, task_id: Optional[str] = None) -> bool:
+def should_recover_turn(result: Any, *, attempt: int) -> bool:
     """True when a settled worker turn grants in-place retry authority.
 
     ``attempt`` is the number of recovery attempts ALREADY made. Authority is
@@ -147,7 +140,7 @@ def should_recover_turn(result: Any, *, attempt: int, task_id: Optional[str] = N
     including ``partial`` / ``completed=False`` — is not authority to re-enter
     the model. See the module docstring for the full rule set.
     """
-    if not kanban_turn_recovery_enabled(task_id):
+    if not kanban_turn_recovery_enabled():
         return False
     if attempt >= max_recovery_attempts():
         return False
@@ -186,14 +179,7 @@ def _now() -> int:
     return int(time.time())
 
 
-def worker_claim_is_live(
-    *,
-    task_id: Optional[str] = None,
-    db_path: Optional[str] = None,
-    run_id: Optional[str] = None,
-    claim_lock: Optional[str] = None,
-    verify_pid: bool = True,
-) -> bool:
+def worker_claim_is_live() -> bool:
     """True when THIS process still owns a live, unexpired run/claim lease.
 
     Verified read-only against the dispatcher-pinned board before EVERY retry.
@@ -216,22 +202,16 @@ def worker_claim_is_live(
     run/lock/pid, closed run, or expired lease returns False and the caller
     does not re-enter the model — an honest non-zero exit is always available,
     whereas mutating state under a released or expired claim is not recoverable.
-
-    An owner-side (managed) worker passes its carrier explicitly from the bound
-    worker frame instead of the env pins, and ``verify_pid=False`` because there
-    the run's ``worker_pid`` names the dispatcher-spawned submitter, not this
-    interpreter — that caller proves interpreter identity from its own
-    ``worker_bound`` event.
     """
-    task_id = _resolve_task_id(task_id)
+    task_id = kanban_task_id()
     if task_id is None:
         return False
-    db_path = _kanban_db_path() if db_path is None else (db_path.strip() or None)
+    db_path = _kanban_db_path()
     if not db_path or not Path(db_path).exists():
         logger.warning("kanban claim check: pinned board db %r not found — not retrying in place", db_path)
         return False
-    run_id_env = str(run_id if run_id is not None else os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
-    lock_env = str(claim_lock if claim_lock is not None else os.environ.get("HERMES_KANBAN_CLAIM_LOCK") or "").strip()
+    run_id_env = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    lock_env = (os.environ.get("HERMES_KANBAN_CLAIM_LOCK") or "").strip()
     if not run_id_env or not lock_env:
         logger.warning(
             "kanban claim check: missing dispatcher-pinned run-id/claim-lock carrier "
@@ -253,7 +233,7 @@ def worker_claim_is_live(
             if (row["status"] or "") != "running":
                 return False
             worker_pid = row["worker_pid"]
-            if verify_pid and worker_pid is not None and int(worker_pid) != os.getpid():
+            if worker_pid is not None and int(worker_pid) != os.getpid():
                 return False
             # A running task with no run pointer is not proof of a live run: the
             # dispatcher writes it on claim and clears it on release/end.
@@ -275,7 +255,7 @@ def worker_claim_is_live(
             if run["ended_at"] is not None:
                 return False
             run_pid = run["worker_pid"]
-            if verify_pid and run_pid is not None and int(run_pid) != os.getpid():
+            if run_pid is not None and int(run_pid) != os.getpid():
                 return False
             if run["claim_expires"] is None or int(run["claim_expires"]) < now:
                 return False
@@ -292,8 +272,7 @@ def _truncate(text: str, limit: int = 300) -> str:
     return text[: limit - 1] + "…" if len(text) > limit else text
 
 
-def build_recovery_nudge(result: Any, *, attempt: int, max_attempts: int,
-                         task_id: Optional[str] = None) -> str:
+def build_recovery_nudge(result: Any, *, attempt: int, max_attempts: int) -> str:
     """The synthetic user turn sent after a failed worker turn.
 
     Mirrors the stop-nudge contract (agent/kanban_stop.py): plain text is not a
@@ -304,7 +283,7 @@ def build_recovery_nudge(result: Any, *, attempt: int, max_attempts: int,
     error = ""
     if isinstance(result, dict):
         error = _truncate(str(result.get("error") or result.get("final_response") or ""))
-    task_id = _resolve_task_id(task_id) or "this task"
+    task_id = kanban_task_id() or "this task"
     return (
         "[System: the previous turn ended UNFINISHED — the API call failed after "
         f"all retries and the turn was interrupted (recovery attempt {attempt}/{max_attempts}). "
@@ -320,10 +299,10 @@ def build_recovery_nudge(result: Any, *, attempt: int, max_attempts: int,
     )
 
 
-def _emit_recovery_skipped(emit: Optional[Callable[[str], None]], task_id: Optional[str] = None) -> None:
+def _emit_recovery_skipped(emit: Optional[Callable[[str], None]]) -> None:
     """The one "no proof, no retry" line — fail-closed is worth saying out loud."""
     message = (
-        f"[kanban] in-place recovery skipped for {_resolve_task_id(task_id) or 'task'}: this worker no "
+        f"[kanban] in-place recovery skipped for {kanban_task_id() or 'task'}: this worker no "
         "longer holds a live run/claim (already settled, reclaimed, or unverifiable)"
     )
     logger.warning("%s", message)
@@ -341,7 +320,6 @@ def recover_failed_kanban_turns(
     sleep_fn: Callable[[float], None] = time.sleep,
     emit: Optional[Callable[[str], None]] = None,
     claim_check: Optional[Callable[[], bool]] = None,
-    task_id: Optional[str] = None,
 ) -> int:
     """Retry an authorised kanban worker turn in place; returns attempts made.
 
@@ -353,23 +331,21 @@ def recover_failed_kanban_turns(
     deliberately does NOT extend its own claim lease during the backoff —
     self-holding a claim is claim-lifetime policy (#95318), not this module's;
     if the lease expires while sleeping, the re-proof fails and the attempt is
-    not made. ``task_id`` carries the worker identity explicitly (owner-side
-    workers pass their bound frame's task); such callers must also pass a
-    ``claim_check`` built from the same explicit carrier.
+    not made.
     """
     attempts = 0
     check = claim_check or worker_claim_is_live
     while True:
         result = get_result()
-        if not should_recover_turn(result, attempt=attempts, task_id=task_id):
+        if not should_recover_turn(result, attempt=attempts):
             return attempts
         if not check():
-            _emit_recovery_skipped(emit, task_id)
+            _emit_recovery_skipped(emit)
             return attempts
         attempts += 1
         delay = recovery_delay_seconds(attempts)
         message = (
-            f"[kanban] provider failure on {_resolve_task_id(task_id) or 'task'} — retrying the turn in place "
+            f"[kanban] provider failure on {kanban_task_id() or 'task'} — retrying the turn in place "
             f"(attempt {attempts}/{max_recovery_attempts()}) after {int(delay)}s; session context preserved"
         )
         logger.warning("%s", message)
@@ -384,10 +360,9 @@ def recover_failed_kanban_turns(
         # alone would let that one attempt run without live ownership (round-5 finding F1 —
         # TOCTOU window). No proof, no retry; the caller's honest exit still applies.
         if not check():
-            _emit_recovery_skipped(emit, task_id)
+            _emit_recovery_skipped(emit)
             return attempts
-        turn_fn(build_recovery_nudge(result, attempt=attempts, max_attempts=max_recovery_attempts(),
-                                     task_id=task_id))
+        turn_fn(build_recovery_nudge(result, attempt=attempts, max_attempts=max_recovery_attempts()))
 
 
 __all__ = [

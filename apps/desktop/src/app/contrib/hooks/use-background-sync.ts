@@ -81,19 +81,6 @@ export function profileScopeForTranscriptSession(stored: ActiveTranscriptSession
   return stored.profile
 }
 
-/** Dedupe key for one active transcript's last published page signature. */
-function transcriptSignatureKey(stored: ActiveTranscriptSession, storedSessionId: string): string {
-  return stored.ownerRoute
-    ? JSON.stringify([
-        stored.ownerRoute.connectionId,
-        stored.ownerRoute.profile,
-        stored.ownerRoute.targetProfile ?? '',
-        stored.ownerRoute.mode ?? '',
-        storedSessionId
-      ])
-    : `${stored.profile ?? 'default'}:${storedSessionId}`
-}
-
 /** Only a runtime-matched explicit tile owner overrides visible rows; unique hints are the last fallback. */
 export function resolveActiveTranscriptSession(
   storedSessionId: string,
@@ -535,24 +522,7 @@ export async function reconcileActiveTranscript({
   const storedSessionId = selectedStoredSessionIdRef.current
   const runtimeSessionId = activeSessionIdRef.current
 
-  // The two refs move separately on a switch (resumeSession names the new
-  // stored id before the active runtime changes). A runtime already hosting a
-  // different stored session is mid-switch: writing under the selected id
-  // would re-key it, and its next session.info would read as a compression
-  // rotation that drags the route back.
-  const hostsOtherSession = () => {
-    const hosted = runtimeSessionId ? $sessionStates.get()[runtimeSessionId]?.storedSessionId : null
-
-    return Boolean(hosted && hosted !== storedSessionId)
-  }
-
-  if (
-    !storedSessionId ||
-    !runtimeSessionId ||
-    busyRef.current ||
-    tileRuntimeOwnsLiveState(runtimeSessionId) ||
-    hostsOtherSession()
-  ) {
+  if (!storedSessionId || !runtimeSessionId || busyRef.current || tileRuntimeOwnsLiveState(runtimeSessionId)) {
     return
   }
 
@@ -608,8 +578,7 @@ export async function reconcileActiveTranscript({
       tileRuntimeOwnsLiveState(runtimeSessionId) ||
       transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages) ||
       selectedStoredSessionIdRef.current !== storedSessionId ||
-      activeSessionIdRef.current !== runtimeSessionId ||
-      hostsOtherSession()
+      activeSessionIdRef.current !== runtimeSessionId
 
     const current = $sessionStates.get()[runtimeSessionId]
 
@@ -617,7 +586,15 @@ export async function reconcileActiveTranscript({
       return
     }
 
-    const signatureKey = transcriptSignatureKey(stored, storedSessionId)
+    const signatureKey = stored.ownerRoute
+      ? JSON.stringify([
+          stored.ownerRoute.connectionId,
+          stored.ownerRoute.profile,
+          stored.ownerRoute.targetProfile ?? '',
+          stored.ownerRoute.mode ?? '',
+          storedSessionId
+        ])
+      : `${stored.profile ?? 'default'}:${storedSessionId}`
 
     // Same rule as the warm-activation guard (use-session-actions/index.ts):
     // publishing the page would blank the thread and trip the routed loading

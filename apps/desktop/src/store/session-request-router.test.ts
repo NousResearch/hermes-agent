@@ -92,7 +92,8 @@ function installDesktop(): void {
       port: connectionId === 'source-a' ? 6161 : 6262,
       profile,
       token: `${connectionId}-token`
-    }))
+    })),
+    touchBackend: vi.fn(async () => undefined)
   }
 }
 

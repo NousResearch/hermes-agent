@@ -3,9 +3,6 @@ import {
   type ModelOptionProvider,
   type ModelOptionsResult,
 } from "@hermes/shared";
-import { createDashboardSessionMutations } from "./session-mutations";
-
-const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
 
 import type { AuxiliaryModelsResponse } from "./api-aux";
 import type {
@@ -491,7 +488,12 @@ export const api = {
       ),
     ),
   deleteSession: (id: string, profile = getManagementProfile()) =>
-    mutateSessionHttp<{ ok: boolean }>(id, "DELETE", {}, profile),
+    fetchJSON<{ ok: boolean }>(
+      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
+      {
+        method: "DELETE",
+      },
+    ),
   getEmptySessionsCount: (profile = getManagementProfile()) =>
     fetchJSON<{ count: number }>(
       appendProfileParam("/api/sessions/empty/count", profile),
@@ -510,7 +512,14 @@ export const api = {
       body: JSON.stringify({ ids, profile: profile || undefined }),
     }),
   renameSession: (id: string, title: string, profile = getManagementProfile()) =>
-    mutateSessionHttp<{ ok: boolean; title: string }>(id, "PATCH", { title }, profile),
+    fetchJSON<{ ok: boolean; title: string }>(
+      `/api/sessions/${encodeURIComponent(id)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, profile: profile || undefined }),
+      },
+    ),
   getSessionStats: (profile = getManagementProfile()) =>
     fetchJSON<SessionStoreStats>(appendProfileParam("/api/sessions/stats", profile)),
   exportSessionUrl: (id: string, profile = getManagementProfile()) =>
@@ -518,11 +527,12 @@ export const api = {
   importSessions: (
     sessions: Array<Record<string, unknown>>,
     profile = getManagementProfile(),
-  ) => {
-    const id = sessions[0]?.id;
-    if (typeof id !== "string" || !id) return Promise.reject(new Error("session id is required"));
-    return mutateSessionHttp<SessionImportResponse>(id, "POST", { sessions }, profile);
-  },
+  ) =>
+    fetchJSON<SessionImportResponse>("/api/sessions/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sessions, profile: profile || undefined }),
+    }),
   pruneSessions: (
     older_than_days: number,
     source?: string,

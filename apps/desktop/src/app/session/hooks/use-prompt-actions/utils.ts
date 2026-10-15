@@ -9,7 +9,6 @@ import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
 
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
-import type { SubmissionDestination } from './submission-destination'
 
 export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
@@ -293,8 +292,7 @@ export function isDeepTruncateRefusal(error: unknown): boolean {
 }
 
 export function isSessionBusyError(error: unknown): boolean {
-  // The shared owner answers its typed reason (`session_busy`), the legacy sidecar prose.
-  return /session[ _]busy/i.test(error instanceof Error ? error.message : String(error))
+  return /session busy/i.test(error instanceof Error ? error.message : String(error))
 }
 
 // prompt.submit refused because another surface (TUI, messaging gateway)
@@ -718,12 +716,6 @@ export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targ
 }
 
 export interface SubmitTextOptions {
-  /** Original slash invocation: retries must not re-expand a prepared prompt. */
-  retryText?: string
-  /** Captured by slash dispatch before asynchronous expansion. */
-  destination?: SubmissionDestination
-  /** Stable caller-owned identity; retain across uncertain admission retries. */
-  submission_id?: string
   attachments?: ComposerAttachment[]
   /** The composer scope key that was actually loaded when this text was
    *  submitted (see use-composer-draft's activeQueueSessionKeyRef). Compared

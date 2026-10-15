@@ -11,7 +11,6 @@ import type { SessionInterruptResponse } from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
-import { rpcErrorMessage } from '../lib/rpc.js'
 import {
   boundedLiveRenderText,
   estimateTokensRough,
@@ -28,7 +27,6 @@ import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '
 import type { Notice } from './interfaces.js'
 import { resetFlowOverlays } from './overlayStore.js'
 import { pushSnapshot } from './spawnHistoryStore.js'
-import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { archiveDoneTodos, getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
@@ -155,7 +153,7 @@ export const lateInterruptedReply = (
 
 export interface InterruptDeps {
   appendMessage: (msg: Msg) => void
-  gw: { isCanonical?: boolean; request: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T> }
+  gw: { request: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T> }
   sid: string
   sys: (text: string) => void
 }
@@ -338,21 +336,17 @@ class TurnController {
     patchTurnState({ reasoningActive: false, reasoningStreaming: false })
   }
 
-  idle(opts: { keepTurnArchive?: boolean } = {}) {
+  idle() {
     this.endReasoningPhase()
     this.activeTools = []
     this.streamTimer = clear(this.streamTimer)
     this.bufRef = ''
-    // `keepTurnArchive`: the turn-over signal arrived before the final; the sealed segments
-    // and finished tool rows wait for `recordMessageComplete` to archive them.
-    if (!opts.keepTurnArchive) {
-      this.pendingSegmentTools = []
-      this.segmentMessages = []
-    }
+    this.pendingSegmentTools = []
+    this.segmentMessages = []
 
     patchTurnState({
-      streamPendingTools: opts.keepTurnArchive ? this.pendingSegmentTools : [],
-      streamSegments: opts.keepTurnArchive ? this.segmentMessages : [],
+      streamPendingTools: [],
+      streamSegments: [],
       streaming: '',
       subagents: [],
       tools: [],
@@ -367,45 +361,9 @@ class TurnController {
   // while `interrupted`) instead of racing the still-unwinding turn — the race
   // duplicated the user bubble, leaked a "queued: …" note, and surfaced the
   // cancelled turn's "[interrupted]" reply.
-  async interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps, opts: { keepBusy?: boolean } = {}) {
-    if (gw.isCanonical) {
-      const destination = captureDestination()
-      const info = getUiState().info
-
-      const isActiveTurn = () => {
-        const current = getUiState()
-
-        return current.sid === sid && isCurrentDestination(destination) && current.busy && !this.interrupted &&
-          current.info?.execution_epoch === info?.execution_epoch &&
-          current.info?.execution_generation === info?.execution_generation
-      }
-
-      try {
-        const response = await gw.request<SessionInterruptResponse>('session.interrupt', {
-          session_id: sid, execution_generation: info?.execution_generation
-        })
-
-        // An already-settled handle is a successful no-op, not a cancelled turn.
-        if (response.execution_state !== 'running' || response.execution_generation !== info?.execution_generation) {
-          return
-        }
-      } catch (error) {
-        if (isActiveTurn()) {
-          sys(t('canonical.submit.interruptFailed', rpcErrorMessage(error)))
-        }
-
-        return
-      }
-
-      // Completion or navigation may win the RPC race; never cancel its successor.
-      if (!isActiveTurn()) {
-        return
-      }
-    } else {
-      gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
-    }
-
+  interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps, opts: { keepBusy?: boolean } = {}) {
     this.interrupted = true
+    gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
 
     this.closeReasoningSegment()
 
@@ -791,7 +749,7 @@ class TurnController {
     return { finalMessages, finalText, interruptedReply, wasInterrupted }
   }
 
-  recordMessageDelta({ text }: { rendered?: string | null; text?: string | null }) {
+  recordMessageDelta({ text }: { rendered?: string | null; text?: string }) {
     if (this.interrupted || !text) {
       return
     }
@@ -1094,11 +1052,7 @@ class TurnController {
     }
 
     patchUiState({ busy: true })
-    // A turn whose final never came (owner died between settle and publish) must not leak its
-    // parked archive into this one.
-    this.segmentMessages = []
-    this.pendingSegmentTools = []
-    patchTurnState({ activity: [], outcome: '', streamPendingTools: [], streamSegments: [], subagents: [], toolTokens: 0, tools: [], turnTrail: [] })
+    patchTurnState({ activity: [], outcome: '', subagents: [], toolTokens: 0, tools: [], turnTrail: [] })
   }
 
   upsertSubagent(

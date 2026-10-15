@@ -5,9 +5,7 @@ newline-delimited JSON-RPC 2.0 itself (no SDK client) so the driver controls
 every byte and the shutdown path: ``initialize`` -> ``session/new`` (ACP's
 documented cwd channel) -> ``session/prompt``, collecting
 ``agent_message_chunk`` text from ``session/update`` notifications, then stdin
-EOF — the way an editor host closes the server. ``hermes acp`` runs the turn in
-the profile's gateway daemon (``acp_adapter/gateway_server.py``), so the surface's
-shutdown ends with ``hermes gateway stop``.
+EOF — the way an editor host closes the server.
 """
 
 from __future__ import annotations
@@ -19,14 +17,7 @@ import threading
 import time
 from typing import Any
 
-from tests.e2e.core.parity._helpers import (
-    TURN_TIMEOUT,
-    DriveResult,
-    ParityHome,
-    hermes_argv,
-    stop_profile_gateway,
-    terminate,
-)
+from tests.e2e.core.parity._helpers import TURN_TIMEOUT, DriveResult, ParityHome, hermes_argv, terminate
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
 ACP_TOOLSET = "hermes-acp"  # acp_adapter/session.py::_expand_acp_enabled_toolsets default
@@ -117,9 +108,7 @@ def drive_acp(ph: ParityHome, srv: FakeLLMServer, prompt: str) -> DriveResult:
         )
         client = _AcpClient(proc)
         graceful = True
-        gateway_stopped = False
         stop_reason = None
-        init = None
         try:
             init = client.request("initialize", {
                 "protocolVersion": 1,
@@ -144,9 +133,6 @@ def drive_acp(ph: ParityHome, srv: FakeLLMServer, prompt: str) -> DriveResult:
             except subprocess.TimeoutExpired:
                 graceful = False
                 terminate(proc)
-            # The daemon that ran the turn outlives the ACP server; stop it the operator way.
-            gateway_stopped = stop_profile_gateway(ph)
-            graceful = graceful and gateway_stopped
     return DriveResult(
         final_text="".join(client.chunks),
         toolset=ACP_TOOLSET,
@@ -155,7 +141,6 @@ def drive_acp(ph: ParityHome, srv: FakeLLMServer, prompt: str) -> DriveResult:
         extra={
             "stop_reason": stop_reason,
             "returncode": proc.returncode,
-            "gateway_stopped": gateway_stopped,
             "agent_info": (init or {}).get("agentInfo"),
             "server_requests": client.server_requests,
             "stray_stdout": client.stray_stdout[:20],

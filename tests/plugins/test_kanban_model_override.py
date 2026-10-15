@@ -2,18 +2,16 @@
 
 Covers the model-dropdown feature: kanban_db.set_model_override(),
 create_task(model_override=..., provider_override=...), the dispatcher
-passing task identity to the owner for trusted policy resolution, and the dashboard
+passing ``-m <model> --provider <name>`` to the worker, and the dashboard
 PATCH/bulk/model-options surfaces.
 """
 
 from __future__ import annotations
 
 import importlib.util
-import json
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -113,86 +111,40 @@ def test_create_task_with_model_and_provider(conn):
 
 
 # ---------------------------------------------------------------------------
-# Worker spawn — task identity resolves trusted owner policy
+# Worker spawn — argv carries -m and --provider
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "overrides, expected_model, expected_provider, expected_reasoning",
-    [
-        ({"model_override": "glm-5", "provider_override": "openrouter",
-          "reasoning_effort": "high"}, "glm-5", "openrouter", "high"),
-        ({"reasoning_effort": "high"}, "profile-model", "custom", "high"),
-        ({"reasoning_effort": "none"}, "profile-model", "custom", None),
-        ({}, "profile-model", "custom", "low"),
-    ],
-)
-def test_spawn_resolves_claimed_task_policy(
-    monkeypatch, tmp_path, conn, kanban_home, overrides,
-    expected_model, expected_provider, expected_reasoning,
-):
-    """The worker passes identity, while the owner reads overrides from SQLite."""
-    from gateway.session_contract import Principal
-    from gateway.session_kanban import build_kanban_policy
-    from hermes_cli import kanban_worker_client
-    from hermes_state_runtime import RuntimeStoreError
-
-    profile = kanban_home / "profiles" / "elias"
-    profile.mkdir(parents=True)
-    (profile / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is not a live profile
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-    tid = kb.create_task(conn, title="t", assignee="elias",
-                         workspace_kind="dir", workspace_path=str(workspace), **overrides)
-    task = kb.claim_task(conn, tid)
-    assert task is not None
+def _spawn_and_capture(monkeypatch, tmp_path, task):
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
     captured = {}
 
-    def fake_popen(cmd, **kwargs):
-        captured.update(cmd=list(cmd), env=kwargs["env"])
-        kwargs["stdout"].close()
-        return SimpleNamespace(pid=4245)
+    class FakeProc:
+        pid = 4245
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured["cmd"] = list(cmd)
+        return FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    workspace = tmp_path / "ws"
+    workspace.mkdir(exist_ok=True)
     kbd._default_spawn(task, str(workspace))
-    assert captured["cmd"] == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
-    assert captured["env"]["HERMES_HOME"] == str(profile)
-    actor = Principal("owner", str(profile), frozenset({"session:create"}), "transport")
-    connection = SimpleNamespace(
-        authority=SimpleNamespace(profile_id=str(profile)), actor=actor, native_owner=True)
-    config = {"model": {"default": "profile-model", "provider": "custom"},
-              "agent": {"reasoning_effort": "medium",
-                        "reasoning_overrides": {"profile-model": "low", "glm-5": "low"}},
-              "platform_toolsets": {"cli": ["terminal"]}}
-    original_config = json.dumps(config, sort_keys=True)
+    return captured["cmd"]
 
-    async def resolve_at_owner(params, board_db):
-        params = dict(params, db=board_db)
-        policy, _ = build_kanban_policy(connection, params, config)
-        assert policy.model == expected_model
-        assert policy.provider == expected_provider
-        expected = ({"enabled": False} if expected_reasoning is None else
-                    {"enabled": True, "effort": expected_reasoning})
-        assert policy.reasoning_config == expected
-        assert policy.cwd == str(workspace) and "kanban" in policy.toolsets
-        context = json.loads(policy.kanban_json)
-        assert (context["task_id"], context["run_id"], context["claim_lock"]) == (
-            task.id, task.current_run_id, task.claim_lock)
-        # A worker cannot replace trusted settings or reuse another claim.
-        with pytest.raises(RuntimeStoreError, match="invalid_params"):
-            build_kanban_policy(connection, params | {"model": "forged"}, config)
-        with pytest.raises(RuntimeStoreError, match="invalid_kanban_claim"):
-            build_kanban_policy(connection, params | {"claim_lock": "forged"}, config)
-        assert json.dumps(config, sort_keys=True) == original_config
-        captured["resolved"] = True
-        return 0
 
-    monkeypatch.setattr(kanban_worker_client, "run", resolve_at_owner)
-    with monkeypatch.context() as child:
-        for key, value in captured["env"].items():
-            child.setenv(key, value)
-        assert kanban_worker_client.main() == 0
-    assert captured["resolved"]
+def test_spawn_passes_model_and_provider(monkeypatch, tmp_path, conn):
+    tid = kb.create_task(
+        conn, title="t", assignee="elias",
+        model_override="glm-5", provider_override="openrouter",
+    )
+    task = kb.get_task(conn, tid)
+    cmd = _spawn_and_capture(monkeypatch, tmp_path, task)
+    i = cmd.index("-m")
+    assert cmd[i + 1] == "glm-5"
+    j = cmd.index("--provider")
+    assert j == i + 2
+    assert cmd[j + 1] == "openrouter"
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +241,32 @@ def test_reasoning_effort_survives_clearing_the_model(conn):
     assert t.reasoning_effort == "ultra"
 
 
+
+
+def test_spawn_passes_reasoning_without_a_model(monkeypatch, tmp_path, conn):
+    tid = kb.create_task(conn, title="t", assignee="elias", reasoning_effort="high")
+    task = kb.get_task(conn, tid)
+    cmd = _spawn_and_capture(monkeypatch, tmp_path, task)
+    assert "-m" not in cmd
+    i = cmd.index("--reasoning")
+    assert cmd[i + 1] == "high"
+
+
+def test_spawn_omits_reasoning_when_unset(monkeypatch, tmp_path, conn):
+    tid = kb.create_task(conn, title="t", assignee="elias")
+    task = kb.get_task(conn, tid)
+    cmd = _spawn_and_capture(monkeypatch, tmp_path, task)
+    assert "--reasoning" not in cmd
+
+
+def test_worker_cli_accepts_the_reasoning_flag():
+    """The dispatcher's --reasoning must be a real flag on the worker's CLI —
+    a spawn arg no parser accepts fails every dispatch."""
+    from hermes_cli._parser import build_top_level_parser
+
+    parser = build_top_level_parser()[0]
+    args = parser.parse_args(["--cli", "chat", "-q", "hi", "--reasoning", "high"])
+    assert args.reasoning == "high"
 
 
 def test_patch_sets_and_clears_reasoning_effort(client):

@@ -14,6 +14,5 @@ export const zhHantUpdateChannel = {
   latestRelease: (v: string) => `你正在使用最新的穩定版發布（${v}）。`,
   rollbackTitle: (v: string) => `回退到穩定版 ${v}`,
   rollbackBody: (v: string) => `目前的組建比穩定版 ${v} 更新。安裝後 Hermes 將回退到該版本。`,
-  rollbackAction: (v: string) => `回退到 ${v}`,
-  allChanges: '查看全部變更'
+  rollbackAction: (v: string) => `回退到 ${v}`
 }

@@ -20,24 +20,10 @@ import pytest
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
-    """Point HERMES_HOME at a temp dir so session creation stays isolated. The gateway is the single
-    writer: ``session.create {title}`` is played by a stand-in that writes the row the owner would."""
+    """Point HERMES_HOME at a temp dir so session creation stays isolated."""
     home = tmp_path / "hermes_home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    from hermes_cli import gateway_session_store
-
-    def create_titled(title):
-        from hermes_state import SessionDB
-        db = SessionDB()
-        try:
-            sid = "local-" + "ab" * 32
-            db.create_session(sid, source="local")
-            db.set_session_title(sid, title)
-            return sid
-        finally:
-            db.close()
-    monkeypatch.setattr(gateway_session_store, "create_titled_session", create_titled)
     return home
 
 
@@ -148,15 +134,9 @@ class TestChatCFailLoudlyOnStderr:
         assert not stderr_lines[0].startswith("Use 'hermes sessions list'")
 
     def test_create_if_missing_sets_resume(self, isolated_home, monkeypatch):
-        """--create-if-missing resolves to a new session id on args.resume. The classic CLI's
-        gateway is the single writer: the titled session is the gateway's ``session.create`` (with
-        ``title``), and this process writes no state.db row."""
+        """--create-if-missing resolves to a new session id on args.resume."""
         import hermes_cli.main as main_mod
-        import hermes_cli.gateway_session_store as store_mod
 
-        created = []
-        monkeypatch.setattr(store_mod, "create_titled_session",
-                            lambda title: created.append(title) or "local-" + "a" * 64, raising=False)
         args = type(
             "Args",
             (),
@@ -168,17 +148,6 @@ class TestChatCFailLoudlyOnStderr:
         )()
 
         main_mod._resolve_continue_arg(args, use_tui=False)
-
-        assert args.resume == "local-" + "a" * 64, "resume should be set to the new session id"
-        assert created == ["Bot Chat"]
-        assert not (isolated_home / "state.db").exists(), "the CLI must not write the titled row itself"
-
-    def test_tui_create_if_missing_keeps_the_local_titled_row(self, isolated_home):
-        """The TUI launch is unchanged: main's titled row, then the TUI resumes it."""
-        import hermes_cli.main as main_mod
-
-        args = type("Args", (), {"continue_last": "Bot Chat", "resume": None, "create_if_missing": True})()
-        main_mod._resolve_continue_arg(args, use_tui=True)
 
         assert args.resume, "resume should be set to the new session id"
         from hermes_state import SessionDB

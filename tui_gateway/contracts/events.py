@@ -55,9 +55,6 @@ class GatewayReadyPayload(Payload):
     change_events: bool
     replay_epoch: str
     heartbeat: bool | None = None  # WebSocket transport only
-    # WebSocket transport bound to a session authority: session verbs speak the canonical wire
-    # (``runtime.describe`` / ``session.create source=…``), so an explicit attach must negotiate it.
-    session_authority: bool | None = None
 
 
 event("gateway.ready", GatewayReadyPayload,
@@ -132,20 +129,7 @@ event("notice", NoticePayload, doc="Informational one-liner for the session (cap
 # ── turn stream ───────────────────────────────────────────────────────────────────────────────
 
 
-class MessageStartPayload(Payload):
-    """``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission;
-    ``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card
-    (``session_automation.admission_display``: a background-process completion) and its model
-    text, so a viewer that did not submit the turn paints the same header the submitter would."""
-
-    display_kind: str | None = None
-    display_text: str | None = None
-    notification_category: str | None = None
-    text: str | None = None
-
-
-event("message.start", MessageStartPayload,
-      doc="A turn began streaming; an automation turn carries its async-result card.")
+event("message.start", None, doc="A turn began streaming; no payload.")
 
 
 class StreamDeltaPayload(Payload):
@@ -158,15 +142,7 @@ class StreamDeltaPayload(Payload):
     verbose: bool | None = None
 
 
-class MessageDeltaPayload(StreamDeltaPayload):
-    """``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the
-    reply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that
-    closes the classic CLI's reply box. Every other viewer ignores an empty chunk."""
-
-    text: str | None
-
-
-event("message.delta", MessageDeltaPayload, doc="One streamed chunk of the assistant reply (null text: segment boundary).")
+event("message.delta", StreamDeltaPayload, doc="One streamed chunk of the assistant reply.")
 event("reasoning.delta", StreamDeltaPayload, doc="One streamed chunk of the model's reasoning.")
 event("reasoning.available", StreamDeltaPayload, doc="A completed reasoning block (non-streaming providers).")
 event("thinking.delta", StreamDeltaPayload, doc="Legacy thinking-text chunk (thinking_callback).")
@@ -227,11 +203,6 @@ class PersistedTurn(Payload):
     complete: bool
     user_row_id: int | None = None
     final_assistant_row_id: int | None = None
-    #: Every rendered user row of the turn in order (prompt, then steer/redirect rows); absent
-    #: unless all of them committed. Binds optimistic bubbles a submit receipt could not name.
-    user_row_ids: list[int] | None = None
-    #: The client submission the turn ran (session authority only; its ack precedes the user row).
-    submission_id: str | None = None
 
 
 class MessageCompletePayload(Payload):
@@ -272,34 +243,9 @@ event("status.update", StatusUpdatePayload, doc="Transient status line (kind: st
 
 
 class SessionUsagePayload(Payload):
-    """``server._start_usage_ticker`` (``usage``), or a canonical local viewer's session-cumulative
-    counters (``gateway/session_usage.py::usage_stats``, the ``session.stats`` dict) at the top level:
-    published after every API call and at turn end, what main's classic CLI read off its agent."""
+    """``server._start_usage_ticker``."""
 
-    usage: Usage | None = None
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    cache_read_tokens: int | None = None
-    cache_write_tokens: int | None = None
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    total_tokens: int | None = None
-    reasoning_tokens: int | None = None
-    api_calls: int | None = None
-    last_prompt_tokens: int | None = None
-    context_tokens: int | None = None
-    context_length: int | None = None
-    config_context_length: int | None = None
-    context_source: str | None = None
-    compression_count: int | None = None
-    avg_latency_s: float | None = None
-    tokens_per_s: float | None = None
-    last_turn_tokens: int | None = None
-    rate_limit: dict[str, JsonValue] | None = None
-    active_subagents: int | None = None
-    model: str | None = None
-    provider: str | None = None
-    fallback_model: str | None = None
+    usage: Usage
 
 
 event("session.usage", SessionUsagePayload, doc="Mid-turn usage tick; message.complete carries the authoritative final usage.")
@@ -331,17 +277,6 @@ class ReviewSummaryPayload(Payload):
 
 
 event("review.summary", ReviewSummaryPayload, doc="Background review of the last turn finished.")
-
-
-class AgentPrintPayload(Payload):
-    """A session-authority local-viewer turn: one line the agent printed through ``_print_fn``
-    (subagent completion, compaction, errors, budget notices), which main's classic CLI rendered
-    through ``_agent_status_print``."""
-
-    text: str
-
-
-event("agent.print", AgentPrintPayload, doc="A status line the agent printed during a local viewer's turn.")
 
 
 # ── tools ─────────────────────────────────────────────────────────────────────────────────────

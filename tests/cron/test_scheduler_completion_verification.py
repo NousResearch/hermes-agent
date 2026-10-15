@@ -13,9 +13,6 @@ mislabeling a healthy run.
 """
 
 import os
-from types import SimpleNamespace
-
-from gateway import session_cron
 
 import pytest
 
@@ -27,7 +24,7 @@ class _FakeCronAgent:
     def __init__(self, *args, **kwargs):
         pass
 
-    def run_conversation(self, prompt, *, task_id):
+    def run_conversation(self, prompt):
         return {
             "completed": True,
             "failed": False,
@@ -67,12 +64,18 @@ class _RecordingSessionDB:
 
 
 def _run_booked_job(monkeypatch, tmp_path):
+    import hermes_state
     import run_agent
 
-    db = _RecordingSessionDB()
-    db.db_path = tmp_path / "state.db"
-    owner = SimpleNamespace(db=db)
-    monkeypatch.setattr("hermes_state_registry.acquire", lambda _path: db)
+    instances: list[_RecordingSessionDB] = []
+    real_init = _RecordingSessionDB.__init__
+
+    def _capture_init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        instances.append(self)
+
+    monkeypatch.setattr(_RecordingSessionDB, "__init__", _capture_init)
+    monkeypatch.setattr(hermes_state, "SessionDB", _RecordingSessionDB)
     monkeypatch.setattr(run_agent, "AIAgent", _FakeCronAgent)
     monkeypatch.setattr(
         "hermes_constants.resolve_reasoning_config", lambda *_a, **_k: None
@@ -100,16 +103,15 @@ def _run_booked_job(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cron_scheduler, "_guard_job_credential_exfil", lambda _job: None
     )
-    token = session_cron._execution.set((owner, "verify-session", "verify-complete", "verify-fire"))
-    try:
-        result = cron_scheduler.run_job(
-            {"id": "verify-complete", "name": "Verification", "prompt": "Do the thing",
-             "schedule_display": "manual"}, execution_id="verify-fire")
-    finally:
-        session_cron._execution.reset(token)
-    assert result[0] and result[2] == "done", result
-    assert db.ended[0][0] == "verify-session"
-    return [db]
+    cron_scheduler.run_job(
+        {
+            "id": "verify-complete",
+            "name": "Verification",
+            "prompt": "Do the thing",
+            "schedule_display": "manual",
+        }
+    )
+    return instances
 
 
 @pytest.fixture(autouse=True)

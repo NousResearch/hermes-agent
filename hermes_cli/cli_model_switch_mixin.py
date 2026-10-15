@@ -43,7 +43,6 @@ def _resolve_cli_reasoning(cli) -> None:
     from hermes_constants import resolve_reasoning_config
     # getattr: tests drive /new unbound on a SimpleNamespace without ``model`` (blank -> config default).
     cli.reasoning_config = resolve_reasoning_config(CLI_CONFIG, getattr(cli, "model", None) or "")
-    cli._reasoning_user_set = False
 
 
 def stored_session_route(session_meta, *, current_model, current_provider):
@@ -240,7 +239,6 @@ def _apply_reasoning_after_switch(cli, effort: str, *, persist_global: bool) -> 
     if parsed is None:
         return
     cli.reasoning_config = parsed
-    cli._reasoning_user_set = True
     if cli.agent is not None:
         cli.agent.reasoning_config = parsed
     saved = persist_global and save_config_value("agent.reasoning_effort", effort)

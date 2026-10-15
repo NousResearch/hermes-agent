@@ -77,11 +77,10 @@ export function CreateProfileDialog({
     setError(null)
 
     try {
-      const result = await createProfile({ name: trimmed, clone_from: cloneFrom, ...(soul.trim() ? { soul } : {}) })
+      await createProfile({ name: trimmed, clone_from: cloneFrom })
 
-      // Older remote backends do not accept an initial persona in the create request.
-      if (soul.trim() && !result.soul_set) {
-        await updateProfileSoul(trimmed, soul, trimmed)
+      if (soul.trim()) {
+        await updateProfileSoul(trimmed, soul)
       }
 
       await onCreated?.(trimmed)

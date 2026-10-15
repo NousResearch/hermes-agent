@@ -30,9 +30,7 @@ import {
   installFirstRunSampler,
   installProcesses,
   launchInstalledApp,
-  nonGatewayProcesses,
-  startInstallSession,
-  stopInstallGateway
+  startInstallSession
 } from './harness'
 
 const RUN = Date.now().toString(36)
@@ -114,17 +112,9 @@ test('a healthy local install opens straight to chat on every launch: no setup c
         }
 
         await expect
-          .poll(() => nonGatewayProcesses(facts).map(p => `${p.pid} ${p.cmdline.slice(0, 160)}`), {
-            timeout: 30_000,
-            message: 'quitting the app leaves nothing of the install running but its gateway'
-          })
-          .toEqual([])
-        const stopped = stopInstallGateway(facts)
-        expect(stopped.code, `hermes gateway stop\n${stopped.output}`).toBe(0)
-        await expect
           .poll(() => installProcesses(facts).map(p => `${p.pid} ${p.cmdline.slice(0, 160)}`), {
             timeout: 30_000,
-            message: 'stopping the gateway leaves nothing of the install running'
+            message: 'quitting the app leaves nothing of the install running'
           })
           .toEqual([])
       })

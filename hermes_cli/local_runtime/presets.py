@@ -100,11 +100,12 @@ def _draft_fits(path: Path, profile, budget: HardwareBudget, window: int, overhe
 
 def preset_for_model(gguf: Path, budget: HardwareBudget,
                      mtp_capable: set[str], *, requested_window: int | None = None,
-                     live: HardwareBudget | None = None) -> PresetEntry | None:
+                     live: HardwareBudget | None = None, residents: int = 1) -> PresetEntry | None:
     """The launch decision for one staged model, or None when its header is unreadable.
 
     ``budget`` is the card's capacity; ``live`` (from ``hardware.launch_budget``) narrows the
-    window to what fits beside other programs now.
+    window to what fits beside other programs now. ``residents`` is how many models the router may
+    hold at once; on Windows unified memory their prompt caches share the commit they leave.
     """
     from hermes_cli.local_runtime.catalog import entry_for_model
     from hermes_cli.local_runtime.growth import load_window_overrides
@@ -136,6 +137,11 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
         profile, decision, mtp_capable=is_mtp, uma=budget.uma, mtp_prefill=plan.mtp_prefill,
         mtp_draft_depth=entry.mtp_draft_depth if entry is not None else 3))
     keys["model"] = str(gguf)
+    from hermes_cli.local_runtime.hardware import prompt_cache_bytes
+    cache = prompt_cache_bytes(live, footprint_bytes(plan.profile, decision.window,
+                                                     overhead_bytes=plan.overhead_bytes), residents)
+    if cache is not None:
+        keys["cache-ram"] = str(cache >> 20)  # MiB; 0 turns the cache off
     if profile.lazy_bytes:
         # The price above leaves these tensors on disk; llama.cpp's own default loads them on
         # integrated GPUs.
@@ -215,7 +221,8 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
     return footprint_bytes(plan.profile, plan.decision.window, overhead_bytes=plan.overhead_bytes)
 
 
-def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configured: int) -> int:
+def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configured: int,
+                             live: HardwareBudget | None = None) -> int:
     """How many models the card may hold resident at once: priced against the budget, not a count.
 
     Residency used to be bounded by a count alone, so a second model was admitted against an
@@ -228,7 +235,8 @@ def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configure
     The cap rises above one only while the LARGEST staged model still fits TWICE — any pair of
     staged models then fits by construction. ``configured`` stays a ceiling (a user's smaller
     number is honoured), and an unpriceable input (no usable device memory, no readable model)
-    keeps today's behaviour.
+    keeps today's behaviour. On Windows unified memory ``live`` (free commit) bounds it too: the
+    models the router holds together must fit in commit, not just in the pool.
     """
     from hermes_cli.local_runtime.bootstrap import staged_in
 
@@ -241,25 +249,28 @@ def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configure
             largest = max(largest, need)
     if largest <= 0:
         return configured
-    return max(1, min(configured, budget.usable_vram_bytes // largest))
+    usable = budget.usable_vram_bytes
+    if live is not None and live.commit_room_bytes is not None:
+        usable = min(usable, live.usable_vram_bytes)
+    return max(1, min(configured, usable // largest))
 
 
 def plan_presets(models_dir: Path, budget: HardwareBudget, mtp_capable: set[str] | None = None,
-                 *, live: HardwareBudget | None = None) -> list[PresetEntry]:
+                 *, live: HardwareBudget | None = None, residents: int = 1) -> list[PresetEntry]:
     """The launch decision for every staged model; unreadable headers are skipped."""
     from hermes_cli.local_runtime.bootstrap import staged_in
 
-    entries = (preset_for_model(gguf, budget, mtp_capable or set(), live=live)
+    entries = (preset_for_model(gguf, budget, mtp_capable or set(), live=live, residents=residents)
                for gguf in staged_in(models_dir))
     return [entry for entry in entries if entry is not None]
 
 
 def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path,
                      mtp_capable: set[str] | None = None, *,
-                     live: HardwareBudget | None = None) -> list[PresetEntry]:
+                     live: HardwareBudget | None = None, residents: int = 1) -> list[PresetEntry]:
     """Plan every staged model and write one INI. Refused models get no section (the picker
     surfaces the refusal from the returned entries)."""
-    entries = plan_presets(models_dir, budget, mtp_capable, live=live)
+    entries = plan_presets(models_dir, budget, mtp_capable, live=live, residents=residents)
     write_presets(entries, preset_path)
     return entries
 

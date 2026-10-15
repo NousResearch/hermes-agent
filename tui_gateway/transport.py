@@ -145,8 +145,7 @@ class FanoutTransport:
 
     One slow socket must not stop the emitting turn or any healthy subscriber.
     Each peer has at most one daemon writer and a bounded backlog. On overflow
-    it loses its subscription; unless the writer supplies a resume notice for a
-    still-healthy socket, that peer's transport is closed so the client
+    it loses its subscription and that peer's transport is closed so the client
     notices, reconnects and replays history. Closing the socket also drops any
     other sessions multiplexed on it; the same reconnect + replay recovers them.
     Other sockets are unaffected. A write already in the OS cannot be revoked.
@@ -208,36 +207,26 @@ class FanoutTransport:
     def _drain(self, peer: _FanoutPeer) -> None:
         while True:
             with self._lock:
-                # A detached peer's mailbox is empty except for the one overflow
-                # notice ``write`` leaves behind; deliver it, then let go.
-                if not peer.pending:
+                if not peer.attached or not peer.pending:
                     peer.writing = False
                     if not peer.attached:
                         self._remove(peer)
                     return
                 generation = peer.generation
-                # Everything queued so far goes out as ONE batch: a producer with no per-frame I/O
-                # (an in-process turn streaming tokens) otherwise outruns one cross-thread round trip
-                # per frame and overflows a healthy socket's mailbox. In flight stays bounded: the
-                # next batch is taken only after this one is on the wire.
-                batch = list(peer.pending)
-                peer.pending.clear()
-                peer.pending_bytes = 0
+                frame, size = peer.pending.popleft()
+                peer.pending_bytes -= size
             try:
-                # Duck-typed on purpose: importing ``tui_gateway.ws`` here would pull
-                # ``tui_gateway.server`` in on this drain thread, racing any concurrent
-                # importer with a partially initialized module.
-                write_many = getattr(peer.transport, "write_many_async", None)
-                loop = getattr(peer.transport, "_loop", None)
-                if write_many is not None and loop is not None:
+                from tui_gateway.ws import WSTransport
+                if isinstance(peer.transport, WSTransport):
                     # write() acknowledges buffered tokens/timeouts, not socket
                     # progress. Await the real send so WS cannot move an
                     # unbounded backlog underneath this bounded mailbox.
                     from agent.async_utils import safe_schedule_threadsafe
-                    future = safe_schedule_threadsafe(write_many([frame for frame, _size in batch]), loop)
+                    future = safe_schedule_threadsafe(
+                        peer.transport.write_async(frame), peer.transport._loop)
                     ok = future is not None and future.result()
                 else:
-                    ok = all(peer.transport.write(frame) for frame, _size in batch)
+                    ok = peer.transport.write(frame)
             except Exception:
                 logger.debug("fanout write failed; pruning peer", exc_info=True)
                 ok = False
@@ -259,12 +248,7 @@ class FanoutTransport:
         except Exception:
             logger.debug("fanout overflow close failed; membership already dropped", exc_info=True)
 
-    def write(self, obj: dict, *, overflow: Callable[[Transport], Optional[dict]] | None = None) -> bool:
-        """Fan *obj* out. A peer whose bounded backlog is full loses its subscription; *overflow*
-        (called with its transport, under the membership lock) may return one final frame that
-        replaces the dropped backlog, so a socket that is still healthy learns it must resume
-        rather than silently continuing with partial history. Without such a notice the peer's
-        transport is closed so the client notices, reconnects and replays."""
+    def write(self, obj: dict) -> bool:
         # Freeze the queued frame so a caller cannot mutate it after admission. Same serialization
         # guard as the single-peer transports: an unserializable frame reaches every peer as -32603.
         encoded = serialize_frame(obj, "fanout", logger)
@@ -278,18 +262,8 @@ class FanoutTransport:
                 if (len(peer.pending) >= self._MAX_PENDING_FRAMES
                         or peer.pending_bytes + size > self._MAX_PENDING_BYTES):
                     logger.warning("fanout subscriber backlog full; detaching peer")
+                    overflowed.append(peer.transport)
                     self._remove(peer)
-                    notice = overflow(peer.transport) if overflow is not None else None
-                    if notice is None:
-                        overflowed.append(peer.transport)
-                    else:
-                        peer.pending.append((notice, 0))
-                        if peer not in self._peers:
-                            self._peers.append(peer)
-                        if not peer.writing:
-                            peer.writing = True
-                            threading.Thread(target=self._drain, args=(peer,),
-                                             name="tui-fanout", daemon=True).start()
                     continue
                 peer.pending.append((frame, size))
                 peer.pending_bytes += size

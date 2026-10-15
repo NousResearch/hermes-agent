@@ -101,25 +101,18 @@ class CLICommandsSessionToolsMixin:
 
         See #14602.
         """
-        from hermes_cli.gateway_tools import process_registry as _registry, process_view
-        process_registry, view = _registry(), process_view()
-        if view is not None:
-            view.refresh(force=True)
+        from tools.process_registry import process_registry
         running = [p for p in process_registry.list_sessions() if p.get("status") == "running"]
         # Background subagents live in their own registry, not the process registry.
-        n_async = view.active_delegations() if view is not None else _probe("tools.async_delegation", "active_count", 0)
+        n_async = _probe("tools.async_delegation", "active_count", 0)
         if not running and not n_async:
             return print(f"  {_t('stop.none_running')}")
         if running:
             print(f"  {_t('stop.stopping', count=len(running))}")
             print(f"  {_t('stop.stopped', count=process_registry.kill_all(source='cli.stop'))}")
         if n_async:
-            if view is not None:
-                interrupted = view.interrupt_delegations()  # the gateway interrupts this session's own
-            else:
-                from tools.async_delegation import interrupt_all
-                interrupted = interrupt_all(reason='/stop')
-            print(f"  {_t('stop.interrupted_delegations', count=interrupted)}")
+            from tools.async_delegation import interrupt_all
+            print(f"  {_t('stop.interrupted_delegations', count=interrupt_all(reason='/stop'))}")
 
     def _handle_agents_command(self):
         """Handle /agents — show background processes and agent status."""

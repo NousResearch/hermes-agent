@@ -856,9 +856,10 @@ class GatewayBusySessionMixin:
         _busy_state = self._peek_session_state(session_key)
         running_agent = _busy_state.turn.agent if _busy_state else None
         _steer = await self._resolve_busy_steer_or_redirect(event, session_key, effective_mode, running_agent)
+        effective_mode, redirected = _steer.effective_mode, _steer.redirected
         # Queue as the next turn — skipped after a successful steer/redirect (the text is already in
         # the run and must NOT replay). FIFO gives each text its own turn (raw merge would join them).
-        if not _steer.steered and not _steer.redirected:
+        if not _steer.steered and not redirected:
             self._queue_or_replace_pending_event(session_key, event)
         # Store the message so it's processed as the next turn after the current run finishes (or is
         # interrupted). Skip this for a successful steer — the text already landed inside the run and must
@@ -869,14 +870,6 @@ class GatewayBusySessionMixin:
         # messages sent while the agent was busy (interrupt mode, or a steer that fell back to queue)
         # arrived as one mashed-together turn (#43066 sub-bug 2). The FIFO path gives each text its own turn
         # in arrival order while still preserving photo-burst / album merge semantics for media.
-        await self._busy_interrupt_and_ack(event, session_key, adapter, _busy_state, running_agent, _steer)
-        return True
-
-    async def _busy_interrupt_and_ack(self, event, session_key, adapter, _busy_state, running_agent, _steer) -> None:
-        """Interrupt-mode abort (voice transcribed) and the busy ack, after the steer/redirect resolution.
-        Shared by the in-process busy handler and the session authority's busy preempt."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
-        effective_mode, redirected = _steer.effective_mode, _steer.redirected
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
         is_redirect_mode = effective_mode == "interrupt" and redirected
@@ -890,15 +883,15 @@ class GatewayBusySessionMixin:
         # stamps the "last ack" timestamp.
         if os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true":
             logger.debug("Busy ack suppressed for session %s", session_key)
-            return  # input still processed, just no ack sent
+            return True  # input still processed, just no ack sent
 
         # Debounce (30s) before the config-heavy display lookup.
         now = time.time()
         if now - (_busy_state.turn.busy_ack_ts if _busy_state else 0) < 30:
-            return  # interrupt sent (if not queue), ack already delivered recently
+            return True  # interrupt sent (if not queue), ack already delivered recently
 
         if is_steer_mode and not self._busy_steer_ack_enabled(event, session_key):
-            return
+            return True
 
         self._session_state(session_key).turn.busy_ack_ts = now
 
@@ -909,6 +902,7 @@ class GatewayBusySessionMixin:
             demoted_for_compression=_steer.demoted_for_compression,
         )
         await self._send_busy_ack_reply(event, adapter, message)
+        return True
 
     # Slash name → handler method is ``_handle_<name>_command`` (``-`` → ``_``) except these.
     _COMMAND_HANDLER_ALIASES = {"bg": "_handle_background_command", "sethome": "_handle_set_home_command"}
@@ -924,7 +918,7 @@ class GatewayBusySessionMixin:
         "approvals", "model", "codex-runtime", "personality", "suggestions", "save", "retry",
         "sethome", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
         "bundles", "debug", "title", "resume", "sessions", "branch", "rollback", "diff", "goal",
-        "loop", "refine", "review", "voice", "curator",
+        "loop", "refine", "review", "voice",
     )
 
     def _command_handler_table(self, names) -> dict[str, Any]:
@@ -941,10 +935,6 @@ class GatewayBusySessionMixin:
 
     async def _send_command_ack(self, source, text: str, label: str) -> None:
         """Best-effort acknowledgment for a slash command that falls through to agent processing."""
-        from gateway.session_command_sink import active_sink
-        if (sink := active_sink()) is not None:
-            sink.notices.append(text)  # a local slash.exec: the ack rides the client's directive
-            return
         try:
             adapter = self._delivery_adapter_for(source)
             if adapter:

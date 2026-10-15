@@ -33,7 +33,6 @@ export const esProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   movedTo: name => `Movido a ${name}`,
   moveFailed: 'No se pudo mover la sesión',
   moveNoFolder: 'Ese proyecto no tiene carpeta a la que mover',
-  moveBusy: 'Detén el turno en curso y luego mueve el chat',
   moveNoProjects: 'No hay otros proyectos',
   reveal: 'Revelar en carpeta',
   copyPath: 'Copiar ruta',

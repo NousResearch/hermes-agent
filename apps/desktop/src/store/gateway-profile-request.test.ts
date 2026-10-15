@@ -66,7 +66,8 @@ const {
 
 function installDesktop(getConnection: ReturnType<typeof vi.fn>): void {
   ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
-    getConnection
+    getConnection,
+    touchBackend: vi.fn(async () => undefined)
   }
 }
 
@@ -202,7 +203,7 @@ describe('requestGatewayForProfile', () => {
     }
   })
 
-  it('accepts a Settings-scoped foreground dial hint without changing the canonical dial (#111651)', async () => {
+  it('dials the profile with foreground priority when a Settings-scoped caller asks for it (#111651)', async () => {
     setPrimaryGateway(makePrimary() as never, 'default')
 
     const getConnection = vi.fn(async (profile: null | string) =>
@@ -214,9 +215,7 @@ describe('requestGatewayForProfile', () => {
 
     await requestGatewayForProfile('worker', 'vault.list', {}, undefined, undefined, { spawnPriority: 'foreground' })
 
-    // `gateway ensure` has no slot pool to reserve: the hint is carried by the
-    // call shape, the dial itself stays the plain profile descriptor request.
-    expect(getConnection).toHaveBeenCalledWith('worker')
+    expect(getConnection).toHaveBeenCalledWith('worker', { priority: 'foreground' })
   })
 
   it('uses the primary socket and adds profile scope for a shared global remote route', async () => {
@@ -318,7 +317,8 @@ describe('requestGatewayForAgent', () => {
     ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
       getConnection: vi.fn(),
       getConnectionFor,
-      getGatewayWsUrlFor: vi.fn(async () => ({ ok: true as const, wsUrl: 'wss://remote.invalid/api/ws' }))
+      getGatewayWsUrlFor: vi.fn(async () => ({ ok: true as const, wsUrl: 'wss://remote.invalid/api/ws' })),
+      touchBackend: vi.fn(async () => undefined)
     }
     await ensureGatewayForProfile('default')
 
@@ -355,7 +355,8 @@ describe('requestGatewayForAgent', () => {
     ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
       getConnection: vi.fn(),
       getConnectionFor,
-      getGatewayWsUrlFor: vi.fn(async () => ({ ok: true as const, wsUrl: 'wss://remote.invalid/api/ws' }))
+      getGatewayWsUrlFor: vi.fn(async () => ({ ok: true as const, wsUrl: 'wss://remote.invalid/api/ws' })),
+      touchBackend: vi.fn(async () => undefined)
     }
 
     await requestGatewayForAgent('remote-primary', 'research', 'session.resume', {
@@ -387,7 +388,8 @@ describe('requestGatewayForAgent', () => {
     ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
       getConnection,
       getConnectionFor,
-      getGatewayWsUrlFor
+      getGatewayWsUrlFor,
+      touchBackend: vi.fn(async () => undefined)
     }
     await ensureGatewayForProfile('default')
 
@@ -432,7 +434,8 @@ describe('requestGatewayForAgent', () => {
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
         ok: true as const,
         wsUrl: `ws://${connectionId}/${profile}`
-      }))
+      })),
+      touchBackend: vi.fn(async () => undefined)
     }
     await ensureGatewayForProfile('default')
 
@@ -459,7 +462,8 @@ describe('requestGatewayForAgent', () => {
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
         ok: true as const,
         wsUrl: `ws://${connectionId}/${profile}`
-      }))
+      })),
+      touchBackend: vi.fn(async () => undefined)
     }
 
     await openGatewayForAgent('source-a', 'research')
@@ -487,7 +491,8 @@ describe('requestGatewayForAgent', () => {
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
         ok: true as const,
         wsUrl: `ws://${connectionId}/${profile}`
-      }))
+      })),
+      touchBackend: vi.fn(async () => undefined)
     }
 
     await ensureGatewayForAgent('source-a', 'pinned')
@@ -523,7 +528,8 @@ describe('requestGatewayForAgent', () => {
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
         ok: true as const,
         wsUrl: `ws://${connectionId}/${profile}`
-      }))
+      })),
+      touchBackend: vi.fn(async () => undefined)
     }
     await ensureGatewayForProfile('default')
 
@@ -556,7 +562,8 @@ describe('requestGatewayForAgent', () => {
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
         ok: true as const,
         wsUrl: `ws://${connectionId}/${profile}`
-      }))
+      })),
+      touchBackend: vi.fn(async () => undefined)
     }
     await ensureGatewayForProfile('default')
 
@@ -584,7 +591,8 @@ describe('retainGatewayForAgent (#93602)', () => {
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }) => ({
         ok: true as const,
         wsUrl: `ws://${connectionId}/${profile}`
-      }))
+      })),
+      touchBackend: vi.fn(async () => undefined)
     }
   }
 
@@ -668,7 +676,8 @@ describe('attached shared-remote group turns (#96493)', () => {
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
         ok: true as const,
         wsUrl: `ws://${connectionId}/${profile}`
-      }))
+      })),
+      touchBackend: vi.fn(async () => undefined)
     }
 
     return getConnectionFor
@@ -716,7 +725,8 @@ describe('attached shared-remote group turns (#96493)', () => {
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
         ok: true as const,
         wsUrl: `ws://${connectionId}/${profile}`
-      }))
+      })),
+      touchBackend: vi.fn(async () => undefined)
     }
     await ensureGatewayForProfile('default')
 
@@ -735,7 +745,8 @@ describe('attached shared-remote group turns (#96493)', () => {
       getConnectionFor: vi.fn(async () => {
         throw new Error('Timed out connecting to profile "voter"')
       }),
-      getGatewayWsUrlFor: vi.fn(async () => ({ ok: true as const, wsUrl: 'ws://homelab/voter' }))
+      getGatewayWsUrlFor: vi.fn(async () => ({ ok: true as const, wsUrl: 'ws://homelab/voter' })),
+      touchBackend: vi.fn(async () => undefined)
     }
     await ensureGatewayForProfile('default')
 
@@ -760,7 +771,8 @@ describe('attached shared-remote group turns (#96493)', () => {
       getConnectionFor: vi.fn(async () => {
         throw new Error('Timed out connecting to profile "sean"')
       }),
-      getGatewayWsUrlFor: vi.fn(async () => ({ ok: true as const, wsUrl: 'ws://local/sean' }))
+      getGatewayWsUrlFor: vi.fn(async () => ({ ok: true as const, wsUrl: 'ws://local/sean' })),
+      touchBackend: vi.fn(async () => undefined)
     }
     await ensureGatewayForProfile('default')
 
@@ -839,7 +851,8 @@ describe('session-owner calls for a profile on the shared local host backend (#1
       getGatewayWsUrlFor: vi.fn(async ({ connectionId, profile }: { connectionId: string; profile: string }) => ({
         ok: true as const,
         wsUrl: `ws://${connectionId}/${profile}`
-      }))
+      })),
+      touchBackend: vi.fn(async () => undefined)
     }
 
     return getConnectionFor

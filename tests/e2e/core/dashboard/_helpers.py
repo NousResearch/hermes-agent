@@ -11,7 +11,6 @@ it as ``X-Hermes-Session-Token`` on REST and ``?token=`` on WebSocket upgrades, 
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import re
@@ -156,7 +155,6 @@ class Sandbox:
             for p in self.profiles.values():
                 if p.srv is not None:
                     p.srv.stop()
-            self._stop_gateways()
             leaks = _reaper.reap(_reaper.with_home(self.home), *also)
         finally:
             if not self._released:
@@ -165,17 +163,6 @@ class Sandbox:
         if leaks:
             raise SandboxLeak(f"{len(leaks)} sandbox process(es) outlived the test by "
                               f"{_reaper.REAP_TIMEOUT:.0f}s and were killed:\n  " + "\n  ".join(leaks))
-
-
-    def _stop_gateways(self) -> None:
-        """Under the attach model a TUI starts the gateway daemon (setsid, outside the dashboard's
-        process group), which outlives its viewer by design: stop it the way a user would."""
-        for home in (self.hermes_home, *sorted((self.hermes_home / "profiles").glob("*"))):
-            if (home / "gateway.pid").exists():
-                with contextlib.suppress(Exception):
-                    subprocess.run([sys.executable, "-m", "hermes_cli.main", "gateway", "stop"],
-                                   env=self.env({"HERMES_HOME": str(home)}), cwd=str(self.home),
-                                   capture_output=True, timeout=60, check=False)
 
 
 class SandboxLeak(AssertionError):

@@ -186,10 +186,6 @@ class GatewayConfigLoadersMixin:
             _r_state = self._peek_session_state(resolved_session_key)
             if _r_state is not None and _r_state.conversation.reasoning_override is not None:
                 return _r_state.conversation.reasoning_override
-        from gateway.session_setting_commands import local_policy
-        if (policy := local_policy(self, source)) is not None:
-            # A local session runs its frozen (or followed) level, not the profile's.
-            return policy.current_reasoning_config(self, resolved_session_key)
         return self._load_reasoning_config(model)
 
     def _set_session_reasoning_override(self, session_key: str, reasoning_config: Optional[dict]) -> None:
@@ -212,10 +208,6 @@ class GatewayConfigLoadersMixin:
             _t_state = self._peek_session_state(resolved_session_key)
             if _t_state is not None and _t_state.conversation.service_tier_override is not _SERVICE_TIER_UNSET:
                 return _t_state.conversation.service_tier_override
-        from gateway.session_setting_commands import local_live_for_route, local_policy
-        live = local_live_for_route(self, resolved_session_key)
-        if live is not None and (policy := local_policy(self, live.source)) is not None:
-            return policy.current_service_tier(self, resolved_session_key)  # its frozen tier, not config.yaml's
         return self._load_service_tier()
 
     def _set_session_service_tier_override(self, session_key: str, service_tier, clear: bool = False) -> None:

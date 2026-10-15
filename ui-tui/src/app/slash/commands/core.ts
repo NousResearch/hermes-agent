@@ -12,7 +12,6 @@ import type {
   SessionSteerResponse,
   SessionTitleResponse,
   SessionUndoResponse,
-  SlashExecResponse,
   SystemBatteryResponse
 } from '../../../gatewayTypes.js'
 import { t } from '../../../i18n/runtime.js'
@@ -27,17 +26,7 @@ import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
-import { canonicalRewind, canonicalTitle } from '../canonicalSessionCommands.js'
-import type { SlashCommand, SlashRunCtx } from '../types.js'
-
-// Client display preferences: written to the profile's config.yaml by either backend (the shared
-// owner's config.set serves them profile-wide, like the sidecar). `/focus` names the session on the
-// shared owner so its tool-progress mode follows at once (the sidecar's session read it from config).
-const saveDisplayPref = (ctx: SlashRunCtx, key: string, value: string) => {
-  const session = key === 'focus' && ctx.gateway.gw?.isCanonical && ctx.sid ? { session_id: ctx.sid } : {}
-
-  ctx.gateway.rpc<ConfigSetResponse>('config.set', { key, value, ...session }).catch(() => {})
-}
+import type { SlashCommand } from '../types.js'
 
 const flagFromArg = (arg: string, current: boolean): boolean | null => {
   if (!arg) {
@@ -178,8 +167,9 @@ export const coreCommands: SlashCommand[] = [
       }
 
       patchUiState({ mouseTracking: next })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next }).catch(() => {})
+
       queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.mouse.tracking', next)))
-      saveDisplayPref(ctx, 'mouse', next)
     }
   },
 
@@ -237,20 +227,6 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('slashCmd.core.status.noActiveSession'))
       }
 
-      if (ctx.gateway.gw?.isCanonical) {
-        // The shared gateway serves /status as a session read; session.status is a legacy sidecar RPC.
-        ctx.gateway.gw
-          .request<SlashExecResponse>('slash.exec', { command: 'status', session_id: ctx.sid })
-          .then(r => {
-            if (!ctx.stale()) {
-              ctx.transcript.page(r?.output || t('slashCmd.core.status.empty'), t('slashCmd.core.status.pageTitle'))
-            }
-          })
-          .catch(ctx.guardedErr)
-
-        return
-      }
-
       ctx.gateway
         .rpc<SessionStatusResponse>('session.status', { session_id: ctx.sid })
         .then(
@@ -271,10 +247,6 @@ export const coreCommands: SlashCommand[] = [
       }
 
       const title = arg.trim()
-
-      if (ctx.gateway.gw?.isCanonical && (!arg || title)) {
-        return canonicalTitle(title, ctx)
-      }
 
       if (!arg) {
         ctx.gateway
@@ -319,8 +291,9 @@ export const coreCommands: SlashCommand[] = [
       }
 
       patchUiState({ compact: next })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'density', value: next ? 'on' : 'off' }).catch(() => {})
+
       queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.density.state', next ? 'on' : 'off')))
-      saveDisplayPref(ctx, 'density', next ? 'on' : 'off')
     }
   },
 
@@ -366,8 +339,10 @@ export const coreCommands: SlashCommand[] = [
         const { [first]: _drop, ...rest } = ui.sections
 
         patchUiState({ sections: mode ? { ...rest, [first]: mode } : rest })
+        gateway
+          .rpc<ConfigSetResponse>('config.set', { key: `details_mode.${first}`, value: mode ?? '' })
+          .catch(() => {})
         transcript.sys(t('slashCmd.core.details.section', first, mode ?? t('slashCmd.core.details.reset')))
-        saveDisplayPref(ctx, `details_mode.${first}`, mode ?? '')
 
         return
       }
@@ -381,8 +356,8 @@ export const coreCommands: SlashCommand[] = [
       const sections = Object.fromEntries(SECTION_NAMES.map(section => [section, next]))
 
       patchUiState({ detailsMode: next, detailsModeCommandOverride: true, sections })
+      gateway.rpc<ConfigSetResponse>('config.set', { key: 'details_mode', value: next }).catch(() => {})
       transcript.sys(t('slashCmd.core.details.current', next, ''))
-      saveDisplayPref(ctx, 'details_mode', next)
     }
   },
 
@@ -633,10 +608,11 @@ export const coreCommands: SlashCommand[] = [
       // returns to whatever /verbose mode the user had. Optimistically patch the
       // badge so the status bar flips on the same frame.
       patchUiState({ focusView: next })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'focus', value: next ? 'on' : 'off' }).catch(() => {})
+
       queueMicrotask(() =>
         ctx.transcript.sys(next ? t('slashCmd.core.focus.enabled') : t('slashCmd.core.focus.disabled'))
       )
-      saveDisplayPref(ctx, 'focus', next ? 'on' : 'off')
     }
   },
 
@@ -662,8 +638,9 @@ export const coreCommands: SlashCommand[] = [
       }
 
       patchUiState({ statusBar: next })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next }).catch(() => {})
+
       queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.statusbar.state', next)))
-      saveDisplayPref(ctx, 'statusbar', next)
     }
   },
 
@@ -702,8 +679,9 @@ export const coreCommands: SlashCommand[] = [
       }
 
       patchUiState({ battery: next, ...(next ? {} : { batteryStatus: null }) })
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'battery', value: next ? 'on' : 'off' }).catch(() => {})
+
       queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.battery.state', next ? 'on' : 'off')))
-      saveDisplayPref(ctx, 'battery', next ? 'on' : 'off')
     }
   },
 
@@ -746,13 +724,7 @@ export const coreCommands: SlashCommand[] = [
       }
 
       ctx.gateway
-        .rpc<SessionSteerResponse>('session.steer', {
-          session_id: ctx.sid,
-          text: payload,
-          ...(ctx.gateway.gw.isCanonical && ctx.ui.info?.execution_generation !== undefined
-            ? { execution_generation: ctx.ui.info.execution_generation }
-            : {})
-        })
+        .rpc<SessionSteerResponse>('session.steer', { session_id: ctx.sid, text: payload })
         .then(
           ctx.guarded<SessionSteerResponse>(r => {
             if (r?.status === 'queued') {
@@ -776,10 +748,6 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys(t('slashCmd.core.undo.nothing'))
       }
 
-      if (ctx.gateway.gw?.isCanonical) {
-        return canonicalRewind('undo', ctx)
-      }
-
       ctx.gateway.rpc<SessionUndoResponse>('session.undo', { session_id: ctx.sid }).then(
         ctx.guarded<SessionUndoResponse>(r => {
           if ((r.removed ?? 0) > 0) {
@@ -799,11 +767,6 @@ export const coreCommands: SlashCommand[] = [
     help: 'retry last user message',
     name: 'retry',
     run: (_arg, ctx) => {
-      // The durable transcript names the turn to retry, so a resumed session retries too.
-      if (ctx.sid && ctx.gateway.gw?.isCanonical) {
-        return canonicalRewind('retry', ctx)
-      }
-
       const last = ctx.local.getLastUserMsg()
 
       if (!last) {

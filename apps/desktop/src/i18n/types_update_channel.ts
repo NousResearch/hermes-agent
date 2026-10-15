@@ -22,6 +22,4 @@ export interface UpdateChannelCopy {
   rollbackBody: (version: string) => string
   /** Updates overlay install button for that rollback. */
   rollbackAction: (version: string) => string
-  /** Update dialog link to every change in a commit-line update. */
-  allChanges: string
 }

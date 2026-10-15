@@ -6,13 +6,12 @@ import { rpcErrorMessage } from '../lib/rpc.js'
 import { launchWidget } from '../sdk/host.js'
 import { getWidgetApp } from '../sdk/registry.js'
 
-import type { SlashHandler, SlashHandlerContext, SlashSubmission } from './interfaces.js'
+import type { SlashHandlerContext } from './interfaces.js'
 import { scoreSlashMenuItem } from './slash/fuzzyScore.js'
 import { findSlashCommand } from './slash/registry.js'
 import type { SlashRunCtx } from './slash/types.js'
-import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { getUiState } from './uiStore.js'
-import { describeSlashExecError, isUnsupportedCommand, shouldFallbackToDispatch } from './userMessages.js'
+import { describeSlashExecError, shouldFallbackToDispatch } from './userMessages.js'
 
 /** Shared metrics count each user-typed command once, from the client: the gateway no longer
  *  counts slash.exec, so locally handled commands (/resume, /skin, overlays) land too.
@@ -28,16 +27,15 @@ export function reportSlashCommand(gw: GatewayClient, name: string, sid: null | 
 /** `typed` is false for programmatic calls (a picker re-issuing `/model <x>`) and for the
  *  backend's alias re-dispatch; prefix/alias expansion keeps it, so a typed `/hea` counts once
  *  as the /heartbeat it resolved to. */
-export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
+export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string, typed?: boolean) => boolean {
   const { gw } = ctx.gateway
   const { catalog } = ctx.local
   const { page, send, sys } = ctx.transcript
 
-  const handler = (cmd: string, submission?: SlashSubmission, typed = true): boolean => {
+  const handler = (cmd: string, typed = true): boolean => {
     const flight = ++ctx.slashFlightRef.current
     const ui = getUiState()
     const sid = ui.sid
-    const destination = captureDestination()
     const parsed = parseSlashCommand(cmd)
     const argTail = parsed.arg ? ` ${parsed.arg}` : ''
 
@@ -47,7 +45,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
       }
     }
 
-    const stale = () => flight !== ctx.slashFlightRef.current || !isCurrentDestination(destination)
+    const stale = () => flight !== ctx.slashFlightRef.current || getUiState().sid !== sid
 
     const guarded =
       <T>(fn: (r: T) => void) =>
@@ -59,7 +57,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
 
     const guardedErr = (e: unknown) => {
       if (!stale()) {
-        sys(isUnsupportedCommand(e) ? describeSlashExecError(parsed.name, e) : `error: ${rpcErrorMessage(e)}`)
+        sys(`error: ${rpcErrorMessage(e)}`)
       }
     }
 
@@ -94,7 +92,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
 
       if (exact) {
         if (exact.toLowerCase() !== needle) {
-          return handler(`${exact}${argTail}`, submission, typed)
+          return handler(`${exact}${argTail}`, typed)
         }
       } else {
         // Tiered name scoring (ported from grok-cli's slash menu): prefix
@@ -112,7 +110,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
         const matches = [...new Set(scored.filter(entry => entry.score === best).map(entry => entry.canon))]
 
         if (matches.length === 1 && matches[0]!.toLowerCase() !== needle) {
-          return handler(`${matches[0]}${argTail}`, submission, typed)
+          return handler(`${matches[0]}${argTail}`, typed)
         }
 
         if (matches.length > 1) {
@@ -123,14 +121,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
       }
     }
 
-    // Main's sidecar slash output: a long reply opens the pager, a short one is a system line.
-    const showOutput = (text: string) => {
-      const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
-
-      long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
-    }
-
-    const handleDispatch = (raw: unknown, fromExec = false): void => {
+    const handleDispatch = (raw: unknown): void => {
       const d = parseCommandDispatch(raw)
 
       if (!d) {
@@ -138,13 +129,11 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
       }
 
       if (d.type === 'exec' || d.type === 'plugin') {
-        // The shared owner answers its slash.exec reads as `{type: 'exec'}`; they page like
-        // main's bare `{output}` did. command.dispatch output keeps its system line.
-        return fromExec && d.output ? showOutput(d.output) : sys(d.output || '(no output)')
+        return sys(d.output || '(no output)')
       }
 
       if (d.type === 'alias') {
-        return void handler(`/${d.target}${argTail}`, submission, false)
+        return void handler(`/${d.target}${argTail}`, false)
       }
 
       // A skill/bundle dispatch's `message` is the expanded skill body —
@@ -155,10 +144,6 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
       // version-skew (unlike the desktop, which can meet an older backend).
       const sendDispatch = (display: string | undefined, message: string) => {
         const shown = display?.trim()
-
-        if (submission) {
-          return send(message, true, shown || undefined, submission.expand, { attachments: submission.attachments })
-        }
 
         return shown ? send(message, true, shown) : send(message)
       }
@@ -199,29 +184,25 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
         }
 
         if (parseCommandDispatch(r)) {
-          return handleDispatch(r, true)
+          return handleDispatch(r)
         }
 
         const body = r?.output || `/${parsed.name}: no output`
+        const text = r?.warning ? `warning: ${r.warning}\n${body}` : body
+        const long = text.length > 180 || text.split('\n').filter(Boolean).length > 2
 
-        showOutput(r?.warning ? `warning: ${r.warning}\n${body}` : body)
+        long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
       })
       .catch((execErr: unknown) => {
-        if (stale()) {
-          return
-        }
-
         // Only "slash.exec does not own this command" refusals (4011/4018) may
         // fall through to command.dispatch. A helper timeout/crash (5030) must
         // be shown as itself — the fallback's "not a quick/plugin/bundle/skill
         // command" refusal used to bury the real cause and imply the command
         // did not exist.
-        if (isUnsupportedCommand(execErr)) {
-          return sys(describeSlashExecError(parsed.name, execErr))
-        }
-
         if (!shouldFallbackToDispatch(execErr)) {
-          sys(`error: ${describeSlashExecError(parsed.name, execErr)}`)
+          if (!stale()) {
+            sys(`error: ${describeSlashExecError(parsed.name, execErr)}`)
+          }
 
           return
         }

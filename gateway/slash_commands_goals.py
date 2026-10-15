@@ -73,15 +73,8 @@ class GatewayGoalCommandsMixin:
         """Enqueue *text* as the next turn through the adapter FIFO (the post-turn judge's path).
 
         A kickoff keeps the triggering message id / channel prompt; a resume continuation carries
-        none. Best-effort: failures only logged. A local ``slash.exec`` returns the turn to the
-        client as its ``send`` directive instead (the client submits it with its own input id).
+        none. Best-effort: failures only logged.
         """
-        from gateway.session_command_sink import active_sink
-        if (sink := active_sink()) is not None:
-            sink.prompt = text
-            if not kickoff:
-                sink.display = "/goal resume"
-            return
         try:
             adapter, quick_key = self._adapter_and_key_for(event)
             if text and adapter and quick_key:

@@ -810,6 +810,11 @@ def _codex_event_has_content(event: Any) -> bool:
     event_type = _event_field(event, "type")
     if event_type in _CODEX_PROGRESS_DELTA_TYPES:
         return bool(_event_field(event, "delta"))
+    if event_type == "response.output_item.done":
+        item = _event_field(event, "item")
+        # Sol can finish reasoning chunks without emitting visible summary deltas.
+        # A completed encrypted chunk is model output; an empty placeholder is not.
+        return _event_field(item, "type") == "reasoning" and bool(_event_field(item, "encrypted_content"))
     if event_type == "response.output_item.added":
         item = _event_field(event, "item")
         return "function_call" in str(_event_field(item, "type") or "") and any(

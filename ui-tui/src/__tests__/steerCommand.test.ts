@@ -17,7 +17,7 @@ const runSteer = async (arg: string, steerResult: unknown, busy = true) => {
 
   const ctx = {
     composer: { enqueue },
-    gateway: { gw: { isCanonical: false }, rpc },
+    gateway: { rpc },
     guarded,
     guardedErr: vi.fn(),
     sid: 'sid-1',

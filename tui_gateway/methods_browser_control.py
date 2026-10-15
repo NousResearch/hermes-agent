@@ -49,8 +49,7 @@ def _is_authenticated_identity(identity: object) -> bool:
 
 def _principal_digest(identity: dict) -> str:
     """Server-derived principal id: stable per user, unspoofable without the minted identity."""
-    from gateway.session_identity import authenticated_subject
-    raw = authenticated_subject(identity)
+    raw = f"{identity.get('provider')}\x00{identity.get('user_id')}"
     return f"principal:dashboard:{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:32]}"
 
 

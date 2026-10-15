@@ -233,30 +233,26 @@ class CLIAgentSetupMixin:
         """Re-resolve provider credentials before agent use so key rotation / token
         refresh are picked up without restarting the CLI. False on auth failure."""
         from cli import ChatConsole, logger
-        from hermes_cli.runtime_provider import (
-            deferred_token_mint, format_runtime_provider_error, resolve_runtime_provider)
+        from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error
         _primary_exc = None
         runtime = None
         _model_at_entry = self.model
         self._credentials_rate_limited = False
         self._credentials_terminal = False
-        # The gateway session runs the turn and mints its own short-lived OAuth token (Vertex); this
-        # process only routes, so it must not run a second JWT exchange per launch.
-        with deferred_token_mint():
-            try:
-                # target_model: the ladder's model-keyed rungs (Zen/Go api_mode, Copilot/Nous
-                # api_mode) must see the model this CLI will actually send, not config's `default`,
-                # or `hermes -m mimo-v2.5 --provider opencode-go` resolves an api_mode/base_url the
-                # sent model cannot use (#112600).
-                runtime = resolve_runtime_provider(
-                    requested=self.requested_provider, explicit_api_key=self._explicit_api_key,
-                    explicit_base_url=self._explicit_base_url, target_model=self.model or None)
-            except Exception as exc:
-                _primary_exc = exc
-            if _primary_exc is not None:
-                runtime = self._resolve_fallback_runtime(_primary_exc)
-                if runtime is not None:
-                    _primary_exc = None
+        try:
+            # target_model: the ladder's model-keyed rungs (Zen/Go api_mode, Copilot/Nous
+            # api_mode) must see the model this CLI will actually send, not config's `default`,
+            # or `hermes -m mimo-v2.5 --provider opencode-go` resolves an api_mode/base_url the
+            # sent model cannot use (#112600).
+            runtime = resolve_runtime_provider(
+                requested=self.requested_provider, explicit_api_key=self._explicit_api_key,
+                explicit_base_url=self._explicit_base_url, target_model=self.model or None)
+        except Exception as exc:
+            _primary_exc = exc
+        if _primary_exc is not None:
+            runtime = self._resolve_fallback_runtime(_primary_exc)
+            if runtime is not None:
+                _primary_exc = None
         if runtime is None:
             from hermes_cli.auth import AuthError, is_rate_limited_auth_error
             self._credentials_rate_limited = bool(_primary_exc) and is_rate_limited_auth_error(_primary_exc)
@@ -402,12 +398,11 @@ class CLIAgentSetupMixin:
         """``(ready, error)``: *error* is the exception that stopped resolution — raised, or
         swallowed by the "auto" ladder and stamped on a keyless fallback — ``None`` when a provider
         resolved (usable or merely keyless). Never prints or mutates CLI state."""
-        from hermes_cli.runtime_provider import deferred_token_mint, resolve_runtime_provider
+        from hermes_cli.runtime_provider import resolve_runtime_provider
         try:
-            with deferred_token_mint():  # a readiness probe never needs a live token
-                runtime = resolve_runtime_provider(
-                    requested=self.requested_provider, explicit_api_key=self._explicit_api_key,
-                    explicit_base_url=self._explicit_base_url)
+            runtime = resolve_runtime_provider(
+                requested=self.requested_provider, explicit_api_key=self._explicit_api_key,
+                explicit_base_url=self._explicit_base_url)
         except Exception as exc:
             return False, exc
         if not isinstance(runtime, dict):
@@ -612,7 +607,7 @@ class CLIAgentSetupMixin:
         """Build the agent on first use; when resuming, restore history from SQLite.
         Returns True on success."""
         from cli import ChatConsole, _cprint, _prepare_deferred_agent_startup, logger
-        from hermes_cli.gateway_agent import GatewayAgent as AIAgent  # the gateway runs the turn
+        from run_agent import AIAgent
         if self.agent is not None:
             return True
 
@@ -623,19 +618,15 @@ class CLIAgentSetupMixin:
         self._install_tool_callbacks()
         if not self._ensure_runtime_credentials():
             return False
-        # No MCP discovery here: the gateway session that runs the turn owns its MCP servers.
-        from hermes_cli.cli_chat_error_copy import agent_init_failure_message
+        from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
+        ensure_mcp_discovery_before_agent_build(
+            logger=logger, single_query=getattr(self, "_single_query_mode", False))
         if self._session_db is None:
             try:
-                from hermes_cli.gateway_session_store import session_store
-                self._session_db = session_store()
+                from hermes_state_registry import acquire
+                self._session_db = acquire()
             except Exception as e:
                 logger.warning("SQLite session store not available — session will NOT be indexed: %s", e)
-        try:
-            self._ensure_gateway_session()
-        except Exception as e:  # health: allow BLE001 -- any session.create/resume failure is main's agent-init failure copy, never a traceback
-            ChatConsole().print(f"[bold red]{_escape(agent_init_failure_message(e))}[/]")
-            return False
         if (
             self._resumed and self._session_db and not self.conversation_history
             and not self._load_resumed_history_late()):
@@ -666,7 +657,6 @@ class CLIAgentSetupMixin:
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config, service_tier=self.service_tier,
-                push_reasoning=getattr(self, "_reasoning_user_set", False),
                 request_overrides=request_overrides, providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore, providers_order=self._providers_order,
                 provider_sort=self._provider_sort,
@@ -707,9 +697,6 @@ class CLIAgentSetupMixin:
             # patch_stdout's StdoutProxy (#2262), holding lines while a response box streams so a
             # subagent/background completion notice never splits the reply mid-paragraph.
             self.agent._print_fn = self._agent_status_print
-            self.agent._finite = single_query_mode  # -q/-Q: a finite gateway admission (headless clarify)
-            from hermes_cli.gateway_tools import bind
-            bind(self.agent)  # main's dock / status bar / /stop read this session's gateway processes
             # Hydrate credits notices at session OPEN (parity with the TUI) so a depletion
             # warning shows before the first message. Idempotent + fail-open in the helper.
             try:

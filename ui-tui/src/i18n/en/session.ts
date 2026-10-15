@@ -31,9 +31,7 @@ export const sessionEn = {
     },
     // Shared by the rpc wrapper (useMainApp) and the lifecycle paths; `error: ` prefix stays literal.
     common: {
-      invalidResponse: (method: string) => `invalid response: ${method}`,
-      // useSubmission.interpolate: a `{!cmd}` that could not run refuses the whole submit.
-      interpolationFailed: (message: string) => `not sent: {!…} could not run (${message}) — input retained`
+      invalidResponse: (method: string) => `invalid response: ${method}`
     },
     lifecycle: {
       newLiveSessionStarted: 'new live session started',

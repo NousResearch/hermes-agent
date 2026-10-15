@@ -83,7 +83,8 @@ describe('connection-switch query invalidation', () => {
           })
         ),
         getGatewayWsUrl: vi.fn(async () => 'wss://pool.invalid/api/ws?ticket=fake'),
-        getGatewayWsUrlFor: vi.fn(async () => 'wss://spark.invalid/api/ws?ticket=fake')
+        getGatewayWsUrlFor: vi.fn(async () => 'wss://spark.invalid/api/ws?ticket=fake'),
+        touchBackend: vi.fn(async () => ({ ok: true }))
       },
       localStorage: new Map<string, string>() as unknown as Storage
     })

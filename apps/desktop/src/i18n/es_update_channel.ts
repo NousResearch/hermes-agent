@@ -15,6 +15,5 @@ export const esUpdateChannel = {
   rollbackTitle: (v: string) => `Volver a la versión estable ${v}`,
   rollbackBody: (v: string) =>
     `Esta compilación es más reciente que la versión estable ${v}. Al instalarla, Hermes vuelve a esa versión.`,
-  rollbackAction: (v: string) => `Volver a ${v}`,
-  allChanges: 'Ver todos los cambios'
+  rollbackAction: (v: string) => `Volver a ${v}`
 }

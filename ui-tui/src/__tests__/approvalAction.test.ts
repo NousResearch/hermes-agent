@@ -80,9 +80,5 @@ describe('approvalAction — pure key dispatch for ApprovalPrompt', () => {
         description: 'blocked'
       })
     ).toEqual(['once', 'deny'])
-    // Canonical owners send ['once', 'deny', 'session', 'always']: allowed set, not numbering.
-    expect(
-      approvalOptions({ choices: ['once', 'deny', 'session', 'always'], command: 'rm -rf /', description: 'blocked' })
-    ).toEqual(['once', 'session', 'always', 'deny'])
   })
 })

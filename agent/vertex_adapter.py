@@ -145,21 +145,6 @@ def _needs_refresh(creds) -> bool:
     )
 
 
-def _cached_credentials(resolved_path: Optional[str], sa_raw: Optional[bytes], cache_key: tuple[Any, ...]):
-    """(credentials, project_id) from the per-content cache, loading on a miss; None when refused."""
-    cached = _creds_cache.get(cache_key)
-    if cached is None:
-        cached = _load_credentials(resolved_path, sa_raw)
-        if cached is None:
-            return None
-        _creds_cache[cache_key] = cached
-        # A rotation leaves the old signature's entry behind; keep at most
-        # one Credentials per file so stale identities can't be reused.
-        for k in [k for k in _creds_cache if k != cache_key and k[0] == cache_key[0]]:
-            _creds_cache.pop(k, None)
-    return cached
-
-
 def get_vertex_credentials(credentials_path: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
     """Return (fresh access_token, project_id) or (None, None); Credentials cached per file content."""
     if not _ensure_google_auth():
@@ -170,9 +155,16 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> tuple[Opti
     sa_raw, cache_key = _sa_snapshot(resolved_path)
 
     try:
-        cached = _cached_credentials(resolved_path, sa_raw, cache_key)
+        cached = _creds_cache.get(cache_key)
         if cached is None:
-            return None, None
+            cached = _load_credentials(resolved_path, sa_raw)
+            if cached is None:
+                return None, None
+            _creds_cache[cache_key] = cached
+            # A rotation leaves the old signature's entry behind; keep at most
+            # one Credentials per file so stale identities can't be reused.
+            for k in [k for k in _creds_cache if k != cache_key and k[0] == cache_key[0]]:
+                _creds_cache.pop(k, None)
         creds, project_id = cached
         if _needs_refresh(creds):
             creds.refresh(google.auth.transport.requests.Request())
@@ -203,33 +195,6 @@ def get_vertex_config(
     if not token or not project_id:
         return None, None
     return token, build_vertex_base_url(project_id, _resolve_region(region))
-
-
-def get_vertex_base_url(credentials_path: Optional[str] = None, region: Optional[str] = None) -> Optional[str]:
-    """The Vertex base_url WITHOUT minting a token (no OAuth exchange), or None when the credentials
-    cannot be loaded or no project resolves. For processes that route but never send — the
-    gateway-backed CLI, whose gateway session mints its own token for the turn."""
-    if not _ensure_google_auth():
-        return None
-    resolved_path = _resolve_credentials_path(credentials_path)
-    sa_raw, cache_key = _sa_snapshot(resolved_path)
-    try:
-        cached = _cached_credentials(resolved_path, sa_raw, cache_key)
-    except Exception:  # health: allow BLE001 -- same boundary as get_vertex_credentials: unloadable credentials are main's AuthError copy
-        logger.debug("Vertex AI credentials could not be loaded", exc_info=True)
-        _creds_cache.pop(cache_key, None)
-        return None
-    project_id = _resolve_project_override() or (cached[1] if cached else None)
-    return build_vertex_base_url(project_id, _resolve_region(region)) if cached and project_id else None
-
-
-def vertex_access_token() -> str:
-    """Callable API key: a fresh Vertex token, minted on first use and reused until near expiry.
-    One stable object, so a credential re-resolution never reads as a key change."""
-    token, _project_id = get_vertex_credentials()
-    if not token:
-        raise RuntimeError("Vertex AI OAuth token could not be minted (see the Vertex credential settings)")
-    return token
 
 
 def has_vertex_credentials() -> bool:

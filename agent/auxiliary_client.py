@@ -24,6 +24,8 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING, Union
 from urllib.parse import urlparse, parse_qs, urlunparse
 
+from agent.local_prompt_progress import (
+    PromptReadingClock, current_prompt_reading_hook, prompt_progress, prompt_reading_hook, with_prompt_progress)
 from agent.error_classifier import (
     _BILLING_PATTERNS,
     _OVERLOADED_PATTERNS,
@@ -31,8 +33,9 @@ from agent.error_classifier import (
     is_reasoning_field_rejection,
     is_reasoning_required_rejection,
 )
+from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
-from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
+from agent.auxiliary_structured_output import _route_key, remember_structured_output_rejection
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
     apply_required_codex_headers as _apply_required_codex_headers,
@@ -411,12 +414,13 @@ def aux_progress_hook(hook):
 
 
 def _current_aux_stream_deadline() -> Optional[float]:
-    """The waiting host's absolute monotonic deadline, if one is installed."""
-    return getattr(_aux_stream_deadline, "value", None)
+    """The waiting host's absolute monotonic deadline, if one is installed (read live from a callable)."""
+    value = getattr(_aux_stream_deadline, "value", None)
+    return value() if callable(value) else value
 
 
 @contextlib.contextmanager
-def aux_stream_deadline(deadline: Optional[float]):
+def aux_stream_deadline(deadline: float | Callable[[], float | None] | None):
     """Publish the host's absolute ``time.monotonic()`` deadline to the stream consumer.
 
     ``None`` is a passthrough; re-entrant-safe. Host->worker return leg of the progress hook:
@@ -430,7 +434,7 @@ def aux_stream_deadline(deadline: Optional[float]):
     session that compression never managed to shrink. See #99692.
     """
     previous = getattr(_aux_stream_deadline, "value", None)
-    _aux_stream_deadline.value = deadline if isinstance(deadline, (int, float)) else previous
+    _aux_stream_deadline.value = deadline if isinstance(deadline, (int, float)) or callable(deadline) else previous
     try:
         yield
     finally:
@@ -458,7 +462,8 @@ def _run_protected_sync_provider_call(callback: Callable[[dict[str, Any]], Any],
     progress_hook = getattr(_aux_progress, "hook", None)
     dispatch_hook = getattr(_aux_dispatch, "hook", None)
     provider_response_hook = getattr(_aux_provider_response, "hook", None)
-    host_deadline = _current_aux_stream_deadline()
+    host_deadline = getattr(_aux_stream_deadline, "value", None)
+    reading_hook = current_prompt_reading_hook()
     # #99692: the stream is consumed on the daemon below, and thread-locals do not cross that boundary — an
     # owner-thread-only deadline would leave the fix inert on exactly the path large-session compression
     # takes (protected call + hard-cancel source installed).
@@ -472,7 +477,7 @@ def _run_protected_sync_provider_call(callback: Callable[[dict[str, Any]], Any],
                 aux_progress_hook(progress_hook),
                 _aux_thread_local_hook(_aux_dispatch, dispatch_hook),
                 _aux_thread_local_hook(_aux_provider_response, provider_response_hook),
-                aux_stream_deadline(host_deadline),
+                aux_stream_deadline(host_deadline), prompt_reading_hook(reading_hook),
                 aux_interrupt_protection(cancel_check=cancel_check),
             ):
                 outcome["result"] = callback(kwargs)
@@ -3411,6 +3416,22 @@ def _is_structured_output_rejection(exc: Exception) -> bool:
     return _is_unsupported_parameter_error(exc, "response_format") or _is_unsupported_parameter_error(exc, "output_config")
 
 
+def _without_structured_output_format(kwargs: dict) -> Optional[dict]:
+    """Copy *kwargs* without ``response_format`` (top-level and ``extra_body``); None when nothing was
+    removed, so call sites don't retry an unchanged request."""
+    retry_kwargs = dict(kwargs)
+    changed = retry_kwargs.pop("response_format", None) is not None
+    extra_body = retry_kwargs.get("extra_body")
+    if isinstance(extra_body, dict) and "response_format" in extra_body:
+        remaining = {k: v for k, v in extra_body.items() if k != "response_format"}
+        if remaining:
+            retry_kwargs["extra_body"] = remaining
+        else:
+            retry_kwargs.pop("extra_body", None)
+        changed = True
+    return retry_kwargs if changed else None
+
+
 def _is_reasoning_field_rejection(exc: Exception) -> bool:
     """Provider 400 rejecting a reasoning wire control by name (``reasoning_effort``, ``reasoning``,
     ``thinking``/``think``). Chat-only models behind OpenAI-compatible relays reject the top-level
@@ -3797,12 +3818,10 @@ def _retry_same_provider_sync(*, resolved_provider: str, resolved_api_mode: Opti
 
 
 async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mode: Optional[str], task: Optional[str], **prep) -> Any:
-    import asyncio
     retry_client, retry_kwargs = _prepare_same_provider_retry(
         task=task, resolved_provider=resolved_provider, resolved_api_mode=resolved_api_mode, async_mode=True, **prep,
     )
-    return await asyncio.to_thread(
-        _validate_llm_response,
+    return _validate_llm_response(
         await _relay_async_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode),
         task,
     )
@@ -4186,9 +4205,7 @@ async def _call_fallback_candidate_async(
     )
 
     async def _send(client: Any, request_kwargs: dict[str, Any], dest: _FallbackDestination) -> Any:
-        import asyncio
-        return await asyncio.to_thread(
-            _validate_llm_response,
+        return _validate_llm_response(
             await _relay_async_completion(client, request_kwargs, provider=dest.provider, api_mode=dest.api_mode),
             task,
         )
@@ -6800,8 +6817,7 @@ def _validate_llm_response(
     """Validate the .choices[0].message shape (fail fast, not a downstream AttributeError).
 
     Also the single aux-usage accounting chokepoint: every successful non-streaming response
-    passes here exactly once; *provider*/*base_url* are optional hints. Async callers
-    await this off-loop because accounting may commit through synchronous worker RPC.
+    passes here exactly once; *provider*/*base_url* are optional hints.
 
     See #7264.
     Recording is best-effort and never affects validation. *provider*/*base_url* are optional accounting
@@ -7003,43 +7019,6 @@ def _client_streams_internally(client: Any) -> bool:
     return isinstance(client, (CodexAuxiliaryClient, AnthropicAuxiliaryClient, BedrockAuxiliaryClient))
 
 
-_MANAGED_LOCAL_STATE_TTL_S = 15.0
-_managed_local_cache: tuple[float, str] = (0.0, "")
-
-
-def _managed_local_netloc() -> str:
-    """host:port of the managed local llama-server ("" when none), read with a short TTL from
-    the supervisor state file provider resolution also uses (exact match)."""
-    global _managed_local_cache
-    now = time.monotonic()
-    ts, cached = _managed_local_cache
-    if now - ts < _MANAGED_LOCAL_STATE_TTL_S:
-        return cached
-    try:
-        from hermes_cli.local_runtime.supervisor import state_path
-
-        raw = state_path().read_text(encoding="utf-8-sig")
-        base = str((json.loads(raw) or {}).get("base_url", ""))
-        netloc = urlparse(base).netloc.lower()
-    except Exception:
-        netloc = ""
-    _managed_local_cache = (now, netloc)
-    return netloc
-
-
-def _is_managed_local_endpoint(base_url: Optional[str]) -> bool:
-    """True when *base_url* targets the llama-server this Hermes manages."""
-    if not base_url:
-        return False
-    managed = _managed_local_netloc()
-    if not managed:
-        return False
-    try:
-        return urlparse(str(base_url)).netloc.lower() == managed
-    except Exception:
-        return False
-
-
 def _provider_requires_stream(provider: str, base_url: Optional[str]) -> bool:
     """Providers that only accept streaming (non-stream = 400): Tencent Copilot, any
     ``auxiliary.stream_only_base_urls`` substring, and the managed local llama-server
@@ -7111,11 +7090,15 @@ def _create_with_progress(
         return _create_with_progress_once(client, retry_kwargs, task, force_stream=force_stream)
 
 
-def _stream_request_plan(kwargs: dict[str, Any]) -> tuple[dict[str, Any], str, float]:
-    """(stream kwargs, model name, total ceiling) for a streamed re-aggregation."""
+def _stream_request_plan(kwargs: dict[str, Any], client: Any = None) -> tuple[dict[str, Any], str, float]:
+    """(stream kwargs, model name, total ceiling) for a streamed re-aggregation. Requests to the
+    managed llama-server also ask for prompt-reading progress, which keeps the watchdogs fed
+    through a long prefill."""
     stream_kwargs = dict(kwargs)
     stream_kwargs["stream"] = True
     stream_kwargs["stream_options"] = {"include_usage": True}
+    if _is_managed_local_endpoint(str(getattr(client, "base_url", "") or "")):
+        stream_kwargs = with_prompt_progress(stream_kwargs)
     return (stream_kwargs, str(kwargs.get("model") or ""),
             _aux_stream_total_ceiling(kwargs.get("timeout")))
 
@@ -7149,7 +7132,7 @@ def _create_with_progress_once(
         if not _client_streams_internally(client):
             _notify_aux_provider_response()
         return response
-    stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
+    stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs, client)
     try:
         chunks = client.chat.completions.create(**stream_kwargs)
     except Exception as exc:
@@ -7184,7 +7167,7 @@ def _aggregate_chat_stream(
     ``_is_timeout_error`` matches) past *total_ceiling* or the *no_progress* windows (#100501)."""
     from agent.auxiliary_stream_watchdog import _close_chunk_stream, consume_chat_stream
     acc = _ChatStreamAccumulator(
-        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline())
+        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline)
     try:
         consume_chat_stream(chunks, acc, no_progress)
     finally:
@@ -7200,8 +7183,10 @@ class _ChatStreamAccumulator:
     """Shared per-chunk accumulation so sync and async aggregation cannot drift."""
 
     def __init__(self, model: str = "", total_ceiling: Optional[float] = None,
-                 host_deadline: Optional[float] = None):
+                 host_deadline: float | Callable[[], float | None] | None = None):
         self._started = time.monotonic()
+        # llama-server prompt reading doesn't count toward the ceiling (``local_prompt_progress``).
+        self._prompt_reading = PromptReadingClock(self._started)
         self._total_ceiling = total_ceiling
         # Absolute instant the waiting host gives up; checked alongside (not instead of) the
         # ceiling, and unaffected by pre-construction dispatch/TTFT.
@@ -7220,10 +7205,11 @@ class _ChatStreamAccumulator:
     def _check_deadlines(self) -> None:
         """Raise TimeoutError past the total ceiling or the host deadline."""
         now = time.monotonic()
-        if self._total_ceiling is not None and (now - self._started) >= self._total_ceiling:
+        if self._total_ceiling is not None and (now - self._started - self._prompt_reading.seconds) >= self._total_ceiling:
             raise TimeoutError(f"Auxiliary streamed call timed out after {self._total_ceiling:.0f}s "
                                "total ceiling (stream still open but over budget)")
-        if self._host_deadline is not None and now >= self._host_deadline:
+        host_deadline = self._host_deadline() if callable(self._host_deadline) else self._host_deadline
+        if host_deadline is not None and now >= host_deadline:
             raise TimeoutError("Auxiliary streamed call timed out at the host compression "
                                f"deadline after {time.monotonic() - self._started:.0f}s "
                                "(the caller already stopped waiting; streaming on would only "
@@ -7270,12 +7256,22 @@ class _ChatStreamAccumulator:
         # Every frame records transport timing (TTFP); only a substantive payload ticks the
         # forward-progress hook that keeps compression alive (and is reported as True).
         _notify_aux_timing_response()
+        progress = prompt_progress(chunk)
+        # Count the reading before the deadline check it extends.
+        read_more = progress is not None and self._prompt_reading.tick(progress)
         self._check_deadlines()
         self.resp_id = getattr(chunk, "id", None) or self.resp_id
         self.resp_model = getattr(chunk, "model", None) or self.resp_model
         chunk_usage = getattr(chunk, "usage", None)
         if chunk_usage:
             self.usage = chunk_usage
+        if progress is not None:
+            # llama-server is still reading the prompt: new tokens read keep the compression fence
+            # alive. It is no first token, so the stream watchdog keeps its pre-token patience: a
+            # busy server reports a batch every minute or more.
+            if read_more:
+                _notify_aux_progress()
+            return False
         choices = getattr(chunk, "choices", None) or []
         if not choices:
             return False
@@ -7327,7 +7323,7 @@ async def _aggregate_chat_stream_async(
 ) -> Any:
     """Async mirror of :func:`_aggregate_chat_stream` (AsyncOpenAI streams need ``async for``)."""
     acc = _ChatStreamAccumulator(
-        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline())
+        model=model, total_ceiling=total_ceiling, host_deadline=_current_aux_stream_deadline)
     try:
         async for chunk in chunks:
             acc.feed(chunk)
@@ -7342,7 +7338,7 @@ async def _aggregate_chat_stream_async(
 
 async def _acreate_with_stream(client: Any, kwargs: dict[str, Any], task: Optional[str] = None) -> Any:
     """Async create() for stream-only providers: ``stream=True`` + aggregate the async chunks."""
-    stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
+    stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs, client)
     chunks = await client.chat.completions.create(**stream_kwargs)
     if hasattr(chunks, "choices"):  # shims may hand back a complete response despite stream=True
         return chunks
@@ -7367,7 +7363,7 @@ async def _acreate_with_progress(
         if not _async_client_streams_internally(client):
             _notify_aux_provider_response()
         return response
-    stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
+    stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs, client)
     try:
         chunks = await client.chat.completions.create(**stream_kwargs)
     except Exception as exc:
@@ -8375,9 +8371,7 @@ async def _async_call_llm_impl(
             return await _acreate_with_progress(client, _kwargs, task, force_stream=_force_stream_async)
 
         async def _primary(**validate_kw: Any) -> Any:
-            import asyncio
-            return await asyncio.to_thread(
-                _validate_llm_response,
+            return _validate_llm_response(
                 await _relay_async_completion(
                     client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode,
                     create=_acreate),
@@ -8395,8 +8389,7 @@ async def _async_call_llm_impl(
         async def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
             if kind == "call":
-                import asyncio
-                return await asyncio.to_thread(_validate_llm_response, await _relay_async_completion(*args, **kw), task)
+                return _validate_llm_response(await _relay_async_completion(*args, **kw), task)
             if kind == "retry":
                 return await _retry_same_provider_async(**kw)
             fb_client, fb_model, fb_label = args

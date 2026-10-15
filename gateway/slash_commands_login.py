@@ -36,24 +36,6 @@ class _SignInAttempt:
 _LOGIN_BLOCKED_PLATFORMS = frozenset({"ntfy", "raft", "a2a"})
 
 
-def _publish_local_notice(runner, source, text: str) -> bool:
-    """A LOCAL session's adapter ``send`` is a no-op (viewers read the event stream), so the
-    sign-in link/code/result reach its viewers as a sticky ``notification.show``. False when
-    *source* is not a live local session (the platform push applies)."""
-    from gateway.config import Platform
-    if getattr(source, "platform", None) != Platform.LOCAL:
-        return False
-    from gateway.session_authorities import active_authority
-    authority = active_authority(runner)
-    live = authority.sessions.get(source.chat_id) if authority is not None else None
-    if live is None:
-        return False
-    live.event_stream.publish(source.chat_id, {"text": text, "level": "info", "kind": "sticky",
-                                               "key": "login:" + uuid4().hex[:8]},
-                              event_type="notification.show")
-    return True
-
-
 class GatewayLoginCommandsMixin:
     _LOGIN_SINGLE = _LOGIN_SINGLE
 
@@ -170,8 +152,6 @@ class GatewayLoginCommandsMixin:
     async def _push_login(self, attempt: _SignInAttempt, text: str) -> None:
         """Push one notice without allowing a transport failure to abort the state drain."""
         try:
-            if _publish_local_notice(self, attempt.source, text):
-                return
             await self._deliver_platform_notice(attempt.source, text)
         except Exception:
             logger.warning("/login %s: push failed", attempt.attempt_id, exc_info=True)

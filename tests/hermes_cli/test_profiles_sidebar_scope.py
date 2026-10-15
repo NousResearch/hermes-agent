@@ -229,21 +229,6 @@ class TestCrossProfileProjectTree:
 
         assert labels == {"Only default", "Only worker"}
 
-    def test_a_named_profile_reads_only_its_own_tree(self, client, profiles_on_disk, tmp_path):
-        # The per-profile read a native grant makes; its caller merges the profiles by mergeKey.
-        for name in profiles_on_disk:
-            (tmp_path / "repos" / f"only-{name}").mkdir(parents=True)
-            _seed_session(profiles_on_disk[name], f"{name}-chat", source="cli")
-            _seed_project(profiles_on_disk[name], f"Only {name}", tmp_path / "repos" / f"only-{name}")
-
-        payload = client.get("/api/profiles/projects/tree", params={"profile": "worker"}).json()
-
-        assert payload["errors"] == []
-        assert {project["label"] for project in payload["projects"] if not project["isNoProject"]} == {"Only worker"}
-        assert all(project["mergeKey"] for project in payload["projects"])
-        sessions = [s for project in payload["projects"] for s in project.get("previewSessions") or []]
-        assert {s["profile"] for s in sessions} == {"worker"}
-
     def test_a_profile_that_cannot_be_read_does_not_sink_the_rest(
         self, client, profiles_on_disk, tmp_path, monkeypatch
     ):

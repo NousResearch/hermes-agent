@@ -59,24 +59,10 @@ class CLITuiRuntimeMixin:
             with suppress(Exception):
                 step()
 
-    def _tui_dock_drop_dequeued(self):
-        """Re-read the live-work dock once an input has left ``_pending_input``.
-
-        The spinner thread polls the dock once a second, so without this the prompt a turn just took
-        (a seeded ``-q`` prompt above all) stays listed as queued while the turn starts. If the reply
-        prints in that window the dock shrinks only after it, leaving blank rows under the prompt.
-        The turn's own invalidate repaints the refreshed rows.
-        """
-        monitor = getattr(self, "_subagent_monitor", None)
-        if monitor is not None:
-            with suppress(Exception):
-                monitor.refresh()
-
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
         from cli import _DIM, _PASTE_REF_RE, _RST, _cprint, _detect_file_drop, _looks_like_slash_command, _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         from tools.process_registry_notifications import TimelineNotification
-        self._tui_dock_drop_dequeued()
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
         if not user_input:
             return
@@ -243,18 +229,6 @@ class CLITuiRuntimeMixin:
             pass
         raise KeyboardInterrupt()  # fallback for non-prompt_toolkit contexts
 
-    def _show_startup_browser_notice(self):
-        """Main's ``_show_browser_backend_notice``; on a gateway session the gateway computed the notice
-        (and its once-per-24h stamp) with the session's tools, so it is printed from the snapshot."""
-        inventory = getattr(getattr(self, "_session_db", None), "banner_inventory", lambda: None)()
-        if inventory is None or "browser_backend_notice" not in inventory:
-            self._show_browser_backend_notice()
-            return
-        notice = inventory.get("browser_backend_notice")
-        if notice:
-            from gateway.warning_notifications import render_notification
-            render_notification(lambda: self._console_print(f"[yellow]⚠ {notice}[/yellow]"), platform="cli")
-
     def _tui_print_startup(self):
         """Startup output: light-mode probe, banner, advisories, resume/welcome lines, tips."""
         from cli import _accent_hex, _detect_light_mode
@@ -266,10 +240,9 @@ class CLITuiRuntimeMixin:
             if _term_lines > 2:
                 print("\n" * (_term_lines - 1), end="", flush=True)
 
-        self._ensure_gateway_session()  # the banner shows the gateway session's id and inventory
         self.show_banner()
         self._show_security_advisories()
-        self._show_startup_browser_notice()
+        self._show_browser_backend_notice()
 
         # First-run: an unconfigured install routes into provider onboarding instead of
         # a chat that spins ~30s and fails with a provider-specific error. TTY only. A
@@ -464,13 +437,6 @@ class CLITuiRuntimeMixin:
                 _aio_probe.set_event_loop_policy(_SelectEventLoopPolicy())
         return True
 
-    def _closing_session_id(self):
-        """The session quit closes: the agent's, or (gateway) the session opened at the banner before
-        any agent was built. Main created its row lazily at the first turn, so with no agent it had none."""
-        if self.agent:
-            return self.agent.session_id
-        return self.session_id if getattr(self, "_gateway_session_open", False) else None
-
     def _tui_shutdown(self):
         """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""
         from cli import _DIM, _RST, _cprint, _invoke_interrupted_session_end, _run_cleanup, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
@@ -498,22 +464,21 @@ class CLITuiRuntimeMixin:
         # On SIGHUP/SIGTERM the agent thread may be reaped before its own persistence runs.
         self._persist_active_session_before_close()
 
-        _closing_sid = self._closing_session_id()
-        if self._session_db and _closing_sid:
+        if self._session_db and self.agent:
             try:
-                self._session_db.end_session(_closing_sid, "cli_close")
+                self._session_db.end_session(self.agent.session_id, "cli_close")
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Could not close session in DB: %s", e)
             if not self._delete_session_on_exit:
                 # Drop the empty row of a start-and-quit session so /resume stays clean.
                 try:
-                    self._discard_session_if_empty(_closing_sid)
+                    self._discard_session_if_empty(self.agent.session_id)
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not prune empty session: %s", e)
             else:
                 # /exit --delete: remove transcripts + SQLite history.
                 try:
-                    _sid = _closing_sid
+                    _sid = self.agent.session_id
                     if self._session_db.delete_session(_sid, sessions_dir=get_hermes_home() / "sessions"):
                         _cprint(f"  {_DIM}{t('cli.tui.session_deleted', session_id=_escape(_sid))}{_RST}")
                     else:

@@ -70,14 +70,10 @@ export type DesktopActionId =
   | 'new'
   | 'pet'
   | 'profile'
-  | 'queue'
   | 'reasoning'
-  | 'retry'
   | 'skin'
-  | 'steer'
   | 'stop'
   | 'title'
-  | 'undo'
   | 'wake'
   | 'yolo'
 
@@ -291,25 +287,6 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     description: 'Run a prompt in a background session',
     aliases: ['/background'],
     surface: action('background'),
-    argumentMode: 'text'
-  },
-  // /undo /retry /steer /queue must be actions, not exec: the shared gateway refuses them as
-  // slash.exec. They run on the owner's canonical verbs like the Ink TUI (session.mutate rewind,
-  // session.steer) and on the composer's next-turn queue (slash-session-commands.ts).
-  { name: '/undo', description: 'Back up N user turns and re-prompt (default 1)', surface: action('undo') },
-  { name: '/retry', description: 'Retry the last message (resend to agent)', surface: action('retry') },
-  {
-    name: '/steer',
-    description: 'Inject a message after the next tool call without interrupting',
-    aliases: ['/s'],
-    surface: action('steer'),
-    argumentMode: 'text'
-  },
-  {
-    name: '/queue',
-    description: 'Queue a prompt for the next turn',
-    aliases: ['/q'],
-    surface: action('queue'),
     argumentMode: 'text'
   },
   {

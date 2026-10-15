@@ -244,15 +244,10 @@ def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict, *, root_blo
     return bridged
 
 
-def shared_loop_targets(registry, entries=None) -> list:
-    """Built-in platforms plus registered plugin platforms (so plugin authors get shared-key bridging).
-
-    *entries* are the plugin entries to bridge (``load_yaml_layer`` passes only the configured
-    ones, see ``gateway.platform_activation``); None means every registered plugin platform."""
+def shared_loop_targets(registry) -> list:
+    """Built-in platforms plus registered plugin platforms (so plugin authors get shared-key bridging)."""
     targets: list = list(Platform)
-    if entries is None:
-        entries = registry.plugin_entries() if registry is not None else ()
-    for entry in entries:
+    for entry in registry.plugin_entries() if registry is not None else ():
         with contextlib.suppress(ValueError, KeyError):
             if (plat := Platform(entry.name)) not in targets:
                 targets.append(plat)
@@ -384,16 +379,14 @@ def bridge_platform_shared_keys(
 def apply_plugin_yaml_hooks(
     yaml_cfg: dict, gateway_platforms: Any, platforms_data: dict, registry,
     warned: Optional[set] = None, authored: Optional[dict] = None, managed_extra: Optional[dict] = None,
-    entries: Optional[list] = None,
 ) -> None:
     """Plugin-owned YAML→env config bridges (``PlatformEntry.apply_yaml_config_fn``). Order: shared-key
-    loop → this dispatch → core-only bridges (require_mention/signal) → ``_apply_env_overrides()``.
-    *entries* limits the dispatch to those platforms (None = every registered entry)."""
+    loop → this dispatch → core-only bridges (require_mention/signal) → ``_apply_env_overrides()``."""
     if registry is None:
         return
     if authored is None:
         authored = snapshot_authored_extra(platforms_data)
-    for entry in registry.all_entries() if entries is None else entries:
+    for entry in registry.all_entries():
         # Plugin-owned YAML→env config bridges (#24836). See ``PlatformEntry.apply_yaml_config_fn`` for the
         # hook contract. Order: shared-key loop (above) → this dispatch → legacy hardcoded blocks (below;
         # no-op when a hook already set their env var) → ``_apply_env_overrides()`` after
@@ -536,14 +529,7 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
         logger.debug("plugin discovery skipped: %s", e)
         registry = None
 
-    # Only platforms this profile configures (a block above, a gateway.json row, their env/.env) are
-    # materialized: importing every deferred adapter to read its hooks cost each cold start ~0.5 s.
-    entries = None
-    if registry is not None:
-        from gateway.platform_activation import activation_predicate
-        entries = registry.configured_entries(activation_predicate(
-            yaml_cfg=yaml_cfg, platform_names=platforms_data, home=home, registry=registry))
-    targets = shared_loop_targets(registry, None if entries is None else [e for e in entries if e.source == "plugin"])
+    targets = shared_loop_targets(registry)
     # "Authored" is config.yaml only: a scratch merge leaves out the legacy gateway.json extra
     # already in ``platforms_data``, which stays the base layer every config.yaml key overrides.
     authored = snapshot_authored_extra(merge_platform_sections(yaml_cfg, gateway_section, {}))
@@ -553,5 +539,5 @@ def load_yaml_layer(home: Path, gw_data: dict) -> None:
     bridge_platform_shared_keys(
         yaml_cfg, gateway_platforms, gw_data, platforms_data, targets, warned=warned, authored=authored)
     apply_plugin_yaml_hooks(yaml_cfg, gateway_platforms, platforms_data, registry,
-                            warned=warned, authored=authored, managed_extra=managed_extra, entries=entries)
+                            warned=warned, authored=authored, managed_extra=managed_extra)
     bridge_core_env_settings(yaml_cfg, platforms_data)

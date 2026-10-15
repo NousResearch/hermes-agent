@@ -72,10 +72,7 @@ async def _run_config_scoped(profile: Optional[str], fn):
         with _config_profile_scope(profile):
             return fn()
 
-    # to_thread copies the request context: a secondary-profile native ticket's implicit
-    # scope (native_profile_scope's home override) must reach the worker, which
-    # run_in_executor drops, silently resolving the LAUNCH profile's config and keys.
-    return await asyncio.to_thread(_scoped)
+    return await asyncio.get_running_loop().run_in_executor(None, _scoped)
 
 
 def _audio_extension_for_mime(mime_type: str) -> str:
@@ -249,11 +246,13 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
     )
 
     try:
+        loop = asyncio.get_running_loop()
+
         def _fetch() -> dict[str, Any]:
             with urllib.request.urlopen(request, timeout=10) as response:
                 return _read_dashboard_json_response(response)
 
-        payload = await asyncio.to_thread(_fetch)
+        payload = await loop.run_in_executor(None, _fetch)
     except urllib.error.HTTPError as exc:
         # An auth failure (bad/expired/scoped key) is a persistent, user-fixable
         # state and the desktop polls this on every settings open/focus, so
@@ -376,7 +375,7 @@ async def tts_lease(payload: TTSLeaseRequest, profile: Optional[str] = None):
             return release_tts_lease(lease)
 
     try:
-        result = await asyncio.to_thread(_apply)
+        result = await asyncio.get_running_loop().run_in_executor(None, _apply)
     except HTTPException:
         raise
     except Exception as exc:
@@ -504,7 +503,7 @@ async def stt_lease(payload: STTLeaseRequest, profile: Optional[str] = None):
         return release_stt_lease(lease)
 
     try:
-        result = await asyncio.to_thread(_apply)
+        result = await asyncio.get_running_loop().run_in_executor(None, _apply)
     except HTTPException:
         raise
     except Exception as exc:
@@ -636,7 +635,7 @@ async def speak_stream_ws(ws: WebSocket) -> None:
         return streamer, cap, cfg
 
     try:
-        streamer, cap, cfg = await asyncio.to_thread(_resolve)
+        streamer, cap, cfg = await loop.run_in_executor(None, _resolve)
     except Exception:
         _log.exception("speak-stream provider resolution failed")
         streamer, cap, cfg = None, 0, {}

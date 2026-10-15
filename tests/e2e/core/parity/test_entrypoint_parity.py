@@ -16,10 +16,7 @@ Desktop/gateway/ACP/cron" class:
 * the documented toolset's core feature tools are present, the disabled toolset
   is absent;
 * the surface delivered the model's answer to its client;
-* after the surface's normal shutdown no MCP server / grandchild survives. For the
-  gateway-client surfaces (``-z``, ``chat -q``, ``acp``, ``cron run``) the turn runs
-  in the profile's ``gateway run`` daemon, which outlives the client by design;
-  their normal shutdown is client exit + ``hermes gateway stop``.
+* after the surface's normal shutdown no MCP server / grandchild survives.
 
 ``PARITY_TABLE_OUT=<path>`` appends a markdown row per entrypoint (REPORT.md table).
 """

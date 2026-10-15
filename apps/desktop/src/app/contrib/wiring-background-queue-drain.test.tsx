@@ -224,9 +224,7 @@ describe('ContribWiring background queue: independent remote owner', () => {
       attachments: [],
       fromQueue: true,
       sessionId: 'rt-remote',
-      storedSessionId: 'stored-remote',
-      // The queued row's id rides every drain so the gateway admits it at most once.
-      submission_id: expect.any(String)
+      storedSessionId: 'stored-remote'
     })
     expect.soft(fixture.remoteRequest).toHaveBeenCalledExactlyOnceWith('remote-healthy', 'worker', 'prompt.submit', {
       session_id: 'rt-remote',

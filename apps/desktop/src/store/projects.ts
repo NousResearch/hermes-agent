@@ -799,15 +799,10 @@ export async function moveSessionToProject(
     throw new Error(translateNow('sidebar.projects.moveNoFolder'))
   }
 
-  // The shared owner refuses a move while a turn runs (its frozen policy would change under it).
   const res = await gatewayRequest<WorkspaceMovePayload>('session.workspace.move', {
     cwd,
     session_key: sessionId,
     ...(profile ? { profile } : {})
-  }).catch((err: unknown) => {
-    throw (err as { data?: { reason?: string } })?.data?.reason === 'session_busy'
-      ? new Error(translateNow('sidebar.projects.moveBusy'))
-      : err
   })
 
   const moved = res.cwd || cwd

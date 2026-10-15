@@ -25,13 +25,6 @@ import {
   stashSessionDraft,
   takeSessionDraft
 } from '@/store/composer'
-import {
-  type ComposerDraftRetry,
-  draftRetryTextMatches,
-  matchingDraftRetry,
-  readDraftRetry,
-  writeDraftRetry
-} from '@/store/composer-draft-retry'
 import { isBrowsingHistory } from '@/store/composer-input-history'
 import { $composerPopout } from '@/store/composer-popout'
 import { clearDraftSuggestions, sampleComposerDraft } from '@/store/composer-suggestions'
@@ -129,8 +122,6 @@ export function useComposerDraft({
 
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef('')
-  // The uncertain send this draft was restored from, while the text is still exactly that send.
-  const draftRetryRef = useRef<ComposerDraftRetry | undefined>(undefined)
   const pendingDraftPersistRef = useRef<{ scope: string | null; text: string } | null>(null)
   const draftPersistTimerRef = useRef<number | undefined>(undefined)
   const activeQueueSessionKeyRef = useRef(activeQueueSessionKey)
@@ -311,32 +302,6 @@ export function useComposerDraft({
   const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) =>
     stashSessionDraft(scope, text, attachments)
 
-  const sameDraftScope = (a: string | null | undefined, b: string | null | undefined) =>
-    (isFreshDraftScope(a) || !a ? null : a) === (isFreshDraftScope(b) || !b ? null : b)
-
-  // A rejected or unconfirmed send is restored with its identity, so Enter on that exact draft is
-  // the explicit retry. Recorded per draft scope (it survives a reload with the draft text).
-  const rememberDraftRetry = (scope: string | null, retry: ComposerDraftRetry) => {
-    writeDraftRetry(scope, retry)
-
-    if (sameDraftScope(scope, draftScopeRef.current)) {
-      draftRetryRef.current = retry
-    }
-  }
-
-  // The identity a send of exactly this draft retries, if any. Spent by the send either way: a
-  // rejection restores it again, and an accepted send leaves nothing to retry.
-  const takeDraftRetry = (text: string, attachments: ComposerAttachment[]) => {
-    const retry = matchingDraftRetry(draftRetryRef.current, text, attachments)
-    draftRetryRef.current = undefined
-
-    if (retry) {
-      writeDraftRetry(draftScopeRef.current, undefined)
-    }
-
-    return retry
-  }
-
   // Draft read/write bus (plugin SDK `host.composer`): answer for the sessions
   // this composer owns — the runtime id, the queue/stored key (tiles run with
   // sessionId = their stored id; the primary's queue key is the resolved
@@ -473,13 +438,6 @@ export function useComposerDraft({
       }
 
       const scope = draftScopeRef.current
-
-      // An edited (or cleared) restored draft is a new message: it no longer retries the old send.
-      if (draftRetryRef.current && !draftRetryTextMatches(draftRetryRef.current, text)) {
-        draftRetryRef.current = undefined
-        writeDraftRetry(scope, undefined)
-      }
-
       const entry = { scope, text }
       pendingDraftPersistRef.current = entry
       window.clearTimeout(draftPersistTimerRef.current)
@@ -593,7 +551,6 @@ export function useComposerDraft({
     }
 
     draftScopeRef.current = activeQueueSessionKey
-    draftRetryRef.current = readDraftRetry(activeQueueSessionKey)
 
     const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
     loadIntoComposer(text, attachments, true)
@@ -631,7 +588,6 @@ export function useComposerDraft({
     }
 
     reloadPersistedDrafts()
-    draftRetryRef.current = readDraftRetry(draftScopeRef.current)
     const stashed = takeSessionDraft(draftScopeRef.current)
     loadIntoComposer(stashed.text, stashed.attachments)
   }
@@ -687,12 +643,10 @@ export function useComposerDraft({
     isHelpHint,
     isSteerableText,
     loadIntoComposer,
-    rememberDraftRetry,
     requestMainFocus,
     sessionIdRef,
     setComposerText,
     stashAt,
-    syncDraftFromEditor,
-    takeDraftRetry
+    syncDraftFromEditor
   }
 }

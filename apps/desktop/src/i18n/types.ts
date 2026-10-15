@@ -929,6 +929,12 @@ export interface Translations extends NoticeTranslations {
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
     uninstallSection: UninstallSectionTranslations
+    poolLimits: {
+      warmBotBackendsAria: string
+      warmBotBackendsTitle: string
+      backendIdleTimeoutAria: string
+      backendIdleTimeoutTitle: string
+    }
     customEndpoints: {
       active: string
       apiKeySet: string
@@ -2958,7 +2964,6 @@ export interface Translations extends NoticeTranslations {
     openDirective: string
     queueMessage: string
     steer: string
-    redirect: string
     stop: string
     send: string
     speaking: string
@@ -3021,11 +3026,6 @@ export interface Translations extends NoticeTranslations {
     queueSend: string
     queueSteer: string
     queueDelete: string
-    queueLostNote: string
-    restoreImageDraft: string
-    queueCancelFailed: string
-    queueLostDiscard: string
-    queueLostDiscardTip: string
     queueResume: string
     queueResumeTip: string
     queueStuckTitle: string

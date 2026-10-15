@@ -7,8 +7,6 @@ the transport and declared on the shared base) and the ``result`` the client ans
 
 from __future__ import annotations
 
-from typing import Literal
-
 from pydantic import Field
 
 from tools.tour_presets import TourPreset
@@ -49,11 +47,9 @@ class ClarifyRequestParams(ServerRequestParams):
 
 class ClarifyResult(Result):
     """``{answers}`` for the whole set (early locks go through the ``clarify.lock`` RPC); a response
-    without ``answers`` is cancel-all. ``outcome`` (optional): how the viewer's own panel ended, as
-    main's classic CLI reports it (``timed_out`` keeps the answers locked before its deadline)."""
+    without ``answers`` is cancel-all."""
 
     answers: dict[str, str | None] | None = None
-    outcome: Literal["submitted", "timed_out", "cancelled"] | None = None
 
 
 server_request("clarify", params=ClarifyRequestParams, result=ClarifyResult,

@@ -1790,7 +1790,7 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
                 model_cfg.get("base_url"), result.base_url, model_cfg.get("provider"), result.target_provider):
             updates["context_length"] = None
     target = str(result.target_provider or "").strip().lower()
-    route_changed = selection_route_changed(model_cfg, result)
+    route_changed = _route_changed(model_cfg, result)
     stale = ["api_key", "api"] if (not target.startswith("custom") or route_changed) else []
     if route_changed:
         stale += ["key_env", "api_key_env"]
@@ -1800,9 +1800,8 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     return updates
 
 
-def selection_route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
-    """Provider or endpoint differs between a ``model:`` block and the switch target. The one
-    route-identity test for endpoint-bound credentials (inline keys, ``key_env``, launch keys)."""
+def _route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
+    """Provider or endpoint differs between the on-disk ``model:`` block and the switch target."""
     from hermes_cli.route_identity import normalize_route_base_url
     if str(model_cfg.get("provider") or "").strip().lower() != str(result.target_provider or "").strip().lower():
         return True

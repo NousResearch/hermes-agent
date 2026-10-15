@@ -198,8 +198,17 @@ describe('desktop slash command curation', () => {
     // prompt.background RPC since #97635 (the slash worker's completion
     // print lands after the capture window closes, so the result never
     // reached the originating conversation).
-    // /undo /retry /steer /queue are local actions now: the shared gateway refuses them as exec.
-    const execNames = ['/debug', '/goal', '/personality', '/rollback', '/tools', '/version']
+    const execNames = [
+      '/debug',
+      '/goal',
+      '/personality',
+      '/queue',
+      '/retry',
+      '/rollback',
+      '/tools',
+      '/undo',
+      '/version'
+    ]
 
     for (const name of execNames) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
@@ -421,15 +430,6 @@ describe('registry-derived block-list (contract with hermes_cli/commands.py)', (
       }
 
       expect(isDesktopSlashSuggestion(name)).toBe(false)
-    }
-  })
-
-  it('runs a typed /approve or /deny on the owner like every surface (the approval card stays approval.respond)', () => {
-    for (const name of ['/approve', '/deny']) {
-      expect(desktopSlashRegistry[name as keyof typeof desktopSlashRegistry]).toBeNull()
-      expect(isDesktopSlashCommand(name, 'all')).toBe(true)
-      expect(resolveDesktopCommand(name)?.surface.kind).toBe('exec')
-      expect(desktopSlashUnavailableMessage(name)).toBeNull()
     }
   })
 

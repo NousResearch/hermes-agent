@@ -7,8 +7,7 @@ import type { GroupMember } from './types'
 const { host } = vi.hoisted(() => ({ host: {} as Record<string, unknown> }))
 
 vi.mock('@hermes/plugin-sdk', async () => {
-  const { pluginSdkMock, createGroupGateway } = await import('./group-test-utils')
-  Object.assign(host, createGroupGateway().host)
+  const { pluginSdkMock } = await import('./group-test-utils')
   const base = await pluginSdkMock(host)
 
   return {
@@ -146,13 +145,11 @@ describe('durable group holds', () => {
 
     activity.recordGroupActivity('Core', { kind: 'settled', member: null })
     const view = render(<GroupChatWorkspace group="Core" members={MEMBERS} />)
-    // The workspace paints behind the group-source classification gate, so the
-    // activity row appears once that async check settles.
-    expect((await screen.findByRole('button', { name: /^Activity/ })).textContent).toContain('research hit an error')
+    expect(screen.getByRole('button', { name: /^Activity/ }).textContent).toContain('research hit an error')
 
     activity.recordGroupActivity('Core', { kind: 'replied', member: 'research' })
     view.rerender(<GroupChatWorkspace group="Core" members={MEMBERS} />)
-    expect((await screen.findByRole('button', { name: /^Activity/ })).textContent).toContain('builder hit an error')
+    expect(screen.getByRole('button', { name: /^Activity/ }).textContent).toContain('builder hit an error')
   })
 
   it('projects hydrated holds into the real group workspace', async () => {
@@ -169,6 +166,6 @@ describe('durable group holds', () => {
 
     render(<GroupChatWorkspace group="Core" members={MEMBERS} />)
 
-    expect((await screen.findByRole('status')).textContent).toContain('Paused: Research')
+    expect(screen.getByRole('status').textContent).toContain('Paused: Research')
   })
 })

@@ -1,7 +1,5 @@
 import type { ProjectInfo, SessionLiveInfo, SubagentStatus, ToolLabel } from '@hermes/shared/gateway-events'
 
-import type { SharedControl } from './canonicalGateway.js'
-
 export interface ActiveTool {
   context?: string
   id: string
@@ -98,7 +96,6 @@ export interface DelegationStatus {
 }
 
 export interface ApprovalReq {
-  sharedControl?: SharedControl
   // false when the backend won't honor a permanent allow → hide "Always allow".
   allowPermanent?: boolean
   choices?: string[]
@@ -126,7 +123,6 @@ export interface ClarifyQuestion {
 }
 
 export interface ClarifyReq {
-  sharedControl?: SharedControl
   requestId: string
   questions: ClarifyQuestion[]
   /** Answers already locked server-side (qid → answer): seeded from the
@@ -184,24 +180,8 @@ export interface McpServerStatus {
   transport: string
 }
 
-/** The gateway's `session.info` / resume `info` block — generated from `tui_gateway/contracts`,
- *  plus the canonical-authority fields the legacy contract does not carry yet
- *  (`gateway/session_events.py` owner stamps and the durable admission FIFO). */
-export interface SessionInfo extends SessionLiveInfo {
-  execution_epoch?: string
-  execution_generation?: number
-  execution_state?: string
-  install_warning?: string
-  pending_submissions?: Array<{
-    admission_id: string
-    input_id?: string
-    target_session_id: string
-    target_profile_home: string
-    status: string
-    user: string
-    outcome?: string | null
-  }>
-}
+/** The gateway's `session.info` / resume `info` block — generated from `tui_gateway/contracts`. */
+export type SessionInfo = SessionLiveInfo
 export type { ProjectInfo }
 
 export interface SudoReq {

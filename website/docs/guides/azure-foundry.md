@@ -33,7 +33,7 @@ hermes model
 #     1. API key
 #     2. Microsoft Entra ID  (managed identity / workload identity / az login)
 # → (Entra) choose Default credential chain or Azure CLI login
-# → (Azure CLI) optionally specify tenant and subscription; Hermes probes the chosen source
+# → (Azure CLI) optionally specify tenant or subscription; Hermes probes the chosen source
 # → (API key) Enter your API key
 # Hermes probes the endpoint and auto-detects transport + models
 # → Pick a model from the list (or type a deployment name manually)
@@ -128,7 +128,8 @@ Hermes stores non-secret Entra settings under `model.entra`:
 - `credential_source`: `default` for the existing chain, or `azure_cli` to use only
   Azure CLI. The default remains `default`.
 - `tenant_id` and `subscription`: optional selectors for `azure_cli`. Subscription
-  accepts a name or ID. Omitting these uses Azure CLI's selected account.
+  accepts a name or ID. Choose one selector; Azure CLI rejects requests with both.
+  Omitting both uses Azure CLI's selected account.
 - `scope`: the token scope, defaulting to `https://ai.azure.com/.default`.
 
 The default chain continues to use standard `AZURE_*` settings for service principals,
@@ -145,7 +146,8 @@ The ambient credential-chain refusal remains in place.
 3. Enter your inference endpoint and deployment name. Hermes sends that deployment
    name as `model`; no `custom:` prefix is needed.
 4. Select **Microsoft Entra ID → Azure CLI login**. Under **Advanced settings**, optionally
-   enter a tenant ID, subscription name or ID, and token scope. Select the API mode
+   choose **Azure CLI default**, **Tenant ID**, or **Subscription name or ID**,
+   then enter the selected value. Token scope is a separate optional setting. Select the API mode
    your deployment supports, such as **Responses API**.
 5. Click **Test**, then **Save and use**. This sets Foundry as the provider for new
    chats in that profile. Existing chats with a saved model selection may need their
@@ -167,7 +169,7 @@ model:
   entra:
     credential_source: azure_cli
     tenant_id: YOUR_TENANT_ID          # optional
-    subscription: YOUR_SUBSCRIPTION_ID # optional; a name also works
+    # subscription: YOUR_SUBSCRIPTION_ID # alternative to tenant_id; a name also works
 ```
 
 Hermes uses Azure's `AzureCliCredential` and bearer-token provider to acquire and

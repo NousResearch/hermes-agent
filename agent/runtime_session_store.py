@@ -35,6 +35,14 @@ def apply_row_annotations(messages, annotations):
             else:
                 message[key] = value
 
+def apply_append_result(messages, result):
+    if result.get('delegation_claim_lost') is True:
+        from hermes_state_errors import DelegationClaimLostError
+        raise DelegationClaimLostError('Delegation carrier claim lost before owner commit')
+    apply_row_annotations(messages, result['annotations'])
+    return result['count']
+
+
 class WorkerPersistenceError(RuntimeError):
     pass
 
@@ -253,8 +261,7 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
             return self._append_compression_messages(session_id, messages, compression_lock_holder,
                 turn_lease_holder, turn_lease_ttl_seconds)
         result = self._apply('transcript.append', {'messages': messages, 'turn_lease_holder': turn_lease_holder})
-        apply_row_annotations(messages, result['annotations'])
-        return result['count']
+        return apply_append_result(messages, result)
 
     def try_acquire_session_turn_lease(self, session_id, holder, *, ttl_seconds=300.0, patience_s=None):
         self._session(session_id)

@@ -18,7 +18,8 @@ class Store:
 
     def _apply(self, operation, payload):
         self.calls.append((operation, payload))
-        return {'value': True}
+        return {'value': {'state': 'pending', 'owned': bool(payload.get('claim_id'))}
+                if operation == 'delegation.status' else True}
 
 
 def test_worker_ledger_paths_are_closed_and_process_scoped(monkeypatch):
@@ -43,6 +44,9 @@ def test_worker_ledger_paths_are_closed_and_process_scoped(monkeypatch):
         assert ledger.drop_completion_delivery('deleg_owned', 'token')
         assert ledger.complete_completion_delivery('deleg_owned', 'token')
         assert ledger.get_durable_delegation('deleg_owned')
+        assert ledger.get_event_delivery_state(event) == 'pending'
+        assert ledger.get_event_delivery_claim_status(event, 'token') == ('pending', True)
+        assert ledger.renew_event_delivery(event, 'token')
         assert ledger.restore_undelivered_completions(queue.Queue()) == 0
         with pytest.raises(runtime_session_store.WorkerPersistenceError, match='owner_only'):
             ledger.mark_completion_delivered('deleg_owned')
@@ -51,7 +55,7 @@ def test_worker_ledger_paths_are_closed_and_process_scoped(monkeypatch):
     with ThreadPoolExecutor(max_workers=1) as pool:
         pool.submit(exercise).result()
     assert {name for name, _ in store.calls} == {'delegation.' + name for name in
-        ('dispatch', 'child', 'complete', 'claim', 'defer', 'release', 'drop', 'ack', 'read')}
+        ('dispatch', 'child', 'complete', 'claim', 'defer', 'release', 'drop', 'ack', 'read', 'status', 'renew')}
     assert store.calls[0][1]['task'] == {'goal': 'inert'}
 
 

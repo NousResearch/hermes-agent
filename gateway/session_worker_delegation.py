@@ -10,7 +10,8 @@ import time
 
 from hermes_state_runtime import RuntimeStoreError
 
-_TASK_KEYS = {'goal', 'goals', 'context', 'toolsets', 'role', 'model', 'is_batch', 'task_indexes'}
+_TASK_KEYS = {'goal', 'goals', 'context', 'toolsets', 'role', 'model', 'is_batch', 'task_indexes',
+              'result_delivery', 'parent_turn_id'}
 _ROUTE = {'session_key': 'origin_session', 'parent_session_id': 'parent_session_id',
           'origin_ui_session_id': 'origin_ui_session_id', 'origin_session_id': 'origin_session_id'}
 _EVENT_KEYS = _TASK_KEYS | set(_ROUTE) | {
@@ -40,9 +41,19 @@ def _owned(conn, session_id, execution_id, delegation_id):
     row = conn.execute('SELECT * FROM async_delegations WHERE delegation_id=?', (delegation_id,)).fetchone()
     if row is None:
         raise RuntimeStoreError('not_found')
-    if row['parent_session_id'] != session_id or row['owner_execution_id'] != execution_id:
+    from tools.async_delegation import completion_parent_matches
+    if (row['owner_execution_id'] != execution_id
+            or not completion_parent_matches(conn, row['parent_session_id'], session_id)):
         raise RuntimeStoreError('permission_denied')
     return row
+
+
+def _delivery_policy(task):
+    mode, turn = task.get('result_delivery', 'after_turn'), task.get('parent_turn_id', '')
+    if (mode not in ('inject', 'after_turn') or not isinstance(turn, str)
+            or len(turn) > 512 or (mode == 'inject' and not turn)):
+        raise RuntimeStoreError('invalid_params')
+    return mode, turn
 
 
 def _dispatch(db, conn, session_id, payload, *, execution_id, worker_pid, worker_birth):
@@ -51,6 +62,7 @@ def _dispatch(db, conn, session_id, payload, *, execution_id, worker_pid, worker
     _number(payload['dispatched_at'])
     if not isinstance(payload['task'], dict) or set(payload['task']) - _TASK_KEYS:
         raise RuntimeStoreError('invalid_params')
+    _delivery_policy(payload['task'])
     session = conn.execute('SELECT source,session_key FROM sessions WHERE id=?', (session_id,)).fetchone()
     # Only compute registrations are currently enabled. Native/child origins need
     # an owner-reserved source envelope, not worker-selected transport identities.
@@ -95,6 +107,8 @@ def _complete(db, conn, session_id, payload, *, execution_id):
     row = _owned(conn, session_id, execution_id, event.get('delegation_id'))
     if any(event.get(key, '') != (row[column] or '') for key, column in _ROUTE.items()):
         raise RuntimeStoreError('permission_denied')
+    if _delivery_policy(event) != _delivery_policy(json.loads(row['task_json'] or '{}')):
+        raise RuntimeStoreError('permission_denied')
     _number(event.get('completed_at'))
     if row['state'] != 'running':
         raise RuntimeStoreError('admission_conflict')
@@ -135,6 +149,12 @@ def _claim(db, conn, session_id, payload, *, execution_id):
     now = time.time()
     if row['state'] in ('running', 'finalizing'):
         return {'value': False}
+    # apply_worker_receipt holds the owner's BEGIN IMMEDIATE throughout receipt
+    # reconciliation and takeover, just like the in-process consumer.
+    from tools.async_delegation import _reconcile_tool_carrier
+    if row['delivery_state'] == 'pending' and _reconcile_tool_carrier(
+            conn, payload['delegation_id'], row['event_json']):
+        return {'value': False}
     changed = conn.execute('''UPDATE async_delegations SET delivery_claim=?,delivery_claimed_at=?,
         delivery_attempts=delivery_attempts+1,updated_at=? WHERE delegation_id=? AND delivery_state='pending'
         AND (delivery_claim IS NULL OR delivery_claimed_at < ?)''',
@@ -163,6 +183,27 @@ def _delivery(db, conn, session_id, payload, *, execution_id, action):
     return {'value': changed == 1}
 
 
+def _status(db, conn, session_id, payload, *, execution_id):
+    _shape(payload, {'delegation_id', 'claim_id'})
+    row = _owned(conn, session_id, execution_id, payload['delegation_id'])
+    token = payload['claim_id']
+    if not isinstance(token, str) or len(token) > 512:
+        raise RuntimeStoreError('invalid_params')
+    return {'value': {'state': row['delivery_state'],
+        'owned': bool(token and row['delivery_state'] == 'pending' and row['delivery_claim'] == token)}}
+
+
+def _renew(db, conn, session_id, payload, *, execution_id):
+    _shape(payload, {'delegation_id', 'claim_id'})
+    _owned(conn, session_id, execution_id, payload['delegation_id'])
+    _text(payload['claim_id'])
+    now = time.time()
+    changed = conn.execute("UPDATE async_delegations SET delivery_claimed_at=?,updated_at=? "
+        "WHERE delegation_id=? AND delivery_state='pending' AND delivery_claim=?",
+        (now, now, payload['delegation_id'], payload['claim_id'])).rowcount
+    return {'value': changed == 1}
+
+
 def _unscheduled(db, conn, session_id, payload, *, execution_id):
     _shape(payload, {'delegation_id'})
     row = _owned(conn, session_id, execution_id, payload['delegation_id'])
@@ -180,7 +221,7 @@ def worker_delegation_handlers(execution_id, worker_pid, worker_birth):
     _number(worker_birth)
     handlers = {name: partial(fn, execution_id=execution_id) for name, fn in {
         'complete': _complete, 'child': _child, 'read': _read, 'claim': _claim,
-        'unscheduled': _unscheduled}.items()}
+        'unscheduled': _unscheduled, 'status': _status, 'renew': _renew}.items()}
     handlers['dispatch'] = partial(_dispatch, execution_id=execution_id, worker_pid=worker_pid, worker_birth=worker_birth)
     handlers.update({name: partial(_delivery, execution_id=execution_id, action=name) for name in _DELIVERY_UPDATES})
     return {'delegation.' + name: handler for name, handler in handlers.items()}

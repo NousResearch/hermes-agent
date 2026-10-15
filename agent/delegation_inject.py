@@ -468,6 +468,21 @@ def _normal_budget_available(agent: Any) -> bool:
     return api_calls < int(max_iterations or 0) and remaining > 0
 
 
+def _inject_parent_sessions(agent: Any) -> set[str]:
+    """Read ancestry before the routing reservation; only this turn's lineage may inject."""
+    current = str(getattr(agent, "session_id", "") or "")
+    db = getattr(agent, "_session_db", None)
+    if db is None:
+        return {current}
+    try:
+        lineage = db.get_compression_lineage(current)
+        if current in lineage:
+            return set(lineage[:lineage.index(current) + 1])
+    except Exception:
+        logger.warning("Could not resolve delegation injection lineage; keeping the current session", exc_info=True)
+    return {current}
+
+
 def attach_ready_injects_to_tool_results(
     agent: Any,
     messages: list[dict[str, Any]],
@@ -571,16 +586,24 @@ def attach_ready_injects_to_tool_results(
                     or event.get("task_failure_notice")  # interim notices are not final unit receipts
                     or str(event.get("result_delivery") or "after_turn").strip().lower() != "inject"
                     or str(event.get("parent_turn_id") or "") != active_turn_id
-                    or str(event.get("parent_session_id") or "") != str(getattr(agent, "session_id", "") or "")
                     or not event.get("parent_session_id")
                 ):
                     requeue(event)
                 else:
                     candidates.append(event)
 
+        # Resolve compression ancestry only for candidates from an earlier physical
+        # parent, outside the reservation. The usual empty/current-parent path does
+        # no additional DB work or worker RPC.
+        current_session = str(getattr(agent, "session_id", "") or "")
+        parent_sessions = (_inject_parent_sessions(agent)
+            if any(str(event.get("parent_session_id")) != current_session for event in candidates)
+            else {current_session})
         # Formatting/storage holds no routing or database lock. Every event still
         # belongs to unowned until a claim is registered in the existing RAM owner.
         for event in candidates:
+            if str(event.get("parent_session_id") or "") not in parent_sessions:
+                continue
             try:
                 text = _format_async_delegation(event)
                 if not text:

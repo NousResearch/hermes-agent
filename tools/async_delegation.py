@@ -461,6 +461,24 @@ def mark_completion_delivered(delegation_id: str) -> bool:
            WHERE delegation_id=? AND delivery_state!='delivered'""", (now, now, delegation_id))
 
 
+def completion_parent_matches(conn, parent_session_id: str, session_id: str) -> bool:
+    """An immutable delegation parent may own its verified compression continuation."""
+    if parent_session_id == session_id:
+        return True
+    if not parent_session_id or not session_id:
+        return False
+    from hermes_state_common import _non_continuation_child_sql
+    edge = _non_continuation_child_sql('child.', 'parent.id')
+    return conn.execute("""
+        WITH RECURSIVE ancestors(id) AS (
+            SELECT ? UNION SELECT parent.id FROM ancestors a
+            JOIN sessions child ON child.id=a.id
+            JOIN sessions parent ON parent.id=child.parent_session_id
+            WHERE parent.end_reason='compression'
+        """ + edge + ") SELECT 1 FROM ancestors WHERE id=? LIMIT 1",
+        (session_id, parent_session_id)).fetchone() is not None
+
+
 def validate_tool_carrier_claims(conn, session_id: str, messages: list[dict]) -> None:
     """Fence fresh carrier insertion on its exact tokens inside the transcript write transaction."""
     from hermes_state_errors import DelegationClaimLostError
@@ -480,7 +498,7 @@ def validate_tool_carrier_claims(conn, session_id: str, messages: list[dict]) ->
                 "WHERE delegation_id=?", (event_id,),
             ).fetchone()
             if (not token or row is None or row[0] != "pending"
-                    or row[1] != token or row[2] != session_id):
+                    or row[1] != token or not completion_parent_matches(conn, row[2], session_id)):
                 raise DelegationClaimLostError(f"Delegation carrier claim lost: {event_id}")
 
 
@@ -494,8 +512,16 @@ def _reconcile_tool_carrier(conn, delegation_id: str, payload: str | None) -> bo
     if event.get("result_delivery") != "inject" or not event.get("parent_session_id"):
         return False
     try:
-        rows = conn.execute(
-            "SELECT display_metadata FROM messages WHERE session_id=? AND role='tool' "
+        from hermes_state_common import _non_continuation_child_sql
+        edge = _non_continuation_child_sql('child.', 'parent.id')
+        rows = conn.execute("""
+            WITH RECURSIVE lineage(id) AS (
+                SELECT ? UNION SELECT child.id FROM lineage l
+                JOIN sessions parent ON parent.id=l.id
+                JOIN sessions child ON child.parent_session_id=parent.id
+                WHERE parent.end_reason='compression'
+            """ + edge + ") SELECT display_metadata FROM messages "
+            "WHERE session_id IN (SELECT id FROM lineage) AND role='tool' "
             "AND display_metadata IS NOT NULL AND instr(display_metadata, ?) > 0",
             (event["parent_session_id"], delegation_id),
         ).fetchall()
@@ -525,6 +551,8 @@ def _reconcile_tool_carrier(conn, delegation_id: str, payload: str | None) -> bo
 def get_event_delivery_state(evt: Dict[str, Any]) -> Optional[str]:
     if evt.get("type") != "async_delegation":
         return None
+    if remote := worker_ledger():
+        return remote.status(str(evt.get("delegation_id") or ""))["state"]
     with _DB_LOCK, _transaction() as conn:
         row = conn.execute("SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
                            (str(evt.get("delegation_id") or ""),)).fetchone()
@@ -545,6 +573,9 @@ def get_event_delivery_claim_status(
     delegation_id = str(evt.get("delegation_id") or "")
     if not delegation_id:
         return None, False
+    if remote := worker_ledger():
+        status = remote.status(delegation_id, claim_id)
+        return status["state"], status["owned"]
     with _DB_LOCK, _transaction() as conn:
         row = conn.execute(
             "SELECT delivery_state, delivery_claim FROM async_delegations "
@@ -564,6 +595,8 @@ def renew_event_delivery(evt: Dict[str, Any], claim_id: str) -> bool:
     """Keep the existing single-row lease live until the transcript flush settles."""
     if not claim_id or evt.get("type") != "async_delegation":
         return False
+    if remote := worker_ledger():
+        return remote.renew(str(evt.get("delegation_id") or ""), claim_id)
     now = time.time()
     return _update_delivery(
         "UPDATE async_delegations SET delivery_claimed_at=?, updated_at=? "

@@ -561,12 +561,13 @@ _MESSAGE_FIELDS = frozenset({
     'codex_reasoning_items', 'codex_message_items', 'platform_message_id', 'message_id',
     'observed', 'effect_disposition', '_compressed_summary', 'timestamp', 'api_content',
     'display_kind', 'display_metadata', '_row_id', '_canonical_content', DB_ROW_SNAPSHOT, CANONICAL_ROW,
+    '_delegation_delivery_claims',
     # Main's durable message identity (message_uid / merge witness / tool-call uids) and the alternation
     # repair's row counts ride every persisted dict; the owner's insert and coverage read them.
 }) | PERSISTENCE_ONLY_MESSAGE_FIELDS | {ABSORBED_ROW_IDS}
 # Compaction handoffs (archive/publish) also carry the summary's user-turn flag. This is the closed
 # boundary the owner validates AND the projection the worker facade applies to live dicts first.
-HANDOFF_MESSAGE_FIELDS = _MESSAGE_FIELDS | {'_compressed_summary_has_user_turn'}
+HANDOFF_MESSAGE_FIELDS = (_MESSAGE_FIELDS - {'_delegation_delivery_claims'}) | {'_compressed_summary_has_user_turn'}
 # Row state the owner's insert and transcript repair stamp on each message (main mutates the caller's
 # dict in place; a worker gets it back as an annotation). None = absent, so a stale adoption is cleared.
 # The owner-minted identity rides too: a worker dict without it re-mints a new uid on every later
@@ -577,6 +578,29 @@ _ROW_ANNOTATION_KEYS = ('_row_id', 'timestamp', DB_ROW_SNAPSHOT, CANONICAL_ROW,
 
 def row_annotations(messages):
     return [{key: msg.get(key) for key in _ROW_ANNOTATION_KEYS} for msg in messages]
+
+
+def worker_append_result(db, conn, session_id, messages, **kwargs):
+    """Receipt a rejected carrier so the worker can retire it and append ordinary text.
+
+    The savepoint keeps transcript repair and row insertion atomic on owner loss.
+    The existing worker receipt then records this refusal without storing its tokens.
+    """
+    from hermes_state_errors import DelegationClaimLostError
+    carrier = any('_delegation_delivery_claims' in message for message in messages)
+    if carrier:
+        conn.execute('SAVEPOINT delegation_carrier_append')
+    try:
+        count = db._append_messages_in_transaction(conn, session_id, messages, **kwargs)
+    except DelegationClaimLostError:
+        if not carrier:
+            raise
+        conn.execute('ROLLBACK TO delegation_carrier_append')
+        return {'count': 0, 'annotations': [], 'delegation_claim_lost': True}
+    finally:
+        if carrier:
+            conn.execute('RELEASE delegation_carrier_append')
+    return {'count': count, 'annotations': row_annotations(messages)}
 
 
 def _worker_append(db, conn, session_id, payload):
@@ -597,8 +621,7 @@ def _worker_append(db, conn, session_id, payload):
     holder = payload.get('turn_lease_holder')
     if holder is not None:
         _text(holder)
-    count = db._append_messages_in_transaction(conn, session_id, messages, turn_lease_holder=holder)
-    return {'count': count, 'annotations': row_annotations(messages)}
+    return worker_append_result(db, conn, session_id, messages, turn_lease_holder=holder)
 
 
 def _worker_turn(db, conn, session_id, payload, operation):

@@ -201,3 +201,69 @@ def test_completion_delivers_original_bytes_after_workspace_mutation(tmp_path, m
         adapter=adapter, chat_id="chat", metadata={}, event_payload=payload, task=task, board=board,
     ))
     assert adapter.uploaded == [(str(kb.task_attachments_dir(task_id, board=board) / "report.pdf"), b"original report")]
+
+
+def _aliased_kanban_home(tmp_path, monkeypatch):
+    real = tmp_path / "real"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(real, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    home = alias / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    return home
+
+
+def _deliver(task_id, artifacts):
+    adapter = _ArtifactAdapter()
+    task = SimpleNamespace(id=task_id, workspace_path=None, result=None)
+    asyncio.run(
+        GatewayKanbanWatchersMixin()._deliver_kanban_artifacts(
+            adapter=adapter,
+            chat_id="chat",
+            metadata={},
+            event_payload={"artifacts": artifacts},
+            task=task,
+            board="default",
+        )
+    )
+    return adapter.documents
+
+
+def test_artifact_staged_under_configured_root_alias_is_delivered(tmp_path, monkeypatch):
+    """Staging accepts an alias above the configured root; delivery must too."""
+    _aliased_kanban_home(tmp_path, monkeypatch)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    kb.init_db()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    artifact = workspace / "report.pdf"
+    artifact.write_bytes(b"report")
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="alias", workspace_kind="dir", workspace_path=str(workspace))
+        assert kb.complete_task(conn, task_id, summary="done", metadata={"artifacts": [str(artifact)]}, fire_lifecycle_hook=False)
+        event = [e for e in kb.list_events(conn, task_id) if e.kind == "completed"][-1]
+    stored = event.payload["artifacts"]
+
+    assert _deliver(task_id, stored) == stored
+
+
+def test_configured_root_alias_does_not_authorize_symlinked_attachments(tmp_path, monkeypatch):
+    home = _aliased_kanban_home(tmp_path, monkeypatch)
+    from hermes_cli import kanban_db as kb
+
+    outside = tmp_path / "outside"
+    (outside / "t_alias").mkdir(parents=True)
+    external = outside / "t_alias" / "report.pdf"
+    external.write_bytes(b"host secret")
+    (home / "kanban").mkdir()
+    (home / "kanban" / "attachments").symlink_to(outside, target_is_directory=True)
+
+    assert _deliver("t_alias", [str(kb.task_attachments_dir("t_alias", board="default") / "report.pdf")]) == []

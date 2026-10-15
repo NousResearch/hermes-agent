@@ -1,6 +1,5 @@
 """Durable task attachment confinement for the kanban notifier."""
 import logging
-import os
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -13,15 +12,15 @@ def confined_artifact_paths(candidates, task, board):
     if task_id:
         try:
             from hermes_cli import kanban_db as _kb
+            from hermes_cli.kanban_db_artifacts import anchor_to_configured_root
 
-            declared_root = _kb.task_attachments_dir(
-                str(task_id), board=board
-            ).expanduser()
-            lexical_root = Path(os.path.abspath(os.fspath(declared_root)))
-            resolved_root = declared_root.resolve(strict=True)
-            # The durable root is an authority boundary, not just a
-            # containment hint. Refuse any symlinked component instead of
-            # resolving it into an attacker-selected external directory.
+            declared_root = _kb.task_attachments_dir(str(task_id), board=board)
+            # Same boundary as staging: only the configured Kanban root may be
+            # an alias. The durable root is an authority boundary, not just a
+            # containment hint, so any symlinked component below it is refused
+            # instead of being resolved into an attacker-selected directory.
+            lexical_root = anchor_to_configured_root(declared_root)
+            resolved_root = lexical_root.resolve(strict=True)
             if lexical_root == resolved_root and resolved_root.is_dir():
                 allowed_roots.append(resolved_root)
             else:

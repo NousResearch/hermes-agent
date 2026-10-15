@@ -1,5 +1,6 @@
 """Workspace-confined durable completion artifacts (PR #86610)."""
 import contextlib
+import inspect
 import os
 import re
 import sqlite3
@@ -223,14 +224,7 @@ def _persist_completion_artifacts(
     changed = False
 
     try:
-        # Configuration owns the Kanban root, not the worker. Resolve aliases
-        # only through that root (e.g. /var -> /private/var on macOS), then
-        # retain no-follow traversal for every board/attachment/task component.
-        from hermes_cli.kanban_db import kanban_home
-        configured_root = Path(os.path.abspath(kanban_home().expanduser()))
-        absolute_dir = Path(os.path.abspath(attachment_dir.expanduser()))
-        if absolute_dir.is_relative_to(configured_root):
-            attachment_dir = configured_root.resolve(strict=True) / absolute_dir.relative_to(configured_root)
+        attachment_dir = anchor_to_configured_root(attachment_dir)
         with _open_pinned_attachment_directory(attachment_dir) as (
             pinned_attachment_dir,
             attachment_dir_fd,
@@ -314,12 +308,7 @@ def _stage_one_artifact(artifact, workspace_root, pinned_attachment_dir,
             resolved_src.name,
             used_destinations,
         )
-        source_flags = (
-            os.O_RDONLY
-            | getattr(os, "O_BINARY", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-        )
-        source_fd = os.open(resolved_src, source_flags)
+        source_fd = _open_workspace_source(workspace_root, resolved_src)
         with (
             os.fdopen(source_fd, "rb") as source_file,
             os.fdopen(destination_fd, "wb") as destination_file,
@@ -371,6 +360,39 @@ def _stage_one_artifact(artifact, workspace_root, pinned_attachment_dir,
     return dest
 
 
+def _open_workspace_source(workspace_root: Path, source: Path) -> int:
+    """Open a confined source without following a symlink below the workspace.
+
+    ``source`` was resolved inside ``workspace_root``, but O_NOFOLLOW only
+    covers the leaf: a parent directory swapped for a symlink after that
+    check would redirect the open outside the workspace. Walking again from
+    pinned directory descriptors makes such a swap fail instead. O_NONBLOCK
+    keeps a leaf swapped for a FIFO from blocking; the caller still requires
+    a regular file with the expected identity.
+    """
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    if not _attachment_dir_fd_supported():
+        return os.open(source, flags)
+    directory_flags = (
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    )
+    current_fd = os.open(workspace_root, directory_flags)
+    try:
+        for component in source.relative_to(workspace_root).parts[:-1]:
+            next_fd = os.open(component, directory_flags, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        return os.open(source.name, flags, dir_fd=current_fd)
+    finally:
+        os.close(current_fd)
+
+
 def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> Path:
     """Return the next candidate path under ``directory`` for ``filename``."""
     safe_name = Path(filename).name or "artifact"
@@ -387,13 +409,32 @@ def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> 
             return candidate
         idx += 1
 
+def anchor_to_configured_root(path: Path) -> Path:
+    """Return ``path`` with only the configured Kanban root canonicalised.
+
+    Configuration owns the root, not the worker: an alias above it (e.g.
+    /var -> /private/var on macOS) is resolved once, while every board,
+    attachments and task component below it is left for no-follow checks.
+    """
+    from hermes_cli.kanban_db import kanban_home
+    configured_root = Path(os.path.abspath(kanban_home().expanduser()))
+    absolute = Path(os.path.abspath(path.expanduser()))
+    if absolute.is_relative_to(configured_root):
+        return configured_root.resolve(strict=True) / absolute.relative_to(configured_root)
+    return absolute
+
 def _attachment_dir_fd_supported() -> bool:
-    """Return whether this platform supports descriptor-relative directory IO."""
+    """Return whether this platform supports descriptor-relative directory IO.
+
+    ``supports_dir_fd`` holds the os builtins themselves; a pass-through
+    wrapper (an I/O audit hook, the test suite's home guard) must not
+    silently downgrade every caller to the weaker lstat fallback.
+    """
     supported = getattr(os, "supports_dir_fd", set())
     return (
         hasattr(os, "O_DIRECTORY")
         and hasattr(os, "O_NOFOLLOW")
-        and all(fn in supported for fn in (os.open, os.mkdir, os.unlink))
+        and all(inspect.unwrap(fn) in supported for fn in (os.open, os.mkdir, os.unlink))
     )
 
 @contextlib.contextmanager

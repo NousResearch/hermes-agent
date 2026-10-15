@@ -300,3 +300,34 @@ def test_complete_task_rejects_artifact_swapped_to_symlink_before_open(
 
     assert workspace.exists(), "rejected completion must preserve the workspace"
     assert outside.read_text(encoding="utf-8") == "host secret\n"
+
+
+@pytest.mark.platforms("posix")
+def test_source_parent_swapped_after_confinement_is_not_copied(tmp_path, monkeypatch):
+    """O_NOFOLLOW guards only the leaf; a swapped parent must not redirect the read."""
+    root = tmp_path.resolve()
+    workspace = root / "workspace"
+    parent = workspace / "inputs"
+    parent.mkdir(parents=True)
+    source = parent / "report.txt"
+    source.write_text("authorized report")
+    outside = root / "outside"
+    outside.mkdir()
+    (outside / "report.txt").write_text("outside fixture")
+    destination = root / "attachments"
+    destination.mkdir()
+    real_stat = os.stat
+    swapped = []
+
+    def swap_parent_on_first_check(path, *args, **kwargs):
+        if str(path) == str(source) and kwargs.get("follow_symlinks") is False and not swapped:
+            swapped.append(True)
+            parent.rename(workspace / "old-inputs")
+            parent.symlink_to(outside, target_is_directory=True)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", swap_parent_on_first_check)
+    with pytest.raises(kb.ArtifactPreservationError):
+        kba._stage_one_artifact(str(source), workspace, destination, None, set(), lambda: None)
+    assert swapped
+    assert list(destination.iterdir()) == []

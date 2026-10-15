@@ -1645,6 +1645,7 @@ DEFAULT_CONFIG = {
         "require_mention": True,  # require @mention to respond in channels
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
+        "rich_markdown": False,  # Normalize unsupported rich HTML into Mattermost Markdown
         "channel_prompts": {},  # per-channel ephemeral system prompts
     },
 

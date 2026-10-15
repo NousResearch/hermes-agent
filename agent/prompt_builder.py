@@ -1766,16 +1766,24 @@ def build_context_files_prompt(
 
     if safe_worker_enabled() or not host_feature_enabled("context_files"):
         return ""  # hosted: the project's files are in the agent's sandbox, this host's are not its
-    cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
-    if _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
+    try:
+        cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
+    except OSError as exc:
         logger.warning(
-            "skipping project-context discovery: working-directory resolution fell back to the Hermes "
-            "install tree (%s) — set terminal.cwd to your project directory", cwd_path,
+            "skipping project-context discovery: could not resolve the working directory — "
+            "set terminal.cwd to your project directory: %s", exc,
         )
         sections = []
     else:
-        sections = [_load_hermes_md(cwd_path, context_length) or _load_agents_md(cwd_path, context_length)
-                    or _load_claude_md(cwd_path, context_length) or _load_cursorrules(cwd_path, context_length)]
+        if _project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback):
+            logger.warning(
+                "skipping project-context discovery: working-directory resolution fell back to the Hermes "
+                "install tree (%s) — set terminal.cwd to your project directory", cwd_path,
+            )
+            sections = []
+        else:
+            sections = [_load_hermes_md(cwd_path, context_length) or _load_agents_md(cwd_path, context_length)
+                        or _load_claude_md(cwd_path, context_length) or _load_cursorrules(cwd_path, context_length)]
     if not skip_soul:
         sections.append(load_soul_md(context_length, home_override=home_override))
     sections = [s for s in sections if s]

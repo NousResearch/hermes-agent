@@ -53,6 +53,8 @@ import { setPreviewDirty } from '@/store/preview-edit'
 import { $connection, $currentCwd } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
+import { OfficePreview } from './office-preview'
+
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 const SOURCE_CHUNK_LINES = 200
@@ -792,6 +794,9 @@ export function LocalFilePreview({
   const isImage = target.previewKind === 'image'
   const isPdf = target.previewKind === 'pdf'
 
+  const isOffice =
+    target.previewKind === 'document' || target.previewKind === 'presentation' || target.previewKind === 'spreadsheet'
+
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     setUserMode(null)
@@ -809,7 +814,7 @@ export function LocalFilePreview({
   // when the file is forcibly previewed past the binary refusal screen.
   const isText = target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html'
 
-  const blockedByTarget = !isImage && !isPdf && !forcePreview && (target.binary || target.large)
+  const blockedByTarget = !isImage && !isPdf && !isOffice && !forcePreview && (target.binary || target.large)
 
   useEffect(() => {
     let active = true
@@ -821,7 +826,7 @@ export function LocalFilePreview({
         return
       }
 
-      if (!isImage && !isPdf && !isText) {
+      if (!isImage && !isPdf && !isOffice && !isText) {
         setState({ loading: false })
 
         return
@@ -830,7 +835,7 @@ export function LocalFilePreview({
       setState({ loading: true })
 
       try {
-        if (isImage || isPdf) {
+        if (isImage || isPdf || isOffice) {
           // Prefer bytes the caller already handed us (a pasted/dropped
           // screenshot) over re-reading a path that may be transient/unreadable.
           const dataUrl = target.dataUrl || (await readDesktopFileDataUrl(filePath))
@@ -903,6 +908,7 @@ export function LocalFilePreview({
     forcePreview,
     fsCacheKey,
     isImage,
+    isOffice,
     isPdf,
     isText,
     reloadKey,
@@ -1164,6 +1170,7 @@ export function LocalFilePreview({
   if (
     !isImage &&
     !isPdf &&
+    !isOffice &&
     !forcePreview &&
     (target.binary || target.large || state.binary || (state.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
   ) {
@@ -1208,6 +1215,14 @@ export function LocalFilePreview({
 
   if (isPdf && state.dataUrl) {
     return <PageLoader label={t.preview.loading} />
+  }
+
+  if (
+    isOffice &&
+    state.dataUrl &&
+    (target.previewKind === 'document' || target.previewKind === 'presentation' || target.previewKind === 'spreadsheet')
+  ) {
+    return <OfficePreview dataUrl={state.dataUrl} kind={target.previewKind} label={target.label} />
   }
 
   if (isText && state.text !== undefined) {

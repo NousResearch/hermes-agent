@@ -41,6 +41,8 @@ import {
 } from 'electron'
 import type { Session } from 'electron'
 
+import { officePreviewKind } from '../../shared/src/preview-kind'
+
 import { type ActiveRuntimeState, classifyActiveRuntime } from './active-runtime-state'
 import { HERMES_API_EXPECTED_404 } from './api-expected-404'
 import {
@@ -5872,7 +5874,8 @@ async function previewFileTarget(rawTarget, baseDir) {
   const isHtml = PREVIEW_HTML_EXTENSIONS.has(ext)
   const isImage = mimeType.startsWith('image/')
   const isPdf = PREVIEW_PDF_EXTENSIONS.has(ext) || mimeType === 'application/pdf'
-  const previewKind = isHtml ? 'html' : isImage ? 'image' : isPdf ? 'pdf' : metadata.binary ? 'binary' : 'text'
+  const officeKind = officePreviewKind(ext)
+  const previewKind = isHtml ? 'html' : isImage ? 'image' : isPdf ? 'pdf' : officeKind || (metadata.binary ? 'binary' : 'text')
 
   return {
     binary: metadata.binary,

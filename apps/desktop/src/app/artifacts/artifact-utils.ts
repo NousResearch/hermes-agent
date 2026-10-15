@@ -1,3 +1,4 @@
+import { translateNow } from '@/i18n'
 import { mediaTagValues } from '@/lib/chat-messages/parts'
 import { isArtifactFilePath, mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
 import type { SessionInfo, SessionMessage, SessionMessagesResponse } from '@/types/hermes'
@@ -113,7 +114,7 @@ function looksLikeArtifact(value: string, explicit = false): boolean {
 }
 
 function artifactSessionTitle(session: SessionInfo): string {
-  return session.title?.trim() || session.preview?.trim() || 'Untitled session'
+  return session.title?.trim() || session.preview?.trim() || translateNow('sidebar.untitledPlaceholder')
 }
 
 function normalizeValue(value: string): string {

@@ -20,6 +20,7 @@ import { referenceKind, referenceRe, unwrapReferenceValue } from '@/components/a
 import { slashCommandMatches, type SlashCommandScanOptions } from './slash-refs'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
+export const NATIVE_PASTE_INSERT_MAX_CHARS = 16_000
 
 /** Chromium's litter: editing beside a `contenteditable=false` chip splits the
  *  line and leaves zero-length text nodes behind. They render as nothing and
@@ -296,8 +297,11 @@ function atTokenBoundary(editor: HTMLElement, range: Range | null): boolean {
 }
 
 /** Insert text at the caret (replacing any selection), with any directives in
- *  it landing as chips. Pastes use this instead of `execCommand('insertText')`
- *  — Chromium's editing pipeline is ~O(n²) on large multiline blobs.
+ *  it landing as chips. Plain normal-sized pastes reach the caret through
+ *  `insertPastedTextAtCaret`, which uses a native `execCommand('insertText')`
+ *  transaction first (Chromium/IME state observes a real edit transaction);
+ *  this manual path is its fallback and the chip renderer — Chromium's editing
+ *  pipeline is ~O(n²) on large multiline blobs.
  *
  *  The text arrives whole rather than typed, so a `/command` ending it is
  *  complete rather than half-written and chips like the rest.
@@ -452,6 +456,36 @@ export function replaceBeforeCaret(editor: HTMLElement, length: number, fragment
   selection?.addRange(range)
 
   return true
+}
+
+export function insertPastedTextAtCaret(editor: HTMLElement, text: string, consumeBefore = 0) {
+  const hit = composerSelectionRange(editor)
+
+  // Only a plain text insert can ride the native transaction — content that
+  // must land as chips (refs, slash commands) and scoped pastes fall through
+  // to the chip-rendering manual path.
+  const plain = chipSpans(text, {
+    boundaryBefore: atTokenBoundary(editor, hit?.range ?? null),
+    trailingCommitted: true
+  }).length === 0
+
+  if (
+    plain &&
+    !consumeBefore &&
+    hit &&
+    text.length <= NATIVE_PASTE_INSERT_MAX_CHARS &&
+    typeof document.execCommand === 'function'
+  ) {
+    try {
+      if (document.execCommand('insertText', false, text)) {
+        return
+      }
+    } catch {
+      // Fall back to manual insertion below.
+    }
+  }
+
+  insertComposerContentsAtCaret(editor, text, consumeBefore)
 }
 
 /** Backspace at a collapsed caret immediately after a chip: delete the chip AND

@@ -20,7 +20,8 @@ from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
 from gateway.status import (
     derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
-    profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state,
+    multiplexer_liveness_for_profile, profile_platforms_from_multiplexer, resolve_gateway_liveness,
+    retained_gateway_state,
     runtime_status_heartbeat_age_s, runtime_status_is_stale)
 from hermes_cli import __release_date__
 from hermes_cli.config import get_config_path, get_env_path
@@ -310,15 +311,31 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> di
     runtime = local_runtime
     if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
         runtime = remote_health_body
-    if liveness.runtime is not None:
+    mux_runtime = liveness.runtime
+    if mux_runtime is None and gateway_running and profile_dir is not None:
+        # The PID rung answers before the multiplexer rung, and a served profile's gateway.lock is
+        # held by the multiplexer itself, so the ladder returns without its record while the
+        # profile's own gateway_state.json may be a retired standalone gateway's (#139080). When the
+        # lock holder IS the multiplexer serving this profile, its record is the live one; a
+        # profile's own (--force) gateway holds the lock under a different PID and keeps its record.
+        try:
+            served = await run_in_threadpool(multiplexer_liveness_for_profile, profile_dir)
+        except Exception:  # health: allow BLE001 -- status route must never 500; traceback is logged
+            # A failed lookup keeps the profile's own record. A missing multiplexer record does
+            # not raise: the helper returns (pid, {}), which still replaces it on a PID match.
+            _log.warning("/api/status multiplexer record lookup failed", exc_info=True)
+            served = None
+        if served is not None and served[0] == liveness.pid:
+            mux_runtime = served[1]
+    if mux_runtime is not None:
         # Served by the multiplexer: its record is this profile's runtime, with the profile's own
         # adapters under ``<profile>:<platform>`` re-keyed to the standalone shape. Unscoped, the
         # profile is the process's own home (a pooled ``hermes --profile X serve``).
         # Fold on the profile NAME, never ``profile_dir.name``: ``?profile=default`` resolves the
         # root itself, whose basename (``.hermes``) matched nothing and read as a named id (#123088).
         served_name = profile_name_for_home(profile_dir or get_process_hermes_home())
-        runtime = {**liveness.runtime,
-                   "platforms": profile_platforms_from_multiplexer(liveness.runtime, served_name or "")}
+        runtime = {**mux_runtime,
+                   "platforms": profile_platforms_from_multiplexer(mux_runtime, served_name or "")}
 
     gateway_state = None
     gateway_platforms: dict = {}
@@ -353,9 +370,9 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> di
     if gateway_running and gateway_state is None and remote_health_body is not None:
         gateway_state = "running"
 
-    # ``liveness.runtime`` is set only when the shared multiplexer answered for a served profile: its
+    # ``mux_runtime`` is set only when the shared multiplexer answered for a served profile: its
     # gateway IS that process, so name every bot a restart would blip ("default, alpha, beta").
-    served = (liveness.runtime or {}).get("served_profiles")
+    served = (mux_runtime or {}).get("served_profiles")
     return {
         "runtime": runtime, "gateway_running": gateway_running, "gateway_pid": liveness.pid,
         "gateway_state": gateway_state, "gateway_platforms": gateway_platforms,

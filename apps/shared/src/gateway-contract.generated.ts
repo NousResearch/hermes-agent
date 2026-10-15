@@ -3863,6 +3863,7 @@ export interface RollbackRestoreParams {
   hash: string
   file_path?: string | null
   profile?: string | null
+  all?: boolean | null
 }
 /** ``tools/checkpoint_manager.py::restore`` outcome; ``history_removed`` is added for a full (non-file) restore that also rewound the live transcript. */
 export interface RollbackRestoreResult {

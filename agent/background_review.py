@@ -271,9 +271,9 @@ def _pending_primary_runtime(agent: Any) -> Optional[dict[str, Any]]:
         rt = getattr(agent, "_primary_runtime", None)
         if not isinstance(rt, dict):
             return None
-        provider = str(rt.get("provider") or "").strip()
-        model = str(rt.get("model") or "").strip()
-        if not (provider and model):
+        # All-or-nothing: a snapshot missing any identity/transport field would splice the
+        # primary's model name onto the fallback's endpoint/credentials — keep live instead.
+        if not all(str(rt.get(key) or "").strip() for key in ("provider", "model", "base_url", "api_key", "api_mode")):
             return None
         from agent.agent_runtime_helpers import primary_runtime_restore_blocked
         if primary_runtime_restore_blocked(agent):
@@ -281,6 +281,30 @@ def _pending_primary_runtime(agent: Any) -> Optional[dict[str, Any]]:
         return rt
     except Exception:
         return None
+
+
+def _snapshot_parent_runtime(agent: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Fork runtime taken from a pending-primary snapshot (#138979): identity AND request
+    shaping travel together — the snapshot is complete (all-or-nothing is enforced by
+    _pending_primary_runtime), so nothing is spliced from the live fallback. The live
+    credential pool is the fallback's and is dropped (the fork re-resolves the primary's
+    pool from the snapshot credentials); ``max_tokens`` is turn state that
+    restore_primary_runtime itself never touches, so the live value carries;
+    ``reasoning_config`` comes from the snapshot (or None) so the fallback's reasoning
+    vocabulary never crosses providers (codex_responses forwards effort vocabularies
+    unmapped; see _same_model_parity_kwargs).
+    """
+    api_mode = snapshot.get("api_mode") or None
+    return {
+        "provider": snapshot["provider"], "model": snapshot["model"],
+        "api_key": snapshot["api_key"], "base_url": snapshot["base_url"],
+        "api_mode": "codex_responses" if api_mode == "codex_app_server" else api_mode,
+        "credential_pool": None,
+        "request_overrides": dict(snapshot.get("request_overrides") or {}),
+        "max_tokens": getattr(agent, "max_tokens", None), "command": getattr(agent, "acp_command", None),
+        "args": list(getattr(agent, "acp_args", []) or []), "routed": False,
+        "reasoning_config": dict(snapshot["reasoning_config"]) if isinstance(snapshot.get("reasoning_config"), dict) else None,
+    }
 
 
 def _resolve_review_runtime(agent: Any, task_cfg: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -293,21 +317,19 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[dict[str, Any]] = Non
     if snapshot is not None:
         # The live runtime is the one-off fallback; the fork should run on the primary
         # the next turn restores to, not bill the fallback for the whole review.
-        for key in ("model", "provider", "base_url", "api_key", "api_mode"):
-            value = snapshot.get(key)
-            if value:
-                parent_runtime[key] = value
-    parent_api_mode = parent_runtime.get("api_mode") or None
-    parent = {
-        "provider": parent_runtime.get("provider") or agent.provider,
-        "model": parent_runtime.get("model") or agent.model,
-        "api_key": parent_runtime.get("api_key") or None, "base_url": parent_runtime.get("base_url") or None,
-        "api_mode": "codex_responses" if parent_api_mode == "codex_app_server" else parent_api_mode,
-        "credential_pool": getattr(agent, "_credential_pool", None),
-        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
-        "max_tokens": getattr(agent, "max_tokens", None), "command": getattr(agent, "acp_command", None),
-        "args": list(getattr(agent, "acp_args", []) or []), "routed": False,
-    }
+        parent = _snapshot_parent_runtime(agent, snapshot)
+    else:
+        parent_api_mode = parent_runtime.get("api_mode") or None
+        parent = {
+            "provider": parent_runtime.get("provider") or agent.provider,
+            "model": parent_runtime.get("model") or agent.model,
+            "api_key": parent_runtime.get("api_key") or None, "base_url": parent_runtime.get("base_url") or None,
+            "api_mode": "codex_responses" if parent_api_mode == "codex_app_server" else parent_api_mode,
+            "credential_pool": getattr(agent, "_credential_pool", None),
+            "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+            "max_tokens": getattr(agent, "max_tokens", None), "command": getattr(agent, "acp_command", None),
+            "args": list(getattr(agent, "acp_args", []) or []), "routed": False,
+        }
     task = _background_review_task_config(task_cfg)
     task_provider, task_model, task_base_url, task_api_key = (
         str(task.get(key, "")).strip() or None for key in ("provider", "model", "base_url", "api_key")
@@ -982,6 +1004,11 @@ def _fork_init_kwargs(agent: Any, rt: dict[str, Any], routed: bool, max_iteratio
         kwargs.update(acp_command=rt["command"], acp_args=rt.get("args") or [])
     if not routed:
         kwargs.update(_same_model_parity_kwargs(agent))
+        if "reasoning_config" in rt:
+            # Pending-primary snapshot runtime (#138979): the LIVE reasoning config is the
+            # fallback's — forwarding it would splice the fallback's reasoning vocabulary
+            # onto the primary provider. The snapshot's own config (or none) applies.
+            kwargs["reasoning_config"] = rt["reasoning_config"]
     elif (routed_cfg := _routed_reasoning_config(task_cfg)) is not None:
         kwargs["reasoning_config"] = routed_cfg
     return kwargs

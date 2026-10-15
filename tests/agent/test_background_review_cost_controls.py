@@ -160,6 +160,8 @@ def _fallback_agent() -> _FakeAgent:
     """Live runtime is the one-off fallback; the primary snapshot is complete and
     carries its own request shaping."""
     agent = _FakeAgent(provider="anthropic", model="claude-haiku-4.5")
+    agent.platform = "cli"
+    agent.session_id = "test-session"
     agent._current_main_runtime = lambda: {
         "provider": "anthropic", "model": "claude-haiku-4.5",
         "api_key": "fallback-key", "base_url": "https://api.anthropic.com",
@@ -215,6 +217,36 @@ def test_pending_primary_skipped_when_reset_gate_blocks():
     rt = _resolve(agent, reset_gate=(True, None, False))
     assert rt["provider"] == "anthropic"
     assert rt["model"] == "claude-haiku-4.5"
+
+
+def test_partial_snapshot_never_splices_two_runtimes():
+    """All-or-nothing: a snapshot missing transport fields must not overlay at all —
+    otherwise the fork sends the primary's model name to the fallback's endpoint
+    with the fallback's key."""
+    agent = _fallback_agent()
+    agent._primary_runtime = {"provider": "openai-codex", "model": "gpt-5.5",
+                              "base_url": "", "api_key": "", "api_mode": ""}
+    rt = _resolve(agent)
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-haiku-4.5"
+    assert rt["api_key"] == "fallback-key"
+    assert rt["base_url"] == "https://api.anthropic.com"
+    assert rt["api_mode"] == "messages"
+
+
+def test_snapshot_overlay_carries_snapshot_request_shaping():
+    """Identity and request shaping travel together: the fallback's credential pool,
+    request_overrides and reasoning vocabulary never cross onto the primary provider."""
+    agent = _fallback_agent()
+    agent._credential_pool = "FALLBACK-POOL"
+    agent.request_overrides = {"extra_body": {"anthropic_beta": ["context-1m-2025-08-07"]}}
+    agent.reasoning_config = {"type": "enabled", "budget_tokens": 8000}
+    rt = _resolve(agent)
+    assert rt["provider"] == "openai-codex"
+    assert rt["credential_pool"] is None  # the live pool is the fallback's
+    assert rt["request_overrides"] == {"extra_body": {"store": False}}
+    kwargs = br._fork_init_kwargs(agent, rt, bool(rt.get("routed")), 5)
+    assert kwargs["reasoning_config"] == {"effort": "low"}
 
 
 # ---------------------------------------------------------------------------

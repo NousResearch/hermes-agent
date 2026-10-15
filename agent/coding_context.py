@@ -28,24 +28,38 @@ CODING_TOOLSET = "coding"
 
 # Surfaces where ``auto`` may adopt the posture; messaging platforms are deliberately absent.
 INTERACTIVE_CODING_PLATFORMS = {"cli", "tui", "acp", "desktop", ""}
-# Project-root signals (cheap filename checks) marking a code workspace even without git.
-_PROJECT_MARKERS = (
+# True project manifests (cheap filename checks): dispositive on their own — a directory
+# holding one of these is a code workspace even without git.
+_MANIFEST_MARKERS = (
     "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "package.json", "tsconfig.json", "deno.json",
     "Cargo.toml", "go.mod", "pom.xml", "build.gradle", "build.gradle.kts", "Gemfile", "composer.json", "mix.exs",
-    "pubspec.yaml", "CMakeLists.txt", "Makefile", "Dockerfile", "AGENTS.md", "CLAUDE.md", ".cursorrules",
+    "pubspec.yaml", "CMakeLists.txt", "Makefile", "Dockerfile",
 )
+# Agent-instruction files. They appear in prose/notes/research vaults as often as in code
+# projects, so one alone is NOT project evidence: it needs source-code corroboration.
+_INSTRUCTION_MARKERS = ("AGENTS.md", "CLAUDE.md", ".cursorrules")
 # Agent-instruction files surfaced separately from manifests in the snapshot.
-_CONTEXT_FILES = ("AGENTS.md", "CLAUDE.md", ".cursorrules")
+_CONTEXT_FILES = _INSTRUCTION_MARKERS
+# Every project-root signal (manifests + instruction files) — the union the snapshot lists.
+_PROJECT_MARKERS = (*_MANIFEST_MARKERS, *_INSTRUCTION_MARKERS)
 
 # Extensions that make a manifest-less git repo a *code* workspace (a `git init` notes folder is not).
 _CODE_EXTENSIONS = frozenset({
     ".py", ".pyi", ".ipynb", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".kt", ".kts",
     ".scala", ".rb", ".php", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".swift", ".m", ".mm", ".dart", ".ex", ".exs",
     ".lua", ".sh", ".bash", ".zsh", ".sql", ".vue", ".svelte", ".r", ".jl", ".hs", ".clj", ".erl", ".pl",
+    # Static web, infrastructure, contracts, and additional systems languages: without these a
+    # manifest-less project whose only sources are HTML/Terraform/Solidity would lose the
+    # instruction-marker corroboration this module now requires.
+    ".html", ".htm", ".css", ".scss", ".sass", ".less", ".tf", ".hcl", ".proto", ".sol", ".zig",
+    ".fs", ".fsx", ".vb", ".groovy",
 })
 _CODE_SCAN_SKIP_DIRS = frozenset({
     ".git", "node_modules", "venv", ".venv", "__pycache__", "dist", "build", "target", ".next", ".turbo", "vendor",
 })
+# Conventional package roots: source usually sits one level below them (``src/pkg/main.py``),
+# so the bounded scan descends one extra level inside these and nowhere else.
+_CODE_PACKAGE_ROOT_DIRS = frozenset({"src", "app", "lib", "tests", "test"})
 # Bounded sweep: a code workspace reveals itself in the first handful of entries.
 _CODE_SCAN_MAX_ENTRIES = 500
 # Lockfile → package manager, checked in priority order.
@@ -217,8 +231,22 @@ def _home() -> Optional[Path]:
         return None
 
 
+def _is_code_workspace_root(directory: Path) -> bool:
+    """Whether *directory* is a code-workspace root. A manifest is dispositive; an
+    agent-instruction file (``AGENTS.md`` / ``CLAUDE.md`` / ``.cursorrules``) only counts
+    with source-code corroboration, because those files are as common in prose/notes vaults
+    as in code projects — a vault with one was adopting the whole coding posture (brief,
+    toolset collapse, verify-on-stop) on the strength of a single file.
+
+    "Corroboration is required" is not "corroboration is forbidden": a manifest-less project
+    with an instruction file and real sources anywhere below the package roots still counts."""
+    if any((directory / marker).exists() for marker in _MANIFEST_MARKERS):
+        return True
+    return any((directory / marker).exists() for marker in _INSTRUCTION_MARKERS) and _has_code_files(directory)
+
+
 def _marker_root(cwd: Path) -> Optional[Path]:
-    """Nearest ancestor (≤6 levels) that looks like a project root, or ``None``. ``$HOME``
+    """Nearest ancestor (≤6 levels) that IS a code-workspace root, or ``None``. ``$HOME``
     and the shared temp root are skipped: a Makefile/AGENTS.md in the home dir is global
     config, and a stray manifest in /tmp must not flip every session under it."""
     current = cwd.resolve()
@@ -228,17 +256,18 @@ def _marker_root(cwd: Path) -> Optional[Path]:
         temp_root = None
     skip = (_home(), temp_root)
     for parent in (current, *current.parents)[:7]:
-        if parent not in skip and any((parent / marker).exists() for marker in _PROJECT_MARKERS):
+        if parent not in skip and _is_code_workspace_root(parent):
             return parent
     return None
 
 
 def _has_code_files(root: Path) -> bool:
-    """Bounded check for source files in the root and its immediate subdirs."""
+    """Bounded check for source files in the root, its immediate subdirs, and one level
+    beneath a conventional package root (``src/pkg/main.py``)."""
     seen = 0
-    stack = [(root, True)]
+    stack = [(root, 0)]
     while stack:
-        directory, is_root = stack.pop()
+        directory, depth = stack.pop()
         try:
             entries = os.scandir(directory)
         except OSError:
@@ -252,8 +281,9 @@ def _has_code_files(root: Path) -> bool:
                     if entry.is_file():
                         if os.path.splitext(entry.name)[1].lower() in _CODE_EXTENSIONS:
                             return True
-                    elif is_root and entry.is_dir() and entry.name not in _CODE_SCAN_SKIP_DIRS and not entry.name.startswith("."):
-                        stack.append((Path(entry.path), False))
+                    elif entry.is_dir() and entry.name not in _CODE_SCAN_SKIP_DIRS and not entry.name.startswith("."):
+                        if depth == 0 or (depth == 1 and directory.name in _CODE_PACKAGE_ROOT_DIRS):
+                            stack.append((Path(entry.path), depth + 1))
                 except OSError:
                     continue
     return False

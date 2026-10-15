@@ -124,8 +124,11 @@ class _WebexAPIRequestError(RuntimeError):
         kind = {401: "forbidden", 403: "forbidden", 404: "not_found", 413: "too_long", 429: "rate_limited"}.get(
             self.status, "transient" if retryable else "unknown"
         )
+        error = str(self)
+        if self.status == 429:
+            error = f"flood_control:{self.retry_after or 0.0}"
         return SendResult(
-            success=False, error=str(self), retryable=retryable,
+            success=False, error=error, retryable=retryable,
             error_kind=kind, retry_after=self.retry_after,
         )
 

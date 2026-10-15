@@ -1685,7 +1685,9 @@ try {
     $owedSteps = @([regex]::Matches(($res.Output -join "`n"), "Update follow-up '([A-Za-z0-9_]+)' did not finish: ") |
         ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
     if ($owedSteps.Count -gt 0) {
-        $owedHint = if ($owedSteps -contains 'gateway_restart') { " Run 'hermes gateway restart' to move the messaging gateway onto the new code now." } else { '' }
+        $owedHint = ''
+        if ($owedSteps -contains 'gateway_restart') { $owedHint += " Run 'hermes gateway restart' to move the messaging gateway onto the new code now." }
+        if ($owedSteps -contains 'dashboard_restart') { $owedHint += " Run 'hermes dashboard --port <port>' to bring the dashboard/serve backend onto the new code now." }
         Add-Followup ("followup: owed by the committed update: " + ($owedSteps -join ', ')) ("some follow-up steps did not finish (" + ($owedSteps -join ', ') + "). The next launch or 'hermes update' retries them; the update log has the details." + $owedHint) -Manual
     }
 

@@ -198,6 +198,11 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     with _best_effort('Legacy unit check during update failed: %s'):
         _print_legacy_units_warning()
 
+    # Whether the owed work belongs to the gateway fleet: the restart phase may already have
+    # failed a unit (or aborted into recovery) before verification ran.
+    _gateway_owed = bool(restart.incomplete)
+    # Planned serve/dashboard runtimes reconciliation could not account for (still on old code).
+    _serves_missed: list = []
     # Restart a managed dashboard via systemd or stop stale manual ones (raw-killing
     # a systemd-owned PID reads as clean stop and leaves the Cloudflare origin dead).
     # Already-restarted units aren't redone.
@@ -246,6 +251,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         _fleet_snapshot = _collect_fleet_snapshot(restart, _fleet_rows_expected)
         if print_fleet_version_matrix(_fleet_snapshot):
             restart.incomplete = True
+            _gateway_owed = True
             # A proven-stale survivor must not keep running (its ticker yields every tick and
             # nothing else restarts it, #117275): hand it to the drain-first restart path.
             from hermes_cli.update_cmd_stale_survivors import signal_stale_fleet_survivors
@@ -264,6 +270,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 " gateway runtimes were expected — verification incomplete."
             )
             restart.incomplete = True
+            _gateway_owed = True
 
     # Every runtime the PLAN saw must appear in restart bookkeeping; an
     # unaccounted one is a silent miss and escalates like a STALE/DOWN row.
@@ -307,37 +314,31 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                     outcome["outcome"] = "deferred"
             if report_unaccounted_runtimes(_runtime_outcomes):
                 restart.incomplete = True
+                # Reconciliation covers both runtime kinds: missed serve work is not gateway debt.
+                from hermes_cli.update_inventory import _SERVE_KINDS
+                _missed = [row for row in _runtime_outcomes if row.get("outcome") == "unaccounted"]
+                _gateway_owed |= any(row.get("kind") not in _SERVE_KINDS for row in _missed)
+                _serves_missed = [row for row in _missed if row.get("kind") in _SERVE_KINDS]
             with suppress(Exception):
                 import hermes_cli.update_receipt as _ur
                 _active = _ur._current.get()
                 if _active is not None:
                     _active.data["runtime_outcomes"] = _runtime_outcomes
 
-    if not restart.incomplete:
+    if not _gateway_owed:
         with _best_effort('Owed-gateway check failed: %s'):
             if _named_gateways_still_owed():
                 # A gateway a previous run could not restart is still not serving HEAD (nothing
                 # live to restart this time): keep owing it rather than clearing the obligation.
                 print("  ⚠ A gateway owed a restart by a previous update is still not serving this checkout.")
                 restart.incomplete = True
+                _gateway_owed = True
     if getattr(restart, "stopped_unmapped_pids", None):
         # A gateway stopped with no successor is owed a restart, not "accounted for": keep the
         # fleet obligation armed so the startup warning names it until someone restarts it.
         restart.incomplete = True
-    if restart.incomplete:
-        # Code is committed (contract C3): a gateway that may still run stale modules is a
-        # follow-up, never a failed update. The fleet obligation stays armed, every CLI start
-        # warns about it, and the next `hermes update` retries the restart.
-        from hermes_cli.update_receipt import record_followup
-        stopped = sorted(getattr(restart, "stopped_unmapped_pids", None) or ())
-        record_followup(
-            "gateway_restart",
-            "gateways may still run pre-update code or were stopped without a successor"
-            + (f" (stopped PIDs {', '.join(map(str, stopped))})" if stopped else "")
-            + "; recover with `hermes gateway restart`",
-        )
-        with _best_effort('Fleet restart inventory not recorded: %s'):
-            _record_owed_gateway_inventory(_pre_update_plan, stopped)
+        _gateway_owed = True
+    _record_restart_followup(restart, _dashboards_down, _serves_missed, _gateway_owed, _pre_update_plan)
     with _best_effort('Update receipt finalize failed: %s'):
         from hermes_cli.update_receipt import finalize_update_receipt
         # A False ``update_complete`` (unsafe SQLite runtime, owed tail work) never fails the
@@ -346,9 +347,11 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         if _receipt_path is not None:
             logger.info("Update receipt written: %s", _receipt_path)
 
-    if restart.incomplete:
+    if _gateway_owed:
         return
     fleet._clear_fleet_restart_pending_marker()
+    if restart.incomplete:
+        return
     if not update_complete:
         # Fleet caught up, but the selected runtime's SQLite is unsafe or the tail is still owed
         # (both reported by the completion): leave the topology alone until they are repaired.
@@ -361,3 +364,36 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     except (Exception, SystemExit) as exc:  # health: allow BLE001 -- a SystemExit here must not fail a committed update
         logger.warning('Multiplex auto-migration after update failed: %s', exc)
         print(f"  ⚠ Gateway multiplex migration did not finish: {exc} (run `hermes gateway migrate` later)")
+
+
+def _record_restart_followup(restart, dashboards_down, serves_missed, gateway_owed, plan):
+    if not restart.incomplete:
+        return
+    # Code is committed (contract C3): a gateway that may still run stale modules is a
+    # follow-up, never a failed update. The fleet obligation stays armed, every CLI start
+    # warns about it, and the next `hermes update` retries the restart.
+    from hermes_cli.update_receipt import record_followup
+    stopped = sorted(getattr(restart, "stopped_unmapped_pids", None) or ())
+    # Each debt gets its own follow-up: a gateway restart cannot restore a stopped dashboard,
+    # and a dashboard remedy cannot catch a gateway still running old code.
+    if dashboards_down or serves_missed:
+        details = []
+        if dashboards_down:
+            details.append(f"stopped without a successor: PIDs {', '.join(map(str, sorted(dashboards_down)))}")
+        if serves_missed:
+            pids = sorted(row["pid"] for row in serves_missed if row.get("pid") is not None)
+            details.append("still on pre-update code" + (f": PIDs {', '.join(map(str, pids))}" if pids else ""))
+        record_followup(
+            "dashboard_restart",
+            f"web dashboard/serve backends are not on the updated code ({'; '.join(details)})"
+            "; recover with `hermes dashboard --port <port>`",
+        )
+    if gateway_owed:
+        record_followup(
+            "gateway_restart",
+            "gateways may still run pre-update code or were stopped without a successor"
+            + (f" (stopped PIDs {', '.join(map(str, stopped))})" if stopped else "")
+            + "; recover with `hermes gateway restart`",
+        )
+        with _best_effort('Fleet restart inventory not recorded: %s'):
+            _record_owed_gateway_inventory(plan, stopped)

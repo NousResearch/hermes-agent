@@ -54,15 +54,23 @@ def take_turn_report_path(environ: MutableMapping[str, str] = os.environ) -> str
     return environ.pop(TURN_REPORT_FILE_ENV, None) or None
 
 
-def write_turn_report(path: str | None, *, exit_code: int, error: str = "", reply: str = "") -> None:
-    """Atomically record ``{pid, exit_code, error, reply}`` at *path*; a no-op without a path. Never
-    raises: the report is the spawner's convenience, the turn itself is already persisted. ``reply``
-    is what the run will print — a spawner booking a lingering child from its report relays it."""
+def write_turn_report(path: str | None, *, exit_code: int, error: str = "", reply: str = "",
+                      turn_exit_reason: str = "") -> None:
+    """Atomically record ``{pid, exit_code, error, reply, turn_exit_reason}`` at *path*; a no-op
+    without a path. Never raises: the report is the spawner's convenience, the turn itself is
+    already persisted. ``reply`` is what the run will print — a spawner booking a lingering child
+    from its report relays it. ``turn_exit_reason`` is the loop's typed outcome (e.g.
+    ``max_iterations_reached(60/60)``) — the ONLY machine-readable way a spawner of the ``-q``
+    contract can tell budget exhaustion apart from an ordinary failed turn, since the usage-file
+    report is ``-z``-only. Non-empty only when the loop finalized the turn (``finalize_turn``);
+    the early-abort paths (``_failed_turn_result``, ``abort_turn_on_interrupt``) never set a
+    typed reason, so their spawner sees ``""`` — unknown, never invented."""
     if not path:
         return
     from utils import atomic_json_write
 
-    record = {"pid": os.getpid(), "exit_code": int(exit_code), "error": str(error or ""), "reply": str(reply or "")}
+    record = {"pid": os.getpid(), "exit_code": int(exit_code), "error": str(error or ""), "reply": str(reply or ""),
+              "turn_exit_reason": str(turn_exit_reason or "")}
     # 0600 from creation: the record now carries the turn's answer, like the 0600 query file beside it.
     with contextlib.suppress(Exception):
         atomic_json_write(path, record, indent=None, mode=0o600)
@@ -86,9 +94,20 @@ def read_turn_report(path: str, pid: int) -> dict | None:
 REPORTED_TURN_EXIT_GRACE_SECONDS = 2.0
 
 
+class TurnReportedProcess(subprocess.CompletedProcess):
+    """What ``run_reported_turn`` returns: the ``CompletedProcess`` plus ``turn_exit_reason``.
+
+    A plain attribute stamp is what the report's extra key demands — the caller never sees the
+    report file itself (the relay lane unlinks it, the cron lane reads only the return), so the
+    loop's typed outcome must ride the return. ``""`` when no report was written or the loop
+    typed no reason (early-abort paths never set one; unknown, never invented)."""
+
+    turn_exit_reason: str = ""
+
+
 def run_reported_turn(argv: list, *, env: MutableMapping[str, str], report_path: str, timeout: float,
                       exit_grace: float | None = REPORTED_TURN_EXIT_GRACE_SECONDS, cwd: str | None = None,
-                      encoding: str | None = None) -> subprocess.CompletedProcess:
+                      encoding: str | None = None) -> "TurnReportedProcess":
     """Run one ``hermes chat -Q`` delivery child; *timeout* bounds the TURN, not the process.
 
     The child records its turn at *report_path* (``write_turn_report``) the moment the turn ends,
@@ -101,6 +120,12 @@ def run_reported_turn(argv: list, *, env: MutableMapping[str, str], report_path:
     spawner that needs only the outcome, or at the cap when *exit_grace* is None, for a spawner
     that relays the printed answer — a teammate's reply during the linger may still become it.
     Only a turn that never ends is killed, as ``subprocess.TimeoutExpired``.
+
+    The returned ``CompletedProcess`` carries ``turn_exit_reason`` — the loop's typed outcome from
+    the child's report (``""`` when no report was written or the loop typed none). The report file
+    is a cross-process channel the callers never see: the relay lane unlinks it in its ``finally``
+    and the cron lane reads only the return, so the reason must ride the return or no spawner can
+    read it.
 
     *cwd* pins the child's directory (a spawner sitting in a reaped scratch workspace must not
     hand its dead cwd on — the child dies at CLI startup, #102941). The pipes decode lossily
@@ -132,7 +157,12 @@ def run_reported_turn(argv: list, *, env: MutableMapping[str, str], report_path:
     while True:
         drain.join(timeout=exit_grace if report is not None and exit_grace is not None else 0.25)
         if not drain.is_alive():
-            return subprocess.CompletedProcess(argv, proc.returncode, streams.get("out", ""), streams.get("err", ""))
+            proc_done = TurnReportedProcess(argv, proc.returncode, streams.get("out", ""), streams.get("err", ""))
+            # The child may have stamped its report before exiting; the typed reason rides home
+            # on the return either way (the caller never sees the report path).
+            early = read_turn_report(report_path, proc.pid) or {}
+            proc_done.turn_exit_reason = str(early.get("turn_exit_reason") or "")
+            return proc_done
         if report is not None and exit_grace is not None:
             break
         # Re-read while waiting for the cap: a follow-up turn rewrites the report with its answer.
@@ -151,8 +181,10 @@ def run_reported_turn(argv: list, *, env: MutableMapping[str, str], report_path:
                 break
             raise subprocess.TimeoutExpired(argv, timeout)
     # Turn over, child still lingering for a nested reply: not this spawner's wait.
-    return subprocess.CompletedProcess(
+    booked = TurnReportedProcess(
         argv, int(report["exit_code"]), report.get("reply") or "", report.get("error") or "")
+    booked.turn_exit_reason = str(report.get("turn_exit_reason") or "")
+    return booked
 
 
 @contextlib.contextmanager

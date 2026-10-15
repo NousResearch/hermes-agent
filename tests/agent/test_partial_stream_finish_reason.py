@@ -15,6 +15,7 @@ Pins the contract:
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -135,22 +136,21 @@ class TestTerminalChunkFenceException:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_superseded_writer_still_fences_further_content(
+    def test_superseded_writer_fences_live_tail_without_truncating_final(
         self, _mock_close, mock_create, monkeypatch,
     ):
         monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
-        agent_box = {}
+        first_consumed = threading.Event()
+        superseded = threading.Event()
 
         class SupersedeBeforeMoreText:
             response = SimpleNamespace(headers={})
 
             def __iter__(self):
                 yield _make_stream_chunk(content="kept ")
-                agent_box["agent"]._claim_stream_writer()
-                # A False accept_chunk ends consumption; this text must
-                # never reach the accumulator, and the later finish chunk
-                # is never seen (the fence still stops *further* content).
-                yield _make_stream_chunk(content="must-not-append")
+                first_consumed.set()
+                assert superseded.wait(timeout=2)
+                yield _make_stream_chunk(content="preserved")
                 yield _make_stream_chunk(finish_reason="stop")
 
         mock_client = MagicMock()
@@ -158,13 +158,25 @@ class TestTerminalChunkFenceException:
         mock_create.return_value = mock_client
 
         agent = _make_agent()
-        agent_box["agent"] = agent
-        response = agent._interruptible_streaming_api_call({})
+        delivered = []
+        agent.stream_delta_callback = delivered.append
+        agent._stream_callback = None
 
-        content = response.choices[0].message.content or ""
-        assert "must-not-append" not in content
-        assert "kept" in content
-        assert response.id == PARTIAL_STREAM_STUB_ID
+        def claim_new_writer():
+            assert first_consumed.wait(timeout=2)
+            agent._claim_stream_writer()
+            superseded.set()
+
+        claimant = threading.Thread(target=claim_new_writer)
+        claimant.start()
+        response = agent._interruptible_streaming_api_call({})
+        claimant.join(timeout=3)
+
+        assert not claimant.is_alive()
+        assert "".join(delivered) == "kept "
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "stop"
+        assert response.choices[0].message.content == "kept preserved"
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")

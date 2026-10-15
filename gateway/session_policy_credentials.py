@@ -20,6 +20,9 @@ def policy_identity(policy):
         data.pop('editor_mcp_json', None)
     if not data.get('coding_posture'):
         data.pop('coding_posture', None)
+    for key in ('reasoning_pinned', 'service_tier_pinned'):
+        if not data.get(key):
+            data.pop(key, None)
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 

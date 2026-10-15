@@ -112,6 +112,7 @@ class CanonicalSnapshotInfo(SessionInventoryFields):
     started_at: float | None = None
     last_active_at: float | None = None
     yolo: bool | None = None
+    base_url: str | None = None
     api_mode: str | None = None
     tool_count: int | None = None
     credential_hint: str | None = None

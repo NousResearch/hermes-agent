@@ -37,7 +37,7 @@ def _queue_prompt(state: SessionState, text: str) -> int:
 # run_conversation tears the running turn. Gateway parity: all three are idle-only there.
 # The command_op flag is held for the whole handler so a turn cannot claim the session in
 # the check-then-act window (the /compress LLM call and /model agent rebuild take seconds).
-_MID_TURN_BLOCKED_COMMANDS = frozenset({"reset", "compress", "model"})
+_MID_TURN_BLOCKED_COMMANDS = frozenset({"reset", "compress", "model", "reasoning", "fast"})
 
 
 class SlashCommandsMixin:
@@ -52,6 +52,8 @@ class SlashCommandsMixin:
             "Show current model and provider, or switch models",
             "model name to switch to",
         ),
+        "reasoning": ("Show or change reasoning effort", "Show or change reasoning effort", "level"),
+        "fast": ("Show or change fast mode", "Show or change fast mode", "normal|fast|ultrafast|auto|cold|status"),
         "tools": ("List available tools", "List available tools with descriptions", None),
         "context": ("Show conversation context info", "Show conversation message counts by role", None),
         "reset": ("Clear conversation history", "Clear conversation history", None),
@@ -142,6 +144,8 @@ class SlashCommandsMixin:
             provider = getattr(state.agent, "provider", None) or "auto"
             return f"Current model: {model}\nProvider: {provider}"
 
+        from acp_adapter.config_options import text_selection
+        args = text_selection(args)
         current_provider, target_provider, new_model = self._switch_model(state, args)
         provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider or "openrouter"
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
@@ -241,6 +245,7 @@ class SlashCommandsMixin:
             reset_session_state = getattr(state.agent, "reset_session_state", None)
             if callable(reset_session_state):
                 reset_session_state()
+            self._reset_controls(state)
         except Exception:
             logger.warning("ACP session state reset failed for %s", state.session_id, exc_info=True)
             return "Conversation history cleared. Agent session state reset failed; see logs."

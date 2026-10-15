@@ -13,7 +13,7 @@ from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 _READS = frozenset({'context', 'usage', 'status', 'version'})
 _MUTATIONS = frozenset({'model', 'compress', 'new', 'branch'})
 _PROMPTS = frozenset({'steer', 'queue'})
-COMMANDS = _READS | _MUTATIONS | _PROMPTS | {'help', 'tools'}
+COMMANDS = _READS | _MUTATIONS | _PROMPTS | {'help', 'tools', 'reasoning', 'fast'}
 
 
 async def run_command(agent, session_id, command, arg):
@@ -22,6 +22,8 @@ async def run_command(agent, session_id, command, arg):
     from acp_adapter.gateway_session_meta import help_text
     if command not in COMMANDS:
         raise GatewayClientError('unsupported_command')
+    if command in {'reasoning', 'fast'}:
+        return await agent._control_command(session_id, command, arg), None
     if command == 'branch':
         raise GatewayClientError('use_acp_fork_session')
     if command == 'help':
@@ -85,6 +87,8 @@ async def _mutate(agent, client, session_id, command, arg):
         reply = _summary_text(result) or 'No changes from compression.'
     else:
         agent._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
+        if operation == 'model':
+            await agent._send_config_options(session_id)
         if operation in {'reset', 'compress'}:
             await _refresh_context(agent, client, session_id, operation)
         reply = {'model': lambda: _model_text('Model switched to', result),

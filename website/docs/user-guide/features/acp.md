@@ -358,7 +358,8 @@ the variable is set.
 
 ## Session behavior
 
-ACP sessions are tracked by the ACP adapter's in-memory session manager while the server is running.
+The standard ACP launcher attaches to sessions owned by the profile's gateway.
+An explicitly supplied in-process session manager is also supported for embedded use.
 
 Each session stores:
 
@@ -370,14 +371,47 @@ Each session stores:
 
 Conversations are persisted to Hermes' session database and can be listed, loaded,
 resumed, or forked after the ACP server restarts. Opening a new session without a
-prompt keeps it in memory only: model-discovery probes do not create empty history
-rows. A nonempty fork is persisted immediately, and existing session metadata can
-still be updated even when its current history is empty.
+prompt or explicit setting keeps it in memory only in the in-process manager:
+model-discovery probes do not create empty history rows. Explicit settings and
+nonempty forks are persisted immediately, and existing session metadata can still
+be updated even when its current history is empty.
 
 Existing empty rows from older versions are not automatically deleted. An open ACP
 row does not prove its client has disconnected. After closing the relevant editor
 sessions, inspect unwanted rows with `hermes sessions show <id>` and remove only
 confirmed unwanted sessions with `hermes sessions delete <id>`.
+
+### Model, reasoning and fast controls
+
+Hermes advertises native `configOptions` for **Model**, **Reasoning** and **Fast mode**
+on new, loaded, resumed and forked sessions. These use the pinned SDK's negotiated
+protocol v1 select options; this does not imply full ACP v2 support. Legacy model
+and mode fields remain available. Hosts decide how to render the selectors; SDK
+contract tests do not establish live acceptance in every editor UI.
+
+The equivalent text controls are `/model <provider:model>`, `/reasoning <level>`
+and `/fast <normal|fast|ultrafast|auto|cold>`. Bare `/model`, `/reasoning` and `/fast`
+show current settings. Changes apply to this session and survive resume and fork;
+changing a fork's settings leaves its parent unchanged. `--global` is rejected:
+change profile defaults through Hermes configuration instead.
+
+Reasoning choices follow the current model route's canonical effort vocabulary.
+Fast choices follow route support and Ultrafast availability. **Paid fast tiers can
+increase cost** and require an explicit choice or a previously configured default.
+Selecting a model does not enable a paid tier. `auto` opens a bounded fast window
+on each user turn; `cold` opens one only on a session's first turn. Existing tier
+intent remains visible when switching to a route where it cannot apply; choose
+`normal` to disable it. Unsupported new selections are refused.
+
+Native and text controls use the same mutation boundaries. Busy sessions and
+owner refusals do not publish a successful setting change. Successful changes and
+owner setting events refresh the complete option set, including model-dependent
+availability. Model validation and guarded-model confirmation remain in effect.
+These controls do not change edit or tool permission policy.
+
+`/reset` clears conversation history. On the gateway it retains session settings;
+the embedded in-process adapter restores reasoning and fast controls to configured
+defaults while retaining the selected model.
 
 ## Working directory behavior
 

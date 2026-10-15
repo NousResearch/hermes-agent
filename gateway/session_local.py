@@ -254,40 +254,63 @@ def _lazy_model(authority, policy):
         return GUEST_MODEL if free_tier_route() else model
 
 
-def _reasoning_fields(agent, policy, model, authority=None, override=None):
+def _reasoning_fields(agent, policy, model, authority=None, conversation=None):
     """Main's session-info effort/tier fields, from the built agent or (lazy) what the policy's next turn
     resolves (a following session's current profile): a resumed Desktop slice holds its reasoning pill
     pending until ``reasoning_effort`` arrives."""
     from agent.fast_mode import STATIC_TIERS, parse_service_tier
     from agent.reasoning_effort import clamp_effort, route_supported_efforts
     from agent.voice_turn_route import session_runtime_view
+    from gateway.session_state import SERVICE_TIER_UNSET
     from hermes_cli.models import resolve_fast_mode_overrides
     if agent is None and policy is None:
         return {}
     view = session_runtime_view(agent) if agent is not None else None
-    if view is None:
-        from hermes_constants import resolve_reasoning_config
-        effective, next_model = policy.effective(authority, secrets=False)
+    if policy is not None:
+        from gateway.session_authorities import owner_scope
+        from gateway.run_turn_prepare import _resolve_policy_agent_runtime
+        from hermes_cli.anon_auth import pin_model_for_route
+        from hermes_cli.auth import AuthError
+        with owner_scope(authority):
+            effective, next_model = policy.effective(authority, secrets=False)
+            # Execution resolves the session's reasoning policy independently of auth fallback.
+            config = policy.current_reasoning_config(authority.runner)
+            # A resident agent describes the previous turn. Resolve the current policy
+            # exactly as turn preparation does, including provider defaults/fallbacks.
+            try:
+                next_model, runtime = _resolve_policy_agent_runtime(authority.runner, policy)
+                model = pin_model_for_route(runtime.get('provider'), runtime.get('base_url'), next_model or model)
+            except (AuthError, RuntimeStoreError):
+                # Revoked launch credentials must not make retained history unreadable.
+                # Only the public current policy remains known; never reuse a stale agent.
+                runtime = {}
         route = effective.get('model') or {}
-    config = (getattr(view, 'reasoning_config', None) if view is not None
-              else override if override is not None else resolve_reasoning_config(effective, next_model or ''))
-    tier = (getattr(view, 'service_tier', None) if view is not None
-            else parse_service_tier((effective.get('agent') or {}).get('service_tier'))) or ''
-    provider = getattr(view, 'provider', None) if view is not None else route.get('provider')
-    base_url = getattr(view, 'base_url', None) if view is not None else route.get('base_url')
+        route = {key: runtime.get(key, route.get(key)) for key in ('provider', 'base_url', 'api_mode')}
+        tier = parse_service_tier((effective.get('agent') or {}).get('service_tier'))
+    else:
+        config = getattr(view, 'reasoning_config', None)
+        tier = getattr(view, 'service_tier', None)
+        route = {key: getattr(view, key, None) for key in ('provider', 'base_url', 'api_mode')}
+    if conversation is not None:
+        if conversation.reasoning_override is not None:
+            config = conversation.reasoning_override
+        if conversation.service_tier_override is not SERVICE_TIER_UNSET:
+            tier = conversation.service_tier_override
+    provider, base_url, api_mode = (route.get(key) for key in ('provider', 'base_url', 'api_mode'))
     effort = ''
     if isinstance(config, dict):
         effort = 'none' if config.get('enabled') is False else str(config.get('effort') or '')
     wire = ''
     if effort and effort != 'none':
         wire = str(clamp_effort(effort, route_supported_efforts(
-            provider, model, getattr(view, 'api_mode', None))) or '')
+            provider, model, api_mode)) or '')
     try:
         fast = tier in STATIC_TIERS and resolve_fast_mode_overrides(
             model, provider=provider or None, base_url=base_url or None, tier=tier) is not None
     except Exception:  # health: allow BLE001 -- main's _fast_tier_applies gate: unknown means not Fast
         fast = False
-    return {'reasoning_effort': effort, 'reasoning_effort_wire': wire, 'service_tier': tier, 'fast': fast}
+    return {'reasoning_effort': effort, 'reasoning_effort_wire': wire, 'service_tier': tier, 'fast': fast,
+            'model': model, 'provider': provider, 'base_url': base_url, 'api_mode': api_mode}
 
 
 def local_session_info(authority, ref):
@@ -297,8 +320,8 @@ def local_session_info(authority, ref):
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, live.source)
     info = {'source': policy.source if policy else live.source.platform.value,
-            'model': (getattr(agent, 'model', policy.current_model(authority) if policy else None) if agent is not None
-                      else _lazy_model(authority, policy)),
+            'model': (_lazy_model(authority, policy) if policy is not None
+                      else getattr(agent, 'model', None)),
             'lazy': agent is None,
             'profile_id': authority.profile_id, 'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL,
             # Main's TUI labels a named profile's composer (``alpha ❯``) from this field.
@@ -306,20 +329,20 @@ def local_session_info(authority, ref):
             **({'cwd': policy.cwd} if policy else {})}
     peek = getattr(authority.runner, '_peek_session_state', None)
     state = peek(live.route) if peek is not None else None
-    override = state.conversation.reasoning_override if state is not None else None  # a typed /reasoning
-    info.update(_reasoning_fields(agent, policy, info['model'], authority, override))
+    fields = _reasoning_fields(agent, policy, info['model'], authority, state.conversation if state else None)
     if policy:
         # The creation request the route was frozen with (secrets already extracted), so a
         # resuming client can tell "same flags again" from a real override attempt.
         import json
         info['launch_request'] = json.loads(policy.request_json)
     info.update(_classic_cli_fields(authority, ref, live, agent, policy))
+    info.update(fields)
     return info
 
 
 def _classic_cli_fields(authority, ref, live, agent, policy):
     """What main's HermesCLI read off itself for /status, the status bar and the exit summary: the
-    stored title and times, the session's yolo, api_mode, the loaded tool count and a masked
+    stored title and times, the session's yolo, the loaded tool count and a masked
     credential hint (never the key). Lazy sessions report what is known without building an agent."""
     import contextlib
     stored_id = ref.session_id
@@ -333,10 +356,6 @@ def _classic_cli_fields(authority, ref, live, agent, policy):
     with contextlib.suppress(Exception):
         from tools.approval import is_session_yolo_enabled
         yolo = yolo or is_session_yolo_enabled(live.route)
-    api_mode = getattr(agent, 'api_mode', None) if agent is not None else None
-    if api_mode is None and policy is not None:
-        with contextlib.suppress(Exception):
-            api_mode = (policy.effective(authority, secrets=False)[0].get('model') or {}).get('api_mode')
     hint = None
     if agent is not None and getattr(agent, 'api_key', None):
         from agent.redact import mask_secret
@@ -345,5 +364,5 @@ def _classic_cli_fields(authority, ref, live, agent, policy):
     started = row.get('started_at')
     return {'title': row.get('title'), 'started_at': started,
             'last_active_at': row.get('last_activity_at') or started, 'yolo': yolo,
-            'api_mode': api_mode or None, 'tool_count': len(tools) if isinstance(tools, list) else None,
+            'tool_count': len(tools) if isinstance(tools, list) else None,
             'credential_hint': hint}

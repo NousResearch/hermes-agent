@@ -151,6 +151,8 @@ class SessionState:
     # Per-session allocator for ACP assistant messageIds (lazily created by
     # the server so streamed chunks group into distinct assistant replies).
     message_ids: Any = None
+    control_values: dict[str, str] = field(default_factory=dict)
+    control_revision: int = 0
 
 
 class SessionManager:
@@ -200,10 +202,26 @@ class SessionManager:
         original = self.get_session(session_id)  # checks DB too
         if original is None:
             return None
+        with original.runtime_lock:
+            if original.is_running or original.command_op:
+                raise RuntimeError("Session is busy; fork while the session is idle")
+            model = original.model
+            history, controls = copy.deepcopy(original.history), copy.deepcopy(original.control_values)
+            persist = bool(history or controls)
+            from acp_adapter.config_options import runtime_info
+            from agent.fast_mode import service_tier_word
+            info = runtime_info(original)
+            controls.setdefault("fast", service_tier_word(info["service_tier"]))
+            controls.setdefault("reasoning", info["reasoning_effort"])
+            route = {"requested_provider": getattr(original.agent, "provider", None),
+                     "base_url": getattr(original.agent, "base_url", None),
+                     "api_mode": getattr(original.agent, "api_mode", None),
+                     "enabled_toolsets": copy.deepcopy(getattr(original.agent, "enabled_toolsets", None)),
+                     "disabled_toolsets": copy.deepcopy(getattr(original.agent, "disabled_toolsets", None))}
         new_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=new_id, cwd=cwd, model=original.model or None)
-        model = getattr(agent, "model", original.model) or original.model
-        state = self._install_state(new_id, agent, cwd, model, copy.deepcopy(original.history))
+        agent = self._make_agent(session_id=new_id, cwd=cwd, model=model or None, **route)
+        model = getattr(agent, "model", model) or model
+        state = self._install_state(new_id, agent, cwd, model, history, persist=persist, controls=controls)
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
@@ -305,10 +323,12 @@ class SessionManager:
     # ---- persistence via SessionDB ------------------------------------------
 
     def _install_state(self, session_id: str, agent: Any, cwd: str, model: str,
-                       history: list[dict[str, Any]], *, persist: bool = True) -> SessionState:
+                       history: list[dict[str, Any]], *, persist: bool = True, controls: dict | None = None) -> SessionState:
         """Build a SessionState, register it in memory, bind its cwd for tools, optionally persist."""
         state = SessionState(session_id=session_id, agent=agent, cwd=cwd, model=model,
                              history=history, cancel_event=threading.Event())
+        from acp_adapter.session_controls import restore_controls
+        restore_controls(state, controls or {})
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)
@@ -349,6 +369,8 @@ class SessionManager:
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
+        if state.control_values:
+            session_meta["acp_controls"] = copy.deepcopy(state.control_values)
         for key in ("provider", "base_url", "api_mode"):
             value = getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
@@ -356,7 +378,7 @@ class SessionManager:
 
         try:
             if db.get_session(state.session_id) is None:
-                if not state.history:
+                if not state.history and not state.control_values:
                     # Empty editor probes stay ephemeral; copied fork history persists.
                     return
                 db.create_session(session_id=state.session_id, source="acp", model=model_str,
@@ -486,7 +508,7 @@ class SessionManager:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
         state = self._install_state(session_id, agent, cwd, model or getattr(agent, "model", "") or "",
-                                    history, persist=False)
+                                    history, persist=False, controls=meta.get("acp_controls"))
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
         return state
 
@@ -577,6 +599,11 @@ class SessionManager:
             if resolve_error is not None:
                 raise resolve_error from exc
             raise
+        if "service_tier" in (config.get("agent") or {}):
+            from agent.fast_mode import parse_service_tier, service_tier_word
+            from acp_adapter.session_controls import apply_control
+            tier = parse_service_tier(config["agent"]["service_tier"])
+            apply_control(agent, "fast", service_tier_word(tier))
         # ACP stdio: stdout is protocol-only JSON-RPC; agent chatter goes to stderr.
         agent._print_fn = _acp_stderr_print
         return agent

@@ -12,7 +12,7 @@ from hermes_state_runtime import RuntimeStoreError, mutate_runtime_session
 
 _METADATA = frozenset({'rename', 'archive', 'sidebar'})
 # Prepared off the commit like model, then published as a new frozen policy.
-_POLICY = frozenset({'model', 'reasoning', 'workspace', 'editor_mcp'})
+_POLICY = frozenset({'model', 'reasoning', 'service_tier', 'workspace', 'editor_mcp'})
 _FIELDS = frozenset({'session_id', 'request_id', 'expected_revision', 'operation', 'payload'})
 
 
@@ -252,8 +252,11 @@ def _project_committed(authority, ref, operation, result):
     if operation == 'reasoning':
         # The picked level is the policy's now; a typed /reasoning override must not shadow it.
         authority.runner._set_session_reasoning_override(authority.sessions[ref.session_id].route, None)
-    if operation in {'reasoning', 'workspace'}:
-        # Every viewer repaints its reasoning pill / workspace from the published policy, as main's
+    if operation == 'service_tier':
+        authority.runner._set_session_service_tier_override(
+            authority.sessions[ref.session_id].route, None, clear=True)
+    if operation in {'model', 'reasoning', 'service_tier', 'workspace'}:
+        # Every viewer repaints its model / reasoning pill / workspace from the published policy, as main's
         # _emit_session_info did after the live change.
         from gateway.session_local import local_session_info
         authority.sessions[ref.session_id].event_stream.publish(

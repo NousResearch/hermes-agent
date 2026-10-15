@@ -20,6 +20,13 @@ def validate_action(operation, payload):
         from hermes_constants import parse_reasoning_effort
         if parse_reasoning_effort(payload['effort']) is not None:
             return
+    if operation == 'service_tier' and set(payload) == {'service_tier'} and isinstance(payload['service_tier'], str):
+        from agent.fast_mode import parse_exact_service_tier
+        try:
+            parse_exact_service_tier(payload['service_tier'])
+        except ValueError:
+            raise RuntimeStoreError('invalid_params') from None
+        return
     if operation == 'workspace' and set(payload) == {'cwd'} and isinstance(payload['cwd'], str) and payload['cwd'].strip():
         return
     # The editor's MCP servers (gateway/session_local_mcp.py): the owner keeps the list in memory and
@@ -81,7 +88,7 @@ def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
     if operation == 'compress':
         from hermes_state_mutation_compress import compress_in_transaction
         return compress_in_transaction(db, conn, session_id, payload, prepared)
-    if operation in {'model', 'reasoning', 'workspace', 'editor_mcp'}:
+    if operation in {'model', 'reasoning', 'service_tier', 'workspace', 'editor_mcp'}:
         from hermes_state_mutation_prepared import POLICY_HANDLERS
         return POLICY_HANDLERS[operation](db, conn, session_id, payload, prepared)
     if operation == 'branch':

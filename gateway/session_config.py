@@ -100,13 +100,13 @@ async def config_get(connection, ref, params):
 
 
 def _fast(connection, ref, policy, agent, cfg):
-    from agent.fast_mode import parse_service_tier
+    from agent.fast_mode import parse_service_tier, service_tier_word
     if ref.session_id:  # the session's next-turn tier: its /fast pin, else its policy's
         from gateway.session_tui_config import current_tier
         tier = current_tier(connection, ref, policy)
     else:
         tier = getattr(agent, 'service_tier', None) or parse_service_tier(cfg.get('agent', {}).get('service_tier'))
-    return {'value': {'priority': 'fast', 'ultrafast': 'ultrafast'}.get(tier, 'normal')}
+    return {'value': service_tier_word(tier)}
 
 
 def _reasoning(agent, policy, cfg, connection=None, ref=None):

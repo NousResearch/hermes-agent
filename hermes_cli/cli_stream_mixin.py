@@ -266,11 +266,20 @@ class CLIStreamMixin:
         # Emit complete lines; force-flush long partial lines so reasoning is visible in
         # real-time even without newlines.
         while "\n" in self._reasoning_buf:
-            line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
+            line, rest = self._reasoning_buf.split("\n", 1)
+            if not line and not rest.strip("\n"):
+                break  # hold trailing newlines: thinking text ends with "\n\n" before the footer
+            self._reasoning_buf = rest
+            if not line.strip() and getattr(self, "_reasoning_partial_flushed", False):
+                # This newline only ends a force-flushed partial line that is already printed.
+                self._reasoning_partial_flushed = False
+                continue
+            self._reasoning_partial_flushed = False
             _cprint(f"{_DIM}{line}{_RST}")
-        if len(self._reasoning_buf) > 80:
+        if "\n" not in self._reasoning_buf and len(self._reasoning_buf) > 80:
             _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
             self._reasoning_buf = ""
+            self._reasoning_partial_flushed = True
 
     def _agent_status_print(self, *args, **kwargs) -> None:
         """``agent._print_fn`` for the interactive CLI: agent status lines (subagent completion ``✓ [set n · i/N]``,
@@ -296,10 +305,11 @@ class CLIStreamMixin:
         from cli import _DIM, _RST, _cprint
         if not getattr(self, "_reasoning_box_opened", False):
             return
-        buf = getattr(self, "_reasoning_buf", "")
+        buf = getattr(self, "_reasoning_buf", "").rstrip("\n")
         if buf:
             _cprint(f"{_DIM}{buf}{_RST}")
-            self._reasoning_buf = ""
+        self._reasoning_buf = ""
+        self._reasoning_partial_flushed = False
         w = self._scrollback_box_width()
         _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
         self._reasoning_box_opened = False
@@ -536,6 +546,7 @@ class CLIStreamMixin:
         self._stream_last_was_newline = True
         self._reasoning_box_opened = False
         self._reasoning_buf = ""
+        self._reasoning_partial_flushed = False
         self._reasoning_preview_buf = ""
         # A batch cancelled/errored before any tool.started would otherwise mute the next turn's line.
         self.__dict__.pop("_tool_gen_announced", None)

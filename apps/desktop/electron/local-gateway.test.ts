@@ -501,3 +501,9 @@ test('an ensure refusal names its remedy instead of only a status pointer', asyn
     code: 3, stdout: JSON.stringify({ state: 'incompatible', reason_code: 'runtime_protocol', detail, endpoint: null })
   }))).rejects.toThrow(`Gateway incompatible (runtime_protocol). ${detail}. Use hermes gateway status for recovery.`)
 })
+
+test('an update-paused ensure refusal points to the restart that completes its tail', async () => {
+  await expect(ensureLocalGateway(async () => ({
+    code: 6, stdout: JSON.stringify({ state: 'draining', reason_code: 'update_paused', endpoint: null })
+  }))).rejects.toThrow('Gateway draining (update_paused). Use hermes gateway restart for recovery.')
+})

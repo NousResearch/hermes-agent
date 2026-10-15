@@ -1415,6 +1415,7 @@ def compute_error_backoff(
         LIVE_RETRY_WAIT_CAP_S, RETRY_AFTER_CAP_S, adaptive_rate_limit_backoff, jittered_backoff,
         provider_retry_after_seconds,
     )
+    from agent.agent_runtime_helpers import extract_api_error_context
     from agent.fallback_cooldown import switch_deferred_by_reset
     from hermes_cli.anon_auth import on_free_model
 
@@ -1425,7 +1426,7 @@ def compute_error_backoff(
     _retry_after = provider_retry_after_seconds(api_error)
     if _retry_after is not None:
         if is_rate_limited and _retry_after > RETRY_AFTER_CAP_S and not switch_deferred_by_reset(
-            agent, FailoverReason.rate_limit, time.time() + _retry_after,
+            agent, FailoverReason.rate_limit, extract_api_error_context(api_error).get("reset_at"),
         ):
             # A rate limit that reopens past the cap is a spent quota window (hours to days), not
             # a request bucket: no in-turn wait reaches it, and sleeping the cap only delays the

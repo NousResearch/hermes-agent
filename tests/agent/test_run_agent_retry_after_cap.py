@@ -150,3 +150,16 @@ class TestRetryAfterCap:
         with patch("hermes_cli.config.load_config", return_value=config):
             status, _ = self._drive_once(agent, error, "Waiting")
         assert "Waiting 600.0s" in status
+
+    def test_primary_is_kept_only_when_the_provider_reset_is_under_the_threshold(self, agent):
+        """The keep-the-primary check reads the same reset the fallback walk reads: a body reset
+        a day out wins over a 1000 s header, so the turn is not held on the primary for 600 s
+        waits only to switch once the retries run out."""
+        error = self._retryable_error(
+            429, {"retry-after": "1000"}, body={"error": {"resets_in_seconds": 86400}},
+        )
+        config = {"fallback": {"min_switch_reset_seconds": 3600}}
+        with patch("hermes_cli.config.load_config", return_value=config):
+            status, _ = self._drive_once(agent, error, "Waiting")
+        assert "Waiting 600.0s" not in status
+        assert "Waiting 0.0s" in status

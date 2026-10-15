@@ -1403,105 +1403,147 @@ def _skill_on_disk(tmp_path, name="budget-skill"):
     skill = tmp_path / name
     skill.mkdir(parents=True, exist_ok=True)
     (skill / "SKILL.md").write_text(
-        _skill_md(_desc_of_length(SKILL_PROMPT_DESC_LIMIT), name=name), encoding="utf-8"
+        _skill_md(_desc_of_length(SKILL_PROMPT_DESC_LIMIT), name=skill.name), encoding="utf-8"
     )
     return skill
 
 
+_EXISTING_WRITE_PAYLOADS = [
+    {"action": "edit", "content": VALID_SKILL_CONTENT_2},
+    {"action": "patch", "old_string": "Step 1.", "new_string": "Step 2."},
+    {"action": "write_file", "file_path": "references/a.md", "file_content": "new"},
+    {"action": "remove_file", "file_path": "references/a.md"},
+    {"action": "delete"},
+]
+
+
 class TestStagedWritePreflight:
-    """An invalid write payload must be rejected before it is staged.
+    """Invalid payloads never queue; valid writes still require and survive approval."""
 
-    Staging defers the real write — and the validation inside the action
-    handlers — to approval replay, so validation that only runs there surfaces
-    the failure after the user already reviewed and approved the pending
-    record.
-    """
-
-    @pytest.mark.parametrize("make_desc, via", [
-        pytest.param(_desc_of_length, "flat", id="flat-plain"),
-        pytest.param(_desc_with_quoted_tail, "flat", id="flat-quoted-tail"),
-        pytest.param(_desc_of_length, "batch", id="batch-plain"),
-    ])
-    def test_over_budget_description_is_not_staged(self, tmp_path, monkeypatch, make_desc, via):
-        """A create whose description overruns the budget never becomes pending,
-        and the rejection reports the length the budget check actually measured —
-        on the flat path and the batch path alike.
-
-        Both are entry points to the same gate, so a preflight wired into only
-        one of them leaves the other failing after approval.
-        """
-        from tools import write_approval as wa
-        content = _skill_md(make_desc(SKILL_PROMPT_DESC_LIMIT + 1))
-        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
-            if via == "flat":
-                raw = skill_manage(action="create", name="budget-skill", content=content)
-            else:
-                raw = skill_manage(action="", name="", operations=[
-                    {"action": "create", "name": "budget-skill", "content": content}])
-            result = json.loads(raw)
-            assert result.get("success") is False, result
-            assert result.get("staged") is not True, result
-            assert wa.pending_count(wa.SKILLS) == 0
-            error = result["error"]
-            assert f"{SKILL_PROMPT_DESC_LIMIT}-char system-prompt budget" in error
-            # The count reported is the one the limit was applied to.
-            assert f"Description is {SKILL_PROMPT_DESC_LIMIT + 1} chars" in error
-            if via == "flat":
-                # The budget measures the quote-stripped value, so a quoted tail
-                # must not inflate the number the user is told to cut to.
-                assert f"Description is {SKILL_PROMPT_DESC_LIMIT + 2} chars" not in error
-            else:
-                # Same prefix _validate_batch_ops uses, so one op's rejection is
-                # attributable in a multi-op batch.
-                assert error.startswith("operations[0]: "), error
-
-    @pytest.mark.parametrize("kwargs", [
+    @pytest.mark.parametrize("kwargs, via", [
         pytest.param(
             {"action": "create", "content": _skill_md(_desc_of_length(SKILL_PROMPT_DESC_LIMIT + 1))},
-            id="create-over-budget",
-        ),
-        pytest.param({"action": "create"}, id="create-missing-content"),
+            "flat", id="legacy-create-over-budget"),
         pytest.param(
-            {"action": "create", "content": _skill_md(_desc_of_length(SKILL_PROMPT_DESC_LIMIT)),
-             "category": "../escape"},
-            id="create-bad-category",
-        ),
+            {"action": "create", "content": _skill_md(_desc_with_quoted_tail(SKILL_PROMPT_DESC_LIMIT + 1))},
+            "flat", id="legacy-create-quoted-tail"),
         pytest.param(
-            {"action": "patch", "new_string": "Step 2."}, id="patch-missing-old-string",
-        ),
+            {"action": "create", "name": "new-skill",
+             "content": _skill_md(_desc_of_length(SKILL_PROMPT_DESC_LIMIT + 1))},
+            "batch", id="legacy-batch-description-budget"),
+        pytest.param({"action": "create"}, "flat", id="legacy-create-missing-content"),
         pytest.param(
-            {"action": "patch", "file_path": "../escape.md",
-             "old_string": "Step 1.", "new_string": "Step 2."},
-            id="patch-traversal",
-        ),
+            {"action": "create", "content": VALID_SKILL_CONTENT, "category": "../escape"},
+            "flat", id="legacy-create-bad-category"),
+        pytest.param({"action": "patch", "new_string": "Step 2."}, "flat", id="legacy-patch-missing-old-string"),
+        pytest.param(
+            {"action": "patch", "file_path": "../escape.md", "old_string": "Step 1.", "new_string": "Step 2."},
+            "flat", id="legacy-patch-traversal"),
         pytest.param(
             {"action": "write_file", "file_path": "../escape.md", "file_content": "x"},
-            id="write-file-traversal",
-        ),
+            "flat", id="legacy-write-file-traversal"),
         pytest.param(
             {"action": "write_file", "file_path": "notes/a.md", "file_content": "x"},
-            id="write-file-bad-subdir",
-        ),
-        pytest.param({"action": "write_file", "file_path": "references/a.md", "content": "x"},
-                     id="write-file-body-under-content"),
-        pytest.param({"action": "remove_file", "file_path": "../escape.md"},
-                     id="remove-file-traversal"),
+            "flat", id="legacy-write-file-bad-subdir"),
+        pytest.param(
+            {"action": "write_file", "file_path": "references/a.md", "content": "x"},
+            "flat", id="legacy-write-file-misplaced-content"),
+        pytest.param(
+            {"action": "remove_file", "file_path": "../escape.md"}, "flat", id="legacy-remove-file-traversal"),
+        *[pytest.param({**payload, "name": "category/bad name"}, "flat",
+                       id=f"TC-{i + 1:03d}-{payload['action']}-invalid-name")
+          for i, payload in enumerate(_EXISTING_WRITE_PAYLOADS)],
+        *[pytest.param({**payload, "name": "category/bad name"}, "batch",
+                       id=f"TC-{i + 11:03d}-{payload['action']}-invalid-batch-name")
+          for i, payload in enumerate([
+              {"action": "create", "content": VALID_SKILL_CONTENT},
+              *_EXISTING_WRITE_PAYLOADS[1:4],
+          ])],
+        pytest.param({"action": "delete", "name": ""}, "flat", id="TC-015-empty-name"),
+        pytest.param(
+            {**_EXISTING_WRITE_PAYLOADS[1], "name": "category/" + "s" * 65},
+            "flat", id="TC-016-name-over-limit"),
+        pytest.param(
+            {"action": "create", "name": "category/valid-skill", "content": VALID_SKILL_CONTENT},
+            "flat", id="TC-018-create-requires-bare-name"),
     ])
-    def test_gated_and_ungated_rejections_are_identical(self, tmp_path, monkeypatch, kwargs):
-        """The preflight must be the gate-off path's validation, not a parallel
-        copy of it: the same payload has to produce the same error either way.
+    def test_invalid_payloads_never_stage(self, tmp_path, monkeypatch, kwargs, via):
+        from tools import write_approval as wa
+        from tools.registry import registry
 
-        Divergence is the real hazard here — a preflight that is stricter than
-        replay rejects writes approval would have accepted, and one that is
-        laxer re-introduces the round trip this exists to remove.
-        """
-        _skill_on_disk(tmp_path)
+        # Arrange: the first batch op could change a real skill, but must never run.
+        skill = _skill_on_disk(tmp_path)
+        before = (skill / "SKILL.md").read_bytes()
+        payload = {"name": "budget-skill", **kwargs}
+        request = payload if via == "flat" else {"operations": [
+            {"action": "patch", "name": "budget-skill", "old_string": "Step 1.", "new_string": "Step 2."},
+            payload,
+        ]}
+
+        # Act: exercise real registry dispatch, configuration and pending storage.
         with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
-            gated = json.loads(skill_manage(name="budget-skill", **kwargs))
+            gated = json.loads(registry.dispatch("skill_manage", request))
+            assert gated.get("success") is False, gated
+            assert gated.get("staged") is not True, gated
+            assert wa.pending_count(wa.SKILLS) == 0
         with _approval_home(monkeypatch, False), _skill_dir(tmp_path):
-            ungated = json.loads(skill_manage(name="budget-skill", **kwargs))
+            ungated = json.loads(registry.dispatch("skill_manage", payload))
 
-        assert gated.get("success") is False, gated
-        assert gated.get("staged") is not True, gated
+        # Assert: the same validator decides, with only the batch attribution added.
         assert ungated.get("success") is False, ungated
-        assert gated["error"] == ungated["error"]
+        prefix = "operations[1]: " if via == "batch" else ""
+        assert gated["error"] == prefix + ungated["error"]
+        if "system-prompt budget" in gated["error"]:
+            assert f"Description is {SKILL_PROMPT_DESC_LIMIT + 1} chars" in gated["error"]
+        assert (skill / "SKILL.md").read_bytes() == before
+
+    @pytest.mark.parametrize("payload, name", [
+        *[pytest.param(payload, "category/valid-skill", id=f"TC-{i + 6:03d}-{payload['action']}-categorized")
+          for i, payload in enumerate(_EXISTING_WRITE_PAYLOADS)],
+        pytest.param(_EXISTING_WRITE_PAYLOADS[1], "s" * 64, id="TC-017-name-at-limit"),
+        pytest.param({"operations": [
+            {"action": "create", "name": "new-skill", "content": _skill_md("Use when testing staged batches.")},
+            {"action": "patch", "name": "new-skill", "old_string": "Step 1.", "new_string": "Step 2."},
+            {"action": "write_file", "name": "new-skill", "file_path": "references/a.md", "file_content": "new"},
+        ]}, "new-skill", id="TC-019-create-patch-write-batch"),
+    ])
+    def test_valid_writes_stage_and_replay(self, tmp_path, monkeypatch, payload, name):
+        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from tools import write_approval as wa
+        from tools.registry import registry
+
+        # Arrange: a supporting file exists so every existing-skill mutation is valid.
+        batch = "operations" in payload
+        skill = tmp_path / name if batch else _skill_on_disk(tmp_path, name)
+        if not batch:
+            (skill / "references").mkdir()
+            (skill / "references/a.md").write_text("original", encoding="utf-8")
+        before = {str(p.relative_to(tmp_path)): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+        request = payload if batch else {"name": name, **payload}
+
+        with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
+            # Act: staging defers all filesystem effects until the actual approve handler.
+            staged = json.loads(registry.dispatch("skill_manage", request))
+            assert staged.get("success") is True and staged.get("staged") is True, staged
+            assert wa.pending_count(wa.SKILLS) == 1
+            assert {str(p.relative_to(tmp_path)): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+            approved = handle_pending_subcommand(wa.SKILLS, ["approve", staged["pending_id"]])
+
+            # Assert: approval replays once, consumes the queue record, and applies the write.
+            assert "Approved 1 skills write(s)." in approved, approved
+            assert "Failed:" not in approved, approved
+            assert wa.pending_count(wa.SKILLS) == 0
+        if batch:
+            assert "Step 2." in (skill / "SKILL.md").read_text(encoding="utf-8")
+            assert (skill / "references/a.md").read_text(encoding="utf-8") == "new"
+        elif payload["action"] == "delete":
+            assert not skill.exists()
+        else:
+            expected = {
+                "edit": payload.get("content"),
+                "patch": before[str((skill / "SKILL.md").relative_to(tmp_path))].decode().replace("Step 1.", "Step 2."),
+                "write_file": "new",
+                "remove_file": None,
+            }[payload["action"]]
+            target = skill / (payload.get("file_path") or "SKILL.md")
+            assert (target.read_text(encoding="utf-8") if target.exists() else None) == expected

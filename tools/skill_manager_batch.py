@@ -93,11 +93,13 @@ def _preflight_staged_skill_write(action: str, name: str, payload: dict) -> str 
     from tools import skill_manager_tool as smt
     if err := _op_shape_error(action, payload):
         return err
+    if err := smt._validate_name(name if action == "create" or not name else Path(name).name):
+        return err
     content = payload.get("content") or ""
     file_path = payload.get("file_path")
     file_content = payload.get("file_content") or ""
     validators = {
-        "create": lambda: (smt._validate_name(name) or smt._validate_category(payload.get("category"))
+        "create": lambda: (smt._validate_category(payload.get("category"))
                            or smt._validate_frontmatter(content, new_skill=True)
                            or smt._validate_content_size(content)),
         "edit": lambda: (smt._validate_frontmatter(content) or smt._validate_content_size(content)),

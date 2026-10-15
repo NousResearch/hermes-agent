@@ -583,7 +583,7 @@ def test_new_session_keeps_the_runs_launch_policy(store, monkeypatch):
     db.open_session(cli("local-old", resumed=True))
     host = types.SimpleNamespace(session_id="local-old", _session_db=db, _gateway_session_open=True,
                                  model="m-explicit", _explicit_model_override=True, requested_provider="openrouter",
-                                 enabled_toolsets=["file"], _explicit_max_turns=3, _explicit_checkpoints=True,
+                                 enabled_toolsets=["file"], _explicit_toolsets=True, _explicit_max_turns=3, _explicit_checkpoints=True,
                                  _explicit_run_budget=60, verbose=True, _preload_skills_requested=["arxiv"])
     CLIInitMixin._new_session_id(host, None)
     params = [p for m, p in client.calls if m == "session.create"][-1]

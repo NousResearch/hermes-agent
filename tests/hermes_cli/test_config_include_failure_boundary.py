@@ -81,3 +81,27 @@ def test_include_that_cannot_be_stated_is_not_a_missing_include(tmp_path, monkey
         assert loader()["approvals"]["deny"] == ["included-guard"]
     assert loader()["approvals"]["deny"] == ["edited-guard"]
     assert root.read_bytes() == original
+
+
+@pytest.mark.parametrize("loader", [config.load_config, load_user_config_effective])
+@pytest.mark.parametrize("payload", ["- approvals\n", "7\n", "false\n"])
+def test_non_mapping_include_is_refused_not_read_as_empty(tmp_path, monkeypatch, loader, payload):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("include: policy.yaml\napprovals:\n  deny: [root-guard]\n")
+    inc = tmp_path / "policy.yaml"
+    inc.write_text(payload)
+    with pytest.raises(config_includes.ConfigIncludeError, match="Invalid config include"):
+        loader()
+    inc.write_text("approvals:\n  deny: [repaired-guard]\n")
+    assert loader()["approvals"]["deny"] == ["root-guard"]
+    inc.write_text("display:\n  language: fr\n")
+    assert loader()["display"]["language"] == "fr"
+
+
+@pytest.mark.parametrize("loader", [config.load_config, load_user_config_effective])
+@pytest.mark.parametrize("payload", ["", "null\n", "# placeholder\n"])
+def test_empty_include_declares_nothing(tmp_path, monkeypatch, loader, payload):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("include: policy.yaml\napprovals:\n  deny: [root-guard]\n")
+    (tmp_path / "policy.yaml").write_text(payload)
+    assert loader()["approvals"]["deny"] == ["root-guard"]

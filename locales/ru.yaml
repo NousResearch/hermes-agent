@@ -1507,7 +1507,7 @@ slash:
   prompt:
     description: "Написать следующий промпт в $EDITOR (markdown) и отправить его"
   undo:
-    description: "Откатиться на N реплик пользователя и задать промпт заново (по умолчанию 1)"
+    description: "Откатиться на N промптов"
   title:
     description: "Задать заголовок беседы"
   handoff:

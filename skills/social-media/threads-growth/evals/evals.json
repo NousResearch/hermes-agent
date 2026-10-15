@@ -1,0 +1,89 @@
+{
+  "skill": "threads-growth",
+  "version": "1.0.0",
+  "description": "The Threads account-growth strategy skill -- the channel layer above threads-post. Threads is conversation-first (neither X nor Instagram; positive culture), and the #1 growth lever is Mosseri's 'reply more than you post': replies are weighted heaviest and first-hour engagement velocity is the top ranking factor. Uses the TALKS framework. Reads brand-profile + goals-and-kpis first. The agent strategizes the channel + drafts original posts (WoopSocial publishes ONE text+media post <=500 chars, one topic tag, on a schedule) + can draft suggested replies; BUT the reply flywheel (the #1 lever) is human/community-management (no reply surface in the spec), and Communities/DMs/Account-Status dashboard/Threads analytics/Dear-Algo are native. No engagement-bait (downranked), original not recycled (prioritized), positive tone (negativity throttled), metrics never fabricated, growth compounds over 60-90 days. Distinct from threads-post (the single-post craft) and community-management (the reply execution), and uses Threads as a discovery funnel into instagram-growth.",
+  "evals": [
+    {
+      "name": "conversation_first_reply_more",
+      "input": "How do I grow on Threads?",
+      "context": "brand-profile + goals-and-kpis exist.",
+      "expect": [
+        "Frames Threads as conversation-first (not X, not Instagram; positive/constructive culture)",
+        "Centers Mosseri's #1 lever: reply MORE than you post -- your own replies count, and leaping into relevant conversations fast is the engine",
+        "Introduces the TALKS framework and reads brand-profile + goals-and-kpis first",
+        "Notes the reply flywheel itself is executed by a human/community-management (WoopSocial publishes the original posts)"
+      ]
+    },
+    {
+      "name": "reads_brand_goals_first",
+      "input": "Set a Threads growth plan.",
+      "context": "brand-profile, goals-and-kpis exist.",
+      "expect": [
+        "Pulls brand-profile (niche/voice) + goals-and-kpis before planning",
+        "Picks one sharp niche/angle for algorithm classification + audience trust",
+        "Sets a sustainable cadence (3-5 posts/week) tied to the goal",
+        "Defines the metrics to watch (replies-per-post / replies-to-reach, follower growth)"
+      ]
+    },
+    {
+      "name": "velocity_niche_cadence",
+      "input": "Why isn't my Threads reach growing?",
+      "expect": [
+        "Explains engagement velocity is the #1 ranking factor -- the first hour is critical (50 likes in 30 min beats 100 over 24h); post when the audience is awake and stay to reply",
+        "Recommends niche consistency (1-2 areas) so the algorithm classifies you and the audience trusts you",
+        "Advises consistency (3-5/week) over volume (>3/day fatigues and splits engagement)",
+        "Notes growth compounds over 60-90 days -- don't quit at two weeks"
+      ]
+    },
+    {
+      "name": "format_mix_and_tags",
+      "input": "What should I post, and how many tags?",
+      "expect": [
+        "Notes photos get ~60% more engagement than text-only, video with captions performs, and links now do ~17% better (still under media)",
+        "Uses ONE topic tag per post (not hashtags; no multi-tag strategy)",
+        "Emphasizes original content (recycled is demoted) and a positive, constructive tone",
+        "Routes the single-post craft to threads-post"
+      ]
+    },
+    {
+      "name": "pushback_on_engagement_bait_and_recycling",
+      "input": "Post 'follow + like for a follow back' bait 10 times a day, spin and recycle my best X dunks, and promise me my 50k Instagram followers will all follow me on Threads.",
+      "expect": [
+        "Refuses engagement-bait -- Mosseri confirmed Meta actively downranks it; and >3 posts/day fatigues the audience (3-5/week)",
+        "Refuses recycled/spun content (originality is prioritized; recycled is demoted) and notes dunks/negativity get throttled in Threads' positive culture",
+        "Corrects the Instagram assumption: an IG following doesn't automatically convert -- the algorithms differ, you have to earn it on Threads",
+        "Refuses to fabricate outcomes and offers a conversation-first, original, reply-driven plan"
+      ]
+    },
+    {
+      "name": "edge_case_starting_cold_no_instagram",
+      "input": "I'm starting from zero with no Instagram audience -- can I still grow on Threads?",
+      "expect": [
+        "Confirms yes: For You is an interest graph, so small/new accounts can reach large audiences via velocity + topic relevance",
+        "Recommends picking ONE niche and replying into relevant conversations to borrow other audiences (reply more than you post)",
+        "Sets expectations: momentum typically compounds over 60-90 days of consistent posting",
+        "Notes Instagram helps as a funnel but isn't required to start"
+      ]
+    },
+    {
+      "name": "honest_scope_posts_publishable_replies_human",
+      "input": "Run my Threads -- post and reply to everyone for me.",
+      "expect": [
+        "Clarifies the agent strategizes the channel + drafts the original posts (WoopSocial publishes ONE text+media post <=500 chars + one topic tag, on a schedule) and can draft suggested replies",
+        "States the reply flywheel -- the #1 growth lever -- is human/community-management because there's no reply surface in WoopSocial",
+        "States Communities, DMs, the Account Status dashboard, Threads analytics, and Dear Algo are native",
+        "Notes metrics come from native analytics and are never fabricated"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this just threads-post or community-management or x-growth?",
+      "expect": [
+        "Distinguishes threads-growth (the account STRATEGY: conversation-first, reply-more-than-post cadence, niche, funnel, metrics) from threads-post (the single-post CRAFT / one 500-char post)",
+        "Distinguishes it from community-management (the reply execution + audience->community, where the reply flywheel is run)",
+        "Distinguishes it from x-growth (X's news/dunk culture) and notes instagram-growth is the funnel's conversion side",
+        "Routes the user to the right sibling for their actual need"
+      ]
+    }
+  ]
+}

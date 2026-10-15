@@ -16,6 +16,23 @@ import {
   switchBranch
 } from './git-worktree-ops'
 
+// Windows: a FAILED git probe (e.g. for-each-ref in a non-repo dir) leaves the
+// child-process chain's cwd handle on the directory for a few hundred ms, so an
+// immediate rmSync races it with EBUSY. Retry briefly; the handle always clears.
+async function rmDirRetry(dir: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+      return
+    } catch (err) {
+      if (attempt >= 10 || (err as NodeJS.ErrnoException).code !== 'EBUSY') {
+        throw err
+      }
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+  }
+}
+
 test('sanitizeBranch: spaces → hyphens, forbidden chars dropped, edges trimmed', () => {
   assert.equal(sanitizeBranch('beach vibes'), 'beach-vibes')
   assert.equal(sanitizeBranch('feat/cool thing'), 'feat/cool-thing')
@@ -94,6 +111,43 @@ test('switchBranch: switches a normal checkout branch', async () => {
   }
 })
 
+test('switchBranch: unborn HEAD — a root commit is seeded, then the switch lands', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-unborn-'))
+  const git = (...args) => execFileSync('git', args, { cwd: dir }).toString().trim()
+
+  try {
+    // Fresh `git init` with no commits: refs/heads/master does not exist yet.
+    execFileSync('git', ['init', '-b', 'master'], { cwd: dir })
+
+    // switchBranch seeds a root commit (ensureGitRepo) so the branch becomes
+    // real, then `git switch master` succeeds for real.
+    const result = await switchBranch(dir, 'master', 'git')
+
+    assert.equal(result.branch, 'master')
+    assert.equal(git('symbolic-ref', '--quiet', '--short', 'HEAD'), 'master')
+    assert.equal(git('rev-list', '--count', 'HEAD'), '1')
+  } finally {
+    await rmDirRetry(dir)
+  }
+})
+
+test('switchBranch: inits a brand-new non-repo folder before switching', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-fresh-'))
+  const git = (...args) => execFileSync('git', args, { cwd: dir }).toString().trim()
+
+  try {
+    // No git init at all: a folder the user never touched with git.
+    // switchBranch must init it (with a root commit) so the switch can land.
+    const result = await switchBranch(dir, 'master', 'git')
+
+    assert.equal(result.branch, 'master')
+    assert.equal(git('branch', '--show-current'), 'master')
+    assert.equal(git('rev-list', '--count', 'HEAD'), '1')
+  } finally {
+    await rmDirRetry(dir)
+  }
+})
+
 test('listBranches: lists locals and flags the checked-out branch', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-branches-'))
 
@@ -164,7 +218,7 @@ test('listBranches: empty on a non-repo path', async () => {
   try {
     assert.deepEqual(await listBranches(dir, 'git'), [])
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    await rmDirRetry(dir)
   }
 })
 

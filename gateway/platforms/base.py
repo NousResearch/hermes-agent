@@ -425,6 +425,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.base_docker_media import _translate_docker_container_media_path
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, format_approval_deadline_line)
@@ -1067,61 +1068,6 @@ def _cache_dir_container_mounts() -> list[tuple[Path, Path]]:
         return [(Path(m["host_path"]), Path(m["container_path"])) for m in get_cache_directory_mounts()]
     except Exception:
         return []
-
-
-def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str) -> None:
-    """Name WHY a container-absolute MEDIA path failed translation (otherwise the only signal is
-    the generic "Skipping unsafe MEDIA directive path" line). Docker-only; host rejections quiet.
-
-    See #93950.
-    """
-    if not _docker_env_active():
-        return
-    logger.warning("Docker MEDIA path %s did not resolve to a host sandbox file (%s%s); "
-                   "the producing container's sandbox directory may not exist yet or "
-                   "was pruned", _log_safe_path(str(candidate)), reason,
-                   f", session_key={session_key}" if session_key else "")
-
-
-def _translate_docker_container_media_path(candidate: Path, session_key: str = "") -> Optional[Path]:
-    """Container-absolute path -> host path via longest-prefix match over ``docker_volumes``, the
-    auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``."""
-    if not candidate.is_absolute():
-        return None
-    # In-process gateways (Desktop, `hermes serve`) may not have bridged terminal.* config into
-    # TERMINAL_* env yet; the bridge is idempotent.
-    with contextlib.suppress(Exception):
-        from tools.terminal_tool import _ensure_terminal_env_bridged
-        _ensure_terminal_env_bridged()
-    mounts = [*_parse_docker_volume_mounts(), *_cache_dir_container_mounts()]
-    mounted = {c.as_posix() for _, c in mounts}
-    # Synthetic /workspace mounts: profile-scoped layout first, then legacy per-session.
-    if "/workspace" not in mounted:
-        mounts.extend((root, Path("/workspace")) for root in _default_docker_workspace_host_roots(session_key))
-    # Synthetic /root mounts catch stray home writes (/root/out.png; cache mounts are longer
-    # prefixes). /root/.hermes/* that missed a cache mount is the container's credential surface —
-    # translating it via the home mount would dodge the host denylist.
-    if "/root" not in mounted and not candidate.as_posix().startswith("/root/.hermes"):
-        mounts.extend(
-            (root, Path("/root")) for root in _docker_persistent_sandbox_roots(session_key, "home"))
-    if not mounts:
-        _warn_unresolved_docker_media(candidate, session_key, "no sandbox mounts resolved")
-        return None
-    # Longest container-prefix match; equal-length prefixes are tried in insertion order.
-    candidate_posix = candidate.as_posix()
-    matched = [(host_root, container_root, len(prefix)) for host_root, container_root in mounts
-               for prefix in (container_root.as_posix().rstrip("/") or "/",)
-               if candidate_posix == prefix or candidate_posix.startswith(prefix + "/")]
-    if not matched:
-        _warn_unresolved_docker_media(candidate, session_key, "no mounted prefix matches")
-        return None
-    for host_root, container_root, _score in sorted(matched, key=lambda m: -m[2]):
-        translated = _resolve_path(host_root / candidate.relative_to(container_root), strict=True)
-        if translated is not None and (
-                translated == host_root or _path_is_within(translated, host_root)):
-            return translated
-    _warn_unresolved_docker_media(candidate, session_key, "host file missing from sandbox")
-    return None
 
 
 def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
@@ -3329,7 +3275,9 @@ class BasePlatformAdapter(ABC):
         """Bare local file paths (absolute, ``~/`` or drive-letter) with deliverable extensions ->
         ``(expanded_paths, cleaned_text)``. Candidates must exist on disk (URLs / hallucinated paths
         ignored); paths inside fenced or inline code are skipped so code samples are never
-        mutilated. Dispatch by type lives in ``gateway/run.py``."""
+        mutilated. A container path the Docker sandbox wrote (``/workspace/report.md``) is
+        translated to its host file the same way ``validate_media_delivery_path`` translates a
+        ``MEDIA:`` tag. Dispatch by type lives in ``gateway/run.py``."""
         ext_part = '|'.join(e.lstrip('.') for e in MEDIA_DELIVERY_EXTS)
         # Lookbehind rejects URL/relative matches (https://…/img.png, ./foo.png).
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png) and relative paths (./foo.png)
@@ -3345,6 +3293,12 @@ class BasePlatformAdapter(ABC):
                 continue
             raw = match.group(0)
             expanded = os.path.expanduser(raw)
+            if not os.path.isfile(expanded) and os.path.isabs(expanded):
+                # Same container-path case as the MEDIA: route: the file lives on the host at
+                # the bind-mount source, not at the path the sandboxed agent named.
+                translated = _translate_docker_container_media_path(Path(expanded), warn=False)
+                if translated is not None:
+                    expanded = str(translated)
             if os.path.isfile(expanded):
                 unique.setdefault(expanded, raw)
             else:
@@ -4300,11 +4254,18 @@ class BasePlatformAdapter(ABC):
         def _as_image(path: str) -> bool:
             return Path(path).suffix.lower() in _IMAGE_EXTS and not force_document_attachments
         _image_paths = [p for p, is_voice in media_files if not is_voice and _as_image(p)]
-        _image_paths += [p for p in local_files if _as_image(p)]
+        _local_images = [p for p in local_files if _as_image(p)]
+        _image_paths += _local_images
+        if _local_images:
+            # Same intent/confirmation pair as the non-image local files below: most adapters
+            # override ``send_multiple_images``, so nothing else marks a batch that hung.
+            logger.info("[%s] Delivering %d local image attachment(s)", self.name, len(_local_images))
         if _image_paths:
-            await self._send_image_batch(
+            batch_ok = await self._send_image_batch(
                 event, [(f"file://{_quote(p)}", "") for p in _image_paths], metadata, human_delay,
                 record_delivery)
+            if batch_ok and _local_images:
+                logger.info("[%s] Delivered %d local image attachment(s)", self.name, len(_local_images))
         chat_id = event.source.chat_id
 
         async def _send_one(path: str, *, is_voice: bool, media_tag: bool) -> SendResult:
@@ -4327,12 +4288,20 @@ class BasePlatformAdapter(ABC):
         queue = [(p, v, True) for p, v in media_files if v or not _as_image(p)]
         if queue:
             logger.info("[%s] Delivering %d non-image MEDIA attachment(s)", self.name, len(queue))
-        queue += [(p, False, False) for p in local_files if not _as_image(p)]
+        local_queue = [(p, False, False) for p in local_files if not _as_image(p)]
+        if local_queue:
+            # Intent here plus the per-file confirmation below: a "Delivering" line with no matching
+            # "Delivered" is the trace of an upload that hung, which raises nothing and returns nothing.
+            logger.info("[%s] Delivering %d local file attachment(s)", self.name, len(local_queue))
+        queue += local_queue
         for path, is_voice, media_tag in queue:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
             try:
-                record_delivery(await _send_one(path, is_voice=is_voice, media_tag=media_tag))
+                result = await _send_one(path, is_voice=is_voice, media_tag=media_tag)
+                record_delivery(result)
+                if not media_tag and result.success:
+                    logger.info("[%s] Delivered local file %s", self.name, _log_safe_path(path))
             except Exception as err:
                 record_delivery(SendResult(success=False, error=str(err)))
                 if media_tag:
@@ -4342,18 +4311,19 @@ class BasePlatformAdapter(ABC):
 
     async def _send_image_batch(
         self, event: MessageEvent, images: list, metadata: dict[str, Any], human_delay: float,
-        record_delivery: Callable) -> None:
+        record_delivery: Callable) -> bool:
         """Batch-send images; a failure is logged (never raised) so other attachments still go.
         The batch result feeds ``record_delivery`` so media-only turns report their real
-        outcome instead of FAILURE."""
+        outcome instead of FAILURE. Returns True when the batch reported success."""
         try:
             result = await self.send_multiple_images(
                 chat_id=event.source.chat_id, images=images, metadata=metadata, human_delay=human_delay)
         except Exception as batch_err:
             logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
             record_delivery(SendResult(success=False, error=str(batch_err)))
-            return
+            return False
         record_delivery(result)
+        return bool(getattr(result, "success", False))
 
     async def send_final_ledgered(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: dict[str, Any], *,

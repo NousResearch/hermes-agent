@@ -396,7 +396,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         """Home + terminal-policy scope for validating a turn's MEDIA / local-file paths on the
         adapter's delivery side, which runs after the routed turn scope was reset.
 
-        Docker path translation (``platforms/base.py::_translate_docker_container_media_path``)
+        Docker path translation (``platforms/base_docker_media.py::_translate_docker_container_media_path``)
         infers the producing container from the ACTIVE profile (``get_active_profile_name``) and the
         scope-aware ``TERMINAL_DOCKER_VOLUMES``; without this a secondary's ``MEDIA:/output/x.png``
         resolves against the default profile's sandbox and mounts (#109024). No secret hydration:

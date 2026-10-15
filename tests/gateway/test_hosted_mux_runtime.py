@@ -285,3 +285,28 @@ def test_startup_preserves_queued_work_until_ready(mux, monkeypatch):
     sid, = target.sessions
     admission, = list_session_admissions(target.db, session_id=sid, pending_only=False)
     assert admission['admission_id'] == executed[0] and admission['status'] == 'terminal'
+
+
+def test_mux_served_profiles_are_local_members_without_config(mux, monkeypatch):
+    """Cross-profile groups create out of the box, with no hosted_rooms.profiles config (#139002)."""
+    from gateway import run as run_module
+    from gateway.run_runtime import recover_gateway_native_sessions
+    from gateway.session_authorities import owner_scope
+    monkeypatch.setattr(run_module, '_load_gateway_config', dict)
+    runner, homes, _loop, call = mux
+    call(recover_gateway_native_sessions(runner))
+    # Launch authority rosters a served secondary with no hosted_rooms.profiles entry.
+    launch = runner.session_authorities.require(homes['default'])
+    with owner_scope(launch):
+        room = launch.hosted_room_service.create_room(room_id='cross', name='Cross', members=[
+            {'member_id': 'one', 'profile': 'default', 'handle': 'one'},
+            {'member_id': 'two', 'profile': 'beta', 'handle': 'two'}])
+        assert {m['profile'] for m in room['members']} == {'default', 'beta'}
+    # A secondary authority can likewise roster the launch profile (its own scan cannot
+    # see the launch root; only the served-authority registry covers that direction).
+    secondary = runner.session_authorities.require(homes['beta'])
+    with owner_scope(secondary):
+        room = secondary.hosted_room_service.create_room(room_id='back', name='Back', members=[
+            {'member_id': 'one', 'profile': 'beta', 'handle': 'one'},
+            {'member_id': 'two', 'profile': 'default', 'handle': 'two'}])
+        assert {m['profile'] for m in room['members']} == {'beta', 'default'}

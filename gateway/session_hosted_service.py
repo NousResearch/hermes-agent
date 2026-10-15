@@ -26,13 +26,26 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def profile_homes(self):
         from gateway.run import _load_gateway_config
         from gateway.hosted_rooms_common import IDENTIFIER_RE
-        from gateway.session_authorities import served_profile_name
+        from gateway.session_authorities import all_authorities, served_profile_name
         home = Path(self.authority.profile_id)
         own = served_profile_name(home)
         # The coordinator's own threads do not inherit the caller's ContextVars.
         with owner_scope(self.authority):
             configured = _load_gateway_config().get('hosted_rooms', {}).get('profiles', {})
         result = {own: home}
+        # Local membership beyond config, or cross-profile groups cannot be created out of
+        # the box: the sibling profiles installed under this launch home (the same discovery
+        # the service-less dispatch fallback uses) and every authority this multiplexed
+        # runtime serves (#139002). ``configured`` still wins, so explicit homes override.
+        if own == 'default':
+            for name in super().local_profiles():
+                if name != own and IDENTIFIER_RE.fullmatch(name):
+                    result.setdefault(name, self.root / 'profiles' / name)
+        for authority in all_authorities(getattr(self.authority, 'runner', None)):
+            if authority is None or authority is self.authority or getattr(authority, 'retiring', False):
+                continue
+            served = Path(authority.profile_id)
+            result.setdefault(served_profile_name(served), served)
         if not isinstance(configured, dict):
             raise RuntimeStoreError('invalid_params')
         for name, value in configured.items():

@@ -7,6 +7,7 @@ Compression and reset may later advance the physical target, never FIFO identity
 """
 from dataclasses import asdict, replace
 from datetime import datetime
+import json
 from pathlib import Path
 
 from gateway.config import Platform
@@ -61,6 +62,25 @@ def resolve_local_target(authority, actor, sid):
     return adopt_legacy_session(authority, actor, row)
 
 
+def legacy_launch_params(row):
+    """``(create params, api_mode)`` a legacy row resumes on: its cwd and model and, for main's
+    in-process ACP server, the route it saved in ``model_config`` and rebuilt the agent from
+    (``SessionManager._persist`` / ``_restore``, billing columns as its fallback). Older ACP rows
+    hold the workspace only there. ``api_mode`` is no create field, so it is returned apart."""
+    params = {key: row[key] for key in ('cwd', 'model') if row.get(key)}
+    if row['source'] != 'acp':
+        return params, None
+    from hermes_state_sessions import _parse_model_config
+    saved = _parse_model_config(row.get('model_config'))
+    route = {'cwd': saved.get('cwd'), 'provider': saved.get('provider') or row.get('billing_provider'),
+             'base_url': saved.get('base_url') or row.get('billing_base_url'), 'api_mode': saved.get('api_mode')}
+    route = {key: value.strip() for key, value in route.items() if isinstance(value, str) and value.strip()}
+    if 'cwd' not in params and Path(route.get('cwd', '')).is_absolute():
+        params['cwd'] = route['cwd']
+    params.update({key: route[key] for key in ('provider', 'base_url') if key in route})
+    return params, route.get('api_mode')
+
+
 def adopt_legacy_session(authority, actor, row):
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
@@ -78,13 +98,14 @@ def adopt_legacy_session(authority, actor, row):
 
     request_id = 'legacy:' + row['id']
     sid = row['id']
-    params = {'source': LEGACY_CREATION_SOURCES.get(row['source'], row['source'])}
-    if row.get('cwd'):
-        params['cwd'] = row['cwd']
-    if row.get('model'):
-        params['model'] = row['model']
+    params, api_mode = legacy_launch_params(row)
+    params['source'] = LEGACY_CREATION_SOURCES.get(row['source'], row['source'])
     private = {}
     policy = build_policy(params, _load_gateway_config(), private_secrets=private)
+    if api_mode:
+        config = json.loads(policy.config_json)
+        config.setdefault('model', {})['api_mode'] = api_mode
+        policy = replace(policy, config_json=json.dumps(config))
     if policy.model is None:
         policy = replace(policy, model=_resolve_gateway_model(policy.config()))
     policy = bind_launch_key(authority, sid, policy, None, config_secrets=private)

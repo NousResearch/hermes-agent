@@ -148,9 +148,12 @@ message through their normal identified `prompt.submit`; resolution is not an
 admission ACK. The authority's durable FIFO owns retries and execution, and skill
 content remains a user message without changing the cached system prefix.
 
-Other commands return `unsupported_command`: shell quick commands, plugin execution,
-bundles, configuration/runtime changes, lifecycle commands, and approval/secret
-slash shortcuts are not exposed. Existing generation-bound approval and interrupt
+`type: exec` quick commands and plugin slash commands require `session:control` and run
+through the messaging gateway's own quick/plugin dispatch (slash access policy,
+sanitized-env exec with a 30 s cap and redacted output, plugin session env).
+
+Other commands return `unsupported_command`: bundles, configuration/runtime changes,
+lifecycle commands, and approval/secret slash shortcuts are not exposed. Existing generation-bound approval and interrupt
 RPCs remain separate. Catalog discovery is broader than this reviewed execution set.
 
 ## Shared authority busy input and corrections

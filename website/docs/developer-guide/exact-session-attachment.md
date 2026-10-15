@@ -3,7 +3,14 @@ title: Exact session attachment
 description: Non-executing stored-session attachment and its recovery fence
 ---
 
-`session.attach` is the gateway's non-executing attachment primitive. It takes
+`session.attach` is the standalone TUI gateway's non-executing attachment primitive.
+It belongs to the legacy `RpcMethods` catalog, not the native owner's
+`CanonicalRpcMethods` catalog. Native owner-backed connections retain their
+existing `session.resume`/authority attachment and generation-bound controls;
+they do not fall back to this method. Clients must check the catalog of the
+actual connection before use.
+
+It takes
 `{session_id, profile}` with the full stored primary key and canonical profile
 name. Both are required. A title, prefix, runtime ID, profile alias or missing
 row is refused. Compression descendants are never selected implicitly; the

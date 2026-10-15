@@ -1,11 +1,12 @@
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $desktopOnboarding } from '@/store/onboarding'
 import { $introView } from '@/store/onboarding-intro'
-import { markOnboardingDecided } from '@/store/onboarding-presence'
+import { $onboardingDecided, markOnboardingDecided } from '@/store/onboarding-presence'
+import { $routeRequest } from '@/store/recovery-requests'
 import { setGatewayState } from '@/store/session'
 
 import { BootFailureOverlay } from './boot-failure-overlay'
@@ -64,6 +65,38 @@ const isRecoveryShown = () =>
   Boolean(screen.queryByText(/use local gateway/i) || screen.queryByText(/retry/i) || screen.queryByText(/sign in/i))
 
 describe('connecting overlay vs recovery surface', () => {
+  it('opens gateway settings during a pending cold boot without changing the connection', async () => {
+    $onboardingDecided.set(false)
+    $routeRequest.set(null)
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      message: 'Connecting to remote Hermes backend',
+      phase: 'backend.remote',
+      progress: 24,
+      running: true,
+      visible: true
+    })
+    const pendingBoot = $desktopBoot.get()
+    const { container } = render(<GatewayConnectingOverlay />)
+
+    expect(isConnectingShown()).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: /gateway settings/i }))
+
+    expect($routeRequest.get()?.path).toBe('/settings?tab=gateway')
+    expect(container.querySelector('[data-glass-opaque]')).toBeNull()
+    // Recovery is presentation-only: don't pretend boot succeeded, skip onboarding,
+    // or apply Local behind the user's back.
+    expect($desktopBoot.get()).toBe(pendingBoot)
+    expect($onboardingDecided.get()).toBe(false)
+
+    // More progress from the still-pending primary must not cover Settings again.
+    await act(async () => {
+      $desktopBoot.set({ ...pendingBoot, phase: 'backend.resolve', progress: 8 })
+      setGatewayState('closed')
+    })
+    expect(container.querySelector('[data-glass-opaque]')).toBeNull()
+  })
+
   it('post-boot socket drops do not re-cover the app with the initial CONNECTING overlay', async () => {
     // 1. Initial boot succeeded: gateway opened, boot completed (no error).
     setGatewayState('open')

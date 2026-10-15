@@ -19,7 +19,8 @@ from hermes_cli.web_server_gateway import _display_system_platform
 from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
 from gateway.status import (
-    derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
+    derive_gateway_busy, derive_gateway_drainable, normalize_updated_at,
+    own_profile_platforms_owned_by, parse_active_agents,
     profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state,
     runtime_status_heartbeat_age_s, runtime_status_is_stale)
 from hermes_cli import __release_date__
@@ -201,7 +202,13 @@ def _status_platform_key_allowed(key: object, configured: set[str] | None) -> bo
 # Per-entry writer-identity stamps (added by gateway.status.write_runtime_status for the
 # aggregation ownership check) are process recon — the same class of detail as the
 # auth-gated top-level ``gateway_pid`` — and must not project onto the public endpoint.
-_PRIVATE_PLATFORM_ENTRY_KEYS = frozenset({"writer_pid", "writer_start_time"})
+# The ``stale_*`` fields park a previous gateway life's verdict when a platform entry is
+# downgraded across a life boundary (see gateway.status._downgrade_foreign_life_platforms):
+# process recon too, and never public.
+_PRIVATE_PLATFORM_ENTRY_KEYS = frozenset({
+    "writer_pid", "writer_start_time",
+    "stale_state", "stale_writer_pid", "stale_writer_start_time",
+})
 
 
 def _public_platform_entry(value: Any) -> Any:
@@ -267,8 +274,9 @@ def _project_gateway_platforms(gateway_platforms: dict, configured: set[str] | N
     for the key rules). A cleanly stopped gateway's platform states are stale noise and are
     cleared so a dead process can't report "connected"; a startup_failed gateway's FATAL
     entries are the diagnosis (credential collisions, auth failures) that the single
-    exit_reason string can't express, so they are kept — upstream writer-identity/freshness
-    filtering already dropped other processes' entries."""
+    exit_reason string can't express, so they are kept. Upstream writer-identity filtering
+    (``_own_profile_platforms_owned_by``) already dropped entries a previous gateway life
+    wrote, so a live process can only certify platforms IT connected."""
     platforms = {key: _public_platform_entry(value) for key, value in gateway_platforms.items()
                  if _status_platform_key_allowed(key, configured)}
     if gateway_running:
@@ -342,7 +350,8 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> di
             # as ``hermes gateway status`` so the sidebar strip and the CLI agree.
             gateway_heartbeat_stale_s = runtime_status_heartbeat_age_s(runtime)
         gateway_platforms = _project_gateway_platforms(
-            runtime.get("platforms") or {}, configured, gateway_running, gateway_state)
+            own_profile_platforms_owned_by(runtime, getattr(liveness, "pid", None)),
+            configured, gateway_running, gateway_state)
         gateway_exit_reason = None if gateway_state == "stopped" else runtime.get("exit_reason")
         # Contract: gateway_updated_at is RFC3339 string | null, never a number. ``runtime``
         # may be the local gateway_state.json (legacy gateways wrote epoch floats; hand

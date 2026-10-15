@@ -360,15 +360,26 @@ def _not_configured_error(platform_name, platform, entry):
     # gateway started from the default root (the reporter's shell had HERMES_HOME=<root>/profiles/<p>)
     # never reads this profile's .env at all.
     try:
-        from gateway.status import read_runtime_status, runtime_status_pid_is_live
+        from gateway.status import (
+            read_runtime_status, runtime_platforms_owned_by, runtime_status_pid_is_live)
         from hermes_constants import get_default_hermes_root, hermes_home_key
         root = get_default_hermes_root()
         gateways = [(home, read_runtime_status())]
         if hermes_home_key(root) != hermes_home_key(home):
             gateways.append((root, read_runtime_status(root / "gateway_state.json")))
         for gw_home, record in gateways:
-            state = ((record or {}).get("platforms") or {}).get(platform_name, {}).get("state")
-            if state != "connected" or "present" in dotenv_state or not runtime_status_pid_is_live(record):
+            if not runtime_status_pid_is_live(record):
+                continue
+            record = record or {}
+            # A platform entry may carry a previous gateway LIFE's verdict (startup preserves
+            # flat adapters across a restart): demand the entry's writer identity, not just the
+            # record's pid liveness, so a dead life's "connected" cannot vouch for credentials
+            # the live process does not hold.
+            entry = runtime_platforms_owned_by(
+                {platform_name: (record.get("platforms") or {}).get(platform_name)},
+                record.get("pid"), record.get("start_time")).get(platform_name)
+            state = entry.get("state") if isinstance(entry, dict) else None
+            if state != "connected" or "present" in dotenv_state:
                 continue
             msg += f" A gateway (pid {record.get('pid')}) running from {gw_home} has {platform_name} connected"
             msg += (f", so its credentials live only in that process's environment; add {names} to {env_path}."

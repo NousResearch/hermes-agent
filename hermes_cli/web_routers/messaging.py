@@ -22,8 +22,8 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 
 from gateway.status import (
-    multiplexer_liveness_for_profile, profile_name_for_home, profile_platforms_from_multiplexer,
-    resolve_gateway_liveness, retained_gateway_state)
+    multiplexer_liveness_for_profile, own_profile_platforms_owned_by, profile_name_for_home,
+    profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
 from hermes_constants import get_process_hermes_home
@@ -220,18 +220,27 @@ def _messaging_platform_payload(
     # scoped to a named profile: gateway/status readers resolve process-level paths
     # and do NOT follow the HERMES_HOME contextvar override, so without it messaging
     # silently reports another profile's gateway.
-    gateway_running = resolve_gateway_liveness(
+    liveness = resolve_gateway_liveness(
         profile_dir=profile_home, runtime=runtime,
         health_probe=_probe_gateway_health if _GATEWAY_HEALTH_URL else None,
         pid_probe=get_running_pid_cached, runtime_reader=read_runtime_status,
         runtime_pid_probe=get_runtime_status_running_pid,
-    ).running
+    )
+    gateway_running = liveness.running
     if not gateway_running:
         # gateway_state.json outlives its writer and keeps per-platform entries across
         # restarts, so a stopped gateway that once ran WITHOUT credentials still says
         # "fatal / No bot token configured" after the user saved a token. Only a live
         # process's verdict describes the current config; a dead one's is history.
         runtime_platform = {}
+    else:
+        # A platform verdict may not survive a gateway LIFE boundary either: the boot write
+        # restamps the record's pid/start_time for the new life while preserving the previous
+        # life's flat adapters, so a dead life's "connected" would otherwise be served. Keep
+        # only an entry the LIVE process wrote (identity that cannot be certified is returned
+        # unchanged, so a cross-container or legacy record is unaffected).
+        candidate = own_profile_platforms_owned_by(rt, liveness.pid).get(platform_id, {})
+        runtime_platform = candidate if isinstance(candidate, dict) else {}
 
     def env_value(key: str) -> str:
         # Profile-scoped: judge only the profile's own .env — the dashboard process's

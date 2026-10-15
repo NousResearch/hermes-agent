@@ -591,6 +591,39 @@ def _rule_running_with_open_parents(task, events, runs, now, cfg) -> list[Diagno
     )]
 
 
+def _current_blocker_evidence(
+    task_id: str, events: list[Any], runs: list[Any],
+) -> Optional[tuple[str, str, Optional[int], int]]:
+    """Return the selected reason and event provenance, without changing history."""
+    candidate = None
+    for ev in events:
+        if _event_kind(ev) == "blocked":
+            reason = _parse_payload(ev).get("reason")
+            candidate = (
+                (reason, "blocked", _task_field(ev, "id"), _event_ts(ev))
+                if isinstance(reason, str) and reason.strip() else None
+            )
+    return candidate
+
+
+def _rule_current_blocker(task, events, runs, now, cfg) -> list[Diagnostic]:
+    if _task_field(task, "status") != "blocked":
+        return []
+    evidence = _current_blocker_evidence(_task_field(task, "id"), events, runs)
+    if evidence is None:
+        return []
+    reason, kind, event_id, timestamp = evidence
+    return [Diagnostic(
+        kind="current_blocker", severity="warning",
+        title="Blocked: " + reason, detail=reason,
+        actions=[DiagnosticAction(
+            kind="comment", label="Review and discuss the blocker", suggested=True,
+        )],
+        first_seen_at=timestamp, last_seen_at=timestamp,
+        data={"source_event_kind": kind, "source_event_id": event_id},
+    )]
+
+
 def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Blocked for >= cfg["blocked_stale_hours"] (default 24) with no comment
     or unblock since the last ``blocked`` event."""
@@ -745,6 +778,7 @@ _RULES: list[RuleFn] = [
     _rule_repeated_crashes,
     _rule_review_dependency_deadlock,
     _rule_running_with_open_parents,
+    _rule_current_blocker,
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,

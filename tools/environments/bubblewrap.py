@@ -713,6 +713,84 @@ def ancestor_pin_args(
     return argv
 
 
+def _late_mounts(
+    config: BubblewrapConfig,
+    profile: Profile,
+    state_dir: str,
+    hermes_home: str,
+    hidden_paths: Sequence[str],
+    *,
+    scratch_dir: str | None,
+    scratch_view: str | None,
+    scratch_private: str | None,
+    staged_roots: Sequence[str],
+    staged_files: Sequence[tuple[str, str]],
+    sandbox_overlays: Sequence[str],
+) -> list[tuple[str, ...]]:
+    """The mounts that go on top of every overlay, in order: scratch, staged data, the
+    profile home, the overlays a bound-back root shows again, and the state dir last."""
+    # The state dir holds the shell snapshot and the cwd file between
+    # commands (and the execute_code sandbox dir during a call). Under
+    # home_mode=profile the subprocess HOME is HERMES_HOME/home
+    # (hermes_constants.get_subprocess_home). Both are bound read-write on
+    # top of the overlays, so the rest of HERMES_HOME stays hidden.
+    late: list[tuple[str, ...]] = []
+    # Roots bound back on top of the HERMES_HOME overlay, and the ones of
+    # them a command can write to.
+    restored: list[str] = []
+    restored_rw: list[str] = []
+    # The Hermes scratch dir lies under the hidden HERMES_HOME: left
+    # hidden, a write there lands in that spawn's own tmpfs and is gone by
+    # the next command, with no error. The host directory is TMPDIR of
+    # every Hermes process, so it also holds control sockets and message
+    # payloads of other sessions, and a new one can appear while a command
+    # runs. So the sandbox gets an empty read-only directory at that path,
+    # and inside it the scratch dir of this environment alone, at its host
+    # path. That one follows the cwd: writable with it, read-only under
+    # the restricted profile. A write to the scratch path itself fails
+    # where the command can see it.
+    if scratch_dir and scratch_view:
+        late.append(("--ro-bind", scratch_view, scratch_dir))
+        if scratch_private:
+            late.append(("--bind" if profile.writable_cwd else "--ro-bind", scratch_private, scratch_private))
+    # Attachments, cached documents and the other staged data live under
+    # HERMES_HOME, and Hermes hands the model their host paths. Read-only:
+    # a command opens them, it does not produce them. The -try form lets a
+    # root that is gone from the host drop out instead of failing the spawn.
+    late += [("--ro-bind-try", root, root) for root in staged_roots]
+    late += [("--ro-bind-try", src, path) for src, path in staged_files]
+    restored += staged_roots
+    if config.home_mode in PROFILE_HOME_MODES:
+        profile_home = os.path.join(os.path.abspath(os.path.expanduser(hermes_home)), "home")
+        if os.path.isdir(profile_home):
+            late.append(("--bind", profile_home, profile_home))
+            restored.append(profile_home)
+            restored_rw.append(profile_home)
+    # A hidden path under one of the roots just bound back is shown again
+    # by that bind, so it gets its overlay once more, on top of it. Inside
+    # a writable root its parents are pinned first, as under any writable
+    # bind: otherwise a command renames a parent and the next spawn finds
+    # the path, and the secret, under another name.
+    shown = [
+        path for path in hidden_paths
+        if not os.path.islink(path) and any(path != root and _is_within(path, root) for root in restored)
+    ]
+    pins = ancestor_pin_args([(root, root) for root in restored_rw], restored, shown)
+    late += [(pins[i], pins[i + 1], pins[i + 2]) for i in range(0, len(pins), 3)]
+    for path in shown:
+        if os.path.isdir(path):
+            late.append(("--tmpfs", path))
+        elif os.path.exists(path):
+            late.append(("--ro-bind", empty_file_path(state_dir), path))
+    # A sandbox dir outside every hidden path shows through the read-only
+    # root, and with it the state dirs of the other environments: their
+    # shell snapshots and the scripts of their execute_code calls. A
+    # tmpfs goes over it, and the state dir of this environment on top.
+    late += [("--tmpfs", path) for path in sandbox_overlays]
+    late.append(("--bind", state_dir, state_dir))
+    return late
+
+
 def build_bwrap_args(
     config: BubblewrapConfig,
     initial_cwd: str,
@@ -809,65 +887,11 @@ def build_bwrap_args(
     if home_root is not None and home_replaced_by_bind(home_root, binds):
         home_root = None
 
-    # The state dir holds the shell snapshot and the cwd file between
-    # commands (and the execute_code sandbox dir during a call). Under
-    # home_mode=profile the subprocess HOME is HERMES_HOME/home
-    # (hermes_constants.get_subprocess_home). Both are bound read-write on
-    # top of the overlays, so the rest of HERMES_HOME stays hidden.
-    late: list[tuple[str, ...]] = []
-    # Roots bound back on top of the HERMES_HOME overlay, and the ones of
-    # them a command can write to.
-    restored: list[str] = []
-    restored_rw: list[str] = []
-    # The Hermes scratch dir lies under the hidden HERMES_HOME: left
-    # hidden, a write there lands in that spawn's own tmpfs and is gone by
-    # the next command, with no error. The host directory is TMPDIR of
-    # every Hermes process, so it also holds control sockets and message
-    # payloads of other sessions, and a new one can appear while a command
-    # runs. So the sandbox gets an empty read-only directory at that path,
-    # and inside it the scratch dir of this environment alone, at its host
-    # path. That one follows the cwd: writable with it, read-only under
-    # the restricted profile. A write to the scratch path itself fails
-    # where the command can see it.
-    if scratch_dir and scratch_view:
-        late.append(("--ro-bind", scratch_view, scratch_dir))
-        if scratch_private:
-            late.append(("--bind" if profile.writable_cwd else "--ro-bind", scratch_private, scratch_private))
-    # Attachments, cached documents and the other staged data live under
-    # HERMES_HOME, and Hermes hands the model their host paths. Read-only:
-    # a command opens them, it does not produce them. The -try form lets a
-    # root that is gone from the host drop out instead of failing the spawn.
-    late += [("--ro-bind-try", root, root) for root in staged_roots]
-    late += [("--ro-bind-try", src, path) for src, path in staged_files]
-    restored += staged_roots
-    if config.home_mode in PROFILE_HOME_MODES:
-        profile_home = os.path.join(os.path.abspath(os.path.expanduser(hermes_home)), "home")
-        if os.path.isdir(profile_home):
-            late.append(("--bind", profile_home, profile_home))
-            restored.append(profile_home)
-            restored_rw.append(profile_home)
-    # A hidden path under one of the roots just bound back is shown again
-    # by that bind, so it gets its overlay once more, on top of it. Inside
-    # a writable root its parents are pinned first, as under any writable
-    # bind: otherwise a command renames a parent and the next spawn finds
-    # the path, and the secret, under another name.
-    shown = [
-        path for path in hidden_paths
-        if not os.path.islink(path) and any(path != root and _is_within(path, root) for root in restored)
-    ]
-    pins = ancestor_pin_args([(root, root) for root in restored_rw], restored, shown)
-    late += [(pins[i], pins[i + 1], pins[i + 2]) for i in range(0, len(pins), 3)]
-    for path in shown:
-        if os.path.isdir(path):
-            late.append(("--tmpfs", path))
-        elif os.path.exists(path):
-            late.append(("--ro-bind", empty_file_path(state_dir), path))
-    # A sandbox dir outside every hidden path shows through the read-only
-    # root, and with it the state dirs of the other environments: their
-    # shell snapshots and the scripts of their execute_code calls. A
-    # tmpfs goes over it, and the state dir of this environment on top.
-    late += [("--tmpfs", path) for path in sandbox_overlays]
-    late.append(("--bind", state_dir, state_dir))
+    late = _late_mounts(
+        config, profile, state_dir, hermes_home, hidden_paths,
+        scratch_dir=scratch_dir, scratch_view=scratch_view, scratch_private=scratch_private,
+        staged_roots=staged_roots, staged_files=staged_files, sandbox_overlays=sandbox_overlays,
+    )
 
     if home_root is None:
         for mount in mounts:

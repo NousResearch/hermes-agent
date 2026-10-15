@@ -43,6 +43,50 @@ def _missing_command_hint(missing: str) -> str:
         "or use an absolute path instead of retrying the same command.")
 
 
+# A generated script/command that embeds a natural-language payload in its own
+# source dies when a character lands where the source expects code: typographic
+# punctuation that cannot stand in code position — a smart quote or guillemet
+# used as a delimiter, or a middot / em dash / prime / acute standing where an
+# operator or literal belongs — or a payload quote closing the literal that
+# carries it (also breaking a single-quoted shell arg).
+# Patterns are public so code_execution_tool shares ONE source of truth; they
+# match only the collision errors themselves, so typographic punctuation
+# inside a correctly delimited literal (which runs fine) never fires.
+# The `invalid character` pattern is intentionally broad, NOT quote-only: every
+# typographic punctuation mark a payload may use (guillemets, low-9 quotes,
+# fullwidth quote, prime, acute, middot, em dash) produces the same
+# `invalid character '<ch>' (U+XXXX)` message, so narrowing it to “”‘’ would
+# false-negative across the bug class.
+# Invisible characters (NBSP, ZWSP) produce a DIFFERENT message —
+# `invalid non-printable character U+XXXX` — a different cause with a
+# different remedy, which these patterns must NOT match.
+PAYLOAD_QUOTING_PATTERNS: tuple[str, ...] = (
+    r"SyntaxError: invalid character",
+    # payload apostrophe closed the literal; the optional group covers the
+    # triple-quoted variant (multi-line payload inside a """...""" literal).
+    r"SyntaxError: unterminated (?:triple-quoted )?string literal",
+    # Python 3.9 and earlier word those two failures differently ("EOL/EOF while
+    # scanning ..."; bpo-40176 changed it in 3.10) — captured verbatim on 3.9.6,
+    # which is still the macOS system python3. Both messages are specific to an
+    # unterminated literal, so they carry the same remedy. A nested payload
+    # apostrophe on 3.9.6 surfaces as the generic `SyntaxError: invalid syntax`,
+    # which this rule deliberately leaves to the unrelated-syntax-error boundary.
+    r"SyntaxError: EOL while scanning string literal",
+    r"SyntaxError: EOF while scanning triple-quoted string literal",
+    r"unexpected EOF while looking for matching",         # bash/sh wrapper, unmatched quote
+    r"(?:^|\s)zsh:\d*:? unmatched",                       # zsh's wording for the same failure
+)
+
+PAYLOAD_QUOTING_HINT: str = (
+    "The generated source contains a character that cannot appear in code position — "
+    "typographic punctuation, or a payload quote closing the literal that carries it — "
+    "so the same source will fail again. Leave the payload text alone: write it to a file "
+    "with write_file and pass the file (`gh ... --body-file <file>`, "
+    "`gh api -F body=@<file>`, `open(path).read()`); a character that is merely stray in "
+    "the generated code may be swapped for ASCII."
+)
+
+
 # Ordered by production frequency — first match wins.
 _OUTPUT_HINTS: list[Callable[[str, str], Optional[str]]] = [
     # gh version drift; gh already prints the valid field list.
@@ -69,6 +113,9 @@ _OUTPUT_HINTS: list[Callable[[str, str], Optional[str]]] = [
     _regex_hint(r"Permission denied|EACCES",
                 "Permission denied. Check ownership/mode of the target path (`ls -la`); prefer a "
                 "user-writable location. Only escalate to sudo if the task genuinely requires it."),
+    # Payload-quoting collision in generated code — one entry built from the
+    # shared public patterns so code_execution_tool keeps ONE source of truth.
+    _regex_hint("(?:" + "|".join(PAYLOAD_QUOTING_PATTERNS) + ")", PAYLOAD_QUOTING_HINT),
 ]
 
 # Exit-code-only hints for codes the terminal_tool semantics table does not

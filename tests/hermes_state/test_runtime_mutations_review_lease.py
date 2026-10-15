@@ -158,7 +158,9 @@ def _assert_fork_still_owns_the_stamped_row(db, holder):
     assert db.refresh_session_turn_lease("tip", holder, ttl_seconds=60) is True
     db.release_session_turn_lease("tip", holder)
     assert _lease_rows(db) == []
-    assert db.try_acquire_session_turn_lease("root", _foreground_holder(), ttl_seconds=60)
+    assert db.try_acquire_session_turn_lease(
+        "root", _foreground_holder(), ttl_seconds=60
+    )
 
 
 def test_canonical_chain_delete_leaves_the_review_its_root_keyed_row(tmp_path):

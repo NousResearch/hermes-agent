@@ -318,7 +318,13 @@ async def _late_waiter(tmp_path, monkeypatch, timeline, turns):
     )
     entered, gate = asyncio.Event(), asyncio.Event()
     _install_turn(
-        runner, monkeypatch, timeline, turns, gate_text="one", gate=gate, entered=entered
+        runner,
+        monkeypatch,
+        timeline,
+        turns,
+        gate_text="one",
+        gate=gate,
+        entered=entered,
     )
     real_admit_native = authority.admit_native
 
@@ -328,7 +334,9 @@ async def _late_waiter(tmp_path, monkeypatch, timeline, turns):
         return receipt
 
     monkeypatch.setattr(authority, "admit_native", late_admit_native)
-    await adapter.handle_message(MessageEvent(text="one", source=source, message_id="m1"))
+    await adapter.handle_message(
+        MessageEvent(text="one", source=source, message_id="m1")
+    )
     await asyncio.wait_for(entered.wait(), 10)
     await async_wait_until(lambda: bool(authority.native_waiters), timeout=10)
     assert _statuses(authority) == {"one": "started"}
@@ -342,11 +350,15 @@ async def test_late_waiter_kept_alive_completes_the_drained_turn_once_after_its_
     """``deliver_settled`` hands the reply to the late waiter; its adapter task sends it and
     completes the token once, after that send."""
     timeline, turns = [], {}
-    authority, adapter, gate = await _late_waiter(tmp_path, monkeypatch, timeline, turns)
+    authority, adapter, gate = await _late_waiter(
+        tmp_path, monkeypatch, timeline, turns
+    )
     sid, profile_key = turns["one"]
     gate.set()
     await async_wait_until(
-        lambda: _statuses(authority) == {"one": "terminal"} and not adapter._session_tasks,
+        lambda: (
+            _statuses(authority) == {"one": "terminal"} and not adapter._session_tasks
+        ),
         timeout=20,
     )
     await async_wait_until(lambda: ("spawn", sid) in timeline, timeout=10)
@@ -368,7 +380,9 @@ async def test_late_waiter_cancelled_while_the_drain_runs_releases_the_token_unc
     so nothing is reviewed) instead of being left for a waiter nobody resumes — which would
     refuse every later automatic review on the session for the process lifetime."""
     timeline, turns = [], {}
-    authority, adapter, gate = await _late_waiter(tmp_path, monkeypatch, timeline, turns)
+    authority, adapter, gate = await _late_waiter(
+        tmp_path, monkeypatch, timeline, turns
+    )
     sid, profile_key = turns["one"]
     (session_key,) = list(adapter._session_tasks)
     await adapter.cancel_session_processing(
@@ -444,5 +458,7 @@ def test_a_waiter_registered_again_for_the_same_admission_drops_the_stale_gone_m
     event = types.SimpleNamespace()
     sir.adopt_review_completion(authority, "a", event)
     assert authority.review_completions == {}
-    sir.complete_review_delivery(sir.take_review_completion(event), delivery_succeeded=True)
+    sir.complete_review_delivery(
+        sir.take_review_completion(event), delivery_succeeded=True
+    )
     assert done.calls == [(True, None)]

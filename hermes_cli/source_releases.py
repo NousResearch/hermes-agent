@@ -96,7 +96,7 @@ def resolve_source_target(channel: str, git_cmd=None, cwd=None, *, repository=No
     return target
 
 
-def _probe(git_cmd, cwd, *args):
+def _probe(git_cmd, cwd, *args, timeout=10):
     """``git <args>`` in ``cwd``, or None when git did not answer: an unknown relation, not a claim.
 
     Before the updater's fetch the release commit is usually absent, and git 2.43 spends 7-12 s
@@ -107,11 +107,27 @@ def _probe(git_cmd, cwd, *args):
     try:
         return subprocess.run(
             [*git_cmd, *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env(),
+            errors="replace", timeout=timeout, stdin=subprocess.DEVNULL, env=source_git_env(),
             check=False)
     except (OSError, subprocess.SubprocessError) as exc:
         logger.debug("git %s did not answer: %s", " ".join(args), exc)
         return None
+
+
+def _graph_then_probe(git_cmd, cwd, commit: str, head: str):
+    """Retry the ancestry probe after writing a changed-path-free commit-graph.
+
+    Graph writes stay off on partial clones because changed-path (Bloom) data lazy-fetches a
+    tree per unseen commit, the loop #127711 guards against. ``--reachable`` without
+    ``--changed-paths`` reads commits only, never trees, and turns the full ancestor walk that
+    outran the bound with both commits local (#139091) into milliseconds, so later updates
+    answer locally instead of burning the bound and falling back to the network. A graph that
+    cannot be written keeps the relation unknown, exactly as the unanswered probe did.
+    """
+    written = _probe(git_cmd, cwd, "commit-graph", "write", "--reachable", timeout=60)
+    if written is None or written.returncode != 0:
+        return None
+    return _probe(git_cmd, cwd, "merge-base", "--is-ancestor", commit, head)
 
 
 def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
@@ -128,8 +144,11 @@ def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
     ).stdout.strip()
     if not _SHA.fullmatch(head):
         return None
-    # An unanswered probe falls through to the comparison API, as a shallow checkout's does.
+    # An unanswered probe falls through to the comparison API, as a shallow checkout's does —
+    # after one changed-path-free commit-graph made the walk cheap enough to answer (#139091).
     ancestry = _probe(git_cmd, cwd, "merge-base", "--is-ancestor", commit, head)
+    if ancestry is None:
+        ancestry = _graph_then_probe(git_cmd, cwd, commit, head)
     if ancestry is not None and ancestry.returncode == 0:
         return head
     # A shallow boundary makes exit 1 a guess; full history makes it proof.

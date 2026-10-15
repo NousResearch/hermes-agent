@@ -78,4 +78,6 @@ def test_a_probe_that_never_answered_leaves_the_relation_unknown(history, monkey
     timed_out = _timeout_git_probe(monkeypatch, "merge-base")
     monkeypatch.setattr(source_check, "_github_compare", lambda *a, **k: compare)
     assert source_releases._head_containing(["git"], origin, shas[2], "o/r") == (shas[2] if keeps_head else None)
-    assert timed_out == [["git", "merge-base", "--is-ancestor", shas[2], shas[2]]]
+    # The retry after the commit-graph self-heal (#139091) times out too; only then does the
+    # comparison API answer.
+    assert timed_out == [["git", "merge-base", "--is-ancestor", shas[2], shas[2]]] * 2

@@ -82,6 +82,71 @@ python3 ab_eval.py report --models "anthropic/claude-sonnet-4.5,qwen/qwen3-coder
   the hidden-file search probe only fired on total-zero-match searches
   (fixed on main since).
 
+## Credit verdicts (`credit`)
+
+`report` is a human-readable table: it pairs nothing, accounts for nothing and publishes no
+uncertainty. `credit` is the machine verdict over the same results tree:
+
+```bash
+export ABEVAL_ROOT=/tmp/abeval-workspace
+export ABEVAL_HOME=/tmp/abeval-home
+python3 ab_eval.py credit --models "anthropic/claude-sonnet-4.5" --reps 3 --seed 7 \
+  --metric ok --guardrails llm,tools,errs --margin 0.10
+```
+
+It is offline and deterministic — no model call, no network, no credentials — and it appends
+one row per candidate to `$ABEVAL_ROOT/results/<model>/verdicts.jsonl`, credited, denied and
+withheld alike, so rejected candidates survive as negative data.
+
+Declare before you look; every declared value is echoed into the artifact, so a reader sees
+what was asked before what was found:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--metric` | `ok` | the single primary (promotion) metric |
+| `--alpha` | `0.05` | one-sided significance |
+| `--comparisons` | `1` | candidates judged on this battery; alpha is Bonferroni-corrected |
+| `--min-pairs` / `--min-tasks` | `5` / `5` | minimum paired runs / distinct tasks |
+| `--bootstrap` | `10000` | resamples |
+| `--seed` | required | determinism: same inputs + same seed = identical bounds |
+| `--guardrails` / `--margin` | `llm,tools,errs` / `0.10` | metrics that must be non-inferior within a relative margin |
+| `--reps` | derived | the scheduled rep count; declare it, a battery whose last rep vanished cannot be reconstructed from its survivors |
+
+Outcomes:
+
+- **`withheld`** — a precondition failed, and `reason` names it: `incomplete` (a scheduled
+  cell has no usable evidence: crashed, lost its trace, lost its oracle, or was never
+  recorded), `battery_changed` / `battery_unverified` (the fingerprint recorded by the
+  baseline runs does not match this file's battery, or predates fingerprints), `insufficient`
+  (fewer pairs or tasks than declared).
+- **`denies`** — the evidence exists but does not clear zero (`no_effect`), or a guardrail
+  fell through its floor (`guardrail_breach`). `NO UPDATE` is a legitimate result.
+- **`credits`** — complete, attributable, paired and above the declared bar.
+
+Why it is strict, one line each:
+
+- Every scheduled cell is accounted for, so "the gates behaved on the completed cases" can
+  never be confused with "the experiment completed all the scheduled cases".
+- A run whose trace is missing is excluded from the means and its twin is counted as
+  unpaired — it never enters the table as a zero-waste run (which is how a *lost* trace used
+  to read as a *faster* run).
+- The bootstrap resamples TASKS, not runs, so raising `--reps` buys precision inside a task
+  instead of significance across tasks.
+- Deltas are **relative** improvements, so one `--margin` covers turns and KB alike.
+- The artifact carries no trace text — no `tail`, no sandbox paths — so a verdict can be
+  pasted into a public issue while the raw traces stay on the machine.
+
+`run` additionally records `tree` (the git revision of the `--pythonpath` tree, read from
+`.git` without spawning a process), `pythonpath` and the battery fingerprint in each
+`meta.jsonl` row: that is what makes a verdict attributable to a revision pair and a battery
+version, and what makes a silent battery edit visible.
+
+Known limits: the runner writes no row for a startup crash, so a dropped cell is
+`unaccounted` (and withholds the verdict) rather than assumed harmless; `TASKS` is 9 traps
+with no healthy control task, so guardrails protect metrics, not task families; and no noise
+floor is recorded for the battery yet (#111119), so a small real effect will simply be
+`withheld`/`denies`.
+
 ## Extending
 
 Add a task by appending to `TASKS` (the prompt), `make_sandbox` (the trap),

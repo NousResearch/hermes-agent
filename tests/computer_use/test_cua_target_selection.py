@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-import yaml
 
 
 def _target_config(target: str):
@@ -57,7 +57,8 @@ def test_wsl_windows_target_uses_windows_path_and_never_linux_fallback(monkeypat
 
     monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
     monkeypatch.setattr(driver, "_wsl_windows_install_paths", lambda: ["/mnt/c/Users/u/AppData/Local/Programs/Cua/cua-driver/bin/cua-driver.exe"])
-    monkeypatch.setattr(driver.shutil, "which", lambda value: "/usr/bin/cua-driver" if value == "cua-driver" else None)
+    monkeypatch.setattr("pm.installed_package", lambda name: SimpleNamespace(binary="/usr/bin/cua-driver"))
+    monkeypatch.setattr(driver.shutil, "which", lambda value: "/usr/bin/cua-driver" if value in {"cua-driver", "/usr/bin/cua-driver"} else None)
 
     with _target_config("windows"):
         _, platform, command, error = driver._resolve_cua_driver_selection(runtime_host=("linux", True))
@@ -95,7 +96,7 @@ def test_wsl_windows_install_discovery_is_fixed_sanitized_and_cached(monkeypatch
     monkeypatch.setattr(driver.subprocess, "run", run)
     monkeypatch.setattr(driver, "_wsl_windows_path_to_posix", lambda path: "converted:" + path)
     monkeypatch.setattr(driver, "_cb", lambda: SimpleNamespace(sanitized_cua_driver_env=lambda: {"PATH": "safe"}))
-    driver._wsl_windows_install_paths.cache_clear()
+    driver._cached_wsl_windows_install_paths.cache_clear()
 
     paths = driver._wsl_windows_install_paths()
     assert paths == [
@@ -109,36 +110,39 @@ def test_wsl_windows_install_discovery_is_fixed_sanitized_and_cached(monkeypatch
     assert argv[4] == "-Command" and "GetFolderPath" in argv[5]
     assert kwargs["timeout"] == 5.0 and kwargs["stdin"] is driver.subprocess.DEVNULL
     assert kwargs["env"] == {"PATH": "safe"}
-    driver._wsl_windows_install_paths.cache_clear()
+    driver._cached_wsl_windows_install_paths.cache_clear()
 
 
 def test_auto_preserves_regular_linux_resolution(monkeypatch):
     from tools.computer_use import cua_backend_driver as driver
 
     monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
-    monkeypatch.setattr(driver.shutil, "which", lambda value: "/usr/bin/cua-driver" if value == "cua-driver" else None)
+    monkeypatch.setattr("pm.installed_package", lambda name: SimpleNamespace(binary="/usr/bin/cua-driver"))
+    monkeypatch.setattr(driver.shutil, "which", lambda value: "/usr/bin/cua-driver" if value in {"cua-driver", "/usr/bin/cua-driver"} else None)
 
     with _target_config("auto"):
         assert driver._resolve_cua_driver_selection(runtime_host=("linux", False))[:3] == (
             "auto", "linux", "/usr/bin/cua-driver")
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_auto_preserves_native_macos_resolution(monkeypatch):
     from tools.computer_use import cua_backend_driver as driver
 
     monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
-    monkeypatch.setattr(driver.shutil, "which", lambda value: "/usr/local/bin/cua-driver" if value == "cua-driver" else None)
+    monkeypatch.setattr("pm.installed_package", lambda name: SimpleNamespace(binary="/usr/local/bin/cua-driver"))
+    monkeypatch.setattr(driver.shutil, "which", lambda value: "/usr/local/bin/cua-driver" if value in {"cua-driver", "/usr/local/bin/cua-driver"} else None)
     with _target_config("auto"):
         assert driver.computer_use_selection_identity()[:2] == ("auto", "macos")
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_target_works_on_native_windows(monkeypatch):
     from tools.computer_use import cua_backend_driver as driver
 
     monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
-    monkeypatch.setattr(driver.shutil, "which", lambda value: r"C:\Tools\cua-driver.exe" if value == "cua-driver.exe" else None)
+    monkeypatch.setattr("pm.installed_package", lambda name: SimpleNamespace(binary=r"C:\Tools\cua-driver.exe"))
+    monkeypatch.setattr(driver.shutil, "which", lambda value: r"C:\Tools\cua-driver.exe" if value in {"cua-driver.exe", r"C:\Tools\cua-driver.exe"} else None)
     with _target_config("windows"):
         assert driver.computer_use_selection_identity()[:2] == ("windows", "windows")
 
@@ -150,7 +154,7 @@ def test_target_is_profile_scoped_a_b_a(tmp_path, monkeypatch):
     homes = [tmp_path / "a", tmp_path / "b"]
     for home, target in zip(homes, ("linux", "windows")):
         home.mkdir()
-        (home / "config.yaml").write_text(yaml.safe_dump({"computer_use": {"target": target}}), encoding="utf-8")
+        (home / "config.yaml").write_text(f"computer_use:\n  target: {target}\n", encoding="utf-8")
     seen = []
     for home in (homes[0], homes[1], homes[0]):
         token = set_hermes_home_override(str(home))
@@ -188,3 +192,84 @@ def test_embedded_daemon_uses_named_pipe_for_windows_exe_path_symlink(tmp_path):
 
     daemon = _EmbeddedCuaDaemon(str(link), "unrestricted")
     assert daemon.socket_path.startswith(r"\\.\pipe\hermes-cua-")
+
+
+@pytest.mark.parametrize("failure", ["timeout", "missing-powershell", "bad-json", "nonzero", "incomplete"])
+def test_failed_windows_discovery_recovers_without_restart(monkeypatch, failure):
+    from tools.computer_use import cua_backend_driver as driver
+
+    available = [failure != "missing-powershell"]
+    monkeypatch.setattr(driver.shutil, "which", lambda name: "powershell.exe" if available[0] else None)
+    monkeypatch.setattr(driver, "_wsl_windows_path_to_posix", lambda path: "converted:" + path)
+    monkeypatch.setattr(driver, "_cb", lambda: SimpleNamespace(sanitized_cua_driver_env=lambda: {}))
+    success = SimpleNamespace(returncode=0, stdout='{"LocalAppData":"C:/Users/A/AppData/Local","UserProfile":"C:/Users/A"}')
+    first = {
+        "timeout": subprocess.TimeoutExpired("powershell.exe", 5),
+        "bad-json": SimpleNamespace(returncode=0, stdout="not JSON"),
+        "nonzero": SimpleNamespace(returncode=1, stdout="{}"),
+        "incomplete": SimpleNamespace(returncode=0, stdout='{"UserProfile":"C:/Users/A"}'),
+    }.get(failure)
+    run = MagicMock(side_effect=[first, success] if first is not None else [success])
+    monkeypatch.setattr(driver.subprocess, "run", run)
+    driver._cached_wsl_windows_install_paths.cache_clear()
+    try:
+        assert driver._wsl_windows_install_paths() == []
+        available[0] = True
+        paths = driver._wsl_windows_install_paths()
+        assert len(paths) == 2
+        calls = run.call_count
+        assert driver._wsl_windows_install_paths() == paths
+        assert run.call_count == calls
+    finally:
+        driver._cached_wsl_windows_install_paths.cache_clear()
+
+
+def test_auto_does_not_probe_windows_installation_or_change_existing_precedence(monkeypatch):
+    from tools.computer_use import cua_backend_driver as driver
+
+    monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
+    monkeypatch.setattr("pm.installed_package", lambda name: SimpleNamespace(binary="/usr/bin/cua-driver"))
+    monkeypatch.setattr(driver.shutil, "which", lambda name: "/usr/bin/cua-driver" if name in {"cua-driver", "/usr/bin/cua-driver"} else None)
+    monkeypatch.setattr(driver, "_wsl_windows_install_paths", MagicMock(side_effect=AssertionError("auto must preserve resolution")))
+    with _target_config("auto"):
+        assert driver._resolve_cua_driver_selection(runtime_host=("linux", True))[:3] == (
+            "auto", "linux", "/usr/bin/cua-driver")
+
+
+@pytest.mark.platforms("linux")
+def test_auto_windows_override_does_not_start_a_linux_screen(tmp_path, monkeypatch):
+    import json
+    from hermes_cli.config import save_config
+    from tools.computer_use import tool
+    from tools.computer_use_tool import registry
+
+    host = tmp_path / "cua-driver.exe"
+    host.write_text("host binary fixture")
+    host.chmod(0o755)
+    save_config({"computer_use": {"target": "auto"}})
+    monkeypatch.setattr("hermes_constants.is_wsl", lambda: True)
+    monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(host))
+    monkeypatch.setattr("tools.bot_desktop.runtime.ensure_started_for_tool", lambda: pytest.fail("Windows override started a Linux screen"))
+    monkeypatch.setattr(tool, "_new_backend", lambda mode: tool._NoopBackend())
+    tool.reset_backend_for_tests()
+    try:
+        result = json.loads(registry.dispatch("computer_use", {"action": "list_apps"}, session_id="auto-host"))
+        assert "error" not in result, result
+    finally:
+        tool.reset_backend_for_tests()
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("target,override", [("windows", ""), ("auto", "cua-driver.exe")])
+def test_windows_host_refuses_terminal_placement_before_starting_a_screen(tmp_path, monkeypatch, target, override):
+    from hermes_cli.config import save_config
+    from tools.bot_desktop import placement, runtime
+    from tools.computer_use import cua_backend
+
+    save_config({"computer_use": {"target": target}})
+    monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", override)
+    monkeypatch.setattr("hermes_constants.is_wsl", lambda: True)
+    monkeypatch.setattr(runtime, "tool_placement", lambda: placement.TERMINAL)
+    monkeypatch.setattr(runtime, "published_env", lambda: pytest.fail("Windows target accessed a terminal screen"))
+    with pytest.raises(RuntimeError, match="requires gateway desktop placement"):
+        cua_backend.sandbox_mcp_invocation()

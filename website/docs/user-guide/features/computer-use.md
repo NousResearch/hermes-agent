@@ -124,9 +124,9 @@ In Desktop's **Capabilities → Computer Use** card, a WSL backend exposes a
 persistent target selector. It writes `computer_use.target` to the selected
 backend/profile, not to a separate local Windows backend:
 
-- **Automatic** (`auto`, default): keep the existing environment/PATH resolution.
-- **Windows host** (`windows`): find the Windows user's installed `cua-driver.exe`
-  and execute it through WSL interop. Never fall back to a Linux driver.
+- **Automatic** (`auto`, default): keep the existing Hermes PM or explicit-override resolution.
+- **Windows host** (`windows`): use the staged Windows PM pin or the Windows user's
+  installed `cua-driver.exe` through WSL interop. Never fall back to a Linux driver.
 - **Linux guest** (`linux`): use a native Linux driver; Windows executables,
   including symlinks to them, are rejected.
 
@@ -138,11 +138,11 @@ hermes computer-use install
 hermes computer-use status
 ```
 
-Installation uses the official Windows installer and its autostart setup through
-`powershell.exe`. WSL interop and Windows PowerShell must
-be available. If Windows blocks installation or the UIAccess worker, complete
+Installation stages the Windows driver pinned by Hermes PM. Autostart setup through
+`powershell.exe` remains opt-in through `computer_use.autostart`. WSL interop and
+Windows PowerShell must be available. If Windows blocks installation or the UIAccess worker, complete
 that approval on Windows; Hermes does not dismiss OS permission prompts.
-Unattended updates do not launch this cross-OS installer: use an explicit
+Unattended updates do not run cross-OS setup: use an explicit
 `hermes computer-use install --upgrade` when needed.
 
 The card and CLI status show the effective driver platform/path separately from
@@ -156,6 +156,9 @@ Windows installation path). If it conflicts with the explicit target, status
 reports the conflict and execution fails closed; unset or correct it rather
 than expecting a different driver to be chosen silently. Windows target selection
 is supported on native Windows or WSL, not on an arbitrary remote Linux server.
+
+With a sandboxed terminal backend, Windows-host control requires an explicit
+`bot_desktop.placement: gateway` choice. Terminal placement remains inside its sandbox.
 
 Verify with real tool calls: list Windows windows, then request
 `capture(app="screen", mode="vision")`. A green doctor is a health signal, not

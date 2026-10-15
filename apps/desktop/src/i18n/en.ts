@@ -1191,7 +1191,7 @@ export const en: Translations = {
       targetWindows: 'Windows host',
       targetLinux: 'Linux guest',
       targetAutomaticDescription:
-        'Uses the existing resolution: the Windows host through WSL when available, otherwise this Linux guest.',
+        'Keeps the existing driver resolution. Select Windows host to discover its Windows installation explicitly.',
       targetWindowsDescription: 'Runs cua-driver on the Windows host and reaches it through WSL.',
       targetLinuxDescription: 'Runs cua-driver inside this WSL Linux guest.',
       effectiveDriver: platform => `Effective driver: ${platform}`,

@@ -1,54 +1,55 @@
-"""The selected Windows target must not run the Linux installer from WSL."""
+"""WSL setup stages the Windows pin and preserves opt-in autostart."""
+import os
 from types import SimpleNamespace
-from unittest.mock import Mock
 
 import pytest
 
 from hermes_cli import tools_config_cua as install
-from tools.computer_use import cua_backend_driver as driver
+from hermes_cli.config import save_config
 
 
-@pytest.fixture
-def windows_target(monkeypatch):
-    monkeypatch.setattr(install.platform, 'system', lambda: 'Linux')
-    monkeypatch.setattr('hermes_constants.is_wsl', lambda: True)
-    monkeypatch.setattr(driver, 'computer_use_target', lambda: 'windows')
-    monkeypatch.delenv('HERMES_CUA_DRIVER_CMD', raising=False)
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("autostart", [False, True])
+def test_wsl_setup_stages_windows_pin_without_installing_the_guest(tmp_path, monkeypatch, autostart):
+    monkeypatch.setattr("hermes_constants.is_wsl", lambda: True)
+    save_config({"computer_use": {"target": "windows", "autostart": autostart}})
+    executable = tmp_path / "cua-driver.exe"
+    executable.write_text("Windows binary fixture")
+    executable.chmod(0o644)
+    exe = str(executable)
+    windows_exe = r"C:\Users\Alice O'Neil\cua-driver.exe"
+    acquired = []
+    state = {"task": False}
+    monkeypatch.setattr(install, "_resolved_cua_driver_cmd", lambda: exe)
+    monkeypatch.setattr(install, "_cua_driver_contract_status", lambda *a: {"ready": True, "binary": exe})
+    monkeypatch.setattr("pm.client.stage_only", lambda name, target: acquired.append((name, target)) or tmp_path)
+    monkeypatch.setattr("pm.ensure", lambda *a, **kw: pytest.fail("must not install the Linux guest"))
+    monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
+    which = install.shutil.which
+    monkeypatch.setattr(install.shutil, "which", lambda name: name if name in {exe, "powershell.exe"} else which(name))
+    commands = []
 
+    def run(argv, **kwargs):
+        commands.append(argv)
+        if argv[0] == "wslpath":
+            return SimpleNamespace(returncode=0, stdout=windows_exe)
+        if argv[0] == "schtasks.exe":
+            xml = f"<Task><Actions><Exec><Command>{windows_exe}</Command></Exec></Actions></Task>".encode()
+            return SimpleNamespace(returncode=0 if state["task"] else 1, stdout=xml)
+        assert argv[0] == "powershell.exe"
+        assert "@('autostart','enable')" in argv[-1]
+        assert "Alice O''Neil" in argv[-1]
+        assert "irm " not in argv[-1]
+        state["task"] = True
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-def test_missing_windows_target_uses_windows_installer(windows_target, monkeypatch):
-    monkeypatch.setattr(install, '_resolved_cua_driver_cmd', lambda: None)
-    monkeypatch.setattr(install.shutil, 'which', lambda name: '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe' if name == 'powershell.exe' else None)
-    run = Mock(return_value=SimpleNamespace(returncode=0, stdout='', stderr=''))
-    monkeypatch.setattr(install, '_run_text', run)
-    monkeypatch.setattr(install, '_cua_driver_contract_status', lambda *a: {'ready': True})
-    monkeypatch.setattr(install, '_run_cua_driver_installer', Mock(side_effect=AssertionError('POSIX installer used')))
-    assert install.install_cua_driver()
-    argv = run.call_args.args[0]
-    assert argv[0].endswith('powershell.exe')
-    assert install._CUA_INSTALL_PS1_URL in argv[-1]
-    assert '-NoAutoStart' not in argv[-1], 'standard mode needs the Windows daemon'
-    assert run.call_args.kwargs['stdin'] == install.subprocess.DEVNULL
-
-
-def test_unattended_wsl_update_never_downloads(windows_target, monkeypatch):
-    monkeypatch.setattr(install, '_resolved_cua_driver_cmd', lambda: '/mnt/c/cua-driver.exe')
-    monkeypatch.setattr(install, '_cua_driver_contract_status', lambda *a: {'ready': True})
-    monkeypatch.setattr(install, '_run_text', Mock(side_effect=AssertionError('installer started')))
-    assert install.install_cua_driver(upgrade=True, require_confirmed_update=True)
-
-
-def test_wsl_override_conflict_does_not_install_elsewhere(windows_target, monkeypatch):
-    monkeypatch.setenv('HERMES_CUA_DRIVER_CMD', '/usr/bin/linux-driver')
-    monkeypatch.setattr(install, '_resolved_cua_driver_cmd', lambda: None)
-    monkeypatch.setattr(driver, 'computer_use_target_error', lambda: 'override conflicts with windows target')
-    monkeypatch.setattr(install, '_run_text', Mock(side_effect=AssertionError('installer started')))
-    assert not install.install_cua_driver()
-
-
-def test_wsl_installer_success_requires_selected_runtime_contract(windows_target, monkeypatch):
-    monkeypatch.setattr(install, '_resolved_cua_driver_cmd', lambda: None)
-    monkeypatch.setattr(install.shutil, 'which', lambda name: '/mnt/c/powershell.exe')
-    monkeypatch.setattr(install, '_run_text', Mock(return_value=SimpleNamespace(returncode=0, stdout='', stderr='')))
-    monkeypatch.setattr(install, '_cua_driver_contract_status', lambda *a: {'ready': False, 'reason': 'binary missing'})
-    assert not install.install_cua_driver()
+    monkeypatch.setattr(install.subprocess, "run", run)
+    assert install.install_cua_driver(show_installer_progress=False)
+    assert acquired == [("cua-driver", "win32-x64")]
+    assert os.access(exe, os.X_OK)
+    assert install._cua_driver_install_ready()
+    assert any(argv[0] == "powershell.exe" for argv in commands) is autostart
+    monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", exe)
+    acquired.clear()
+    assert install.install_cua_driver(show_installer_progress=False)
+    assert acquired == []

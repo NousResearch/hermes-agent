@@ -19,6 +19,10 @@ const getUsageAnalytics = vi.fn()
 const getProfiles = vi.fn()
 const getSkillContent = vi.fn()
 const getOfficialSkills = vi.fn()
+const getComputerUseStatus = vi.fn()
+const saveHermesConfigRecord = vi.fn()
+const runToolsetPostSetup = vi.fn()
+const getActionStatus = vi.fn()
 
 // Partial mock: keep the real module (CapabilitiesView pulls in @/store/profile,
 // whose import-time subscription calls setApiRequestProfile) and stub only the
@@ -36,7 +40,14 @@ vi.mock('@/hermes', async importOriginal => ({
   getUsageAnalytics: (days: number, profile?: null | string) => getUsageAnalytics(days, profile),
   getProfiles: () => getProfiles(),
   getSkillContent: (name: string, profile?: null | string) => getSkillContent(name, profile),
-  getOfficialSkills: (profile?: null | string) => getOfficialSkills(profile)
+  getOfficialSkills: (profile?: null | string) => getOfficialSkills(profile),
+  getComputerUseStatus: (profile?: HermesApi.ProfileScope) => getComputerUseStatus(profile),
+  saveHermesConfigRecord: (config: unknown, profile?: HermesApi.ProfileScope) =>
+    saveHermesConfigRecord(config, profile),
+  runToolsetPostSetup: (name: string, key: string, profile?: HermesApi.ProfileScope) =>
+    runToolsetPostSetup(name, key, profile),
+  getActionStatus: (name: string, lines?: number, profile?: HermesApi.ProfileScope) =>
+    getActionStatus(name, lines, profile)
 }))
 
 // Notifications hit nanostores/timers we don't care about here.
@@ -494,5 +505,86 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     await waitFor(() =>
       expect(vi.mocked(installHubSkill)).toHaveBeenCalledWith('official/gifs/gif-search', expect.anything())
     )
+  })
+})
+
+describe('Computer Use target and provider matrix integration', { timeout: 60_000 }, () => {
+  it.each([false, true])('refreshes the real install panel without losing an active setup: %s', async installing => {
+    let target = 'auto'
+    let complete!: (value: { name: string; running: boolean; exit_code: number; lines: string[] }) => void
+
+    const completion = new Promise<{ name: string; running: boolean; exit_code: number; lines: string[] }>(resolve => {
+      complete = resolve
+    })
+
+    getToolsets.mockResolvedValue([toolset({ name: 'computer_use', label: 'Computer Use', tools: ['computer_use'] })])
+    getComputerUseStatus.mockImplementation(async () => ({
+      platform: 'linux',
+      platform_supported: true,
+      is_wsl: true,
+      target,
+      installed: target !== 'windows',
+      ready: target !== 'windows',
+      can_grant: false,
+      checks: [],
+      driver_platform: target === 'windows' ? null : 'linux',
+      driver_command: target === 'windows' ? null : '/usr/bin/cua-driver'
+    }))
+    getToolsetConfig.mockImplementation(async () => ({
+      name: 'computer_use',
+      has_category: true,
+      active_provider: 'cua-driver',
+      providers: [
+        {
+          name: 'cua-driver',
+          badge: 'local',
+          tag: 'Desktop control',
+          env_vars: [],
+          post_setup: 'cua_driver',
+          requires_nous_auth: false,
+          is_active: true,
+          status: target === 'windows' ? 'needs_setup' : 'ready'
+        }
+      ]
+    }))
+    saveHermesConfigRecord.mockImplementation(async (config: { computer_use: { target: string } }) => {
+      target = config.computer_use.target
+
+      return { ok: true }
+    })
+    runToolsetPostSetup.mockResolvedValue({ ok: true, name: 'install-cua' })
+    getActionStatus.mockReturnValue(completion)
+
+    await renderSkills()
+    const rerun = await screen.findByRole('button', { name: 'Re-run setup' })
+    const initialConfigCalls = getToolsetConfig.mock.calls.length
+    const scope = getToolsetConfig.mock.calls.at(-1)?.[1]
+
+    if (installing) {
+      fireEvent.click(rerun)
+      // Wait until the existing runner owns a live poll. A remount would
+      // abandon this poll and reset the busy state despite the running action.
+      await waitFor(() => expect(getActionStatus).toHaveBeenCalled(), { timeout: 5000 })
+    }
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Windows host' }))
+    await waitFor(() => expect(getToolsetConfig.mock.calls.length).toBeGreaterThan(initialConfigCalls))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Windows host' }).getAttribute('aria-pressed')).toBe('true')
+    )
+    expect(saveHermesConfigRecord).toHaveBeenCalledWith({ computer_use: { target: 'windows' } }, scope)
+    expect(getToolsetConfig).toHaveBeenLastCalledWith('computer_use', scope)
+    expect(screen.getByText(/Install the cua-driver backend below/)).toBeTruthy()
+    expect(screen.queryByText('Installed')).toBeNull()
+
+    if (installing) {
+      expect(screen.getByRole('button', { name: 'Installing…' }).hasAttribute('disabled')).toBe(true)
+      await act(async () => complete({ name: 'install-cua', running: false, exit_code: 0, lines: ['finished'] }))
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Installing…' })).toBeNull())
+      expect(runToolsetPostSetup).toHaveBeenCalledTimes(1)
+      expect(getActionStatus).toHaveBeenCalledTimes(1)
+    }
+
+    expect(await screen.findByRole('button', { name: 'Run setup' })).toBeTruthy()
   })
 })

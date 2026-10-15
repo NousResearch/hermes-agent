@@ -159,6 +159,10 @@ def sandbox_mcp_invocation() -> Optional[tuple[tuple[str, list[str]], dict[str, 
     from tools.bot_desktop import placement, runtime as _bd_runtime
     if _bd_runtime.tool_placement() == placement.GATEWAY:
         return None
+    from tools.computer_use.cua_backend_driver import computer_use_target, is_windows_driver
+    if computer_use_target() == "windows" or is_windows_driver(os.environ.get(_CUA_DRIVER_CMD_ENV)):
+        raise RuntimeError("Windows-host Computer Use requires gateway desktop placement; "
+                           "the selected terminal sandbox cannot control the Windows host")
     published = _bd_runtime.published_env()
     if not published.get("DISPLAY"):
         raise RuntimeError("the screen inside the terminal backend's sandbox is gone; start it again")

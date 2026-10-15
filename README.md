@@ -236,6 +236,12 @@ for activation, daily use, dependency changes, and leaving the environment.
 
 ---
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=NousResearch/hermes-agent&type=Date)](https://www.star-history.com/#NousResearch/hermes-agent&Date)
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

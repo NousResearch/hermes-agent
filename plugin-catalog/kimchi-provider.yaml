@@ -1,0 +1,18 @@
+name: kimchi-provider
+repo: https://github.com/getkimchi/kimchi-hermes
+subdir: model-providers/kimchi
+sha: 0fcca81491ce97449d615754c60f89eff7696a93
+description: Kimchi (kimchi.dev) models via the OpenAI-compatible API — live catalog from the metadata endpoint, API-key auth, gateway unknown-model 400s classified as model_not_found, and an identifying User-Agent (hermes-agent/<version>) on every gateway request.
+maintainer: getkimchi
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/getkimchi/kimchi-hermes#readme
+version: "1.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - KIMCHI_API_KEY

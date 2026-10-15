@@ -3,11 +3,12 @@
 
 import mimetypes
 import os
+import stat
 import urllib.request
 from dataclasses import dataclass
 from fastapi import HTTPException, Request
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 _MANAGED_FILES_ROOT_ENV = "HERMES_DASHBOARD_FILES_ROOT"
@@ -140,7 +141,7 @@ def _dashboard_local_update_managed_externally() -> bool:
     return True
 
 
-def _managed_files_policy(request: Request, *, create_root: bool = True) -> ManagedFilesPolicy:
+def _managed_files_policy(request: Optional[Request], *, create_root: bool = True) -> ManagedFilesPolicy:
     raw_forced_root = os.environ.get(_MANAGED_FILES_ROOT_ENV, "").strip()
     if raw_forced_root:
         root = _ensure_managed_root(raw_forced_root) if create_root else _canonical_path(Path(raw_forced_root))
@@ -192,25 +193,82 @@ def _resolve_managed_path(
     return policy, resolved, str(resolved)
 
 
-def _managed_response_meta(policy: ManagedFilesPolicy) -> Dict[str, Any]:
+def _managed_response_meta(policy: ManagedFilesPolicy) -> dict[str, Any]:
     locked_root = str(policy.locked_root) if policy.locked_root is not None else None
     return {"root": locked_root, "locked_root": locked_root, "can_change_path": policy.can_change_path}
 
 
-def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, Any]:
+def _hosted_fs_path_allowed(root: Path, target: Path) -> bool:
+    from hermes_cli.web_routers.files import _is_sensitive_path
+
+    resolved = _canonical_path(target)
+    return (_path_is_under(root, resolved)
+            and not _is_sensitive_path(target) and not _is_sensitive_path(resolved))
+
+
+def _hosted_fs_read_guard(target: Path, request: Optional[Request] = None) -> Path | None:
+    """Preview and Git reads share managed-file restrictions on locked deployments.
+
+    ``request`` is unused (the policy is env/home driven) and optional so the
+    route functions stay callable directly, e.g. from agent-side tests.
+    """
+    root = _managed_files_policy(request, create_root=False).locked_root
+    if root is not None and not _hosted_fs_path_allowed(root, target):
+        raise HTTPException(status_code=403, detail="Path is outside the managed read boundary")
+    return root
+
+
+def _managed_file_entry(
+    policy: ManagedFilesPolicy, target: Path, *, skip_missing: bool = False
+) -> dict[str, Any] | None:
+    """Describe an entry; listings may skip vanished files, while writes stay strict."""
     try:
         resolved = target.resolve()
     except (OSError, RuntimeError):
         raise HTTPException(status_code=400, detail="Invalid path")
+
+    # A dangling symlink is still a directory entry even when its missing
+    # target resolves outside the managed root. Classify only a definite
+    # missing target before checking the resolved-target boundary so one safe
+    # placeholder does not abort the whole listing. Permission and other I/O
+    # errors still pass through the existing boundary/error handling below.
+    st = None
+    if target.is_symlink():
+        try:
+            st = resolved.stat()
+        except FileNotFoundError:
+            # A placeholder may describe only an entry inside the managed root,
+            # even when the missing destination is outside it.
+            if policy.locked_root is not None and not _path_is_under(
+                policy.locked_root, target.parent.resolve() / target.name
+            ):
+                raise HTTPException(status_code=403, detail="Path outside managed files root")
+            return {
+                "name": target.name or resolved.name or str(resolved),
+                "path": str(target),
+                "is_directory": False,
+                "broken_link": True,
+                "size": None,
+                "mtime": None,
+                "mime_type": None,
+            }
+        except OSError:
+            pass
+
     if policy.locked_root is not None and not _path_is_under(policy.locked_root, resolved):
         raise HTTPException(status_code=403, detail="Path outside managed files root")
 
-    try:
-        st = resolved.stat()
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
+    if st is None:
+        try:
+            st = resolved.stat()
+        except FileNotFoundError as exc:
+            if skip_missing:
+                return None
+            raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
 
-    is_dir = resolved.is_dir()
+    is_dir = stat.S_ISDIR(st.st_mode)
     mime_type = None if is_dir else (mimetypes.guess_type(resolved.name)[0] or "application/octet-stream")
     return {
         "name": target.name or resolved.name or str(resolved),

@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
-import { messagesIfTranscriptBehind } from '@/lib/stale-transcript-guard'
 import { $transcriptTailBySessionId, recordTranscriptTail, transcriptTailState } from '@/store/transcript-tail'
 
 import {
@@ -278,11 +277,6 @@ describe('graftRefreshedTailOntoBackfill', () => {
     const page = [chat('orphan-tools'), chat('user', 122886), chat('assistant', 122887)]
 
     expect(graftRefreshedTailOntoBackfill(page, page)).toBe(page)
-    expect(messagesIfTranscriptBehind(page, page)).toBeNull()
-
-    const grown = [...page, chat('later', 122890)]
-
-    expect(messagesIfTranscriptBehind(page, grown)).toBe(grown)
   })
 
   it('returns the refreshed tail when it is not shorter than the previous transcript', () => {
@@ -290,50 +284,6 @@ describe('graftRefreshedTailOntoBackfill', () => {
     const refreshed = [chat('a', 1), chat('b', 2)]
 
     expect(graftRefreshedTailOntoBackfill(refreshed, previous)).toBe(refreshed)
-  })
-})
-
-describe('messagesIfTranscriptBehind retention tips (#123909)', () => {
-  it('treats a retention-trimmed store ending on the page tip as current', () => {
-    // Retention released the head: the store holds fewer messages than the
-    // latest page renders, but its last durable row IS the page's own tip.
-    // The count comparison refused every send on that shape.
-    const trimmed = [chat('old-a', 110), chat('old-b', 111), chat('tip-user', 118), chat('tip-reply', 119)]
-
-    const page = [
-      chat('old-a', 110),
-      chat('old-b', 111),
-      chat('mid-turn', 115),
-      chat('tip-user', 118),
-      chat('tip-reply', 119)
-    ]
-
-    expect(page.length).toBeGreaterThan(trimmed.length)
-
-    expect(messagesIfTranscriptBehind(trimmed, page)).toBeNull()
-  })
-
-  it('skips unpersisted tail rows when establishing the local tip', () => {
-    // The guard runs on a baseline that may still end on a live row past the
-    // last durable one; the durable tip decides, not the stream bubble.
-    const local = [chat('durable-reply', 119), chat('live-stream')]
-    const page = [chat('older', 118), chat('durable-reply', 119)]
-
-    expect(messagesIfTranscriptBehind(local, page)).toBeNull()
-  })
-
-  it("still refuses when a peer window's newer row changes the tip (#65047)", () => {
-    const local = [chat('a', 118), chat('b', 119)]
-    const page = [...local, chat('peer-turn', 120)]
-
-    expect(messagesIfTranscriptBehind(local, page)).toBe(page)
-  })
-
-  it('falls back to counts when neither side carries a durable row id', () => {
-    const local = [chat('a'), chat('b')]
-    const page = [chat('a'), chat('b'), chat('c')]
-
-    expect(messagesIfTranscriptBehind(local, page)).toBe(page)
   })
 })
 

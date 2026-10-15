@@ -20,7 +20,7 @@ from pm.downloader import (Download, DownloadError, DownloadPaused,
                            HashError, Source, replace_when_released)
 
 from tests.pm._range_server import RangeHandler as _Handler, url as _url
-from tests.pm._range_server import dl_server as dl_server
+from tests.pm._range_server import dl_server as dl_server  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 
 def _payload(n: int, seed: bytes = b"x") -> bytes:

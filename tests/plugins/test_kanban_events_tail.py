@@ -97,7 +97,7 @@ async def _drive(monkeypatch, mod, ws, conn, polls: int) -> None:
         waits += 1
         awaitable.close()
         if waits <= polls:
-            raise asyncio.TimeoutError
+            raise TimeoutError
         return {"type": "websocket.disconnect"}
 
     monkeypatch.setattr(mod.asyncio, "wait_for", _wait_for)

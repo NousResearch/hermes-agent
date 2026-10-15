@@ -14,6 +14,8 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 
 import asyncio
 import signal
+import sys
+import types
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -544,3 +546,45 @@ class TestNoCredsPreflight:
         # but the fatal-error code is NOT the "not paired" one.
         assert result is False
         assert adapter._fatal_error_code != "whatsapp_not_paired"
+
+
+class TestNamedConnectFailures:
+    """A failed connect names its cause; an unnamed False loops forever as an unclassified failure (#126358)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("aiohttp_module, lazy_allowed, cause, retryable", [
+        (None, False, "lazy installs are disabled", False),
+        # Installed but this process could not adopt it: final would exit the gateway 78 instead of restarting.
+        (None, True, "sms installed; restart Hermes to activate it", True),
+        (types.ModuleType("aiohttp"), True, "incomplete install", False),  # a shadowing aiohttp.py has no __path__
+    ])
+    async def test_missing_aiohttp_is_named_and_final_only_when_pm_cannot_install(
+            self, aiohttp_module, lazy_allowed, cause, retryable):
+        from pm.package import InstallError
+
+        adapter = _make_adapter()
+        adapter._acquire_platform_lock = MagicMock(return_value=False)
+        ensure_import = MagicMock(side_effect=InstallError("venv", cause))
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch.object(Path, "exists", return_value=True), patch.dict(sys.modules, {"aiohttp": aiohttp_module}), \
+             patch("pm.extras.ensure_import", ensure_import), \
+             patch("pm.install.lazy_installs_allowed", return_value=lazy_allowed), \
+             patch("pm.environments.running_from_selected_environment", return_value=True):
+            assert await adapter.connect() is False
+
+        assert ensure_import.call_count == (aiohttp_module is None)
+        adapter._acquire_platform_lock.assert_not_called()  # bridge never started
+        assert adapter.fatal_error_code == "whatsapp_aiohttp_missing"
+        assert adapter.fatal_error_retryable is retryable
+        assert cause in adapter.fatal_error_message
+
+    @pytest.mark.asyncio
+    async def test_bridge_http_timeout_is_a_named_retryable_failure(self):
+        adapter = _make_adapter()
+        adapter._bridge_process = MagicMock(**{"poll.return_value": None})
+        with patch.object(adapter, "_probe_bridge_health", new_callable=AsyncMock, side_effect=OSError("refused")), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
+            assert await adapter._wait_for_bridge() is False
+
+        assert adapter.fatal_error_code == "whatsapp_bridge_timeout"
+        assert adapter.fatal_error_retryable is True

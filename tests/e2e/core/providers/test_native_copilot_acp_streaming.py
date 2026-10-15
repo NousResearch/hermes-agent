@@ -73,7 +73,7 @@ class Observed:
     stderr: str = ""
 
 
-def _pump(proc: subprocess.Popen, sink: "queue.Queue[tuple[float, dict[str, Any]] | None]") -> None:
+def _pump(proc: subprocess.Popen, sink: queue.Queue[tuple[float, dict[str, Any]] | None]) -> None:
     for line in proc.stdout:  # type: ignore[union-attr]
         try:
             sink.put((time.time(), json.loads(line)))

@@ -59,8 +59,16 @@ def test_cli_test_save_and_inference_use_selected_profile(client, tmp_path, monk
     az.chmod(0o700)
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
     requests = []
+    model_requests = []
 
     class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            model_requests.append((self.path, self.headers.get("Authorization"), self.headers.get("api-key")))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"data":[{"id":"my-deployment"}]}')
+
         def do_POST(self):
             requests.append((self.path, self.headers.get("Authorization"),
                              json.loads(self.rfile.read(int(self.headers["Content-Length"])))))
@@ -84,6 +92,12 @@ def test_cli_test_save_and_inference_use_selected_profile(client, tmp_path, monk
     payload["auth"]["entra"].pop("subscription" if selector == "tenant_id" else "tenant_id")
     reset_credential_cache()
     try:
+        before = (home / "config.yaml").read_text()
+        discovered = client.post(f"/api/providers/azure-foundry/models?profile={profile}", json={**payload, "model": ""})
+        assert discovered.status_code == 200, discovered.text
+        assert discovered.json() == {"models": ["my-deployment"]}
+        assert model_requests == [("/v1/models", "Bearer cli-token", None)]
+        assert (home / "config.yaml").read_text() == before
         tested = client.post(f"/api/providers/azure-foundry/validate?profile={profile}", json=payload)
         assert tested.status_code == 200 and tested.json()["ok"], tested.text
         saved = client.put(route, json=payload)
@@ -158,7 +172,7 @@ def test_bad_endpoint_never_overwrites_settings(client, base):
     before = read_raw_config()
     payload = {"base_url": base, "model": "deployment", "api_mode": "codex_responses",
                "auth": {"kind": "entra_id", "entra": {"credential_source": "azure_cli"}}}
-    for method, route in ((client.put, "/api/providers/azure-foundry"), (client.post, "/api/providers/azure-foundry/validate")):
+    for method, route in ((client.put, "/api/providers/azure-foundry"), (client.post, "/api/providers/azure-foundry/validate"), (client.post, "/api/providers/azure-foundry/models")):
         result = method(route + "?profile=default", json=payload)
         assert result.status_code == 400, result.text
     assert read_raw_config() == before
@@ -210,8 +224,43 @@ def test_mixed_account_selectors_are_rejected_before_test_or_save(client):
     payload = {"base_url": "https://resource.services.ai.azure.com/openai/v1", "model": "deployment",
                "api_mode": "codex_responses", "auth": {"kind": "entra_id", "entra": {
                    "credential_source": "azure_cli", "tenant_id": "tenant", "subscription": "subscription"}}}
-    for method, route in ((client.put, "/api/providers/azure-foundry"), (client.post, "/api/providers/azure-foundry/validate")):
+    for method, route in ((client.put, "/api/providers/azure-foundry"), (client.post, "/api/providers/azure-foundry/validate"), (client.post, "/api/providers/azure-foundry/models")):
         result = method(route + "?profile=default", json=payload)
         assert result.status_code == 422, result.text
         assert "not both" in result.text
     assert read_raw_config() == before
+
+
+def test_discovery_failure_does_not_leak_credentials_or_save(client, monkeypatch):
+    from hermes_cli.web_routers import azure_foundry
+    from agent import azure_identity_adapter
+    from hermes_cli.config import read_raw_config
+
+    def failed(**_):
+        raise RuntimeError("secret-cli-output")
+
+    monkeypatch.setattr(azure_identity_adapter, "build_token_provider", failed)
+    payload = {"base_url": "https://resource.services.ai.azure.com/openai/v1", "model": "", "api_mode": "codex_responses",
+               "auth": {"kind": "entra_id", "entra": {"credential_source": "azure_cli"}}}
+    before = read_raw_config()
+    result = client.post("/api/providers/azure-foundry/models?profile=default", json=payload)
+    assert result.status_code == 400
+    assert "az login" in result.text
+    assert "secret-cli-output" not in result.text
+    assert read_raw_config() == before
+
+
+def test_unavailable_model_listing_keeps_manual_setup_possible(client, monkeypatch):
+    from hermes_cli import azure_detect
+    from hermes_cli.config import read_raw_config
+
+    monkeypatch.setattr(azure_detect, "_probe_openai_models", lambda *_: (False, []))
+    payload = {"base_url": "https://resource.services.ai.azure.com/openai/v1", "model": "", "api_mode": "codex_responses",
+               "auth": {"kind": "api_key", "api_key": "private-key"}}
+    before = read_raw_config()
+    listed = client.post("/api/providers/azure-foundry/models?profile=default", json=payload)
+    assert listed.json() == {"models": []}
+    assert read_raw_config() == before
+    saved = client.put("/api/providers/azure-foundry?profile=default", json={**payload, "model": "manual-deployment"})
+    assert saved.status_code == 200
+    assert saved.json()["model"] == "manual-deployment"

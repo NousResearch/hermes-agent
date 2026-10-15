@@ -43,3 +43,7 @@ export function saveFoundrySettings(body: FoundryUpdate, scope?: ProfileScope): 
 export function validateFoundrySettings(body: FoundryUpdate, scope?: ProfileScope): Promise<FoundryValidation> {
   return hermesApi<FoundryValidation>({ ...capabilityScoped(scope), path: `${path}/validate`, method: 'POST', body })
 }
+
+export function discoverFoundryModels(body: FoundryUpdate, scope?: ProfileScope): Promise<{ models: string[] }> {
+  return hermesApi<{ models: string[] }>({ ...capabilityScoped(scope), path: `${path}/models`, method: 'POST', body })
+}

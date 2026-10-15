@@ -143,13 +143,15 @@ The ambient credential-chain refusal remains in place.
    For a remote connection, this is the gateway host.
 2. Open **Settings → Providers → API Keys → Microsoft Foundry**. Select the bot profile
    under **Applies to**.
-3. Enter your inference endpoint and deployment name. Hermes sends that deployment
-   name as `model`; no `custom:` prefix is needed.
-4. Select **Microsoft Entra ID → Azure CLI login**. Under **Advanced settings**, optionally
+3. Enter your inference endpoint.
+4. Select **Microsoft Entra ID**, then choose **Azure CLI login** under **Get credentials from**. Under **Advanced settings**, optionally
    choose **Azure CLI default**, **Tenant ID**, or **Subscription name or ID**,
    then enter the selected value. Token scope is a separate optional setting. Select the API mode
    your deployment supports, such as **Responses API**.
-5. Click **Test**, then **Save and use**. This sets Foundry as the provider for new
+5. Select **Refresh models**, then choose a model or enter your Azure deployment name.
+   Hermes sends the deployment name as `model`; no `custom:` prefix is needed.
+   If listing is unavailable, manual entry and testing still work.
+6. Click **Test**, then **Save and use**. This sets Foundry as the provider for new
    chats in that profile. Existing chats with a saved model selection may need their
    model selector updated.
 

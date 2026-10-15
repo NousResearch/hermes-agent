@@ -10,6 +10,7 @@ const profileState = atom('bot-a')
 
 const calls = vi.hoisted(() => ({
   get: vi.fn(),
+  discover: vi.fn(),
   remove: vi.fn(),
   confirm: vi.fn(),
   save: vi.fn(),
@@ -19,6 +20,7 @@ const calls = vi.hoisted(() => ({
 }))
 vi.mock('@/hermes', () => ({
   deleteEnvVar: calls.remove,
+  discoverFoundryModels: calls.discover,
   getFoundrySettings: calls.get,
   saveFoundrySettings: calls.save,
   validateFoundrySettings: calls.test
@@ -40,6 +42,9 @@ const saved: FoundrySettings = {
 }
 
 beforeEach(() => {
+  Element.prototype.scrollIntoView = vi.fn()
+  Element.prototype.hasPointerCapture = vi.fn(() => false)
+  Element.prototype.releasePointerCapture = vi.fn()
   vi.resetAllMocks()
   profileState.set('bot-a')
   connectionState.set('local')
@@ -47,6 +52,7 @@ beforeEach(() => {
   calls.remove.mockResolvedValue({ ok: true })
   calls.get.mockResolvedValue(saved)
   calls.save.mockImplementation(async payload => ({ ...payload, is_current: true, api_key_set: false }))
+  calls.discover.mockResolvedValue({ models: ['deployment-alias', 'another-model'] })
   calls.test.mockResolvedValue({ ok: true, reachable: true, message: '' })
 })
 afterEach(cleanup)
@@ -59,7 +65,8 @@ it('offers CLI within Entra and sends account selectors to the same bot for test
   render(surface())
   await screen.findByDisplayValue('deployment-alias')
   fireEvent.click(screen.getByRole('button', { name: 'Microsoft Entra ID' }))
-  fireEvent.click(screen.getByRole('button', { name: 'Azure CLI login' }))
+  fireEvent.keyDown(screen.getByRole('combobox', { name: 'Get credentials from' }), { key: 'ArrowDown' })
+  fireEvent.click(await screen.findByRole('option', { name: 'Azure CLI login' }))
   expect(screen.queryByLabelText('API Key')).toBeNull()
   fireEvent.click(screen.getByText('Advanced settings'))
   fireEvent.click(screen.getByRole('button', { name: 'Tenant ID' }))
@@ -135,9 +142,80 @@ it('uses the old API-key card only when the backend lacks the route', async () =
 it('removes the saved API key through the existing confirmation and scoped credential API', async () => {
   render(surface())
   await screen.findByPlaceholderText('Leave blank to keep current key')
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Refresh models' })))
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Remove' })))
   expect(calls.confirm).toHaveBeenCalledWith(expect.objectContaining({ destructive: true }))
   expect(calls.remove).toHaveBeenCalledWith('AZURE_FOUNDRY_API_KEY', { connectionId: 'local', profile: 'bot-a' })
   await waitFor(() => expect(screen.queryByPlaceholderText('Leave blank to keep current key')).toBeNull())
+  fireEvent.focus(screen.getByLabelText('Deployment name'))
+  expect(screen.queryByText('another-model')).toBeNull()
   expect(calls.save).not.toHaveBeenCalled()
+})
+
+it('discovers with unsaved credentials without a deployment or a configuration write', async () => {
+  calls.get.mockResolvedValue({
+    ...saved,
+    model: '',
+    auth: { kind: 'entra_id', entra: { credential_source: 'azure_cli', scope: '' } }
+  })
+  render(surface())
+  await screen.findByRole('combobox', { name: 'Get credentials from' })
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Refresh models' })))
+  expect(calls.discover).toHaveBeenCalledWith(
+    expect.objectContaining({
+      model: '',
+      auth: { kind: 'entra_id', entra: { credential_source: 'azure_cli', scope: '' } }
+    }),
+    { connectionId: 'local', profile: 'bot-a' }
+  )
+  fireEvent.focus(screen.getByLabelText('Deployment name'))
+  fireEvent.click(await screen.findByText('another-model'))
+  expect(screen.getByDisplayValue('another-model')).toBeTruthy()
+  expect(calls.save).not.toHaveBeenCalled()
+  fireEvent.change(screen.getByLabelText('Deployment name'), { target: { value: 'manual-deployment' } })
+  expect(screen.getByDisplayValue('manual-deployment')).toBeTruthy()
+})
+
+it('preserves automatic credentials and permits manual deployment entry when listing is unavailable', async () => {
+  calls.get.mockResolvedValue({
+    ...saved,
+    auth: { kind: 'entra_id', entra: { credential_source: 'default', scope: '' } }
+  })
+  calls.discover.mockResolvedValue({ models: [] })
+  render(surface())
+  await screen.findByText('Automatic Azure credentials')
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Refresh models' })))
+  expect(calls.notify).toHaveBeenCalledWith(
+    expect.objectContaining({ kind: 'warning', message: expect.stringContaining('Enter your deployment name') })
+  )
+  fireEvent.change(screen.getByLabelText('Deployment name'), { target: { value: 'manual-deployment' } })
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save and use' })))
+  expect(calls.save).toHaveBeenCalledWith(
+    expect.objectContaining({
+      model: 'manual-deployment',
+      auth: { kind: 'entra_id', entra: { credential_source: 'default', scope: '' } }
+    }),
+    expect.anything()
+  )
+})
+
+it('discards discovery results after switching profiles', async () => {
+  let finish: (data: { models: string[] }) => void = () => {
+    throw new Error('Discovery not started')
+  }
+  calls.discover.mockImplementation(
+    () =>
+      new Promise(resolve => {
+        finish = resolve
+      })
+  )
+  render(surface())
+  await screen.findByDisplayValue('deployment-alias')
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh models' }))
+  await act(() => profileState.set('bot-b'))
+  await screen.findByDisplayValue('deployment-alias')
+  await act(() => finish({ models: ['old-profile-model'] }))
+  fireEvent.focus(screen.getByLabelText('Deployment name'))
+  expect(screen.queryByText('old-profile-model')).toBeNull()
+  expect(calls.notify).not.toHaveBeenCalled()
 })

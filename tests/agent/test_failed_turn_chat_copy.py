@@ -112,34 +112,113 @@ def test_max_retries_exhausted_chat_text_has_next_step_and_no_mechanism_lead():
         api_kwargs=None, api_messages=[], messages=[], conversation_history=None, api_call_count=1,
         approx_tokens=10, provider="openrouter", base_url="https://openrouter.ai/api/v1", model="m",
     )
+    # empty chain proves nothing about the wider /model route set -> the hint is KEPT (default)
     text = result["final_response"]
-    assert "/retry" in text
-    assert "/model" not in text
+    assert "/retry" in text and "/model" in text
     assert result["failure_reason"] == classified.reason.value
     assert result["failure_retryable"] is True
 
 
-class _AgentWithDifferentModelHop(_Agent):
-    _fallback_chain = ({"provider": "openai-codex", "model": "gpt-other"},)
+class _AgentSameSurfaceChain(_Agent):
+    """Realistic post-walk state: index at the end of the chain (the walker consumed it),
+    every hop on the SAME credential surface as the failed primary (alias/custom variants
+    of one corp router). A switch relists the quota that just died."""
+    _fallback_chain = ({"provider": "openrouter", "model": "m-alt"},
+                       {"provider": "openrouter", "model": "m-alt2"})
+    _fallback_index = 2
 
 
-class _AgentWithSameModelHop(_Agent):
-    # same model behind the same exhausted quota: NOT a viable switch target
-    _fallback_chain = ({"provider": "openrouter", "model": "m"},)
+class _AgentCrossSurfaceChain(_Agent):
+    """Hops living on a DIFFERENT credential surface: their own account envelope governs."""
+    _fallback_chain = ({"provider": "openai-codex", "model": "gpt-5.6-sol"},)
+    _fallback_index = 1
 
 
-def test_exhausted_copy_advises_model_switch_only_when_a_viable_hop_remains():
-    error = _Http(429, "HTTP 429: rate limited")
+def _exhausted_kwargs(**over):
+    kw = dict(attempts=3, error_msg="http 429: rate limited",
+              api_kwargs=None, api_messages=[], messages=[], conversation_history=None,
+              api_call_count=3, approx_tokens=10, provider="openrouter",
+              base_url="https://openrouter.ai/api/v1", model="m")
+    kw.update(over)
+    return kw
+
+
+def _with_account_reset(classified, seconds=900):
+    """The reset travels through the classifier's error_context (reset_at epoch), as in prod."""
+    classified.error_context = {"reset_at": __import__("time").time() + seconds}
+    return classified
+
+
+def _rate_limit_with_reset_window(provider="openrouter", model="m", base="https://openrouter.ai/api/v1"):
+    """A 429 that the classifier keeps as rate_limit (transient signal in the body), carrying
+    an account-envelope reset — the exact shape a corp-router usage window produces."""
+    import httpx
+    import openai
+    body = {"error": {"type": "rate_limit_error", "message": "The usage limit has been reached",
+                      "resets_in_seconds": 900}}
+    response = httpx.Response(429, json=body, request=httpx.Request("POST", base))
+    return openai.RateLimitError(f"Error code: 429 - {body}", response=response, body=body)
+
+
+def test_account_quota_exhaustion_with_same_surface_chain_withholds_model_hint():
+    """Rate-limit envelope with a reset + every detour hop on the same credential surface:
+    the /model hint is withheld — advising a switch would relist the quota that just died."""
+    error = _rate_limit_with_reset_window()
     classified = classify_api_error(error, provider="openrouter", model="m")
-    kwargs = dict(attempts=3, is_rate_limited=True, error_msg=str(error).lower(),
-                  api_kwargs=None, api_messages=[], messages=[], conversation_history=None,
-                  api_call_count=1, approx_tokens=10, provider="openrouter",
-                  base_url="https://openrouter.ai/api/v1", model="m")
-    with_hop = max_retries_exhausted_result(_AgentWithDifferentModelHop(), error, classified, **kwargs)
-    assert "/model" in with_hop["final_response"]
+    assert classified.reason.value == "rate_limit"  # the gate's jurisdiction
+    result = max_retries_exhausted_result(
+        _AgentSameSurfaceChain(), error, _with_account_reset(classified),
+        is_rate_limited=True, **_exhausted_kwargs())
+    text = result["final_response"]
+    assert "/retry" in text and "resets in" in text
+    assert "/model" not in text
 
-    same_hop = max_retries_exhausted_result(_AgentWithSameModelHop(), error, classified, **kwargs)
-    assert "/model" not in same_hop["final_response"]
+
+def test_cross_surface_chain_keeps_the_model_hint_through_a_quota_wall():
+    error = _rate_limit_with_reset_window()
+    classified = classify_api_error(error, provider="openrouter", model="m")
+    result = max_retries_exhausted_result(
+        _AgentCrossSurfaceChain(), error, _with_account_reset(classified),
+        is_rate_limited=True, **_exhausted_kwargs())
+    assert "/model" in result["final_response"]
+
+
+def test_deployment_scoped_failure_never_withholds_the_model_hint():
+    """Server/overload failures invalidate ONE deployment: even a same-surface chain keeps
+    the hint, because another deployment on that surface can genuinely serve the turn."""
+    error = _Http(503, "HTTP 503: upstream unavailable")
+    classified = classify_api_error(error, provider="openrouter", model="m")
+    result = max_retries_exhausted_result(
+        _AgentSameSurfaceChain(), error, classified,
+        is_rate_limited=False, **_exhausted_kwargs(error_msg=str(error).lower()))
+    assert "/model" in result["final_response"]
+
+
+def test_switch_advice_viable_reason_axis_and_chain_shapes():
+    """Unit contract for the gate itself. Billing never reaches it — an account-envelope 402
+    renders through the static billing-guidance family, not exhausted_copy — so the reason
+    axis here covers the scopes exhausted_copy can actually receive."""
+    from agent.turn_failure_copy import switch_advice_viable
+
+    same_surface = _AgentSameSurfaceChain()
+    cross_surface = _AgentCrossSurfaceChain()
+    no_chain = _Agent()
+
+    # account-quota scope: withheld ONLY when every hop shares the failed credential surface
+    assert switch_advice_viable(same_surface, "openrouter", "m", "rate_limit") is False
+    assert switch_advice_viable(same_surface, "openrouter", "m", "billing") is False
+    assert switch_advice_viable(cross_surface, "openrouter", "m", "rate_limit") is True
+    # empty chain proves nothing about the wider /model route set: hint stays
+    assert switch_advice_viable(no_chain, "openrouter", "m", "rate_limit") is True
+    # deployment-scoped failures never withhold: another deployment can genuinely serve
+    for reason in ("server_error", "timeout", "overloaded", "upstream_rate_limit"):
+        assert switch_advice_viable(same_surface, "openrouter", "m", reason) is True
+    # unknown/odd reason: default-keep
+    assert switch_advice_viable(same_surface, "openrouter", "m", "ssl_cert_verification") is True
+    # malformed chain entry: no proof of same-surface, keep the hint
+    class _Malformed(_Agent):
+        _fallback_chain = ({"oops": True}, "garbage")
+    assert switch_advice_viable(_Malformed(), "openrouter", "m", "rate_limit") is True
 
 
 def test_exhausted_plan_quota_429_names_the_reset_window_not_wait_a_minute():
@@ -163,16 +242,8 @@ def test_exhausted_plan_quota_429_names_the_reset_window_not_wait_a_minute():
     )
     text = result["final_response"]
     assert result["error"] == "HTTP 429: The usage limit has been reached"
-    # /model advice is now gated on a VIABLE hop remaining (stub chain is empty -> withheld)
-    assert "resets in ~9h" in text and "/retry" in text and "/model" not in text
+    assert "resets in ~9h" in text and "/retry" in text and "/model" in text
     assert "Wait a minute" not in text
-    assert max_retries_exhausted_result(
-        _AgentWithDifferentModelHop(), error, classified,
-        attempts=3, is_rate_limited=True, error_msg=str(error).lower(),
-        api_kwargs=None, api_messages=[], messages=[], conversation_history=None, api_call_count=3,
-        approx_tokens=10, provider="openai-codex", base_url="https://chatgpt.com/backend-api/codex",
-        model="gpt-5.3-codex",
-    )["final_response"].count("/model") == 1  # viable hop -> the advice returns
     # A throttle with no reset window keeps the short-wait copy.
     short = _Http(429, "HTTP 429: Rate limit exceeded")
     plain = max_retries_exhausted_result(
@@ -182,7 +253,6 @@ def test_exhausted_plan_quota_429_names_the_reset_window_not_wait_a_minute():
         base_url="https://openrouter.ai/api/v1", model="m",
     )
     assert "Wait a minute" in plain["final_response"] and "resets in" not in plain["final_response"]
-    assert "/model" not in plain["final_response"]  # same-model-only fleet: switch cannot change the quota
 
 
 def test_invalid_response_stamps_reason_from_embedded_provider_code():

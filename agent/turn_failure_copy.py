@@ -162,11 +162,17 @@ def is_max_iteration_handoff(result: Any) -> bool:
 
 # ---- chat copy tables -----------------------------------------------------------------------
 
-_NEXT_STEPS_RETRY = "Wait a minute and send /retry, or switch models with /model."
+_NEXT_STEPS_RETRY_BASE = "Wait a minute and send /retry"
+_NEXT_STEPS_RETRY = _NEXT_STEPS_RETRY_BASE + ", or switch models with /model."
 _NEXT_STEPS_LOOP = (
     "Your message is saved. Send `continue` to try again, or start a new session with /new. "
     "If it happens again, run `hermes doctor` and share the error details."
 )
+
+# FailoverReasons whose scope invalidates the whole credential surface (account envelope),
+# not just one deployment: with a known usage-limit reset, every route sharing that surface
+# is equally dead for the window (#89401 family).
+_ACCOUNT_QUOTA_REASONS = frozenset({FailoverReason.rate_limit.value, FailoverReason.billing.value})
 
 # Lead sentence per classifier reason once retries and fallback are exhausted.
 _EXHAUSTED_LEADS: dict[str, str] = {
@@ -360,21 +366,34 @@ def site_copy(code: str, **fields: Any) -> str:
     return _SITE_COPY[code].format_map(_Defaults(fields))
 
 
-def has_viable_fallback_hop(agent: Any, provider: Any, model: Any) -> bool:
-    """True when the fallback chain still holds an unconsumed hop serving a DIFFERENT
-    (provider, model) than the route that just failed — i.e. ``/model`` could hand the turn
-    to an actual alternative rather than relist the same exhausted quota. Consumption is
-    read from ``_fallback_index`` (entries at/before it were already activated)."""
-    chain = getattr(agent, "_fallback_chain", None) or []
-    try:
-        consumed = int(getattr(agent, "_fallback_index", 0) or 0)
-    except (TypeError, ValueError):
-        consumed = 0
-    for entry in list(chain)[max(consumed, 0):]:
+def switch_advice_viable(agent: Any, provider: Any, model: Any, reason: str) -> bool:
+    """Whether the exhausted-turn copy may advise "switch models with /model".
+
+    Default True (keep the hint) — it is withheld only on positive proof that a switch cannot
+    change the outcome: the failure is an ACCOUNT-scoped quota wall (rate_limit / billing —
+    the credential surface is exhausted for a long window) AND every fallback-providers entry
+    lives on that same credential surface, so the whole configured detour path serves the
+    quota that just failed.backend identity comparison is delegated to
+    :mod:`agent.backend_identity` — labels never compared inline (#22548 lesson). An empty
+    chain proves nothing about the wider /model route set, so the hint stays."""
+    if reason not in _ACCOUNT_QUOTA_REASONS:
+        return True
+    chain = getattr(agent, "_fallback_chain", ()) or ()
+    if not chain:
+        return True
+    from agent.backend_identity import BackendIdentity, same_credential_surface
+    failed = BackendIdentity.build(
+        provider=str(provider or ""), model=str(model or ""),
+        base_url=str(getattr(agent, "base_url", "") or ""),
+    )
+    for entry in chain:
         if not isinstance(entry, dict):
-            continue
-        hop = (str(entry.get("provider") or "").lower(), str(entry.get("model") or "").lower())
-        if hop != (str(provider or "").lower(), str(model or "").lower()):
+            return True  # malformed entry: no proof, keep the hint
+        candidate = BackendIdentity.build(
+            provider=str(entry.get("provider") or ""), model=str(entry.get("model") or ""),
+            base_url=str(entry.get("base_url") or "") or "",
+        )
+        if not same_credential_surface(candidate, failed):
             return True
     return False
 
@@ -385,9 +404,8 @@ def exhausted_copy(
 ) -> str:
     """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
     limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401).
-    ``viable_switch`` gates the "switch models with /model" clause: advertising it when every
-    configured route serves the same failing quota sends the user to a door that cannot change
-    the outcome — the caller computes it via :func:`has_viable_fallback_hop`."""
+    ``viable_switch`` gates the "switch models with /model" clause — computing it is the caller's
+    job (:func:`switch_advice_viable`); default keeps the hint for every existing caller."""
     first_attempt = attempts == 1 and reason in _EXHAUSTED_FIRST_ATTEMPT_LEADS
     lead = (_EXHAUSTED_FIRST_ATTEMPT_LEADS if first_attempt else _EXHAUSTED_LEADS).get(
         reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
@@ -398,7 +416,10 @@ def exhausted_copy(
         situation = (f"its usage limit resets in {format_reset_window(reset_seconds)}. "
                      f"Send /retry after that{_switch}.")
     else:
-        situation = f"it looks temporarily unavailable. Wait a minute and send /retry{_switch}."
+        situation = (
+            f"it looks temporarily unavailable. {_NEXT_STEPS_RETRY}" if viable_switch
+            else f"it looks temporarily unavailable. {_NEXT_STEPS_RETRY_BASE}."
+        )
     return (
         f"{lead} — {situation} To avoid this in future, "
         f"add a backup provider with `hermes fallback add`.\n\nProvider said: {summary}"

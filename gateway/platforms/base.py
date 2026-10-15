@@ -3869,6 +3869,14 @@ class BasePlatformAdapter(ABC):
             self._record_and_fence_followup_locked(state)
             return True
 
+    def park_pending_message(self, session_key: str, event: MessageEvent) -> None:
+        """Make ``event`` the session's pending follow-up through the admission fence: it is the
+        next live turn, so review admission learns of it like every other accepted follow-up."""
+        def _park() -> bool:
+            self._pending_messages[session_key] = event
+            return True
+        self.apply_followup_queue_mutation(session_key, _park)
+
     def _is_queue_text_debounce_candidate(self, event: MessageEvent) -> bool:
         """Return True for normal text eligible for queue-mode debounce."""
         result = (

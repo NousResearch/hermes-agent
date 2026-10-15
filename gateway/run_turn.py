@@ -275,7 +275,7 @@ class _GatewayReviewAdmission:
             return None
         # The Context captured at bind time carries the turn's profile/secret scope; the loop
         # thread's own context is the launch profile's, so it is entered explicitly here.
-        spawner = threading.Thread(
+        spawner = threading.Thread(  # health: allow HX012 -- runs under the turn's bound Context, not the spawner's
             target=self.context.run,
             args=(agent._spawn_background_review,),
             kwargs=candidate,

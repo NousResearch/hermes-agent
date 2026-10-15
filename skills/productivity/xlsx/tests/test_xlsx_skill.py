@@ -25,7 +25,7 @@ def run(script, *args, expect_ok=True):
     env.pop("PYTHONIOENCODING", None)
     proc = subprocess.run(
         [sys.executable, str(SCRIPTS / script), *map(str, args)],
-        capture_output=True, text=True, env=env, encoding="utf-8")
+        capture_output=True, text=True, env=env, encoding="utf-8", check=False)
     if expect_ok:
         assert proc.returncode == 0, f"{script} failed: {proc.stderr}"
     return proc
@@ -157,7 +157,7 @@ def test_read_sheets_json_formulas(workbook, tmp_path):
     assert notes["rows"][0] == ["Zürich", "Фамилия", "12,5%"]
 
     formulas = json.loads(run("xlsx_read.py", workbook, "--formulas").stdout)
-    entry = [f for f in formulas["formulas"] if f["cell"] == "B6"][0]
+    entry = next(f for f in formulas["formulas"] if f["cell"] == "B6")
     assert entry["formula"] == "=SUM(B2:B4)"
     # openpyxl never computes: cached value absent on a fresh file
     assert entry["cached"] is None
@@ -350,7 +350,7 @@ def test_restructure_insert_rows_shifts_everything(restructure_book):
     # validation + conditional format ranges shifted
     dv = data.data_validations.dataValidation[0]
     assert str(dv.sqref) == "C2:C6"
-    cf = list(data.conditional_formatting)[0]
+    cf = next(iter(data.conditional_formatting))
     assert str(cf.sqref) == "B2:B6"
     # native table expanded
     assert data.tables["SalesTbl"].ref == "A1:C6"
@@ -521,7 +521,7 @@ def test_recalc_reports_json_both_ways(tmp_path):
     env = dict(os.environ, LC_ALL="C", LANG="C", PATH=str(tmp_path))
     proc = subprocess.run(
         [sys.executable, str(SCRIPTS / "xlsx_recalc.py"), str(book)],
-        capture_output=True, text=True, env=env, encoding="utf-8")
+        capture_output=True, text=True, env=env, encoding="utf-8", check=False)
     assert proc.returncode == 0
     absent = json.loads(proc.stdout)
     assert absent["recalculated"] is False and "soffice" in absent["reason"]

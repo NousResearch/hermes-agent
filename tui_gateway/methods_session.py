@@ -99,14 +99,6 @@ def _release_db(db) -> None:
         release_or_close(db)
 
 
-def _branch_title(db, parent_key: str) -> str:
-    """Next title in the parent's lineage (mirrors the TUI /branch naming)."""
-    current = db.get_session_title(parent_key) or "branch"
-    if hasattr(db, "get_next_title_in_lineage"):
-        return db.get_next_title_in_lineage(current)
-    return f"{current} (branch)"
-
-
 def _cwd_info(session: dict, cwd: str, branch=None) -> dict:
     """session.info after a cwd change: the full agent view, or the lazy shape."""
     if (agent := session.get("agent")) is not None:
@@ -182,7 +174,7 @@ def _pet_emit(event: str, payload: dict, what: str) -> None:
     """Best-effort progress emit: a transport hiccup must never abort generation."""
     try:
         _emit(event, "", payload)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("%s emit failed: %s", what, exc)
 
 
@@ -201,7 +193,7 @@ def _pet_method(name: str, *, fail_open=None, slug: bool = False, scoped: bool =
                 if slug and not (value := _str_param(params, "slug")):
                     return _err(rid, 4004, "missing slug")
                 return fn(rid, params, value) if slug else fn(rid, params)
-            except Exception as exc:  # noqa: BLE001 - cosmetic surface
+            except Exception as exc:
                 logger.debug("%s failed: %s", name, exc)
                 if fail_open is not None:
                     return _ok(rid, fail_open(params) if callable(fail_open) else dict(fail_open))
@@ -283,7 +275,7 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
         from hermes_state_errors import is_disk_full_error
         if compensate and not is_disk_full_error(exc):
             try:
-                db.delete_session(new_key)
+                db.discard_unadmitted_session(new_key)
             except Exception:
                 logger.debug("branch seed compensation delete failed for %s", new_key, exc_info=True)
         raise
@@ -325,7 +317,7 @@ def _seed_row(record: dict) -> None:
     if not record.get("_branch_seed_persisted"):
         with contextlib.suppress(Exception), _session_db(record) as db:
             if db is not None:
-                db.delete_session(key)
+                db.discard_unadmitted_session(key)
         return
     try:
         if title := record.get("pending_title"):
@@ -658,16 +650,15 @@ class _Resume:
             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
             profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
         if follows_profile:
-            record.update(
-                follow_profile_config=True,
-                composer_override_profile=(model_config.get("composer_override_profile")
-                                           if overrides and overrides.get("model_override") else None),
-            )
+            record.update(follow_profile_config=True, composer_override_profile=(
+                model_config.get("composer_override_profile") if overrides and overrides.get("model_override") else None))
         return record
 
     def claim(self, sid: str, record: dict) -> dict | None:
-        """Register ``record`` live under the resume lock, or reuse a concurrent winner's session."""
-        live = _claim_or_reuse_live(sid, self.target, record, None)
+        """Register ``record`` live under the resume lock, or reuse a concurrent winner's session; then repair a
+        named profile's ROW like the eager build's ``_init_session`` (#87584) — listings and later resumes read it."""
+        if (live := _claim_or_reuse_live(sid, self.target, record, None)) is None and self.profile_home and not self.lazy:
+            _hydrate_session_cwd(sid, self.target, self.db, self.profile_home)
         return None if live is None else _resume_reuse_live(self, *live)
 
     def restore(self):
@@ -1022,8 +1013,8 @@ def _resume_eager(ctx: _Resume) -> dict:
             return _resume_reuse_live_locked(ctx, *live)
         try:
             with _profile_build_scope(ctx.profile_home):
-                _init_session(sid, ctx.target, agent, history, cols=ctx.cols, cwd=ctx.profile_resume_cwd,
-                              session_db=ctx.db, source=source, explicit_cwd=bool(ctx.profile_resume_cwd))
+                _init_session(sid, ctx.target, agent, history, cols=ctx.cols, cwd=ctx.profile_resume_cwd, session_db=ctx.db,
+                              source=source, profile_home=ctx.profile_home, explicit_cwd=bool(ctx.profile_resume_cwd))
                 # Ownership TRANSFER: the agent holds the handle for life (AIAgent.close() releases it). The
                 # owns_db drop is UNCONDITIONAL — the session is registered against the handle, so the finally
                 # must not close it even if the transfer was refused (a leak beats "closed database" every
@@ -1074,7 +1065,7 @@ def _(rid, params: dict) -> dict:
         if (resp := _resume_guard(ctx)) is not None:
             return resp
         ctx.profile_resume_cwd = (_resumable_stored_cwd(_str_param(ctx.found, "cwd"), ctx.profile_home)
-                                  or _profile_workspace_cwd(ctx.profile_home))
+                                  or _profile_default_cwd(ctx.profile_home))
         with _session_resume_lock:  # fast path: reuse a session live IN THIS PROFILE, never another's
             live = _find_live_session_by_key(ctx.target, ctx.profile_home)
         if live is not None:
@@ -1186,6 +1177,7 @@ def _(rid, params: dict, session: dict) -> dict:
 @method("session.delete")
 def _(rid, params: dict) -> dict:
     """Delete a stored session + transcripts; refused while live here (FK trips on the agent's next flush)."""
+    from agent.onboarding_record import delete_chat
     from hermes_state_errors import SessionActiveWriteGuardError  # body runs on server.py globals
 
     if not (target := params.get("session_id", "")):
@@ -1201,7 +1193,8 @@ def _(rid, params: dict) -> dict:
             return _db_unavailable_error(rid, code=5036)
         try:
             home = Path(profile_home) if profile_home is not None else get_hermes_home()
-            deleted = db.delete_session(target, sessions_dir=home / "sessions", exclude_active_write_guards=True)
+            deleted = delete_chat(db, target, lambda: db.delete_session(
+                target, sessions_dir=home / "sessions", exclude_active_write_guards=True))
         except SessionActiveWriteGuardError:
             return _err(rid, 4023, "cannot delete an active session")
         except Exception as e:
@@ -1615,7 +1608,7 @@ def _(rid, params: dict) -> dict:
                 # No popularity metric; petdex's hand-picked set (by asset path) is closest.
                 "curated": "/curated/" in entry.spritesheet_url,
                 "generated": entry.slug in installed and installed[entry.slug].generated})
-    except Exception as exc:  # noqa: BLE001 - offline: fall back to installed
+    except Exception as exc:
         logger.debug("pet.gallery manifest fetch failed: %s", exc)
     seen = {item["slug"] for item in gallery}
     gallery.extend(
@@ -1654,7 +1647,7 @@ def _pet_config_followup(what: str, fn, *args) -> None:
     """Best-effort ``hermes_cli.pets`` active-slug update after a store op that already succeeded."""
     try:
         fn(*args)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("%s config update failed: %s", what, exc)
 
 
@@ -1729,7 +1722,7 @@ def _(rid, params: dict) -> dict:
         available = False
     try:
         providers = list_sprite_providers()
-    except Exception as exc:  # noqa: BLE001 - picker is best-effort
+    except Exception as exc:
         logger.debug("pet provider list failed: %s", exc)
     return _ok(rid, {"available": available, "providers": providers})
 
@@ -1779,7 +1772,7 @@ def _(rid, params: dict) -> dict:
         try:
             shutil.copyfile(src, dest)
             data_uri = _pet_png_data_uri(dest)
-        except Exception as exc:  # noqa: BLE001 - skip a bad draft, keep the rest
+        except Exception as exc:
             logger.debug("pet.generate draft %d failed: %s", index, exc)
             return
         out.append({"index": index, "dataUri": data_uri})

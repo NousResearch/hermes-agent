@@ -194,6 +194,26 @@ def _relay_compute_host_response(frame: dict) -> bool:
     return True
 
 
+def _cancel_session_requests(sid: str, reason: str, *, method: str) -> None:
+    """Withdraw *sid*'s open *method* requests wherever they wait: in this process, or in the compute-host
+    child that minted them (the parent holds only a mirror, so a local cancel never reaches that wait).
+    The child's ``request.cancel`` comes back through ``_relay_compute_host_rpc``, which drops the mirror."""
+    from tui_gateway import server_requests
+    server_requests.cancel(sid, reason, method=method)
+    session = _sessions.get(sid)
+    if session is None:
+        return
+    with _history_lock(session):
+        mirrored = session.get("_compute_host_open_request")
+        hosted = isinstance(mirrored, dict) and mirrored.get("method") == method
+    if not hosted or not _session_uses_compute_host(session):
+        return
+    try:
+        _get_compute_host_supervisor().respond(sid, {"cancel": {"method": method, "reason": reason}})
+    except Exception:  # health: allow BLE001 -- the bridge raises transport-specific errors unknown here; the child's own deadline still ends the wait
+        logger.warning("compute-host request cancel failed sid=%s method=%s", sid, method, exc_info=True)
+
+
 def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answer: str | None) -> dict | None:
     """Proxy a batch-clarify lock into the child that owns the request; keeps the parent mirror's locked
     answers current for reconnect snapshots. None when the request is not host-owned."""

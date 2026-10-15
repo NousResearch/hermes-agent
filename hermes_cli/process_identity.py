@@ -259,6 +259,12 @@ def is_desktop_owned_backend(argv: Optional[Sequence[str]] = None) -> bool:
     return is_desktop_ssh_backend_argv(list(sys.argv[1:] if argv is None else argv))
 
 
+def is_local_desktop_backend() -> bool:
+    """The backend Desktop spawned on this machine: the local pool spawn's credential, never the
+    SSH spawn (its token arrives as a file on argv, and that host is another computer)."""
+    return os.environ.get("HERMES_DESKTOP") == "1" and os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN", "") != ""
+
+
 def _desktop_spawner_identity() -> tuple[Optional[int], Optional[float]]:
     """Spawner ``(pid, create_time)`` from the Electron app's HERMES_PARENT_PID (+ optional
     ``winms:<ms>`` start marker) parent-death watchdog vars, so ledger lineage works with every
@@ -532,20 +538,20 @@ def _kill_process_tree_windows(proc) -> None:
     for child in descendants:
         try:
             child.terminate()
-        except Exception:  # noqa: BLE001 - raced away or refused; keep going
+        except Exception:
             pass
     try:
         proc.terminate()
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     try:
         _, alive = psutil.wait_procs(descendants + [proc], timeout=2.0)
-    except Exception:  # noqa: BLE001 - broken fake/raced process; nothing more to force-kill
+    except Exception:
         return
     for survivor in alive:
         try:
             survivor.kill()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
 

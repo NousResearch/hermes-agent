@@ -39,7 +39,7 @@ _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_pro
 _voice_list_error_logged_once = late("_voice_list_error_logged_once")
 load_env = late("load_env", "hermes_cli.config")
 
-_AUDIO_MIME_EXTENSIONS: Dict[str, str] = {
+_AUDIO_MIME_EXTENSIONS: dict[str, str] = {
     "audio/aac": ".aac", "audio/flac": ".flac", "audio/m4a": ".m4a", "audio/mp3": ".mp3",
     "audio/mp4": ".mp4", "audio/mpeg": ".mp3", "audio/ogg": ".ogg", "audio/wav": ".wav",
     "audio/wave": ".wav", "audio/webm": ".webm", "audio/x-m4a": ".m4a", "audio/x-wav": ".wav",
@@ -72,7 +72,10 @@ async def _run_config_scoped(profile: Optional[str], fn):
         with _config_profile_scope(profile):
             return fn()
 
-    return await asyncio.get_running_loop().run_in_executor(None, _scoped)
+    # to_thread copies the request context: a secondary-profile native ticket's implicit
+    # scope (native_profile_scope's home override) must reach the worker, which
+    # run_in_executor drops, silently resolving the LAUNCH profile's config and keys.
+    return await asyncio.to_thread(_scoped)
 
 
 def _audio_extension_for_mime(mime_type: str) -> str:
@@ -205,7 +208,7 @@ async def create_voice_live_session(payload: VoiceLiveSessionRequest, profile: O
     return {"ok": True, **result}
 
 
-def _elevenlabs_voice_label(voice: Dict[str, Any]) -> str:
+def _elevenlabs_voice_label(voice: dict[str, Any]) -> str:
     name = str(voice.get("name") or voice.get("voice_id") or "Voice").strip()
     category = str(voice.get("category") or "").strip()
 
@@ -246,13 +249,11 @@ async def get_elevenlabs_voices(profile: Optional[str] = None):
     )
 
     try:
-        loop = asyncio.get_running_loop()
-
-        def _fetch() -> Dict[str, Any]:
+        def _fetch() -> dict[str, Any]:
             with urllib.request.urlopen(request, timeout=10) as response:
                 return _read_dashboard_json_response(response)
 
-        payload = await loop.run_in_executor(None, _fetch)
+        payload = await asyncio.to_thread(_fetch)
     except urllib.error.HTTPError as exc:
         # An auth failure (bad/expired/scoped key) is a persistent, user-fixable
         # state and the desktop polls this on every settings open/focus, so
@@ -375,7 +376,7 @@ async def tts_lease(payload: TTSLeaseRequest, profile: Optional[str] = None):
             return release_tts_lease(lease)
 
     try:
-        result = await asyncio.get_running_loop().run_in_executor(None, _apply)
+        result = await asyncio.to_thread(_apply)
     except HTTPException:
         raise
     except Exception as exc:
@@ -503,7 +504,7 @@ async def stt_lease(payload: STTLeaseRequest, profile: Optional[str] = None):
         return release_stt_lease(lease)
 
     try:
-        result = await asyncio.get_running_loop().run_in_executor(None, _apply)
+        result = await asyncio.to_thread(_apply)
     except HTTPException:
         raise
     except Exception as exc:
@@ -513,7 +514,7 @@ async def stt_lease(payload: STTLeaseRequest, profile: Optional[str] = None):
 
 
 @router.websocket("/api/audio/transcribe-stream")
-async def transcribe_stream_ws(ws: "WebSocket") -> None:
+async def transcribe_stream_ws(ws: WebSocket) -> None:
     """Live STT for Desktop dictation: mic PCM in while the user speaks, partial + final text out.
 
     Protocol:
@@ -590,7 +591,7 @@ async def transcribe_stream_ws(ws: "WebSocket") -> None:
 
 
 @router.websocket("/api/audio/speak-stream")
-async def speak_stream_ws(ws: "WebSocket") -> None:
+async def speak_stream_ws(ws: WebSocket) -> None:
     """Streaming TTS for the desktop: text in, raw int16 PCM frames out.
 
     The socket is a per-reply speech *session*: the client feeds text
@@ -635,7 +636,7 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         return streamer, cap, cfg
 
     try:
-        streamer, cap, cfg = await loop.run_in_executor(None, _resolve)
+        streamer, cap, cfg = await asyncio.to_thread(_resolve)
     except Exception:
         _log.exception("speak-stream provider resolution failed")
         streamer, cap, cfg = None, 0, {}

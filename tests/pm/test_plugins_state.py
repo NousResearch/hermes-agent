@@ -68,7 +68,7 @@ def test_only_live_profiles_join_the_dependency_union(homes):
 def test_unreadable_profile_state_is_not_an_empty_selection(homes, monkeypatch, boundary):
     from pm.workspace import enabled_member_dirs
 
-    default_home, profile_home = homes
+    _default_home, profile_home = homes
     _write_config(profile_home, ["keep-plug"])
     plugin = profile_home / "plugins" / "keep-plug"
     plugin.mkdir(parents=True)

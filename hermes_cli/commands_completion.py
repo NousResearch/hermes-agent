@@ -20,11 +20,11 @@ from hermes_cli.commands import COMMANDS, SUBCOMMANDS
 
 # (config-file signature, personalities) memo for /personality completion.
 _personalities_memo: Optional[
-    Tuple[Tuple[Optional[str], Optional[int], Optional[int]], Dict[str, Any]]
+    tuple[tuple[Optional[str], Optional[int], Optional[int]], dict[str, Any]]
 ] = None
 
 
-def _personalities_from_cli_config() -> Dict[str, Any]:
+def _personalities_from_cli_config() -> dict[str, Any]:
     """``available_personalities(load_cli_config())`` memoised on config path+signature:
     load_cli_config() is a full YAML parse + deep merge and the completer runs per keystroke.
     Falls back to a fresh load when the file cannot be stat'ed."""
@@ -219,7 +219,7 @@ def _dir_completions(
 def _path_completions(word: str, limit: int = 30):
     """Path completions for *word*, keeping the user's style (~, absolute, relative)."""
     if word.startswith("~"):
-        text_for = lambda fp: "~/" + os.path.relpath(fp, os.path.expanduser("~"))  # noqa: E731
+        text_for = lambda fp: "~/" + os.path.relpath(fp, os.path.expanduser("~"))
     else:
         text_for = str if os.path.isabs(word) else os.path.relpath
     yield from _dir_completions(os.path.expanduser(word), word, limit, text_for)
@@ -383,7 +383,7 @@ class SlashCommandCompleter(Completer):
             try:
                 proc = subprocess.run(
                     cmd, capture_output=True, text=True, timeout=2,
-                    cwd=cwd, encoding="utf-8", errors="replace")
+                    cwd=cwd, encoding="utf-8", errors="replace", check=False)
             except (subprocess.TimeoutExpired, OSError):
                 continue
             if proc.returncode != 0 or not proc.stdout.strip():

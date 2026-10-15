@@ -40,7 +40,7 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager, suppress
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -56,7 +56,7 @@ COMMAND_BOUNDARY_STOP_REASON = "completed at command boundary"
 # the outer one, and the boundary finalize must see exactly its own
 # process's receipt. Same pattern as pm.receipt's ContextVars — no
 # manager object.
-_current: contextvars.ContextVar[Optional["UpdateReceipt"]] = contextvars.ContextVar(
+_current: contextvars.ContextVar[Optional[UpdateReceipt]] = contextvars.ContextVar(
     "update_receipt_current", default=None
 )
 #: The terminal outcome of the run the enclosing command scope finalized or adopted (from a
@@ -108,7 +108,7 @@ def current_correlation_id() -> Optional[str]:
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _code_identity(refresh: bool = False) -> dict[str, Any]:
@@ -563,8 +563,9 @@ def git_output_stop_class(output: str, argv: list[str], returncode: Optional[int
     return None
 
 
-def _started_by_handoff_partner() -> bool:
-    """True when the update marker names the Desktop hand-off this process runs under.
+def _started_by_handoff_partner() -> str | None:
+    """``delegate`` (the hand-off launched this process as its update child) or ``partner`` when
+    the update marker names the Desktop hand-off this process runs under, else None.
 
     For an exit before the receipt opens, where this process may NOT hold the lock: at the
     update-lock refusal the marker belongs to whichever update holds it, so "a pid other than
@@ -579,12 +580,14 @@ def _started_by_handoff_partner() -> bool:
 
     marker = _parse_marker(update_marker_path().read_bytes())
     if marker.started_at is None:
-        return False
+        return None
     pid = os.getpid()
-    if marker.delegate_pid == pid:
-        return True
+    # Our parent too: on Windows the hand-off names the exact process it created (suspended), and
+    # hermes_bootstrap's relaunch (or the legacy .cmd's cmd.exe) makes the updater its child.
+    if marker.delegate_pid in (pid, os.getppid()):
+        return "delegate"
     partners = {_handoff_pid(), os.getppid()} - {None, 0, 1, pid}
-    return bool(partners & {marker.pid, marker.delegate_pid})
+    return "partner" if partners & {marker.pid, marker.delegate_pid} else None
 
 
 def record_stop_without_receipt(reason: str, outcome: str) -> None:
@@ -605,8 +608,13 @@ def record_stop_without_receipt(reason: str, outcome: str) -> None:
             "stop_class": reason, "pre_update": {}, "stages": [], "steps": [], "fleet": [],
         }
         with suppress(Exception):  # no marker, or an unreadable one: the CLI default
-            if _started_by_handoff_partner():
+            claim = _started_by_handoff_partner()
+            if claim:
                 data["initiator"] = "desktop"
+            if claim == "delegate":
+                # The Desktop checked the marker, handed this run off and quit; its result dialog
+                # reports the refusal as a failed update, so the row must not read a benign one.
+                data["outcome"] = "failed"
         from hermes_cli.observability.shared_metrics_update import record_update_receipt
 
         record_update_receipt(data)
@@ -782,7 +790,7 @@ def _consent_reader_importable() -> bool:
     that runs the new tree (never the pre-pull one, which must import nothing); the recorder's
     pre-gate imports the same module next, so a working interpreter loads nothing extra."""
     try:
-        import hermes_cli.config  # noqa: F401
+        import hermes_cli.config
     except ImportError:  # ruamel and every other third-party package are missing here
         return False
     return True

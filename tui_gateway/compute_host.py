@@ -7,7 +7,7 @@ from __future__ import annotations
 # Only as ``python -m``: tests import this module, and the bootstrap's TMPDIR/scratch exports
 # must not fire in a library importer.
 if __name__ == "__main__":
-    import hermes_bootstrap  # noqa: F401
+    import hermes_bootstrap
 
 import argparse
 import concurrent.futures
@@ -66,7 +66,7 @@ class ComputeHost:
 
     def __init__(
         self, *, stdout: Any = None, max_workers: int | None = None,
-        heartbeat_secs: int | float | None = None) -> None:
+        heartbeat_secs: float | None = None) -> None:
         self._stdout = stdout or sys.stdout
         self._write_lock = threading.Lock()
         self._executor = concurrent.futures.ThreadPoolExecutor(
@@ -203,7 +203,8 @@ class ComputeHost:
     def _handle_respond(self, frame: dict[str, Any]) -> None:
         """Resolve a server→client request this host owns: ``params.frame`` is the client's JSON-RPC response
         frame relayed by the parent; ``params.lock`` is one batch-clarify lock (answered with ``clarify.lock``'s
-        result so the parent can ack the client)."""
+        result so the parent can ack the client); ``params.cancel`` withdraws this session's open requests of
+        one ``method`` (the parent's own cancel never reaches a wait owned here)."""
         def body(server: Any, sid: str, request_id: Any) -> None:
             params = frame.get("params")
             error = ("session not found" if sid not in server._sessions
@@ -214,6 +215,9 @@ class ComputeHost:
             from tui_gateway import server_requests
             if isinstance(params.get("lock"), dict):
                 response = server._methods["clarify.lock"](request_id, params["lock"])
+            elif isinstance(cancel := params.get("cancel"), dict):
+                withdrawn = server_requests.cancel(sid, str(cancel.get("reason") or "resolved"), method=str(cancel["method"]))
+                response = {"jsonrpc": "2.0", "id": request_id, "result": {"cancelled": withdrawn}}
             else:
                 response_frame = params.get("frame") if isinstance(params.get("frame"), dict) else params
                 resolved = server_requests.resolve_response(response_frame)

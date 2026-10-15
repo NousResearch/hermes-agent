@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 MODEL_ENTITLEMENT_BENCH_SECONDS = 365 * 24 * 60 * 60
 
 
-def model_cooldown_until(entry: "PooledCredential", model: Optional[str]) -> Optional[float]:
+def model_cooldown_until(entry: PooledCredential, model: Optional[str]) -> Optional[float]:
     """Active cooldown blocking *entry* for *model*, or ``None``.
 
     Callers that do not know the model stay conservative: any active model
@@ -32,9 +32,9 @@ def model_cooldown_until(entry: "PooledCredential", model: Optional[str]) -> Opt
     return max(active) if active else None
 
 
-def merge_model_cooldowns(*maps: Any) -> Dict[str, float]:
+def merge_model_cooldowns(*maps: Any) -> dict[str, float]:
     """Latest reset per model across snapshots — each writer only observed its own model."""
-    merged: Dict[str, float] = {}
+    merged: dict[str, float] = {}
     for cooldowns in maps:
         if not isinstance(cooldowns, dict):
             continue
@@ -75,7 +75,7 @@ class CredentialPoolModelCooldownMixin:
         )
 
     def _cool_down_model(
-        self, entry: "PooledCredential", model: str, error_context: Optional[Dict[str, Any]],
+        self, entry: PooledCredential, model: str, error_context: Optional[dict[str, Any]],
         failure_reason: Optional[str] = None,
     ) -> None:
         """Record a cooldown for *model* on *entry* and every sibling sharing its key.
@@ -103,7 +103,7 @@ class CredentialPoolModelCooldownMixin:
             self._adopt(scoped, persist=False, model_cooldowns=cooldowns)
         self._persist()
 
-    def limit_state(self, models: Iterable[str]) -> Optional[Dict[str, Any]]:
+    def limit_state(self, models: Iterable[str]) -> Optional[dict[str, Any]]:
         """What a picker should say about this pool's rate limits, or ``None`` when nothing is limited.
 
         ``{"scope": "account", "resets_at": epoch}`` when every live entry is benched credential-wide
@@ -123,7 +123,7 @@ class CredentialPoolModelCooldownMixin:
             if live and len(benched) == len(live):
                 return {"scope": "account", "resets_at": min(benched.values())}
             usable = [entry for entry in live if entry.id not in benched]
-            cooled: Dict[str, float] = {}
+            cooled: dict[str, float] = {}
             for model in models:
                 waits = [model_cooldown_until(entry, model) for entry in usable]
                 if waits and all(waits) and min(waits) - now < MODEL_ENTITLEMENT_BENCH_SECONDS / 2:

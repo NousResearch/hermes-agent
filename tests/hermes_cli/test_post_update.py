@@ -186,7 +186,7 @@ def test_provisioning_does_not_use_human_diagnostics(tmp_path, monkeypatch):
 def test_provision_runtimes_is_a_noop_when_pm_is_current(monkeypatch):
     import pm
 
-    monkeypatch.setattr(pm, "drift", lambda: {})
+    monkeypatch.setattr(pm, "drift", dict)
     assert post_update.step_provision_runtimes() == {"ok": True, "skipped": "current"}
 
 

@@ -3,7 +3,7 @@
 
 # Must be the very first import (UTF-8 stdio on Windows). Missing only mid-``hermes update``.
 try:
-    import hermes_bootstrap  # noqa: F401
+    import hermes_bootstrap
 except ModuleNotFoundError as exc:
     if exc.name != "hermes_bootstrap":
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
@@ -11,17 +11,19 @@ except ModuleNotFoundError as exc:
 import logging
 import os
 import functools
-import shutil  # noqa: F401 — tests patch shutil/time through the cli facade
+# Tests patch shutil/time/datetime through the cli facade; siblings also resolve datetime
+# lazily through it — these imports are load-bearing despite being unused in this file.
+import shutil
 import sys
 import re
 import atexit
 import errno
-import time  # noqa: F401 — see shutil
+import time
 from collections import deque
 from dataclasses import dataclass
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from datetime import datetime  # noqa: F401 — siblings import it lazily through cli
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -46,7 +48,7 @@ from hermes_cli.cli_process_notifications import CLIProcessNotificationsMixin
 from hermes_cli.cli_init_mixin import CLIInitMixin
 from hermes_cli.cli_tui_runtime_mixin import CLITuiRuntimeMixin
 # Extracted clusters (mechanical split, #116911); re-exported here so `cli.<name>` stays the seam.
-from hermes_cli.cli_shutdown import (  # noqa: F401,E402
+from hermes_cli.cli_shutdown import (
     _CLEANUP_STEPS,
     _arm_exit_watchdog,
     _emit_interrupted_session_end,
@@ -68,11 +70,11 @@ from hermes_cli.cli_shutdown import (  # noqa: F401,E402
     _sync_process_session_id,
     _wait_for_oneshot_background_completions,
 )
-from hermes_cli.cli_auto_maintenance import (  # noqa: F401,E402
+from hermes_cli.cli_auto_maintenance import (
     _run_checkpoint_auto_maintenance,
     _run_state_db_auto_maintenance,
 )
-from hermes_cli.cli_render import (  # noqa: F401,E402
+from hermes_cli.cli_render import (
     ChatConsole,
     _ACCENT,
     _ACCENT_ANSI_DEFAULT,
@@ -139,7 +141,7 @@ from hermes_cli.cli_render import (  # noqa: F401,E402
     _wrap_panel_text,
     _wrap_panel_text_keep_ws,
 )
-from hermes_cli.cli_config_load import (  # noqa: F401,E402
+from hermes_cli.cli_config_load import (
     _AUXILIARY_TASK_ENV,
     _CWD_PLACEHOLDERS,
     _TERMINAL_ENV_MAPPINGS,
@@ -153,7 +155,7 @@ from hermes_cli.cli_config_load import (  # noqa: F401,E402
     _resolve_prefill_messages_file,
     load_cli_config,
 )
-from hermes_cli.cli_terminal_input import (  # noqa: F401,E402
+from hermes_cli.cli_terminal_input import (
     _BACKSLASH_LINE_CONTINUATION_RE,
     _DSR_CPR_ESC_RE,
     _DSR_CPR_VISIBLE_RE,
@@ -191,7 +193,7 @@ from hermes_cli.cli_terminal_input import (  # noqa: F401,E402
     _terminal_supports_extended_enter_keys,
     _termux_example_image_path,
 )
-from hermes_cli.cli_single_query import (  # noqa: F401,E402
+from hermes_cli.cli_single_query import (
     _TERMINAL_PROVIDER_REASONS,
     _TRANSIENT_PROVIDER_REASONS,
     _collect_kanban_task_images,
@@ -331,7 +333,7 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 # ~/.hermes/.env first, project .env as dev fallback; user env files override stale shell exports.
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
-from agent.i18n import t as _t  # noqa: E402
+from agent.i18n import t as _t
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
@@ -439,36 +441,20 @@ def _mark_tui_input_modes_active() -> None:
 
 
 def _prepare_deferred_agent_startup() -> None:
-    """Run Termux-deferred agent discovery before the first real agent turn."""
+    """Run Termux-deferred plugin discovery before the first real agent turn. MCP servers, shell
+    hooks and outbound webhooks belong to the gateway that runs the turn (session policy)."""
     global _deferred_agent_startup_done
     if _deferred_agent_startup_done:
         return
     if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
         return
     _deferred_agent_startup_done = True
-    _accept_hooks = os.environ.get("HERMES_ACCEPT_HOOKS", "").lower() in {"1", "true", "yes", "on"}
     try:
         from hermes_cli.plugins import discover_plugins
 
         discover_plugins()
     except Exception:
         logger.warning("plugin discovery failed at deferred CLI startup", exc_info=True)
-    try:
-        from hermes_cli.mcp_startup import start_background_mcp_discovery
-
-        start_background_mcp_discovery(logger=logger, thread_name="termux-cli-mcp-discovery")
-    except Exception:
-        logger.debug("MCP tool discovery failed at deferred CLI startup", exc_info=True)
-    try:
-        from agent.shell_hooks import register_from_config
-        from agent.outbound_webhooks import register_from_config as register_outbound_webhooks
-        from hermes_cli.config import load_config
-
-        _hooks_cfg = load_config()
-        register_from_config(_hooks_cfg, accept_hooks=_accept_hooks)
-        register_outbound_webhooks(_hooks_cfg)
-    except Exception:
-        logger.debug("shell-hook registration failed at deferred CLI startup", exc_info=True)
 
 
 _signal_watchdog_armed = False
@@ -576,10 +562,10 @@ from hermes_cli.worktree_ops import (
 
 # ============================================================================= Git Worktree Isolation
 # (#652) =============================================================================
-_active_worktree: Optional[Dict[str, str]] = None
+_active_worktree: Optional[dict[str, str]] = None
 
 
-def _cleanup_worktree(info: Dict[str, str] = None) -> None:
+def _cleanup_worktree(info: dict[str, str] | None = None) -> None:
     """Remove a clean worktree and its branch on exit; preserve recoverable work."""
     global _active_worktree
     info = info or _active_worktree
@@ -844,7 +830,7 @@ class _VoiceInputMessage:
 class _SeededQueryMessage:
     """Sentinel for a ``-q`` prompt seeded into an interactive session; treated LITERALLY (no slash/!/file-drop)."""
 
-    __slots__ = ("text", "images")
+    __slots__ = ("images", "text")
 
     def __init__(self, text: str, images=None):
         self.text = text or ""
@@ -894,23 +880,23 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 
     # Seeded -q first message (see _should_seed_interactive); run() re-creates
     # _pending_input, so it is enqueued only after the fresh queue exists.
-    _seeded_first_message: Optional["_SeededQueryMessage"] = None
+    _seeded_first_message: Optional[_SeededQueryMessage] = None
     # Inspection surfaces (banner, /tools, status line) read this on partially built instances too.
-    disabled_toolsets: Optional[List[str]] = None
+    disabled_toolsets: Optional[list[str]] = None
 
     def __init__(
         self,
-        model: str = None,
-        toolsets: List[str] = None,
-        provider: str = None,
-        reasoning: str = None,
-        api_key: str = None,
-        base_url: str = None,
-        max_turns: int = None,
-        run_budget: float = None,
+        model: str | None = None,
+        toolsets: list[str] | None = None,
+        provider: str | None = None,
+        reasoning: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        max_turns: int | None = None,
+        run_budget: float | None = None,
         verbose: Optional[bool] = None,
         compact: bool = False,
-        resume: str = None,
+        resume: str | None = None,
         checkpoints: bool = False,
         pass_session_id: bool = False,
         ignore_rules: bool = False,
@@ -1205,6 +1191,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         entry = self._slash_handler(canonical)
         if entry is None:
             return self._process_unregistered_slash(cmd_original, cmd_lower)
+        from hermes_cli.gateway_setting_commands import run as run_gateway_setting
+        if run_gateway_setting(self, canonical, cmd_original):
+            return True  # a per-session setting the gateway's handler applied
         method_name, pass_arg = entry
         handler = getattr(self, method_name)
         result = handler(cmd_original) if pass_arg else handler()
@@ -1256,7 +1245,8 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             result = subprocess.run(
                 exec_cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
                 timeout=30, env=build_subprocess_env(),
-                creationflags=windows_hide_flags(),  # no console flash on Windows (#56747)
+                creationflags=windows_hide_flags(),  # no console flash on Windows (#56747),
+                check=False,
             )
             # See #56747.
             output = result.stdout.strip() or result.stderr.strip()
@@ -1625,7 +1615,7 @@ def _start_worktree_setup(list_tools, list_toolsets, worktree, w):
         _prune_stale_worktrees(repo)
         _maintain_pack_health(repo)
 
-    def _join_worktree() -> Optional[Dict[str, str]]:
+    def _join_worktree() -> Optional[dict[str, str]]:
         _wt_thread.join(timeout=120)
         info = _wt_result.get("info")
         if not info:
@@ -1646,26 +1636,26 @@ def _start_worktree_setup(list_tools, list_toolsets, worktree, w):
 
 
 def main(
-    query: str = None,
-    q: str = None,
+    query: str | None = None,
+    q: str | None = None,
     oneshot: bool = False,
-    image: str = None,
-    toolsets: str = None,
-    skills: str | list[str] | tuple[str, ...] = None,
-    model: str = None,
-    provider: str = None,
-    reasoning: str = None,
-    api_key: str = None,
-    base_url: str = None,
-    max_turns: int = None,
-    run_budget: float = None,
+    image: str | None = None,
+    toolsets: str | None = None,
+    skills: str | list[str] | tuple[str, ...] | None = None,
+    model: str | None = None,
+    provider: str | None = None,
+    reasoning: str | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    max_turns: int | None = None,
+    run_budget: float | None = None,
     verbose: Optional[bool] = None,
     quiet: bool = False,
     compact: bool = False,
     list_tools: bool = False,
     list_toolsets: bool = False,
     gateway: bool = False,
-    resume: str = None,
+    resume: str | None = None,
     worktree: bool = False,
     w: bool = False,
     checkpoints: bool = False,

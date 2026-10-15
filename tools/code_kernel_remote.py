@@ -151,7 +151,7 @@ class RemoteKernel:
                 logger.debug(failure, exc_info=True)
 
 
-def _kernel_key(owner: str, env_type: str, task_env_id: str, sandbox_tools: frozenset) -> Tuple:
+def _kernel_key(owner: str, env_type: str, task_env_id: str, sandbox_tools: frozenset) -> tuple:
     """The hermes_tools stub module is generated from ``sandbox_tools`` once, at spawn, so a kernel
     is only reusable by calls with the SAME tool set; a different set gets its own kernel."""
     return (owner, "remote", env_type, task_env_id, tuple(sorted(sandbox_tools)))
@@ -159,7 +159,7 @@ def _kernel_key(owner: str, env_type: str, task_env_id: str, sandbox_tools: froz
 
 # Registry + lock shared-shape with code_kernel; teardown runs outside the lock.
 _REGISTRY = KernelRegistry(lambda kernel: kernel.kill())
-_REMOTE_KERNELS: Dict[Tuple, RemoteKernel] = _REGISTRY.kernels
+_REMOTE_KERNELS: dict[tuple, RemoteKernel] = _REGISTRY.kernels
 
 
 def shutdown_all_remote_kernels() -> None:
@@ -178,7 +178,7 @@ def shutdown_remote_kernels_where(owner_matches: Callable[[str], bool]) -> None:
     _REGISTRY.shutdown(owner_matches=owner_matches)
 
 
-def _reap_unlocked(idle_timeout: int) -> List["RemoteKernel"]:
+def _reap_unlocked(idle_timeout: int) -> list[RemoteKernel]:
     """Pop idle-expired, unattached remote kernels; caller tears them down outside the lock. The
     runner self-exits after the same idle window, so this clears the HOST-side entry — without it
     the map grew one entry per never-revisited (owner, env_type, task_env_id) for the gateway's life."""
@@ -188,7 +188,7 @@ def _reap_unlocked(idle_timeout: int) -> List["RemoteKernel"]:
     return [_REMOTE_KERNELS.pop(key) for key in doomed]
 
 
-def _evict_over_cap_unlocked(keep: Tuple) -> List["RemoteKernel"]:
+def _evict_over_cap_unlocked(keep: tuple) -> list[RemoteKernel]:
     """Pop least-recently-used unattached remote kernels beyond the process-wide cap (the same
     ``max_session_kernels`` bound as local kernels, applied independently to this map)."""
     from tools.code_kernel import _lifecycle_limits
@@ -269,7 +269,7 @@ def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
 
 def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
                            sandbox_tools: frozenset, *, reset: bool,
-                           idle_exit: int) -> Tuple[Optional[RemoteKernel], bool, bool, bool]:
+                           idle_exit: int) -> tuple[Optional[RemoteKernel], bool, bool, bool]:
     """Find/respawn the owner's kernel: (kernel|None, reused, state_reset, state_lost); reaps
     idle-expired entries on the way in."""
     key = _kernel_key(owner, env_type, task_env_id, sandbox_tools)
@@ -299,7 +299,7 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
     return kernel, reused, state_reset, state_lost
 
 
-def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> Tuple[str, Dict[str, Any]]:
+def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> tuple[str, dict[str, Any]]:
     """Ship one cell request and poll for its result: (cell status, payload)."""
     from tools.code_execution_tool import _ship_file_to_remote
     kernel.cell_seq += 1
@@ -336,7 +336,7 @@ def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> Tuple[str
 def execute_in_remote_kernel(
     code: str, *, env, env_type: str, task_env_id: str, sandbox_tools: frozenset,
     timeout: int, max_tool_calls: int, reset: bool, idle_exit: int = 1800,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """Run one cell in the owner's remote kernel. Returns the raw cell result dict (caller
     post-processes output), or ``None`` when no kernel could be spawned (caller falls open to
     per-call). ``state_lost``/``state_reset``/``reused`` ride in the ``kernel`` sub-dict."""
@@ -363,9 +363,9 @@ def execute_in_remote_kernel(
             kernel.last_used = time.monotonic()
 
 
-def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task_env_id: str,
+def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task_env_id: str,
                        sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
-                       reused: bool, state_reset: bool, state_lost: bool) -> Dict[str, Any]:
+                       reused: bool, state_reset: bool, state_lost: bool) -> dict[str, Any]:
     from tools.code_execution_rpc import tool_errors_since
     from tools.code_execution_tool import _rpc_poll_loop
     from tools.thread_context import propagate_context_to_thread
@@ -398,8 +398,8 @@ def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task
     finally:
         stop_event.set()
         rpc_thread.join(timeout=5)
-    kernel_info: Dict[str, Any] = {"reused": reused, "remote": True}
-    result: Dict[str, Any] = {
+    kernel_info: dict[str, Any] = {"reused": reused, "remote": True}
+    result: dict[str, Any] = {
         "status": "error", "stdout": cell_payload.get("stdout", ""), "stderr": cell_payload.get("stderr", ""),
         "traceback": cell_payload.get("traceback", ""), "tool_calls_made": tool_call_counter[0], "kernel": kernel_info,
         "tool_errors": tool_errors_since(tool_call_log),

@@ -68,7 +68,7 @@ def assets_dir() -> Path:
     return models_dir() / "assets"
 
 
-def staged_in(models_dir: Path, *, require_complete: bool = True) -> "list[Path]":
+def staged_in(models_dir: Path, *, require_complete: bool = True) -> list[Path]:
     """Servable GGUFs in a directory: single files, plus split GGUFs once by their first part.
     With ``require_complete`` a split counts only when EVERY part is on disk — a mid-download split
     is not servable and must not surface anywhere as a model."""
@@ -89,7 +89,7 @@ def staged_in(models_dir: Path, *, require_complete: bool = True) -> "list[Path]
     return out
 
 
-def adopt_legacy_models() -> "list[Path]":
+def adopt_legacy_models() -> list[Path]:
     """Move GGUFs left in the old per-profile ``<profile home>/models`` layout (and its assets/)
     into the machine-scoped dirs, so everything downstream keeps reading one directory.
 
@@ -133,12 +133,12 @@ def adopt_legacy_models() -> "list[Path]":
     return moved
 
 
-def staged_models() -> "list[Path]":
+def staged_models() -> list[Path]:
     """Servable staged models (continuation parts, incomplete splits and assets/ never count)."""
     return staged_in(models_dir())
 
 
-def staged_model_ids() -> "list[str]":
+def staged_model_ids() -> list[str]:
     return [model_id_from_stem(p.stem) for p in staged_models()]
 
 
@@ -181,7 +181,7 @@ def _stop_state_server() -> None:
     try:
         # Waits for the tree to exit, so the port and the GPU are free for the replacement.
         LlamaServerSupervisor._terminate_tree(proc, verified_root=True)
-    except Exception as exc:  # noqa: BLE001 - a failed stop must not block the replacement boot
+    except Exception as exc:
         logger.warning("could not stop the incumbent llama-server (pid=%s): %s", proc.pid, exc)
 
 
@@ -203,7 +203,7 @@ def refresh_local_runtime() -> bool:
         else:
             shutdown_local_runtime()
         return ensure_local_runtime(load_config(), force=True) is not None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("local runtime refresh failed: %s", exc)
         return False
 
@@ -221,7 +221,7 @@ def _admitted_models_max(mdir: Path, configured: int) -> int:
         from hermes_cli.local_runtime.presets import admitted_residency_count
 
         cap = admitted_residency_count(mdir, probe_budget(planning=True), configured)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("residency cap probe failed (%s); using models_max=%s", exc, configured)
         return configured
     if cap != configured:
@@ -253,7 +253,7 @@ def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
             if entry.refusal:
                 logger.warning("model refused by physics check: %s", entry.refusal)
         return preset_path
-    except Exception as exc:  # noqa: BLE001 — policy failure must not block serving
+    except Exception as exc:
         if preset_path.exists():
             logger.error("preset generation failed (%s); serving with the "
                          "PREVIOUS launch policies — models staged since "
@@ -271,7 +271,7 @@ def _launch_budget(capacity, own_bytes: int = 0):
 
     try:
         return launch_budget(capacity, own_bytes=own_bytes)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("free GPU memory probe failed (%s); launch windows use capacity", exc)
         return None
 
@@ -399,7 +399,7 @@ def _cross_process_boot_lock(timeout_s: float = 130.0):
         os.close(fd)
 
 
-def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
+def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
     """Idempotent boot of the managed runtime. Returns the supervisor (or None when
     disabled/unavailable). Never raises into a session start — failures log and return None; chat
     falls back to configured providers."""
@@ -472,7 +472,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
             logger.info("managed llama-server up at %s (backend=%s tag=%s)", sup.base_url, engine.backend, engine.tag)
             _start_idle_sweeper(sup)
             return sup
-        except Exception as exc:  # noqa: BLE001 — never break session start
+        except Exception as exc:
             _SERVING_ENGINE = None
             logger.warning("managed local runtime unavailable: %s", exc)
             return None
@@ -515,11 +515,11 @@ def _start_idle_sweeper(sup) -> None:
                 last_sweep = time.monotonic()
                 try:
                     sup.sweep_idle()
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.debug("idle sweep skipped: %s", exc)
             try:
                 refit_idle_presets(sup)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.debug("launch window re-plan skipped: %s", exc)
 
     threading.Thread(target=_loop, daemon=True, name="local-runtime-idle-sweep").start()

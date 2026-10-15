@@ -778,6 +778,24 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    async def _reaction(self, chat_id: str, message_id: Optional[str], emoji: str) -> dict[str, Any]:
+        if not message_id:
+            return {"success": False, "error": "message_id is required for WhatsApp reactions"}
+        unavailable = await self._bridge_unavailable()
+        if unavailable:
+            return {"success": False, "error": unavailable}
+        from gateway.whatsapp_identity import to_whatsapp_jid
+        result = await self._post_bridge_message(
+            "reaction", {"chatId": to_whatsapp_jid(chat_id), "messageId": message_id, "emoji": emoji}, timeout=70,
+        )
+        return {"success": True} if result.success else {"success": False, "error": result.error or "Reaction failed"}
+
+    async def add_reaction(self, chat_id: str, emoji: str, message_id: Optional[str] = None) -> dict[str, Any]:
+        return await self._reaction(chat_id, message_id, emoji)
+
+    async def remove_reaction(self, chat_id: str, message_id: Optional[str] = None) -> dict[str, Any]:
+        return await self._reaction(chat_id, message_id, "")
+
     @_needs_bridge
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Format markdown for WhatsApp, chunk preserving code blocks, send sequentially."""
@@ -1175,6 +1193,41 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return {"success": True, "platform": "whatsapp", "chat_id": normalized_chat_id, "message_id": last_message_id}
     except Exception as e:
         return send_error(f"WhatsApp send failed: {e}")
+
+
+async def _standalone_reaction(extra: dict[str, Any], chat_id: str, message_id: str, emoji: str) -> dict[str, Any]:
+    """React through the active profile's bridge from an out-of-process CLI."""
+    from hermes_constants import get_hermes_home
+    from .bridge_ownership import standalone_bridge_port
+    from tools.send_message_tool import _authorize_relay_target
+    import aiohttp
+
+    normalized_chat_id = to_whatsapp_jid(chat_id)
+    denial = _authorize_relay_target("whatsapp", normalized_chat_id)
+    if denial:
+        return send_error(denial)
+    if not normalized_chat_id or not message_id.strip() or not isinstance(emoji, str) or len(emoji) > 32:
+        return send_error("A chat, message ID, and valid reaction emoji are required.")
+    try:
+        port = standalone_bridge_port(get_hermes_home(), extra.get("bridge_port"))
+        own_session = str(_session_dir(extra))
+        base = f"http://127.0.0.1:{port}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{base}/health", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status != 200:
+                    return send_error(f"WhatsApp bridge health check failed (HTTP {resp.status}); nothing was sent.")
+                health = await resp.json()
+            if not isinstance(health, dict) or health.get("session") != own_session:
+                return send_error("WhatsApp bridge session does not match this profile; nothing was sent.")
+            async with session.post(f"{base}/reaction", json={"chatId": normalized_chat_id,
+                                     "messageId": message_id, "emoji": emoji},
+                                    timeout=aiohttp.ClientTimeout(total=70)) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    return {"success": True} if result.get("success") is True else send_error("WhatsApp bridge did not confirm the reaction.")
+                return send_error(f"WhatsApp reaction refused (HTTP {resp.status}): {await resp.text()}")
+    except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+        return send_error(f"WhatsApp reaction could not be confirmed: {exc}")
 
 
 def interactive_setup() -> None:

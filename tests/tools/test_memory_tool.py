@@ -970,11 +970,11 @@ class TestBackgroundReviewDeleteGate:
         assert "entry the fork must not rewrite" in store._entries_for("memory")
 
     @pytest.mark.parametrize("approval_on", [False, True])
-    def test_batch_saves_independent_add_before_staging_destructive_proposal(
+    def test_batch_stages_destructive_proposal_and_saves_independent_add(
             self, store, tmp_path, monkeypatch, approval_on):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         if approval_on:
-            monkeypatch.setattr("tools.write_approval.write_approval_enabled", lambda subsystem: True)
+            monkeypatch.setattr("tools.write_approval.write_approval_enabled", lambda subsystem, **kwargs: True)
         store.add("memory", "rule one")
         token = set_current_write_origin("background_review")
         try:
@@ -1028,7 +1028,7 @@ class TestBackgroundReviewDeleteGate:
         token = set_current_write_origin("background_review")
         try:
             result = json.loads(memory_tool(operations=[
-                {"action": "replace", "old_text": "Alpha", "content": "Beta"},
+                {"action": "patch", "old_text": "Alpha", "content": "Beta"},
                 {"action": "add", "content": added},
             ], store=store))
         finally:
@@ -1059,20 +1059,20 @@ class TestBackgroundReviewDeleteGate:
         assert result["staged"] is True and result["additions_saved"] == 1
         assert store._entries_for("memory") == [old, "C" * 12]
 
-    def test_lossless_replace_stages_without_opt_in(self, store, tmp_path, monkeypatch):
+    def test_lossless_patch_stages_without_opt_in(self, store, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         old = "Existing fact stays verbatim."
         store.add("memory", old)
         token = set_current_write_origin("background_review")
         try:
             result = json.loads(memory_tool(
-                action="replace", old_text=old, content=old + " New fact.", store=store))
+                action="patch", old_text=old, content=old + " New fact.", store=store))
         finally:
             reset_current_write_origin(token)
         assert result["staged"] is True
         assert store._entries_for("memory") == [old]
 
-    def test_lossless_replace_applies_without_pending(self, store, tmp_path, monkeypatch):
+    def test_lossless_patch_applies_without_pending(self, store, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(
             "memory:\n  auto_apply_literal_preserving_reviews: true\n", encoding="utf-8")
@@ -1081,12 +1081,12 @@ class TestBackgroundReviewDeleteGate:
         token = set_current_write_origin("background_review")
         try:
             result = json.loads(memory_tool(
-                action="replace", old_text=old, content=old + " New fact.", store=store))
+                action="patch", old_text=old, content=old + " New fact.", store=store))
         finally:
             reset_current_write_origin(token)
         assert result["success"] is True
         assert not result.get("staged")
-        assert result["replaced_entry"] == old
+        assert result["patched_entry"] == old
         assert store._entries_for("memory") == [old + " New fact."]
         from tools.write_approval import MEMORY, list_pending
         assert list_pending(MEMORY) == []
@@ -1120,7 +1120,7 @@ class TestBackgroundReviewDeleteGate:
         token = set_current_write_origin("background_review")
         try:
             result = json.loads(memory_tool(operations=[
-                {"action": "replace", "old_text": "Important unique", "content": "Important unique fact. More."},
+                {"action": "patch", "old_text": "Important unique fact.", "content": "Important unique fact. More."},
                 {"action": "remove", "old_text": "Other unique"},
                 {"action": "add", "content": "New fact."},
             ], store=store))
@@ -1142,22 +1142,22 @@ class TestBackgroundReviewDeleteGate:
         token = set_current_write_origin("background_review")
         try:
             result = json.loads(memory_tool(
-                action="replace", old_text="Alpha", content=content, store=store))
+                action="patch", old_text="Alpha", content=content, store=store))
         finally:
             reset_current_write_origin(token)
         assert result["staged"] is True
         assert store._entries_for("memory") == ["Alpha"]
 
-    def test_lossless_replace_stages_when_write_approval_is_on(self, store, tmp_path, monkeypatch):
+    def test_lossless_patch_stages_when_write_approval_is_on(self, store, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(
             "memory:\n  auto_apply_literal_preserving_reviews: true\n", encoding="utf-8")
-        monkeypatch.setattr("tools.write_approval.write_approval_enabled", lambda subsystem: True)
+        monkeypatch.setattr("tools.write_approval.write_approval_enabled", lambda subsystem, **kwargs: True)
         store.add("memory", "Existing fact.")
         token = set_current_write_origin("background_review")
         try:
             result = json.loads(memory_tool(
-                action="replace", old_text="Existing fact.",
+                action="patch", old_text="Existing fact.",
                 content="Existing fact. New fact.", store=store))
         finally:
             reset_current_write_origin(token)

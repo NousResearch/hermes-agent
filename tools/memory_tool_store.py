@@ -401,7 +401,7 @@ class MemoryStore:
             return {"success": True, "additions_saved": 0}
         for content in cleaned:
             if scan_error := _scan_memory_content(content):
-                return _error(scan_error)
+                return _error(scan_error, "scan_blocked")
 
         def _add_fitting(entries, limit):
             working = list(entries)
@@ -571,15 +571,18 @@ class MemoryStore:
         echo ``current_entries`` — the store is unchanged and the model already has it."""
         return self._batch(target, operations, commit=True, preserve_existing=preserve_existing)
 
-    def resolve_batch_entries(self, target: str, operations: list[dict[str, Any]]) -> dict[str, Any]:
+    def resolve_batch_entries(self, target: str, operations: list[dict[str, Any]], *,
+                              for_staging: bool = False) -> dict[str, Any]:
         """Dry-run ``apply_batch`` under the lock without persisting: the same content scan,
         op walk, empty-store and budget checks, so it fails exactly where the direct batch
         would; on success ``{"success": True, "matched_entries": [...]}`` — per op, the FULL
-        entry its replace/remove selects now (None for add), in batch order."""
-        return self._batch(target, operations, commit=False)
+        entry its replace/remove selects now (None for add), in batch order. Background
+        staging may defer final budget/empty-store checks and ignore empty additions so
+        a proposal that cannot yet apply does not block valid independent additions."""
+        return self._batch(target, operations, commit=False, for_staging=for_staging)
 
     def _batch(self, target: str, operations: list[dict[str, Any]], *, commit: bool,
-               preserve_existing: bool = False) -> dict[str, Any]:
+               preserve_existing: bool = False, for_staging: bool = False) -> dict[str, Any]:
         from tools.memory_tool import _memory_target_error
         if target_error := _memory_target_error(self, target, operations):
             return target_error
@@ -588,7 +591,8 @@ class MemoryStore:
         ops = [op or {} for op in operations]
         # Scan every add/replace content BEFORE touching disk -- one poisoned op rejects the batch.
         for i, op in enumerate(ops):
-            scan_error = op.get("action") in {"add", "replace"} and op.get("content") and _scan_memory_content(op["content"])
+            content = (op.get("content") or op.get("new_text") or "").strip()
+            scan_error = op.get("action") in {"add", "replace"} and content and _scan_memory_content(content)
             if scan_error:
                 return _error(f"Operation {i + 1}: {scan_error}", "scan_blocked")
 
@@ -599,6 +603,9 @@ class MemoryStore:
             for i, op in enumerate(ops):
                 act = op.get("action")
                 content, old_text = op.get("content") or op.get("new_text") or "", op.get("old_text") or ""
+                if for_staging and act == "add" and not content.strip():
+                    matched.append(None)
+                    continue
                 if act != "patch":  # whole-entry actions; a patch span keeps its whitespace
                     content, old_text = content.strip(), old_text.strip()
                 msg, previous_content, failure_class, after = self._apply_batch_op(
@@ -609,6 +616,8 @@ class MemoryStore:
                 matched.append(previous_content)
                 if after is not None:
                     produced[i + 1] = after
+            if for_staging and not commit:
+                return {"success": True, "matched_entries": matched, "patched_entries_after": produced}
             if preserve_existing and any(
                 not any(new == old or new.startswith((old + " ", old + "\n")) for new in working)
                 for old in entries

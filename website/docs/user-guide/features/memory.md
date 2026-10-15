@@ -335,7 +335,7 @@ first, set `memory.write_approval: true`. It's a simple on/off gate applied to
 
 | `write_approval` | Behaviour |
 |------------------|-----------|
-| `false` (default) | Foreground writes and standalone background additions save automatically. In an unattended mixed batch, independent additions also save immediately if they fit, while the complete destructive proposal remains pending (approval replays already-saved additions idempotently). Background `replace`/`remove` normally stage; the separate, default-off opt-in below permits only literal-preserving edits to auto-save. |
+| `false` (default) | Foreground writes and standalone background additions save automatically. In an unattended mixed batch, independent additions also save immediately if they fit, while the complete destructive proposal remains pending (approval replays already-saved additions idempotently). Background `patch`/`remove` normally stage; the separate, default-off opt-in below permits only literal-preserving edits to auto-save. |
 | `true` | Require approval before anything is saved. In the interactive CLI, foreground writes prompt you inline (entries are small enough to read in full). Everywhere else — messaging platforms, scripts, and the background self-improvement review — writes are **staged** for review with `/memory pending`. |
 
 > To turn memory off entirely (not just gate it), set both `memory_enabled: false` and `user_profile_enabled: false`. When both built-in stores are disabled, the built-in `memory` tool is automatically hidden.

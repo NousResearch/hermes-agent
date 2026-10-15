@@ -14,7 +14,7 @@ def review_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr("tools.skill_provenance.is_unattended_review", lambda: True)
     monkeypatch.setattr(wa, "current_origin", lambda: "background_review")
-    monkeypatch.setattr(wa, "write_approval_enabled", lambda subsystem: False)
+    monkeypatch.setattr(wa, "write_approval_enabled", lambda subsystem, **kwargs: False)
     monkeypatch.setattr(wa, "unattended_literal_preservation_enabled", lambda: False)
     return tmp_path
 
@@ -73,7 +73,7 @@ def test_partial_capacity_alias_and_duplicate_get_current_disk_labels(review_hom
 
 
 def test_approval_on_still_stages_everything(review_home, monkeypatch):
-    monkeypatch.setattr(wa, "write_approval_enabled", lambda subsystem: True)
+    monkeypatch.setattr(wa, "write_approval_enabled", lambda subsystem, **kwargs: True)
     store = mt.MemoryStore()
     assert store.add("memory", "rule one")["success"]
     result = _stage(store)

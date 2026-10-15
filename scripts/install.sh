@@ -526,19 +526,25 @@ git_runs() { command -v git >/dev/null 2>&1 && git --version >/dev/null 2>&1; }
 
 # macOS ships /usr/bin/git as a stub until Apple's Command Line Tools are
 # installed: it is on PATH, but every call fails ("see man xcode-select").
-# Prefer Homebrew (headless); else open Apple's install dialog and, with a
-# terminal, wait for the user to finish it so the install continues in this run.
+# Prefer Homebrew (headless); else open Apple's install dialog and wait for the
+# user to finish it, so the install continues in this run.
 install_macos_git() {
     if command -v brew >/dev/null 2>&1; then
-        log "Installing git with Homebrew"
-        brew install git >/dev/null 2>&1 || true
+        # Auto-update runs git (the broken stub here) and can take minutes.
+        run_logged --may-fail "Installing git with Homebrew" env HOMEBREW_NO_AUTO_UPDATE=1 brew install git || true
         hash -r
         git_runs && return 0
     fi
-    # Opens Apple's install dialog; harmless if it is already open or done.
+    # Developer tools already present (e.g. an Xcode license never accepted):
+    # no dialog will open, so let the caller report git's own error now.
+    local _dev
+    _dev="$(xcode-select -p 2>/dev/null)" && [ -d "$_dev" ] && return 0
+    # Opens Apple's install dialog; harmless if it is already open.
     xcode-select --install >/dev/null 2>&1 || true
     local _remedy="Install Apple's Command Line Tools (run: xcode-select --install), then re-run this installer."
-    if [ "$NON_INTERACTIVE" = true ] || ! has_terminal; then
+    # Hermes-Setup drives stages with --json: no stage timeout, a Cancel
+    # button, and these log lines show as progress, so it waits too.
+    if [ "$JSON" != true ] && { [ "$NON_INTERACTIVE" = true ] || ! has_terminal; }; then
         fail "git needs Apple's Command Line Tools. $_remedy" git_missing
     fi
     log "git needs Apple's Command Line Tools: click Install in the macOS dialog and accept the license"

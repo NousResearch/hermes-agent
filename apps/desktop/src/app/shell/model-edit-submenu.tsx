@@ -134,14 +134,14 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
          {discount ? <Badge size="xs">−{discount}%</Badge> : null}
        </DropdownMenuLabel>
        {free ? null : (
-         <dl>
-           <div>
+         <dl className="flex flex-col gap-1 px-2.5 pt-0.5 pb-1.5 text-[0.7rem] leading-4 text-(--ui-text-tertiary)">
+           <div className="flex items-center justify-between gap-2">
              <dt>Input</dt>
-             <dd>{pricing.input || '—'}</dd>
+             <dd className="tabular-nums">{pricing.input || '—'}</dd>
            </div>
-           <div>
+           <div className="flex items-center justify-between gap-2">
              <dt>Output</dt>
-             <dd>{pricing.output || '—'}</dd>
+             <dd className="tabular-nums">{pricing.output || '—'}</dd>
            </div>
          </dl>
        )}

@@ -1174,6 +1174,7 @@ function ModelFamilyRow({
         onSetOptions={patch =>
           controller.setOptions(patch, { isActive: isCurrent, model: family.id, provider: provider.slug })
         }
+        pricing={pricing}
         provider={provider.slug}
         reasoning={caps?.reasoning ?? true}
         serviceTier={effTier}

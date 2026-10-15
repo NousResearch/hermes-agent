@@ -85,12 +85,19 @@ def test_unfixable_upload_breach_still_retires_in_batches():
     assert moves <= -(-(len(span) - OUTBOUND_IMAGE_FLOOR) // IMAGE_EVICTION_BATCH)
 
 
-def test_unfixable_upload_breach_still_honours_the_byte_budget():
-    """The batch hold never keeps a request over the byte budget: it advances further (down
-    to the floor at most) until the kept carriers fit."""
-    sizes = [3 * MB] * 10
-    retire = outbound_image_retire_count(
-        [1] * 10, OUTBOUND_IMAGE_LIMIT + 1, carrier_bytes_newest_first=sizes, reserved_bytes=10 * MB
-    )
-    assert 10 * MB + 3 * MB * (10 - retire) <= 24 * MB
-    assert 10 - retire >= OUTBOUND_IMAGE_FLOOR
+def test_unfixable_upload_breach_under_byte_pressure_fits_and_still_steps():
+    """The hold never keeps a request over the byte budget, and byte pressure narrows the
+    step instead of collapsing to the floor (which would move the frontier every image)."""
+    span = range(1, 31)
+    counts = [
+        outbound_image_retire_count(
+            [1] * n, OUTBOUND_IMAGE_LIMIT + 1, carrier_bytes_newest_first=[3 * MB] * n, reserved_bytes=6 * MB
+        )
+        for n in span
+    ]
+    kept = [n - c for n, c in zip(span, counts)]
+    assert all(6 * MB + 3 * MB * k <= 24 * MB for k in kept)
+    assert all(k >= min(n, OUTBOUND_IMAGE_FLOOR) for n, k in zip(span, kept))
+    # bytes allow 6 carriers, floor is 3 -> a 4-carrier quantum, so at most one move per 4 images
+    moves = sum(a != b for a, b in itertools.pairwise(counts))
+    assert moves <= -(-(len(span) - OUTBOUND_IMAGE_FLOOR) // 4)

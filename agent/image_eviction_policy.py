@@ -63,9 +63,9 @@ def outbound_image_retire_count(
     The floor is a SATISFIABILITY floor: it shelters the newest frames only when reserved
     uploads alone breach the block ceiling (no retirement can fix that), and never under byte
     pressure — the request-size limit is hard and the provider answers 413. Even then the
-    count stays a step function: it retires whole batches down toward the floor (keeping
-    ``floor`` to ``floor + batch - 1`` carriers), so the cached prefix is rewritten once per
-    batch rather than on every new image.
+    count stays a step function: it retires whole quanta down toward the floor (keeping
+    ``floor`` to ``floor + batch - 1`` carriers, fewer when the byte budget binds), so the
+    cached prefix is rewritten once per quantum rather than on every new image.
     """
     total = len(carrier_blocks_newest_first)
     sizes = carrier_bytes_newest_first
@@ -85,23 +85,22 @@ def outbound_image_retire_count(
         return 0
 
     floor = min(max(floor, 0), total)
-    step = max(batch, 1)
     if not _fits(0) and _bytes_fit(floor):
         # Reserved uploads alone breach the block ceiling: no retirement can make the request
-        # fit it, so shelter the floor but keep advancing in whole batches. Retiring down to
-        # exactly ``total - floor`` here moves the frontier on every new image (#133999).
+        # fit it, so shelter the floor but keep advancing in whole quanta. Retiring down to
+        # exactly ``total - floor`` here moves the frontier on every new image (#133999). The
+        # quantum is capped by how many carriers the byte budget lets us keep, so byte
+        # pressure narrows the step instead of collapsing it back to the floor.
+        byte_window = max(k for k in range(floor, total + 1) if _bytes_fit(k))
+        quantum = max(1, min(batch, byte_window - floor + 1))
         excess = total - floor
-        retire = excess - excess % step
-        while not _bytes_fit(total - retire):
-            retire = min(retire + step, excess)
-        return retire
-    max_retire = total
+        return excess - excess % quantum
     window = max(k for k in range(total + 1) if _fits(k)) if _fits(0) else 0
     quantum = max(1, min(batch, window - floor))
 
     retire = 0
-    while retire < max_retire:
-        retire = min(retire + quantum, max_retire)
+    while retire < total:
+        retire = min(retire + quantum, total)
         if _fits(total - retire):
             break
     return retire

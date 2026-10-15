@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 import logging
+import os
 import uuid
 
 import acp
@@ -98,6 +99,17 @@ def _submit_fingerprint(session_id, text, attachments):
         with open(item['path'], 'rb') as staged:
             digest.update(item['mime'].encode() + b'\0' + hashlib.sha256(staged.read()).digest())
     return session_id, digest.hexdigest()
+
+
+def _bypass_route():
+    """--safe-mode / --ignore-user-config read no profile default model, so the session freezes the
+    launch's explicit one (``hermes -m <model> [--provider <name>] --safe-mode acp``), as the TUI does."""
+    model = (os.environ.get("HERMES_MODEL") or os.environ.get("HERMES_INFERENCE_MODEL") or "").strip()
+    if not model:
+        raise GatewayClientError("--safe-mode / --ignore-user-config read no profile default model: launch "
+                                 "with one, e.g. hermes -m <model> --provider <provider> --safe-mode acp")
+    provider = os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip()
+    return {"model": model, **({"provider": provider} if provider else {})}
 
 
 def _tools_changed_notice(payload):
@@ -270,10 +282,13 @@ class GatewayACPAgent(acp.Agent):
         from hermes_cli.gateway_chat import env_launch_flags
         # `hermes acp --yolo` / `--safe-mode` / ... reach this process as their env equivalents; the
         # owner does not inherit them, so they freeze into this session's policy or not at all.
+        flags = env_launch_flags()
+        if flags.get("safe_mode") or flags.get("ignore_user_config"):
+            flags.update(_bypass_route())
         snapshot = await client.rpc("session.create", request_id=uuid.uuid4().hex,
             source="acp", cwd=_translate_acp_cwd(cwd),
             editor={"mcp_servers": [s.model_dump(by_alias=True) for s in mcp_servers or []],
-                    "edit_approval_policy": "ask"}, **env_launch_flags())
+                    "edit_approval_policy": "ask"}, **flags)
         session_id = snapshot["session_id"]
         self._snapshots[session_id] = snapshot
         if mcp_servers:

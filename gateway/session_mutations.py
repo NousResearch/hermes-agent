@@ -199,6 +199,10 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
             # Before the policy publication below, so no execution sees the policy without them.
             from gateway.session_local_mcp import install_editor_mcp
             install_editor_mcp(authority, result.get('branched_session_id', ref.session_id), editor_servers)
+            if operation == 'editor_mcp' and not editor_servers:
+                # An empty selection: the old servers must not keep running for a viewer.
+                from gateway.session_local_mcp import retire_editor_mcp
+                await asyncio.to_thread(retire_editor_mcp, authority, ref.session_id)
         if operation not in {*_POLICY, 'reset', 'compress', 'rewind'} or owns_projection:
             _project_committed(authority, ref, operation, result)
         if live is not None:

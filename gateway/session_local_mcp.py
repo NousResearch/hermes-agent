@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 PRIVATE_KEY = ('editor_mcp',)
 _HELD_LOCK = threading.Lock()
+_RELIST_TIMEOUT = 5  # seconds an admission start waits on a held server's tools/list
 
 
 def _json(value):
@@ -172,11 +173,13 @@ def _borrowed(authority, scope, servers, names, cwd, *, partial=False):
     from tools.registry import registry, session_tool_scope
     from tools.mcp_tool_discovery import register_mcp_servers
     held = _held(authority, scope)
-    wanted = fingerprint(servers)
+    # The cwd too: stdio servers run in it, so a committed workspace move respawns them there.
+    wanted = fingerprint([servers, cwd])
     with session_tool_scope(scope):
         with held.lock:
             if held.fingerprint not in (None, wanted):
-                # A committed editor_mcp swapped the credentials: no execution may still run on the old ones.
+                # A committed editor_mcp swapped the credentials (or a workspace move the cwd): no
+                # execution may still run on the old ones.
                 if held.users:
                     raise RuntimeStoreError('session_busy')
                 _disconnect(held, scope)
@@ -277,6 +280,14 @@ def resume_editor_mcp(authority, ref, editor):
         attach_editor_mcp(authority, policy, servers)
 
 
+def retire_editor_mcp(authority, sid):
+    """An empty selection committed: *sid*'s held editor connections close now (blocking), viewer or not."""
+    scope = session_scope(authority, sid)
+    held = _held(authority, scope)
+    with held.lock:
+        _disconnect(held, scope)
+
+
 def install_editor_mcp(authority, sid, servers):
     """After a committed change: *sid*'s borrowed credentials follow its committed policy (memory only)."""
     from gateway.session_policy import restore_policy
@@ -316,29 +327,64 @@ async def prepare_editor_mcp(authority, live, payload, prepared, *, servers):
                    mcp_servers=[servers[int(i)]['name'] for i in sorted(names, key=int)])
 
 
+def _live_tools_changed(scope, names):
+    """Whether a held server's live ``tools/list`` differs from the tools its connection was
+    discovered with. Editor servers ignore ``tools/list_changed`` (the manifest is frozen), so
+    the admission start asks; an unanswered list (bounded) counts as unchanged."""
+    from tools import mcp_tool_loop
+    from tools.mcp_tool import _paginate_full_list, _servers
+    from tools.mcp_tool_scope import _server_key
+
+    def dump(tools):
+        return _json([tool.model_dump(mode='json') for tool in tools])
+
+    for name in names.values():
+        server = _servers.get(_server_key(name, scope))
+        if server is None:
+            continue
+
+        async def relist(server=server):
+            async with server._rpc_lock:
+                if server.session is None:
+                    return None
+                return await _paginate_full_list(server.session.list_tools, 'tools', server.name)
+        try:
+            tools = mcp_tool_loop._run_on_mcp_loop(relist, timeout=_RELIST_TIMEOUT)
+        except Exception:
+            logger.warning('Editor MCP server %r: tools/list for the drift check failed', name, exc_info=True)
+            continue
+        if tools is not None and dump(tools) != dump(server._tools):
+            return True
+    return False
+
+
 async def refreeze_editor_mcp(authority, ref, live):
     """The drain, before it claims the FIFO head (claim gate and mutation lock held, nothing
     executing), re-checks the editor schemas; a drifted manifest is re-frozen through the
     ``editor_mcp`` writer path, so the turn runs on it instead of failing ``acp_mcp_schema_changed``."""
-    from gateway.config import Platform
-    from gateway.session_local_recovery import local_adapter_map
-    # The policy the claim just restored (``restore_local_session``) for this local route.
-    adapter = local_adapter_map(authority).get(Platform.LOCAL)
-    policy = adapter.policies.get(live.source.chat_id) if adapter is not None else None
-    if policy is None or not policy.editor_mcp_json:
+    if not getattr(authority, '_local_editor_mcp', None):
+        return  # no session of this owner borrows editor servers: nothing to re-check
+    from gateway.session_policy import restore_policy
+    from hermes_state_local import local_receipt
+    # The committed policy the claim just restored (``restore_local_session``).
+    receipt = await asyncio.to_thread(local_receipt, authority.db, ref.session_id)
+    policy = restore_policy(receipt['policy'])
+    if not policy.editor_mcp_json:
         return
     data = json.loads(policy.editor_mcp_json)
-    servers = getattr(authority, '_local_editor_mcp', {}).get(data['scope'])
+    servers = authority._local_editor_mcp.get(data['scope'])
     if servers is None:
         return  # the execution reports launch_credentials_unavailable
 
     def probe():
         names = _frozen_names(data, servers)
         with _borrowed(authority, data['scope'], servers, names, policy.cwd, partial=True) as (schemas, connected):
-            return schemas, len(connected) == len(names)
-    schemas, complete = await asyncio.to_thread(probe)
+            complete = len(connected) == len(names)
+            # A held connection keeps the registry schemas it was discovered with: ask the server.
+            return schemas, complete, complete and _live_tools_changed(data['scope'], names)
+    schemas, complete, drifted = await asyncio.to_thread(probe)
     # A server that is down right now is the execution's discovery failure, never a narrowed manifest.
-    if not complete or schemas == data['schemas']:
+    if not complete or (schemas == data['schemas'] and not drifted):
         return
     try:
         await _commit_refreeze(authority, ref, live, servers)

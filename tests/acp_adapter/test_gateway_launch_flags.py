@@ -7,7 +7,8 @@ import pytest
 from acp_adapter.gateway_server import GatewayACPAgent
 
 _ENV = ('HERMES_YOLO_MODE', 'HERMES_SAFE_MODE', 'HERMES_IGNORE_USER_CONFIG', 'HERMES_IGNORE_RULES',
-        'HERMES_ACCEPT_HOOKS')
+        'HERMES_ACCEPT_HOOKS', 'HERMES_MODEL', 'HERMES_INFERENCE_MODEL', 'HERMES_INFERENCE_PROVIDER')
+_FLAGS = ('yolo', 'safe_mode', 'ignore_user_config', 'ignore_rules', 'accept_hooks')
 
 
 def _agent(created):
@@ -27,13 +28,46 @@ def _agent(created):
 
 @pytest.mark.asyncio
 async def test_launch_env_rides_session_create(monkeypatch, tmp_path):
-    for name in _ENV:
+    for name in _ENV[:5]:
         monkeypatch.setenv(name, '1')
+    monkeypatch.setenv('HERMES_MODEL', 'explicit-model')  # a bypass session needs one (below)
     created = []
     await _agent(created).new_session(cwd=str(tmp_path))
-    assert {k: created[0].get(k) for k in ('yolo', 'safe_mode', 'ignore_user_config', 'ignore_rules',
-                                          'accept_hooks')} == dict.fromkeys(
-        ('yolo', 'safe_mode', 'ignore_user_config', 'ignore_rules', 'accept_hooks'), True)
+    assert {k: created[0].get(k) for k in _FLAGS} == dict.fromkeys(_FLAGS, True)
+
+
+@pytest.mark.asyncio
+async def test_safe_mode_acp_session_freezes_the_launch_model(monkeypatch, tmp_path):
+    """`hermes -m <model> --provider <name> --safe-mode acp`: the owner reads no profile default, so the
+    launch's model rides session.create and the owner's bypass policy accepts it."""
+    for name in _ENV:
+        monkeypatch.setenv(name, '')  # recorded, so cmd_acp's exports are undone after the test
+    monkeypatch.setenv('HERMES_SAFE_MODE', '1')  # what main() exports for --safe-mode
+    monkeypatch.setenv('HERMES_IGNORE_USER_CONFIG', '1')
+    import acp_adapter.entry
+    from gateway.session_local import _bypass_policy
+    from hermes_cli.main_agent_cmds import cmd_acp
+    monkeypatch.setattr(acp_adapter.entry, 'main', lambda argv: None)
+    cmd_acp(SimpleNamespace(model='anthropic/claude-sonnet-4', provider='openrouter'))
+    created = []
+    await _agent(created).new_session(cwd=str(tmp_path))
+    params = created[0]
+    assert (params['model'], params['provider'], params['safe_mode']) == ('anthropic/claude-sonnet-4', 'openrouter', True)
+    frozen = _bypass_policy({k: v for k, v in params.items() if k != 'request_id'}, private_secrets={})
+    assert frozen.model == 'anthropic/claude-sonnet-4' and frozen.safe_mode
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('flag', ['HERMES_SAFE_MODE', 'HERMES_IGNORE_USER_CONFIG'])
+async def test_bypass_without_a_model_names_the_missing_flag(monkeypatch, tmp_path, flag):
+    from hermes_cli.gateway_client import GatewayClientError
+    for name in _ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(flag, '1')
+    created = []
+    with pytest.raises(GatewayClientError, match='hermes -m <model>'):
+        await _agent(created).new_session(cwd=str(tmp_path))
+    assert created == []
 
 
 @pytest.mark.asyncio

@@ -170,6 +170,16 @@ class TestKernelLifecycle(unittest.TestCase):
         self.assertEqual(fresh["kernel"]["reused"], False)
         self.assertIn("respawned", fresh["output"])
 
+    def test_nonzero_sys_exit_is_a_failure_not_success(self):
+        """sys.exit(N) with N != 0 is the script reporting failure (the per-call path's
+        exit_code contract); a non-int argument is the failure message and exits 1."""
+        with _kernel_config():
+            coded = _run("import sys\nsys.exit(3)")
+            message = _run("import sys\nsys.exit('fatal: config missing')")
+        self.assertEqual((coded["status"], coded["exit_code"]), ("error", 3), coded)
+        self.assertEqual((message["status"], message["exit_code"]), ("error", 1), message)
+        self.assertIn("fatal: config missing", message["output"])
+
     def test_subprocess_fd_output_reaches_the_result(self):
         code = (
             "import subprocess, sys\n"

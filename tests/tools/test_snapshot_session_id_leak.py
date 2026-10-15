@@ -133,3 +133,44 @@ def test_snapshot_does_not_turn_later_commands_into_delegated_children(tmp_path)
         assert "[]" in parent["output"], f"parent command inherited the marker: {parent!r}"
     finally:
         env.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# #124862: unknown HERMES_KANBAN_* exports (not just the delegation marker
+# itself) must not persist into the shared snapshot either.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.platforms("posix")  # POSIX bash snapshot path
+def test_export_dump_drops_every_kanban_env_var():
+    """Any ``HERMES_KANBAN_*`` name — including ones the fixed exclusion list
+    (``agent.delegation_context.KANBAN_ENV_KEYS``) does not know about — must
+    not survive ``export -p`` into the snapshot; ordinary exports must."""
+    kanban_vars = ["HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_CLAIM_LOCK",
+                   "HERMES_KANBAN_BOARD", "HERMES_KANBAN_DB", "HERMES_KANBAN_SOME_FUTURE_VAR"]
+    exports = "; ".join([f'export {n}="x"' for n in kanban_vars] + ['export MYVAR="keep"'])
+    out = subprocess.run(
+        ["bash", "-c", f"{exports}; {_export_dump_excluding_session_vars('/dev/stdout')}"],
+        capture_output=True, text=True, check=True).stdout
+    leaked = [n for n in kanban_vars if f"declare -x {n}=" in out]
+    assert not leaked, f"persisted into the snapshot: {leaked}"
+    assert 'declare -x MYVAR="keep"' in out
+
+
+@pytest.mark.platforms("posix")  # POSIX bash snapshot path
+def test_snapshot_does_not_leak_kanban_env_from_delegated_child(tmp_path):
+    """A delegate_task child that exports an unlisted ``HERMES_KANBAN_*`` var
+    (directly, or via a script it runs) must not have it survive into the
+    parent's next command on the shared snapshot (#124862)."""
+    from agent.delegation_context import delegated_child_context
+    from tools.environments.local import LocalEnvironment
+
+    var = "HERMES_KANBAN_WORKER_TOKEN"
+    env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
+    try:
+        with delegated_child_context():
+            child = env.execute(f'export {var}=leaked; printf "[${var}]"')
+        assert "[leaked]" in child["output"], f"child export did not take effect: {child!r}"
+        parent = env.execute(f'printf "[${{{var}-unset}}]"')
+        assert "[unset]" in parent["output"], f"parent command inherited {var}: {parent!r}"
+    finally:
+        env.cleanup()

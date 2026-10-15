@@ -539,7 +539,7 @@ async def test_queue_mutation_and_review_cancellation_are_one_critical_section(
     callback_observations = []
     original_cancel = background_review.cancel_background_review_for_pending_followup
 
-    def force_request_contender(parent):
+    def force_request_contender(parent, **owner):
         def begin_request():
             request_started.set()
             admitted.append(run.begin_request(object()))
@@ -553,7 +553,7 @@ async def test_queue_mutation_and_review_cancellation_are_one_critical_section(
         callback_observations.append(adapter.has_pending_message("session-key"))
         if not tracked_lock.held_by_current_thread():
             callback_observations.append(request_done.wait(timeout=10.0))
-        original_cancel(parent)
+        original_cancel(parent, **owner)
 
     monkeypatch.setattr(
         background_review,
@@ -778,7 +778,7 @@ async def test_runner_busy_queue_mutations_share_review_admission_lock(
     callback_holds_admission = []
     original_cancel = background_review.cancel_background_review_for_pending_followup
 
-    def force_request_contender(parent):
+    def force_request_contender(parent, **owner):
         def begin_request():
             request_started.set()
             admitted.append(run.begin_request(object()))
@@ -788,7 +788,7 @@ async def test_runner_busy_queue_mutations_share_review_admission_lock(
         contender.start()
         assert request_started.wait(timeout=10.0)
         callback_holds_admission.append(tracked_lock.held_by_current_thread())
-        original_cancel(parent)
+        original_cancel(parent, **owner)
 
     monkeypatch.setattr(
         background_review,

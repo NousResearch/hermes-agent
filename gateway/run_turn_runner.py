@@ -453,7 +453,17 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             def _cancel_review_for_followup() -> None:
                 from agent.background_review import cancel_background_review_for_pending_followup
 
-                cancel_background_review_for_pending_followup(agent)
+                # Fired on the gateway loop (busy-slot writes, the runner's queue mutations),
+                # outside the turn's profile scope: the registry key is the turn's own owner.
+                # Resolved ambiently it would be the loop thread's launch profile, whose review
+                # on the same session id (multiplexing) this fence would cancel instead.
+                owner = gateway_review_admission
+                cancel_background_review_for_pending_followup(
+                    agent,
+                    session_id=owner.session_id if owner is not None else None,
+                    profile_key=owner.profile_key if owner is not None
+                    else getattr(agent, "_active_turn_profile_key", None),
+                )
 
             register_cancel(ctx.session_key, _cancel_review_for_followup)
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()

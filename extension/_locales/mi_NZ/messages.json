@@ -1,0 +1,240 @@
+{
+  "graze_description": {
+    "message": "he 1-pawhiria te whai, te tino pai, te whakanui, me te tohu tohu mo Mastodon, ahakoa he aha te waa e kiia ana e koe ki te kainga.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "To ingoa tauira Mastodon",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "Me awhina?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "Hono Pūkete",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "Hoki ki nga Kaute",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "Kaore ano i runga i Mastodon?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "Kaore i kitea tenei tauira, tirohia te wahitau ka ngana ano.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "Nga kaute"
+  },
+  "add_account": {
+    "message": "+ Tāpiri Pūkete",
+    "description": "Link to add account."
+  },
+  "take_actions": {
+    "message": "WHAKAMAHI MAI I TENEI KAUPAPA",
+    "description": "Take actions string on active account."
+  },
+  "show_notifications": {
+    "message": "Whakaatu whakamohiotanga",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "Kaua rawa",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "Tango Pūkete",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "na"
+  },
+  "or": {
+    "message": "ranei"
+  },
+  "send_feedback": {
+    "message": "Tuku Urupare",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "Pūrongo Bug",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "Tikina Tautoko",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "Koha",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "Kua reri a Graze mo Mastodon ki te whakamahi!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "Ka kati tenei ripa",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "hēkona",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "tauira",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "Whai",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "unfollow": {
+    "message": "Whakakore",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "Whakahua",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "Karere tika",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "Tiri",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "Wahangu",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "Poraka",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "Ripoata",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "Poraka rohe",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "Tuwhera te wharangi taketake",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "Tārua hono ki te whakairinga",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "Whakamau",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "He waahanga kei runga i te kōtaha",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "Hurihia nga reo ohauru",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "Huna whakakake mai",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "Tāpiri, Tango ranei mai i nga rarangi",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "haora",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "i raro",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "I pooti koe mo tenei whakautu",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

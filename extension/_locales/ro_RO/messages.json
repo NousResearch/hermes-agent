@@ -1,0 +1,611 @@
+{
+  "graze_description": {
+    "message": "este 1-clic urmați, favorit, impuls, și semn de carte pentru Mastodon, indiferent de ce instanță te sun acasă.",
+    "description": "Graze main home description"
+  },
+  "mastodon_instance_name_description": {
+    "message": "Numele instanței tale Mastodon",
+    "description": "Instance Name description."
+  },
+  "need_help": {
+    "message": "Ai nevoie de ajutor?",
+    "description": "Need help anchor link"
+  },
+  "connect_account_btn": {
+    "message": "Conectă contul",
+    "description": "Submit button that connects to the new account."
+  },
+  "back_to_account_btn": {
+    "message": "Înapoi La Conturi",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "not_yet_on_mastodon": {
+    "message": "Nu încă pe Mastodon?",
+    "description": "Button that returns the user back to their accounts list."
+  },
+  "instance_error": {
+    "message": "Nu găsiți această instanță, vă rugăm să verificați adresa și încercați din nou.",
+    "description": "Error message that gets displayed when trying to connect to invalid instance name."
+  },
+  "accounts_container_title": {
+    "message": "Conturi"
+  },
+  "add_account": {
+    "message": "+ ADAUGĂ UN CONT",
+    "description": "Link to add account."
+  },
+  "show_notifications": {
+    "message": "Afișează notificările",
+    "description": "Toggle button for notifications."
+  },
+  "nevermind": {
+    "message": "Nu contează",
+    "description": "Nevermind button when logging out a user."
+  },
+  "remove_account": {
+    "message": "Elimină contul",
+    "description": "Remove account button when logging out a user."
+  },
+  "by": {
+    "message": "de"
+  },
+  "or": {
+    "message": "sau"
+  },
+  "send_feedback": {
+    "message": "Trimite feedback",
+    "description": "Send feedback anchor link."
+  },
+  "report_bug": {
+    "message": "Raportare erori",
+    "description": "Report bug anchor link."
+  },
+  "get_support": {
+    "message": "Obține sprijin",
+    "description": "Get support anchor link."
+  },
+  "donate": {
+    "message": "Donează",
+    "description": "Donate anchor link."
+  },
+  "graze_on_connect_success_1": {
+    "message": "Graze pentru Mastodon este gata de utilizare!",
+    "description": "Success message when successfully connected to the server. -P1"
+  },
+  "graze_on_connect_success_2": {
+    "message": "Această filă se va închide în",
+    "description": "Success message when successfully connected to the server. -P2"
+  },
+  "graze_on_connect_success_3": {
+    "message": "secunde",
+    "description": "Success message when successfully connected to the server. -P3"
+  },
+  "example": {
+    "message": "de ex.",
+    "description": "For example (e.g.) placeholder in input field."
+  },
+  "follow": {
+    "message": "Urmărește",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "follows_you": {
+    "message": "Te urmează.",
+    "description": "Follows you overlay"
+  },
+  "unfollow": {
+    "message": "Nu mai urmări",
+    "description": "Follow button on Mastodon webpage."
+  },
+  "mention": {
+    "message": "Monționare",
+    "description": "Mention menu item on Mastodon webpage."
+  },
+  "direct_message": {
+    "message": "Mesaj direct",
+    "description": "Direct message menu item on Mastodon webpage."
+  },
+  "share": {
+    "message": "Distribuie",
+    "description": "Share menu item on Mastodon webpage."
+  },
+  "mute": {
+    "message": "Silențios",
+    "description": "Mute menu item on Mastodon webpage."
+  },
+  "block": {
+    "message": "Blochează",
+    "description": "Block menu item on Mastodon webpage."
+  },
+  "report": {
+    "message": "Raportează",
+    "description": "Report menu item on Mastodon webpage."
+  },
+  "block_domain": {
+    "message": "Blocați domeniu",
+    "description": "Block domain menu item on Mastodon webpage."
+  },
+  "open_original_page": {
+    "message": "Deschideți pagina originală",
+    "description": "Open original page menu item on Mastodon webpage."
+  },
+  "copy_link": {
+    "message": "Copie link pentru a posta",
+    "description": "Copy link to post menu item on Mastodon webpage."
+  },
+  "embed": {
+    "message": "Încorporare",
+    "description": "Embed menu item on Mastodon webpage."
+  },
+  "feature_on_profile": {
+    "message": "Caracteristică pe profil",
+    "description": "Feature on profile menu item on Mastodon webpage."
+  },
+  "change_subscribed_languages": {
+    "message": "Modificarea limbilor abonate",
+    "description": "Change subscribed languages menu item on Mastodon webpage."
+  },
+  "hide_boosts_from": {
+    "message": "Ascunde rafale de la",
+    "description": "Hide boosts from menu item on Mastodon webpage."
+  },
+  "add_or_remove_from_lists": {
+    "message": "Adăugarea sau eliminarea din liste",
+    "description": "Add or Remove from lists menu item on Mastodon webpage."
+  },
+  "hour": {
+    "message": "oră",
+    "description": "hour in time."
+  },
+  "under": {
+    "message": "sub",
+    "description": "context: less than"
+  },
+  "user_voted": {
+    "message": "Ați votat pentru acest răspuns",
+    "description": "Title of the icon of the voted poll answer."
+  },
+  "settings": {
+    "message": "Setări",
+    "description": "settings title."
+  },
+  "theme": {
+    "message": "temă"
+  },
+  "graze_theme_p": {
+    "message": "Graze se potrivește automat cu tema ta, poți să-l suprascrie dacă vrei.",
+    "description": "options theme section paragraph"
+  },
+  "mastodon_dark": {
+    "message": "Mastodon întuneric",
+    "description": "Dropdown menu theme options"
+  },
+  "mastodon_light": {
+    "message": "Mastodon Light",
+    "description": "Dropdown menu theme options"
+  },
+  "graze_color_p": {
+    "message": "Suprascrie mastodont temă Accent culoare",
+    "description": "options color section paragraph"
+  },
+  "home_instance_color_p": {
+    "message": "Override your home instance color.",
+    "description": "options home instance color paragraph"
+  },
+  "language": {
+    "message": "limbă"
+  },
+  "Afrikaans": {
+    "message": "Afrikaans"
+  },
+  "Arabic": {
+    "message": "Arabă"
+  },
+  "Bengali": {
+    "message": "Bengali"
+  },
+  "Bulgarian": {
+    "message": "Bulgară"
+  },
+  "Chinese_Simplified": {
+    "message": "Chineză simplificată"
+  },
+  "Chinese_Traditional": {
+    "message": "Chineză tradițională"
+  },
+  "Czech": {
+    "message": "Cehă"
+  },
+  "Danish": {
+    "message": "Daneză"
+  },
+  "Dutch": {
+    "message": "Olandeză"
+  },
+  "English": {
+    "message": "Engleză"
+  },
+  "Finnish": {
+    "message": "Finlandeză"
+  },
+  "French": {
+    "message": "Franceză"
+  },
+  "German": {
+    "message": "Germană"
+  },
+  "Greek": {
+    "message": "Greacă"
+  },
+  "Hawaiian": {
+    "message": "Hawaiian"
+  },
+  "Hebrew": {
+    "message": "ebraică"
+  },
+  "Hindi": {
+    "message": "Hindi"
+  },
+  "Hungarian": {
+    "message": "Ungaria"
+  },
+  "Icelandic": {
+    "message": "Islandeză"
+  },
+  "Indonesian": {
+    "message": "Indoneziană"
+  },
+  "Italian": {
+    "message": "Italiană"
+  },
+  "Japanese": {
+    "message": "Japoneză"
+  },
+  "Korean": {
+    "message": "Coreeană"
+  },
+  "Malay": {
+    "message": "Malay"
+  },
+  "Maori": {
+    "message": "Maori"
+  },
+  "Norwegian": {
+    "message": "Norvegiană"
+  },
+  "Polish": {
+    "message": "Poloneză"
+  },
+  "Portuguese": {
+    "message": "Portugheză"
+  },
+  "Portuguese_Brazilian": {
+    "message": "Portugheză, braziliană"
+  },
+  "Romanian": {
+    "message": "Română"
+  },
+  "Russian": {
+    "message": "Rusă"
+  },
+  "Serbian_Cyrillic": {
+    "message": "Sârbă (chirilică)"
+  },
+  "Spanish_Modern": {
+    "message": "Spaniolă (Modern)"
+  },
+  "Swedish": {
+    "message": "Suedeză"
+  },
+  "Tamil": {
+    "message": "Tamil"
+  },
+  "Thai": {
+    "message": "Thai"
+  },
+  "Turkish": {
+    "message": "Turcă"
+  },
+  "Ukrainian": {
+    "message": "Ucraineană"
+  },
+  "Urdu_India": {
+    "message": "Urdu (India)"
+  },
+  "Vietnamese": {
+    "message": "Vietnameză"
+  },
+  "Welsh": {
+    "message": "Galez"
+  },
+  "convenience": {
+    "message": "comoditate"
+  },
+  "graze_convenience_p": {
+    "message": "Graze poate face numele de utilizator mastodon în link-uri în jurul web.",
+    "description": "options theme section paragraph"
+  },
+  "linkify_user_label": {
+    "message": "Linkify Mastodon nume de utilizator",
+    "description": "Checkbox label for linkify "
+  },
+  "linkify_user": {
+    "message": "Graze poate face numele de utilizator mastodon în link-uri în jurul web.",
+    "description": "Checkbox description for linkify "
+  },
+  "display_hovercards_label": {
+    "message": "Afișează hovercards",
+    "description": "Checkbox label for display hovercards"
+  },
+  "display_hovercards": {
+    "message": "Hovercards poate afișa informații rapide despre utilizator atunci când treceți peste numele lor.",
+    "description": "Checkbox description for hovercards"
+  },
+  "show_federated_notification": {
+    "message": "Arată pop-up pentru instanțele spre care nu ești federat",
+    "description": "Checkbox description for federated peers notification"
+  },
+  "show_federated_notification_label": {
+    "message": "Sugerează instanțe de federat în timpul vizitei",
+    "description": "Checkbox label for federated peers notification"
+  },
+  "show_missing_account_notification": {
+    "message": "Arată pop-up când logat într-un cont nu a fost adăugat la Graze",
+    "description": "Checkbox description for missing account notification"
+  },
+  "show_missing_account_notification_label": {
+    "message": "Arată popup pentru autentificare rapidă în cont",
+    "description": "Checkbox label for missing account peers notification"
+  },
+  "graze_language_p": {
+    "message": "Suprascrie limba automată în Graze",
+    "description": "options language section paragraph"
+  },
+  "reply_from": {
+    "message": "Când faceți clic pe un răspuns pe un server de la distanță sau \" toot această pagină Graze poate deschide un răspuns rapid sau să vă ducă la instanța de acasă.",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_graze": {
+    "message": "Răspuns de la Graze",
+    "description": "Reply from toggle button description"
+  },
+  "reply_from_home": {
+    "message": "Răspuns de la instanța de acasă",
+    "description": "Reply from toggle button description"
+  },
+  "redirect_explore_description": {
+    "message": "Pe de altă parte, cronologia locală reflectă mai îndeaproape utilizatorii și conținutul acestei instanțe.",
+    "description": "Redirect to explore checkbox description"
+  },
+  "redirect_explore_label": {
+    "message": "Redirect <strong>Exploreaza</strong> la <strong>Local</strong> cronologie",
+    "description": "Redirect explore checkbox description"
+  },
+  "content": {
+    "message": "conținut",
+    "description": "Content title"
+  },
+  "graze_content_p": {
+    "message": "Face afișarea de conținut instanță de la distanță se potrivesc propriul, sau se amestecă.",
+    "description": "options language section paragraph"
+  },
+  "content_writing_label": {
+    "message": "Arată conținut în spatele unui Conținut Warnings (CW)",
+    "description": "Content writing label"
+  },
+  "play_gifs": {
+    "message": "Redare automată GIF-uri",
+    "description": "Play GIFS label"
+  },
+  "display_NSFW": {
+    "message": "Afișare NSFW/Imagini sensibile",
+    "description": "Display NSFW label"
+  },
+  "set_active": {
+    "message": "Cont activ",
+    "description": "Active account message"
+  },
+  "drag_title": {
+    "message": "Trageți pentru a reordona",
+    "description": "Drag title"
+  },
+  "messages_title": {
+    "message": "Mesaje pentru {username}",
+    "description": "Messages title"
+  },
+  "notifications_title": {
+    "message": "Notificări pentru {username}",
+    "description": "Notifications title"
+  },
+  "take_actions": {
+    "message": "LUAȚI MĂSURI DIN ACEST CONT",
+    "description": "Notifications title"
+  },
+  "taking_actions": {
+    "message": "Luarea de măsuri ca {username}",
+    "description": "Notifications title"
+  },
+  "show_rounded_avatars_label": {
+    "message": "Afișare imagini avatar rotund",
+    "description": "Checkbox label for showing rounded avatars"
+  },
+  "show_graze_context_menu_p": {
+    "message": "Afișează link-ul, imaginea și partajarea de fragmente de text din meniul contextual de pe web",
+    "description": "Checkbox paragraph for show graze context menu"
+  },
+  "show_graze_context_menu_label": {
+    "message": "Afișează meniul contextual Graze",
+    "description": "Checkbox label for show graze context menu"
+  },
+  "redirect_automatically_p": {
+    "message": "Redirecționarea profilurilor goale (nefederate) către cazurile de acasă pentru a vă asigura un clic",
+    "description": "Checkbox paragraph for redirect automatically to unfederated profiles"
+  },
+  "redirect_automatically_label": {
+    "message": "Redirect automat",
+    "description": "Checkbox label for redirect automatically to unfederated profiles"
+  },
+  "expand_mastodon_links_p": {
+    "message": "Extindeți link-urile către posturile Mastodon în termenele dvs.",
+    "description": "Checkbox paragraph for expanded mastodon link previews"
+  },
+  "expand_mastodon_links_label": {
+    "message": "Afișează postări extinse în linie",
+    "description": "Checkbox label for expanded link mastodon previews"
+  },
+  "dedupe_label": {
+    "message": "Dedupe poze imagini și link-uri previzualizări",
+    "description": "Checkbox label for deduping post images and link mastodon previews"
+  },
+  "expand_link_preview_p": {
+    "message": "Înlocuiți previzualizări de legătură implicite cu imagini mai mari și text full snippet",
+    "description": "Checkbox paragraph for expand link previews"
+  },
+  "expand_link_preview_label": {
+    "message": "Afișează previzualizări de link-uri bogate",
+    "description": "Checkbox label for expand link previews"
+  },
+  "show_alt_text_p": {
+    "message": "Graze poate arăta descriptins imagine \"Alt Text\" de mai jos imagini rathrer decât doar într-un tooltip pentru lectură mai ușoară",
+    "description": "Checkbox label for show alt text"
+  },
+  "show_alt_text_label": {
+    "message": "Afișează descrierile imaginilor de mai jos",
+    "description": "Checkbox label for show alt text"
+  },
+  "invalid_version_number_error": {
+    "message": "Graze este compatibil doar cu instanțele care rulează Mastodon versiunea 4.0.0 sau mai mare",
+    "description": "Error message for incompatible Mastodon version"
+  },
+  "no_instance_found_error": {
+    "message": "Nu se poate găsi această instanță, verificați adresa și încercați din nou.",
+    "description": "Error message for unfound instance"
+  },
+  "general_error": {
+    "message": "A apărut o eroare. Te rugăm să încerci din nou mai târziu.",
+    "description": "General error message"
+  },
+  "posts": {
+    "message": "Mesaje",
+    "description": "Posts title"
+  },
+  "followers": {
+    "message": "Urmăritori",
+    "description": "Followers title"
+  },
+  "following": {
+    "message": "Urmăriți",
+    "description": "Following title"
+  },
+  "no_thanks": {
+    "message": "Nu, mulțumesc",
+    "description": "No thanks button"
+  },
+  "go_to_profile_directory": {
+    "message": "Du-te la directorul de profil",
+    "description": "Go to profile directory button"
+  },
+  "go_to_local_timeline": {
+    "message": "Mergi la Cronologia Locală",
+    "description": "Go to local timeline button"
+  },
+  "follow_account_local_feed": {
+    "message": "Urmăriți un cont din feed-ul local pentru a începe să vedeți conținutul în feed-ul dvs. de pornire.",
+    "description": "Federated popup description"
+  },
+  "not_federated": {
+    "message": "Nu sunteți federată în $username$",
+    "description": "Not federated popup title",
+    "placeholders": {
+      "username": {
+        "content": "$1"
+      }
+    }
+  },
+  "add_account_to_graze_description": {
+    "message": "Vei putea lua măsuri de la acest cont în orice instanță.",
+    "description": "Add account to graze description"
+  },
+  "add_account_to_graze_title": {
+    "message": "Adăugați $display_name$ la Graze?",
+    "description": "Add account to graze title. Expects <span>display name</span> as a placeholder",
+    "placeholders": {
+      "display_name": {
+        "content": "$1",
+        "example": "<span>Mastodon</span>"
+      }
+    }
+  },
+  "add_to_graze": {
+    "message": "Adaugă la Graze",
+    "description": "Add to graze button"
+  },
+  "account_switching_non_supported": {
+    "message": "Account switching is disabled on non supported instances",
+    "description": "Account switching disabled on unsupported instances"
+  },
+  "account_switching_logged_in": {
+    "message": "Account switching is disabled on logged in instances",
+    "description": "Account switching disabled when user is logged in"
+  },
+  "file_not_image_error": {
+    "message": "File is not an image",
+    "description": "File upload error message"
+  },
+  "upload_aborted_error": {
+    "message": "The upload was aborted.",
+    "description": "File upload aborted message"
+  },
+  "file_read_error": {
+    "message": "An error occurred while reading the file.",
+    "description": "File reading error message"
+  },
+  "image_empty_error": {
+    "message": "Image is empty",
+    "description": "Image empty error message"
+  },
+  "image_load_aborted_error": {
+    "message": "Image load was aborted.",
+    "description": "Image load aborted message"
+  },
+  "image_load_error": {
+    "message": "An error occurred while loading image.",
+    "description": "Image load error message"
+  },
+  "participants": {
+    "message": "Participants",
+    "description": "Participants title"
+  },
+  "posts_today": {
+    "message": "Posts today",
+    "description": "Posts today title"
+  },
+  "learn_more_about_hashtag": {
+    "message": "Learn more about #$hashtag$ hashtag across the",
+    "description": "Hashtag hovercard description",
+    "placeholders": {
+      "hashtag": {
+        "content": "$1"
+      }
+    }
+  },
+  "show_more": {
+    "message": "...more",
+    "description": "Truncated bio more text"
+  },
+  "mirror_content_settings_p": {
+    "message": "",
+    "description": "Intro text for mirroring content settings"
+  },
+  "mirror_sensitive_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring sensitive media display"
+  },
+  "mirror_cw_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring CW expansion"
+  },
+  "mirror_gif_label": {
+    "message": "",
+    "description": "Checkbox label for mirroring GIF autoplay"
+  }
+}

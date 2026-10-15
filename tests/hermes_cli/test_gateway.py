@@ -91,8 +91,7 @@ def _run_native_windows_gateway_start_diag(
     completed = subprocess.run(
         [sys.executable, "-c", script],
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         creationflags=windows_detach_flags_without_breakaway(),
         text=True,
         encoding="utf-8",
@@ -203,8 +202,7 @@ def test_gateway_run_subprocess_preserves_daemon_exit_codes(
         completed = subprocess.run(
             [sys.executable, "-c", script],
             stdin=stdin,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             env=env,
             timeout=30,
@@ -262,9 +260,10 @@ def _run_status_with_snapshot(monkeypatch, snapshot) -> str:
     monkeypatch.setattr(gateway, "_installed_service_kind_for", lambda probe: None)
     monkeypatch.setattr(gateway, "named_profile_served_by_running_multiplexer", lambda: False)
     for name in ("_print_runtime_health", "_print_multiplex_standalone_reason", "_print_served_ingress_urls",
-                 "_print_duplicate_credential_warnings", "_print_other_profiles_gateway_status",
-                 "_print_standalone_by_config"):
+                 "_print_duplicate_credential_warnings", "_print_other_profiles_gateway_status"):
         monkeypatch.setattr(gateway, name, lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.gateway_status_notes.print_standalone_by_config", lambda: None)
+    monkeypatch.setattr("hermes_cli.gateway_status_notes._incompatible_owner_verdict", lambda: None)
     buf = io.StringIO()
     with redirect_stdout(buf):
         gateway._cmd_status(SimpleNamespace(deep=False, full=False, system=False))
@@ -1136,7 +1135,7 @@ def test_install_if_missing_only_installs_when_no_service_exists(monkeypatch, in
     monkeypatch.setattr(gateway, "_guard_named_profile_under_multiplexer", lambda force: None)
     monkeypatch.setattr(gateway, "_service_mgmt_blocked", lambda: False)
     monkeypatch.setattr(gateway, "_service_backend", lambda: "launchd")
-    monkeypatch.setattr(gateway, "launchd_install", lambda force, start_now: installs.append(force))
+    monkeypatch.setattr(gateway, "launchd_install", lambda force, start_now, force_unit_path=False: installs.append(force))
 
     gateway._cmd_install(SimpleNamespace(if_missing=True, force=False, system=False, run_as_user=None))
 

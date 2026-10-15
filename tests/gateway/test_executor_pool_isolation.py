@@ -47,7 +47,7 @@ async def _abandon_housekeeping(runner, count, timeout):
                 runner._run_housekeeping_in_executor(runner._cleanup_agent_resources, object()),
                 timeout=timeout,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass  # exactly what the production callers do
 
     await asyncio.gather(*(one() for _ in range(count)))

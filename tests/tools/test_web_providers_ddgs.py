@@ -46,8 +46,7 @@ def _install_fake_ddgs(monkeypatch, *, text_results=None, text_raises=None, text
                 _time.sleep(text_sleep)
             if text_raises is not None:
                 raise text_raises
-            for hit in (text_results or []):
-                yield hit
+            yield from (text_results or [])
 
     fake.DDGS = _FakeDDGS
     monkeypatch.setitem(sys.modules, "ddgs", fake)

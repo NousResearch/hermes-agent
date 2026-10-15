@@ -33,13 +33,35 @@ def _home(tmp_path: Path, name: str = "home", *, env: str = "", config: str = ""
     return home
 
 
+# The uncommented platform_toolsets block cli-config.yaml.example carried (the homeassistant row from
+# 1aa7badb3c until fb9fc8a3dd). The installers (install.sh, install.ps1, the Docker hook) and
+# `hermes doctor` seed config.yaml from that file, so the block alone says nothing about use.
+_EXAMPLE_PLATFORM_TOOLSETS = (
+    "platform_toolsets:\n"
+    "  cli: [hermes-cli]\n"
+    "  telegram: [hermes-telegram]\n"
+    "  discord: [hermes-discord]\n"
+    "  whatsapp: [hermes-whatsapp]\n"
+    "  slack: [hermes-slack]\n"
+    "  signal: [hermes-signal]\n"
+    "  homeassistant: [hermes-homeassistant]\n"
+    "  qqbot: [hermes-qqbot]\n"
+    "  yuanbao: [hermes-yuanbao]\n"
+    "  teams: [hermes-teams]\n"
+    "  google_chat: [hermes-google_chat]\n"
+)
+
+
 @pytest.mark.parametrize(("env", "config"), [
     ("HASS_TOKEN=abc\n", ""),
     ("", "platforms:\n  homeassistant:\n    enabled: true\n"),
     ("", "gateway:\n  platforms:\n    homeassistant:\n      enabled: true\n"),
     ("", "platforms:\n  homeassistant:\n    token: inline-token\n"),
     ("", "platform_toolsets:\n  cli: [hermes-cli, homeassistant]\n"),
-    ("", "platform_toolsets:\n  homeassistant: [hermes-homeassistant]\n"),
+    ("", "toolsets: [hermes-cli, homeassistant]\n"),
+    # The Home Assistant row counts once the platform itself is on.
+    ("", "platforms:\n  homeassistant:\n    enabled: true\n"
+         "platform_toolsets:\n  homeassistant: [hermes-homeassistant]\n"),
 ])
 def test_homeassistant_in_use_matches_what_core_activated(tmp_path, env, config):
     assert lcm.homeassistant_in_use(_home(tmp_path, env=env, config=config)) is True
@@ -51,6 +73,9 @@ def test_homeassistant_in_use_matches_what_core_activated(tmp_path, env, config)
     ("", "platforms:\n  homeassistant:\n    enabled: false\n    token: t\n"),
     ("", "platform_toolsets:\n  cli: [hermes-cli]\n"),
     ("OPENAI_API_KEY=sk\n", "platforms:\n  telegram:\n    enabled: true\n"),
+    # The platform's own row only scoped Home Assistant's own sessions, which need the platform on.
+    ("", "platform_toolsets:\n  homeassistant: [hermes-homeassistant]\n"),
+    ("", _EXAMPLE_PLATFORM_TOOLSETS),
 ])
 def test_homeassistant_not_in_use(tmp_path, env, config):
     assert lcm.homeassistant_in_use(_home(tmp_path, env=env, config=config)) is False
@@ -182,7 +207,7 @@ def test_migrate_all_homes_migrates_only_the_profile_that_used_it(tmp_path, monk
     monkeypatch.setattr(ps, "dependency_homes", lambda: [a, b])
     installed_into = []
 
-    def install_into(home):
+    def install_into(home, **_kw):
         def _install(name):
             installed_into.append((home, name))
             return {"ok": True}
@@ -200,7 +225,7 @@ def test_startup_honours_lazy_install_opt_out(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     import pm.install
     monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: False)
-    monkeypatch.setattr(lcm, "_install_into", lambda h: pytest.fail("installed"))
+    monkeypatch.setattr(lcm, "_install_into", lambda h, **_kw: pytest.fail("installed"))
     said = []
     assert lcm.recover_at_startup(say=said.append) == []
     assert "allow_lazy_installs is off" in said[0] and "plugins install homeassistant" in said[0]
@@ -213,8 +238,13 @@ def test_gateway_start_outcome_waits_for_the_first_agent(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     import pm.install
     monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: True)
-    monkeypatch.setattr(lcm, "_install_into", lambda h: (lambda name: {"ok": True}))
+    consents = []
+    monkeypatch.setattr(lcm, "_install_into",
+                        lambda h, consent=None: consents.append(consent) or (lambda name: {"ok": True}))
     assert lcm.recover_at_startup() == ["homeassistant"]  # gateway start: nobody to tell yet
+    # Agent init cannot answer a dependency prompt (the chat input owns the terminal): the feature
+    # shipped in core, so its startup install carries consent.
+    assert consents == [True]
     said = []
     assert lcm.recover_at_startup(say=said.append) == []  # first agent: delivered, not re-attempted
     assert len(said) == 1 and said[0].startswith("✓ Home Assistant moved out of core")
@@ -248,7 +278,7 @@ def test_the_migration_installs_once_so_a_removal_sticks(tmp_path, monkeypatch):
     assert lcm.migrate_home(home, install=install, say=quiet) == []
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: True)
-    monkeypatch.setattr(lcm, "_install_into", lambda h: install)
+    monkeypatch.setattr(lcm, "_install_into", lambda h, **_kw: install)
     assert lcm.recover_at_startup(say=quiet) == []
     assert calls == ["homeassistant"] and not plugin.exists()
 
@@ -267,7 +297,7 @@ def test_a_failed_startup_install_backs_off_and_reports_one_line(tmp_path, monke
                  "Details: Cloning into '/h/plugins/.install-1'...\n"
                  "fatal: unable to access 'https://github.com/x/y/': Could not resolve host: github.com\n")
     failing = lambda name: {"ok": False, "error": git_error}
-    monkeypatch.setattr(lcm, "_install_into", lambda h: failing)
+    monkeypatch.setattr(lcm, "_install_into", lambda h, **_kw: failing)
     said = []
     assert lcm.recover_at_startup(say=said.append) == []
     assert len(said) == 1 and "\n" not in said[0] and "Could not resolve host: github.com" in said[0]
@@ -278,3 +308,116 @@ def test_a_failed_startup_install_backs_off_and_reports_one_line(tmp_path, monke
     assert lookups == ["homeassistant"] and len(said) == 1
     assert lcm.migrate_home(home, install=failing, say=said.append) == []
     assert lookups == ["homeassistant", "homeassistant"]
+
+
+def test_repeated_startup_failures_back_off_exponentially(tmp_path, monkeypatch):
+    """A home whose install can never succeed (version gate, root-owned plugins dir, no route to
+    GitHub) is retried after 1h, 2h, 4h ... up to a week, not every hour forever."""
+    import os
+    import time
+
+    import hermes_cli.memory_provider_migration as mpm
+    import pm.install
+    home = _home(tmp_path, env="HASS_TOKEN=abc\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: True)
+    attempts = []
+    monkeypatch.setattr(lcm, "_install_into", lambda h, **_kw: lambda n: attempts.append(n) or {"ok": False, "error": "x"})
+    stamp = mpm._failure_stamp(home, "homeassistant")
+
+    def start_after(hours: float) -> None:
+        then = time.time() - hours * 3600
+        os.utime(stamp, (then, then))
+        lcm._attempted.clear()  # a fresh agent/gateway process
+        lcm.recover_at_startup(say=lambda _m: None)
+
+    lcm.recover_at_startup(say=lambda _m: None)          # failure 1 → next try after 1h
+    start_after(1.5)                                     # failure 2 → next try after 2h
+    assert len(attempts) == 2
+    start_after(1.5)                                     # inside the 2h window: no network
+    assert len(attempts) == 2
+    start_after(2.5)                                     # failure 3 → 4h
+    start_after(3.5)
+    assert len(attempts) == 3
+    stamp.write_text("40", encoding="utf-8")             # capped at a week, never overflows
+    start_after(24 * 6.9)
+    assert len(attempts) == 3
+    start_after(24 * 7.1)
+    assert len(attempts) == 4
+    stamp.write_text("", encoding="utf-8")               # an older Hermes's empty stamp counts once
+    start_after(1.5)
+    assert len(attempts) == 5
+
+
+@pytest.mark.parametrize(("auth_json", "config", "in_use"), [
+    ('{"providers": {"spotify": {"refresh_token": "r"}}}', "", True),
+    ('{"providers": {"spotify": {"access_token": "a"}}}', "", True),
+    ("", "platform_toolsets:\n  cli: [hermes-cli, spotify]\n", True),
+    ('{"providers": {"spotify": {"client_id": "only-the-app"}}}', "", False),
+    ('{"providers": {"nous": {"access_token": "a"}}}', "platform_toolsets:\n  cli: [hermes-cli]\n", False),
+])
+def test_spotify_in_use_is_a_stored_login_or_the_toolset(tmp_path, auth_json, config, in_use):
+    """Core's Spotify tools were opt-in and login-gated: a login in auth.json or the toolset selected is
+    use; an app client id alone (or another provider's login) is not."""
+    home = _home(tmp_path, config=config)
+    if auth_json:
+        (home / "auth.json").write_text(auth_json, encoding="utf-8")
+    assert lcm.spotify_in_use(home) is in_use
+
+
+def test_old_spotify_commands_point_at_the_plugin(tmp_path, monkeypatch):
+    """`hermes auth spotify` / `hermes spotify` name the new command and how to get it for this home."""
+    home = _home(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    hint = lcm.moved_command_hint("hermes auth", "spotify", "status")
+    assert "`hermes auth status spotify` is now `hermes spotify status`" in hint
+    assert "plugins install spotify" in hint
+    assert "plugins install spotify" in lcm.moved_command_hint("hermes", "spotify")
+    (home / "plugins" / "spotify").mkdir(parents=True)  # installed but disabled
+    assert "plugins enable spotify" in lcm.moved_command_hint("hermes", "spotify")
+    assert lcm.moved_command_hint("hermes", "honcho") == ""
+
+
+_LANGFUSE_KEYS_ENV = "HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-x\nHERMES_LANGFUSE_SECRET_KEY=sk-lf-x\n"
+
+
+@pytest.mark.parametrize(("config", "managed", "in_use"), [
+    ("plugins:\n  enabled: [observability/langfuse]\n", "", True),
+    ("plugins:\n  enabled: [langfuse]\n", "", True),                   # legacy bare name the loader accepted
+    ("plugins:\n  enabled: [observability/langfuse]\n  disabled: [langfuse]\n", "", False),  # disabled wins
+    ("plugins:\n  enabled: [other]\n", "", False),
+    ("", "", False),                                                   # keys alone: it was opt-in
+    ("", "plugins:\n  enabled: [observability/langfuse]\n", True),     # an administrator's pinned list
+])
+def test_langfuse_in_use_is_the_bundled_plugin_enabled(tmp_path, monkeypatch, config, managed, in_use):
+    home = _home(tmp_path, env=_LANGFUSE_KEYS_ENV, config=config)
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+    if managed:
+        (managed_dir / "config.yaml").write_text(managed, encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+    assert lcm.langfuse_in_use(home) is in_use
+
+
+def test_old_langfuse_plugin_key_keeps_naming_the_catalog_plugin(tmp_path, monkeypatch):
+    """`observability/langfuse` (every pre-move doc, an administrator's pinned list) names the install
+    while the plugin is absent, and selects/resolves the installed plugin once it is there."""
+    from hermes_cli.plugins_cmd import _find_plugin_entry, _unknown_plugin_message
+    from hermes_cli.plugins_discovery import gate_manifest
+    from hermes_cli.plugins_manifest import PluginManifest
+    home = _home(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    for name in ("observability/langfuse", "langfuse"):
+        message = _unknown_plugin_message(name)
+        assert "moved out of core into the 'langfuse' plugin" in message
+        assert "hermes plugins install langfuse" in message
+    assert "moved out of core" not in _unknown_plugin_message("nonexistent")
+
+    plugin_dir = home / "plugins" / "langfuse"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text("name: langfuse\nversion: 2.0.0\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text("def register(ctx):\n    pass\n", encoding="utf-8")
+    assert _find_plugin_entry("observability/langfuse")[5] == "langfuse"
+    manifest = PluginManifest(name="langfuse", source="user", path=str(plugin_dir), key="langfuse")
+    assert gate_manifest(manifest, set(), {"observability/langfuse"}).action == "load"
+    assert gate_manifest(manifest, {"observability/langfuse"}, {"langfuse"}).error == "disabled via config"

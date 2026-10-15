@@ -18,7 +18,7 @@ from gateway.platforms.event import MessageEvent
 def mock_runner():
     """Create a minimal mock GatewayRunner with the methods we need."""
     runner = MagicMock(spec=GatewayRunner)
-    runner.config = MagicMock(profile_routes=[])
+    runner.config = MagicMock(profile_routes=[], _runtime_profile_homes=None)
     # Bind the actual methods to the mock
     runner._profile_name_for_source = GatewayRunner._profile_name_for_source.__get__(runner)
     runner._resolve_profile_home_for_source = GatewayRunner._resolve_profile_home_for_source.__get__(runner)
@@ -301,7 +301,7 @@ class _StubAdapter(BasePlatformAdapter):
 _StubAdapter.__abstractmethods__ = frozenset()  # type: ignore[attr-defined]
 
 
-def _stub_adapter(platform: Platform, runner) -> "_StubAdapter":
+def _stub_adapter(platform: Platform, runner) -> _StubAdapter:
     a = _StubAdapter.__new__(_StubAdapter)
     a.platform = platform
     a.gateway_runner = runner

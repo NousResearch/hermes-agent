@@ -3,12 +3,17 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
+import { zhClarify } from './zh_clarify'
+import { zhConnectorCard } from './zh_connector_card'
+import { zhFirstRun } from './zh_first_run'
 import { zhLocalModels } from './zh_local_models'
 import { zhModelMenu } from './zh_model_menu'
 import { zhNotices } from './zh_notices'
 import { zhOnboarding } from './zh_onboarding'
 import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
+import { zhThemePicker } from './zh_theme_picker'
+import { zhUpdateChannel } from './zh_update_channel'
 
 export const zhOverrides = {
   externalOpenFailed: {
@@ -18,38 +23,9 @@ export const zhOverrides = {
     close: '关闭'
   },
   sharedMetrics: zhSharedMetrics,
+  firstRun: zhFirstRun,
   intro: introZh,
-  connectors: {
-    title: '连接你的应用',
-    connect: '连接',
-    skip: '暂不连接',
-    cancel: '停止等待',
-    retry: '重试',
-    grant: '重新连接',
-    connected: '已连接',
-    skipped: '已跳过',
-    disabled: '不可用',
-    failed: '连接失败',
-    needsAuth: '授权已过期',
-    opening: '正在打开登录…',
-    waiting: '正在等待浏览器…',
-    notConnected: '未连接',
-    timeout: '仍在等待授权。',
-    refresh: '刷新状态',
-    connectError: '无法开始授权，请重试。',
-    connectErrorFor: app => `无法为 ${app} 开始授权。`,
-    unavailable: '此会话暂时无法使用连接器。',
-    ownerMissing: '请重新打开此对话以管理连接。',
-    search: '查找应用',
-    empty: '没有匹配的应用',
-    disclaimer: '连接为可选操作。请仅授权你希望 Hermes 使用的应用。',
-    execution: '连接器工具',
-    setup: server => `设置 ${server}`,
-    openInBrowser: '在浏览器中打开',
-    setupCancel: '取消',
-    authorizedToolsUnavailable: '已授权。工具不可用。',
-    required: '必填'
-  },
+  connectors: zhConnectorCard,
   sessionImport: {
     title: '从其他应用继续',
     subtitle: '将对话导入 Hermes，接着上次的进度继续。',
@@ -653,10 +629,6 @@ export const zhOverrides = {
         profileLabel: '安装到配置文件',
         agentTargetLocal: (profile, dir) => `安装到 ${profile} 后端（${dir}）`,
         agentTargetRemote: profile => `安装到已连接的 ${profile} 后端`,
-        catalogPinned: (name, sha) =>
-          `Hermes 目录条目「${name}」— agent 部分将安装在经过审核的固定提交${sha ? ` ${sha}` : ''}，而不是分支最新代码。`,
-        reviewedHeading: '经过审核的目录条目',
-        reviewedIntro: '此条目已在其固定提交处经过人工审核。你仍可在下方检查确切代码。',
         toolsConnected: n => `已连接 ${n} 个工具`,
         skillsReady: names => (names.length === 1 ? `技能 ${names[0]} 已就绪` : `${names.length} 个技能已就绪`),
         nextChat: '更多工具将在下一次聊天中可用',
@@ -667,12 +639,10 @@ export const zhOverrides = {
         desktopTargetFromPackage: '从上方的包加载到本应用 — 所有配置相同',
         desktopOnlyNote: '仅桌面包不会安装后端智能体插件。',
         insecureWarning: '此 URL 使用了不安全的本地 scheme。生产环境请优先使用 https:// 或 git@。',
-        securityHeading: '安装前须知',
         securityIntro: '请仅安装你信任的来源 — 如需了解将添加的内容，可先查看下方仓库。',
         sourceHeading: '源代码',
         viewRepository: '查看仓库',
         viewPluginFiles: '查看插件文件',
-        gitCloneLabel: 'Git 克隆地址',
         enableAgent: '安装后启用智能体插件',
         forceReinstall: '强制重装（替换已存在的安装）',
         pinToCommit: '固定到提交（可选）',
@@ -691,7 +661,17 @@ export const zhOverrides = {
         agentFailed: '智能体插件安装失败',
         installUncertain: 'Hermes 已停止等待安装结果，但插件可能仍在安装。关闭此窗口并刷新插件列表，然后再尝试安装。',
         desktopFailed: '桌面插件安装失败',
-        missingEnv: (_name, vars) => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`
+        missingEnv: (_name, vars) => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`,
+        verified: '已验证',
+        unverified: '未验证',
+        reviewedByNous: '已由 Nous 审核。',
+        installsAndEnables: profile => `安装到 ${profile}，并立即启用。`,
+        installsOnly: profile => `安装到 ${profile}。`,
+        advanced: '高级',
+        versionLabel: '版本',
+        reviewedPin: sha => (sha ? `已审核的固定提交 ${sha}` : '已审核的固定提交'),
+        latestCommit: '最新提交',
+        nothingToInstall: '此包在这里没有可安装的内容。'
       }
     },
     notifications: {
@@ -1217,12 +1197,6 @@ export const zhOverrides = {
         }
       }
     },
-    poolLimits: {
-      warmBotBackendsAria: '预热机器人后端',
-      warmBotBackendsTitle: '预热机器人后端',
-      backendIdleTimeoutAria: '后端空闲超时（毫秒）',
-      backendIdleTimeoutTitle: '后端空闲超时（毫秒）'
-    },
     customEndpoints: {
       active: '已启用',
       apiKeySet: '已设置 API 密钥',
@@ -1269,9 +1243,7 @@ export const zhOverrides = {
       screenRecording: '屏幕录制',
       driverHealth: '驱动健康状态'
     },
-    about: {
-      updates: '更新'
-    },
+    about: { updates: '更新', channel: zhUpdateChannel },
     config: {
       minimizeToTrayTitle: '最小化到托盘',
       minimizeToTrayDesc:
@@ -1305,11 +1277,6 @@ export const zhOverrides = {
       alwaysExternalLinksTitle: '始终在外部浏览器中打开链接',
       alwaysExternalLinksDesc:
         '点击的每个链接都在系统浏览器中打开，而不是应用内浏览器。右键菜单中的“在应用内浏览器中打开”仍然可用。',
-      developerTitle: '开发者',
-      resetOnboardingTitle: '重置新手引导',
-      resetOnboardingDesc: '删除设置对话，重建设置配置文件，并重新运行首次设置。你自己的配置文件、对话和插件会保留。',
-      resetOnboardingAction: '重置',
-      resetOnboardingFailed: '无法重置新手引导',
       attachmentSizeTitle: '预览 / 图片加载大小上限',
       attachmentSizeDesc:
         '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',
@@ -3290,25 +3257,6 @@ export const zhOverrides = {
     markAllRead: '全部标记为已读'
   },
 
-  handoffTour: {
-    profileTitle: '你的第一个任务在默认配置文件中运行',
-
-    profileText:
-      '这条栏用于切换配置文件。现在亮着的是 default，任务会话就在这里。另一个是设置配置文件，欢迎聊天在那里。',
-
-    sessionsTitle: '每个配置文件都有自己的会话',
-
-    sessionsText:
-      '这个列表属于 default 配置文件。“新会话”会在当前选中的配置文件中开始。在栏上切换配置文件，列表也会随之变化。',
-
-    stayTitle: 'Hermes 一键可达',
-
-    stayText: '需要帮忙时，切换到设置配置文件并打开“欢迎使用 Hermes”。它会一直在那里。',
-    localTitle: '这台电脑可以在本地运行模型',
-    localText: (model: string) =>
-      `${model} 适合你的硬件。免费运行，对话不会离开你的电脑。随时在这里的模型菜单中选择它。`
-  },
-
   composer: {
     message: '消息',
     wakingProfile: profile => `正在唤醒 ${profile}…`,
@@ -3337,6 +3285,7 @@ export const zhOverrides = {
     openDirective: '打开',
     queueMessage: '排队消息',
     steer: '引导当前运行',
+    redirect: '重新定向当前运行',
     stop: '停止',
     send: '发送',
     speaking: '讲话中',
@@ -3471,11 +3420,6 @@ export const zhOverrides = {
     editingQueuedInComposer: '正在输入框中编辑排队回合',
     restoredDraftNotice: '已恢复你未发送的消息',
     restoredDraftUndo: '撤销',
-    localSetup: {
-      title: '这可以在你的电脑上运行',
-      text: (model: string) => `${model} 适合这台电脑。免费，对话留在你的电脑上。`,
-      action: '带我看看'
-    },
     queueEdit: '编辑',
     queueExpand: '展开',
     queueCollapse: '收起',
@@ -3483,6 +3427,11 @@ export const zhOverrides = {
     queueSteer: '引导 — 立即修正当前回合',
     queueSend: '发送',
     queueDelete: '删除',
+    queueLostNote: '重启期间该轮次已丢失',
+    restoreImageDraft: '恢复图片草稿',
+    queueCancelFailed: '无法移除排队的轮次',
+    queueLostDiscard: '丢弃',
+    queueLostDiscardTip: '网关在该轮次进行中重启，无法完成。丢弃后其后的排队轮次将继续执行。',
     queueResume: '继续',
     queueResumeTip: '已被停止操作暂停 — 继续发送排队的回合',
     queueStuckTitle: '排队消息未发送',
@@ -4580,48 +4529,8 @@ export const zhOverrides = {
         `这会将“${pattern}”模式加入永久允许列表 (~/.hermes/config.yaml)。Hermes 对类似命令将不再询问，包括当前会话和未来会话。`,
       alwaysAllow: '始终允许'
     },
-    clarify: {
-      notReady: '澄清请求尚未就绪',
-      gatewayDisconnected: 'Hermes 网关未连接',
-      sendFailed: '无法发送澄清响应',
-      loadingQuestion: '正在加载问题…',
-      other: '其他 (输入你的答案)',
-      placeholder: '输入你的答案…',
-      skip: '跳过',
-      skipped: '已跳过',
-      noAnswer: '未回答',
-      confirmAndContinueLabel: '确认并继续',
-      singleSelectHint: '选一个',
-      multiSelectHint: '可多选',
-      oneQuestion: '1 个问题',
-      questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
-      notDelivered: '此问题未送达应用，无法在此回答。请按停止结束本轮，然后在聊天中回复。'
-    },
-    setupChoose: {
-      kinds: {
-        accent: '强调色',
-        connectors: '应用',
-        layout: '布局',
-        plugins: '插件',
-        theme: '外观'
-      },
-      loading: '正在加载选项…',
-      unavailable: '此列表暂不可用，请直接在对话中回复。',
-      findApp: '查找应用',
-      customColor: '自定义颜色',
-      plugin: '插件',
-      startsLater: '开始时我们会帮你设置好这些。'
-    },
-    startChat: {
-      starting: title => `正在启动“${title}”…`,
-      startingUntitled: '正在启动对话…',
-      untitled: '新对话',
-      notStarted: '对话未能启动',
-      retry: '重试',
-      inProfile: profile => `位于 ${profile}`,
-      open: '打开',
-      openFailed: '无法打开对话'
-    },
+    clarify: zhClarify,
+    themePicker: zhThemePicker,
     catalogInstall: {
       preparing: '正在准备安装…',
       install: '安装',
@@ -4743,8 +4652,6 @@ export const zhOverrides = {
         read_file: { done: '已读取文件', pending: '正在读取文件', pendingAction: '正在读取' },
         search_files: { done: '已搜索文件', pending: '正在搜索文件', pendingAction: '正在搜索' },
         session_search_recall: { done: '已搜索会话历史', pending: '正在搜索会话历史', pendingAction: '正在搜索' },
-        setup_choose: { done: '已提出设置问题', pending: '正在提出设置问题', pendingAction: '正在提问' },
-        start_chat: { done: '已启动对话', pending: '正在启动对话', pendingAction: '正在启动' },
         terminal: { done: '已运行命令', pending: '正在运行命令', pendingAction: '正在运行' },
         todo: { done: '已更新待办', pending: '正在更新待办', pendingAction: '正在更新' },
         vision_analyze: { done: '已分析图片', pending: '正在分析图片', pendingAction: '正在分析' },

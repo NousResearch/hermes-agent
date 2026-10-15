@@ -295,7 +295,7 @@ async def _await_bounded(aw: Awaitable[Any]) -> None:
     """Best-effort teardown await: bounded, swallows timeout/cancel/errors."""
     try:
         await asyncio.wait_for(aw, timeout=_TEARDOWN_AWAIT_TIMEOUT_S)
-    except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+    except (TimeoutError, asyncio.CancelledError, Exception):
         pass
 
 
@@ -664,7 +664,7 @@ class WebSocketRelayTransport:
             await self._send(frame)
             frame_sent = True
             return await asyncio.wait_for(fut, timeout=self._outbound_timeout_s)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # AMBIGUOUS by contract: the frame reached the wire and only the ack is
             # missing — the connector may have applied it. The fail-fast paths
             # above never sent anything (definite non-delivery) and stay unmarked.
@@ -900,7 +900,7 @@ class WebSocketRelayTransport:
             await asyncio.wait_for(
                 self._redial_release.wait(), timeout=self._redial_hold_max_s
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.info("relay: brokered suspend did not land, reconnecting")
         finally:
             self._redial_held = False
@@ -935,7 +935,16 @@ class WebSocketRelayTransport:
     async def _on_inbound(self, frame: dict[str, Any]) -> None:
         if self._inbound is None:
             return
-        await self._inbound(_event_from_wire(frame.get("event", {})))
+        from gateway.session_ingress_context import relay_callback
+        event = _event_from_wire(frame.get("event", {}))
+        try:
+            with relay_callback(self, event):
+                await self._inbound(event)
+        except Exception:
+            # A handler failure is not a socket failure: keep this reader, withhold the
+            # ACK so the connector redelivers the buffered frame later.
+            logger.exception("relay: inbound handler failed; frame left unacknowledged")
+            return
         # A replayed buffered delivery carries a bufferId; ack AFTER the handler
         # has taken it so the connector advances its cursor (no dup).
         buffer_id = frame.get("bufferId")

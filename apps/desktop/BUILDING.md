@@ -203,7 +203,7 @@ defaults into the desktop app, for example:
 
 ```sh
 python scripts/release.py --build-commit REV --remote fork --publish \
-  --bundle-env HERMES_GUEST_ONBOARDING=1 \
+  --bundle-env HERMES_PREVIEW_FULL_CONNECTORS=1 \
   --bundle-env HERMES_DATA_DIR_SUFFIX=magic-test \
   --bundle-unset HERMES_HOME
 ```
@@ -226,8 +226,7 @@ For local commit builds, `HERMES_BUNDLE_ENV_JSON` accepts a JSON object whose
 string values are defaults and whose `null` values are explicit clears. For example,
 `{"HERMES_HOME":null,"HERMES_DATA_DIR_SUFFIX":"magic-test"}`. Only
 `HERMES_HOME`, `HERMES_DATA_DIR_SUFFIX`, `HERMES_DESKTOP_USER_DATA_DIR`,
-`HERMES_SHARED_AUTH_DIR`, `HERMES_GUEST_ONBOARDING`, and
-`HERMES_PREVIEW_FULL_CONNECTORS` are accepted. Process-control variables such as `NODE_OPTIONS` and `PATH`
+`HERMES_SHARED_AUTH_DIR`, and `HERMES_PREVIEW_FULL_CONNECTORS` are accepted. Process-control variables such as `NODE_OPTIONS` and `PATH`
 are rejected. These settings are not applied to the build runner itself.
 Commit archive keys still use the SHA, so use a fresh commit for different
 defaults: an existing artifact is never overwritten with different bytes.
@@ -319,15 +318,17 @@ relaunch waiter is registered before the install request. Unknown checks,
 cancellation and request failures do not count as successful updates. Native
 acceptance requires a Store-acquired package or flight, not a sideloaded MSIX.
 
-On Windows bundles, every dependency generation is built on the bundled Python
-and nothing runs a venv's own executables. A venv's `Scripts\python.exe` is a
-redirector outside the package that starts the packaged interpreter, which
-Windows refuses (WinError 5) to a process without package identity. The app and
-execution aliases keep their signed bundled launchers, and children that need a
+On Windows bundles, PM builds dependency generations on a verified writable
+copy of the bundled Python in its user store. A venv's `Scripts\python.exe` is a
+redirector outside the package. Windows refuses it (WinError 5) when it starts the
+packaged interpreter, and uv runs that redirector during every lock, sync and
+`pip check`. Hermes never runs a venv's own executables. The app and execution
+aliases keep their signed bundled launchers, and children that need a
 generation's packages start through `pm.environments.venv_command`: the bundled
 Python with `-S` plus `pm/_venv_entry.py`, which attaches the generation's
-site-packages. The new venv's generated console scripts must not replace the
-launchers, and are kept off `PATH`.
+site-packages. Processes started from the bundled Python keep package access to
+the bundled git, rg and the PM worker. The new venv's generated console scripts
+must not replace the launchers, and are kept off `PATH`.
 
 Sideload stable versions are `X.Y.Z.0`. Canary revisions derive from elapsed
 minutes after the stable baseline. The release script rejects ambiguous or
@@ -396,11 +397,3 @@ live in the [existing install/update family](../../tests/install/BUNDLED_UPDATES
 A helper test or unpacked-app smoke is not proof of native install, update,
 or automatic relaunch. Historical receipts and current unresolved gates are
 separate in [PM audit status](../../docs/pm-audit-status.md).
-
-## Rehearsing the guided onboarding
-
-From `apps/desktop`, use a fresh temporary directory for each rehearsal and run
-`env -u NODE_ENV HERMES_GUEST_ONBOARDING=1 HERMES_HOME=<tmp>/.hermes HERMES_DESKTOP_USER_DATA_DIR=<tmp>/electron-user-data npm run dev`
-(replace `<tmp>` with that directory). To use the portal stand-in, add
-`HERMES_PORTAL_BASE_URL=http://127.0.0.1:8765 HERMES_ANON_API_SECRET=test-secret HERMES_SHARED_AUTH_DIR=<tmp>/.hermes/shared`
-before `npm run dev`. Stop Electron and its dev server after the run.

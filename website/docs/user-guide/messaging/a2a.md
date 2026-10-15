@@ -127,7 +127,7 @@ Secure by default; every widening step is explicit:
 | `A2A_PORT` | `9900` | Inbound port |
 | `A2A_AGENT_NAME` | hostname-derived | Name on the Agent Card |
 | `A2A_PUBLIC_URL` | _(unset)_ | Routable URL advertised on the card (reverse proxies / k8s) |
-| `A2A_TRUSTED_PEERS` | _(unset)_ | Allow-list of authenticated identities |
+| `A2A_TRUSTED_PEERS` | _(unset)_ | Allow-list of authenticated identities: peer names (`A2A_PEER_TOKENS`) or `ip:<addr>` with a shared bearer token (e.g. `ip:127.0.0.1,ip:10.0.0.5`). Required for a non-loopback bind with a token set — otherwise every dispatch is refused with 403 — unless `A2A_ALLOW_ALL_USERS=true` |
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authenticated peer (dev only) |
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20) |

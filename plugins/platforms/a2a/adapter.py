@@ -219,7 +219,8 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             (lambda: version and version not in {"1.0", "1.0.0"}, 200, protocol.ERR_INVALID_PARAMS, f"unsupported A2A-Version: {version}"),
             (lambda: route.get("error"), 400, protocol.ERR_INVALID_PARAMS, route.get("error")),
             (lambda: not adapter._rate_limiter.allow(identity), 429, protocol.ERR_RATE_LIMITED, "rate limit exceeded"),
-            (lambda: not adapter._security_context.is_trusted_peer(identity), 403, protocol.ERR_UNTRUSTED_PEER, f"peer '{identity}' not trusted"),
+            (lambda: not adapter._security_context.is_trusted_peer(identity), 403, protocol.ERR_UNTRUSTED_PEER,
+             f"peer '{identity}' not trusted — add it to A2A_TRUSTED_PEERS to allow it"),
             (lambda: not handler_name, 200, protocol.ERR_METHOD_NOT_FOUND, f"method not found: {method}"),
         )
         for failed, http, code, msg in checks:
@@ -312,7 +313,9 @@ class A2AAdapter(BasePlatformAdapter):
         sec = self._security_context
         if sec.dispatch_fails_closed():
             logger.error("A2A: exposed on non-loopback bind %s with no A2A_TRUSTED_PEERS; every dispatch will be refused (403). "
-                         "Set A2A_TRUSTED_PEERS, or A2A_ALLOW_ALL_USERS=true for a trusted network.", self.host)
+                         "Set A2A_TRUSTED_PEERS (entries are peer names from A2A_PEER_TOKENS or 'ip:<addr>' with a shared "
+                         "A2A_BEARER_TOKEN, e.g. A2A_TRUSTED_PEERS=ip:127.0.0.1,ip:<peer-ip>), or A2A_ALLOW_ALL_USERS=true "
+                         "for a trusted network.", self.host)
         self._wire_plugin_handlers(None)  # plugin-registered native handlers
         return True
 

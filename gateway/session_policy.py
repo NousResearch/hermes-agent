@@ -129,7 +129,11 @@ class LocalSessionPolicy:
         if (not self.follows_profile or self.source not in SURFACES or self.editor_mcp_json is not None
                 or 'toolsets' in json.loads(self.request_json)):
             return self.toolsets
-        return tuple(sorted(_resolve_toolsets({}, config, self.source, self.safe_mode, self.cwd)))
+        # The workspace decision is the creation-time one (the frozen set carries it): a project file the
+        # agent writes mid-session must not switch this conversation's toolsets (prompt cache).
+        from agent.coding_context import CODING_TOOLSET
+        return tuple(sorted(_resolve_toolsets({}, config, self.source, self.safe_mode, self.cwd,
+                                              coding_workspace=CODING_TOOLSET in self.toolsets)))
 
     def current_reasoning_config(self, runner, session_key=None):
         """The next turn's reasoning: a typed session /reasoning (the messaging handler's override), else
@@ -379,7 +383,7 @@ def _apply_launch_overrides(params, config):
         config['agent'].pop('reasoning_overrides', None)
 
 
-def _resolve_toolsets(params, config, source, safe_mode, cwd=None):
+def _resolve_toolsets(params, config, source, safe_mode, cwd=None, coding_workspace=None):
     """Validate explicit toolsets and return the session's enabled toolset set. Without a pick, the
     coding posture for *cwd* (``agent.coding_context: focus`` in a code workspace) replaces the
     profile default on every interactive surface; the gateway decides it, never the client."""
@@ -399,14 +403,9 @@ def _resolve_toolsets(params, config, source, safe_mode, cwd=None):
         if not requested <= effective:
             raise RuntimeStoreError('invalid_params')
     else:
-        selection = None
-        if cwd is not None:
-            # A detection failure keeps the profile default rather than refusing the session.
-            with suppress(Exception):
-                from agent.coding_context import coding_selection
-                selection = coding_selection(platform=SURFACES[source], cwd=cwd, config=config)
+        selection = _coding_posture(config, source, cwd, coding_workspace) if cwd is not None else None
         if selection is not None:
-            enabled = set(selection)
+            enabled = selection
     if explicit is None and source in {'tui', 'gui'}:
         # Same surface toolsets as the native TUI factory, without its env inference.
         # The fold-in lands after _get_platform_tools subtracted agent.disabled_toolsets, so
@@ -422,6 +421,20 @@ def _resolve_toolsets(params, config, source, safe_mode, cwd=None):
         from hermes_cli.tools_config import _get_plugin_toolset_keys
         enabled -= _get_plugin_toolset_keys()
     return enabled
+
+
+def _coding_posture(config, source, cwd, coding_workspace=None):
+    """The coding posture's toolsets (``agent.coding_context: focus`` in a code workspace), else None.
+    *coding_workspace* replays a decision already made for this session instead of probing *cwd*. MCP
+    servers come from the same resolver as the profile default, so plugin-provided servers stay."""
+    # A detection failure keeps the profile default rather than refusing the session.
+    with suppress(Exception):
+        from agent.coding_context import CODING_TOOLSET, resolve_runtime_mode
+        from hermes_cli.tools_config import enabled_mcp_server_names
+        mode = resolve_runtime_mode(platform=SURFACES[source], cwd=cwd, config=config)
+        if mode.config_mode == 'focus' and (mode.is_coding if coding_workspace is None else coding_workspace):
+            return {CODING_TOOLSET, *enabled_mcp_server_names(config)}
+    return None
 
 
 def _extract_config_secrets(value, private, path=()):

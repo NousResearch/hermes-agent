@@ -3,8 +3,9 @@
 A config file may name other YAML files (paths relative to the declaring file) whose values sit
 under its own: the declaring file wins, nested includes recurse, cycles are skipped. Loaders cache
 on the root file's signature, so each include's stat signature is recorded and re-checked without
-reparsing YAML. A missing include is skipped with a warning; one that cannot be resolved, stat'ed or
-read raises ``ConfigIncludeError``: a partial policy is not a safe fallback.
+reparsing YAML. A missing include is skipped with a warning and an empty one declares nothing; one
+that cannot be resolved, stat'ed, read or parsed into a mapping raises ``ConfigIncludeError``: a
+partial policy is not a safe fallback.
 """
 
 from __future__ import annotations
@@ -52,9 +53,17 @@ def resolve_include_path(config_path: Path, raw: Any) -> Optional[Path]:
 
 
 def read_config_yaml(path: Path) -> dict[str, Any]:
+    """An include's mapping; an empty file (or a bare ``null``) declares nothing.
+
+    Any other non-mapping root (a list, ``7``, ``false``) is an error, not an empty policy.
+    """
     with open(path, encoding="utf-8-sig") as f:
-        data = fast_safe_load(f) or {}
-    return data if isinstance(data, dict) else {}
+        data = fast_safe_load(f)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(f"config include root is a {type(data).__name__}, not a mapping")
+    return data
 
 
 def merge_config_includes(

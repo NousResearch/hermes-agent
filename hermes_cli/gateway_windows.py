@@ -98,7 +98,10 @@ def _decode_schtasks_output(data: bytes) -> str:
     UTF-8 output pass; legacy multi-byte text fails loudly), then the native code pages, then a lossy
     fallback so a reader thread never raises."""
     if data[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
-        return data.decode("utf-16")  # a genuine UTF-16 write (BOM) decodes as such, never as a code page
+        try:
+            return data.decode("utf-16")  # a genuine UTF-16 write (BOM) decodes as such, never as a code page
+        except UnicodeDecodeError:
+            pass  # malformed UTF-16 falls through to the same fallbacks as any other bytes
     for encoding in ("utf-8", *_windows_console_encodings()):
         try:
             return data.decode(encoding)

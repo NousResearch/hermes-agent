@@ -32,7 +32,7 @@ class TurnFacadeMixin:
         prelude: Optional[Generator]=None,
     ) -> dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
-        from agent import relay_runtime, review_admission
+        from agent import relay_runtime
         from agent.aux_accounting import reset_accounting_context, set_accounting_context
         from agent.auxiliary_client import scoped_runtime_main
         from agent.conversation_loop import run_conversation
@@ -42,10 +42,10 @@ class TurnFacadeMixin:
         )
         from agent.prompt_cache_scope import declared_conversation_scope_safe
         from agent.relay_cwd import resolve_relay_scope_cwds
-        from agent.review_idle_queue import QUEUE as _review_queue
         from agent.subagent_lifecycle import bind_subagent_parent
         from agent.interrupt_scope import track_in_interrupt_scope
         from agent.turn_facade_lease import admit_durable_turn_lease, carry_unadmitted_user_message
+        from agent.turn_facade_review import ForegroundReviewOwnership
         from hermes_cli.observability.relay_shared_metrics import finish_task_run, start_task_run
 
         effective_task_id = task_id or str(uuid.uuid4())
@@ -68,49 +68,13 @@ class TurnFacadeMixin:
         token = affinity_token = acct_token = None
         task_started = task_finished = False
         relay_outcome = "failed"
-
-        # A review shares this session_id for cache parity. Publish THIS turn on the session
-        # BEFORE cancelling: a review that has not issued its first request yet refuses admission
-        # (agent/review_admission.py) instead of racing the cancel with a full-transcript request
-        # already on the wire. Then fence review startup / interrupt an admitted request and await
-        # its exit before opening live-turn instrumentation. That wait has no deadline: an admitted
-        # request must acknowledge, and a run that never admitted a fork is revoked atomically by
-        # the canceller, so no turn waits on a worker that may never start (#84423).
-        from agent.background_review import (
-            cancel_background_review_for_live_turn,
-            wait_for_background_review_cancellation,
-        )
-
-        review_queue_started = False
-        review_profile_key = review_admission.current_profile_key()
-        turn_token = review_run = None
-        # A cache-parity fork (the review, a /btw side question; ``build_cache_parity_fork``
-        # stamps it) replays through this same facade on the session it was forked from. It is
-        # not a foreground turn: registering it would label the owner ``live_turn_active`` for
-        # every other spawn attempt and mask the truthful slot state, and a /btw would fence,
-        # then wait on, the review it answers beside — an explicit /refine included.
-        exempt_fork = getattr(self, "_foreground_exempt_fork", False)
+        # A review shares this session_id for cache parity: the turn registers with review
+        # admission and cancels the review before taking the durable lease (turn_facade_review).
+        review_ownership = ForegroundReviewOwnership(self, session_id)
 
         try:
-            # Linearize registration with review request admission. If the review owns this lock
-            # first it publishes its fork under the run lock, so cancellation finds it; if this
-            # turn owns it first the review's foreground sample observes the live token.
-            if not exempt_fork:
-                with review_admission.admission_lock():
-                    turn_token = review_admission.note_turn_started(
-                        session_id, review_profile_key
-                    )
-                    review_run = cancel_background_review_for_live_turn(
-                        self,
-                        wait=False,
-                        session_id=session_id,
-                        profile_key=review_profile_key,
-                    )
-            self._active_turn_token = turn_token
-            self._active_turn_profile_key = review_profile_key
-            _review_queue.note_turn_started()
-            review_queue_started = True
-            wait_for_background_review_cancellation(review_run)
+            # First statement of the try so the finally's release_admission balances every exit.
+            review_ownership.open()
             admission = admit_durable_turn_lease(
                 self, session_id=session_id, relay_turn_id=relay_turn_id, task_context=task_context,
                 conversation_history=conversation_history,
@@ -221,15 +185,7 @@ class TurnFacadeMixin:
         finally:
             # Release admission before any fallible cleanup. A leaked token would block every
             # later review on this session, including when attribute assignment itself raised.
-            if turn_token is not None:
-                review_admission.note_turn_finished(
-                    session_id, turn_token, review_profile_key
-                )
-            with suppress(Exception):
-                if getattr(self, "_active_turn_token", None) == turn_token:
-                    self._active_turn_token = None
-                if getattr(self, "_active_turn_profile_key", None) == review_profile_key:
-                    self._active_turn_profile_key = None
+            review_ownership.release_admission()
             try:
                 if relay_turn is not None:
                     relay_runtime.SESSION_COORDINATOR.end_turn(relay_turn, outcome=relay_outcome)
@@ -255,20 +211,9 @@ class TurnFacadeMixin:
                         reset_conversation_context(token)
                     if affinity_token is not None:
                         reset_affinity_scope(affinity_token)
-                    if review_queue_started:
-                        # Balance note_turn_started so the idle queue's live-turn count cannot leak.
-                        with suppress(Exception):
-                            _review_queue.note_turn_finished()
-                    post_turn_review = getattr(
-                        self, "_post_turn_background_review_candidate", None
-                    )
-                    if isinstance(post_turn_review, dict):
-                        with suppress(AttributeError):
-                            del self._post_turn_background_review_candidate
-                        # The finalizer staged this while the foreground still owned the durable
-                        # session row. Start it only after every foreground owner above is released.
-                        with suppress(Exception):
-                            self._spawn_background_review(**post_turn_review)
+                    # Every foreground owner above is released: balance the idle queue and start
+                    # the review candidate the finalizer staged.
+                    review_ownership.finish()
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """Final response string of one turn; ``stream_callback`` receives each text delta."""

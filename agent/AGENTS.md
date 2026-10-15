@@ -8,7 +8,8 @@ Applies on top of the root `AGENTS.md` (prompt-caching invariant, facade + sibli
 `client_lifecycle.py`, `stream_delivery.py`, `session_persistence.py`, `compression_facade.py`, ...).
 Construction runs `agent/agent_init.py::init_agent`; a turn is
 `agent/conversation_loop.py::run_conversation`, which `AIAgent.run_conversation` forwards to after
-taking the session turn lease (`turn_facade_lease.py`). `AIAgent.__init__` takes ~60 parameters
+registering the foreground turn with review admission (`turn_facade_review.py`) and taking the
+session turn lease (`turn_facade_lease.py`). `AIAgent.__init__` takes ~60 parameters
 (credentials, routing, callbacks, session context, budget, credential pool, ...) — read
 `run_agent.py` for the list; the subset you usually touch: `base_url`, `api_key`, `provider`,
 `api_mode` (`"chat_completions" | "codex_responses" | ...`), `model` (empty → resolved from
@@ -79,6 +80,9 @@ Adding one: register in that table (no `if name == ...` chain); `tools/todo_tool
 Manual `/compress` on every surface (CLI, gateway, TUI, ACP) runs through
 `agent/conversation_compression_manual.py::compress_now` (one parser for `here [N]` / focus /
 `--preview` / `--aggressive`; surfaces only parse their own argv, install `after_messages` and render).
+A rotation (continuation child, adopted live child) moves the agent to the new session through
+`conversation_compression_rotation.py::adopt_rotated_session` (session_id, the thread's session
+context and the active turn's review ownership move together).
 
 Two layers: gateway session hygiene (85% threshold) and the agent `ContextCompressor` (50%,
 configurable; per-model overrides; failure cooldown after provider-proven overflow). The algorithm

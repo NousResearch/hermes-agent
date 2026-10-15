@@ -1763,8 +1763,6 @@ def _run_conversation_turn(
         early_result = _run_api_retry_loop(agent, s)
         if early_result is not None:
             return early_result
-        if s._turn_exit_reason == "review_input_budget_exhausted":
-            break
 
         _rs = _run_phase(apply_retry_restarts, agent, s)
         if _rs.action == "break":

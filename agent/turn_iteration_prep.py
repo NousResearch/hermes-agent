@@ -464,6 +464,11 @@ def apply_retry_restarts(
             _turn_exit_reason=_turn_exit_reason,
         )
 
+    # The retry loop refused this request against a detached review's aggregate input budget
+    # (``_run_api_retry_loop`` sets the reason): no response was produced and nothing restarts.
+    if _turn_exit_reason == "review_input_budget_exhausted":
+        return _verdict("break")
+
     if _retry.restart_with_redirected_messages:
         restart_count += 1
         if restart_count > max_retries:

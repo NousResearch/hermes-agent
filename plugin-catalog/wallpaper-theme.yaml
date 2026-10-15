@@ -1,0 +1,28 @@
+name: wallpaper-theme
+repo: https://github.com/strnadchristopher/hermes-wallpaper-theme
+sha: 6d6d852ba6d4b8cabda111b15d64cc2aa72d2705
+description: >-
+  A Hermes Desktop theme that follows your wallpaper. Reads Pywal's ~/.cache/wal/colors.json by
+  default, or any palette JSON you point it at (settings page or ~/.config/hermes-wallpaper-theme/config.json),
+  derives a palette with checked contrast floors and repaints live when the file changes. Optional
+  glass mode paints a translucent background for native window materials or compositor blur.
+  Disclosure — reads the chosen palette file (and its own config file) on the machine running Desktop
+  every 2 seconds through the Desktop file-read bridge; no network calls, no shell commands, no
+  credentials, no telemetry.
+maintainer: strnadchristopher
+tier: community
+category: desktop
+version: "1.0.0"
+docs_url: https://github.com/strnadchristopher/hermes-wallpaper-theme/blob/6d6d852ba6d4b8cabda111b15d64cc2aa72d2705/README.md
+platforms: [linux, macos, windows]
+title: Wallpaper Theme
+screenshots:
+  - https://raw.githubusercontent.com/strnadchristopher/hermes-wallpaper-theme/6d6d852ba6d4b8cabda111b15d64cc2aa72d2705/docs/screenshots/pywal-dark.png
+  - https://raw.githubusercontent.com/strnadchristopher/hermes-wallpaper-theme/6d6d852ba6d4b8cabda111b15d64cc2aa72d2705/docs/screenshots/flat-palette-light.png
+  - https://raw.githubusercontent.com/strnadchristopher/hermes-wallpaper-theme/6d6d852ba6d4b8cabda111b15d64cc2aa72d2705/docs/screenshots/settings.png
+  - https://raw.githubusercontent.com/strnadchristopher/hermes-wallpaper-theme/6d6d852ba6d4b8cabda111b15d64cc2aa72d2705/docs/screenshots/glass.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

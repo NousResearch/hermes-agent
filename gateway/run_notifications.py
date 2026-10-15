@@ -895,7 +895,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             else:
                 await admit_internal_event(adapter, synth_event)
             return True
-        except WakeNotAccepted:
+        except WakeNotAccepted as exc:
+            logger.warning("Watch notification not admitted for %s chat=%s: %s",
+                           platform_name, source.chat_id, exc)
             # Durable callers refund the claim; ordinary watch callers just requeue.
             if raise_not_accepted:
                 raise

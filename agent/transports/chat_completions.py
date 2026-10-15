@@ -167,6 +167,18 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
     return clamp_reasoning_config(reasoning_config, OPENAI_COMPAT_WIRE_EFFORTS)
 
 
+def _deep_merge_dict(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """Merge nested provider request bodies without erasing sibling keys."""
+    merged = dict(base)
+    for key, value in overlay.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge_dict(current, value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
     """Translate Hermes/OpenRouter-style reasoning config to Gemini thinkingConfig."""
     from agent.gemini_native_adapter import gemini_uses_thinking_level
@@ -650,6 +662,7 @@ class ChatCompletionsTransport(ProviderTransport):
             qwen_session_metadata=params.get("qwen_session_metadata"), model=model,
             base_url=params.get("base_url"), ollama_num_ctx=params.get("ollama_num_ctx"),
             session_id=params.get("session_id"), cache_scope_id=params.get("cache_scope_id"),
+            request_overrides=params.get("request_overrides"),
             **({"lmstudio_reasoning_options": _lm_options} if _lm_options is not None else {}),
         )
         api_kwargs.update(top_level_from_profile)
@@ -662,10 +675,10 @@ class ChatCompletionsTransport(ProviderTransport):
         )
         for part in (profile_body, extra_body_from_profile, params.get("extra_body_additions")):
             if part:
-                extra_body.update(part)
+                extra_body = _deep_merge_dict(extra_body, part)
         for k, v in (params.get("request_overrides") or {}).items():
             if k == "extra_body" and isinstance(v, dict):
-                extra_body.update(v)
+                extra_body = _deep_merge_dict(extra_body, v)
             else:
                 api_kwargs[k] = v
 

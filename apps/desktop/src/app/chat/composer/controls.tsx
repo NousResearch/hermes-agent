@@ -11,7 +11,6 @@ import { recordAction } from '@/store/desktop-metrics'
 import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
-import type { BusyComposerAction } from './busy-input-mode'
 import { ACTIVE_ICON_BTN, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 import type { ConversationStatus } from './hooks/use-voice-conversation'
 import { ModelPill } from './model-pill'
@@ -53,11 +52,12 @@ export function ComposerControls({
   voiceStatus,
   onDictate,
   onQueue,
+  onSteer,
   onToggleAutoSpeak
 }: {
   autoSpeak: boolean
   busy: boolean
-  busyAction: BusyComposerAction
+  busyAction: 'interrupt' | 'steer' | 'queue' | 'stop'
   canSubmit: boolean
   /** A card parked on the session takes typed text as its answer, so queueing that text would leave the card waiting. */
   cardWaiting?: boolean
@@ -72,6 +72,7 @@ export function ComposerControls({
   voiceStatus: VoiceStatus
   onDictate: () => void
   onQueue: () => void
+  onSteer?: () => void
   onToggleAutoSpeak: () => void
 }) {
   const { t } = useI18n()
@@ -86,8 +87,10 @@ export function ComposerControls({
   // Steer is just send: a payload keeps the Send affordance mid-turn (it answers
   // a waiting card). Stop only when the composer is empty and a turn is running.
   const showStop = busy && !hasComposerPayload
-  const showQueueButton = busy && busyAction !== 'queue' && busyAction !== 'stop' && hasComposerPayload && !cardWaiting
-  const primaryActionLabel = busyAction === 'queue' && !cardWaiting ? c.queueMessage : c.send
+
+  const showQueueButton = queueButtonVisible(busy, busyAction, hasComposerPayload, cardWaiting)
+  const sendLabel = composerSendLabel(busy && !cardWaiting, busyAction, c)
+
   const primaryKeybindAction = cardWaiting
     ? 'composer.send'
     : busyAction === 'queue'
@@ -95,6 +98,7 @@ export function ComposerControls({
       : busyAction === 'steer'
         ? 'composer.steer'
         : 'composer.send'
+
   // The HUD is a Spotlight bar a few hundred pixels wide, so the four separate
   // voice toggles fold into one menu there and leave the row to the input. A
   // narrow tile hits the same wall from the other direction and folds for the
@@ -138,6 +142,7 @@ export function ComposerControls({
           {voiceControls}
         </>
       )}
+      {renderSteerButton(busy, busyAction, onSteer, disabled, c.steer)}
       {showQueueButton ? (
         <Tip label={<TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />} placement="control">
           <Button
@@ -161,13 +166,13 @@ export function ComposerControls({
             showStop ? (
               <TipKeybindLabel actionId="composer.cancel" text={c.stop} />
             ) : (
-              <TipKeybindLabel actionId={primaryKeybindAction} text={primaryActionLabel} />
+              <TipKeybindLabel actionId={primaryKeybindAction} text={sendLabel} />
             )
           }
           placement="control"
         >
           <Button
-            aria-label={showStop ? c.stop : primaryActionLabel}
+            aria-label={showStop ? c.stop : sendLabel}
             className={PRIMARY_ICON_BTN}
             disabled={disabled || !canSubmit}
             onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}
@@ -191,6 +196,49 @@ export function ComposerControls({
       {hudMode ? <HudWindowButtons /> : null}
     </div>
   )
+}
+
+// Queue is the secondary mid-turn action: never while the primary button already queues or stops, and
+// never while a card waits (its Send answers the card).
+function queueButtonVisible(
+  busy: boolean,
+  busyAction: 'interrupt' | 'steer' | 'queue' | 'stop',
+  hasPayload: boolean,
+  cardWaiting: boolean
+): boolean {
+  return busy && busyAction !== 'stop' && busyAction !== 'queue' && hasPayload && !cardWaiting
+}
+
+function composerSendLabel(
+  busy: boolean,
+  busyAction: 'interrupt' | 'steer' | 'queue' | 'stop',
+  c: { redirect: string; queueMessage: string; send: string; steer: string; stop: string }
+): string {
+  return busy ? { interrupt: c.redirect, queue: c.queueMessage, steer: c.steer, stop: c.stop }[busyAction] : c.send
+}
+
+function renderSteerButton(
+  busy: boolean,
+  busyAction: 'interrupt' | 'steer' | 'queue' | 'stop',
+  onSteer: (() => void) | undefined,
+  disabled: boolean,
+  label: string
+) {
+  return busy && busyAction !== 'steer' && onSteer ? (
+    <Tip label={label}>
+      <Button
+        aria-label={label}
+        className={GHOST_ICON_BTN}
+        disabled={disabled}
+        onClick={onSteer}
+        size="icon"
+        type="button"
+        variant="ghost"
+      >
+        <Codicon name="debug-step-over" size="0.875rem" />
+      </Button>
+    </Tip>
+  ) : null
 }
 
 function HudWindowButtons() {

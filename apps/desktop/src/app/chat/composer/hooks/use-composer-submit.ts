@@ -6,6 +6,7 @@ import { translateNow, useI18n } from '@/i18n'
 import { isSlashCommandText } from '@/lib/chat-runtime'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
+import type { BusyInputMode } from '@/store/busy-input-mode'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import {
   clearSessionDraft,
@@ -14,14 +15,14 @@ import {
   freezeComposerTransportPayload,
   isFreshDraftScope
 } from '@/store/composer'
+import { type ComposerDraftRetry, draftRetry } from '@/store/composer-draft-retry'
 import { resetBrowseState } from '@/store/composer-input-history'
-import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
+import { enqueueQueuedPrompt, type QueuedPromptEntry, serverOwnsComposerQueue } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
 import { notify } from '@/store/notifications'
 import { answerParkedCard, skipParkedCards, yieldParkedCardsToMessage } from '@/store/parked-card-answers'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
-import type { BusyInputMode } from '../busy-input-mode'
 import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
 import { pathifyRefs } from '../path-refs'
@@ -34,7 +35,7 @@ interface UseComposerSubmitArgs {
   activeQueueSessionKeyRef: RefObject<string | null>
   attachments: ComposerAttachment[]
   busy: boolean
-  busyInputMode: BusyInputMode
+  busyInputMode?: BusyInputMode | null
   compacting?: boolean
   clearDraft: () => void
   disabled: boolean
@@ -50,12 +51,15 @@ interface UseComposerSubmitArgs {
   onSteer: ChatBarProps['onSteer']
   onSteerHidden: ChatBarProps['onSteerHidden']
   onSubmit: ChatBarProps['onSubmit']
-  queueCurrentDraft: () => boolean
+  queueCurrentDraft: () => boolean | Promise<boolean>
   queueEdit: QueueEditState | null
   queuedPrompts: QueuedPromptEntry[]
   sessionId: string | null | undefined
   setComposerText: (value: string) => void
   stashAt: (scope: string | null, text?: string, attachments?: ComposerAttachment[]) => void
+  /** Restored-send identity (see use-composer-draft); absent = every send is a new message. */
+  rememberDraftRetry?: (scope: string | null, retry: ComposerDraftRetry) => void
+  takeDraftRetry?: (text: string, attachments: ComposerAttachment[]) => ComposerDraftRetry | undefined
 }
 
 /**
@@ -72,7 +76,7 @@ export function useComposerSubmit({
   activeQueueSessionKeyRef,
   attachments,
   busy,
-  busyInputMode,
+  busyInputMode = 'interrupt',
   compacting = false,
   clearDraft,
   disabled,
@@ -93,7 +97,9 @@ export function useComposerSubmit({
   queuedPrompts,
   sessionId,
   setComposerText,
-  stashAt
+  stashAt,
+  rememberDraftRetry,
+  takeDraftRetry
 }: UseComposerSubmitArgs) {
   const paneVisible = usePaneVisible()
   const scope = useComposerScope()
@@ -105,12 +111,20 @@ export function useComposerSubmit({
   // === false) or throws, re-stash the draft so the words survive. Repaint it
   // only while the same session still owns the visible composer; a late reject
   // must not publish an old session's text into the newly focused one.
-  const dispatchSubmit = (text: string, attachments?: ComposerAttachment[], displayKind?: 'hidden') => {
+  // `target` carries an explicit destination (a canonical queue admission).
+  const dispatchSubmit = (
+    text: string,
+    attachments?: ComposerAttachment[],
+    displayKind?: 'hidden',
+    target?: Parameters<ChatBarProps['onSubmit']>[1]
+  ) => {
     // A fresh chat's composer is keyed by its per-lifecycle fresh-draft key
     // (`__new__:<uuid>`), but the submit contract spells "no session yet" as
     // null: the create handoff below and the composer drift prong both key off
     // it, and draftKey(null) resolves to that same fresh bucket.
-    const submittedScope = isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current
+    const submittedScope =
+      target?.storedSessionId ?? (isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current)
+
     let restoreScope = submittedScope
     const submittedAttachments = attachments ?? []
 
@@ -125,8 +139,15 @@ export function useComposerSubmit({
           }
         : {}
 
+    // The composer owns this send's identity: the caller's (a queue entry), the restored draft's
+    // (the explicit retry), else a new one. Equal text never inherits an identity, so a new
+    // message that repeats an uncertain send, in this pane or another, is its own turn.
+    const submissionId = target?.submission_id ?? crypto.randomUUID()
+
     const restore = () => {
       stashAt(restoreScope, text, submittedAttachments)
+      // Restored with its identity: Enter on this exact draft retries the same send.
+      rememberDraftRetry?.(restoreScope, draftRetry(submissionId, text, submittedAttachments))
 
       if ((isFreshDraftScope(draftScopeRef.current) ? null : draftScopeRef.current) === restoreScope) {
         loadIntoComposer(text, submittedAttachments)
@@ -138,14 +159,14 @@ export function useComposerSubmit({
     const rejected = displayKind ? () => {} : restore
 
     void Promise.resolve(
-      attachments
-        ? onSubmit(text, {
-            attachments,
-            composerScope: submittedScope,
-            ...assignment,
-            ...(displayKind ? { displayKind } : {})
-          })
-        : onSubmit(text, { composerScope: submittedScope, ...assignment, ...(displayKind ? { displayKind } : {}) })
+      onSubmit(text, {
+        ...target,
+        submission_id: submissionId,
+        ...(attachments ? { attachments } : {}),
+        composerScope: submittedScope,
+        ...assignment,
+        ...(displayKind ? { displayKind } : {})
+      })
     )
       .then(accepted => void (accepted === false ? rejected() : clearSessionDraft(submittedScope)))
       .catch(rejected)
@@ -251,9 +272,10 @@ export function useComposerSubmit({
         return false
       }
 
+      const retry = takeDraftRetry?.(text, [])
       triggerHaptic('submit')
       clearDraft()
-      dispatchSubmit(text)
+      dispatchSubmit(text, undefined, undefined, retry && { submission_id: retry.id })
     } else if (!blockingPrompt && !attachments.length && text.trim()) {
       // Queue during compaction, otherwise apply the configured one-message policy.
       // Slash commands above and parked-card answers retain higher priority.
@@ -267,8 +289,10 @@ export function useComposerSubmit({
         } else {
           queueCurrentDraft()
         }
+      } else if (effectiveMode !== null) {
+        steerDraft(effectiveMode, text)
       } else {
-        redirectDraft(text)
+        return false
       }
     } else if (payloadPresent) {
       // Attachments can't ride a redirect (no tool-result image carriage) —
@@ -405,13 +429,14 @@ export function useComposerSubmit({
       void drainNextQueued()
     } else if (payloadPresent) {
       const submittedAttachments = cloneAttachments(attachments)
+      const retry = takeDraftRetry?.(text, submittedAttachments)
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
       // Keep blob: previews alive for the optimistic bubble; revoke when that
       // consumer is discarded/replaced (not here — clear would race the clone).
       scope.attachments.clear({ retainPreviewUrls: true })
-      dispatchSubmit(text, submittedAttachments)
+      dispatchSubmit(text, submittedAttachments, undefined, retry && { submission_id: retry.id })
     }
 
     focusInput()
@@ -421,11 +446,20 @@ export function useComposerSubmit({
   // must not vanish with the already-cleared draft. Capture the target scope at
   // dispatch time so a late rejection cannot enqueue into a newly focused chat.
   const queueRejectedCorrection = (frozen: ComposerTransportPayload, rejectedScope: string | null) => {
-    if (rejectedScope) {
+    const hasTerminalTransport = frozen.displayText !== frozen.transportText
+
+    if (rejectedScope && serverOwnsComposerQueue(sessionId ?? rejectedScope)) {
+      dispatchSubmit(frozen.transportText, [], undefined, {
+        ...(hasTerminalTransport ? { displayText: frozen.displayText } : {}),
+        fromQueue: true,
+        sessionId: sessionId ?? null,
+        storedSessionId: rejectedScope
+      })
+    } else if (rejectedScope) {
       enqueueQueuedPrompt(rejectedScope, {
         text: frozen.displayText,
         attachments: [],
-        ...(frozen.displayText !== frozen.transportText
+        ...(hasTerminalTransport
           ? { displayText: frozen.displayText, frozenTransport: frozen.transportText }
           : {})
       })
@@ -435,7 +469,7 @@ export function useComposerSubmit({
     }
   }
 
-  const redirectDraft = (text: string) => {
+  const steerDraft = (mode: 'interrupt' | 'steer' = 'interrupt', text = pathifyRefs(draftRef.current).trim()) => {
     if (!onSteer || !text || attachments.length > 0 || SLASH_COMMAND_RE.test(text)) {
       queueCurrentDraft()
 
@@ -459,28 +493,19 @@ export function useComposerSubmit({
     triggerHaptic('submit')
     clearDraft()
 
+    const submittedScope = activeQueueSessionKeyRef.current
+
     // The draft is already cleared, so a refused or failed redirect must keep
-    // the only copy: queue it for the next turn, or restore it when there is no
+    // the only copy (#68927): the canonical gateway queue when the server owns
+    // it, the local queue otherwise, or the composer itself when there is no
     // queue yet (a new chat is busy before its first session exists). Keep the
     // frozen transport for the queue; restoring to the composer keeps the chip
     // form so the user can re-send it as-is.
-    const hasTerminalTransport = frozen.displayText !== frozen.transportText
-
-    const keep = () => {
-      if (activeQueueSessionKey) {
-        enqueueQueuedPrompt(activeQueueSessionKey, {
-          text: frozen.displayText,
-          attachments: [],
-          ...(hasTerminalTransport ? { displayText: frozen.displayText, frozenTransport: frozen.transportText } : {})
-        })
-      } else {
-        loadIntoComposer(frozen.displayText, [])
-      }
-    }
+    const keep = () => queueRejectedCorrection(frozen, submittedScope)
 
     // Also recover callbacks that throw synchronously before returning a promise.
     try {
-      void Promise.resolve(onSteer(frozen.transportText))
+      void Promise.resolve(onSteer(frozen.transportText, mode))
         .then(accepted => {
           if (!accepted) {
             keep()
@@ -545,5 +570,5 @@ export function useComposerSubmit({
     focusInput()
   }
 
-  return { dispatchSubmit, queueDraft, submitDraft }
+  return { dispatchSubmit, queueDraft, steerDraft, submitDraft }
 }

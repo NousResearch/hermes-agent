@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import hashlib
 import shutil
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
@@ -146,6 +147,7 @@ def install_from_quarantine(
 ) -> Path:
     """Move a scanned skill from quarantine into the skills directory."""
     from tools.skills_hub import HubLockFile, _quarantine_dir, _skills_dir, append_audit_log
+    from utils import rmtree_readonly
     safe_skill_name = _validate_skill_name(skill_name)
     safe_category = _validate_install_parent_path(category) if category else ""
     quarantine_resolved = quarantine_path.resolve()
@@ -157,8 +159,6 @@ def install_from_quarantine(
     # symlink-redirected target.
     install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
     _check_install_target(install_dir)
-    if install_dir.exists():
-        shutil.rmtree(install_dir)
 
     try:
         skill_size = (quarantine_path / "SKILL.md").stat().st_size
@@ -183,8 +183,36 @@ def install_from_quarantine(
             raise ValueError(f"Installed skill contains symlinks, which is not allowed: {rel}")
 
     install_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(quarantine_path), str(install_dir))
-    installed_hash = content_hash(install_dir)
+    # Stage beside the target before moving the installed skill. Keep both
+    # new and recovery trees under .hub, excluded from skill discovery.
+    # shutil.move can fall back to a partial copy across devices or on errors.
+    staging_parent = install_dir.parent / ".hub"
+    staging_parent.mkdir(exist_ok=True)
+    staged = Path(tempfile.mkdtemp(prefix="skill-install-", dir=staging_parent))
+    replacement, backup = staged / "new", staged / "previous"
+    published = False
+    try:
+        shutil.copytree(quarantine_path, replacement)
+        installed_hash = content_hash(replacement)
+        if install_dir.exists():
+            install_dir.rename(backup)
+        try:
+            replacement.rename(install_dir)
+        except OSError:
+            if backup.exists():
+                try:
+                    backup.rename(install_dir)
+                except OSError as exc:
+                    raise OSError(
+                        f"Skill replacement failed and rollback could not restore '{install_dir}'; "
+                        f"the previous skill is preserved at '{backup}'"
+                    ) from exc
+            raise
+        published = True
+    finally:
+        # Never discard the only old copy when rollback itself cannot complete.
+        if published or not backup.exists():
+            rmtree_readonly(staged, ignore_errors=True)
     HubLockFile().record_install(
         name=safe_skill_name, source=bundle.source, identifier=bundle.identifier, trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict, skill_hash=installed_hash,
@@ -194,6 +222,7 @@ def install_from_quarantine(
     )
     append_audit_log("INSTALL", safe_skill_name, bundle.source, bundle.trust_level, scan_result.verdict,
                      installed_hash)
+    rmtree_readonly(quarantine_path, ignore_errors=True)
     try:
         from tools.skill_usage import record_installed
         record_installed(safe_skill_name)

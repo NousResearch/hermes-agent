@@ -48,6 +48,19 @@ class TestContainerAndVmDestructionApproval:
         "docker compose rm web",
         "docker volume rm appdata",
         "docker volume prune -f",
+        # Canonical `container` subcommand spellings (#132483): `docker rm` was gated while
+        # `docker container rm`, `docker container prune` and `docker system prune` passed untouched.
+        "docker container rm web",
+        "podman container rm web",
+        "docker container prune",
+        "docker container prune -f",
+        "docker system prune",
+        "docker system prune -a --volumes",
+        "docker container stop web",
+        "docker container kill web",
+        "docker container restart web",
+        # A doubled space between a flag and its value must not hide the verb (#130511).
+        "docker --log-level  warn container rm web",
         "zfs destroy tank/data",
         "zpool destroy tank",
     ])
@@ -67,10 +80,24 @@ class TestContainerAndVmDestructionApproval:
         "docker ps -a",
         "docker images",
         "docker volume ls",
+        "docker container ls",
+        "docker container inspect web",
+        "docker system df",
         "zfs list",
         "zpool status",
     ])
     def test_read_and_stop_verbs_stay_allowed(self, command):
+        assert detect_dangerous_command(command) == (False, None, None), command
+
+    @pytest.mark.parametrize("command", [
+        "docker image rm web",
+        "docker rmi web",
+        "docker network rm web",
+    ])
+    def test_image_and_network_removal_stay_ungated(self, command):
+        """Boundary taken from the #132483 report: an image comes back with a pull and a network
+        with a recreate, so an approval card there buys nothing. Pinned so the gap cannot reopen
+        as a silent one."""
         assert detect_dangerous_command(command) == (False, None, None), command
 
     def test_quoted_mention_is_an_accepted_over_match(self):

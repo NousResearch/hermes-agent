@@ -20,6 +20,8 @@ Hermes Agent includes a full browser automation toolset with multiple backend op
 
 In all modes, the agent can navigate websites, interact with page elements, fill forms, and extract information.
 
+For one-shot page retrieval with automatic browser fallback, the [MrScraper plugin](#mrscraper-rendered-page-extraction) can return HTML, Markdown, or screenshots. It also supports Google SERP through `web_search` and exposes account usage; see [Web Search & Extract](web-search.md#mrscraper-plugin).
+
 ## Overview
 
 Pages are represented as **accessibility trees** (text-based snapshots), making them ideal for LLM agents. Interactive elements get ref IDs (like `@e1`, `@e2`) that the agent uses for clicking and typing.
@@ -125,6 +127,17 @@ FIRECRAWL_API_URL=http://localhost:3002
 # Session TTL in seconds (default: 300)
 FIRECRAWL_BROWSER_TTL=600
 ```
+
+### MrScraper rendered-page extraction {#mrscraper-rendered-page-extraction}
+
+The [MrScraper plugin](https://github.com/ai-mrscraper/hermes-mrscraper-plugin) provides `mrscraper_scraper_api` for individual URLs through MrScraper's HTTP API. It returns HTML by default, supports Markdown and screenshots, and accepts rendering, proxy, cookie, wait-selector, and resource-blocking options. Install the [catalog entry](plugin-catalog.md) and enable the plugin:
+
+```bash
+hermes plugins install mrscraper
+hermes plugins enable mrscraper
+```
+
+The installer prompts for `MRSCRAPER_API_TOKEN`. Start a new Hermes session after enabling the plugin to load its three tools: `mrscraper_scraper_api`, `mrscraper_web_search`, and `mrscraper_account`. Each page request uses the MrScraper API and may consume account credits. This native plugin does not require MCP. The scraper tool does not create a persistent browser session, so interactive actions such as `browser_click` and `browser_type` still need one of the browser backends above. Derive structured fields from returned page content; for Google search and account usage, see [MrScraper in Web Search & Extract](web-search.md#mrscraper-plugin).
 
 ### Hybrid routing: cloud for public URLs, local for LAN/localhost
 

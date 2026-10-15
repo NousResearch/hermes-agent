@@ -50,6 +50,7 @@ from hermes_cli.config_backend import (
     ConfigWriteError, config_cache_version, config_destination, config_exists, config_version,
     get_config_backend, probe_config_readable, read_config_doc, supports_file_tooling,
     write_config_document)
+from hermes_cli import config_includes
 from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
     _refuse_failed_read, _refuse_overwrite, _warn_config_parse_failure, _yaml_error_details,
@@ -2181,6 +2182,8 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[dict[str, 
     n = len(cache_sig)  # the backend's version tuple + the managed file's signature
     if cached[:n] != cache_sig:
         return None
+    if not config_includes.config_includes_unchanged(path_key):
+        return None
     hit = cached[n]
     if isinstance(hit, FailedConfigRead) and isinstance(hit.read_error, OSError):
         # A read error (EMFILE/EIO/sharing violation) can clear without touching the file's
@@ -2235,6 +2238,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
             try:
                 user_config = read_config_doc(config_path) or {}
                 _CONFIG_PARSE_FAILURES.pop(path_key, None)  # the file reads now (a transient error left the record)
+                user_config = config_includes.merge_and_record(config_path, path_key, user_config)
 
                 if "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})
@@ -2374,15 +2378,18 @@ def save_config(
         from hermes_cli.config_worker_save import rebase_for_save  # frozen-worker writes + merge_existing
         config = rebase_for_save(config, _raw_for_paths, merge_existing)
 
+        include_declarations, included_config = config_includes.includes_for_save(config_path, _raw_for_paths)
         normalized = current_normalized = _canonicalize_config(config)
         if _raw_for_paths:
             normalized = _preserve_env_ref_templates(
                 normalized, _canonicalize_config(_raw_for_paths),
                 _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)))
 
+        effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
+        normalized = config_includes.strip_for_save(
+            normalized, included_config, include_declarations, effective_preserve_keys)
         if strip_defaults:
             # ``_strip_default_values`` always preserves ``_config_version`` itself.
-            effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
         note_first_stamp(config_path.parent, _raw_for_paths, normalized)

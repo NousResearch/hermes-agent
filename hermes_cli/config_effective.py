@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from hermes_cli import config as _config
+from hermes_cli import config_includes
 from hermes_cli import managed_scope
 from hermes_cli.config_backend import read_config_doc
 from hermes_cli.config_read_errors import _warn_config_parse_failure
@@ -28,6 +29,8 @@ from hermes_cli.config_read_errors import _warn_config_parse_failure
 _LAST_GOOD_USER_RAW: dict[str, dict[str, Any]] = {}
 # path -> (*user_signature, *managed_signature, effective, env_snapshot); see utils.file_signature.
 _EFFECTIVE_CACHE: dict[str, tuple[Any, ...]] = {}
+_INCLUDE_SIGNATURES: dict[str, tuple[tuple[Any, ...], ...]] = {}
+_LAST_GOOD_INCLUDED: dict[str, dict[str, Any]] = {}
 
 
 def _effective(raw: dict[str, Any]) -> dict[str, Any]:
@@ -75,7 +78,8 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
         cached = _EFFECTIVE_CACHE.get(path_key)
         n = len(cache_sig) if cache_sig is not None else 0
         if cached is not None and cache_sig is not None and cached[:n] == cache_sig:
-            if all(_config._env_ref_lookup(k) == v for k, v in cached[n + 1].items()):
+            if (config_includes.config_includes_unchanged(path_key, _INCLUDE_SIGNATURES.get(path_key, ()))
+                    and all(_config._env_ref_lookup(k) == v for k, v in cached[n + 1].items())):
                 return copy.deepcopy(cached[n])
 
         raw: dict[str, Any] = {}
@@ -102,6 +106,17 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
                     from hermes_cli.config_backups import backup_config
                     backup_config(config_path, "good")
 
+        try:
+            raw, include_sig = config_includes.merge_config_includes(config_path, raw)
+        except Exception as exc:
+            if fail_closed:
+                raise
+            _warn_config_parse_failure(config_path, exc, fallback="last-known-good")
+            raw, recovered = copy.deepcopy(_LAST_GOOD_INCLUDED.get(path_key, {})), True
+        else:
+            _INCLUDE_SIGNATURES[path_key] = include_sig
+            if not recovered:
+                _LAST_GOOD_INCLUDED[path_key] = copy.deepcopy(raw)
         env_snapshot = _config._env_ref_snapshot(raw)
         managed = managed_scope.load_managed_config()
         if managed:

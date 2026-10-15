@@ -1330,15 +1330,8 @@ class SessionSessionsMixin:
         Storage interface: port as ``list_sessions_rich`` (``workspace_key`` is ``session.list``'s
         ``workspace`` filter)."""
         self.flush_for_read()  # rows carry token/cost totals
-        # When projecting compression tips, source membership is defined by the
-        # *live tip* source, not the root. Use a SQL CTE to compute the
-        # projected tip source directly in the WHERE clause so telegram→webui
-        # chains appear under source=webui (#75625).
-        source_sql = (
-            _projected_tip_source_sql("s")
-            if project_compression_tips and not include_children
-            else "s.source"
-        )
+        # Filter on the live tip before pagination so cross-source chains remain visible (#75625).
+        source_sql = _projected_tip_source_sql("s") if project_compression_tips and not include_children else "s.source"
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
@@ -1600,12 +1593,7 @@ class SessionSessionsMixin:
         exclude_children: bool = False, exclude_sources: list[str] | None = None, include_subagents: bool = False,
         local_created_sources: Sequence[str] | None = None,
     ) -> int:
-        """Count sessions with list_sessions_rich's filters so a paired "load more" total matches.
-
-        With ``exclude_children=True`` and a source filter, membership matches
-        ``list_sessions_rich`` after compression-tip projection (tip source),
-        not the raw root source (#75625).
-        """
+        """Count listing membership; ``exclude_children`` applies source filters to the live tip (#75625)."""
         source_sql = _projected_tip_source_sql("s") if exclude_children else "s.source"
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, source=source, sources=sources,
@@ -1626,11 +1614,7 @@ class SessionSessionsMixin:
         self, *, include_archived: bool = False, archived_only: bool = False,
         exclude_children: bool = False,
     ) -> dict[str, int]:
-        """``{source: count}`` via one GROUP BY; ``exclude_children`` mirrors listing visibility.
-
-        Counts use the **projected tip** source when compression tips are
-        projected (#75625).
-        """
+        """``{source: count}`` in one GROUP BY; ``exclude_children`` mirrors visible live-tip membership."""
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, archived_only=archived_only,
             include_archived=include_archived,
@@ -1639,19 +1623,13 @@ class SessionSessionsMixin:
             from hermes_state_local import exclude_superseded_segments
             exclude_superseded_segments(self, where_clauses, params)
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        source_sql = (
-            _projected_tip_source_sql("s")
-            if exclude_children
-            else "COALESCE(NULLIF(s.source, ''), 'cli')"
-        )
+        source_sql = _projected_tip_source_sql("s") if exclude_children else "COALESCE(NULLIF(s.source, ''), 'cli')"
         with self._read_ctx() as conn:
             if self._conn is None:
                 raise RuntimeError("SessionDB connection is closed")
             rows = conn.execute(
-                "SELECT projected_source AS source, COUNT(*) AS count "
-                "FROM ("
-                f"SELECT {source_sql} AS projected_source "
-                f"FROM sessions s{where_sql}"
+                "SELECT projected_source AS source, COUNT(*) AS count FROM ("
+                f"SELECT {source_sql} AS projected_source FROM sessions s{where_sql}"
                 ") "
                 "GROUP BY projected_source "
                 "ORDER BY count DESC, projected_source ASC",

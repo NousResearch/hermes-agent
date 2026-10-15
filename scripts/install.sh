@@ -522,19 +522,44 @@ emit_manifest() {
     printf '%s\n' ']}'
 }
 
+git_runs() { command -v git >/dev/null 2>&1 && git --version >/dev/null 2>&1; }
+
+# macOS ships /usr/bin/git as a stub until Apple's Command Line Tools are
+# installed: it is on PATH, but every call fails ("see man xcode-select").
+# Prefer Homebrew (headless); else open Apple's install dialog and, with a
+# terminal, wait for the user to finish it so the install continues in this run.
+install_macos_git() {
+    if command -v brew >/dev/null 2>&1; then
+        log "Installing git with Homebrew"
+        brew install git >/dev/null 2>&1 || true
+        hash -r
+        git_runs && return 0
+    fi
+    # Opens Apple's install dialog; harmless if it is already open or done.
+    xcode-select --install >/dev/null 2>&1 || true
+    local _remedy="Install Apple's Command Line Tools (run: xcode-select --install), then re-run this installer."
+    if [ "$NON_INTERACTIVE" = true ] || ! has_terminal; then
+        fail "git needs Apple's Command Line Tools. $_remedy" git_missing
+    fi
+    log "git needs Apple's Command Line Tools: click Install in the macOS dialog and accept the license"
+    local _waited=0
+    while [ "$_waited" -lt 900 ]; do
+        git_runs && return 0
+        sleep 5
+        _waited=$((_waited + 5))
+        [ $((_waited % 60)) -ne 0 ] || log "Still waiting for the Command Line Tools install ($((_waited / 60))m)"
+    done
+    fail "Command Line Tools did not finish within 15 minutes. $_remedy" git_missing
+}
+
 stage_prerequisites() {
+    if [ "$(uname -s 2>/dev/null)" = Darwin ] && ! git_runs; then
+        install_macos_git
+    fi
     command -v git >/dev/null 2>&1 || fail "git is required. Install it with your system package manager." git_missing
-    # macOS ships /usr/bin/git as a stub until Apple's Command Line Tools are
-    # installed: it is on PATH, but every call fails ("see man xcode-select").
     local _git_err
     if ! _git_err="$(git --version 2>&1)"; then
-        _git_err="$(printf '%s\n' "$_git_err" | error_line)"
-        if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
-            # Opens Apple's install dialog; harmless if it is already open or done.
-            xcode-select --install >/dev/null 2>&1 || true
-            fail "git cannot run ($_git_err). Install Apple's Command Line Tools (run: xcode-select --install), then re-run this installer." git_missing
-        fi
-        fail "git is installed but cannot run: $_git_err" git_missing
+        fail "git is installed but cannot run: $(printf '%s\n' "$_git_err" | error_line)" git_missing
     fi
     command -v curl >/dev/null 2>&1 || fail "curl is required. Install it with your system package manager." curl_missing
     # PM's Node on musl is the unofficial-builds musl archive, which links the

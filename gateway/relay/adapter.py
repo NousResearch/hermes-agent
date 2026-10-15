@@ -901,6 +901,11 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
             # The connector does not transmit a provider timestamp. Local arrival
             # time must not change the fingerprint of a retried provider identity.
             event.timestamp = datetime.fromtimestamp(0, UTC)
+            if event.source.profile and not getattr(runner.config, 'multiplex_profiles', False):
+                # The connector's profile route (Team Gateway) selects among a multiplexed
+                # gateway's profiles; a single-profile gateway serves it from its one profile.
+                # _capture_scope already kept the stamp for egress (persona attribution).
+                event.source.profile = None
             # Wait only for the SQLite receipt, never inference or outbound ACKs
             # (those need this same WS reader). A permanent refusal returns, so the
             # transport ACKs it (a replay would be refused again: main's runner dropped

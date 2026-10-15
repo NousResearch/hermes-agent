@@ -1,8 +1,6 @@
 export interface CustomEndpointsTranslations {
   credentials: {
     authentication: string
-    azureCli: string
-    azureCliHint: string
     command: string
     commandLabel: string
     commandHint: string

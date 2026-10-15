@@ -49,7 +49,7 @@ class CustomEndpointUpdate(BaseModel):
     base_url: str
     model: str
     api_key: Optional[str] = None
-    credential_source: Optional[Literal["api_key", "command", "azure_cli"]] = None
+    credential_source: Optional[Literal["api_key", "command"]] = None
     key_cmd: Optional[str] = None
     # Same choices as the CLI's custom-provider setup; "" = auto-detect at runtime.
     # None (older UI payload) leaves a hand-written api_mode alone.

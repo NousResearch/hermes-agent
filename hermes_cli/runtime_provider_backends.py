@@ -29,16 +29,15 @@ def _azure_entra_credentials(cfg_entra: dict[str, Any]) -> Any:
     ``build_anthropic_client`` injects the bearer via an httpx hook)."""
     AuthError = _rp().AuthError
     try:
-        from agent.azure_identity_adapter import SCOPE_AI_AZURE_DEFAULT, EntraIdentityConfig, build_token_provider
+        from agent.azure_identity_adapter import EntraIdentityConfig, build_token_provider
     except Exception as exc:
         raise AuthError(
             "Could not load the Azure Foundry Entra ID adapter. "
             "Run hermes pm repair, then restart Hermes. "
             f"(import failed: {exc})"
         ) from exc
-    scope = str(cfg_entra.get("scope") or "").strip() or SCOPE_AI_AZURE_DEFAULT
     try:
-        return build_token_provider(config=EntraIdentityConfig(scope=scope))
+        return build_token_provider(config=EntraIdentityConfig.from_dict(cfg_entra))
     except ImportError as exc:
         raise AuthError(str(exc)) from exc
 
@@ -92,6 +91,9 @@ def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: dict[s
             "Azure Foundry requires a base URL. Set it via 'hermes model' or "
             "the AZURE_FOUNDRY_BASE_URL environment variable."
         )
+    from hermes_cli.azure_detect import normalize_foundry_base_url
+
+    base_url = normalize_foundry_base_url(base_url, cfg_api_mode)
     if cfg_api_mode == "anthropic_messages":
         base_url = re.sub(r"/v1/?$", "", base_url)
     if cfg_auth_mode == "entra_id":
@@ -100,9 +102,8 @@ def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: dict[s
         if explicit_api_key:
             api_key, source, auth_mode, entra = explicit_api_key, "explicit", "api_key", {}
         else:
-            scope = str(cfg_entra.get("scope") or "").strip()
             api_key = forwarded_token_provider or _azure_entra_credentials(cfg_entra)
-            source, auth_mode, entra = "entra_id", "entra_id", ({"scope": scope} if scope else {})
+            source, auth_mode, entra = "entra_id", "entra_id", dict(cfg_entra)
         return rp._runtime("azure-foundry", cfg_api_mode, base_url, api_key, auth_mode=auth_mode, entra=entra, source=source,
                            requested_provider=requested_provider)
     return rp._runtime("azure-foundry", cfg_api_mode, base_url, _azure_foundry_api_key(rp, explicit_api_key),

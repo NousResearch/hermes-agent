@@ -80,3 +80,44 @@ async def test_agents_command_marks_stalling_delegation(monkeypatch):
     assert "no progress" in out
 
 
+@pytest.mark.asyncio
+async def test_agents_lists_other_chats_work_only_for_a_configured_admin():
+    """/agents counts every chat's work but names another chat's keys, commands and goals only to
+    an explicitly configured admin (a session key is a routing handle, not authority)."""
+    from types import SimpleNamespace
+
+    from gateway.config import Platform
+    from gateway.session import SessionSource, build_session_key
+
+    owner = SessionSource(platform=Platform.TELEGRAM, chat_id="111", chat_type="dm", user_id="111")
+    peer = SessionSource(platform=Platform.TELEGRAM, chat_id="-100", chat_type="group", user_id="222")
+    same_room = SessionSource(platform=Platform.TELEGRAM, chat_id="-100", chat_type="group", user_id="333")
+    owner_key = build_session_key(owner)
+    runner = _make_runner()
+    runner._session_key_for_source = build_session_key
+    runner._running_agents = {owner_key: SimpleNamespace(session_id="OWNER-SID", model="m"),
+                              build_session_key(same_room): SimpleNamespace(session_id="ROOM-SID", model="m")}
+    proc = process_registry.spawn_local("sleep 30 # OWNER-CMD", task_id="t", session_key=owner_key)
+    gate = threading.Event()
+    ad.dispatch_async_delegation(goal="OWNER-GOAL", context=None, toolsets=None, role="leaf", model="m",
+                                 session_key=owner_key, max_async_children=1,
+                                 runner=lambda: gate.wait() and {})
+
+    class _Ev:
+        source = peer
+
+    try:
+        out = await runner._handle_agents_command(_Ev())
+        for private in (owner_key, "OWNER-SID", "OWNER-CMD", "OWNER-GOAL"):
+            assert private not in out
+        assert "ROOM-SID" in out and "**Active agents:** 2" in out
+        runner.config = SimpleNamespace(platforms={Platform.TELEGRAM: SimpleNamespace(
+            extra={"group_allow_admin_from": ["222"]})})
+        admin_out = await runner._handle_agents_command(_Ev())
+        for private in (owner_key, "OWNER-SID", "OWNER-CMD", "OWNER-GOAL"):
+            assert private in admin_out
+    finally:
+        gate.set()
+        process_registry.kill_process(proc.id)
+
+

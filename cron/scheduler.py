@@ -3030,6 +3030,7 @@ def _pre_result_delivery_directive(
         from cron.scheduler_delivery import _redact_cron_payload
         content = _redact_cron_payload(deliver_content, "delivery content")
     except Exception:
+        logger.debug("Job '%s': pre_result_delivery redaction failed open", job.get("id"), exc_info=True)
         content = deliver_content
     try:
         targets = [
@@ -3038,6 +3039,7 @@ def _pre_result_delivery_directive(
             for t in (_resolve_delivery_targets(job, for_failure=not d.success) or [])
         ]
     except Exception:
+        logger.debug("Job '%s': pre_result_delivery targets failed open", job.get("id"), exc_info=True)
         targets = []
     payload = {
         "source": "cron", "job_id": job.get("id"), "job_name": job.get("name") or job.get("id"),
@@ -3087,10 +3089,12 @@ def _invoke_pre_result_delivery(payload: dict) -> list[tuple[str, Any]]:
     try:
         manager = _plugins_mod.get_plugin_manager()
     except Exception:
+        logger.debug("pre_result_delivery: no plugin manager, failed open", exc_info=True)
         return []
     try:
         timeout = _plugins_mod._resolve_hook_callback_timeout()
     except Exception:
+        logger.debug("pre_result_delivery: hook timeout unresolved, using default", exc_info=True)
         timeout = 30.0
     use_timeout = _hook_uses_callback_timeout("pre_result_delivery", timeout)
     out: list[tuple[str, Any]] = []
@@ -3107,7 +3111,7 @@ def _invoke_pre_result_delivery(payload: dict) -> list[tuple[str, Any]]:
             try:
                 manager._report_hook_failure("pre_result_delivery", cb, payload, exc)
             except Exception:
-                pass
+                logger.debug("pre_result_delivery: failure report failed for %s", plugin, exc_info=True)
             continue
         if ret is not None:
             out.append((plugin, ret))

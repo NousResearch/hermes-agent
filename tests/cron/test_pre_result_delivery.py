@@ -118,7 +118,6 @@ def test_hook_payload_contract(monkeypatch):
 
     def probe(**kwargs):
         seen.update(kwargs)
-        return None
 
     manager._hooks.setdefault("pre_result_delivery", []).append(probe)
     job = _job()
@@ -187,7 +186,7 @@ def test_has_hook_works_in_restart_safe_worker():
     )
     proc = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=120,
-        cwd="/home/kom/proj/ai_pr/hermes-seams",
+        cwd="/home/kom/proj/ai_pr/hermes-seams", check=False,
         env={"PYTHONNOUSERSITE": "1", "PATH": "/usr/bin:/bin"},
     )
     assert "R2-OK" in proc.stdout, proc.stderr[-2000:]

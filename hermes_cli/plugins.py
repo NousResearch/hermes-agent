@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- pre_result_delivery seam registers one hook name plus its contract comment in VALID_HOOKS, the designated hook registry sibling plugins code against; the set-element addition cannot be offset within the facade without moving unrelated code
 """Hermes Plugin System — discovers, loads, and manages plugins.
 
 Sources, later overriding earlier on key collision: bundled ``<repo>/plugins/<name>/`` (``memory/``

@@ -351,12 +351,11 @@ class _Collector:
             return {}
         try:
             rows = conn.execute(
-                "SELECT id, summary, metadata FROM task_runs WHERE task_id = ? AND id IN (%s)"
-                % ",".join("?" * len(run_ids)),
+                f"SELECT id, summary, metadata FROM task_runs WHERE task_id = ? AND id IN ({','.join('?' * len(run_ids))})",
                 (task_id, *sorted(run_ids)),
             ).fetchall()
         except Exception as exc:
-            logger.debug("kanban notifier: run-row lookup failed for %s: %s", task_id, exc)
+            logger.debug("kanban notifier: run-row lookup failed for %s", task_id, exc_info=True)
             return {}
         out = {}
         for row in rows:
@@ -365,6 +364,7 @@ class _Collector:
                 import json as _json
                 metadata = _json.loads(meta) if meta else {}
             except Exception:
+                logger.debug("kanban notifier: run-row metadata parse failed", exc_info=True)
                 metadata = {}
             out[row["id"]] = {"summary": row["summary"], "metadata": metadata,
                               "artifacts": (metadata.get("artifacts") if isinstance(metadata, dict) else None)}
@@ -445,10 +445,12 @@ def _invoke_kanban_result_delivery(payload: dict) -> list[tuple[str, Any]]:
     try:
         manager = _plugins_mod.get_plugin_manager()
     except Exception:
+        logger.debug("pre_result_delivery: no plugin manager, failed open", exc_info=True)
         return []
     try:
         timeout = _plugins_mod._resolve_hook_callback_timeout()
     except Exception:
+        logger.debug("pre_result_delivery: hook timeout unresolved, using default", exc_info=True)
         timeout = 30.0
     use_timeout = _hook_uses_callback_timeout("pre_result_delivery", timeout)
     out: list[tuple[str, Any]] = []
@@ -465,7 +467,7 @@ def _invoke_kanban_result_delivery(payload: dict) -> list[tuple[str, Any]]:
             try:
                 manager._report_hook_failure("pre_result_delivery", cb, payload, exc)
             except Exception:
-                pass
+                logger.debug("pre_result_delivery: failure report failed for %s", plugin, exc_info=True)
             continue
         if ret is not None:
             out.append((plugin, ret))
@@ -812,12 +814,14 @@ class _KanbanNotification:
             if not has_hook("pre_result_delivery"):
                 return False
         except Exception:
+            logger.debug("kanban notifier: pre_result_delivery gate failed open", exc_info=True)
             return False
         task = self.task
         payload_summary = None
         try:
             payload_summary = _payload(ev, "summary")
         except Exception:
+            logger.debug("kanban notifier: event summary read failed", exc_info=True)
             payload_summary = None
         run_id = getattr(ev, "run_id", None)
         run = (self.d.get("runs") or {}).get(run_id, {}) if run_id is not None else {}
@@ -838,8 +842,7 @@ class _KanbanNotification:
             results = await _to_thread_process_service(
                 partial(_invoke_kanban_result_delivery, payload))
         except Exception as exc:
-            logger.debug("kanban notifier: pre_result_delivery failed open for %s: %s",
-                         self.task_id, exc)
+            logger.debug("kanban notifier: pre_result_delivery failed open for %s", self.task_id, exc_info=True)
             return False
         for _plugin, result in results:
             if isinstance(result, dict) and result.get("action") == "handled":

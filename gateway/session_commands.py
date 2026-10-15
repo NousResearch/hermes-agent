@@ -73,10 +73,11 @@ _READ_ARGUMENTS = {
 
 
 # The write forms of a command whose reads are above: the messaging handler's own review verbs,
-# applied for this session's profile (`/skills approve|reject` the staged queue, `/skills approval`
-# its config.yaml switch, as main's CLI wrote it).
+# applied for this session's profile (`/memory` and `/skills` approve|reject their staged queues;
+# `approval` updates their config.yaml switch, as main's CLI wrote it).
 _CONTROL_ARGUMENTS = {
     'skills': lambda arg: _first_token(arg) in {'approve', 'apply', 'reject', 'deny', 'drop', 'approval', 'mode'},
+    'memory': lambda arg: _first_token(arg) in {'approve', 'apply', 'reject', 'deny', 'drop', 'approval', 'mode'},
 }
 
 

@@ -67,3 +67,11 @@ def test_plugin_mcp_servers_stay_in_the_posture(project, monkeypatch):
     from gateway.session_policy import build_policy
     monkeypatch.setattr('hermes_cli.plugins.get_portable_mcp_server_names_nowait', lambda: {'plug'})
     assert {'coding', 'plug'} <= set(build_policy({'source': 'gui', 'cwd': str(project)}, FOCUS).toolsets)
+
+
+@pytest.mark.parametrize('source', ['tool', 'gui'])
+def test_the_daemons_own_directory_is_not_a_workspace(project, monkeypatch, source):
+    from gateway.session_policy import build_policy
+    monkeypatch.chdir(project)
+    monkeypatch.setattr('agent.runtime_cwd.resolve_agent_cwd', lambda: project)
+    assert 'coding' not in build_policy({'source': source}, FOCUS, profile_terminal=False).toolsets

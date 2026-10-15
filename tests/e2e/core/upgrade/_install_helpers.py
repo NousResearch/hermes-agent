@@ -121,8 +121,9 @@ class Sandbox:
         return str(python)
 
     def run(self, argv: list[str], *, timeout: float = 600, cwd: Path | None = None,
-            input: str | None = None) -> subprocess.CompletedProcess:
-        return H.run(argv, env=self.env, cwd=cwd or self.root, writable=[self.root], timeout=timeout, input=input)
+            input: str | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+        return H.run(argv, env=env or self.env, cwd=cwd or self.root, writable=[self.root], timeout=timeout,
+                     input=input)
 
     def cli(self, *args: str, timeout: float = 600) -> subprocess.CompletedProcess:
         return self.run([self.hermes, *args], timeout=timeout)
@@ -161,13 +162,17 @@ def run_installer(sb: Sandbox, *, timeout: float = 1800) -> subprocess.Completed
     """HEAD's scripts/install.sh, non-interactive, as the documented `curl | bash` run does it."""
     script = sb.root / "install.sh"
     shutil.copy(H.WORKTREE / "scripts" / "install.sh", script)
-    env = dict(sb.env)
-    if not sb.checkout.exists():
-        # The origin publishes commits on main and no release tags, so a fresh install follows
-        # main; the channel it saves carries the reruns.
-        env["HERMES_INSTALL_CHANNEL"] = "main"
-    return H.run(["bash", str(script), "--non-interactive"], env=env, cwd=sb.root, writable=[sb.root],
-                 timeout=timeout, input="")
+    return sb.run(["bash", str(script), "--non-interactive"], timeout=timeout, input="",
+                  env=fresh_install_env(sb))
+
+
+def fresh_install_env(sb: Sandbox) -> dict[str, str]:
+    """The sandbox env, plus `main` as the channel for a FRESH install: sandbox origins publish
+    commits on main and no release tags, so the stable default has nothing to install. The
+    install saves the choice, which carries every rerun (a rerun passes nothing, as users do)."""
+    if sb.checkout.exists():
+        return sb.env
+    return {**sb.env, "HERMES_INSTALL_CHANNEL": "main"}
 
 
 def pin_main_channel(sb: Sandbox) -> None:

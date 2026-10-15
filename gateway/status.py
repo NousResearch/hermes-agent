@@ -1266,9 +1266,8 @@ class GatewayLiveness:
     source: str
     health_body: Optional[dict[str, Any]] = None
     probe_error: bool = False
-    # The multiplexer's own ``gateway_state.json`` when the ``multiplexer`` rung answered: a served
-    # profile writes no runtime record of its own, so its platform states live there under
-    # ``<profile>:<platform>`` keys.
+    # The live owner's multiplexer record; served profiles keep platform states there under
+    # ``<profile>:<platform>`` keys, even when the PID or runtime-status rung answers first.
     runtime: Optional[dict[str, Any]] = None
 
 
@@ -1381,22 +1380,15 @@ def resolve_gateway_liveness(
     runtime_reader: Optional[Callable[..., Optional[dict[str, Any]]]] = None,
     runtime_pid_probe: Optional[Callable[..., Optional[int]]] = None,
 ) -> GatewayLiveness:
-    """Single source of truth for "is the gateway up?" across dashboard surfaces. Ladder, most to
-    least authoritative: (1) PID file + runtime lock (scoped to ``profile_dir``; cached by default
-    so polling does not re-flock ``gateway.lock``); (2) caller-supplied HTTP health probe (gateway
-    in another container); (3) LOCAL runtime status PID validated against the live process table
-    with ``expected_home`` (a recycled PID of another profile never counts; pass ``runtime`` if
-    already read); (4) for a named ``profile_dir`` only, the live default multiplexer that records the
-    profile in ``served_profiles`` (a served profile writes no identity files of its own). ``*_probe``/
-    ``runtime_reader`` are the dashboard's injection/test seam. A rung
-    that raises degrades to the next (never 500 a status endpoint) and sets ``probe_error``.
+    """Resolve dashboard liveness in order: (1) profile-scoped PID file + runtime lock (cached);
+    (2) caller's HTTP health probe for cross-container gateways; (3) local runtime PID validated
+    against the process table and ``expected_home``; (4) the live multiplexer serving this home.
+    Recycled PIDs and other profiles' records must never establish ownership. A matching live
+    owner's multiplexer runtime travels even when an earlier local rung answers, so obsolete
+    standalone platform states cannot override the served profile's current states.
 
-    Before this existed, ``/api/status`` and ``/api/messaging/platforms`` each open-coded their own ladder
-    and disagreed on the same page load — the sidebar read "running" while the Channels page rendered "The
-    gateway is not running."  Three deployments hit it: a cross-container gateway (only ``/api/status`` ran
-    the HTTP health probe), a profile-scoped dashboard (only ``/api/status`` passed the profile's paths, so
-    messaging borrowed another profile's runtime state — issue #71211), and a launch-service-managed gateway
-    with no PID file (only some callers used the runtime-status fallback).
+    ``*_probe``/``runtime_reader`` are injection seams; pass ``runtime`` to avoid rereading it.
+    Probe exceptions fall through to the next rung and set ``probe_error``, never a status 500.
     """
     _pid_probe = pid_probe or (get_running_pid_cached if use_cache else get_running_pid)
     _runtime_reader = runtime_reader or read_runtime_status
@@ -1415,8 +1407,15 @@ def resolve_gateway_liveness(
     # Zero-arg call when unscoped: callers monkeypatch with zero-arg lambdas and
     # /api/status's cache signature is keyed on the call shape.
     pid = guarded(_pid_probe, profile_dir / "gateway.pid") if scoped else guarded(_pid_probe)
+    def served_runtime_for_pid(owner_pid):
+        # A served profile's held lock belongs to the host gateway, while its old
+        # standalone status file may still exist. Carry the current owner's state.
+        home = profile_dir if scoped else _get_process_hermes_home()
+        served = guarded(multiplexer_liveness_for_profile, home)
+        return served[1] if served is not None and served[0] == owner_pid else None
+
     if pid is not None:
-        return GatewayLiveness(running=True, pid=pid, source="pid")
+        return GatewayLiveness(running=True, pid=pid, source="pid", runtime=served_runtime_for_pid(pid))
     health_body: Optional[dict[str, Any]] = None
     if health_probe is not None:
         alive, health_body = guarded(health_probe, fallback=(False, None))
@@ -1436,7 +1435,8 @@ def resolve_gateway_liveness(
     runtime_pid = guarded(_runtime_pid_probe, {} if (scoped and runtime is None) else runtime, **probe_kwargs)
     if runtime_pid is not None:
         return GatewayLiveness(
-            running=True, pid=runtime_pid, source="runtime_status", health_body=health_body
+            running=True, pid=runtime_pid, source="runtime_status", health_body=health_body,
+            runtime=served_runtime_for_pid(runtime_pid)
         )
     # (4) A named profile served by the live default multiplexer: no identity files of its own, but
     # the multiplexer IS its gateway (mirrors `hermes -p X status` / `gateway list`). Unscoped, the

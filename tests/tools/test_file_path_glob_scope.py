@@ -36,3 +36,17 @@ def test_path_glob_preserves_scope_and_pagination(tmp_path, order, multiple_root
     basename = ops._search_files("*.txt", scope, limit=50, offset=0, order=order)
     assert basename.error is None
     assert set(expected) < set(basename.files)
+
+
+def test_recursive_basename_glob_without_ripgrep(tmp_path, monkeypatch):
+    """``**/`` before a basename needs no path-aware matching: find still serves it."""
+    wanted = [tmp_path / "root.py", tmp_path / "nested" / "child.py"]
+    wanted[1].parent.mkdir()
+    for file in wanted:
+        file.write_text("fixture", encoding="utf-8")
+    (tmp_path / "nested" / "other.txt").write_text("not Python", encoding="utf-8")
+    ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+    monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+    result = ops._search_files("**/*.py", str(tmp_path), limit=50, offset=0)
+    assert result.error is None
+    assert set(result.files) == {str(file) for file in wanted}

@@ -844,7 +844,10 @@ class SearchMixin:
                       "Install ripgrep for best results: "
                       "https://github.com/BurntSushi/ripgrep#installation")
 
-        if '/' in pattern:
+        # find already traverses descendants: a leading **/ before a basename
+        # does not require path-aware matching. Keep scoped path globs rejected.
+        search_pattern = pattern.removeprefix("**/")
+        if '/' in search_pattern:
             return SearchResult(error=(
                 "Path-aware file globs require ripgrep. Set `path` to the "
                 "directory to search and use a basename glob such as `*.py`, "

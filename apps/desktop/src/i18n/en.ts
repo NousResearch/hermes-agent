@@ -10,6 +10,7 @@ import { enClarify } from './en_clarify'
 import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
 import { enCronControl } from './en_cron_control'
+import { enCustomEndpoints } from './en_custom_endpoints'
 import { enGatewayGroupOpen, enSkillDeepLink } from './en_deep_links'
 import { enErrorCodes } from './en_error_codes'
 import { enErrorLayers } from './en_error_layers'
@@ -1117,47 +1118,7 @@ export const en: Translations = {
     fieldDescriptions: FIELD_DESCRIPTIONS,
     uninstallSection: enUninstallSection,
     memoryLayers: enMemoryLayers,
-    customEndpoints: {
-      active: 'Active',
-      apiKeySet: 'API key set',
-      use: 'Use',
-      editTitle: 'Edit Endpoint',
-      addTitle: 'Add Endpoint',
-      fields: {
-        name: 'Name',
-        providerId: 'Provider ID',
-        endpointUrl: 'Endpoint URL',
-        defaultModel: 'Default Model',
-        context: 'Context',
-        apiKey: 'API Key',
-        apiKeyNewPlaceholder: 'Leave blank to keep current key',
-        apiKeyPlaceholder: 'Optional',
-        useNewChats: 'Use for new chats',
-        discoverModels: 'Discover models'
-      },
-      test: 'Test',
-      save: 'Save',
-      newEndpoint: 'New endpoint',
-      apiMode: 'API Mode',
-      autoDetect: 'Auto-detect',
-      couldNotLoad: 'Could not load custom endpoints',
-      endpointSaved: 'Custom endpoint saved.',
-      saveFailed: 'Save failed',
-      endpointReachable: 'Endpoint is reachable.',
-      endpointReachableTransport: transport => `Endpoint is reachable (${transport} route served).`,
-      endpointReachableModels: (reachable, count) => `${reachable} Found ${count} models.`,
-      endpointValidationFailed: 'Endpoint validation failed.',
-      validationFailed: 'Validation failed',
-      activationFailed: 'Activation failed',
-      deleteConfirm: name => `Delete ${name}?`,
-      deleteFailed: 'Delete failed',
-      title: 'Custom Endpoints',
-      deleteEndpoint: 'Delete endpoint',
-      emptyDescription: 'Add an OpenAI-compatible endpoint below.',
-      emptyTitle: 'No custom endpoints',
-      namePlaceholder: 'Axet Proxy',
-      contextPlaceholder: 'Auto'
-    },
+    customEndpoints: enCustomEndpoints,
     computerUse: {
       accessibility: 'Accessibility',
       screenRecording: 'Screen Recording',

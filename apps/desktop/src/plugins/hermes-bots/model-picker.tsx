@@ -10,7 +10,9 @@ import {
   Button,
   catalogProviderMatches,
   GlyphSpinner,
+  host,
   Input,
+  modelOptionsQueryKey,
   Select,
   SelectContent,
   SelectItem,
@@ -23,8 +25,7 @@ import { useState } from 'react'
 
 import { labeled } from './dialog-parts'
 import { useBots } from './i18n'
-import { botRouteKey, requestForBot, resolveBotConnectionRoute } from './routing'
-import { ID } from './shared'
+import { requestForBot, resolveBotConnectionRoute } from './routing'
 import type { RosterRow } from './types'
 
 // ── model picker (provider/model dropdowns via model.options) ───────────────
@@ -81,7 +82,12 @@ function useModelOptions(bot: null | RosterRow = null) {
   const orphaned = resolved?.status === 'owner_removed'
 
   return useQuery<ModelOptionsResult>({
-    queryKey: [ID, 'model-options', route ? botRouteKey(route) : 'active'],
+    // Setup includes unconfigured providers; keep it separate from the chat catalog.
+    queryKey: modelOptionsQueryKey(
+      route?.targetProfile || route?.profile || host.state.profile.get(),
+      'bot-setup',
+      route?.connectionId || host.state.connectionId.get()
+    ),
     // No forced `refresh`: forcing a network read on EVERY mount bypassed the
     // staleTime cache, so each Bots view remount (tab re-front, dialog reopen,
     // pane visibility flip) knocked the picker back into its loading state and

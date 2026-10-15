@@ -1,6 +1,7 @@
 import { arDelegationRouting } from './ar_delegation_routing'
 import { arMemoryLayers } from './ar_memory_layers'
 import { arUpdateChannel } from './ar_update_channel'
+import { customEndpointCredentials } from './custom_endpoint_credentials'
 import type { TranslationOverrides } from './define-locale'
 
 export const arSettings = {
@@ -45,6 +46,7 @@ export const arSettings = {
         }
       }
     },
+    customEndpoints: { credentials: customEndpointCredentials.ar },
     subpages: {
       appearanceTheme: 'السمة',
       appearanceTypography: 'الخطوط والتحجيم',

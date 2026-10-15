@@ -17,6 +17,7 @@ import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ClarifyCopy } from './types_clarify'
 import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
 import type { CronControlCopy } from './types_cron_control'
+import type { CustomEndpointsTranslations } from './types_custom_endpoints'
 import type { GatewayGroupOpenCopy, SkillDeepLinkCopy } from './types_deep_links'
 import type { ExternalOpenFailedCopy } from './types_external_open'
 import type { FirstRunCopy } from './types_first_run'
@@ -923,47 +924,7 @@ export interface Translations extends NoticeTranslations {
     fieldDescriptions: Record<string, string>
     uninstallSection: UninstallSectionTranslations
     memoryLayers: MemoryLayersTranslations
-    customEndpoints: {
-      active: string
-      apiKeySet: string
-      use: string
-      editTitle: string
-      addTitle: string
-      fields: {
-        name: string
-        providerId: string
-        endpointUrl: string
-        defaultModel: string
-        context: string
-        apiKey: string
-        apiKeyNewPlaceholder: string
-        apiKeyPlaceholder: string
-        useNewChats: string
-        discoverModels: string
-      }
-      test: string
-      save: string
-      newEndpoint: string
-      apiMode: string
-      autoDetect: string
-      couldNotLoad: string
-      endpointSaved: string
-      saveFailed: string
-      endpointReachable: string
-      endpointReachableTransport: (transport: string) => string
-      endpointReachableModels: (reachable: string, count: number) => string
-      endpointValidationFailed: string
-      validationFailed: string
-      activationFailed: string
-      deleteConfirm: (name: string) => string
-      deleteFailed: string
-      title: string
-      deleteEndpoint: string
-      emptyDescription: string
-      emptyTitle: string
-      namePlaceholder: string
-      contextPlaceholder: string
-    }
+    customEndpoints: CustomEndpointsTranslations
     computerUse: {
       accessibility: string
       screenRecording: string

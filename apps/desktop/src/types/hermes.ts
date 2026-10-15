@@ -289,7 +289,10 @@ export interface CustomEndpointModelDetail {
   reasoning_effort?: null | string
 }
 
+export type CustomEndpointCredentialSource = 'api_key' | 'command' | 'azure_cli'
+
 export interface CustomEndpoint {
+  credential_source?: CustomEndpointCredentialSource
   api_key_preview?: null | string
   api_mode?: CustomEndpointApiMode
   base_url: string
@@ -316,6 +319,8 @@ export interface CustomEndpointsResponse {
 }
 
 export interface CustomEndpointUpdate {
+  credential_source?: CustomEndpointCredentialSource
+  key_cmd?: string
   api_key?: string
   api_mode?: CustomEndpointApiMode
   base_url: string

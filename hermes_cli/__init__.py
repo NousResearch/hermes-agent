@@ -69,8 +69,8 @@ def _release_date() -> str:
         from hermes_cli.version_info import get_version_info
         commit_date = get_version_info().commit_date
     if isinstance(commit_date, int):
-        from datetime import datetime, timezone
-        moment = datetime.fromtimestamp(commit_date, tz=timezone.utc)
+        from datetime import UTC, datetime
+        moment = datetime.fromtimestamp(commit_date, tz=UTC)
         _release_date_cached = f"{moment.year}.{moment.month}.{moment.day}"
     else:
         _release_date_cached = _RELEASE_DATE_FALLBACK

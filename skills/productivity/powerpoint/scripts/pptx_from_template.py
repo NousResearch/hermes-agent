@@ -38,12 +38,12 @@ def find_layout(prs, ref):
 
 
 def add_slides(prs, spec):
-    from pptx_create import add_bullets
+    from pptx_create import add_bullets, set_slide_title
     for slide_spec in spec.get("slides", []):
         layout = find_layout(prs, slide_spec.get("layout", 1))
         slide = prs.slides.add_slide(layout)
-        if slide_spec.get("title") is not None and slide.shapes.title:
-            slide.shapes.title.text = slide_spec["title"]
+        if slide_spec.get("title") is not None:
+            set_slide_title(slide, slide_spec["title"], prs.slide_width)
         if slide_spec.get("bullets"):
             body = next((ph for ph in slide.placeholders
                          if ph.placeholder_format.idx != 0), None)

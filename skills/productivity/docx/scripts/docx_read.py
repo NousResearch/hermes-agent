@@ -24,21 +24,43 @@ import zipfile
 from docx import Document
 
 
+def cell_text(cell) -> str:
+    """Flatten a cell's own paragraphs and any nested table text."""
+    parts = [p.text for p in cell.paragraphs if p.text]
+    for nested in cell.tables:
+        for row in table_to_rows(nested):
+            parts.extend(text for text in row if text)
+    return "\n".join(parts)
+
+
 def table_to_rows(table) -> list:
-    return [[cell.text for cell in row.cells] for row in table.rows]
+    return [[cell_text(cell) for cell in row.cells] for row in table.rows]
+
+
+def append_part_text(target: list[str], part, seen: set[int]) -> None:
+    """Append one header/footer variant without duplicating linked parts."""
+    marker = id(part._element)
+    if marker in seen:
+        return
+    seen.add(marker)
+    target.extend(p.text for p in part.paragraphs)
+    for table in part.tables:
+        target.append(json.dumps(table_to_rows(table), ensure_ascii=False))
 
 
 def extract_text(doc) -> dict:
     out = {"body": [p.text for p in doc.paragraphs],
            "tables": [table_to_rows(t) for t in doc.tables],
            "headers": [], "footers": []}
+    seen_headers: set[int] = set()
+    seen_footers: set[int] = set()
     for section in doc.sections:
-        out["headers"].extend(p.text for p in section.header.paragraphs)
-        out["footers"].extend(p.text for p in section.footer.paragraphs)
-        for t in section.header.tables:
-            out["headers"].append(json.dumps(table_to_rows(t), ensure_ascii=False))
-        for t in section.footer.tables:
-            out["footers"].append(json.dumps(table_to_rows(t), ensure_ascii=False))
+        for part in (section.header, section.first_page_header,
+                     section.even_page_header):
+            append_part_text(out["headers"], part, seen_headers)
+        for part in (section.footer, section.first_page_footer,
+                     section.even_page_footer):
+            append_part_text(out["footers"], part, seen_footers)
     return out
 
 

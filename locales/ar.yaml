@@ -33,7 +33,7 @@ gateway:
     ctx_source_config:     "الإعدادات"
     ctx_source_default:    "الافتراضي — اضبط model.context_length في الإعدادات لتغييره"
     ctx_source_detected:   "مكتشف"
-    stopped_notice: "◐ Session reset after being stopped. Conversation history cleared.\nUse /resume to browse and restore a previous session.\n"
+        stopped_notice: "◐ أُعيد تعيين الجلسة بعد إيقافها. تم مسح سجل المحادثة.\nاستخدم /resume لتصفح جلسة سابقة واستعادتها.\n"
   context:
     header:                "🧠 **Context Window**"
     model:                 "Model: `{model}`"

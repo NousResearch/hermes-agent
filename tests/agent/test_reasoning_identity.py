@@ -104,10 +104,14 @@ def test_identified_delta_keeps_writer_fencing_legacy_fallback_and_observer_once
 
 
 def test_native_reasoning_obeys_muted_notification_turn_and_restores_delivery():
-    from agent.notification_presentation import event_presentation_muted, notification_turn
+    from agent.notification_presentation import (
+        event_presentation_muted,
+        notification_turn,
+    )
 
     agent = StreamDeliveryMixin()
     seen = []
+
     def callback(*args):
         seen.append(args)
 

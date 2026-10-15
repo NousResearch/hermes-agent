@@ -91,8 +91,7 @@ def test_the_resumed_owner_still_gets_its_completion(monkeypatch):
     owner = _session(OWNER_KEY)
     monkeypatch.setattr(server, "_sessions", {"owner-sid": owner})
     monkeypatch.setattr("tools.process_registry.process_registry", registry)
-    for name in ("_poll_bot_live_delivery_guarded", "_maybe_fire_tui_loop_tick",
-                 "_maybe_fire_tui_heartbeat_tick", "_notif_poll_kanban"):
+    for name in ("_maybe_fire_tui_loop_tick", "_maybe_fire_tui_heartbeat_tick", "_notif_poll_kanban"):
         monkeypatch.setattr(server, name, lambda *a, **k: None)
     monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda evt, consumer: "claim")
     monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda evt, claim: None)

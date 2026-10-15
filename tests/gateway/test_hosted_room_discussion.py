@@ -742,6 +742,34 @@ def test_malformed_or_remote_roster_is_rejected(members: list[dict], match: str)
         discussion.validate_roster(members, local_profiles=LOCAL_PROFILES)
 
 
+def test_legacy_label_member_alias_is_accepted():
+    legacy = [
+        {"member_id": "member-research", "profile": "research", "handle": "research", "label": "Research"},
+        {"member_id": "member-build", "profile": "build", "handle": "build", "label": "Build"},
+    ]
+
+    members = discussion.validate_roster(legacy, local_profiles=LOCAL_PROFILES)
+
+    assert [member.display_name for member in members] == ["Research", "Build"]
+
+
+def test_display_name_wins_over_legacy_label_alias():
+    mixed = [
+        {
+            "member_id": "member-research",
+            "profile": "research",
+            "handle": "research",
+            "label": "Legacy",
+            "display_name": "Canonical",
+        },
+        {"member_id": "member-build", "profile": "build", "handle": "build", "display_name": "Build"},
+    ]
+
+    members = discussion.validate_roster(mixed, local_profiles=LOCAL_PROFILES)
+
+    assert members[0].display_name == "Canonical"
+
+
 @pytest.mark.parametrize(
     "payload",
     [

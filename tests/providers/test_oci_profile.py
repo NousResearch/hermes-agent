@@ -1,5 +1,8 @@
 """Tests for the bundled OCI Generative AI provider plugin."""
 
+import pytest
+
+from agent.models_dev import lookup_models_dev_context
 from providers import get_provider_profile
 from providers.base import ProviderProfile
 
@@ -35,3 +38,21 @@ class TestOCIProfile:
     def test_curated_list_skips_llama(self) -> None:
         """OCI 400s Llama tool calls whose first message is not a user turn; Hermes always opens with a system prompt."""
         assert not any(m.startswith("meta.") for m in _profile().fallback_models)
+
+    def test_context_window_comes_from_models_dev_oci_catalog(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without the models.dev mapping, gpt-oss on OCI fell back to the generic 256K window (it's 128K)."""
+        catalog = {
+            "oci": {
+                "models": {
+                    "openai.gpt-oss-120b": {
+                        "limit": {"context": 128000, "output": 16384}
+                    }
+                }
+            }
+        }
+        monkeypatch.setattr(
+            "agent.models_dev.fetch_models_dev", lambda *a, **k: catalog
+        )
+        assert lookup_models_dev_context("oci", "openai.gpt-oss-120b") == 128000

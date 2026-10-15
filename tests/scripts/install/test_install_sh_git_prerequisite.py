@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "install.sh"
+_SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "install.sh"
 _STUB_ERR = (
     "xcrun: error: invalid active developer path (/Library/Developer/CommandLineTools), "
     "missing xcrun at: /Library/Developer/CommandLineTools/usr/bin/xcrun"
@@ -27,7 +27,7 @@ def _exe(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
-def _run_prerequisites(tmp_path: Path, *, system: str, git: str = "stub", interactive: bool = False,
+def _run_prerequisites(tmp_path: Path, *, git: str = "stub", interactive: bool = False,
                        brew: bool = False, clt_finishes: bool = True):
     """git: "stub" (fails until the CLT install finishes) or "working"."""
     bin_dir = tmp_path / "bin"
@@ -41,7 +41,6 @@ def _run_prerequisites(tmp_path: Path, *, system: str, git: str = "stub", intera
         _exe(bin_dir / "git", f'#!/bin/sh\nif [ -f "{done}" ]; then echo "git version 2.39.5"; exit 0; fi\n'
                               f'echo "{_STUB_ERR}" >&2\nexit 1\n')
     _exe(bin_dir / "curl", "#!/bin/sh\nexit 0\n")
-    _exe(bin_dir / "uname", f"#!/bin/sh\necho {system}\n")
     _exe(bin_dir / "xcode-select", f'#!/bin/sh\necho "xcode-select $*" >> "{calls}"\nexit 1\n')
     # Each poll interval is where the user may finish Apple's dialog.
     finish = f'touch "{done}"\n' if clt_finishes else ""
@@ -58,18 +57,19 @@ def _run_prerequisites(tmp_path: Path, *, system: str, git: str = "stub", intera
         "uv_bootstrap_target() { echo darwin-arm64; }\n"
         "stage_prerequisites\n"
     )
-    path = os.pathsep.join([str(brew_bin), str(bin_dir), os.environ["PATH"]])
+    # System dirs only: a host's real Homebrew must never run from a test.
+    path = os.pathsep.join([str(brew_bin), str(bin_dir), "/usr/bin", "/bin"])
     env = dict(os.environ, PATH=path, HOME=str(tmp_path))
     result = subprocess.run(
-        ["bash", "-c", probe, "probe", str(_SCRIPT)],
+        ["/bin/bash", "-c", probe, "probe", str(_SCRIPT)],
         env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120, check=False,
     )
     return result, (calls.read_text().splitlines() if calls.is_file() else [])
 
 
-@pytest.mark.platforms("posix")
+@pytest.mark.platforms("macos")
 def test_macos_stub_waits_for_clt_dialog_then_continues(tmp_path):
-    result, calls = _run_prerequisites(tmp_path, system="Darwin", interactive=True)
+    result, calls = _run_prerequisites(tmp_path, interactive=True)
 
     assert result.returncode == 0, result.stderr
     assert "click Install" in result.stdout
@@ -77,18 +77,18 @@ def test_macos_stub_waits_for_clt_dialog_then_continues(tmp_path):
     assert calls == ["xcode-select --install", "sleep 5"]
 
 
-@pytest.mark.platforms("posix")
+@pytest.mark.platforms("macos")
 def test_macos_stub_prefers_homebrew_without_dialog(tmp_path):
-    result, calls = _run_prerequisites(tmp_path, system="Darwin", interactive=True, brew=True)
+    result, calls = _run_prerequisites(tmp_path, interactive=True, brew=True)
 
     assert result.returncode == 0, result.stderr
     assert "prerequisites ok" in result.stdout
     assert calls == ["brew install git"]
 
 
-@pytest.mark.platforms("posix")
+@pytest.mark.platforms("macos")
 def test_macos_stub_non_interactive_fails_fast_with_remedy(tmp_path):
-    result, calls = _run_prerequisites(tmp_path, system="Darwin", interactive=False)
+    result, calls = _run_prerequisites(tmp_path, interactive=False)
 
     assert result.returncode != 0
     assert "xcode-select --install" in result.stderr
@@ -96,9 +96,9 @@ def test_macos_stub_non_interactive_fails_fast_with_remedy(tmp_path):
     assert calls == ["xcode-select --install"]
 
 
-@pytest.mark.platforms("posix")
+@pytest.mark.platforms("macos")
 def test_macos_stub_wait_gives_up_after_fifteen_minutes(tmp_path):
-    result, calls = _run_prerequisites(tmp_path, system="Darwin", interactive=True, clt_finishes=False)
+    result, calls = _run_prerequisites(tmp_path, interactive=True, clt_finishes=False)
 
     assert result.returncode != 0
     assert "did not finish within 15 minutes" in result.stderr
@@ -106,9 +106,9 @@ def test_macos_stub_wait_gives_up_after_fifteen_minutes(tmp_path):
     assert "Still waiting for the Command Line Tools install (15m)" in result.stdout
 
 
-@pytest.mark.platforms("posix")
-def test_broken_git_elsewhere_names_git_error_without_xcode(tmp_path):
-    result, calls = _run_prerequisites(tmp_path, system="Linux")
+@pytest.mark.platforms("linux")
+def test_broken_git_on_linux_names_git_error_without_xcode(tmp_path):
+    result, calls = _run_prerequisites(tmp_path)
 
     assert result.returncode != 0
     assert "git is installed but cannot run" in result.stderr
@@ -118,7 +118,7 @@ def test_broken_git_elsewhere_names_git_error_without_xcode(tmp_path):
 
 @pytest.mark.platforms("posix")
 def test_working_git_passes_prerequisites(tmp_path):
-    result, calls = _run_prerequisites(tmp_path, system="Darwin", git="working")
+    result, calls = _run_prerequisites(tmp_path, git="working")
 
     assert result.returncode == 0, result.stderr
     assert "prerequisites ok" in result.stdout

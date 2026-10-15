@@ -118,7 +118,10 @@ def _binding(runner, source, profile):
         raise RuntimeStoreError('profile_mismatch')
     runtime_home = home
     multiplex = getattr(runner.config, 'multiplex_profiles', False)
-    if not multiplex and source.profile:
+    # A single-profile gateway serves a relay event from its one profile whatever the connector
+    # stamped (session keys ignore the profile here); the sealed stamp stays on the source so a
+    # restored reply can still echo it to the connector.
+    if not multiplex and source.profile and not relay:
         raise RuntimeStoreError('profile_mismatch')
     if multiplex:
         # Only the reservation-backed server registry proves a served home. Directory

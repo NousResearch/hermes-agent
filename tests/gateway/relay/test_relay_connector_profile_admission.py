@@ -2,7 +2,7 @@
 
 The connector (Team Gateway per-scope profile routing) stamps the Hermes profile that serves an
 inbound event. A single-profile gateway serves it from its one profile (the stamp is not a route
-there, as before shared session authority); a multiplexed gateway admits it into that profile's
+there, as before shared session authority, but it is kept on the admission); a multiplexed gateway admits it into that profile's
 own ledger. Neither may acknowledge the frame and drop it. An unserved stamped profile is refused
 the way an unserved profile route is: acknowledged, never run.
 """
@@ -106,6 +106,10 @@ def _requests(authority):
 @pytest.mark.asyncio
 async def test_single_profile_gateway_serves_a_connector_stamped_profile(tmp_path, monkeypatch):
     from gateway.session_authority import initialize_session_authority
+    from hermes_constants import get_hermes_home
+    launch = Path(get_hermes_home()).resolve()
+    # A profile of the stamped name exists on disk: the single-profile gateway must still not use it.
+    (launch / 'profiles' / 'work').mkdir(parents=True, exist_ok=True)
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
     turns = _stub_turns(runner, monkeypatch)
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='relay-profile-single')
@@ -117,11 +121,14 @@ async def test_single_profile_gateway_serves_a_connector_stamped_profile(tmp_pat
                                    and _replies(outgoing, 'chat-plain'), timeout=20,
                                    what='both relay frames answered')
             assert {'buf-plain', 'buf-stamped'} <= _acked(outgoing)
-            by_text = {text: key for text, _home, key in turns}
-            # The stamp is not a route on a single-profile gateway: the historical namespace.
-            assert by_text['hello stamped'] == 'agent:main:telegram:dm:chat-stamped'
-            assert by_text['hello plain'] == 'agent:main:telegram:dm:chat-plain'
-            assert sorted(r['request_id'] for r in _requests(authority)) == ['plain', 'stamped']
+            by_text = {text: (home, key) for text, home, key in turns}
+            # The stamp is not a route on a single-profile gateway: the one profile, historical namespace.
+            assert by_text['hello stamped'] == (launch, 'agent:main:telegram:dm:chat-stamped')
+            assert by_text['hello plain'] == (launch, 'agent:main:telegram:dm:chat-plain')
+            rows = {r['request_id']: r for r in _requests(authority)}
+            assert sorted(rows) == ['plain', 'stamped']
+            # The stamp is kept (sealed) in the durable admission, so a restored reply can echo it.
+            assert rows['stamped']['payload']['native_text_v1']['source'].get('profile') == 'work'
             # The connector still gets its profile echoed on egress (persona attribution).
             assert _replies(outgoing, 'chat-stamped')[-1]['metadata'].get('profile') == 'work'
             # A replay of the stamped frame is the same admission, not a second turn.

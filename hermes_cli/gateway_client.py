@@ -83,11 +83,13 @@ def rpc_error(error):
 
 class GatewayUnavailableError(GatewayClientError):
     """No ready owner to dial: ``state`` is ``ensure_gateway_runtime``'s verdict (``draining`` while an
-    update holds the install, ``starting`` past the deadline, ...). Nothing was submitted."""
+    update holds the install, ``starting`` past the deadline, ...) and ``reason_code`` its bounded
+    reason (``update_paused``, ``runtime_protocol``, ...). Nothing was submitted."""
 
-    def __init__(self, message, state):
+    def __init__(self, message, state, reason_code=None):
         super().__init__(message)
         self.state = state
+        self.reason_code = reason_code
 
 
 class GatewayClient:
@@ -209,10 +211,11 @@ async def connect_gateway(endpoint=None):
             detail = getattr(result, "detail", None)
             if result.reason_code == "runtime_exited" and detail:
                 # A multi-line startup report (redacted traceback tail + where the full log is).
-                raise GatewayUnavailableError(f"Gateway could not start: {detail}", result.state)
+                raise GatewayUnavailableError(f"Gateway could not start: {detail}", result.state,
+                                              result.reason_code)
             detail = f" ({detail})" if detail else ""
             raise GatewayUnavailableError(f"Gateway {result.state}: {result.reason_code or 'not_ready'}{detail}",
-                                          result.state)
+                                          result.state, result.reason_code)
         endpoint = result.endpoint
         ticket = await asyncio.to_thread(_session_ticket, home, endpoint)
         url, protocols = gateway_ws_target(endpoint, ticket)

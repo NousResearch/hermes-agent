@@ -239,6 +239,8 @@ def _observe_replacing_stale(home: Path, deadline: float, replaced: set[Path]) -
     from hermes_cli import gateway_runtime_replace as replace
     replaced.add(home)
     refusal = replace.replace_incompatible_owner(home, deadline=deadline)
+    if refusal == "owner_is_parent":
+        return GatewayDiscovery("incompatible", reason_code="parent_outdated", detail=replace.REFUSAL_DETAIL[refusal])
     if refusal is not None:
         return GatewayDiscovery("incompatible", reason_code="runtime_protocol",
                                 detail=replace.REFUSAL_DETAIL.get(refusal, _REPLACE_FAILED_DETAIL))

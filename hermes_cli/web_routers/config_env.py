@@ -13,8 +13,9 @@ import urllib.parse
 from fastapi import APIRouter
 from hermes_cli.web_routers._common import (
     REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
-    redacted_credential_preview, scoped_to_thread,
+    redacted_credential_preview, scoped_to_thread, config_scoped_to_thread,
 )
+from hermes_cli.web_routers.custom_endpoint_credentials import credential_source, probe_headers, select_credentials
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
     _apply_main_model_assignment, _denormalize_config_from_web, _normalize_config_for_web, _schema_with_dynamic_provider_options,
@@ -457,6 +458,7 @@ def _endpoint_row(
         "api_mode": _endpoint_api_mode(key_entry),
         "context_length": context_length, "discover_models": discover_models,
         "has_api_key": has_api_key, "api_key_preview": api_key_preview,
+        "credential_source": credential_source(key_entry),
         "is_current": is_current, "source": source,
     }
 
@@ -570,9 +572,63 @@ def _detach_main_model_from_provider(cfg: dict[str, Any], provider_key: str, ent
     cfg["model"] = model_cfg
 
 
+def _write_endpoint_credentials(endpoint_id: str, entry: dict[str, Any], body: CustomEndpointUpdate) -> None:
+    # API keys never belong in config.yaml: write to .env and reference it via
+    # ``key_env`` — the indirection built-in providers use and that
+    # runtime_provider.py resolves at load time.
+    # See #69449.
+    env_var = custom_endpoint_key_env(endpoint_id)
+    if body.credential_source in ("command", "azure_cli") or body.key_cmd is not None:
+        # Do not delete the old key before validation/config commit: a rejected
+        # model selection must leave the current endpoint usable.
+        return
+    submitted_key = body.api_key.strip() if body.api_key is not None else None
+    if submitted_key:
+        # ``${KEY_ENV}`` is the GET display for key_env entries; the helper covers the
+        # sentinel and legacy masks. Either one is display-only, current or stale.
+        if _ENV_REF_RE.fullmatch(submitted_key) or is_redacted_credential_preview(submitted_key):
+            raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
+        save_env_value(env_var, submitted_key)
+        entry["key_env"] = env_var
+        entry.pop("api_key_env", None)
+        entry.pop("api_key", None)
+    elif submitted_key is not None:
+        # Blank field means "clear the key", not "leave it alone".
+        remove_env_value(env_var)
+        entry.pop("key_env", None)
+        entry.pop("api_key_env", None)
+        entry.pop("api_key", None)
+    elif str(entry.get("api_key") or "").strip() and not _config_api_key_is_env_ref(endpoint_id):
+        # Migrate a plaintext key an earlier release wrote, on the next save,
+        # without the user having to re-enter it.
+        save_env_value(env_var, entry["api_key"].strip())
+        entry["key_env"] = env_var
+        entry.pop("api_key", None)
+
+
+def _custom_endpoint_base_url(body: CustomEndpointUpdate) -> str:
+    """Expand pasted Foundry project/resource URLs to their OpenAI client base."""
+    from utils import base_url_host_matches
+
+    base = body.base_url.strip().rstrip("/")
+    if _canonical_api_mode(body.api_mode or "") == "anthropic_messages":
+        return base
+    try:
+        parsed = urllib.parse.urlsplit(base)
+    except ValueError:
+        return base  # Save owns URL validation below.
+    azure = (base_url_host_matches(base, "services.ai.azure.com")
+             or base_url_host_matches(base, "openai.azure.com"))
+    if azure and not parsed.query and not parsed.fragment:
+        path = parsed.path.rstrip("/")
+        if not path or re.fullmatch(r"/api/projects/[^/]+", path):
+            return parsed._replace(path=path + "/openai/v1").geturl()
+    return base
+
+
 def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> tuple[str, dict[str, Any]]:
     name = (body.name or "").strip()
-    base_url = (body.base_url or "").strip().rstrip("/")
+    base_url = _custom_endpoint_base_url(body)
     model = (body.model or "").strip()
 
     if not name:
@@ -624,7 +680,7 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     # (``key_env``/``api_key_env``, ``extra_headers`` — possibly with
     # credentials — ``request_overrides``); rebuilding from scratch silently
     # dropped them on an unrelated edit.
-    entry: dict[str, Any] = dict(existing)
+    entry = select_credentials(existing, body)
     entry.update({
         "name": name, "base_url": base_url, "model": model,
         "discover_models": bool(body.discover_models),
@@ -684,31 +740,7 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
         entry["context_length"] = int(body.context_length)
         entry["models"][model]["context_length"] = int(body.context_length)
 
-    # API keys never belong in config.yaml: write to .env and reference it via
-    # ``key_env`` — the indirection built-in providers use and that
-    # runtime_provider.py resolves at load time.
-    # See #69449.
-    env_var = custom_endpoint_key_env(endpoint_id)
-    submitted_key = body.api_key.strip() if body.api_key is not None else None
-    if submitted_key:
-        # ``${KEY_ENV}`` is the GET display for key_env entries; the helper covers the
-        # sentinel and legacy masks. Either one is display-only, current or stale.
-        if _ENV_REF_RE.fullmatch(submitted_key) or is_redacted_credential_preview(submitted_key):
-            raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
-        save_env_value(env_var, submitted_key)
-        entry["key_env"] = env_var
-        entry.pop("api_key", None)
-    elif submitted_key is not None:
-        # Blank field means "clear the key", not "leave it alone".
-        remove_env_value(env_var)
-        entry.pop("key_env", None)
-        entry.pop("api_key", None)
-    elif str(entry.get("api_key") or "").strip() and not _config_api_key_is_env_ref(endpoint_id):
-        # Migrate a plaintext key an earlier release wrote, on the next save,
-        # without the user having to re-enter it.
-        save_env_value(env_var, entry["api_key"].strip())
-        entry["key_env"] = env_var
-        entry.pop("api_key", None)
+    _write_endpoint_credentials(endpoint_id, entry, body)
 
     if stored_key is not None and stored_key != endpoint_id:
         providers.pop(stored_key, None)
@@ -716,7 +748,12 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     cfg["providers"] = providers
 
     if body.make_default:
-        result = _validated_main_model_selection(cfg, endpoint_id, model, base_url)
+        from hermes_cli.runtime_provider import frozen_runtime_config
+
+        # The endpoint is not on disk yet. Resolve this pending provider definition,
+        # including key_cmd, rather than probing with the previous configuration.
+        with frozen_runtime_config(cfg):
+            result = _validated_main_model_selection(cfg, endpoint_id, model, base_url)
         cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
         if entry.get("key_env") and isinstance(cfg["model"], dict):
             cfg["model"]["key_env"] = entry["key_env"]
@@ -850,28 +887,37 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
 
 
 @router.post("/api/providers/custom-endpoints/validate")
-async def validate_custom_endpoint(body: CustomEndpointUpdate):
+async def validate_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = None):
     """Probe a custom endpoint by calling its OpenAI-compatible /models URL."""
-    base_url = (body.base_url or "").strip().rstrip("/")
+    base_url = _custom_endpoint_base_url(body)
     if not base_url:
         return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
 
-    headers = {"Accept": "application/json"}
-    if body.api_key and body.api_key.strip():
-        headers["Authorization"] = f"Bearer {body.api_key.strip()}"
+    from agent.command_token_source import CommandTokenError
 
+    body = body.model_copy(update={"base_url": base_url})
+    try:
+        headers = await config_scoped_to_thread(profile, lambda: probe_headers(body))
+    except CommandTokenError as exc:
+        return {"ok": False, "reachable": True, "message": str(exc), "models": []}
     resolved, resp = await _probe_openai_compatible_models(base_url, headers)
     if resp is None:
         return {"ok": False, "reachable": False, "message": f"Could not reach {base_url}/models.", "models": []}
-    if resp.status_code in (401, 403):
-        return {"ok": False, "reachable": True, "message": "The endpoint rejected the API key.", "models": []}
+    require_success = body.credential_source in ("command", "azure_cli") or body.key_cmd is not None
+    known_deployment = require_success and bool(body.model.strip())
+    if resp.status_code in (401, 403) and not known_deployment:
+        return {"ok": False, "reachable": True, "message": "The endpoint rejected the credential.", "models": []}
     if not resp.is_success:
+        # No catalogue candidate established a base URL. Probe the user-entered inference
+        # base, not the last guessed /models alternate, which may have also returned 404.
+        resolved = base_url
+    if not resp.is_success and not known_deployment:
         return {"ok": False, "reachable": True, "message": f"Endpoint returned HTTP {resp.status_code}.", "models": []}
     # ``models`` stays the bare id list older clients read; ``model_details`` keeps the
     # alias metadata (``canonical_model`` / ``reasoning_effort``) the id list flattens.
-    entries = _parse_model_entries(resp)
+    entries = _parse_model_entries(resp) if resp.is_success else []
     ids = [e["id"] for e in entries]
-    if not ids:
+    if not ids and not known_deployment:
         # A 200 that parses to zero models is the SPA-catch-all signature (#83128): a real
         # OpenAI-compatible /models answers JSON with a usable list. ``_parse_model_entries``
         # is lenient by design, so classify the empty result here instead of reporting
@@ -887,11 +933,13 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     probe_model = (body.model or "").strip() or (ids[0] if ids else "")
     try:
         async with _endpoint_probe_client(resolved, 8.0) as client:
-            missing = await _probe_transport_route(client, resolved, mode, probe_model, headers)
+            missing = await _probe_transport_route(
+                client, resolved, mode, probe_model, headers, require_success=require_success)
     except Exception:
-        missing = ""  # inconclusive (see _probe_transport_route): never block on a transport error
+        missing = "Could not validate the inference route." if require_success else ""
 
-    result = {"ok": True, "reachable": True, "message": "", "models": ids, "model_details": entries,
+    result = {"ok": True, "reachable": True, "message": "" if ids else "Deployment accepted; model discovery is unavailable.",
+              "models": ids or [probe_model], "model_details": entries,
               "transport_checked": mode, "resolved_base_url": resolved}
     if missing:
         result.update(ok=False, message=missing)
@@ -958,26 +1006,72 @@ def _auto_api_mode(base_url: str) -> str:
     return _detect_api_mode_for_url(base_url) or "chat_completions"
 
 
-async def _probe_transport_route(client, base_url: str, mode: str, model: str, headers: dict[str, str]) -> str:
-    """POST a 1-token request to ``mode``'s route; return a failure message when the host does
-    not serve it (404/405/501), ``""`` otherwise. Any other status — 200, 400 (bad body), 401,
-    422, 429 — means the route exists, which is all the check needs to know; a network error or
-    timeout (a local server still loading the model) is inconclusive and does not block."""
+def _endpoint_probe_failure(resp: Any, route: str, headers: dict[str, str]) -> str:
+    """Expose a bounded provider explanation, redacting the credential we sent."""
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    detail = error.get("message") if isinstance(error, dict) else None
+    if not isinstance(detail, str):
+        detail = ""
+    authorization = next((value for key, value in headers.items() if key.lower() == "authorization"), "")
+    secrets = {*headers.values(), authorization.partition(" ")[2]}
+    for secret in sorted(secrets, key=len, reverse=True):
+        if secret:
+            detail = detail.replace(secret, "[redacted]")
+    detail = " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", detail).split())[:500]
+    if resp.status_code == 403:
+        reason = "access denied"
+        fallback = "Check account permissions and endpoint network access policies."
+    elif resp.status_code == 401:
+        reason = "credential rejected"
+        fallback = "Check the selected account and credential."
+    else:
+        reason = "request failed"
+        fallback = "Check the deployment name and API mode."
+    return f"POST {route} returned HTTP {resp.status_code} ({reason}). {detail or fallback}"
+
+
+async def _probe_transport_route(
+    client, base_url: str, mode: str, model: str, headers: dict[str, str], *, require_success: bool = False,
+) -> str:
+    """Probe the chosen inference route without executing any returned tools.
+
+    Explicit auth selections require a successful inference response. Older clients retain
+    the route-existence check, which accepts request validation failures as inconclusive.
+    """
     route = _TRANSPORT_ROUTES.get(mode)
     if route is None:
         return ""
     if mode == "anthropic_messages":
         payload = {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}
-        token = headers.get("Authorization", "").removeprefix("Bearer ")
-        headers = {**headers, "anthropic-version": "2023-06-01", **({"x-api-key": token} if token else {})}
+        import httpx
+
+        protocol_headers = httpx.Headers(headers)
+        token = protocol_headers.get("Authorization", "").removeprefix("Bearer ")
+        protocol_headers.setdefault("anthropic-version", "2023-06-01")
+        if token:
+            protocol_headers.setdefault("x-api-key", token)
+        headers = dict(protocol_headers)
     elif mode == "codex_responses":
         payload = {"model": model, "input": "hi", "max_output_tokens": 16}
     else:
-        payload = {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}
+        from utils import base_url_host_matches, base_url_hostname, model_forces_max_completion_tokens
+
+        # Match AIAgent._max_tokens_param: Azure deployment aliases may hide the model family.
+        completion_limit = (model_forces_max_completion_tokens(model) or base_url_hostname(base_url) == "api.openai.com"
+                            or base_url_host_matches(base_url, "openai.azure.com")
+                            or base_url_host_matches(base_url, "githubcopilot.com"))
+        limit_field = "max_completion_tokens" if completion_limit else "max_tokens"
+        payload = {"model": model, limit_field: 1, "messages": [{"role": "user", "content": "hi"}]}
     try:
         resp = await client.post(base_url + route, json=payload, headers=headers)
     except Exception:
-        return ""
+        return "Could not validate the inference route." if require_success else ""
+    if resp.status_code in (401, 403) or (require_success and not resp.is_success):
+        return _endpoint_probe_failure(resp, route, headers)
     if resp.status_code not in (404, 405, 501):
         return ""
     return (f"{base_url}/models answered, but POST {route} returned HTTP {resp.status_code}: this host "

@@ -781,7 +781,7 @@ def validate_requested_model(
     model_name: str,
     provider: Optional[str],
     *,
-    api_key: Optional[str] = None,
+    api_key: str | Callable[[], str] | None = None,
     base_url: Optional[str] = None,
     api_mode: Optional[str] = None,
     headers: Optional[dict[str, str]] = None,
@@ -790,7 +790,10 @@ def validate_requested_model(
     ``persist`` (safe to save to config), ``recognized`` (matched a known provider catalog),
     ``message`` (optional warning / guidance). The requested id is never rewritten: what the user
     selected is what the wire sees."""
+    from agent.command_token_source import materialize_probe_api_key
     from hermes_cli import models as _m
+
+    api_key = materialize_probe_api_key(api_key)
 
     requested = (model_name or "").strip()
     normalized = _m.normalize_provider(provider)

@@ -77,7 +77,8 @@ def _ok_child():
     return child
 
 
-def test_provider_pin_clears_global_endpoint_with_real_resolver():
+@pytest.mark.parametrize("model_pin", [None, PIN_CREDS["model"]])
+def test_provider_pin_clears_global_endpoint_with_real_resolver(model_pin):
     """A provider pin replaces the endpoint bundle without changing its sibling's config."""
     parent = _make_mock_parent()
     cfg = {
@@ -88,9 +89,14 @@ def test_provider_pin_clears_global_endpoint_with_real_resolver():
         "request_overrides": {"extra_body": {"routing": {"tier": "batch"}}},
     }
     original = deepcopy(cfg)
+    pinned_task = {"goal": "Research topic A on the pinned provider", "provider": "lmstudio-x121"}
+    if model_pin is not None:
+        pinned_task["model"] = model_pin
+    expected_pinned = dict(PIN_CREDS, model=model_pin or cfg["model"])
 
     def discover(*, requested, target_model):
         assert requested in ("nous", "lmstudio-x121")
+        assert target_model == (expected_pinned["model"] if requested == "lmstudio-x121" else cfg["model"])
         return dict(PIN_CREDS if requested == "lmstudio-x121" else PARENT_CREDS)
 
     with (
@@ -101,8 +107,7 @@ def test_provider_pin_clears_global_endpoint_with_real_resolver():
     ):
         result = json.loads(delegate_task(
             tasks=[
-                {"goal": "Research topic A on the pinned provider", "provider": "lmstudio-x121",
-                 "model": PIN_CREDS["model"]},
+                pinned_task,
                 {"goal": "Research topic B on the configured endpoint"},
             ],
             parent_agent=parent,
@@ -111,8 +116,8 @@ def test_provider_pin_clears_global_endpoint_with_real_resolver():
     assert result == {"status": "built"}
     assert agent.call_count == 2
     pinned, sibling = [call.kwargs for call in agent.call_args_list]
-    for key in ("provider", "model", "base_url", "api_key", "api_mode"):
-        assert pinned[key] == PIN_CREDS[key]
+    for key in ("base_url", "api_key", "provider", "model", "api_mode"):
+        assert pinned[key] == expected_pinned[key]
     assert sibling["provider"] == "custom"  # Direct endpoint resolution.
     for key in ("model", "base_url", "api_key", "api_mode"):
         assert sibling[key] == PARENT_CREDS[key]

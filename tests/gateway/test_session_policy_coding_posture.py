@@ -45,3 +45,25 @@ def test_a_following_session_keeps_the_posture_for_its_own_cwd(project):
     from gateway.session_policy import build_policy
     policy = build_policy({'source': 'cli', 'cwd': str(project), 'follow_profile_config': True}, FOCUS)
     assert 'coding' in policy.current_toolsets(FOCUS)
+
+
+def test_a_project_file_written_mid_session_does_not_switch_toolsets(tmp_path):
+    from gateway.session_policy import build_policy
+    plain = tmp_path / 'notes'
+    plain.mkdir()
+    policy = build_policy({'source': 'cli', 'cwd': str(plain), 'follow_profile_config': True}, FOCUS)
+    (plain / 'pyproject.toml').write_text('[project]\nname = "late"\n')
+    assert policy.current_toolsets(FOCUS) == ('terminal',)
+
+
+def test_a_following_session_still_takes_a_profile_change(project):
+    from gateway.session_policy import build_policy
+    policy = build_policy({'source': 'cli', 'cwd': str(project), 'follow_profile_config': True}, FOCUS)
+    off = {**FOCUS, 'agent': {'coding_context': 'off'}}
+    assert policy.current_toolsets(off) == ('terminal',)
+
+
+def test_plugin_mcp_servers_stay_in_the_posture(project, monkeypatch):
+    from gateway.session_policy import build_policy
+    monkeypatch.setattr('hermes_cli.plugins.get_portable_mcp_server_names_nowait', lambda: {'plug'})
+    assert {'coding', 'plug'} <= set(build_policy({'source': 'gui', 'cwd': str(project)}, FOCUS).toolsets)

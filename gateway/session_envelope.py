@@ -6,6 +6,7 @@ Relay snapshots bind the authenticated connector and exact source; replay rechec
 """
 import asyncio
 from copy import copy, deepcopy
+from dataclasses import replace
 from datetime import datetime
 import json
 
@@ -27,6 +28,7 @@ _WHATSAPP_METADATA = frozenset({'whatsapp_native_type', 'whatsapp_native', 'what
 _WHATSAPP_NATIVE_KEYS = frozenset({'video', 'audio', 'sticker', 'location', 'contact', 'contacts',
                                    'reaction', 'poll', 'pollUpdate'})
 _WHATSAPP_NATIVE_MAX_BYTES = 16 * 1024
+_MEDIA_FIELDS = ('media_urls', 'media_types', 'media_text_inlined')
 
 
 def _native_metadata(event):
@@ -52,6 +54,13 @@ def _native_metadata(event):
         if len(encoded.encode()) <= _WHATSAPP_NATIVE_MAX_BYTES:
             projected['whatsapp_native'] = json.loads(encoded)
     return projected
+
+
+def _adapter_event(event, **changes):
+    """An adapter's event at the envelope boundary: an absent media list (``None``) is no media.
+    Any other non-list still reaches ``_validate_native`` and refuses."""
+    changes.update({name: [] for name in _MEDIA_FIELDS if getattr(event, name) is None})
+    return replace(event, **changes) if changes else event
 
 
 def _validate_native(runner, event, provenance=None, fresh_roles=False):
@@ -103,17 +112,16 @@ def _validate_native(runner, event, provenance=None, fresh_roles=False):
 def snapshot_native(runner, event):
     from gateway.session_ingress_context import capture_provenance
     provenance = capture_provenance(runner, event)
-    return _snapshot_native(runner, event, provenance)
+    return _snapshot_native(runner, _adapter_event(event), provenance)
 
 
 async def prepare_native(runner, event):
-    from dataclasses import replace
     from gateway.session_ingress_context import capture_provenance, reauthorize_roles
     provenance = capture_provenance(runner, event)
     # Freeze caller-owned identity and content before the first network yield.
     # Preserve dynamic trust fields too: validation must reject forged ones,
     # not silently discard them while freezing the caller's source identity.
-    frozen = replace(event, source=copy(event.source))
+    frozen = _adapter_event(event, source=copy(event.source))
     fresh_roles = await reauthorize_roles(runner, frozen.source, provenance)
     encoded_source = _validate_native(runner, frozen, provenance, fresh_roles)
     # Copy + SHA-256 + fsyncs of up to max_inbound_media_bytes stay off the owner loop; the

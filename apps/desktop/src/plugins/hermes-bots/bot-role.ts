@@ -20,7 +20,13 @@ export function normalizeBotRole(value: unknown): string {
 }
 
 /** The role a row shows: this desktop's meta first, else what the row's own
- *  backend reports in `ui_meta` (rows from another connection). '' when unset. */
+ *  backend reports in `ui_meta` (rows from another connection). '' when unset.
+ *  A role this desktop stored as '' (cleared) is an answer, not a gap: it must
+ *  not fall back to the backend's older copy. */
 export function botRole(bot: Partial<RosterRow> | null | undefined, meta?: BotMeta | null): string {
-  return normalizeBotRole(meta?.role) || normalizeBotRole(bot?.ui_meta?.['hermes-bots']?.role)
+  if (typeof meta?.role === 'string') {
+    return normalizeBotRole(meta.role)
+  }
+
+  return normalizeBotRole(bot?.ui_meta?.['hermes-bots']?.role)
 }

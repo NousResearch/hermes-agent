@@ -95,7 +95,7 @@ describe('Edit Profile role field', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
-    await waitFor(() => expect(mocks.notify).toHaveBeenCalled())
+    await waitFor(() => expect(mocks.notify).toHaveBeenCalledWith({ kind: 'success', message: 'Scout updated' }))
     expect(mocks.saveBotMeta).not.toHaveBeenCalled()
   })
 })

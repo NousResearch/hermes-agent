@@ -3,17 +3,17 @@ import { expect, it } from 'vitest'
 import { TRANSLATIONS } from './catalog'
 import { ruOverrides } from './ru'
 
-const leafPaths = (value: unknown, path = ''): string[] => {
+const leafPaths = (value: unknown, path: string[] = []): string[] => {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
-    return Object.entries(value).flatMap(([key, child]) => leafPaths(child, path ? `${path}.${key}` : key))
+    return Object.entries(value).flatMap(([key, child]) => leafPaths(child, [...path, key]))
   }
 
-  return [path]
+  return [JSON.stringify(path)]
 }
 
 it('keeps Russian overrides on every English desktop catalog leaf', () => {
   // Intro copy is shipped in JSONL, not authored in the English catalog.
-  const english = new Set(leafPaths(TRANSLATIONS.en).filter(path => !path.startsWith('intro.')))
+  const english = new Set(leafPaths(TRANSLATIONS.en).filter(path => JSON.parse(path)[0] !== 'intro'))
   const russian = new Set(leafPaths(ruOverrides))
   expect([...english].filter(path => !russian.has(path)).sort()).toEqual([])
 })
@@ -62,7 +62,16 @@ it('declines counts and retains interpolated plugin names and payment warnings',
 it('uses the instrumental case after the Russian starmap import preposition', () => {
   const importSuccess = TRANSLATIONS.ru.starmap.importSuccess
 
-  for (const [count, noun] of [[1, 'узлом'], [2, 'узлами'], [5, 'узлами'], [11, 'узлами'], [12, 'узлами'], [13, 'узлами'], [14, 'узлами'], [21, 'узлом']] as const) {
+  for (const [count, noun] of [
+    [1, 'узлом'],
+    [2, 'узлами'],
+    [5, 'узлами'],
+    [11, 'узлами'],
+    [12, 'узлами'],
+    [13, 'узлами'],
+    [14, 'узлами'],
+    [21, 'узлом']
+  ] as const) {
     expect(importSuccess(count)).toContain(`с ${count} ${noun}`)
   }
 })

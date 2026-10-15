@@ -1457,19 +1457,19 @@ platform:
     prompt_expired: ⌛ Этот запрос больше не ожидает ответа. Отправьте ответ обычным сообщением.
 slash:
   approve:
-    description: "Разрешить опасную команду"
+    description: "Одобрить ожидающую опасную команду"
   bg:
-    description: "Запустить задачу в фоне"
+    description: "Выполнить промпт в отдельном фоновом сеансе"
   insights:
-    description: "Аналитика использования"
+    description: "Показать аналитику и статистику использования"
   reload_mcp:
     description: "Перезагрузить MCP-серверы из конфигурации"
   resume:
-    description: "Вернуться к прошлой сессии"
+    description: "Возобновить ранее названный сеанс"
   sethome:
-    description: "Сделать этот чат домашним"
+    description: "Сделать этот чат домашним каналом"
   update:
-    description: "Обновить Hermes Agent"
+    description: "Обновить Hermes Agent до последней версии"
   category:
     session: "Сеанс"
     configuration: "Конфигурация"
@@ -1489,197 +1489,197 @@ slash:
   hermes:
     description: "Обратиться к Hermes или выполнить подкоманду"
   start:
-    description: "Отклик на пинг платформы"
+    description: "Принимать стартовые пинги платформы без ответа"
   new:
-    description: "Новая сессия"
+    description: "Начать новый сеанс (новый ID сеанса и история)"
   topic:
-    description: "Темы Telegram DM"
+    description: "Включить или просмотреть сеансы-темы в личных сообщениях Telegram"
   clear:
-    description: "Очистить экран и начать заново"
+    description: "Очистить экран и начать новый сеанс"
   redraw:
-    description: "Перерисовать интерфейс"
+    description: "Принудительно перерисовать интерфейс (исправляет сбои отображения терминала)"
   history:
-    description: "История переписки"
+    description: "Показать историю разговора"
   save:
-    description: "Экспортировать текущий диалог (без аргументов — подсказка)"
+    description: "Экспортировать текущий разговор (/save без аргументов покажет справку)"
   retry:
-    description: "Повторить последний запрос"
+    description: "Повторить последнее сообщение (отправить агенту заново)"
   prompt:
-    description: "Написать запрос в $EDITOR"
+    description: "Написать следующий промпт в $EDITOR (markdown) и отправить его"
   undo:
-    description: "Вернуться на N ходов пользователя и отправить запрос заново (по умолчанию — на один)"
+    description: "Откатиться на N реплик пользователя и задать промпт заново (по умолчанию 1)"
   title:
-    description: "Назвать текущую сессию"
+    description: "Задать название текущего сеанса"
   handoff:
-    description: "Передать сессию в мессенджер"
+    description: "Передать этот сеанс в мессенджер (Telegram, Discord и т. д.)"
   branch:
-    description: "Ответвить текущую сессию (новый тред в Discord/Telegram/Slack/Matrix; --here остаётся здесь)"
+    description: "Ответвить текущий сеанс (новый тред в Discord/Telegram/Slack/Matrix; --here — остаться здесь)"
   worktree:
-    description: "Управление изолированными рабочими деревьями git"
+    description: "Показать, перечислить, создать или удалить изолированные git worktree"
   compress:
-    description: "Сжать контекст вручную"
+    description: "Сжать контекст разговора (добавьте 'here [N]', чтобы сохранить последние N реплик; --preview показывает результат без изменений)"
   rollback:
-    description: "Показать или восстановить файловые контрольные точки (правки сохраняются; --all перезаписывает)"
+    description: "Показать или восстановить контрольные точки файловой системы (ваши ручные правки сохраняются; --all перезаписывает их)"
   snapshot:
-    description: "Снимки конфигурации и состояния"
+    description: "Создать или восстановить снимки конфигурации и состояния Hermes"
   export:
-    description: "Выгрузить профиль в архив"
+    description: "Экспортировать профиль (конфигурация, навыки, тема) в архив для обмена"
   import:
-    description: "Загрузить профиль из архива"
+    description: "Импортировать общий архив профиля как новый профиль"
   stop:
-    description: "Остановить все выполняющиеся фоновые процессы"
+    description: "Завершить все запущенные фоновые процессы"
   pause:
-    description: "Приостановить новую работу глобально (аварийная остановка); /pause off возобновляет"
+    description: "Приостановить всю новую работу (аварийная остановка); '/pause off' возобновляет"
   deny:
-    description: "Отклонить опасную команду"
+    description: "Отклонить ожидающую опасную команду (при желании с указанием причины)"
   btw:
-    description: "Задать побочный вопрос, не прерывая текущий диалог"
+    description: "Задать побочный вопрос о текущем разговоре, не прерывая его"
   agents:
-    description: "Активные агенты и задачи"
+    description: "Показать активных агентов и выполняемые задачи"
   journey:
-    description: "Хронология обучения"
+    description: "Открыть хронологию пути обучения"
   queue:
-    description: "Задача в очередь на следующий ход или список/правка/удаление/перенос очереди"
+    description: "Поставить промпт в очередь на следующий ход или list/edit/rm/move/clear для очереди промптов"
   steer:
-    description: "Подсказать без прерывания"
+    description: "Вставить сообщение после следующего вызова инструмента, не прерывая работу"
   goal:
-    description: "Постоянная цель Hermes"
+    description: "Задать постоянную цель, над которой Hermes работает между ходами до её достижения"
   heartbeat:
-    description: "Повторный запрос при простое"
+    description: "Задать повторяющийся промпт, который возвращается в этот сеанс при простое"
   refine:
-    description: "Извлечь уроки из этого диалога"
+    description: "Проанализировать этот разговор сейчас и сохранить уроки в память/навыки"
   review:
-    description: "Проверить текущую работу независимым субагентом"
+    description: "Запустить независимого подагента для ревью обсуждённой работы (PR, код, документация)"
   loop:
-    description: "Повторять запрос по интервалу"
+    description: "Повторять промпт с заданным интервалом в этом сеансе"
   plan:
-    description: "Создать план реализации без выполнения"
+    description: "Написать план реализации в markdown в .hermes/plans/, ничего не выполняя"
   moa:
-    description: "Прогнать запрос через ансамбль моделей"
+    description: "Прогнать один промпт через пресет Mixture of Agents по умолчанию, затем вернуть вашу модель"
   subgoal:
-    description: "Дополнительные условия цели"
+    description: "Добавить дополнительные критерии к активной цели или управлять ими"
   status:
-    description: "Статус текущей сессии"
+    description: "Показать сведения о сеансе, модели, токенах и контексте"
   egress:
-    description: "Статус Docker egress-прокси"
+    description: "Показать состояние egress-прокси Docker"
   context:
-    description: "Подробный разбор окна контекста"
+    description: "Показать подробный обзор окна контекста: индикатор заполнения, разбивка по категориям, статистика сжатия и пропускная способность"
   whoami:
-    description: "Мои права доступа"
+    description: "Показать ваш уровень доступа к слеш-командам (admin / user)"
   profile:
-    description: "Активный профиль Hermes"
+    description: "Показать имя активного профиля и его домашний каталог"
   sessions:
-    description: "История сессий"
+    description: "Просмотреть и возобновить предыдущие сеансы"
   config:
     description: "Показать текущую конфигурацию"
   model:
-    description: "Сменить модель для этого сеанса (--global сохраняет выбор)"
+    description: "Переключить модель (в рамках сеанса; --global — сохранить навсегда)"
   codex-runtime:
-    description: "Режим выполнения Codex"
+    description: "Переключить среду codex app-server для моделей OpenAI/Codex"
   personality:
-    description: "Выбрать стиль общения"
+    description: "Выбрать предустановленную личность"
   statusbar:
-    description: "Строка состояния"
+    description: "Переключить строку состояния контекста/модели"
   battery:
-    description: "Индикатор заряда в строке состояния"
+    description: "Переключить цветной индикатор-батарею в строке состояния"
   timestamps:
-    description: "Метки времени в сообщениях"
+    description: "Переключить отметки времени [HH:MM] у сообщений и в /history"
   diff:
-    description: "Изменения в рабочем каталоге git"
+    description: "Показать изменения git в рабочем каталоге"
   verbose:
-    description: "Настроить подробность отображения работы инструментов"
+    description: "Переключить отображение хода инструментов: off -> new -> all -> verbose"
   focus:
-    description: "Режим фокуса: только запрос и ответ"
+    description: "Переключить режим фокуса — показывать только ваш промпт и финальный ответ"
   footer:
-    description: "Метаданные gateway в ответах"
+    description: "Переключить нижний колонтитул с метаданными шлюза в финальных ответах"
   yolo:
-    description: "Режим без подтверждений"
+    description: "Переключить режим YOLO (пропускать все одобрения опасных команд)"
   approvals:
-    description: "Режим подтверждения опасных команд"
+    description: "Показать или задать постоянный режим одобрения опасных команд"
   reasoning:
-    description: "Настройки рассуждений"
+    description: "Управлять уровнем и отображением рассуждений"
   fast:
-    description: "Быстрый режим модели"
+    description: "Быстрый режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
   skin:
-    description: "Оформление интерфейса"
+    description: "Показать или сменить скин/тему оформления"
   indicator:
-    description: "Стиль индикатора занятости"
+    description: "Выбрать стиль индикатора занятости TUI"
   voice:
-    description: "Голосовой режим"
+    description: "Переключить голосовой режим"
   wake:
-    description: "Активация по фразе «Hey Hermes»"
+    description: "Переключить прослушивание пробуждающей фразы 'Hey Hermes'"
   busy:
-    description: "Настроить обработку сообщений во время работы Hermes"
+    description: "Настроить поведение сообщений, пока Hermes работает"
   tools:
-    description: "Управление инструментами"
+    description: "Управлять инструментами: /tools [list|disable|enable] [имя...]"
   toolsets:
-    description: "Доступные наборы инструментов"
+    description: "Показать доступные наборы инструментов"
   skills:
-    description: "Поиск и управление навыками"
+    description: "Искать, устанавливать, просматривать навыки и управлять ими"
   memory:
-    description: "Проверка записей в память"
+    description: "Просмотреть ожидающие записи в память / переключить шлюз одобрения"
   bundles:
-    description: "Наборы навыков"
+    description: "Показать бандлы навыков (псевдонимы /<имя> для нескольких навыков)"
   pet:
-    description: "Питомец-маскот"
+    description: "Переключить или завести питомца-маскота petdex (/pet, /pet list, /pet <slug>)"
   hatch:
-    description: "Создать нового питомца"
+    description: "Создать нового питомца petdex по описанию"
   learn:
-    description: "Создать навык из описания"
+    description: "Освоить переиспользуемый навык из чего угодно (каталоги, URL, этот чат, заметки)"
   init:
-    description: "Собрать AGENTS.md по репозиторию"
+    description: "Создать или обновить инструкции проекта AGENTS.md по результатам сканирования репозитория"
   cron:
-    description: "Запланированные задачи"
+    description: "Управлять запланированными задачами"
   suggestions:
-    description: "Предложенные автоматизации"
+    description: "Просмотреть предложенные автоматизации (принять/отклонить)"
   blueprint:
-    description: "Автоматизация по шаблону"
+    description: "Настроить автоматизацию по шаблону blueprint"
   curator:
-    description: "Обслуживание навыков"
+    description: "Фоновое обслуживание навыков (status, run, pin, archive, list-archived)"
   kanban:
-    description: "Доска задач Kanban"
+    description: "Доска совместной работы нескольких профилей (задачи, ссылки, комментарии)"
   reload:
-    description: "Перечитать переменные .env"
+    description: "Перезагрузить переменные .env в текущий сеанс"
   reload-mcp:
-    description: "Перезагрузить MCP-серверы"
+    description: "Перезагрузить MCP-серверы из конфигурации"
   reload-skills:
-    description: "Пересканировать навыки"
+    description: "Пересканировать ~/.hermes/skills/ на предмет установленных или удалённых навыков"
   browser:
-    description: "Подключить браузерные инструменты"
+    description: "Подключить браузерные инструменты к вашему Chromium-браузеру через CDP или переключиться в режим Browser Use"
   plugins:
-    description: "Установленные плагины"
+    description: "Показать установленные плагины и их состояние"
   commands:
-    description: "Все команды"
+    description: "Просмотреть все команды и навыки (по страницам)"
   help:
-    description: "Помощь по командам"
+    description: "Показать доступные команды (/help skills — команды навыков, /help <текст> — фильтр)"
   palette:
-    description: "Палитра команд Hermes"
+    description: "Открыть палитру команд с нечётким поиском (также Ctrl+P)"
   restart:
-    description: "Перезапустить шлюз после завершения активных задач"
+    description: "Аккуратно перезапустить шлюз после завершения активных запусков"
   usage:
-    description: "Токены и лимиты"
+    description: "Показать расход токенов и лимиты; `reset` использует накопленный сброс лимита Codex"
   subscription:
-    description: "Тарифный план Nous"
+    description: "Посмотреть ваш тариф Nous и изменить его в браузере"
   login:
-    description: "Войти в аккаунт Nous (сохраняет ваши коннекторы)"
+    description: "Войти с аккаунтом Nous (ваши коннекторы сохраняются)"
   topup:
-    description: "Баланс и оплата Nous"
+    description: "Показать ваш баланс Nous и управлять оплатой на портале"
   platforms:
-    description: "Статус платформ gateway"
+    description: "Показать состояние шлюза и платформ обмена сообщениями"
   platform:
-    description: "Управление платформой"
+    description: "Приостановить, возобновить или показать сбойные платформы шлюза"
   copy:
-    description: "Скопировать последний ответ"
+    description: "Скопировать последний ответ ассистента в буфер обмена"
   paste:
-    description: "Вставить картинку из буфера"
+    description: "Прикрепить изображение из буфера обмена"
   image:
-    description: "Приложить файл изображения"
+    description: "Прикрепить локальный файл изображения к следующему промпту"
   version:
-    description: "Версия Hermes Agent"
+    description: "Показать версию Hermes Agent"
   debug:
     description: "Отправить диагностический отчёт (сведения о системе и журналы) и получить ссылку"
   quit:
-    description: "Выйти из CLI (--delete также удаляет историю сеанса)"
+    description: "Выйти из CLI (с --delete также удаляется история сеанса)"
 cli:
   billing:
     load_failed: "{label}: {error}"

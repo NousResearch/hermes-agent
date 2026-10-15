@@ -119,6 +119,16 @@ export const ru: Translations = {
     multiplexStandaloneBanner:
       "Шлюз обслуживает только один профиль. Не обслуживаются: {profiles}. Причина: {reason}. Решение: hermes gateway migrate --multiplex",
     dismiss: "Скрыть",
+    sharedMetricsTitle: 'Помочь улучшить Hermes?',
+    sharedMetricsBody:
+      'Общая статистика — это счётчики для ограниченного набора событий. В неё никогда не входят сообщения, файлы, пути или тексты ошибок. Собранные данные остаются на этом компьютере; отправка в Nous — отдельный выбор.',
+    sharedMetricsReaskBody:
+      'Спрашиваем ещё раз: прежняя версия могла сохранить «Нет, спасибо» до того, как вы увидели этот вопрос.',
+    sharedMetricsShare: 'Отправлять в Nous',
+    sharedMetricsLocal: 'Только на этом компьютере',
+    sharedMetricsOff: 'Нет, спасибо',
+    sharedMetricsDetails: 'Подробнее',
+    sharedMetricsSaveFailed: 'Не удалось сохранить выбор'
   },
 
   status: {

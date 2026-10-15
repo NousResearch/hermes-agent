@@ -75,5 +75,15 @@ export const ruOnboarding: TranslationOverrides['onboarding'] = {
   price: (input, output) => `${input} вход / ${output} выход за Mtok`,
   change: 'Изменить',
   startChatting: 'Начать',
-  docs: provider => `Документация ${provider}`
+  docs: provider => `Документация ${provider}`,
+  localModelsTitle: 'Запускайте модели локально',
+  localModelsPitch: 'Аккаунт не нужен — скачайте модель и запустите её на этой машине',
+  localModelNamePlaceholder: 'Название модели (например, command-a-plus-05-2026)',
+  signInExpired:
+    'Время ожидания страницы входа истекло. Повторите попытку и завершите вход в браузере за несколько минут или воспользуйтесь API-ключом.',
+  signInDidNotFinish: provider =>
+    `Не удалось завершить вход через ${provider}. Проверьте подключение к интернету и попробуйте снова или выберите другого провайдера.`,
+  tryAgain: 'Повторить',
+  useApiKeyInstead: 'Использовать API-ключ',
+  errorDetails: 'Подробности'
 }

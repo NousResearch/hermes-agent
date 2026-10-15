@@ -8,5 +8,21 @@ export const ruAuxTasks: AuxTaskCopyMap = {
   mcp: { label: 'MCP', hint: 'Маршрутизация MCP-инструментов' },
   title_generation: { label: 'Ген. заголовка', hint: 'Заголовки сеансов' },
   voice_chat: { label: 'Голосовой чат', hint: 'Ответы в голосовом режиме' },
-  curator: { label: 'Куратор', hint: 'Просмотр использования навыков' }
+  curator: { label: 'Куратор', hint: 'Просмотр использования навыков' },
+  review: {
+    label: 'Разбор',
+    hint: 'Субагент-рецензент команды /review'
+  },
+  triage_specifier: {
+    label: 'Уточнение задачи',
+    hint: 'Детализация спецификации канбан-задачи'
+  },
+  kanban_decomposer: {
+    label: 'Разбиение канбан-задач',
+    hint: 'Разбиение задачи на подзадачи'
+  },
+  profile_describer: {
+    label: 'Описание профиля',
+    hint: 'Автоматическое описание профилей'
+  }
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resolvePageTitle } from "./resolve-page-title";
 import type { Translations } from "@/i18n/types";
+import { ru } from "@/i18n/ru";
 
 // Minimal translations stub — only the fields resolvePageTitle touches.
 const t = {
@@ -19,6 +20,12 @@ const t = {
       plugins: "Plugins",
       sessions: "Sessions",
       skills: "Skills",
+      files: "Files",
+      mcp: "MCP",
+      channels: "Channels",
+      webhooks: "Webhooks",
+      pairing: "Pairing",
+      system: "System",
     },
   },
 } as unknown as Translations;
@@ -27,6 +34,19 @@ describe("resolvePageTitle", () => {
   it("uses i18n nav keys for translated routes", () => {
     expect(resolvePageTitle("/sessions", t, [])).toBe("Sessions");
     expect(resolvePageTitle("/env", t, [])).toBe("Keys");
+  });
+
+  it("uses localized titles for sidebar routes that previously had literal labels", () => {
+    for (const [path, title] of [
+      ["/files", "Файлы"],
+      ["/mcp", "MCP"],
+      ["/channels", "Каналы"],
+      ["/webhooks", "Вебхуки"],
+      ["/pairing", "Сопряжение"],
+      ["/system", "Система"],
+    ]) {
+      expect(resolvePageTitle(path, ru, [])).toBe(title);
+    }
   });
 
   it("prefers plugin tab labels", () => {

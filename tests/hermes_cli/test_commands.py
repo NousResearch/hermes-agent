@@ -1104,25 +1104,28 @@ class TestPluginCommandEnumeration:
 
 
 def test_gateway_command_copy_respects_locale_and_live_registry(monkeypatch):
+    from hermes_cli.commands_platforms import _normalize_telegram_desc
+
     help_command = resolve_command("help")
     assert help_command is not None
     try:
         monkeypatch.setenv("HERMES_LANGUAGE", "ru")
         i18n.reset_language_cache()
         lines = gateway_help_lines()
-        assert any("`/help" in line and "Помощь по командам" in line for line in lines)
+        assert any("`/help" in line and help_command.describe() in line for line in lines)
         debug = next(line for line in lines if line.startswith("`/debug "))
         assert all(word in debug for word in ("Отправить", "журналы", "ссылку"))
-        assert any("псевдоним:" in line for line in lines)
+        assert any("псевдоним" in line for line in lines)
         menu = dict(telegram_bot_commands(include_plugins=False))
-        assert menu["help"] == "Помощь по командам"
+        assert menu["help"] == _normalize_telegram_desc(help_command.describe())
+        assert menu["help"] != help_command.description
         assert "журналы" in menu["debug"]
-        assert menu["reload_mcp"] == "Перезагрузить MCP-серверы"
+        assert menu["reload_mcp"] == _normalize_telegram_desc(resolve_command("reload-mcp").describe())
 
         for lang in ("en", "ja"):
             monkeypatch.setenv("HERMES_LANGUAGE", lang)
             i18n.reset_language_cache()
-            assert dict(telegram_bot_commands(include_plugins=False))["help"] == help_command.describe()
+            assert dict(telegram_bot_commands(include_plugins=False))["help"] == _normalize_telegram_desc(help_command.describe())
             assert any("`/help" in line and help_command.describe() in line for line in gateway_help_lines())
     finally:
         i18n.reset_language_cache()

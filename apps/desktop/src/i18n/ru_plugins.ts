@@ -59,7 +59,8 @@ export const ruPluginSettings = {
       installUncertain:
         'Hermes перестал ждать результат установки, но плагин может всё ещё устанавливаться. Закройте это окно и обновите список плагинов перед повторной установкой.',
       desktopFailed: 'Не удалось установить плагин приложения',
-      missingEnv: (_name, vars) => `Не хватает переменных окружения: ${vars}. Добавьте их в Настройки → Ключи.`,
+      missingEnv: (name, vars) =>
+        `Плагин ${name} установлен, но его инструменты не заработают без ${vars}. Добавьте эти переменные в Настройки → Ключи.`,
       toolsConnected: n => `Подключено инструментов: ${n}`,
       skillsReady: names => (names.length === 1 ? `навык ${names[0]} готов` : `готово навыков: ${names.length}`),
       nextChat: 'остальные инструменты появятся в следующем чате',
@@ -73,7 +74,13 @@ export const ruPluginSettings = {
       versionLabel: 'Версия',
       reviewedPin: sha => (sha ? `Проверенный пин ${sha}` : 'Проверенный пин'),
       latestCommit: 'Последний коммит',
-      nothingToInstall: 'В этом пакете нечего устанавливать здесь.'
+      nothingToInstall: 'В этом пакете нечего устанавливать здесь.',
+      installFromGit: 'Установить из Git',
+      reviewRepository: 'Посмотреть репозиторий',
+      repoPlaceholder: 'https://github.com/owner/repo',
+      missingEnvAction: 'Настроить',
+      alreadyInstalled: name => `${name} уже установлен.`,
+      desktopTargetFromPackage: 'Загружается в это приложение из пакета выше — одинаково для всех профилей'
     }
   }
 } satisfies Pick<SettingsOverrides, 'pluginPages' | 'plugins'>

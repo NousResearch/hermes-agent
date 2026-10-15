@@ -45,67 +45,11 @@ export const ruOverrides = {
     title: 'Не удалось открыть ссылку',
     message: 'Для этого адреса не назначен браузер. Скопируйте ссылку и откройте её вручную.',
     copyUrl: 'Копировать ссылку',
-    close: 'Закрыть'
-  },
-  catalog: {
-    add: 'Добавить',
-    added: 'Добавлено',
-    discover: 'Открывайте новое',
-    featured: 'Рекомендуемые',
-    explorePlugins: 'Обзор плагинов',
-    exploreSkills: 'Обзор навыков',
-    mostStarred: 'Больше всего звёзд',
-    newest: 'Новинки',
-    recentlyUpdated: 'Недавно обновлённые',
-    alphabetical: 'Название',
-    sortBy: 'Сортировать по',
-    seeAll: 'Показать все',
-    related: 'Похожие',
-    tags: 'Теги',
-    screenshots: 'Снимки экрана',
-    listView: 'Список',
-    cardView: 'Карточки',
-    installTitle: (name: string) => `Установить «${name}»?`,
-    installDescription: 'Навык будет доступен в новых сессиях. Устанавливайте только из источников, которым доверяете.',
-    installTo: 'Установить в',
-    thisComputer: 'Этот компьютер',
-    installing: 'Установка…',
-    installComplete: (name: string) => `«${name}» установлен`,
-    destinationChanged: 'Место установки изменилось. Закройте диалог и снова откройте ссылку установки.',
-    installed: 'Установленные',
-    searchSkills: 'Поиск навыков',
-    searchPlugins: 'Поиск плагинов',
-    allSources: 'Все источники',
-    allCategories: 'Все категории',
-    about: 'Описание',
-    author: 'Автор',
-    source: 'Источник',
-    category: 'Категория',
-    version: 'Версия',
-    platforms: 'Платформы',
-    requires: 'Требования',
-    tools: 'Инструменты',
-    hooks: 'Хуки',
-    middleware: 'Промежуточное ПО',
-    commands: 'Команды',
-    license: 'Лицензия',
-    addedDate: 'Добавлено',
-    updatedDate: 'Обновлено',
-    repository: 'Репозиторий',
-    documentation: 'Документация',
-    noResults: 'Совпадений нет',
-    tryAnother: 'Попробуйте другой запрос или сбросьте фильтры.',
-    clearFilters: 'Сбросить фильтры',
-    filters: 'Фильтры',
-    loadFailed: 'Не удалось загрузить каталог',
-    retry: 'Попробовать снова',
-    more: 'Показать ещё',
-    pinned: 'Проверенный коммит',
-    snapshotHint: 'Из каталога Hermes. При просмотре нет обращений к исходным репозиториям.',
-    installHint: 'Проверьте исходный код перед установкой. Изменения применяются к новым сессиям.',
-    results: (count: number) =>
-      `${count.toLocaleString('ru')} ${RU_PLURAL(count, 'результат', 'результата', 'результатов')}`,
-    back: 'Назад к результатам'
+    close: 'Закрыть',
+    missing: {
+      title: 'Файл не найден',
+      message: 'Этого файла нет: возможно, его удалили или переместили, либо он находится на другом компьютере.'
+    }
   },
   common: {
     apply: 'Применить',
@@ -167,7 +111,8 @@ export const ruOverrides = {
     deleteBody: 'Элемент будет перемещён в корзину — его можно восстановить оттуда.',
     pathCopied: 'Путь скопирован',
     revealMissing: 'Этой папки нет на этом компьютере',
-    revealUnavailable: 'Этот путь находится на компьютере бэкенда, а не на этом устройстве. Найдите его в дереве файлов.'
+    revealUnavailable:
+      'Этот путь находится на компьютере бэкенда, а не на этом устройстве. Найдите его в дереве файлов.'
   },
   boot: ruBoot.boot,
   notifications: {
@@ -212,18 +157,21 @@ export const ruOverrides = {
     },
     errors: {
       elevenLabsNeedsKey: 'Для голосового ввода нужен ключ ElevenLabs. Добавьте его в разделе «Настройки → Ключи».',
-      elevenLabsRejectedKey: 'ElevenLabs не принял ваш API-ключ. Обновите его в разделе «Настройки → Ключи», затем попробуйте снова.',
+      elevenLabsRejectedKey:
+        'ElevenLabs не принял ваш API-ключ. Обновите его в разделе «Настройки → Ключи», затем попробуйте снова.',
       diskFull: 'Диск заполнен — освободите место и повторите.',
       gatewayAuthFailed:
         'Этот экземпляр Hermes больше не принимает сохранённые данные для входа. Откройте раздел «Шлюзы» и войдите снова (или вставьте новый токен доступа), затем повторите попытку.',
       methodNotAllowed:
         'Фоновая служба Hermes не соответствует версии приложения, вероятно после обновления. Перезапустите её, чтобы исправить это.',
       microphonePermission: 'Доступ к микрофону запрещён.',
-      openaiRejectedApiKey: 'OpenAI не принял ваш API-ключ. Обновите его в разделе «Настройки → Ключи», затем попробуйте снова.',
+      openaiRejectedApiKey:
+        'OpenAI не принял ваш API-ключ. Обновите его в разделе «Настройки → Ключи», затем попробуйте снова.',
       openaiTtsNeedsKey: 'Для голосовых ответов нужен ключ OpenAI. Добавьте его в разделе «Настройки → Ключи».',
       codeSkewRestartRequired:
         'После обновления этот бэкенд работает на старом коде. Перезапустите его, чтобы загрузить новый код.',
-      storageFailure: 'Hermes не смог сохранить данные в свою папку. Откройте раздел «Обслуживание», чтобы проверить и восстановить её.',
+      storageFailure:
+        'Hermes не смог сохранить данные в свою папку. Откройте раздел «Обслуживание», чтобы проверить и восстановить её.',
       rpcOutOfSync: 'Версии приложения и бэкенда не совпадают. Обновите оба.',
       restartHermesFailed: 'Не удалось перезапустить Hermes'
     },
@@ -257,8 +205,7 @@ export const ruOverrides = {
       liveEndedClosed: 'Голосовой сеанс закрыт службой.',
       liveError: 'Живой голос',
       liveDelegationFailed: 'Не удалось передать запрос Hermes',
-      liveUnavailable:
-        reason => `Живой голосовой чат GPT-Live недоступен: ${reason}. Используем распознавание речи.`,
+      liveUnavailable: reason => `Живой голосовой чат GPT-Live недоступен: ${reason}. Используем распознавание речи.`
     },
     native: {
       approvalTitle: 'Требуется одобрение',
@@ -307,7 +254,7 @@ export const ruOverrides = {
     exitHud: 'Выйти из режима HUD',
     layoutEditor: 'Редактор раскладки',
     layoutEditorTitle: mod => `Редактор раскладки — ${mod}-клик сбрасывает раскладку`,
-    resetHudLayout: 'Сбросить размер и положение HUD',
+    resetHudLayout: 'Сбросить размер и положение HUD'
   },
   keybinds: {
     title: 'Горячие клавиши',
@@ -424,7 +371,16 @@ export const ruOverrides = {
       'composer.slash': 'Палитра slash-команд',
       'composer.help': 'Быстрая справка',
       'composer.history': 'Переключить поповер / историю',
-      'composer.cancel': 'Закрыть поповер · отменить запуск'
+      'composer.cancel': 'Закрыть поповер · отменить запуск',
+      'view.tabSlot.1': 'Переключиться на вкладку 1',
+      'view.tabSlot.2': 'Переключиться на вкладку 2',
+      'view.tabSlot.3': 'Переключиться на вкладку 3',
+      'view.tabSlot.4': 'Переключиться на вкладку 4',
+      'view.tabSlot.5': 'Переключиться на вкладку 5',
+      'view.tabSlot.6': 'Переключиться на вкладку 6',
+      'view.tabSlot.7': 'Переключиться на вкладку 7',
+      'view.tabSlot.8': 'Переключиться на вкладку 8',
+      'view.tabSlot.9': 'Переключиться на вкладку 9'
     }
   },
   findInPage: {
@@ -517,7 +473,9 @@ export const ruOverrides = {
       about: 'О программе',
       billing: 'Оплата',
       notifications: 'Уведомления',
-      plugins: 'Плагины'
+      plugins: 'Плагины',
+      providerLocalModels: 'Локальные модели',
+      vault: 'Пароли и входы'
     },
     plugins: ruPluginSettings.plugins,
     notifications: {
@@ -754,7 +712,7 @@ export const ruOverrides = {
         'Hermes подсвечивает каждый шаг, ведя вас по приложению. Отключается автоматически после первых 30 дней; можно включить снова.',
       vibeHeartsTitle: 'Vibe Hearts',
       vibeHeartsDesc:
-        'Летящие сердечки, когда вы пишете «спасибо», «ily», «хороший бот» или отправляете сердечко. Работает отдельно от реакции на сообщения выше.',
+        'Летящие сердечки, когда вы пишете «спасибо», «ily», «хороший бот» или отправляете сердечко. Работает отдельно от реакции на сообщения выше.'
     },
     fieldLabels: defineFieldCopy({
       model: 'Модель по умолчанию',
@@ -812,7 +770,7 @@ export const ruOverrides = {
       browser: {
         allowPrivateUrls: 'Частные URL браузера',
         autoLocalForPrivateUrls: 'Локальный браузер для частных URL',
-        useRealProfile: 'Использовать мой настоящий профиль браузера',
+        useRealProfile: 'Использовать мой настоящий профиль браузера'
       },
       checkpoints: {
         enabled: 'Чекпоинты файлов',
@@ -824,8 +782,8 @@ export const ruOverrides = {
         voiceChatMode: 'Режим голосового диалога',
         gptLive: {
           voice: 'Голос GPT-Live',
-          instructions: 'Персона GPT-Live',
-        },
+          instructions: 'Персона GPT-Live'
+        }
       },
       stt: {
         enabled: 'Распознавание речи',
@@ -836,7 +794,8 @@ export const ruOverrides = {
           language: 'Язык транскрипции'
         },
         openai: {
-          model: 'Модель STT OpenAI'
+          model: 'Модель STT OpenAI',
+          streamingModel: 'Модель OpenAI для распознавания речи в реальном времени'
         },
         groq: {
           model: 'Модель STT Groq'
@@ -849,6 +808,13 @@ export const ruOverrides = {
           languageCode: 'Язык ElevenLabs',
           tagAudioEvents: 'Метки звуковых событий',
           diarize: 'Разделение спикеров'
+        },
+        streaming: 'Распознавание речи в реальном времени',
+        xai: {
+          model: 'Модель распознавания речи xAI'
+        },
+        deepinfra: {
+          model: 'Модель распознавания речи DeepInfra'
         }
       },
       tts: {
@@ -1001,8 +967,8 @@ export const ruOverrides = {
         gptLive: {
           voice: 'Голос для режима GPT-Live. Можно указывать свои ID голосов.',
           instructions:
-            'Дополнительные фразы для персоны живого голоса (тон, темп, язык). Свой системный промпт Hermes сохраняет.',
-        },
+            'Дополнительные фразы для персоны живого голоса (тон, темп, язык). Свой системный промпт Hermes сохраняет.'
+        }
       },
       tts: {
         xai: {
@@ -1025,7 +991,8 @@ export const ruOverrides = {
         echoTranscripts: 'Возвращать в чат «сырую» 🎙️ расшифровку голосовых сообщений.',
         elevenlabs: {
           languageCode: 'Необязательный код языка ISO-639-3. Пустое значение — автоопределение ElevenLabs.'
-        }
+        },
+        streaming: 'Показывать текст, пока вы говорите (OpenAI, xAI, ElevenLabs). При любом сбое используется запись.'
       },
       updates: {
         nonInteractiveLocalChanges:
@@ -1033,8 +1000,8 @@ export const ruOverrides = {
       },
       browser: {
         useRealProfile:
-          'Локальный браузинг использует ваши настоящие логины. Hermes копирует профиль вашего браузера по умолчанию (куки, логины, настройки) в управляемый снимок и работает через свой Chromium — живой профиль напрямую не открывается, а копия обновляется из него при каждом запуске. Также позволяет агенту по запросу открыть локальный сеанс с настоящим профилем, даже если настроен облачный браузер. Поддерживаются только браузеры на Chromium (Chrome, Edge, Brave, Brave Origin, Chromium); браузер по умолчанию без Chromium даст понятную ошибку. По умолчанию выключено.',
-      },
+          'Локальный браузинг использует ваши настоящие логины. Hermes копирует профиль вашего браузера по умолчанию (куки, логины, настройки) в управляемый снимок и работает через свой Chromium — живой профиль напрямую не открывается, а копия обновляется из него при каждом запуске. Также позволяет агенту по запросу открыть локальный сеанс с настоящим профилем, даже если настроен облачный браузер. Поддерживаются только браузеры на Chromium (Chrome, Edge, Brave, Brave Origin, Chromium); браузер по умолчанию без Chromium даст понятную ошибку. По умолчанию выключено.'
+      }
     }),
     billing: {
       perMonth: amount => `${amount}/мес.`,
@@ -1234,14 +1201,16 @@ export const ruOverrides = {
         },
         insufficientScope: {
           title: 'Нужно разрешить удалённые расходы',
-          message: 'Для этого нужны разрешённые удалённые расходы. Начните пополнение, чтобы разрешить их, затем повторите попытку.'
+          message:
+            'Для этого нужны разрешённые удалённые расходы. Начните пополнение, чтобы разрешить их, затем повторите попытку.'
         },
         remoteSpendingRevoked: {
           title: 'Удалённые расходы отключены',
           messageByAdmin: 'Администратор отключил удалённые расходы для этого терминала.',
           messageBySelf: 'Вы отключили удалённые расходы для этого терминала.'
         },
-        remoteSpendingReconnect: who => `${who} Подключитесь снова через «Настройки → Шлюз», чтобы повторно авторизовать это устройство.`,
+        remoteSpendingReconnect: who =>
+          `${who} Подключитесь снова через «Настройки → Шлюз», чтобы повторно авторизовать это устройство.`,
         sessionRevoked: {
           title: 'Сеанс завершён',
           message: 'Ваш сеанс завершён. Войдите снова через «Настройки → Шлюз».'
@@ -1253,7 +1222,8 @@ export const ruOverrides = {
         },
         roleRequired: {
           title: 'Нужны права администратора',
-          message: 'Пополнять баланс может администратор или владелец организации. Обратитесь к администратору либо управляйте оплатой на портале.'
+          message:
+            'Пополнять баланс может администратор или владелец организации. Обратитесь к администратору либо управляйте оплатой на портале.'
         },
         idempotencyConflict: {
           title: 'Начните новое пополнение',
@@ -1340,13 +1310,10 @@ export const ruOverrides = {
             'Удаляются приложение, агент и все пользовательские данные — настройки, чаты, запланированные задания, секреты и журналы.',
           consequence: 'ВСЁ — Chat GUI, агент Hermes и все ваши настройки, чаты, секреты и журналы'
         }
-      }
-    },
-    poolLimits: {
-      warmBotBackendsAria: 'Количество прогретых бэкендов ботов',
-      warmBotBackendsTitle: 'Прогретые бэкенды ботов',
-      backendIdleTimeoutAria: 'Время простоя бэкенда в миллисекундах',
-      backendIdleTimeoutTitle: 'Время простоя бэкенда'
+      },
+      managedBody: 'Этой установкой управляет система, поэтому Hermes не может удалить себя.',
+      openAppsSettings: 'Открыть настройки приложений',
+      dataKept: path => `Ваши настройки, чаты и секреты хранятся в ${path}. Удаление приложения их не затрагивает.`
     },
     customEndpoints: {
       active: 'Активна',
@@ -1720,7 +1687,11 @@ export const ruOverrides = {
       sshErrUpdateRequired: 'Перед подключением через SSH обновите Hermes на удалённой машине.',
       sshErrInteractiveAuth:
         'Tailscale SSH требует интерактивной проверки в браузере. Выполните `ssh <host> true` в терминале, завершите проверку и повторите попытку — Hermes запускает SSH неинтерактивно.',
-      sshErrUnknown: 'SSH-соединение не удалось.'
+      sshErrUnknown: 'SSH-соединение не удалось.',
+      keychainEncryptionTitle: 'Шифровать сохранённые секреты через системное хранилище ключей',
+      keychainEncryptionDesc:
+        'По умолчанию выключено. Когда включено, токены шлюза и учётные данные входа шифруются системным хранилищем ключей (Keychain Access, GNOME Keyring или Windows DPAPI) — система может запросить разрешение или пароль. Когда выключено, они хранятся обычными файлами, доступными только вашей учётной записи.',
+      keychainEncryptionFailed: 'Не удалось изменить шифрование секретов'
     },
     keys: {
       loading: 'Загрузка API-ключей и учётных данных…',
@@ -1838,6 +1809,9 @@ export const ruOverrides = {
       restartBackend: 'Перезапустить бэкенд',
       restartingBackend: 'Перезапуск бэкенда...',
       restartFailed: 'Не удалось перезапустить бэкенд',
+
+      mainAppliedTitle: 'Основная модель обновлена',
+      mainAppliedMessage: model => `В новых сессиях будет использоваться ${model}.`
     },
     providers: {
       connectAccount: 'Подключить аккаунт',
@@ -2008,16 +1982,15 @@ export const ruOverrides = {
         failedSave: 'Не удалось сохранить настройку настоящего профиля',
         prompt: {
           title: 'Оставайтесь в своих аккаунтах на сайтах',
-          body:
-            'Разрешите Hermes работать со снимком профиля вашего браузера по умолчанию, чтобы сайты открывались уже с выполненным входом.',
+          body: 'Разрешите Hermes работать со снимком профиля вашего браузера по умолчанию, чтобы сайты открывались уже с выполненным входом.',
           bulletSnapshot: 'Куки и логины копируются в управляемый снимок.',
           bulletLiveProfile: 'Ваш живой профиль браузера напрямую не открывается.',
           bulletLocal: 'Ничего не покидает этот компьютер.',
           dontShowAgain: 'Больше не показывать',
           notNow: 'Не сейчас',
-          enable: 'Использовать мой профиль',
-        },
-      },
+          enable: 'Использовать мой профиль'
+        }
+      }
     },
     vault: {
       title: 'Пароли и входы',
@@ -2038,7 +2011,7 @@ export const ruOverrides = {
       kinds: {
         login: 'Логин',
         payment: 'Платёжная карта',
-        address: 'Адрес',
+        address: 'Адрес'
       },
       labelField: 'Название',
       labelPlaceholder: 'напр. рабочий аккаунт GitHub',
@@ -2051,7 +2024,7 @@ export const ruOverrides = {
       identifierTypes: {
         email: 'Email',
         phone: 'Телефон',
-        username: 'Имя пользователя',
+        username: 'Имя пользователя'
       },
       identifierField: 'Идентификатор',
       identifierShown: identifier => identifier,
@@ -2084,11 +2057,10 @@ export const ruOverrides = {
         blurb:
           'Установленные менеджеры паролей подхватываются автоматически. Когда агенту впервые понадобится логин из него, он попросит вас разблокировать менеджер (один раз за сеанс); в памяти остаётся только токен сеанса, а мастер-пароль и логины агент не видит.',
         toggleFailed: 'Не удалось изменить менеджер паролей',
-        notInstalled:
-          name => `Не обнаружен. Установите командную утилиту ${name} и войдите в неё; Hermes подхватит её автоматически.`,
+        notInstalled: name =>
+          `Не обнаружен. Установите командную утилиту ${name} и войдите в неё; Hermes подхватит её автоматически.`,
         disabledDesc: 'Обнаружен, но выключен для Hermes.',
-        lockedDesc:
-          'Обнаружен. Агент попросит разблокировать его, когда понадобится логин, или разблокируйте сейчас.',
+        lockedDesc: 'Обнаружен. Агент попросит разблокировать его, когда понадобится логин, или разблокируйте сейчас.',
         unlockedDesc:
           'Разблокирован на этот сеанс. Блокируется автоматически после 30 минут простоя или при закрытии Hermes.',
         statusLocked: 'Заблокирован',
@@ -2102,8 +2074,8 @@ export const ruOverrides = {
         unlockTitle: name => `Разблокировать ${name}`,
         unlockDescription:
           'Введите мастер-пароль. Он передаётся менеджеру паролей на этой машине и сразу отбрасывается — он нигде не хранится, не попадает в журналы и не показывается агенту.',
-        masterPasswordPlaceholder: 'Мастер-пароль',
-      },
+        masterPasswordPlaceholder: 'Мастер-пароль'
+      }
     },
     managedUpdates: {
       title: 'Управляемые обновления',
@@ -2121,7 +2093,7 @@ export const ruOverrides = {
       receipt: (id, outcome) => `Квитанция ${id} \u00B7 ${outcome}`,
       receiptVersions: (pre, post) => `${pre} \u2192 ${post}`,
       scopesRestored: profiles => `Восстановленные профили: ${profiles}`,
-      scopeNotRestored: (profile, error) => `Профиль \u201C${profile}\u201D не восстановлен: ${error}`,
+      scopeNotRestored: (profile, error) => `Профиль \u201C${profile}\u201D не восстановлен: ${error}`
     },
     localModels: {
       connectionChanged: 'Подключение к локальным моделям изменилось',
@@ -2130,8 +2102,8 @@ export const ruOverrides = {
       runtimeReady: backend => `Готов \u00B7 ${backend}`,
       serverRunning: 'Работает',
       runtimeInstalled: 'Движок llama.cpp установлен',
-      runtimeInstalledDetail:
-        (tag, backend) => `Сборка ${tag}, бэкенд ${backend}. Hermes сам запускает сервер и управляет им.`,
+      runtimeInstalledDetail: (tag, backend) =>
+        `Сборка ${tag}, бэкенд ${backend}. Hermes сам запускает сервер и управляет им.`,
       installTitle: 'Установите локальный движок',
       installDetail:
         'Скачивает движок вывода llama.cpp (несколько сотен мегабайт). Скачанные модели работают полностью на этой машине — ни аккаунта, ни утечек за её пределы.',
@@ -2150,8 +2122,8 @@ export const ruOverrides = {
           'Самая качественная модель, которая целиком работает на вашем GPU на полной скорости. При выборе качество сопоставляется с прогнозом скорости на этом железе.',
         'speed-gated-quality':
           'Модель получше помещается на эту машину, но отвечала бы слишком медленно из-за пропускной способности памяти — это лучшая из тех, что остаются быстрыми.',
-        'fastest-resident':
-          'Ни одна модель не выходит на полную скорость на этом железе; эта ближе всех, при том что целиком работает в памяти GPU.',
+
+        'product-default': 'Модель по умолчанию для этого компьютера, выбранная его производителем.'
       },
       noRecommendationTitle: 'Для этой машины автоподбора нет',
       noRecommendationDetail:
@@ -2174,10 +2146,10 @@ export const ruOverrides = {
       downloadDoneToast: model => `${model} готова.`,
       installDoneToast: 'Локальный движок установлен и готов.',
       quickstartTitle: 'Запустите модель на этой машине',
-      quickstartDetail:
-        (model, size) => `Один клик настраивает всё: локальный движок, ${model} (скачать ${size}) и модель по умолчанию для новых чатов. Ничего не покидает этот компьютер.`,
-      quickstartDetailReady:
-        model => `Один клик делает ${model} моделью по умолчанию для новых чатов. Всё работает на этой машине.`,
+      quickstartDetail: (model, size) =>
+        `Один клик настраивает всё: локальный движок, ${model} (скачать ${size}) и модель по умолчанию для новых чатов. Ничего не покидает этот компьютер.`,
+      quickstartDetailReady: model =>
+        `Один клик делает ${model} моделью по умолчанию для новых чатов. Всё работает на этой машине.`,
       quickstartAction: 'Настроить за меня',
       quickstartConfigure: 'Выберу сам',
       quickstartDoneToast: model => `${model} настроена \u2014 новые чаты работают на этой машине.`,
@@ -2188,13 +2160,13 @@ export const ruOverrides = {
       useAction: 'Использовать',
       activePill: 'По умолчанию',
       updateTitle: 'Доступно обновление движка',
-      updateDetail:
-        (next, current) => `Готова к установке более новая сборка llama.cpp (${next}) \u2014 сейчас у вас ${current}. Во время скачивания модели продолжают работать.`,
+      updateDetail: (next, current) =>
+        `Готова к установке более новая сборка llama.cpp (${next}) \u2014 сейчас у вас ${current}. Во время скачивания модели продолжают работать.`,
       updateAction: 'Обновить движок',
       updating: 'Обновляем движок…',
       upToDateTitle: 'Движок обновлён',
-      upToDateDetail:
-        (tag, backend) => `Работает llama.cpp ${tag} (${backend}) \u2014 самая свежая сборка, которую поставляет Hermes.`,
+      upToDateDetail: (tag, backend) =>
+        `Работает llama.cpp ${tag} (${backend}) \u2014 самая свежая сборка, которую поставляет Hermes.`,
       activeDetail: 'Новые чаты используют эту модель — она загрузится, когда вы отправите первое сообщение',
       activeNotLoaded: 'Загрузится при первом сообщении',
       loadedPill: 'В памяти',
@@ -2252,7 +2224,7 @@ export const ruOverrides = {
       deleteConfirm: model => `Удалить ${model} с диска?`,
       deleted: model => `${model} удалена.`,
       deleteFailed: 'Удаление не удалось'
-    },
+    }
   },
   skillDeepLink: {
     installTitle: (name: string) => `Установить «${name}»?`,
@@ -2395,8 +2367,8 @@ export const ruOverrides = {
       kindDesktop: 'Приложение',
       kindBoth: 'Агент + приложение',
       installAgentHere: 'Установить сюда',
-      installAgentHereTip:
-        profile => `Половина для приложения загружена в это приложение, но половина для агента не установлена в ${profile}. Установите её туда.`,
+      installAgentHereTip: profile =>
+        `Половина для приложения загружена в это приложение, но половина для агента не установлена в ${profile}. Установите её туда.`,
       installAgentHereNoOrigin:
         'Половина для агента не установлена в этом профиле, а сам пакет скопирован вручную (нет записи в каталоге и git-remote), поэтому установить отсюда нельзя. Скопируйте его папку в профиль или переустановите из Git.',
       desktopHalfPending: 'копируем…',
@@ -2420,7 +2392,9 @@ export const ruOverrides = {
         no_interactive_session: 'нет интерактивного сеанса',
         version_too_old: 'устаревшая версия',
         missing_app: 'приложение не найдено',
-        unknown: 'статус неизвестен'
+        unknown: 'статус неизвестен',
+        hermes_not_connected: 'Нет подключения к MCP',
+        unsupported_gpu: 'Видеокарта не поддерживается'
       },
       catalogTitle: 'Каталог плагинов',
       catalogBrowse: 'Обзор',
@@ -2429,15 +2403,14 @@ export const ruOverrides = {
         'Нажмите «+ Добавить этому агенту» у любого плагина — проверенные записи ставятся в выбранный профиль на закреплённом коммите. Встроенные плагины «агент + приложение» дают обе половины.',
       alreadyInstalled: name => `${name} уже установлен в этом профиле.`,
       catalogProvenance: sha => `Установлено из каталога Hermes${sha ? ` на коммите ${sha}` : ''}.`,
-      pinnedProvenance:
-        sha => `Закреплено на коммите ${sha}. Обновления отклоняются, пока плагин не переустановят с новым закреплением.`,
+      pinnedProvenance: sha =>
+        `Закреплено на коммите ${sha}. Обновления отклоняются, пока плагин не переустановят с новым закреплением.`,
       pinnedBadge: sha => `закреплён @ ${sha}`,
       tierOfficial: 'официальный',
       tierCommunity: 'сообщества',
       updateToPin: sha => `Обновить до ${sha}`,
       updateFailed: name => `Не удалось обновить ${name}`,
-      updated:
-        name => `${name} обновлён до текущего закрепления каталога. Перезапустите шлюз, чтобы применить.`,
+      updated: name => `${name} обновлён до текущего закрепления каталога. Перезапустите шлюз, чтобы применить.`,
       updateConsentTitle: (name: string) => `${name} запрашивает новые разрешения`,
       updateConsentBody: (name: string, sha: string) =>
         `Новая закреплённая версия ${name} из каталога (${sha}) добавляет возможности, которых нет в установленной версии. Применяйте обновление, только если доверяете им:`,
@@ -2464,14 +2437,19 @@ export const ruOverrides = {
         save: 'Сохранить настройки',
         saved: (name: string) => `Настройки ${name} сохранены.`,
         saveFailed: (name: string) => `Не удалось сохранить настройки ${name}`,
-        optional: '(необязательно)',
         secretSet: '•••••••• (задан)',
         secretStoredAs: (env: string) =>
-          `Хранится в .env профиля как ${env}, не в config.yaml. Оставьте поле пустым, чтобы сохранить текущее значение.`
+          `Хранится в .env профиля как ${env}, не в config.yaml. Оставьте поле пустым, чтобы сохранить текущее значение.`,
+        required: 'Обязательно'
       },
+
+      toolsetOn: (name, profile) => `Инструменты агента ${name} включены для профиля ${profile}`,
+      toolsetOff: (name, profile) => `Инструменты агента ${name} отключены для профиля ${profile}`,
+      toolsetToggleFailed: name =>
+        `Не удалось переключить инструменты агента ${name}; панель Desktop осталась без изменений`
     },
     officialCatalog: 'Доступно для установки',
-    officialPill: 'Официальный',
+    officialPill: 'Официальный'
   },
   starmap: {
     title: 'Граф памяти',
@@ -2815,7 +2793,8 @@ export const ruOverrides = {
     restartNow: 'Перезапустить',
     restarting: 'Перезапуск…',
     restartFailedManual: 'Не удалось перезапустить шлюз — перезапустите его вручную и проверьте журналы.',
-    restartFailedManualDetail: 'Попробуйте перезапустить шлюз снова. Если не поможет, откройте журналы и отправьте диагностику.',
+    restartFailedManualDetail:
+      'Попробуйте перезапустить шлюз снова. Если не поможет, откройте журналы и отправьте диагностику.',
     restartAgain: 'Повторить перезапуск',
     openLogs: 'Открыть журналы',
     telegramQr: {
@@ -3120,8 +3099,10 @@ export const ruOverrides = {
       connectExistingInstead: 'Вместо этого подключить существующий'
     },
     status: {
-      unread: count => `${count} ${RU_NOUN(count, 'непрочитанный сеанс', 'непрочитанных сеанса', 'непрочитанных сеансов')}`,
-      needsInput: count => `${count} ${RU_NOUN(count, 'сеанс ожидает ответа', 'сеанса ожидают ответа', 'сеансов ожидают ответа')}`,
+      unread: count =>
+        `${count} ${RU_NOUN(count, 'непрочитанный сеанс', 'непрочитанных сеанса', 'непрочитанных сеансов')}`,
+      needsInput: count =>
+        `${count} ${RU_NOUN(count, 'сеанс ожидает ответа', 'сеанса ожидают ответа', 'сеансов ожидают ответа')}`,
       working: count => `${count} ${RU_NOUN(count, 'сеанс', 'сеанса', 'сеансов')} в работе`
     },
     remoteOverride: {
@@ -3138,11 +3119,11 @@ export const ruOverrides = {
       tokenSavedHint: 'Токен уже сохранён. Оставьте поле пустым, чтобы оставить его.',
       plainTextOptIn:
         'На этом компьютере нет защищённого хранилища ключей, поэтому токен будет сохранён на диск без шифрования. Всё равно сохранить.',
-      collisionWarning:
-        label => `Шлюз с именем \u201C${label}\u201D уже есть в настройках. Это подключение профиля отдельное и его не изменит.`,
+      collisionWarning: label =>
+        `Шлюз с именем \u201C${label}\u201D уже есть в настройках. Это подключение профиля отдельное и его не изменит.`,
       confirmTitle: 'Подключить этот профиль к удалённому хосту?',
-      confirmNote:
-        (profile, host) => `Новые чаты в ${profile} будут выполняться на ${host}. Тот компьютер будет запускать команды и читать файлы у себя, а не на этом. Подключайтесь только к хосту, которому доверяете.`,
+      confirmNote: (profile, host) =>
+        `Новые чаты в ${profile} будут выполняться на ${host}. Тот компьютер будет запускать команды и читать файлы у себя, а не на этом. Подключайтесь только к хосту, которому доверяете.`,
       confirmBack: 'Назад',
       connect: 'Подключить',
       connecting: 'Подключение…',
@@ -3153,11 +3134,11 @@ export const ruOverrides = {
       removedMessage: profile => `${profile} снова работает на этом компьютере`,
       removeFailed: 'Не удалось удалить удалённое подключение',
       authFailedTitle: 'Удалённый хост отклонил сохранённый токен',
-      authFailedMessage:
-        (profile, host) => `${host} отклонил токен, сохранённый для ${profile}. Возможно, на удалённой стороне его изменили.`,
-      updateToken: 'Ввести новый токен…',
+      authFailedMessage: (profile, host) =>
+        `${host} отклонил токен, сохранённый для ${profile}. Возможно, на удалённой стороне его изменили.`,
+      updateToken: 'Ввести новый токен…'
     },
-    exportMenu: 'Экспорт…',
+    exportMenu: 'Экспорт…'
   },
   modelAssignment: {
     saveFailed: 'Hermes не сохранил это изменение модели.',
@@ -3440,7 +3421,8 @@ export const ruOverrides = {
     noSessions: 'Сеансов пока нет',
     storageCorrupt: {
       title: 'База данных сеансов повреждена',
-      body: profiles => `Hermes не может прочитать всю историю сеансов для ${profiles}. Отсутствующие в списке чаты не удалены: повреждён файл, в котором они хранятся.`,
+      body: profiles =>
+        `Hermes не может прочитать всю историю сеансов для ${profiles}. Отсутствующие в списке чаты не удалены: повреждён файл, в котором они хранятся.`,
       action: 'Закройте Hermes для этого профиля, затем изучите файл, не изменяя его, или восстановите снимок:',
       guide: 'Инструкция по восстановлению'
     },
@@ -3496,7 +3478,8 @@ export const ruOverrides = {
       ageNow: 'сейчас',
       ageDay: 'д',
       ageHour: 'ч',
-      ageMin: 'м'
+      ageMin: 'м',
+      continuationOrigin: 'Автоматическое продолжение — контекст этого разговора был сжат, и разговор продолжился'
     },
     dateDivider: {
       today: 'Ранее сегодня',
@@ -3775,6 +3758,12 @@ export const ruOverrides = {
     voiceEngineChainedShort: 'распознавание речи',
     voiceEngineLiveShort: 'GPT-Live',
     hiddenQueued: 'Заметка о настройке',
+
+    terminalSelectionMissingTitle: 'Выделенный текст терминала недоступен',
+    terminalSelectionMissingBody:
+      'Перед отправкой снова выделите строки в терминале (Ctrl/Cmd+L): в этом вложении нет исходного текста.',
+    queuedTerminalSelectionExpiredBody:
+      'Выделенный текст терминала в очереди больше недоступен. Снова выделите строки (Ctrl/Cmd+L) и поставьте сообщение в очередь.'
   },
   statusStack: {
     hideStack: 'Скрыть панель состояния',
@@ -3928,7 +3917,10 @@ export const ruOverrides = {
       branchOffFrom: base => `Новая ветка от ${base}`,
       switchTo: branch => `Переключиться на ${branch}`,
       switchFailed: branch => `Не удалось переключиться на ${branch}`,
-      worktrees: 'Рабочие деревья'}
+      worktrees: 'Рабочие деревья',
+      readOnlyScope:
+        'Только просмотр — добавление в индекс, отмена изменений и коммиты доступны в разделе «Незакоммиченные»'
+    }
   },
   updates: {
     discontinuedTitle: 'Эта сборка Hermes больше не поддерживается',
@@ -4030,7 +4022,9 @@ export const ruOverrides = {
       restarting: 'Бэкенд перезапускается для загрузки обновления…',
       notAvailable: 'Обновление недоступно для этого бэкенда.',
       failed: 'Не удалось обновить бэкенд.',
-      noReturn: 'Бэкенд не вернулся в сеть. Обновление могло не завершиться — проверьте хост бэкенда.'
+      noReturn: 'Бэкенд не вернулся в сеть. Обновление могло не завершиться — проверьте хост бэкенда.',
+      owed: steps =>
+        `Бэкенд обновлён, но ещё нужно выполнить: ${steps}. Снова запустите \`hermes update\`, чтобы завершить обновление.`
     },
     // Restored About-card strings (moved from `settings.about.*` to `updates.*`).
     version: value => `Версия ${value}`,
@@ -4063,7 +4057,8 @@ export const ruOverrides = {
       'Новая версия Hermes готова. Hermes закроется, Windows завершит обновление, а затем Hermes снова откроется автоматически.',
     applyingBodyAppInstaller:
       'Hermes закроется, а Windows завершит обновление. Когда всё будет готово, Hermes откроется снова — вам ничего делать не нужно.',
-    applyingCloseAppInstaller: 'Это окно закроется, Windows завершит обновление, и Hermes снова откроется автоматически.',
+    applyingCloseAppInstaller:
+      'Это окно закроется, Windows завершит обновление, и Hermes снова откроется автоматически.',
     checkUnknownTitleAppInstaller: 'Не удалось проверить обновления',
     checkUnknownBodyAppInstaller:
       'Windows сейчас не смогла проверить наличие обновлений. Обновления также устанавливаются автоматически при перезапуске Hermes.',
@@ -4087,7 +4082,7 @@ export const ruOverrides = {
     versionDetailsRuntimeEmbedded: 'Встроенная среда выполнения',
     versionDetailsRuntimeExternal: 'Внешняя (использует среду выполнения на этом компьютере)',
     versionDetailsInstallId: 'ID установки',
-    versionDetailsUncommittedChanges: 'незафиксированные изменения',
+    versionDetailsUncommittedChanges: 'незафиксированные изменения'
   },
   install: {
     stageStates: {
@@ -4110,8 +4105,10 @@ export const ruOverrides = {
       'Подключите это приложение к уже работающему шлюзу Hermes или установите Hermes локально на этот компьютер.',
     setupChoiceDescLocal: 'Установите Hermes на этот компьютер или подключитесь к уже работающему шлюзу Hermes.',
     useLocalTitle: 'Использовать Hermes на этом компьютере',
-    useLocalDesc: 'Среда выполнения Hermes уже установлена здесь — запустите её одним нажатием. Ничего скачивать не нужно.',
-    bundledLocalDesc: 'Используйте среду выполнения Hermes из комплекта приложения — встроенный бэкенд и есть локальная установка.',
+    useLocalDesc:
+      'Среда выполнения Hermes уже установлена здесь — запустите её одним нажатием. Ничего скачивать не нужно.',
+    bundledLocalDesc:
+      'Используйте среду выполнения Hermes из комплекта приложения — встроенный бэкенд и есть локальная установка.',
     connectExistingTitle: 'Подключиться к существующему Hermes',
     connectExistingShort: 'Подключить существующий',
     connectExistingDesc:
@@ -4190,7 +4187,7 @@ export const ruOverrides = {
     customModelPlaceholder: 'Введите id модели, например openai/gpt-5',
     loadingIntoMemory: 'Загружаем в память',
     downloading: 'Скачивание',
-    localDownloadsHeading: 'Локальные',
+    localDownloadsHeading: 'Локальные'
   },
 
   modelVisibility: {
@@ -4358,8 +4355,8 @@ export const ruOverrides = {
         gpuMemory: 'Память GPU',
         ram: 'RAM',
         unifiedNote: 'Единая память — GPU и система используют один и тот же пул.',
-        toggle: 'Ресурсы системы',
-      },
+        toggle: 'Ресурсы системы'
+      }
     }
   },
   rightSidebar: {
@@ -4514,16 +4511,23 @@ export const ruOverrides = {
       annotateNeedPage: 'Сначала откройте страницу во встроенном браузере.',
       annotateFailed: 'Не удалось включить режим разметки',
       commenting: 'Комментирование',
-      addComments:
-        count => (count === 1 ? 'Добавить 1 комментарий' : `Добавить ${count} ${RU_NOUN(count, 'комментарий', 'комментария', 'комментариев')}`),
+      addComments: count =>
+        count === 1
+          ? 'Добавить 1 комментарий'
+          : `Добавить ${count} ${RU_NOUN(count, 'комментарий', 'комментария', 'комментариев')}`,
       commentPlaceholder: 'Добавьте комментарий...',
       commentTitle: n => `Комментарий ${n}`,
       saveComment: 'Сохранить',
-      cancelComment: 'Отменить комментарий',
+      cancelComment: 'Отменить комментарий'
     },
     openInExternal: 'Открыть вовне',
     popIn: 'Вернуть в окно',
     popOut: 'Открыть в окне',
+
+    missingTarget: 'Этого пути нет на данном компьютере',
+    missingTitle: 'Файла больше нет',
+    missingBody: label =>
+      `${label}: файл удалён, перемещён или его временное расположение очищено. При следующем запуске эта вкладка не будет восстановлена.`
   },
   interfaceMode: {
     title: 'Режим интерфейса',
@@ -4588,7 +4592,7 @@ export const ruOverrides = {
     notExpressible: 'эта расстановка зацеплена (pinwheel) — пока не выразима как вложенные разделения',
     zoneCount: count => `${count} ${RU_NOUN(count, 'зона', 'зоны', 'зон')}`,
     tabCount: count => `${count} ${RU_NOUN(count, 'вкладка', 'вкладки', 'вкладок')}`,
-    newTab: 'Новая вкладка',
+    newTab: 'Новая вкладка'
   },
   contextMenu: {
     link: {
@@ -4648,7 +4652,8 @@ export const ruOverrides = {
         },
         billing: {
           title: 'Закончились средства на счёте',
-          body: provider => `На счёте ${provider} закончились средства. Пополните счёт или смените провайдера и повторите отправку.`
+          body: provider =>
+            `На счёте ${provider} закончились средства. Пополните счёт или смените провайдера и повторите отправку.`
         },
         rate_limit: {
           title: 'Сервис ИИ ограничивает запросы',
@@ -4660,7 +4665,8 @@ export const ruOverrides = {
         },
         overloaded: {
           title: 'Сервис ИИ перегружен',
-          body: provider => `В работе ${provider} возникли проблемы. Повторите попытку чуть позже или смените провайдера.`
+          body: provider =>
+            `В работе ${provider} возникли проблемы. Повторите попытку чуть позже или смените провайдера.`
         },
         server_error: {
           title: 'Ошибка сервиса ИИ',
@@ -4694,7 +4700,8 @@ export const ruOverrides = {
         },
         model_not_found: {
           title: 'Модель недоступна',
-          body: provider => `Эта модель недоступна для вашей учётной записи ${provider}. Выберите другую модель и отправьте сообщение снова.`
+          body: provider =>
+            `Эта модель недоступна для вашей учётной записи ${provider}. Выберите другую модель и отправьте сообщение снова.`
         },
         provider_policy_blocked: {
           title: 'Модель заблокирована настройками учётной записи',
@@ -4761,12 +4768,17 @@ export const ruOverrides = {
         free_tier_refused: {
           title: 'Не удалось отправить сообщение без входа',
           body: 'Вход в учётную запись Nous бесплатен.'
+        },
+        no_reply: {
+          title: 'Ответ не был завершён',
+          body: 'Hermes завершил этот ход без ответа. Нажмите «Повторить», чтобы отправить запрос снова.'
         }
       },
       errorAuthKinds: {
         api_key: {
           title: provider => `${provider}: API-ключ отклонён`,
-          body: provider => `Сохранённый API-ключ для ${provider} недействителен или отозван. Обновите его и повторите попытку.`
+          body: provider =>
+            `Сохранённый API-ключ для ${provider} недействителен или отозван. Обновите его и повторите попытку.`
         },
         oauth: {
           title: provider => `Срок действия входа в ${provider} истёк`
@@ -4807,17 +4819,22 @@ export const ruOverrides = {
         generic: 'Ход не удался',
         provider: 'Ошибка провайдера',
         runtime: 'Ошибка локальной среды',
-        streaming: 'Ошибка потокового соединения',
+        streaming: 'Ошибка потокового соединения'
       },
       errorLayerBodies: {
         auth: 'Сервис ИИ отклонил вход. Проверьте учётные данные этого провайдера и отправьте сообщение снова.',
-        billing: 'На счёте у этого провайдера закончились средства. Пополните счёт или смените провайдера, затем отправьте сообщение снова.',
+        billing:
+          'На счёте у этого провайдера закончились средства. Пополните счёт или смените провайдера, затем отправьте сообщение снова.',
         disk: 'Диск заполнен, поэтому Hermes не смог сохранить этот разговор. Освободите место и повторите попытку.',
-        endpoint: 'Hermes не может подключиться к вашему серверу модели. Проверьте, запущен ли он, и отправьте сообщение снова.',
-        gateway: 'Внутренняя ошибка Hermes помешала начать ответ. Отправьте сообщение снова; если ошибка повторится, отправьте диагностические данные.',
-        generic: 'Во время ответа Hermes произошла ошибка. Повторите попытку, а если она повторится — скопируйте подробности.',
+        endpoint:
+          'Hermes не может подключиться к вашему серверу модели. Проверьте, запущен ли он, и отправьте сообщение снова.',
+        gateway:
+          'Внутренняя ошибка Hermes помешала начать ответ. Отправьте сообщение снова; если ошибка повторится, отправьте диагностические данные.',
+        generic:
+          'Во время ответа Hermes произошла ошибка. Повторите попытку, а если она повторится — скопируйте подробности.',
         provider: 'Сервис ИИ не смог обработать запрос. Повторите попытку чуть позже или смените провайдера.',
-        runtime: 'Внутренняя ошибка Hermes помешала начать ответ. Отправьте сообщение снова; если ошибка повторится, отправьте диагностические данные.',
+        runtime:
+          'Внутренняя ошибка Hermes помешала начать ответ. Отправьте сообщение снова; если ошибка повторится, отправьте диагностические данные.',
         streaming: 'Соединение прервалось до завершения ответа. Повторите отправку.'
       },
       errorDetails: 'Подробности',
@@ -4843,12 +4860,16 @@ export const ruOverrides = {
       errorOpenDesktopLogs: 'Открыть журналы приложения',
       errorCopyDiagnostics: 'Скопировать детали ошибки',
       errorSendDiagnostics: 'Отправить диагностику',
+
+      responseStopped: 'Ответ остановлен'
     },
     approval: {
-      gatewayDisconnected: 'Hermes сейчас не в сети. Команда ждёт вашего ответа до истечения времени ожидания. Переподключитесь и отправьте ответ снова.',
+      gatewayDisconnected:
+        'Hermes сейчас не в сети. Команда ждёт вашего ответа до истечения времени ожидания. Переподключитесь и отправьте ответ снова.',
       sendFailed: 'Не удалось отправить ответ на подтверждение',
       reconnect: 'Переподключиться',
-      timedOutSystemLine: 'Время ожидания подтверждения истекло — команда не выполнялась. Попросите Hermes повторить попытку или увеличьте лимит в разделе «Настройки → Безопасность → Время ожидания подтверждения».',
+      timedOutSystemLine:
+        'Время ожидания подтверждения истекло — команда не выполнялась. Попросите Hermes повторить попытку или увеличьте лимит в разделе «Настройки → Безопасность → Время ожидания подтверждения».',
       openSafetySettings: 'Открыть настройки безопасности',
       run: 'Выполнить',
       command: 'Команда',
@@ -4886,7 +4907,18 @@ export const ruOverrides = {
       securityHeading: 'Безопасность',
       scan: { passed: 'Проверка пройдена', warnings: 'Проверка нашла предупреждения', failed: 'Проверка не пройдена' },
       requirementsLabel: 'Требования',
-      credentialsHeading: 'Учётные данные'
+      credentialsHeading: 'Учётные данные',
+      phase: {
+        downloading: 'Скачивание…',
+        python_packages: 'Установка пакетов Python…',
+        loading_tools: 'Загрузка инструментов…'
+      },
+      notEnabled: 'Установлен, но не включён',
+      alreadyInstalled: 'Уже установлен; оставлен без изменений',
+      requiresHermes: range => `Hermes ${range}`,
+      envVar: name => `Переменная окружения ${name}`,
+      serverNotConnected: (server, reason) => `MCP-сервер ${server} не подключён${reason ? `: ${reason}` : ''}`,
+      missingEnv: names => `Задайте ${names}, чтобы завершить настройку`
     },
     mcpSetup: {
       installTitle: 'Добавить MCP-серверы',
@@ -4959,7 +4991,8 @@ export const ruOverrides = {
       },
       prefixes: {
         browser: 'Браузер',
-        web: 'Веб'},
+        web: 'Веб'
+      },
       titleTemplates: {
         actionCommand: (action, command) => `${action} ${command}`,
         actionQuoted: (action, value) => `${action} «${value}»`,
@@ -5036,15 +5069,15 @@ export const ruOverrides = {
     secretPlaceholder: 'значение секрета',
     vaultUnlockSendFailed: 'Не удалось отправить мастер-пароль',
     vaultUnlockTitle: name => `Разблокировать ${name}`,
-    vaultUnlockDesc:
-      name => `Агент хочет войти на сайт с логином, сохранённым в ${name}. Введите мастер-пароль, чтобы разблокировать его на этот сеанс \u2014 он уходит прямо в ${name} на этой машине и нигде не хранится и не показывается агенту.`,
+    vaultUnlockDesc: name =>
+      `Агент хочет войти на сайт с логином, сохранённым в ${name}. Введите мастер-пароль, чтобы разблокировать его на этот сеанс \u2014 он уходит прямо в ${name} на этой машине и нигде не хранится и не показывается агенту.`,
     vaultUnlockPlaceholder: 'Мастер-пароль',
     vaultUnlockKeepLocked: 'Оставить заблокированным',
     vaultUnlockConfirm: 'Разблокировать',
     vaultSaveSendFailed: 'Не удалось сохранить логин',
     vaultSaveTitle: site => `Сохранить логин для ${site}?`,
-    vaultSaveDesc:
-      origin => `Hermes дошёл до страницы входа на ${origin}, а логина для неё нет. Введите его один раз здесь; он шифруется на этой машине и подставляется в страницу, а модель пароль не видит.`,
+    vaultSaveDesc: origin =>
+      `Hermes дошёл до страницы входа на ${origin}, а логина для неё нет. Введите его один раз здесь; он шифруется на этой машине и подставляется в страницу, а модель пароль не видит.`,
     vaultSaveIdentifierLabel: 'Email или имя пользователя',
     vaultSaveIdentifierPlaceholder: 'you@example.com',
     vaultSavePasswordPlaceholder: 'Пароль',
@@ -5053,13 +5086,13 @@ export const ruOverrides = {
     vaultSaveConfirm: 'Сохранить и войти',
     vaultCodeSendFailed: 'Не удалось отправить код',
     vaultCodeTitle: site => `Код подтверждения для ${site}`,
-    vaultCodeDesc:
-      site => `${site} запрашивает одноразовый код (СМС, письмо или приложение-аутентификатор). Введите его здесь, и Hermes подставит его в страницу; модель его не видит.`,
+    vaultCodeDesc: site =>
+      `${site} запрашивает одноразовый код (СМС, письмо или приложение-аутентификатор). Введите его здесь, и Hermes подставит его в страницу; модель его не видит.`,
     vaultCodeLabel: 'Код',
     vaultCodeFootnote:
       'Совет: сохраните ключ аутентификатора вместе с этим логином в разделе «Настройки → Пароли и входы», и Hermes будет вводить коды сам.',
     vaultCodeSkip: 'Пропустить',
-    vaultCodeConfirm: 'Ввести код',
+    vaultCodeConfirm: 'Ввести код'
   },
   desktop: {
     audioReadFailed: 'Не удалось прочитать записанное аудио',
@@ -5150,9 +5183,15 @@ export const ruOverrides = {
     readOnlyTranscriptTitle: 'Открыто только для чтения',
     readOnlyTranscriptBody:
       'Ни один подключённый бэкенд пока не заявил права на этот старый чат, поэтому он открылся как стенограмма только для чтения. История цела, отправка сообщений отключена, пока бэкенд не заявит права.',
-    readOnlyTranscriptSendBlocked:
-      'Этот чат открыт как стенограмма только для чтения — отправка сообщений отключена.',
+    readOnlyTranscriptSendBlocked: 'Этот чат открыт как стенограмма только для чтения — отправка сообщений отключена.',
     hydrationSyncing: profile => `Синхронизируем ${profile}\u2026`,
+
+    slashCommandIgnoredTitle: 'Команда не отправлена',
+    slashCommandIgnoredBody:
+      'Слеш-команды нельзя отправлять вместе с вложениями. Удалите вложение или отправьте команду отдельно.',
+    zoomIn: 'Увеличить масштаб',
+    zoomOut: 'Уменьшить масштаб',
+    resetZoom: 'Сбросить масштаб'
   },
   errors: {
     genericFailure: 'Что-то пошло не так',
@@ -5325,7 +5364,8 @@ export const ruOverrides = {
     dialog: {
       disconnect: 'Отключить',
       disconnectTitle: (name: string) => `Отключить ${name}?`,
-      disconnectBody: 'Hermes перестанет действовать от имени этого аккаунта. Вы сможете подключиться снова в любое время.',
+      disconnectBody:
+        'Hermes перестанет действовать от имени этого аккаунта. Вы сможете подключиться снова в любое время.',
       menuRefreshTools: 'Обновить список инструментов',
       moreActions: 'Другие действия',
       removeServerTitle: (name: string) => `Удалить ${name}?`,
@@ -5365,7 +5405,8 @@ export const ruOverrides = {
       summaryAllOn: 'все включены',
       summarySomeOn: (on: number, total: number) => `включено ${on} из ${total}`,
       summaryOff: 'выключены',
-      showAllTools: (count: number) => `Показать ${count} ${RU_NOUN(count, 'инструмент', 'инструмента', 'инструментов')}`,
+      showAllTools: (count: number) =>
+        `Показать ${count} ${RU_NOUN(count, 'инструмент', 'инструмента', 'инструментов')}`,
       showSummary: 'Показать сводку',
       facetSwitch: (facet: string) => `Включить или выключить инструменты категории «${facet}»`,
       moreHints: (count: number) => `+${count}`,
@@ -5434,6 +5475,31 @@ export const ruOverrides = {
       hintDestructive: { label: 'Необратимо', long: 'Здесь нельзя отменить внесённые изменения.' },
       hintIdempotent: { label: 'Повторяемо', long: 'Повторный запуск даёт тот же результат, что и однократный.' },
       hintOpenWorld: { label: 'Внешний доступ', long: 'Обращается к ресурсам вне этого приложения.' }
+    },
+    accounts: {
+      heading: 'Аккаунты',
+      addAnother: 'Добавить ещё один аккаунт',
+      aliasLabel: 'Имя аккаунта',
+      aliasHint: 'До 32 строчных латинских букв, цифр и дефисов. Например, work или home.',
+      aliasInvalid: 'Используйте строчные латинские буквы, цифры и дефисы. Первый символ — буква или цифра.',
+      aliasTaken: 'Это имя уже занято.',
+      add: 'Подключить',
+      rename: 'Переименовать',
+      renameGone: 'Этого аккаунта больше нет. Он был удалён или заменён при переподключении.',
+      remove: 'Удалить',
+      removeBody: 'Hermes перестанет действовать от имени этого аккаунта. Другие аккаунты останутся подключёнными.',
+      status: {
+        expired: 'Срок доступа истёк',
+        failed: 'Не удалось подключиться',
+        inactive: 'Неактивен',
+        pending: 'Ожидание входа',
+        retired: 'Заменён при переподключении',
+        revoked: 'Доступ отозван'
+      },
+      count: count => `Аккаунтов: ${count}`,
+      renameLabel: name => `Новое имя для ${name}`,
+      removeTitle: (app, name) => `Удалить аккаунт ${app} «${name}»?`,
+      retiredCount: count => `Заменено: ${count}`
     }
   },
   tips: {
@@ -5441,52 +5507,46 @@ export const ruOverrides = {
     items: {
       'new-session': {
         title: 'Начните с чистого листа',
-        text: 'У нового чата свой контекст, свой терминал и свой рабочий каталог.',
+        text: 'У нового чата свой контекст, свой терминал и свой рабочий каталог.'
       },
       skills: {
         title: 'Научите один раз',
-        text: 'Навыки — это папки с инструкциями, которые Hermes подгружает, когда они нужны для дела.',
+        text: 'Навыки — это папки с инструкциями, которые Hermes подгружает, когда они нужны для дела.'
       },
       messaging: {
         title: 'Hermes не только за столом',
-        text: 'Подключите Telegram, Discord, Slack и другие — тот же агент, та же память.',
+        text: 'Подключите Telegram, Discord, Slack и другие — тот же агент, та же память.'
       },
       artifacts: {
         title: 'Всё, что сделал Hermes',
-        text: 'Изображения, файлы и ссылки из всех сеансов — в одном месте.',
+        text: 'Изображения, файлы и ссылки из всех сеансов — в одном месте.'
       },
       cron: {
         title: 'Работа, которая запускает себя сама',
-        text: 'Запланируйте запрос на каждый час, на ночь или по cron-выражению.',
+        text: 'Запланируйте запрос на каждый час, на ночь или по cron-выражению.'
       },
       'command-palette': {
         title: 'Одно поле для всего',
-        text: 'Сеансы, настройки, навыки и команды — всё доступно из палитры.',
+        text: 'Сеансы, настройки, навыки и команды — всё доступно из палитры.'
       },
       profiles: {
         title: 'Профили независимы',
-        text: 'Каждый — свой Hermes: свои ключи, своя память, свои сеансы.',
+        text: 'Каждый — свой Hermes: свои ключи, своя память, свои сеансы.'
       },
       'composer-mentions': {
         title: 'Вложить и скомандовать',
-        text: 'Введите @, чтобы добавить файл в разговор, / — чтобы выполнить команду.',
+        text: 'Введите @, чтобы добавить файл в разговор, / — чтобы выполнить команду.'
       },
       'local-runtime-update': {
         title: 'Доступно обновление локального движка',
         text: 'Обновите движок для локальных моделей. Активные запросы к ним могут прерваться.',
         action: 'Обновить сейчас'
       },
-      'local-setup': {
-        title: 'Эта машина умеет запускать модели локально',
-        text:
-          'Ваше железо может обслуживать локальную модель. Чаты остаются на компьютере и ничего не стоят.',
-        action: 'Настроить',
-      },
       'right-pane': {
         title: 'Рабочая панель',
-        text: 'Файлы, терминал, разбор и встроенный браузер делят правую сторону.',
-      },
-    },
+        text: 'Файлы, терминал, разбор и встроенный браузер делят правую сторону.'
+      }
+    }
   },
   sendDiagnostics: {
     title: 'Отправить диагностику в Nous',
@@ -5508,19 +5568,8 @@ export const ruOverrides = {
     links: {
       github: 'GitHub Issues',
       portal: 'Поддержка Nous Portal',
-      discord: 'Discord',
-    },
-  },
-  handoffTour: {
-    profileTitle: 'Ваша первая задача выполняется в профиле по умолчанию',
-    profileText:
-      'Эта панель переключает профили. Подсвечен профиль default — в нём живёт сеанс задачи. Второй — профиль настройки, в нём живёт приветственный чат.',
-    sessionsTitle: 'У каждого профиля свои сеансы',
-    sessionsText:
-      'Этот список принадлежит профилю default. «Новый сеанс» создаётся в том профиле, который выбран. Переключите профиль на панели — список изменится вместе с ним.',
-    stayTitle: 'Hermes всегда в одном клике',
-    stayText:
-      'Переключайтесь в профиль настройки и открывайте «Добро пожаловать в Hermes», когда нужна помощь. Он всегда там.',
+      discord: 'Discord'
+    }
   },
   freeTier: {
     offer: {
@@ -5528,6 +5577,103 @@ export const ruOverrides = {
       body: 'Вы пользуетесь бесплатным лимитом. Если продолжите работать с Hermes, скоро начнёте упираться в ограничения. Войдите с бесплатной учётной записью Nous, чтобы получить больший лимит.',
       signIn: 'Войти',
       notNow: 'Не сейчас'
+    },
+    providerRowTitle: 'Nous · бесплатный тариф',
+    providerRowPitch: 'Войдите с аккаунтом Nous, чтобы открыть больше моделей и инструментов.',
+    readyTitle: 'Hermes готов.',
+    readyCaption: 'Бесплатно · коннекторы включены',
+    begin: 'Начать',
+    signInInstead: 'Войти с аккаунтом Nous',
+    otherProviders: 'Другие провайдеры',
+    stripTitle: 'Бесплатный вывод Nous и коннекторы теперь доступны.',
+    stripBody: 'Откройте выбор модели, чтобы попробовать их, или войдите с аккаунтом Nous.',
+    openModelPicker: 'Открыть выбор модели',
+    dismiss: 'Скрыть',
+    providerName: 'Nous',
+    statusLabel: model => `Nous \u00B7 ${model}`,
+    signIn: 'Войти',
+    signInHeading: 'Войдите с аккаунтом Nous, чтобы открыть больше моделей и инструментов.',
+    settingUp: 'Настраиваем бесплатный вывод…',
+    codeBody: 'Введите этот код в браузере, чтобы завершить вход.',
+    copyLink: 'Скопировать ссылку',
+    doNotShare: 'Не передавайте этот код никому.',
+    waiting: 'Ждём входа…',
+    finishingHeading: 'Завершаем вход…',
+    finishingBody: 'Подтверждено в браузере. Получаем токены аккаунта.',
+    signedInAs: email => `Вы вошли как ${email}`,
+    signedIn: 'Вход выполнен.',
+    completedBody: 'Теперь вашему аккаунту доступны вывод и инструменты.',
+    defaultModel: 'Модель по умолчанию',
+    change: 'Изменить',
+    done: 'Готово',
+    notNow: 'Не сейчас',
+    tryAgain: 'Повторить',
+    startAgain: 'Начать заново',
+    didNotComplete: 'Вход не завершён',
+    rejectedBody: 'Ничего страшного — бесплатный сервис Nous остаётся доступен. Войдите, когда будете готовы.',
+    supersededBody: 'Новый код для входа заменил предыдущий. Используйте новый код или начните заново.',
+    timedOutHeading: 'Срок действия ссылки для входа истёк',
+    timedOutBody: 'Когда будете готовы, начните заново. Бесплатный сервис Nous остаётся доступен.',
+    retiredBody:
+      'Ваша сессия завершилась до окончания входа. Hermes начнёт новую сессию; после этого вы сможете снова войти, когда будете готовы.',
+    errorBody: 'Не удалось завершить вход. Попробуйте снова, когда будете готовы.',
+    busyHeading: 'Почти готово',
+    busyBody: wait =>
+      `Hermes не удалось завершить вход, потому что служба Nous перегружена. Попробуйте снова через ${wait}. Пока что ваша сессия остаётся доступной.`,
+    unreachableBody:
+      'Hermes не удалось связаться со службой Nous, чтобы завершить вход. Проверьте подключение к интернету и попробуйте снова. Ваша сессия остаётся доступной.',
+    alreadySignedInHeading: 'Вы уже вошли.',
+    alreadySignedInBody: 'Этот Hermes уже вошёл в аккаунт Nous.',
+    setupFailed: {
+      gateClosed:
+        'Эта версия Hermes не может запуститься без аккаунта Nous. Войдите или создайте аккаунт — это бесплатно и займёт всего минуту.',
+      paused:
+        'Работа с Hermes без входа временно приостановлена. Hermes продолжит проверять доступность. Вход бесплатный и позволит начать прямо сейчас.',
+      rateLimited: wait =>
+        `Сейчас много новых пользователей, поэтому Hermes попробует снова через ${wait}. Бесплатный вход позволит не ждать.`,
+      unreachable:
+        'Hermes не удалось связаться со службой Nous. Проверьте подключение к интернету и нажмите «Повторить». Пока можно подключить другого провайдера.',
+      serverError:
+        'В работе службы Nous произошёл сбой. Нажмите «Повторить» чуть позже или пока подключите другого провайдера.',
+      powRequired:
+        'Сервер Nous запросил доказательство выполнения работы, но ваша версия Agent пока его не поддерживает. Войдите или создайте бесплатный аккаунт Nous, чтобы продолжить.',
+      locked: 'Чтобы продолжить эту сессию, нужно войти. Войдите или создайте бесплатный аккаунт Nous.',
+      generic:
+        'Hermes не удалось настроить бесплатный доступ без входа. Войти можно бесплатно; также можно подключить другого провайдера.',
+      signInBelow: 'Вход бесплатный. Выберите Nous ниже.',
+      tryAgain: 'Повторить',
+      retrying: 'Пробуем снова…'
+    }
+  },
+  appTour: {
+    sessions: {
+      title: 'Ваши чаты',
+      text: 'Здесь хранятся все разговоры. Любой из них можно найти, закрепить или открыть снова.'
+    },
+    composer: {
+      title: 'Пишите здесь',
+      text: 'Опишите задачу. Введите @, чтобы добавить файл.'
+    },
+    newSession: {
+      title: 'Начните заново',
+      text: 'У каждой новой сессии свой контекст. Создавайте отдельную сессию для каждой задачи.'
+    },
+    model: {
+      title: 'Выбор модели',
+      text: 'Здесь можно выбрать модель, которая будет вам отвечать.'
+    },
+    modelLocal: 'Этот компьютер может запускать модель локально: Настройки > Провайдеры > Локальные модели.',
+    capabilities: {
+      title: 'Возможности',
+      text: 'Навыки, инструменты и плагины, доступные Hermes. Здесь можно добавить новые.'
+    },
+    messaging: {
+      title: 'Мессенджеры',
+      text: 'Общайтесь с Hermes через Telegram, Slack, Discord и другие сервисы.'
+    },
+    rightPane: {
+      title: 'Рабочая панель',
+      text: 'Справа открываются файлы, терминал, проверка изменений и встроенный браузер.'
     }
   }
 } satisfies TranslationOverrides

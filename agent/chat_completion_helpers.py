@@ -3392,10 +3392,25 @@ class _StreamingCall(StreamingWaitMonitor):
             # Partial args WITH finish_reason="length" is a real output cap; with NONE the
             # upstream dropped mid tool-call, and stamping "length" burns 3 useless retries.
             _dropped_names = [(tool_calls_acc[idx]["function"]["name"] or "?") for idx in sorted(tool_calls_acc)]
+            if (not self.deltas_were_sent["yes"] and not self._visible_text_delivered()
+                    and getattr(self, "_stream_budget_left", False)):
+                # Nothing streamed and nothing visible was delivered — the dropped action has no
+                # text to protect, so a same-prefix re-stream cannot duplicate anything. Raise into
+                # the existing drop ladder (EmptyStreamError -> fresh-connection retry, capped by
+                # max_retries) instead of silently dropping the action (#126217).
+                logger.warning(
+                    "Clean EOF, no finish_reason: server ended the stream (no transport exception) while a "
+                    "tool call's arguments were still incomplete (tools=%s) and nothing was delivered — "
+                    "retrying through the drop ladder. Not an output-length truncation.",
+                    _dropped_names)
+                raise EmptyStreamError(
+                    f"Provider closed the stream mid tool-call (tools={_dropped_names}) "
+                    "with no finish_reason and no delivered output.")
             logger.warning(
                 "Clean EOF, no finish_reason: server ended the stream (no transport exception) while a tool "
                 "call's arguments were still incomplete (tools=%s). The server or a proxy closed the stream "
-                "cleanly; not an output-length truncation.",
+                "cleanly; not an output-length truncation. Retry budget exhausted — the caller gets the "
+                "honest partial-stream stub instead of another re-stream.",
                 _dropped_names)
             return _build_partial_stream_stub(
                 role, full_content, full_reasoning, model_name, usage_obj, dropped_tool_names=_dropped_names or None,
@@ -3692,7 +3707,8 @@ class _StreamingCall(StreamingWaitMonitor):
             # text). Exception: a tool call in flight — aborting discards it, so
             # retry TRANSIENT errors (a "reconnecting" marker + duplicated
             # preamble beats a failed action; no tool has executed yet).
-            if not (_partial_tool_in_flight and _is_transient and attempt < max_retries):
+            if not (_partial_tool_in_flight and (_is_transient or _is_empty_stream)
+                    and attempt < max_retries):
                 logger.warning("Streaming failed after partial delivery, not retrying: %s", e)
                 self.result["error"] = e
                 return False
@@ -3820,6 +3836,9 @@ class _StreamingCall(StreamingWaitMonitor):
         try:
             while _stream_attempt < _max_stream_retries + self._compat_retries:
                 _stream_attempt += 1
+                # Mid-tool-call clean-EOF re-raise (#126217): only while the transient
+                # budget has a next attempt left; the final attempt keeps the stub contract.
+                self._stream_budget_left = _stream_attempt < _max_stream_retries
                 stream_attempt_id = self._start_stream_attempt()
                 # Otherwise /stop closes the connection and the retry opens a
                 # FRESH one, blocking up to a full read timeout per attempt.

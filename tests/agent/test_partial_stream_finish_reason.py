@@ -266,6 +266,113 @@ class TestCleanStreamEndMidToolCall:
         )
 
 
+class TestCleanEofMidToolCallRetriesWhenNothingDelivered:
+    """#126217: clean close mid tool-call args, nothing delivered — the action
+    must go through the drop-retry ladder, not evaporate into the stub."""
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_dropped_action_is_restreamed_and_completes(self, _mock_close, mock_create, monkeypatch):
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+        calls = {"n": 0}
+
+        def _create(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                def _dropped():
+                    yield _make_stream_chunk(tool_calls=[
+                        _make_tool_call_delta(index=0, tc_id="call_a", name="write_file"),
+                    ])
+                    yield _make_stream_chunk(tool_calls=[
+                        _make_tool_call_delta(index=0, arguments="{'),"),
+                    ])  # partial args, then a clean close
+                return _dropped()
+
+            def _complete():
+                yield _make_stream_chunk(tool_calls=[
+                    _make_tool_call_delta(index=0, tc_id="call_b", name="write_file"),
+                ])
+                yield _make_stream_chunk(tool_calls=[
+                    _make_tool_call_delta(index=0, arguments='{"path": "a.txt"}'),
+                ])
+                yield _make_stream_chunk(finish_reason="tool_calls")
+            return _complete()
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = _create
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        response = agent._interruptible_streaming_api_call({})
+
+        assert calls["n"] == 2, (
+            "Nothing was delivered, so the mid-tool-call clean EOF must re-stream "
+            "on a fresh request instead of returning the silent stub (#126217)."
+        )
+        assert response.id != PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == "tool_calls"
+        assert response.choices[0].message.tool_calls, (
+            "The re-streamed action must survive: the whole point of the retry."
+        )
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_exhausted_budget_keeps_the_partial_stub_contract(self, _mock_close, mock_create, monkeypatch):
+        """Final attempt keeps the historical stub (#102766/#80498 contract):
+        an honest partial tag, never a false 'output length' truncation."""
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+
+        def _dropped():
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_x", name="execute_code"),
+            ])
+            yield _make_stream_chunk(tool_calls=[_make_tool_call_delta(index=0, arguments="{")])
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = lambda *a, **kw: _dropped()
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert getattr(response, "_clean_eof", None) is True
+        assert getattr(response, "_dropped_tool_names", None) == ["execute_code"]
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_delivered_text_keeps_deliver_as_is(self, _mock_close, mock_create, monkeypatch):
+        """Visible text already delivered: the tool call is dropped as before —
+        the retry is reserved for the nothing-delivered case (no duplication)."""
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "2")
+        calls = {"n": 0}
+
+        def _create(*a, **kw):
+            calls["n"] += 1
+            def _dropped():
+                yield _make_stream_chunk(content="visible prose")
+                yield _make_stream_chunk(tool_calls=[
+                    _make_tool_call_delta(index=0, tc_id="call_y", name="write_file"),
+                ])
+                yield _make_stream_chunk(tool_calls=[_make_tool_call_delta(index=0, arguments="{")])
+            return _dropped()
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = _create
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent.stream_delta_callback = lambda *_a, **_k: None
+        response = agent._interruptible_streaming_api_call({})
+
+        assert calls["n"] == 1, (
+            "Text already reached the user — re-streaming would duplicate it; "
+            "the old deliver-as-is path must handle this case."
+        )
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert "visible prose" in (response.choices[0].message.content or "")
+
+
 # ── Clean stream-end before any argument byte arrives (#80498) ─────────────
 
 class TestCleanStreamEndBeforeAnyToolArgs:

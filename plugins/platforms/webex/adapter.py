@@ -56,7 +56,7 @@ from gateway.platforms._shared import (
     get_scoped_secret as _get_scoped_secret,
     seed_extra_from_env,
 )
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, send_chunks
 from hermes_cli.commands import resolve_command
 from hermes_constants import (
     find_node_executable,
@@ -103,11 +103,31 @@ _LISTENER_DEPENDENCIES = {
 class _WebexAPIRequestError(RuntimeError):
     """Webex REST request failure whose HTTP status is safe to classify."""
 
-    def __init__(self, path: str, status: Optional[int] = None):
+    def __init__(
+        self, path: str, status: Optional[int] = None, *, retry_after: Optional[float] = None,
+        timed_out: bool = False, transport_error: bool = False,
+    ):
         self.path = path
         self.status = status
-        detail = f"HTTP {status}" if status is not None else "transport error"
+        self.retry_after = retry_after
+        self.timed_out = timed_out
+        self.transport_error = transport_error
+        detail = "timed out" if timed_out else f"HTTP {status}" if status is not None else "transport error"
+        if status == 429:
+            detail += " rate limited"
         super().__init__(f"Webex API {path} failed ({detail})")
+
+    def as_send_result(self) -> SendResult:
+        retryable = not self.timed_out and (
+            self.transport_error or self.status in {408, 429} or (self.status is not None and self.status >= 500)
+        )
+        kind = {401: "forbidden", 403: "forbidden", 404: "not_found", 413: "too_long", 429: "rate_limited"}.get(
+            self.status, "transient" if retryable else "unknown"
+        )
+        return SendResult(
+            success=False, error=str(self), retryable=retryable,
+            error_kind=kind, retry_after=self.retry_after,
+        )
 
 
 class _WebexStartupError(RuntimeError):
@@ -456,28 +476,34 @@ class WebexAdapter(BasePlatformAdapter):
             return SendResult(success=True)
 
         sent_ids = []
-        chunks = split_message(message)
-        for chunk in chunks:
+
+        async def send_one(chunk):
             payload = self._build_text_payload(chat_id, chunk, metadata=metadata)
             if payload is None:
-                return SendResult(success=False, error="Missing room target")
-            data = await self._api_post_json("messages", payload)
+                return SendResult(success=False, error="Missing room target", error_kind="not_found")
+            try:
+                data = await self._api_post_json("messages", payload)
+            except _WebexAPIRequestError as exc:
+                return exc.as_send_result()
             if not data or not data.get("id"):
-                raw = dict(data) if data else {}
-                if sent_ids:
-                    raw.update(partial_overflow=True, delivered_chunks=len(sent_ids),
-                               total_chunks=len(chunks))
                 return SendResult(
                     success=False,
                     error=json.dumps(data) if data else "Webex send returned no data",
-                    message_id=sent_ids[-1] if sent_ids else None,
-                    continuation_message_ids=tuple(sent_ids[:-1]), raw_response=raw,
+                    error_kind="unknown", raw_response=data,
                 )
             sent_ids.append(str(data["id"]))
-        return SendResult(
-            success=True, message_id=sent_ids[-1], raw_response=data,
-            continuation_message_ids=tuple(sent_ids[:-1]),
-        )
+            return SendResult(success=True, message_id=str(data["id"]), raw_response=data)
+
+        result = await send_chunks(split_message(message), send_one)
+        if sent_ids:
+            result.message_id = sent_ids[-1]
+            result.continuation_message_ids = tuple(sent_ids[:-1])
+        return result
+
+    def _send_retry_is_final(self, result: SendResult) -> bool:
+        return self._is_partial_delivery(result) or result.error_kind in {
+            "forbidden", "not_found", "too_long", "unknown",
+        }
 
     async def edit_message(
         self,
@@ -500,13 +526,13 @@ class WebexAdapter(BasePlatformAdapter):
         if not room_id:
             return SendResult(success=False, error="Missing room target for Webex edit")
 
-        data = await self._api_put_json(
-            f"messages/{message_id}",
-            {
-                "roomId": room_id,
-                "markdown": message,
-            },
-        )
+        try:
+            data = await self._api_put_json(
+                f"messages/{message_id}",
+                {"roomId": room_id, "markdown": message},
+            )
+        except _WebexAPIRequestError as exc:
+            return exc.as_send_result()
         if not data:
             return SendResult(success=False, error="Webex edit returned no data")
         if data.get("id"):
@@ -536,7 +562,14 @@ class WebexAdapter(BasePlatformAdapter):
         if payload is None:
             return SendResult(success=False, error="Missing room target")
         payload["files"] = [image_url]
-        data = await self._api_post_json("messages", payload)
+        try:
+            data = await self._api_post_json("messages", payload)
+        except _WebexAPIRequestError as exc:
+            if exc.status != 400:
+                result = exc.as_send_result()
+                result.continuation_message_ids = caption_ids
+                return result
+            data = {}
         if data and data.get("id"):
             return SendResult(
                 success=True, message_id=str(data["id"]), raw_response=data,
@@ -645,7 +678,12 @@ class WebexAdapter(BasePlatformAdapter):
             content_type=content_type,
         )
 
-        data = await self._api_post_form("messages", form)
+        try:
+            data = await self._api_post_form("messages", form)
+        except _WebexAPIRequestError as exc:
+            result = exc.as_send_result()
+            result.continuation_message_ids = caption_ids
+            return result
         if data and data.get("id"):
             return SendResult(
                 success=True, message_id=str(data["id"]), raw_response=data,
@@ -1108,56 +1146,51 @@ class WebexAdapter(BasePlatformAdapter):
             return {}
 
     async def _api_post_json(
-        self, path: str, payload: dict[str, Any]
+        self, path: str, payload: dict[str, Any], *, raise_on_error: bool = True,
     ) -> dict[str, Any]:
-        if not self._session:
-            return {}
-        url = f"{API_BASE}/{path.lstrip('/')}"
-        try:
-            async with self._session.post(
-                url, headers=self._json_headers(), json=payload
-            ) as resp:
-                text = await resp.text()
-                if resp.status >= 400:
-                    logger.warning("[Webex] POST %s -> HTTP %s", path, resp.status)
-                    return {}
-                return json.loads(text) if text else {}
-        except (TimeoutError, aiohttp.ClientError, ValueError) as exc:
-            logger.warning("[Webex] POST %s failed: %s", path, exc)
-            return {}
+        return await self._api_write("post", path, payload, raise_on_error=raise_on_error)
 
     async def _api_post_form(self, path: str, form: FormData) -> dict[str, Any]:
-        if not self._session:
-            return {}
-        url = f"{API_BASE}/{path.lstrip('/')}"
-        try:
-            async with self._session.post(
-                url, headers=self._headers(), data=form
-            ) as resp:
-                text = await resp.text()
-                if resp.status >= 400:
-                    logger.warning("[Webex] POST %s -> HTTP %s", path, resp.status)
-                    return {}
-                return json.loads(text) if text else {}
-        except (TimeoutError, aiohttp.ClientError, ValueError) as exc:
-            logger.warning("[Webex] POST %s failed: %s", path, exc)
-            return {}
+        return await self._api_write("post", path, form, form=True)
 
-    async def _api_put_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _api_put_json(
+        self, path: str, payload: dict[str, Any], *, raise_on_error: bool = True,
+    ) -> dict[str, Any]:
+        return await self._api_write("put", path, payload, raise_on_error=raise_on_error)
+
+    async def _api_write(
+        self, method: str, path: str, payload: Any, *, form: bool = False, raise_on_error: bool = True,
+    ) -> dict[str, Any]:
         if not self._session:
+            if raise_on_error:
+                raise _WebexAPIRequestError(path, transport_error=True)
             return {}
         url = f"{API_BASE}/{path.lstrip('/')}"
+        headers = self._headers() if form else self._json_headers()
         try:
-            async with self._session.put(
-                url, headers=self._json_headers(), json=payload
+            async with getattr(self._session, method)(
+                url, headers=headers, **{"data" if form else "json": payload},
             ) as resp:
                 text = await resp.text()
                 if resp.status >= 400:
-                    logger.warning("[Webex] PUT %s -> HTTP %s", path, resp.status)
+                    logger.warning("[Webex] %s %s -> HTTP %s", method.upper(), path, resp.status)
+                    if raise_on_error:
+                        try:
+                            retry_after = max(0.0, float(resp.headers["Retry-After"]))
+                        except (KeyError, ValueError):
+                            retry_after = None
+                        raise _WebexAPIRequestError(path, resp.status, retry_after=retry_after)
                     return {}
                 return json.loads(text) if text else {}
+        except _WebexAPIRequestError:
+            raise
         except (TimeoutError, aiohttp.ClientError, ValueError) as exc:
-            logger.warning("[Webex] PUT %s failed: %s", path, exc)
+            logger.warning("[Webex] %s %s failed: %s", method.upper(), path, exc)
+            if raise_on_error:
+                raise _WebexAPIRequestError(
+                    path, timed_out=isinstance(exc, TimeoutError),
+                    transport_error=isinstance(exc, aiohttp.ClientConnectionError),
+                ) from exc
             return {}
 
     async def _api_delete(self, path: str) -> bool:
@@ -1249,7 +1282,7 @@ class WebexAdapter(BasePlatformAdapter):
                     "targetUrl": self._target_url,
                     "secret": self._secret,
                     "status": "active",
-                })
+                }, raise_on_error=False)
                 if not updated.get("id") or updated.get("status") != "active":
                     raise RuntimeError("Failed to update managed Webex webhook")
                 self._managed_webhook_ids.append(webhook_id)
@@ -1264,7 +1297,7 @@ class WebexAdapter(BasePlatformAdapter):
                 payload["filter"] = spec["filter"]
             if self._secret:
                 payload["secret"] = self._secret
-            created = await self._api_post_json("webhooks", payload)
+            created = await self._api_post_json("webhooks", payload, raise_on_error=False)
             webhook_id = str(created.get("id") or "")
             if not webhook_id:
                 raise RuntimeError(

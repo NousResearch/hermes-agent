@@ -80,3 +80,58 @@ def test_specify_records_audit_comment_only_when_author_given(kanban_home):
     assert comments2 == []
 
 
+def test_respecification_clears_stale_dispatch_failure_not_block_history(kanban_home):
+    from hermes_cli.kanban_db_dispatch import check_respawn_guard
+
+    with kbc.connect() as conn:
+        tid = _create_triage(conn, title="retry after operator diagnosis")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = 'quota exceeded', "
+            "consecutive_failures = 3, block_kind = 'needs_input', "
+            "block_recurrences = 3 WHERE id = ?", (tid,),
+        )
+        conn.commit()
+        assert check_respawn_guard(conn, tid) == "blocker_auth"
+        assert kb.specify_triage_task(conn, tid, body="New verified recovery plan")
+        assert check_respawn_guard(conn, tid) is None
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+        assert task.block_kind == "needs_input"
+        assert task.block_recurrences == 3
+        # A genuinely new failure still blocks the next dispatch.
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = 'quota exceeded' WHERE id = ?",
+            (tid,),
+        )
+        conn.commit()
+        assert check_respawn_guard(conn, tid) == "blocker_auth"
+
+
+@pytest.mark.parametrize("status", ["ready", "running", "blocked", "done"])
+def test_respecification_does_not_clear_failures_outside_triage(kanban_home, status):
+    with kbc.connect() as conn:
+        tid = _create_triage(conn)
+        conn.execute(
+            "UPDATE tasks SET status = ?, last_failure_error = 'quota exceeded', "
+            "consecutive_failures = 3 WHERE id = ?", (status, tid),
+        )
+        conn.commit()
+        assert not kb.specify_triage_task(conn, tid, body="Unsolicited change")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == status
+        assert task.last_failure_error == "quota exceeded"
+        assert task.consecutive_failures == 3
+
+
+def test_respecification_preserves_unfinished_parent_gate(kanban_home):
+    with kbc.connect() as conn:
+        parent = _create_triage(conn, title="unfinished parent")
+        child = _create_triage(conn, title="child")
+        kb.link_tasks(conn, parent, child)
+        assert kb.specify_triage_task(conn, child, body="New plan")
+        task = kb.get_task(conn, child)
+        assert task is not None
+        assert task.status == "todo"

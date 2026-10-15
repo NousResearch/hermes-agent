@@ -149,6 +149,23 @@ def _systemd(home: Path, deadline: float) -> ExistingService | None:
     return found[0] if found else None
 
 
+def _s6(home: Path) -> ExistingService:
+    """Find the container gateway slot that owns ``home``.
+
+    TUI clients call ``ensure_gateway_runtime`` inside the Docker image too.
+    They must request that s6 starts the registered slot, rather than falling
+    through the Linux systemd probe and treating s6 as inaccessible.
+    """
+    from hermes_cli.service_manager import S6ServiceManager
+
+    profile = home.name if home.parent.name == "profiles" else "default"
+    manager = S6ServiceManager()
+    service_name = f"gateway-{profile}"
+    if not (manager.scandir / service_name).is_dir():
+        raise RuntimeStartError("service_manager_unavailable")
+    return ExistingService("s6", (service_name,), manager.is_running(service_name))
+
+
 def _launchd(home: Path, deadline: float) -> ExistingService | None:
     import pwd
     suffix = service_suffix(home)
@@ -225,6 +242,10 @@ def _no_supervisor(home: Path, deadline: float) -> None:
 
 
 def discover_existing_gateway_service(home: Path, *, deadline: float) -> ExistingService | None:
+    from hermes_cli.service_manager import _s6_running
+
+    if _s6_running():
+        return _s6(home)
     backend = {"linux": _systemd, "darwin": _launchd, "win32": _windows,
                "android": _no_supervisor}.get(sys.platform)
     if backend is None:
@@ -240,6 +261,13 @@ def discover_existing_gateway_service(home: Path, *, deadline: float) -> Existin
 def start_existing_gateway_service(service: ExistingService, *, deadline: float) -> None:
     """Request start once; only live control readiness can establish success."""
     if service.running:
+        return
+    if service.backend == "s6":
+        from hermes_cli.service_manager import S6ServiceManager
+        try:
+            S6ServiceManager().start(service.start_argv[0])
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise RuntimeStartError("service_start_failed") from exc
         return
     try:
         result = _run(service.start_argv, deadline, encoding=None)

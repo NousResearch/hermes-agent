@@ -698,6 +698,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         return false;
       }
 
+      if (shortcut === "insert-newline-shift" || shortcut === "insert-newline-ctrl") {
+        ev.preventDefault();
+        sendPtyShortcutSequence(
+          wsRef.current,
+          ptyStateRef.current,
+          shortcut === "insert-newline-shift" ? "\x1b[13;2u" : "\x1b[13;5u",
+        );
+        return false;
+      }
+
       // Ctrl+Backspace → delete previous word. xterm.js sends bare DEL
       // regardless of modifier, so word-delete never reaches the TUI on its
       // own. Send ^W (0x17), which readline / prompt_toolkit treat as

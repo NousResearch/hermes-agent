@@ -53,6 +53,10 @@ def review_targets_managed_local(agent: Any, task_cfg: Optional[dict[str, Any]])
             return False
         from agent.background_review import _resolve_review_runtime
 
+        # Deliberately the default write_origin ("background_review"): this probe answers
+        # "which endpoint will the review fork actually run on?", so it must include the
+        # pending-primary overlay the real fork resolves with (#138979). Do not "unify"
+        # this into a bare live-runtime resolve — the verdict would diverge from the fork.
         runtime = _resolve_review_runtime(agent, task_cfg)
         return _is_managed_local_endpoint(runtime.get("base_url"))
     except Exception:

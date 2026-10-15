@@ -2336,7 +2336,7 @@ Notes:
 
 When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The current footer can show the model, context-window percentage, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
 
-Each completed reply owns its footer: a reply delivered before a queued follow-up uses that reply's model and elapsed run time, and the follow-up's own final reply formats a separate footer from its own result. If a queued reply was already streamed, its footer is sent separately before the follow-up starts. A refused or aborted continuation that returns the same result does not repeat the already-delivered footer; a genuinely new terminal answer still gets one. Fields without a value for a reply are omitted.
+Each completed reply owns its footer: a reply delivered before a queued follow-up uses that reply's model and elapsed run time, and the follow-up's own final reply formats a separate footer from its own result. Latency measures each reply's worker execution, excluding time spent running its queued follow-ups. If a queued reply was already streamed, its footer is sent separately before the follow-up starts. A refused or aborted continuation that returns the same result does not repeat the already-delivered footer; a genuinely new terminal answer still gets one. Fields without a value for a reply are omitted.
 
 ```yaml
 display:

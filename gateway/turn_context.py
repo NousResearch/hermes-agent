@@ -89,8 +89,6 @@ class TurnContext:
     # Footer latency measured across run_sync by _run_agent_inner; None until measured.
     turn_started_monotonic: Optional[float] = None
     turn_seconds: Optional[float] = None
-    # Delivery receipt for THIS turn's queued first response, owned by its response dict.
-    queued_footer_delivery: Optional[dict[str, Any]] = None
     # bound TurnRunner callbacks read via ctx
     progress_callback: Optional[Callable] = None
     voice_ack_callback: Optional[Callable] = None

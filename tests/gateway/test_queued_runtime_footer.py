@@ -29,6 +29,10 @@ class _Transport:
     def __init__(self, *, accepted=True):
         self.accepted = accepted
         self.sent = []
+        self._pending_messages = {}
+
+    def get_pending_message(self, session_key):
+        return self._pending_messages.pop(session_key, None)
 
     async def send(self, chat_id, content, **kwargs):
         self.sent.append((chat_id, content, kwargs.get("metadata")))
@@ -90,8 +94,8 @@ def _turn_context(streamed=False):
         event_message_id="input-1",
         inbound_message_id="input-1",
         run_generation=1,
-        turn_seconds=22.0,
     )
+    turn_ctx.turn_seconds = 22.0
     turn_ctx.result_holder = [None]
     return source, turn_ctx
 
@@ -145,6 +149,7 @@ def _followup_result(*, text="tail reply", model="example/model-two", offset=5):
         "model": model,
         "messages": [],
         "history_offset": offset,
+        "turn_seconds": 33.0,
     }
 
 
@@ -216,6 +221,7 @@ async def test_queued_chain_delivers_one_configured_footer_and_carries_latency(
         "model": "example/model-two",
         "messages": [],
         "history_offset": followup_offset,
+        "turn_seconds": 33.0,
     }
     _pending_event, chain = _queued_chain(
         runner,
@@ -468,7 +474,9 @@ async def test_fresh_terminal_reply_keeps_its_own_footer_even_with_identical_tex
         None,
     )
 
-    followup = _followup_result(text=terminal_text, offset=followup_offset)
+    followup = _followup_result(
+        text=terminal_text, model="example/model-one", offset=followup_offset
+    )
     _pending, chain = _queued_chain(
         runner,
         turn_ctx,
@@ -490,7 +498,7 @@ async def test_fresh_terminal_reply_keeps_its_own_footer_even_with_identical_tex
             source,
             33.0,
         )
-        == "model-two · 33s"
+        == "model-one · 33s"
     )
 
 
@@ -519,14 +527,6 @@ async def test_refused_continuation_returning_the_same_result_keeps_footer_suppr
         "history_offset": 10,
         "failed": False,
     }
-    await gateway_run.GatewayRunner._run_agent_deliver_first_response(
-        runner,
-        turn_ctx,
-        transport,
-        response,
-        result,
-        None,
-    )
     pending_event = _completion_event(source)
     runner._MAX_INTERRUPT_DEPTH = 8
     if refusal == "goal-stale":
@@ -560,126 +560,280 @@ async def test_refused_continuation_returning_the_same_result_keeps_footer_suppr
         )
         == ""
     )
-    # Setup sent once, the queued helper sent once; refusal added no third send.
+    # The real queued helper delivers once before refusing the continuation.
     assert _sent_texts(transport) == [
-        f"{FIRST_TEXT}\n\nmodel-one · 22s",
         f"{FIRST_TEXT}\n\nmodel-one · 22s",
     ]
 
 
 @pytest.mark.asyncio
-async def test_real_worker_boundary_measures_queued_footer_latency(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize("returned", ["finalized", "raw"])
+@pytest.mark.parametrize("offset", [5, 20], ids=["unchanged-offset", "offset-copy"])
+@pytest.mark.parametrize("terminal_metadata", [False, True])
+async def test_returned_delivered_reply_survives_all_result_copies(
+    monkeypatch, streamed, returned, offset, terminal_metadata
 ):
-    """Timing crosses the real worker/queue-drain boundary with controlled monotonic values.
+    _footer_config(monkeypatch)
+    transport = _Transport()
+    runner = _runner(transport)
+    source, ctx = _turn_context(streamed=streamed)
+    finalized = {
+        "final_response": FIRST_TEXT,
+        "model": "example/model-one",
+        "history_offset": offset,
+        "messages": [],
+        "failed": False,
+        "turn_seconds": 22.0,
+    }
+    raw = {**finalized, "history_offset": 10}
+    followup = finalized if returned == "finalized" else raw
+    if returned == "raw":
+        finalized["history_offset"] = 10
+    if terminal_metadata:
+        followup["queued_terminal_inbound_id"] = "deepest-input"
+        followup["queued_terminal_notification_category"] = "result"
+    await runner._run_agent_deliver_first_response(ctx, transport, finalized, raw, None)
+    if returned == "raw":
+        # The parent has an earlier persistence boundary than the returned raw result.
+        raw["history_offset"] = offset
+    parent = {**raw, "history_offset": 10}
+    _pending, chain = _queued_chain(
+        runner, ctx, transport, finalized, parent, followup_result=followup
+    )
+    merged = await chain
 
-    The context, executor future, worker await helper and drain path are the production
-    implementations; only the monotonic clock and AIAgent display wiring are controlled.
-    """
+    assert merged["history_offset"] == min(offset, 10)
+    assert merged["queued_terminal_inbound_id"] == (
+        "deepest-input" if terminal_metadata else "input-2"
+    )
+    assert merged["queued_terminal_notification_category"] == "result"
+    footer = runner._hmwa_runtime_footer_line(merged, source, 99.0)
+    assert footer == ""
+    assert merged["already_sent"] is True
+    assert merged["media_already_delivered"] is True
+    assert await runner._hmwa_deliver_turn_response(
+        *_completion_call(source, merged, footer)
+    ) is None
+    assert _sent_texts(transport) == [
+        "model-one · 22s" if streamed else f"{FIRST_TEXT}\n\nmodel-one · 22s"
+    ]
+
+
+def _outer_completion_runner(runner, source):
+    """Keep the real outer footer/delivery flow, with persistence and admission isolated."""
+    entry = SimpleNamespace(session_id="session")
+    runner.hooks = SimpleNamespace(emit=AsyncMock())
+    runner._hmwa_resolve_session = AsyncMock(return_value=(source, entry, SESSION_KEY))
+    runner._hmwa_prepare_turn = AsyncMock(return_value=(
+        runner._PreparedTurn([], "", "hello", "hello", None, None), {}
+    ))
+    runner._persist_prompt_pins = AsyncMock()
+    runner._pinned_channel_inputs = lambda _key, prompt, source, **_kw: (prompt, source)
+    runner._reply_anchor_for_event = lambda event: event.message_id
+    runner._clear_session_env = lambda _tokens: None
+    runner._hmwa_stop_typing_for_turn = AsyncMock()
+    runner._is_session_run_current = lambda *_args: True
+    runner._hmwa_shape_agent_response = AsyncMock(side_effect=lambda result, *_a, **_k: (
+        result["final_response"], False, result.get("messages", [])
+    ))
+    runner._hmwa_post_turn_hooks = AsyncMock()
+    runner._hmwa_persist_turn_transcript = AsyncMock()
+
+
+def _measured_queue_runner(monkeypatch, *, streamed, queued, terminal_seconds=33.0):
+    """Fake only worker inputs and unrelated chrome; drain, recursion and completion stay real."""
+    from gateway import run_turn
+
+    transport = _Transport()
+    runner = _runner(transport)
+    source, _ctx = _turn_context()
+    _outer_completion_runner(runner, source)
+    runner._get_proxy_url = lambda: None
+    runner._MAX_INTERRUPT_DEPTH = 8
+    runner._draining = False
+    runner._overflow_queue = lambda _key: []
+    runner._is_goal_continuation_event = lambda _event: False
+    runner._session_key_for_source = lambda _source: SESSION_KEY
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="follow up")
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    runner._intake_adapter_for = lambda _source: None
+    runner._run_agent = runner._run_agent_inner
+    runner._run_agent_display_settings = lambda _source: SimpleNamespace(
+        needs_progress_queue=False, log_mode_enabled=False, _native_slack_task_cards=False
+    )
+    contexts = []
+
+    def build_context(_disp, _agent, **kwargs):
+        _source, ctx = _turn_context(streamed=streamed and not contexts)
+        ctx.turn_seconds = None
+        ctx._interrupt_depth = kwargs["_interrupt_depth"]
+        ctx.inbound_message_id = kwargs["inbound_message_id"]
+        index = len(contexts)
+        raw = {
+            "final_response": FIRST_TEXT if index == 0 else "tail reply",
+            "model": "example/model-one" if index == 0 else "example/model-two",
+            "messages": [], "history_offset": 10 + index * 10, "failed": False,
+        }
+        ctx.result_holder[0] = raw
+        contexts.append(ctx)
+        return ctx, SimpleNamespace(run_sync=lambda: dict(raw)), None
+
+    def start_worker(ctx, run_sync):
+        future = asyncio.get_running_loop().create_future()
+        future.set_result(run_sync())
+        assert future.result() is not ctx.result_holder[0]
+        return SimpleNamespace(executor_task=future, agent_timeout=None)
+
+    runner._run_agent_build_turn_context = build_context
+    runner._run_agent_start_turn_worker = start_worker
+    runner._run_agent_bind_turn_wiring = lambda *_a, **_k: None
+    runner._run_agent_start_streaming_tts = lambda *_a, **_k: None
+    runner._run_agent_schedule_bubble_cleanup = lambda *_a, **_k: None
+    runner._release_running_agent_state = lambda *_a, **_k: None
+    for name in (
+        "_run_agent_stream_consumer_task", "_run_agent_track_agent",
+        "_run_agent_monitor_for_interrupt", "_run_agent_notify_long_running",
+    ):
+        setattr(runner, name, AsyncMock())
+    runner._await_stream_task = AsyncMock()
+    if queued:
+        transport._pending_messages[SESSION_KEY] = _completion_event(source)
+    # Rebind this module's time object; never replace the shared asyncio clock.
+    times = iter(
+        [90.0, 100.0, 122.0, 150.0, 150.0 + terminal_seconds, 200.0]
+        if queued else [90.0, 100.0, 122.0, 200.0]
+    )
+    monkeypatch.setattr(run_turn, "time", SimpleNamespace(
+        time=time.time, monotonic=lambda: next(times)
+    ))
+    return runner, source, transport, contexts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True])
+@pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.parametrize("footer_mode", ["enabled", "disabled", "platform-enabled", "platform-disabled"])
+async def test_measured_reply_latency_reaches_real_queue_and_outer_completion(
+    monkeypatch, streamed, queued, footer_mode
+):
+    _footer_config(monkeypatch, enabled=footer_mode == "enabled")
+    enabled = footer_mode in ("enabled", "platform-enabled")
+    if footer_mode.startswith("platform-"):
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {"display": {
+            "runtime_footer": {"enabled": not enabled, "fields": ["model", "latency"]},
+            "platforms": {"discord": {"runtime_footer": {"enabled": enabled}}},
+        }})
+    runner, source, transport, _contexts = _measured_queue_runner(
+        monkeypatch, streamed=streamed, queued=queued
+    )
+    response = await runner._handle_message_with_agent(
+        _completion_event(source), source, SESSION_KEY, 1
+    )
+    if queued:
+        assert not transport._pending_messages
+        expected = (["model-one · 22s"] if enabled else []) if streamed else [
+            f"{FIRST_TEXT}\n\nmodel-one · 22s" if enabled else FIRST_TEXT
+        ]
+        assert _sent_texts(transport) == expected
+        assert response == ("tail reply\n\nmodel-two · 33s" if enabled else "tail reply")
+    else:
+        if streamed:
+            assert response is None
+            assert _sent_texts(transport) == (["model-one · 22s"] if enabled else [])
+        else:
+            assert response == (f"{FIRST_TEXT}\n\nmodel-one · 22s" if enabled else FIRST_TEXT)
+            assert _sent_texts(transport) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seconds", [None, -1.0, "missing"])
+async def test_unavailable_reply_latency_is_omitted_at_both_delivery_boundaries(
+    monkeypatch, seconds
+):
     from gateway import run_turn
 
     _footer_config(monkeypatch)
     transport = _Transport()
     runner = _runner(transport)
-    source, turn_ctx = _turn_context(streamed=False)
-    response_payload = {
-        "final_response": FIRST_TEXT,
-        "model": "example/model-one",
-        "messages": [],
-        "history_offset": 10,
-        "failed": False,
-    }
+    source, ctx = _turn_context()
+    if seconds == "missing":
+        del ctx.turn_seconds
+    else:
+        ctx.turn_seconds = seconds
+    raw = _followup_result(text=FIRST_TEXT, model="example/model-one")
+    if seconds == "missing":
+        raw.pop("turn_seconds")
+    else:
+        raw["turn_seconds"] = seconds
+    finalized = dict(raw)
+    await runner._run_agent_deliver_first_response(ctx, transport, finalized, raw, None)
+    assert _sent_texts(transport) == [f"{FIRST_TEXT}\n\nmodel-one"]
 
-    worker = SimpleNamespace(
-        executor_task=asyncio.get_running_loop().create_future(),
-        agent_timeout=None,
-        agent_warning=None,
-        task_id="",
-        process_baseline=None,
-        worker_done=None,
-        timeout_fired=None,
-        cleanup_lock=None,
-        is_current=lambda: True,
-    )
-    worker.executor_task.set_result(response_payload)
+    terminal = _followup_result()
+    terminal["queued_terminal_inbound_id"] = "input-2"
+    if seconds != "missing":
+        terminal["turn_seconds"] = seconds
+    else:
+        terminal.pop("turn_seconds")
+    _outer_completion_runner(runner, source)
+    runner._run_agent = AsyncMock(return_value=terminal)
+    times = iter([90.0, 200.0])
+    monkeypatch.setattr(run_turn, "time", SimpleNamespace(time=time.time, monotonic=lambda: next(times)))
+    assert await runner._handle_message_with_agent(
+        _completion_event(source), source, SESSION_KEY, 1
+    ) == "tail reply\n\nmodel-two"
 
-    def _fake_start_turn_worker(self, ctx, run_sync):
-        ctx.result_holder[0] = response_payload
-        return worker
 
-    monkeypatch.setattr(
-        type(runner),
-        "_run_agent_start_turn_worker",
-        _fake_start_turn_worker,
+@pytest.mark.asyncio
+async def test_negative_measured_duration_does_not_become_zero_latency(monkeypatch):
+    _footer_config(monkeypatch)
+    runner, source, transport, _contexts = _measured_queue_runner(
+        monkeypatch, streamed=False, queued=True, terminal_seconds=-1.0
     )
-    monkeypatch.setattr(
-        type(runner),
-        "_run_agent_display_settings",
-        lambda self, _source: SimpleNamespace(
-            needs_progress_queue=False,
-            log_mode_enabled=False,
-            log_queue=None,
-            _native_slack_task_cards=False,
-            _display_surface_mode=lambda *_a, **_k: "off",
-        ),
-    )
+    assert await runner._handle_message_with_agent(
+        _completion_event(source), source, SESSION_KEY, 1
+    ) == "tail reply\n\nmodel-two"
+    assert _sent_texts(transport) == [f"{FIRST_TEXT}\n\nmodel-one · 22s"]
 
-    class _NoopRunner:
-        def run_sync(self):
-            return response_payload
 
-    monkeypatch.setattr(
-        type(runner),
-        "_run_agent_build_turn_context",
-        lambda self, *_a, **_k: (turn_ctx, _NoopRunner(), None),
-    )
-    monkeypatch.setattr(
-        type(runner), "_run_agent_bind_turn_wiring", lambda self, *_a, **_k: None
-    )
-    monkeypatch.setattr(type(runner), "_run_agent_finalize_streaming_tts", AsyncMock())
-    monkeypatch.setattr(
-        type(runner), "_run_agent_drain_pending", AsyncMock(return_value=(None, None))
-    )
-    monkeypatch.setattr(type(runner), "_run_agent_cleanup_turn_tasks", AsyncMock())
-    monkeypatch.setattr(type(runner), "_run_agent_mark_streamed_delivery", AsyncMock())
-    monkeypatch.setattr(
-        type(runner), "_run_agent_schedule_bubble_cleanup", lambda *_a, **_k: None
-    )
-    monkeypatch.setattr(
-        type(runner), "_run_agent_evict_on_fallback", lambda *_a, **_k: None
-    )
-    monkeypatch.setattr(gateway_run, "AIAgent", object, raising=False)
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["body", "footer"])
+@pytest.mark.parametrize("raises", [False, True], ids=["refused", "exception"])
+async def test_failed_sends_only_preserve_confirmed_delivery_receipts(
+    monkeypatch, stage, raises
+):
+    _footer_config(monkeypatch)
 
-    times = iter([100.0, 122.0])
+    class FailingTransport(_Transport):
+        async def send(self, chat_id, content, **kwargs):
+            if raises and not self.accepted:
+                raise OSError("transport unavailable")
+            return await super().send(chat_id, content, **kwargs)
 
-    def _controlled_monotonic():
-        try:
-            return next(times)
-        except StopIteration:
-            # Notify sleeps consume the queue; timing calls always come before the first sleep.
-            return 122.0
-
-    monkeypatch.setattr(run_turn.time, "monotonic", _controlled_monotonic)
-    await gateway_run.GatewayRunner._run_agent_inner(
-        runner,
-        "hello",
-        "",
-        [],
-        source,
-        "session",
-        session_key=SESSION_KEY,
-        run_generation=1,
-        event_message_id="input-1",
-        inbound_message_id="input-1",
+    transport = FailingTransport(accepted=False)
+    runner = _runner(transport)
+    source, ctx = _turn_context(streamed=stage == "footer")
+    raw = _followup_result(text=FIRST_TEXT, model="example/model-one")
+    raw["turn_seconds"] = 22.0
+    finalized = dict(raw)
+    await runner._run_agent_deliver_first_response(ctx, transport, finalized, raw, None)
+    for result in (finalized, raw):
+        assert not result.get("runtime_footer_already_delivered")
+        assert bool(result.get("already_sent")) == (stage == "footer")
+        assert bool(result.get("media_already_delivered")) == (stage == "footer")
+    transport.accepted = True
+    _pending, chain = _queued_chain(
+        runner, ctx, transport, finalized, raw, followup_result=finalized
     )
-
-    assert turn_ctx.turn_started_monotonic == 100.0
-    assert turn_ctx.turn_seconds == 22.0
-    assert (
-        runner._hmwa_runtime_footer_line(
-            response_payload,
-            source,
-            turn_ctx.turn_seconds,
-        )
-        == "model-one · 22s"
+    merged = await chain
+    footer = runner._hmwa_runtime_footer_line(merged, source, 99.0)
+    assert footer == "model-one · 22s"
+    response = await runner._hmwa_deliver_turn_response(
+        *_completion_call(source, merged, footer)
     )
+    if stage == "footer":
+        assert response is None
+        assert _sent_texts(transport)[-1] == footer
+    else:
+        assert response == f"{FIRST_TEXT}\n\n{footer}"

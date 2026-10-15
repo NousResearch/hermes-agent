@@ -1966,14 +1966,6 @@ class GatewayTurnMixin(
         await _run_followup_processing_hook(
             _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
         merged = _preserve_queued_followup_history_offset(result, followup_result)
-        # The offset helper may copy the follow-up result; carry the FIRST turn's delivery receipt
-        # by identity through that copy only when it is still relevant. A fresh follow-up result is
-        # a different object and keeps its own footer; equal text alone would also suppress an
-        # independent turn that happened to produce the same words.
-        _first_delivery = getattr(turn_ctx, "queued_footer_delivery", None)
-        _delivered_result = getattr(_first_delivery, "get", lambda _key: None)("result")
-        if isinstance(merged, dict) and merged is _delivered_result:
-            merged["runtime_footer_already_delivered"] = True
         # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
         # the adapter brackets against the event that OPENED the chain. Without this the terminal
         # reply is recorded under the first message's id, so a first reply that was refused (flood
@@ -2374,12 +2366,16 @@ class GatewayTurnMixin(
             # Duration uses the same clock the footer needs, measured across the worker call itself.
             _ended_monotonic = time.monotonic()
             turn_ctx.turn_seconds = (
-                max(0.0, _ended_monotonic - turn_ctx.turn_started_monotonic)
+                _ended_monotonic - turn_ctx.turn_started_monotonic
                 if turn_ctx.turn_started_monotonic is not None else None
             )
 
             # Interrupted OR queued message (/queue)?
             result = turn_ctx.result_holder[0]
+            # Keep this reply's duration through queue recursion and both persistence copies.
+            for turn_result in (response, result):
+                if isinstance(turn_result, dict):
+                    turn_result["turn_seconds"] = turn_ctx.turn_seconds
             adapter = self._delivery_adapter_for(source)
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)

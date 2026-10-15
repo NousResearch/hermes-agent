@@ -1,30 +1,16 @@
-"""Queued first-response delivery extracted from the run_turn facade.
-
-The queued (/queue) lane sends the completed first turn's reply before recursion into the
-follow-up. Keeping it beside the queue drain in ``run_turn`` pushed that facade past its file
-ratchet; the topical sibling keeps production behavior and method resolution unchanged.
-"""
+"""Deliver each completed reply before running its queued follow-up."""
 
 from __future__ import annotations
 
-from typing import Any
-
 from contextlib import suppress
 import inspect
+import logging
+from typing import Any
 
 from gateway.response_filters import silence_allowed
 from gateway.turn_context import TurnContext
 
-# Log-record parity with the origin module.
-import logging
-
 logger = logging.getLogger("gateway.run")
-
-
-def _unexpected_silence_reply():
-    from gateway.run_turn import _unexpected_silence_reply as _impl
-
-    return _impl()
 
 
 class GatewayQueuedDeliveryMixin:
@@ -37,6 +23,8 @@ class GatewayQueuedDeliveryMixin:
         stream_task: Any,
     ) -> None:
         """Deliver the first response before a queued follow-up runs, unless streaming already did."""
+        from gateway.run_turn import _unexpected_silence_reply
+
         if turn_ctx.mute_notification_reply:
             return
         session_key = turn_ctx.session_key
@@ -107,6 +95,12 @@ class GatewayQueuedDeliveryMixin:
                     session_key=session_key,
                     inbound_message_id=turn_ctx.inbound_message_id,
                 )
+                # Both worker results describe this delivery. Mark them before any merge copies
+                # either one, and before a trailing footer send can fail independently of the body.
+                for delivered_result in (_delivery_result, result):
+                    if _text_delivered and isinstance(delivered_result, dict):
+                        delivered_result["already_sent"] = True
+                        delivered_result["media_already_delivered"] = _deliver_media
                 _footer_delivered = False
                 if footer and not _already_streamed:
                     _footer_delivered = _text_delivered
@@ -117,31 +111,16 @@ class GatewayQueuedDeliveryMixin:
                         metadata=turn_ctx._status_thread_metadata,
                     )
                     _footer_delivered = bool(getattr(_footer_sent, "success", False))
+                if _footer_delivered:
+                    for delivered_result in (_delivery_result, result):
+                        if isinstance(delivered_result, dict):
+                            delivered_result["runtime_footer_already_delivered"] = True
             except Exception as e:
                 logger.warning(
                     "Failed to send first response before queued message: %s",
                     e,
                     exc_info=True,
                 )
-            else:
-                # One source of truth for "this turn's final already reached the chat": the normal
-                # completion path (`_hmwa_deliver_turn_response`) consults ``already_sent`` on the
-                # result the queued lane hands back. Every early `return result` after this point
-                # (follow-up text refused, stale goal continuation) otherwise re-sends the text the
-                # fallback just delivered — the #81052 duplicate. A REFUSED send reports False, and
-                # the completion send stays the fallback so the user is not left with nothing.
-                if _text_delivered and isinstance(result, dict):
-                    result["already_sent"] = True
-                    # The queued lane already uploaded this response's MEDIA: attachments; without
-                    # this the completion path's already_sent rescan uploads every file twice.
-                    result["media_already_delivered"] = _deliver_media
-                # Receipt is keyed to THIS response, not to the chain: a real follow-up result
-                # owns its own footer. Refused/aborted continuations can return this same dict;
-                # object identity (not merely equal text) is what proves it is the same delivery.
-                if _footer_delivered:
-                    turn_ctx.queued_footer_delivery = {"result": _delivery_result}
-                    if isinstance(result, dict):
-                        result["runtime_footer_already_delivered"] = True
         # Release deferred bg-review notifications: pop (no double-fire in base.py's finally) and call.
         _bg_cb = self._pop_post_delivery_callback(
             adapter, session_key, turn_ctx.run_generation

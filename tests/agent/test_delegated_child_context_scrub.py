@@ -123,6 +123,7 @@ def test_gateway_run_import_preserves_delegated_child_marker():
         cwd=str(repo_root),
         capture_output=True,
         text=True,
+        check=False,
         timeout=180,
     )
     assert result.returncode == 0, result.stderr
@@ -140,7 +141,7 @@ def test_start_gateway_scrubs_stale_marker_at_startup(monkeypatch, marker):
 
     import asyncio
 
-    import hermes_cli.resource_limits as resource_limits
+    from hermes_cli import resource_limits
 
     def _stop_startup():
         raise RuntimeError("startup-stop")

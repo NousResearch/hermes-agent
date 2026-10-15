@@ -30,11 +30,6 @@ async def admit_native_inbound(adapter, runner, event) -> None:
     # The connector does not transmit a provider timestamp. Local arrival
     # time must not change the fingerprint of a retried provider identity.
     event.timestamp = datetime.fromtimestamp(0, UTC)
-    if event.source.profile and not getattr(runner.config, 'multiplex_profiles', False):
-        # The connector's profile route (Team Gateway) selects among a multiplexed
-        # gateway's profiles; a single-profile gateway serves it from its one profile.
-        # _capture_scope already kept the stamp for egress (persona attribution).
-        event.source.profile = None
     try:
         receipt = await admit_producer(adapter, event)
     except RuntimeStoreError as exc:

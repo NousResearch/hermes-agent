@@ -21,6 +21,7 @@ An unknown value logs a warning and falls back to the default, so a typo never w
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any, Optional
@@ -83,3 +84,26 @@ def gate_applies(task: Any, scope: Optional[str] = None) -> bool:
     if scope == "verify_line":
         return has_verify_line(getattr(task, "body", None))
     return False
+
+
+# Upper bound on the metadata JSON shown to the judge: enough for shas, record names and test
+# counts, small enough that a log dumped into metadata cannot crowd out the summary.
+METADATA_EVIDENCE_LIMIT = 4096
+
+
+def evidence_text(text: Optional[str], metadata: Any = None) -> str:
+    """The handoff evidence the judge sees: summary/result plus compact, bounded metadata.
+
+    Workers routinely put the proof (commit sha, record filenames, test counts) in structured
+    metadata and keep the summary short; judging the prose alone rejected real evidence.
+    """
+    text = (text or "").strip()
+    if not metadata:
+        return text
+    try:
+        blob = json.dumps(metadata, sort_keys=True, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        blob = str(metadata)
+    if len(blob) > METADATA_EVIDENCE_LIMIT:
+        blob = blob[:METADATA_EVIDENCE_LIMIT] + "…[metadata truncated]"
+    return f"{text}\n\nmetadata: {blob}".strip()

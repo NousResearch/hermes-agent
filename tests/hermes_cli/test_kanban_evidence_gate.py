@@ -251,3 +251,37 @@ def test_unknown_scope_value_falls_back_to_default(home):
 
     _set_gate(home, "everything-please")
     assert configured_scope() == DEFAULT_SCOPE == "goal_mode"
+
+
+# --- Part 2: metadata is evidence --------------------------------------------------------------
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_metadata_only_evidence_reaches_judge(home, judge, monkeypatch, surface):
+    _set_gate(home, "verify_line")
+    tid = _claimed(monkeypatch, body=VERIFY_BODY)
+    _complete(surface, tid, "closed, see metadata",
+              metadata={"commit": "c8c4b16dfc", "records": ["run-0415.md"]})
+    assert len(judge.calls) == 1
+    assert "c8c4b16dfc" in judge.calls[0]
+    assert "run-0415.md" in judge.calls[0]
+    assert _status(tid) == "done"
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_metadata_evidence_reaches_review_judge(home, judge, monkeypatch, surface):
+    _set_gate(home, "verify_line")
+    tid = _claimed(monkeypatch, body=VERIFY_BODY)
+    _request_review(surface, tid, "ready", metadata={"tests_run": "17 passed in 3.2s"})
+    assert len(judge.calls) == 1
+    assert "17 passed in 3.2s" in judge.calls[0]
+
+
+def test_metadata_evidence_is_bounded():
+    from hermes_cli.kanban_evidence_gate import METADATA_EVIDENCE_LIMIT, evidence_text
+
+    text = evidence_text("summary", {"log": "x" * 50_000})
+    assert text.startswith("summary")
+    assert len(text) < METADATA_EVIDENCE_LIMIT + 200
+    assert evidence_text("  only text  ", None) == "only text"
+    assert evidence_text("t", {}) == "t"

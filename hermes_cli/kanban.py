@@ -29,6 +29,7 @@ from hermes_cli.kanban_output import (
     _task_to_dict,
 )
 from hermes_cli.kanban_boards import _dispatch_boards
+from hermes_cli.kanban_evidence_gate import evidence_text, gate_applies
 from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
 )
@@ -837,8 +838,6 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     disambiguates the guidance the caller gives the worker (``continue`` = not done yet, ``blocked`` =
     judged unachievable — see #100954).
     """
-    from hermes_cli.kanban_evidence_gate import gate_applies
-
     # Scope is ``kanban.evidence_gate`` (default ``goal_mode`` = upstream); shared with the tool surface.
     if not gate_applies(task):
         return ("done", None)
@@ -914,7 +913,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
         def op(tid):
             gate_err = _goal_gate_error(
-                conn, tid, (summary or args.result or "").strip(), "completion",
+                conn, tid, evidence_text(summary or args.result, metadata), "completion",
                 "Re-scope with kanban edit, or record the block with kanban block instead of completing.",
                 "Provide evidence matching the task's acceptance criteria.")
             if gate_err:
@@ -1043,7 +1042,7 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
         return rc
     with kbc.connect_closing() as conn:
         gate_err = _goal_gate_error(
-            conn, tid, summary or "", "review handoff",
+            conn, tid, evidence_text(summary, metadata), "review handoff",
             "Record the block with kanban block instead of requesting review.",
             "Provide acceptance evidence matching the task.")
         if gate_err:

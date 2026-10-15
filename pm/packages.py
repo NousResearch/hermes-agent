@@ -3,6 +3,7 @@ live in pm/lock.json (written by `pm lock`), never here."""
 
 from __future__ import annotations
 
+import filecmp
 import logging
 import os
 import shutil
@@ -304,13 +305,16 @@ _uv_lock_digest_cache: dict[Path, tuple] = {}
 
 
 def _copy_seed_file(src: str | os.PathLike, dst: str | os.PathLike) -> str | os.PathLike:
-    """Copy one payload cache file unless an earlier seed already copied it whole.
+    """Copy one payload cache file unless the machine cache already holds the same bytes.
 
-    A copy cut short leaves the file in place with too few bytes, so a matching
-    size is what counts as done; a finished file is not rewritten.
+    A matching size is not enough: a failed sdist build leaves a ``revision.http``
+    the same size as the seed's, but pointing at a revision without the built
+    wheel. Keeping it rebuilds the sdist on the next sync. An identical file is
+    not rewritten.
     """
     try:
-        if os.stat(dst).st_size == os.stat(src).st_size:
+        # Different sizes return before reading; equal sizes compare every byte.
+        if filecmp.cmp(src, dst, shallow=False):
             return dst
     except FileNotFoundError:
         pass

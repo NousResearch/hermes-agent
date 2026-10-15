@@ -100,6 +100,9 @@ def bare_gemini_model_id(model: str) -> str:
     return name
 
 
+_MOVING_GEMINI_LATEST_ALIASES = frozenset({"gemini-flash-latest", "gemini-pro-latest", "gemini-flash-lite-latest"})
+
+
 def gemini_requires_tool_call_ids(model: str) -> bool:
     """Gemini 3+ needs explicit functionCall/functionResponse ids so replayed parallel tool calls
     pair with their responses; 2.x rejects the field.
@@ -109,7 +112,10 @@ def gemini_requires_tool_call_ids(model: str) -> bool:
     on the major version. Mirrors earendil-works/pi#7494 (their fix for the same class of bug in the
     google-shared converter).
     """
-    match = re.match(r"gemini-(\d+)", bare_gemini_model_id(model).lower())
+    normalized = bare_gemini_model_id(model).lower()
+    if normalized in _MOVING_GEMINI_LATEST_ALIASES or (normalized.startswith("gemini-") and normalized.endswith("-latest")):
+        return True
+    match = re.match(r"gemini-(\d+)", normalized)
     return match is not None and int(match.group(1)) >= 3
 
 

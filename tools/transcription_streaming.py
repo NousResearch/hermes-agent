@@ -53,7 +53,7 @@ class Resampler:
 
     def __init__(self, src_rate: int, dst_rate: int) -> None:
         self.src, self.dst = int(src_rate), int(dst_rate)
-        self._pos = 0.0  # fractional read position into the carried + new samples
+        self._pos = 0  # read position in 1/dst-sample units, into the carried + new samples
         self._carry = array("h")
 
     def __call__(self, pcm: bytes) -> bytes:
@@ -69,18 +69,20 @@ class Resampler:
             self._carry = data[usable:]
             return out.tobytes()
         data = self._carry + samples
-        ratio = self.src / self.dst
+        # Phase is an integer in units of 1/dst sample: float accumulation drifted by 1 LSB
+        # depending on where chunks split.
         out = array("h")
         pos = self._pos
         last = len(data) - 1
-        while pos < last:
-            i = int(pos)
-            frac = pos - i
-            out.append(int(data[i] + (data[i + 1] - data[i]) * frac))
-            pos += ratio
-        keep = int(pos)
+        while pos < last * self.dst:
+            i, rem = divmod(pos, self.dst)
+            a = data[i]
+            out.append(int((a * self.dst + (data[i + 1] - a) * rem) / self.dst))
+            pos += self.src
+        # Keep the last sample as carry: slicing past it dropped data and shifted the phase.
+        keep = max(0, min(pos // self.dst, last))
         self._carry = data[keep:]
-        self._pos = pos - keep
+        self._pos = pos - keep * self.dst
         return out.tobytes()
 
 

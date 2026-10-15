@@ -87,3 +87,21 @@ def test_recording_uses_the_live_transcript_and_falls_back_to_the_file(tmp_path,
     voice_mode._park_live_session(failed_wav, _Session({"success": False, "transcript": "", "error": "socket"}))
     assert voice_mode.transcribe_recording(failed_wav)["transcript"] == "from file"
     assert uploads == [failed_wav]
+
+
+def test_resampler_output_does_not_depend_on_chunk_boundaries():
+    # Issue #139121: splitting 44.1 kHz PCM across chunks must not add or drop samples.
+    from array import array
+
+    pcm = array("h", [100, 200, 300, 400, 500, 600]).tobytes()
+    whole = ts.Resampler(44100, 16000)(pcm)
+    r = ts.Resampler(44100, 16000)
+    assert whole == r(pcm[:8]) + r(pcm[8:])
+
+    signal = array("h", [(i * 37) % 2000 - 1000 for i in range(44100)]).tobytes()
+    expected = ts.Resampler(44100, 16000)(signal)
+    for chunk in (2, 128, 1000):
+        r = ts.Resampler(44100, 16000)
+        out = b"".join(r(signal[i:i + chunk]) for i in range(0, len(signal), chunk))
+        assert out == expected, f"chunk={chunk} drifted"
+    assert len(expected) // 2 == 16000

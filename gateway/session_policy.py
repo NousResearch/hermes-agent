@@ -326,6 +326,7 @@ def _apply_launch_overrides(params, config):
     from urllib.parse import urlsplit
     from hermes_cli.config import resolve_turn_limit
     from hermes_constants import parse_reasoning_effort
+    held = str(config.get('model', {}).get('provider') or '').strip().lower()
     for key in ('provider', 'base_url'):
         if key in params:
             value = params[key]
@@ -337,6 +338,16 @@ def _apply_launch_overrides(params, config):
                         or url.username or url.password or url.query or url.fragment):
                     raise RuntimeStoreError('invalid_params')
             config.setdefault('model', {})[key] = value
+    if 'provider' in params and 'base_url' not in params and held != str(params['provider']).strip().lower():
+        model = config.setdefault('model', {})
+        # A provider-only pick is a route change: the profile's endpoint, wire protocol and
+        # credential pointers belong to the provider being replaced, and pairing the new one
+        # with them sends its key to the old host (401) or the old key down the new route.
+        # Dropping them lets the target provider resolve its own — the same route keys a
+        # committed /model switch rewrites (#138843). A caller that passes base_url keeps the
+        # route it built, and a same-provider re-pick keeps the profile's pins.
+        for stale in ('base_url', 'api_mode', 'key_env', 'api_key_env', 'api_key', 'api', 'api_key_from'):
+            model.pop(stale, None)
     for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
                  'cwd_explicit', 'verbose'):
         if flag in params and type(params[flag]) is not bool:

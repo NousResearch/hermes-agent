@@ -1,10 +1,11 @@
 import { atom, onMount } from 'nanostores'
 import type { ReactNode } from 'react'
 
-import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
+import { activeMainStripPane, noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
 import type { InterfaceTier } from '@/store/interface-mode'
+import { noteActiveViewPane } from '@/store/view-history'
 
 type NavigateLike = (to: string, options?: { replace?: boolean }) => void
 
@@ -271,8 +272,21 @@ export const $workspaceIsPage = atom(false)
 export const WORKSPACE_PAGE_HEADER_AREA = 'workspace.pageHeader'
 
 function revealWorkspacePane(): void {
+  // The page borrows the main front — it renders in the workspace pane, so that
+  // pane has to come forward — and hands back the tab it displaced: fronting the
+  // workspace records itself as the current view's tab, which would lose the
+  // session tile the user was reading and send Back to the first session tab
+  // (store/view-history.ts). A workspace already fronted displaces nothing
+  // (the nav affordance and `syncWorkspaceRoute` both get here), so there is
+  // nothing to hand back, and nothing to forget.
+  const displaced = activeMainStripPane()
+
   noteActiveTreeGroup(null)
   revealTreePane('workspace')
+
+  if (displaced && displaced !== 'workspace') {
+    noteActiveViewPane(displaced)
+  }
 }
 
 /**

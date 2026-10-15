@@ -377,19 +377,20 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // on pages), and a page route fronts the pane so it can't stay stuck behind
   // a focused session tile.
   useEffect(() => {
-    // Stamp the tab the view being left had FRONTED, while the cursor still
-    // points at it: the route change below may front the workspace (a page
-    // renders there), which would erase the session tile the user was reading.
-    // Back restores the route AND the remembered tab (store/view-history.ts).
-    noteActiveViewPane(activeMainStripPane())
-
     syncWorkspaceRoute(location.pathname)
     // The app's own view history — what the back affordance walks. Recorded here
     // because this is the one effect that sees every navigation, whichever
     // entry point made it (sidebar, palette, a plugin's `to` target, restore).
     noteViewChange(location.pathname)
-    // The view just entered owns its own fronted tab — the workspace, on a page.
-    noteActiveViewPane(activeMainStripPane())
+    // The main-strip tab each view had FRONTED rides along: the tab is written
+    // where it is fronted (components/pane-shell/tree/store.ts), and once more
+    // here for the RESTORED layout, which fronts the saved tab before any route
+    // is known, so that front had nothing to be recorded onto.
+    const fronted = activeMainStripPane()
+
+    if (fronted) {
+      noteActiveViewPane(fronted)
+    }
   }, [location.pathname])
 
   const {

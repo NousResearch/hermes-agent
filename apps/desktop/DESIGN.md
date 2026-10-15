@@ -336,9 +336,12 @@ view, while a view is behind this one — the app's own view history
 (`store/view-history`), recorded per navigation by the wiring, never the
 router's query-string history. Back restores the view as it was left, down to
 the main-strip tab it had fronted: a session tile is not in the route, so the
-history carries it (`noteActiveViewPane`) or Back lands on the workspace — the
-first session tab. The zone it stands on reserves its width in its
-own band (`panel-titlebar`), because that band's remaining space is a native
+history carries it (`noteActiveViewPane`, written where the tab is fronted, and
+the page's own fronting of the workspace hands back the tile it displaced — the
+affordance fronts it in the click's own tick, so a route change has nothing left
+to read) or Back lands on the workspace — the first session tab.
+The zone it stands on reserves its width in its own band (`panel-titlebar`),
+because that band's remaining space is a native
 drag region, and a drag region swallows a press. It is absent in the session
 view (where it could only point at another session) and when nothing is behind
 (a cold start straight into a page). Overlays hide the clusters, so there it

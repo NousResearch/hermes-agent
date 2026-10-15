@@ -33,19 +33,22 @@ export const $canGoBack = computed($viewHistory, history => history.index > 0)
  *  — the first session tab — and abandons the one the user was reading. */
 const paneByPath = new Map<string, string>()
 
-/** Stamp the tab the current entry had fronted. Idempotent, and a no-op before
- *  the first route is recorded. `null` forgets it (nothing fronted to return to). */
-export function noteActiveViewPane(paneId: null | string): void {
+/** Stamp the tab the view the window is on had fronted. Idempotent, and a no-op
+ *  before the first route is recorded.
+ *
+ *  Written where the tab is FRONTED — on every layout commit
+ *  (`components/pane-shell/tree/store.ts`), and again when a view is entered
+ *  (`app/contrib/wiring.tsx`, for a restored tab that was fronted before the
+ *  route was known) — never where a route merely LANDS: a nav affordance fronts
+ *  the workspace for a page in the click's own tick
+ *  (`routes.navigateToWorkspacePage`), so anything keyed on the new location
+ *  reads only the workspace and loses the session tile the user was reading. The
+ *  page borrow hands the tab back (`routes.revealWorkspacePane`). */
+export function noteActiveViewPane(paneId: string): void {
   const { entries, index } = $viewHistory.get()
   const pathname = entries[index]
 
   if (!pathname) {
-    return
-  }
-
-  if (paneId === null) {
-    paneByPath.delete(pathname)
-
     return
   }
 

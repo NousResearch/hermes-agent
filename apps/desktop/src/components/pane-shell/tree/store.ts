@@ -16,6 +16,7 @@ import { writeKey } from '@/lib/storage'
 import { type InterfaceMode, modeLayout } from '@/store/interface-mode'
 import { notify } from '@/store/notifications'
 import { clearAllPaneSizeOverrides } from '@/store/panes'
+import { noteActiveViewPane } from '@/store/view-history'
 import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 
 import {
@@ -607,15 +608,34 @@ export const isMainStripPane = (paneId: string): boolean =>
 
 /** The tab fronted in the MAIN zone — the group holding the workspace pane, the
  *  one a page route renders in. Opening a page fronts the workspace so the page
- *  can show, displacing whatever tab the user was on; the app's view history
- *  remembers this per view so Back can re-front it (`store/view-history.ts`).
- *  Null when the workspace is not in the tree. */
+ *  can show, displacing whatever tab the user was on; the fronting records this
+ *  per view (`store/view-history.ts`) so Back can re-front it. Null when the
+ *  workspace is not in the tree. */
 export function activeMainStripPane(): null | string {
   const tree = $layoutTree.get()
   const group = tree ? findGroupOfPane(tree, 'workspace') : null
 
   return group?.active ?? null
 }
+
+/** Record the main-strip tab now fronted as the tab the view the window is on
+ *  had fronted, so Back can return to it (`store/view-history.ts`). */
+function recordFrontedMainTab(): void {
+  const fronted = activeMainStripPane()
+
+  if (fronted) {
+    noteActiveViewPane(fronted)
+  }
+}
+
+// Every commit, because a tab is fronted by paths with nothing in common: a
+// click (`activateTreePane`), a reveal (a drop, "open as tile", a session
+// focus), a close handing the slot over, and the layout RESTORE, which fronts
+// the saved tab without any fronting call at all. None of them is readable from
+// the route — fronting a session tile is not a navigation, and opening a page
+// fronts the workspace from the nav affordance in the click's own tick — so the
+// tree itself is the only place that sees them all.
+$layoutTree.listen(recordFrontedMainTab)
 
 /** Whether a zone may receive a SESSION drop — an existing session dragged
  *  from the sidebar, or a brand-new one dropped from a create-drag ("New

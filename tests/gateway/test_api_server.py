@@ -364,8 +364,8 @@ class TestRuntimeStatusMetrics:
     @pytest.mark.asyncio
     async def test_heartbeat_loop_publishes_once_when_stopped(self, adapter):
         adapter._running = True
+        adapter._runner = MagicMock(addresses=[("127.0.0.1", 8642)])
         calls = []
-
         def publish_once():
             calls.append(True)
             adapter._running = False

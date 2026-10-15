@@ -1375,11 +1375,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._publish_runtime_status()
 
     async def _heartbeat_loop(self) -> None:
-        while self.is_connected:
-            self._publish_runtime_status()
-            if not self.is_connected:
-                break
-            await asyncio.sleep(API_SERVER_HEARTBEAT_SECONDS)
+        from gateway.platforms.api_server_listener import heartbeat_loop
+        await heartbeat_loop(self)
 
     @staticmethod
     def _resolve_model_name(explicit: str) -> str:
@@ -4584,12 +4581,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         with suppress(Exception):
             await asyncio.to_thread(self._memory_sessions.close_all)
         try:
-            if self._site:
-                await self._site.stop()
-                self._site = None
             if self._runner:
                 await self._runner.cleanup()
                 self._runner = None
+            self._site = None
         finally:
             self._close_cached_session_dbs()
             self._app = None

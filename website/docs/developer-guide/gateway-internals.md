@@ -586,6 +586,14 @@ Adapters implement a common interface:
 - `send()` — outbound message delivery
 - inbound events are normalized into a `MessageEvent` and forwarded via `handle_message()`
 
+The API server's 30-second heartbeat checks its aiohttp runner's bound sockets before
+publishing connected status. If the listener disappears while the adapter is running,
+it reports retryable `api_server_listener_lost` and uses the normal fatal-handler/reconnect
+path to replace the adapter. Intentional disconnects do not trigger recovery. This is
+socket-ownership supervision, not an HTTP responsiveness probe: it cannot detect a
+wedged event loop or a listener that still owns sockets but fails to answer. The dashboard's
+`/api/health` remains dashboard-process liveness, independent of API listener readiness.
+
 Internal push wakes use `gateway.wake.admit_internal_event`: the public
 `handle_message()` still returns `None`, but the event's process-local
 `_gateway_accepted` receipt is set only after scheduling or queue insertion.

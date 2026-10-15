@@ -338,7 +338,7 @@ Get access at [parallel.ai](https://parallel.ai).
 
 ### MrScraper (plugin) {#mrscraper-plugin}
 
-[MrScraper](https://mrscraper.com) adds Google SERP search and JavaScript-rendered page extraction to the standard `web_search` and `web_extract` tools. Its [standalone plugin](https://github.com/ai-mrscraper/hermes-mrscraper-plugin) also exposes focused tools for structured extraction, website crawling, scraper runs, and result retrieval.
+[MrScraper](https://mrscraper.com) adds Google SERP search and page retrieval to the standard `web_search` and `web_extract` tools. Its [standalone native plugin](https://github.com/ai-mrscraper/hermes-mrscraper-plugin) calls MrScraper's HTTP API directly and exposes three tools: `mrscraper_scraper_api`, `mrscraper_web_search`, and `mrscraper_account`. No MCP connection is required for the plugin.
 
 ```bash
 hermes plugins install mrscraper
@@ -354,7 +354,17 @@ web:
   extract_backend: "mrscraper"
 ```
 
-For targeted tasks, use `mrscraper_search_google_serp`, `mrscraper_crawl_website_urls`, `mrscraper_extract_page_by_prompt`, or `mrscraper_extract_structured_data`; `mrscraper_fetch_rendered_html` returns rendered HTML or Markdown from an individual URL. MrScraper API requests may consume account credits and send the URLs, prompts, and schemas you supply to MrScraper. Rendered extraction does not provide an interactive browser session; see [Browser Automation](browser.md#mrscraper-rendered-page-extraction) for the distinction.
+For targeted tasks, use the three native tools directly; they do not require selecting MrScraper as the standard web provider.
+
+| Tool | Use |
+| --- | --- |
+| `mrscraper_scraper_api` | Retrieve one URL as HTML, Markdown, or a screenshot with rendering and proxy options. |
+| `mrscraper_web_search` | Search Google with query text or a Google search URL; optionally set region, language, or result page. Returns structured JSON by default. |
+| `mrscraper_account` | Read a filtered account summary with subscription status, token usage, remaining quota, and rate limits. |
+
+Derive structured fields and listings from returned page content. MrScraper API requests may consume account credits and send the target URLs, search queries, and request options you supply to MrScraper. Page retrieval does not provide an interactive browser session; see [Browser Automation](browser.md#mrscraper-rendered-page-extraction) for the distinction.
+
+MrScraper also offers a separate [hosted MCP connection](https://docs.mrscraper.com/docs/getting-started/mcp-server) with OAuth and the server tools `scraperAPI`, `webSearch`, and `status`. That connection uses its own schemas and does not select the native `web_search` or `web_extract` provider.
 
 ---
 

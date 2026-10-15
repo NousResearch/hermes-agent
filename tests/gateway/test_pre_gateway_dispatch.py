@@ -165,7 +165,7 @@ async def test_rewritten_message_keeps_its_callback_provenance_and_is_admitted(m
     from gateway.platforms.event import MessageEvent
     from gateway.run import GatewayRunner
     from gateway.session_authority import SessionAuthority, initialize_session_authority
-    from gateway.session_ingress_context import capture_provenance, native_callback
+    from gateway.session_ingress_context import capture_provenance, native_callback, register_transport_home
     from hermes_constants import get_hermes_home
     from hermes_state_runtime import list_session_admissions
     from plugins.platforms.discord.adapter import DiscordAdapter
@@ -181,6 +181,10 @@ async def test_rewritten_message_keeps_its_callback_provenance_and_is_admitted(m
     runner.adapters = {Platform.DISCORD: adapter}
     authority = await initialize_session_authority(runner, profile_id="default", instance_id="owner")
     runner._wire_adapter_handlers(adapter)
+    # The multiplexed admission check that refused the reporter (thanks @unsupportedpastels).
+    runner.config.multiplex_profiles = True
+    runner.config._runtime_profile_homes = [("default", get_hermes_home())]
+    register_transport_home(runner, None, get_hermes_home())
     source = adapter.build_source(chat_id="42", chat_type="dm", user_id="42")
     human = MessageEvent(text="original", source=source, message_id="h")
 
@@ -192,3 +196,21 @@ async def test_rewritten_message_keeps_its_callback_provenance_and_is_admitted(m
     payload = list_session_admissions(authority.db, session_id=receipt.ref.session_id, pending_only=False)[-1]["payload"]
     assert expected is not None and event is not human
     assert (payload["text"], payload["native_text_v1"].get("provenance")) == ("rewritten", expected)
+
+
+def test_relay_binding_moves_to_a_text_rewrite_but_never_to_a_new_source():
+    """The relay binding gets the same treatment as the native one, under the same guard: it follows
+    a text-only rewrite, and is never carried to an event whose source object was swapped."""
+    from copy import copy
+    from dataclasses import replace
+
+    from gateway.session_ingress_context import _relay_callback, carry_callback, relay_callback
+
+    transport, event = object(), _make_event("a")
+    with relay_callback(transport, event):
+        rewritten = replace(event, text="b")
+        carry_callback(event, rewritten)
+        assert _relay_callback.get() == (transport, rewritten)
+        carry_callback(rewritten, replace(rewritten, source=copy(rewritten.source), text="c"))
+        assert _relay_callback.get()[1] is rewritten
+    assert _relay_callback.get() is None

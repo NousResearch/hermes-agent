@@ -1045,14 +1045,14 @@ def _canonical_provider_slug(slug: str) -> str:
         profile = get_provider_profile(slug)
         if profile is not None:
             return profile.name
-    except Exception as exc:  # pragma: no cover — a missing registry must not move a verdict
-        logger.debug("Provider registry lookup failed for %s: %s", slug, exc)
+    except Exception:  # pragma: no cover — a missing registry must not move a verdict
+        logger.debug("Provider registry lookup failed for %s", slug, exc_info=True)
     try:
         from hermes_cli.providers import normalize_provider
 
         return normalize_provider(slug)
-    except Exception as exc:  # pragma: no cover
-        logger.debug("Provider alias table unavailable for %s: %s", slug, exc)
+    except Exception:  # pragma: no cover
+        logger.debug("Provider alias table unavailable for %s", slug, exc_info=True)
         return slug
 
 

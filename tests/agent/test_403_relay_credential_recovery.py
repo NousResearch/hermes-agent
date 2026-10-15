@@ -7,7 +7,8 @@ the wrapper would not prove anything about the wrapper), and asserts the sole ``
 credential is not benched for the relay's ``code=server_error`` 403.
 
 One test, per the repo's <=2 invariant-test bar; the verdict side of the contract (provider scoping,
-billing/WAF precedence, the no-code boundary) is the table in ``tests/agent/test_error_classifier.py``.
+billing/WAF precedence, the no-code boundary) is the table in
+``tests/agent/test_error_classifier_403_relay.py``.
 """
 
 from __future__ import annotations

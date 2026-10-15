@@ -662,6 +662,28 @@ def _current_blocker_evidence(
     return candidate
 
 
+def _safe_blocker_reason(reason: str) -> str:
+    """Redact complete selected text before any display shortening."""
+    import re
+    import unicodedata
+    from agent.redact import redact_sensitive_text
+
+    cleaned = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "", reason)
+    cleaned = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", cleaned)
+    cleaned = "".join(
+        " " if char.isspace() else char
+        for char in cleaned
+        if char.isspace() or unicodedata.category(char) not in {"Cc", "Cf"}
+    )
+    redacted = redact_sensitive_text(cleaned, force=True, redact_url_credentials=True)
+    return " ".join(redacted.split())
+
+
+def _truncate_blocker_text(text: str, limit: int) -> str:
+    """Bound complete display text, including an ellipsis when needed."""
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
 def _rule_current_blocker(task, events, runs, now, cfg) -> list[Diagnostic]:
     if _task_field(task, "status") != "blocked":
         return []
@@ -669,9 +691,13 @@ def _rule_current_blocker(task, events, runs, now, cfg) -> list[Diagnostic]:
     if evidence is None:
         return []
     reason, kind, event_id, timestamp = evidence
+    reason = _safe_blocker_reason(reason)
+    if not reason:
+        return []
     return [Diagnostic(
         kind="current_blocker", severity="warning",
-        title="Blocked: " + reason, detail=reason,
+        title=_truncate_blocker_text("Blocked: " + reason, 180),
+        detail=_truncate_blocker_text(reason, 1000),
         actions=[DiagnosticAction(
             kind="comment", label="Review and discuss the blocker", suggested=True,
         )],

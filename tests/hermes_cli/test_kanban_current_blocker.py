@@ -278,6 +278,84 @@ def test_current_blocker_supports_rows_and_dataclasses():
     assert asdict(kb.Event(**ev)) == ev
 
 
+def assert_safe_outputs(diag, capsys, secrets):
+    import json
+    from hermes_cli.kanban import _print_diagnostics
+
+    _print_diagnostics([diag], "", with_kind=True)
+    rendered = capsys.readouterr().out
+    outputs = [diag.title, diag.detail, json.dumps(diag.to_dict()), rendered]
+    for output in outputs:
+        for secret in secrets:
+            assert secret not in output
+    return rendered
+
+
+def test_current_blocker_redacts_url_credentials(capsys):
+    secrets = ["shortuser", "shortpass", "querysecret"]
+    reason = "https://shortuser:shortpass@example.invalid/path?token=querysecret"
+    diag = current([event(reason=reason)])[0]
+    assert_safe_outputs(diag, capsys, secrets)
+    assert "example.invalid" in diag.detail
+
+
+def test_current_blocker_removes_terminal_controls(capsys):
+    reason = "\x1b[31mneeds\x1b[0m\r\n\tapproval\x1b]8;;https://hidden.invalid\x07 now\x1b]8;;\x1b\\\x00\x85next\u200b\u202e\x9b"
+    diag = current([event(reason=reason)])[0]
+    assert diag.detail == "needs approval now next"
+    assert diag.title == "Blocked: needs approval now next"
+    rendered = assert_safe_outputs(diag, capsys, ["hidden.invalid", "\x1b", "\r", "\x00", "\x85", "\u200b", "\u202e", "\x9b"])
+    assert "[warning] current_blocker: Blocked: needs approval now next" in rendered
+
+
+@pytest.mark.parametrize("length", [171, 1000, 1500])
+def test_current_blocker_bounds_title_and_detail(length):
+    reason = "x" * length
+    diag = current([event(reason=reason)])[0]
+    title = "Blocked: " + reason
+    assert diag.title == (title if len(title) <= 180 else title[:179] + "…")
+    assert diag.detail == (reason if length <= 1000 else reason[:999] + "…")
+
+
+@pytest.mark.parametrize("kind", ["blocked", "gave_up"])
+def test_current_blocker_empty_sanitized_reason_does_not_revive_history(kind):
+    payload = {"reason" if kind == "blocked" else "error": "\x1b[31m\x1b[0m\x00\u200b"}
+    assert current([event(), event(kind, id=2, payload=payload)]) == []
+    classification = event(id=3, payload={"classified_in_place": True, "reason": " "})
+    assert current([event(), event(kind, id=2, payload=payload), classification]) == []
+
+
+def test_current_blocker_redacts_with_ordinary_redaction_disabled(monkeypatch, capsys):
+    from agent import redact
+
+    monkeypatch.setattr(redact, "_redact_enabled", lambda: False)
+    diag = current([event(reason="https://disableduser:disabledpass@example.invalid/?api_key=disabledquery")])[0]
+    assert_safe_outputs(diag, capsys, ["disableduser", "disabledpass", "disabledquery"])
+    assert "***" in diag.detail
+
+
+def test_current_blocker_redacts_before_truncation(capsys):
+    prefix = "x" * 145 + " https://"
+    secret = "cutoffcredentialspanningboundary"
+    raw = prefix + secret + ":cutoffpass@example.invalid/?token=cutoffquery"
+    diag = current([event(reason=raw)])[0]
+    assert_safe_outputs(diag, capsys, [secret, "cutoffpass", "cutoffquery"])
+    # Truncating first would expose the credential prefix, not merely its full value.
+    assert secret[:12] not in diag.title
+    assert "***:***@example.invalid" in diag.detail
+    expected = "Blocked: " + diag.detail
+    assert diag.title == (expected if len(expected) <= 180 else expected[:179] + "…")
+
+
+def test_current_blocker_serializes_only_safe_metadata(capsys):
+    reason = "https://metauser:metapass@example.invalid/?token=metaquery"
+    diag = current([event(run_id=7, reason=reason, payload={"reason": reason, "private": "payloadsecret"})],
+                   [{"id": 7, "task_id": TASK_ID, "summary": "summarysecret", "error": "errorsecret"}])[0]
+    assert diag.to_dict()["data"] == {"source_event_kind": "blocked", "source_event_id": 1}
+    assert diag.run_id is None
+    assert_safe_outputs(diag, capsys, ["metauser", "metapass", "metaquery", "payloadsecret", "summarysecret", "errorsecret"])
+
+
 @pytest.fixture
 def show_fixture(monkeypatch):
     import argparse

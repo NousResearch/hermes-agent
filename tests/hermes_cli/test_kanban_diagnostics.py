@@ -99,16 +99,18 @@ def test_stuck_in_blocked_fires_past_threshold():
     now = int(time.time())
     task = _task(status="blocked")
     events = [
-        _event("blocked", ts=now - 3600 * 48, reason="needs approval"),
+        {**_event("blocked", ts=now - 3600 * 48, reason="needs approval"),
+         "task_id": task["id"], "run_id": None},
     ]
     diags = kd.compute_task_diagnostics(
         task, events, [], now=now,
     )
-    assert len(diags) == 1
-    d = diags[0]
-    assert d.kind == "stuck_in_blocked"
-    assert d.severity == "warning"
-    assert d.data["age_hours"] >= 48
+    by_kind = {d.kind: d for d in diags}
+    assert len(diags) == 2
+    assert set(by_kind) == {"stuck_in_blocked", "current_blocker"}
+    assert by_kind["stuck_in_blocked"].severity == "warning"
+    assert by_kind["stuck_in_blocked"].data["age_hours"] >= 48
+    assert by_kind["current_blocker"].title == "Blocked: needs approval"
 
 
 

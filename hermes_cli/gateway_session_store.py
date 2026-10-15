@@ -19,7 +19,6 @@ import argparse
 import logging
 import os
 import re
-import sqlite3
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
@@ -356,7 +355,8 @@ class SurfaceLabelReader:
 
     Read-only opens do not migrate. A store that has no ``created_source`` column is matched on
     ``source`` alone (there are no gateway ``local`` rows yet). ``created_source='unknown'`` stays
-    unmatched once the column exists.
+    unmatched once the column exists. Only a successful "column present" probe is cached: a lock
+    error is not a missing column, and another connection can add the column later.
     """
 
     def __init__(self, db):
@@ -367,20 +367,23 @@ class SurfaceLabelReader:
         return getattr(self._wrapped, name)
 
     def _has_created_source_column(self) -> bool:
-        """Cached ``PRAGMA table_info`` read. A connection does not gain the column after open."""
-        if self._created_source_column is not None:
-            return self._created_source_column
-        present = False
+        """Whether ``sessions.created_source`` is on this connection.
+
+        A positive answer is cached. An absent answer is re-probed: a later
+        ``ALTER TABLE`` from another connection is visible to the next statement.
+        ``sqlite3.Error`` (lock, I/O) propagates and is not stored — it is not
+        evidence the column is missing. This read does not write.
+        """
+        if self._created_source_column is True:
+            return True
         conn = getattr(self._wrapped, "_conn", None)
-        if conn is not None:
-            try:
-                present = any(
-                    row[1] == "created_source"
-                    for row in conn.execute("PRAGMA table_info(sessions)")
-                )
-            except sqlite3.Error:
-                present = False
-        self._created_source_column = present
+        if conn is None:
+            return False
+        present = any(
+            row[1] == "created_source" for row in conn.execute("PRAGMA table_info(sessions)")
+        )
+        if present:
+            self._created_source_column = True
         return present
 
     def _labelled(self, requested, limit, offset, call):

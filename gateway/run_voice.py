@@ -31,6 +31,27 @@ _OFF_SET, _ON_SET = "_auto_tts_disabled_chats", "_auto_tts_enabled_chats"
 _VOICE_MODES = {"off", "voice_only", "all"}
 
 
+def _profile_voice_auto_tts(owner: str, load_config) -> bool:
+    """``voice.auto_tts`` from the owning profile's own ``config.yaml``.
+
+    ``load_config()`` follows the ambient (launch) HERMES_HOME, so a multiplexed
+    secondary adapter would inherit the default profile's value (#127036).
+    Install ONLY the home override (cf. ``run_idle_gates``): a config read needs
+    neither secret hydration nor terminal policy, and this runs on the
+    adapter-connect path where the full ``_profile_runtime_scope`` cost and its
+    process-global terminal install do not belong. Unknown profiles fail closed
+    (raise -> caller falls back to False).
+    """
+    from hermes_cli.profiles import get_profile_dir
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(str(get_profile_dir(owner)))
+    try:
+        return bool((load_config().get("voice") or {}).get("auto_tts", False))
+    finally:
+        reset_hermes_home_override(token)
+
+
 class GatewayVoiceMixin:
     def _voice_key(self, platform: Platform, chat_id: str, profile: Optional[str] = None) -> str:
         """``<profile>:<platform>:<chat_id>`` under multiplexing (else two bots in one channel
@@ -119,7 +140,11 @@ class GatewayVoiceMixin:
             return
         try:
             from hermes_cli.config import load_config  # lazy: no gateway -> hermes_cli module dep
-            auto_tts_default = bool((load_config().get("voice") or {}).get("auto_tts", False))
+            owner = getattr(adapter, "_owner_profile", None)
+            if isinstance(owner, str) and owner not in ("", "default"):
+                auto_tts_default = _profile_voice_auto_tts(owner, load_config)
+            else:
+                auto_tts_default = bool((load_config().get("voice") or {}).get("auto_tts", False))
         except Exception:
             auto_tts_default = False
         if hasattr(adapter, "_auto_tts_default"):

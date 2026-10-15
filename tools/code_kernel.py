@@ -236,13 +236,28 @@ class CellAuthority:
     ``propagate_context_to_thread`` captures for a per-call RPC thread) and retires it when
     the cell settles, so a late tool call (leaked background thread, raced client write) is
     refused instead of running under a stale approval/session/turn identity.
+
+    A call already RUNNING when the cell settles (blocked on an approval prompt, a long
+    command) does not outlive it either: ``retire`` interrupts its RPC thread — the approval
+    waits and terminal commands poll that per-thread signal — and reports what each call did.
     """
+
+    # How long a settling cell waits for its cancelled nested calls to unwind (approval waits
+    # poll the interrupt in ~1s slices).
+    CANCEL_GRACE_SECONDS = 5.0
 
     def __init__(self, task_id: str):
         import contextvars
+        from hermes_logging import get_session_context
         self.task_id = task_id
         self.ctx = contextvars.copy_context()
         self.active = True
+        self.settle_cause = ""
+        # The [session] log tag is thread-local; the RPC thread would log untagged without it.
+        self._log_session = get_session_context()
+        self._lock = threading.Condition()
+        self._in_flight: dict[int, dict] = {}  # RPC thread ident -> {"tool", "args_preview"}
+        self._cancelled: dict[int, Optional[str]] = {}  # interrupted thread -> outcome once it returns
         # ((getter, setter), captured value) per thread-local prompt callback (approval, sudo, vault unlock…)
         self._callbacks: list = []
         try:
@@ -252,16 +267,69 @@ class CellAuthority:
             # Fail-closed like propagate_context_to_thread: no callbacks → dangerous approvals deny.
             self._callbacks = []
 
-    def retire(self) -> None:
-        self.active = False
+    def retire(self, cause: str = "settled") -> list[dict]:
+        """Refuse new calls, cancel the ones still running, and return one
+        ``{"tool", "args_preview", "outcome"}`` per call that was in flight. ``outcome`` is the
+        call's error text, ``"completed"`` (it finished anyway, e.g. approved a moment earlier), or
+        ``"still running"`` after the grace period (its end is logged as a WARNING)."""
+        from tools.interrupt import set_interrupt
+        with self._lock:
+            if not self.active:
+                return []
+            self.active, self.settle_cause = False, cause
+            pending = dict(self._in_flight)
+            for tid in pending:
+                self._cancelled[tid] = None
+                set_interrupt(True, tid, reason=f"the execute_code cell that issued it {cause}")
+            deadline = time.monotonic() + self.CANCEL_GRACE_SECONDS
+            while any(tid in self._in_flight for tid in pending) and deadline > time.monotonic():
+                self._lock.wait(deadline - time.monotonic())
+            # A call still running keeps its _cancelled entry so _settle_call logs it as late.
+            return [{**call, "outcome": "still running" if tid in self._in_flight else self._cancelled.pop(tid)}
+                    for tid, call in pending.items()]
 
     def dispatch(self, tool_name: str, tool_args: dict) -> str:
         """Run one tool call under THIS cell's context and callbacks."""
         from tools.registry import tool_error
-        if not self.active:
-            return tool_error("No active execute_code cell: the cell this kernel call "
-                              "belonged to has settled, so its tool authority is retired.")
-        return self.ctx.run(self._invoke, tool_name, tool_args)
+        tid = threading.get_ident()
+        with self._lock:
+            if not self.active:
+                return tool_error("No active execute_code cell: the cell this kernel call "
+                                  "belonged to has settled, so its tool authority is retired.")
+            self._in_flight[tid] = {"tool": tool_name, "args_preview": str(tool_args)[:120]}
+        from hermes_logging import clear_session_context, set_session_context
+        if self._log_session:
+            set_session_context(self._log_session)
+        start, result = time.monotonic(), None
+        try:
+            result = self.ctx.run(self._invoke, tool_name, tool_args)
+            return result
+        finally:
+            self._settle_call(tid, result, round(time.monotonic() - start, 2))
+            clear_session_context()
+
+    def _settle_call(self, tid: int, result: Optional[str], duration: float) -> None:
+        """Leave the in-flight set and log the call: nested calls get no agent.tool_executor line,
+        so this is the only record that ties a nested write to its session and cell."""
+        from tools.code_execution_rpc import _result_error
+        from tools.interrupt import set_interrupt
+        error = _result_error(result) if result is not None else "raised an exception"
+        with self._lock:
+            call = self._in_flight.pop(tid)
+            late = tid in self._cancelled
+            if late:
+                # Our interrupt must not leak into the next call this RPC thread serves.
+                set_interrupt(False, tid)
+                self._cancelled[tid] = error or "completed"
+                self._lock.notify_all()
+        if late:
+            logger.warning("execute_code nested %s finished after its cell %s (%.2fs, args %s): %s",
+                           call["tool"], self.settle_cause, duration, call["args_preview"], error or "completed")
+        elif error:
+            logger.warning("execute_code nested %s returned error (%.2fs, args %s): %s",
+                           call["tool"], duration, call["args_preview"], error)
+        else:
+            logger.info("execute_code nested %s completed (%.2fs, args %s)", call["tool"], duration, call["args_preview"])
 
     def _invoke(self, tool_name: str, tool_args: dict) -> str:
         from model_tools import handle_function_call
@@ -778,9 +846,12 @@ def _with_stderr(stdout_text: str, stderr_text: str) -> str:
     return stdout_text + "\n--- stderr ---\n" + stderr_text
 
 
+_SETTLE_CAUSES = {"timeout": "timed out", "interrupted": "was interrupted", "error": "lost its kernel"}
+
+
 def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[str, Any], *,
                  timeout: int, sandbox_tools: frozenset, reused: bool,
-                 state_reset: bool, exec_start: float) -> dict[str, Any]:
+                 state_reset: bool, exec_start: float, in_flight: list[dict]) -> dict[str, Any]:
     """Assemble the tool result for one settled cell (disposing the kernel where the contract says so)."""
     from tools.code_execution_tool import _sandbox_failure_hint, _truncate_stdout_text
     from agent.redact import redact_sensitive_text
@@ -807,6 +878,9 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
     tool_errors = tool_errors_since(kernel.tool_call_log, kernel.cell_log_start)
     if tool_errors:
         result["tool_errors"] = tool_errors
+    if in_flight:
+        # Nested calls the settling cell cancelled, each with what it actually did.
+        result["nested_calls_in_flight"] = in_flight
     # Cell-side spill (runner clipped before replying): same read_file recipe as the host-side spill.
     cell_spill = str(payload.get("stdout_spill_path", "") or "")
     if cell_spill and payload.get("stdout_clipped"):
@@ -893,10 +967,13 @@ def _run_cell(kernel: SessionKernel, key: tuple, code: str, *, task_id: str, chi
             kernel.proc.stdin.write((json.dumps({"id": uuid.uuid4().hex, "code": code}) + "\n").encode("utf-8"))
             kernel.proc.stdin.flush()
             status, payload = _await_cell(kernel, timeout, is_interrupted)
+            # Before reporting: a nested call still running (e.g. waiting on an approval) must not
+            # outlive the cell and apply its write after the requester was told the cell died.
+            in_flight = authority.retire(_SETTLE_CAUSES.get(status, "settled"))
             result = _cell_result(
                 kernel, key, status, payload,
                 timeout=timeout, sandbox_tools=sandbox_tools, reused=reused,
-                state_reset=state_reset, exec_start=exec_start,
+                state_reset=state_reset, exec_start=exec_start, in_flight=in_flight,
             )
             return json.dumps(result, ensure_ascii=False)
         except Exception as exc:  # pragma: no cover - defensive parity with per-call

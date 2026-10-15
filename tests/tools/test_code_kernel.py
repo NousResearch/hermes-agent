@@ -540,6 +540,92 @@ class TestPerCellRpcAuthority(unittest.TestCase):
             self.assertFalse(kernel.cell_authority.active)
 
 
+class TestNestedCallsDoNotOutliveTheCell(unittest.TestCase):
+    """A nested call must end with its cell. Incident (15.10.2026): a nested ``patch`` on a protected
+    CLAUDE.md was still waiting on its approval when the cell timed out; approved afterwards, it wrote
+    to disk while the cell's result said only "kernel killed, state lost", and nothing logged the write."""
+
+    SESSION = "nested-outlives-cell"
+
+    def test_a_write_waiting_on_approval_is_cancelled_with_its_cell(self):
+        import threading
+
+        from tools import approval
+        from tools.approval_context import reset_current_session_key, set_current_session_key
+
+        with tempfile.TemporaryDirectory() as project:
+            target = Path(project, "CLAUDE.md")
+            target.write_text("- old\n", encoding="utf-8")
+            prompted = threading.Event()
+            approval.register_gateway_notify(self.SESSION, lambda data: prompted.set())
+            token = set_current_session_key(self.SESSION)
+            try:
+                # approvals.mode "off" (the protected-file gate prompts regardless); the prompt outlives the cell.
+                with patch("tools.approval_context._get_approval_config",
+                           return_value={"mode": "off", "timeout": 60}):
+                    with _kernel_config():
+                        _run(f"import hermes_tools\nhermes_tools.read_file({str(target)!r})\n")
+                    with _kernel_config(timeout=3):
+                        result = _run(f"from hermes_tools import patch\npatch({str(target)!r}, '- old', '- new')\n")
+                # The human answers the prompt after the requester was told the cell died.
+                late_answers = approval.resolve_gateway_approval(self.SESSION, "once")
+            finally:
+                reset_current_session_key(token)
+                approval.unregister_gateway_notify(self.SESSION)
+            self.assertTrue(prompted.is_set(), "the nested patch never reached its approval prompt")
+            self.assertEqual(result["status"], "timeout", result)
+            self.assertEqual(late_answers, 0, "the prompt was still answerable after its cell died")
+            [call] = result["nested_calls_in_flight"]
+            self.assertEqual(call["tool"], "patch")
+            self.assertIn("BLOCKED", call["outcome"])
+            self.assertIn("timed out", call["outcome"])
+            self.assertEqual(target.read_text(encoding="utf-8"), "- old\n")
+
+    def test_the_stub_never_replays_a_call_the_host_is_still_serving(self):
+        # The incident's second write: the stub's 300s recv timeout fired while the host was still
+        # serving the patch (waiting on its approval), and the stub sent the same request again.
+        import importlib.util
+        import socket
+        import threading
+
+        from tools.code_execution_tool import generate_hermes_tools_module
+
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))
+        server.listen(4)
+        requests, release = [], threading.Event()
+
+        def serve():
+            while True:
+                try:
+                    conn, _ = server.accept()
+                except OSError:
+                    return
+                requests.append(conn.makefile("rb").readline())
+                if len(requests) == 1:  # still serving the first call: never answers in time
+                    threading.Thread(target=lambda c=conn: (release.wait(30), c.close()), daemon=True).start()
+                else:
+                    conn.close()
+
+        threading.Thread(target=serve, daemon=True).start()
+        env = {"HERMES_RPC_SOCKET": f"tcp://127.0.0.1:{server.getsockname()[1]}",
+               "HERMES_RPC_TOKEN": "t", "HERMES_RPC_PERSISTENT": "1"}
+        try:
+            with tempfile.TemporaryDirectory() as staging, patch.dict(os.environ, env):
+                path = Path(staging, "hermes_tools.py")
+                path.write_text(generate_hermes_tools_module(["web_search"]), encoding="utf-8")
+                spec = importlib.util.spec_from_file_location("hermes_tools_replay_probe", path)
+                stub = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(stub)
+                stub._connect().settimeout(0.5)  # the host takes longer than the stub's recv window
+                with self.assertRaises(TimeoutError):
+                    stub.web_search(query="q")
+        finally:
+            release.set()
+            server.close()
+        self.assertEqual(len(requests), 1, requests)
+
+
 class TestBackgroundIdleReaper(unittest.TestCase):
     """#117169: the idle sweep must not depend on the next kernel acquire — a host
     that stays alive but wedged (e.g. pids exhaustion fail-closing every tool call)

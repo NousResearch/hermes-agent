@@ -272,16 +272,20 @@ async function locateHermes(ssh, remoteHermesPath) {
   throw err
 }
 
-// Probe the resolved binary's version string (first line of `<hermes> --version`,
-// e.g. "Hermes Agent v0.18.2 ..."), or '' on failure. Surfaces WHICH hermes a
-// connection uses, so a stale/unexpected install is visible.
+// Probe the resolved binary's version string (the "Hermes Agent v..." line of
+// `<hermes> --version`), or '' on failure. Surfaces WHICH hermes a connection
+// uses, so a stale/unexpected install is visible.
 async function probeHermesVersion(ssh, hermesPath) {
   try {
     // Watchdogged: a hung remote CLI must die remotely instead of orphaning
-    // when the local ssh child is SIGKILLed (#110478).
-    const out = (await ssh.exec(withRemoteTimeout(`${expandRemotePath(hermesPath)} --version 2>&1`))).trim()
+    // when the local ssh child is SIGKILLed (#110478). No `2>&1`: remote
+    // plugin warnings ride stderr and must not become the "version" (#138772)
+    // — ssh.exec returns stdout only.
+    const out = (await ssh.exec(withRemoteTimeout(`${expandRemotePath(hermesPath)} --version`))).trim()
 
-    return (out.split('\n')[0] || '').trim()
+    const lines = out.split('\n').map(line => line.trim())
+
+    return lines.find(line => line.startsWith('Hermes Agent v')) || lines[0] || ''
   } catch {
     return ''
   }

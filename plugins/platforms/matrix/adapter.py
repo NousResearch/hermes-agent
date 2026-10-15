@@ -79,6 +79,7 @@ from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
+from plugins.platforms.matrix.adapter_identity import MatrixIdentityMixin
 
 logger = logging.getLogger(__name__)
 
@@ -790,7 +791,7 @@ def ensure_matrix_deps() -> bool:
     return True
 
 
-class MatrixAdapter(BasePlatformAdapter):
+class MatrixAdapter(MatrixIdentityMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -861,6 +862,9 @@ class MatrixAdapter(BasePlatformAdapter):
         # If non-empty, bot ONLY responds in these rooms (whitelist); DMs exempt.
         self._allowed_rooms: set[str] = _extra_csv_set(config, "allowed_rooms", "MATRIX_ALLOWED_ROOMS")
         self._allow_room_mentions: bool = _env_truthy("MATRIX_ALLOW_ROOM_MENTIONS", "false")
+        # Self-chat mode: process messages typed by the bot's OWN account (the WhatsApp bridge's
+        # self-chat equivalent). Off by default; echo-suppressed — see _on_room_message.
+        self._self_chat: bool = self._extra_truthy(config, "self_chat", "MATRIX_SELF_CHAT", "false")
         # Extra-first: the YAML bridge seeds these into extra and skips the env write under a
         # multiplexed secondary scope, where os.environ holds the DEFAULT profile's flags.
         self._auto_thread: bool = self._extra_truthy(config, "auto_thread", "MATRIX_AUTO_THREAD", "true")
@@ -902,18 +906,6 @@ class MatrixAdapter(BasePlatformAdapter):
                 self._ignored_user_patterns.append(re.compile(pattern))
             except re.error as exc:
                 logger.warning("Matrix: ignoring invalid MATRIX_IGNORE_USER_PATTERNS entry %r: %s", pattern, exc)
-
-    def _is_duplicate_event(self, event_id) -> bool:
-        """Return True if this event was already processed. Tracks the ID otherwise."""
-        if not event_id:
-            return False
-        if event_id in self._processed_events_set:
-            return True
-        if len(self._processed_events) == self._processed_events.maxlen:
-            self._processed_events_set.discard(self._processed_events[0])
-        self._processed_events.append(event_id)
-        self._processed_events_set.add(event_id)
-        return False
 
     @staticmethod
     def _extra_truthy(config, key: str, env_name: str, default: str) -> bool:
@@ -1410,6 +1402,7 @@ class MatrixAdapter(BasePlatformAdapter):
         """Send one m.room.message event (45s cap) and return its event ID as str."""
         event_id = await asyncio.wait_for(
             self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
+        self._remember_event(str(event_id))
         return str(event_id)
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
@@ -1824,6 +1817,7 @@ class MatrixAdapter(BasePlatformAdapter):
         """Send a prebuilt m.room.message payload, mapping exceptions to SendResult."""
         try:
             event_id = await self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content)
+            self._remember_event(str(event_id))
             return SendResult(success=True, message_id=str(event_id))
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
@@ -1940,33 +1934,6 @@ class MatrixAdapter(BasePlatformAdapter):
                 if isinstance(result, Exception):
                     logger.warning("Matrix: event handler failed during sync dispatch: %s", result)
 
-    def _is_self_sender(self, sender: str) -> bool:
-        """True if *sender* is the bot itself (case-insensitive: homeservers vary localpart case). With
-        no resolved user_id we can't prove a sender is NOT us, so return True — dropping our own
-        events beats an echo loop ("hall of mirrors").
-
-        Matrix user IDs are byte-compared after trimming whitespace and lowercasing — some homeservers
-        normalize the localpart case differently at different API surfaces, and the reply-loop tail of the
-        "hall of mirrors" bug (#15763) has been observed with the bot's own account bypassing a
-        case-sensitive equality check.
-        """
-        own = (self._user_id or "").strip().lower()
-        return not own or sender.strip().lower() == own
-
-    @staticmethod
-    def _is_system_or_bridge_sender(sender: str) -> bool:
-        """True for appservice/bridge/system identities (``@_telegram_123:server``) or malformed IDs.
-        Never offer these a pairing code: an approved bridge would relay every outbound message
-        back as an "authorized user message" (echo loop).
-
-        We treat these as system identities for pairing purposes: they should never be offered a pairing
-        code, because an operator approving the code would hand the bridge itself permanent authorization —
-        and every outbound message relayed by the bridge would then loop back into the agent as an
-        "authorized user message", which is the root of issue #15763.
-        """
-        localpart = (sender or "").strip().lstrip("@").partition(":")[0]
-        return not localpart or localpart.startswith("_")
-
     async def _is_allowed_matrix_room_event(self, room_id: str) -> bool:
         """MATRIX_ALLOWED_ROOMS gate; DMs are exempt so personal chats survive a project allowlist."""
         if not self._allowed_room_ids or room_id in self._allowed_room_ids:
@@ -2018,7 +1985,24 @@ class MatrixAdapter(BasePlatformAdapter):
         logger.debug(
             "Matrix: callback fired — event %s from %s in %s", getattr(event, "event_id", "?"), sender, room_id)
         if self._is_self_sender(sender):
-            return
+            if not self._self_chat or not self._is_confirmed_self_sender(sender):
+                return
+            # Self-chat mode (MATRIX_SELF_CHAT=true): CONFIRMED owner messages become user input
+            # (the WhatsApp bridge self-chat equivalent; an unresolved _user_id keeps the
+            # fail-closed drop above). Echo suppression, two layers:
+            #   1. sends from OTHER processes (`hermes send`, cron standalone) carry a hermes_*
+            #      transaction ID, echoed back in unsigned.transaction_id;
+            #   2. sends through THIS adapter were recorded at send time and are dropped by the
+            #      _is_duplicate_event check below (the agent's own replies never loop).
+            unsigned = getattr(event, "unsigned", None)
+            if isinstance(unsigned, dict):
+                txn_id = str(unsigned.get("transaction_id") or "")
+            else:
+                txn_id = str(getattr(unsigned, "transaction_id", "") or "")
+            if txn_id.startswith("hermes_"):
+                return
+            if not await self._is_self_chat_room(room_id):
+                return
         # Bridge/system identities must never reach the pairing flow (echo loop once paired).
         # Ignore own messages (case-insensitive; also drops when our own user_id hasn't been resolved yet —
         # see _is_self_sender docstring and issue #15763).
@@ -2442,6 +2426,7 @@ class MatrixAdapter(BasePlatformAdapter):
         content = {"m.relates_to": {"rel_type": "m.annotation", "event_id": event_id, "key": emoji}}
         try:
             resp_event_id = await self._client.send_message_event(RoomID(room_id), EventType.REACTION, content)
+            self._remember_event(str(resp_event_id))
             logger.debug("Matrix: sent reaction %s to %s", emoji, event_id)
             return str(resp_event_id)
         except Exception as exc:
@@ -2487,7 +2472,18 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _on_reaction(self, event: Any) -> None:
         sender = str(getattr(event, "sender", ""))
         if self._is_self_sender(sender):
-            return
+            if not self._self_chat or not self._is_confirmed_self_sender(sender):
+                return
+            # Self-chat: your own reactions (approvals, picker picks) count; agent-sent reaction
+            # echoes carry either a hermes_* txn (other processes) or are dropped by the
+            # _is_duplicate_event check below (this adapter's own sends).
+            unsigned = getattr(event, "unsigned", None)
+            if isinstance(unsigned, dict):
+                txn_id = str(unsigned.get("transaction_id") or "")
+            else:
+                txn_id = str(getattr(unsigned, "transaction_id", "") or "")
+            if txn_id.startswith("hermes_"):
+                return
         event_id = str(getattr(event, "event_id", ""))
         if self._is_duplicate_event(event_id):
             return

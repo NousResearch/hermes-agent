@@ -27,6 +27,13 @@
 
 ---
 
+## Browser client
+
+Run `hermes serve --ui desktop` to serve this same UI from an existing Hermes
+backend process. Browser login uses the backend's normal password/OAuth session;
+no Electron installation is required on the client device. See
+[browser setup and validation](browser/README.md).
+
 ## Install
 
 ### Install with Hermes (recommended)

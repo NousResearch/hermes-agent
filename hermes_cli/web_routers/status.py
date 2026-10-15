@@ -127,6 +127,17 @@ async def get_health():
             "auth_required": bool(getattr(app.state, "auth_required", False))}
 
 
+def _frontend_identity() -> str | None:
+    if not getattr(app.state, "serves_spa", False):
+        return None
+    from hermes_cli.web_server import WEB_DIST
+    marker = WEB_DIST / "hermes-frontend.json"
+    try:
+        return "desktop" if marker.read_text(encoding="utf-8-sig").strip() == '{"frontend":"desktop"}' else "dashboard"
+    except OSError:
+        return "dashboard"
+
+
 @router.get("/api/host/identity")
 async def get_host_identity(request: Request):
     """Prove to an attaching `hermes serve`/`dashboard` WHO owns this port.
@@ -143,7 +154,8 @@ async def get_host_identity(request: Request):
     # `hermes dashboard` are one host role that differ in SPA.
     return {"ok": True, "protocolVersion": 1, "pid": os.getpid(),
             "role": getattr(app.state, "host_role", None) or "serve",
-            "servesSpa": bool(getattr(app.state, "serves_spa", False))}
+            "servesSpa": bool(getattr(app.state, "serves_spa", False)),
+            "frontend": _frontend_identity()}
 
 
 @router.get("/api/health/idle")

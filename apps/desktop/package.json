@@ -71,11 +71,16 @@
     "check:test:desktop:platforms": "npm run test:desktop:platforms",
     "check:test:desktop:all": "npm run test:desktop:all",
     "check:lint": "npm run typecheck && npm run lint",
-    "check": "npm run check:lint && npm run test:ui && npm run test:desktop:platforms && npm run test:desktop:all",
+    "check": "npm run check:lint && npm run test:ui && npm run test:desktop:platforms && npm run test:desktop:all && npm run check:browser",
     "test:e2e": "npm run build && playwright test e2e/",
     "test:e2e:visual": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list",
     "test:e2e:update-snapshots": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list --update-snapshots",
-    "repro:short-session-hang": "node scripts/run-short-session-hang-repro.mjs"
+    "repro:short-session-hang": "node scripts/run-short-session-hang-repro.mjs",
+    "build:browser": "vite build --config vite.browser.config.ts",
+    "typecheck:browser": "tsc -p tsconfig.browser.json --noEmit",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "test:browser:e2e": "node browser/e2e.mjs",
+    "check:browser": "npm run typecheck:browser && eslint browser/ vite.browser.config.ts vitest.browser.config.ts && npm run test:browser && npm run build:browser"
   },
   "dependencies": {
     "@assistant-ui/core": "0.2.23",

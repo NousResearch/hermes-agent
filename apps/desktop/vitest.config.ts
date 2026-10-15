@@ -46,6 +46,6 @@ const electronNative: TestProjectConfiguration = {
 export default defineConfig({
   test: {
     globalSetup: ['./vitest.run-tmp.ts'],
-    projects: [reactUi, electronNative]
+    projects: [reactUi, electronNative, { extends: './vitest.browser.config.ts', test: { name: 'browser' } }]
   }
 })

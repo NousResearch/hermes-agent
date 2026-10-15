@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["browser", "src", "../shared/src", "vite.browser.config.ts", "vitest.browser.config.ts"],
+  "exclude": ["e2e", "electron", "web", "playwright.config.ts"]
+}

@@ -554,6 +554,14 @@ export interface SessionCreateResponse {
   stored_session_id?: string
 }
 
+/** A cron run at its live tip (see {@link SessionInfo.cron_run_tip}). */
+export interface CronRunTip {
+  end_reason: null | string
+  ended_at: null | number
+  id: string
+  scheduler_owned: boolean | null
+}
+
 export interface SessionInfo {
   archived?: boolean
   cwd?: null | string
@@ -598,6 +606,16 @@ export interface SessionInfo {
    *  long tool call and is false for a zombie whose process died (#88443).
    *  Undefined against older backends and for non-cron rows. */
   scheduler_owned?: boolean
+  /** Why the session ended (`end_session`'s reason); null while open.
+   *  `'compression'` ends a segment whose conversation goes on in a
+   *  continuation, so it is not a close. */
+  end_reason?: null | string
+  /** Session detail of a cron run segment that compression ended: the run it
+   *  belongs to at its live tip, as the runs list serves it. A tab can hold
+   *  such a segment (it was the tip when opened), so the cron write gate
+   *  judges this instead of the segment's own `ended_at`. Undefined for any
+   *  other row and against older backends. */
+  cron_run_tip?: CronRunTip
   last_active: number
   message_count: number
   model: null | string

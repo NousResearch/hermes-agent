@@ -258,3 +258,36 @@ async def test_a_compressed_run_is_served_at_its_tip_whether_live_closed_or_lost
     assert (finished['id'], finished['end_reason'], finished['scheduler_owned']) == (tip, 'cron_complete', False)
     assert finished['title'] and finished['title'] == owner.db.get_session(tip)['title']
     assert (await _detail(tip))['scheduler_owned'] is False
+
+
+@pytest.mark.asyncio
+async def test_detail_of_an_older_segment_reports_its_run_at_the_tip(owner, clock):
+    """A Desktop tab can hold a segment that compression ended after the tab opened it as the tip.
+    That segment's own ``ended_at`` is the compression's, not the run closing, so its detail reports
+    the run at its live tip, as the runs list serves it: the send gate reads that to keep a lost
+    run view-only and a live or finalized one writable."""
+    job = jobs.create_job(prompt='report', schedule='every 1h', deliver='local')['id']
+    lost_job = jobs.create_job(prompt='lost report', schedule='every 1h', deliver='local')['id']
+    session_id, execution_id, claim = await _start_fire(owner, job)
+    lost_id, lost_execution, _ = await _start_fire(owner, lost_job)
+    middle = compress(owner.db, session_id)
+    tip = compress(owner.db, middle)
+    lost_tip = compress(owner.db, compress(owner.db, lost_id))
+
+    for segment in (session_id, middle):
+        assert (await _detail(segment)).get('cron_run_tip') == {
+            'id': tip, 'ended_at': None, 'end_reason': None, 'scheduler_owned': True}
+    assert 'cron_run_tip' not in await _detail(tip)
+
+    executions.finish_execution(lost_execution, success=False, error='watchdog: inactivity timeout')
+    [zombie] = _runs(lost_job)
+    assert (await _detail(lost_id)).get('cron_run_tip') == {
+        'id': lost_tip, 'ended_at': None, 'end_reason': None, 'scheduler_owned': zombie['scheduler_owned']}
+    assert zombie['scheduler_owned'] is False
+
+    _close_run(owner, job, session_id, claim)
+    clock['seconds'] = 5
+    executions.finish_execution(execution_id, success=True)
+    closed = (await _detail(middle))['cron_run_tip']
+    assert (closed['id'], closed['end_reason'], closed['scheduler_owned']) == (tip, 'cron_complete', False)
+    assert closed['ended_at'] == owner.db.get_session(tip)['ended_at'] is not None

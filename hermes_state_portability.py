@@ -305,6 +305,16 @@ class SessionPortabilityMixin:
                 run = cron_run_from_request(rows[0]["request_id"], rows[0]["policy_job"])
         return {"cron_job_id": run[0], "cron_execution_id": run[1]} if run else None
 
+    def cron_run_tip(self, session_id: str) -> Optional[dict[str, Any]]:
+        """The run *session_id* is a segment of, as ``list_cron_job_runs`` serves it: its first
+        segment projected onto its live tip. None when that tip is *session_id* itself. Compression
+        ending a segment is not its run closing, so a reader still holding an older segment (a
+        client opened it when it was the tip) judges the run by this row instead."""
+        root = self._read_rows("SELECT id, source, started_at, ended_at, end_reason, title FROM sessions"
+                               f" WHERE id = ({_COMPRESSION_ROOT_SQL})", (session_id,))
+        [run] = self._project_compression_tips([dict(row) for row in root], compact_rows=True)
+        return run if run["id"] != session_id else None
+
     def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[dict[str, Any]]:
         """One session with the ``list_sessions_rich`` enriched columns, or None.
         ``compact_rows=True`` omits the ``system_prompt`` blob. Public alias:

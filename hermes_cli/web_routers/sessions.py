@@ -573,11 +573,18 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
         # unified-runtime run's local id names no job, so stamp its identity first.
         from hermes_cli.web_routers.cron import cron_run_scheduler_owned
 
-        if session.get("source") == "cron":
-            session.update(db.cron_run_identity(sid) or {})
+        identity = (db.cron_run_identity(sid) or {}) if session.get("source") == "cron" else {}
+        session.update(identity)
         owned = cron_run_scheduler_owned(session, profile)
         if owned is not None:
             session["scheduler_owned"] = owned
+            # Compression ending this segment did not end its run. A client still holding the
+            # segment (it was the tip when opened) gates writes on the run at its live tip.
+            run = db.cron_run_tip(sid) if session.get("end_reason") == "compression" else None
+            if run:
+                session["cron_run_tip"] = {
+                    "id": run["id"], "ended_at": run["ended_at"], "end_reason": run["end_reason"],
+                    "scheduler_owned": cron_run_scheduler_owned({**run, **identity}, profile)}
         return session
 
     return await asyncio.to_thread(_with_db, profile, _detail, read_only=True)

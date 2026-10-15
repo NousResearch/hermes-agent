@@ -68,6 +68,15 @@ def native_callback(runner, event, transport_home, profile=None):
         _callback.reset(token)
 
 
+def carry_callback(event, rewritten):
+    """A gateway-side rewrite of a callback's event (``pre_gateway_dispatch``) keeps the callback's
+    provenance: it changes the text only, never the source the callback authenticated (#139045)."""
+    for bound_var in (_callback, _relay_callback):
+        bound = bound_var.get()
+        if bound is not None and bound[1] is event and rewritten.source is event.source:
+            bound_var.set((bound[0], rewritten, *bound[2:]))
+
+
 def _binding(runner, source, profile):
     registries = [(None, runner.adapters), *getattr(runner, '_profile_adapters', {}).items()]
     from gateway.config import Platform

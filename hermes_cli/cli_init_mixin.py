@@ -32,7 +32,7 @@ def _gateway_launch(cli):
             "provider": provider if explicit_model and provider not in {None, "", "auto"} else None,
             "api_key": getattr(cli, "_explicit_api_key", None),
             "base_url": getattr(cli, "_explicit_base_url", None),
-            # Only a picked list (-t or the coding posture); the gateway resolves the profile default (#138670).
+            # Only a typed -t; the gateway resolves the profile default and the coding posture (#138670).
             "toolsets": getattr(cli, "enabled_toolsets", None) if getattr(cli, "_explicit_toolsets", False) else None,
             "reasoning": getattr(cli, "_explicit_reasoning", None),
             "max_turns": getattr(cli, "_explicit_max_turns", None),
@@ -253,8 +253,8 @@ class CLIInitMixin:
     def _init_toolsets(self, toolsets):
         from cli import CLI_CONFIG, validate_toolset
         self.enabled_toolsets = toolsets
-        # Only a picked list rides session.create; _build_cli_from_args clears this for the profile default,
-        # which the gateway resolves itself (an explicit list with a stale name is refused, #138670).
+        # Only a picked list rides session.create; _build_cli_from_args clears this unless -t was typed (the
+        # gateway resolves the profile default and coding posture itself; a stale explicit name is refused, #138670).
         self._explicit_toolsets = toolsets is not None
         from agent.skill_utils import parse_config_string_list
 

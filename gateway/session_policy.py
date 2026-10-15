@@ -137,9 +137,7 @@ class LocalSessionPolicy:
             return self.toolsets
         # The workspace decision is the creation-time one: a project file the agent writes mid-session must
         # not switch this conversation's toolsets (prompt cache). Only a profile change (``focus`` off) does.
-        from agent.coding_context import focus_toolsets
-        posture = focus_toolsets(config) if self.coding_posture else None
-        return tuple(sorted(_resolve_toolsets({}, config, self.source, self.safe_mode, posture)))
+        return tuple(sorted(_resolve_toolsets({}, config, self.source, self.safe_mode, self.coding_posture)))
 
     def current_reasoning_config(self, runner, session_key=None):
         """The next turn's reasoning: a typed session /reasoning (the messaging handler's override), else
@@ -255,7 +253,7 @@ def present_sections(config):
     return config
 
 
-def build_policy(params, config, *, private_secrets=None, profile_terminal=True, workspace_posture=True):
+def build_policy(params, config, *, private_secrets=None, profile_terminal=True, workspace_posture=False):
     from agent.runtime_cwd import resolve_agent_cwd
     from tools.terminal_scope import build_profile_terminal_scope, default_terminal_scope
     from hermes_constants import get_hermes_home
@@ -292,13 +290,12 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
         # still targets this, and a later profile edit supersedes it.
         config.setdefault('model', {})['selection_profile'] = list(profile_target(config))
     _apply_launch_overrides(params, config)
-    # Only a folder the client named is a workspace: the daemon's own directory (the fallback above, used by
-    # hosted rooms) must not switch a session into the coding posture, nor may a caller that opts out
-    # (Kanban workers, legacy-row adoption).
-    # ``tool`` is a third-party integration, not a person's workspace.
+    # The posture is opt-in (``session.create`` only) and needs a folder the client named: the daemon's own
+    # directory (the fallback above) is no workspace, and ``tool`` is a third-party integration. An explicit
+    # pick wins anyway; skipping it here also spares the probe.
     named = workspace_posture and source != 'tool' and 'cwd' in params and 'toolsets' not in params
-    posture = _coding_posture(config, source, cwd) if named else None
-    enabled = _resolve_toolsets(params, config, source, safe_mode, posture)
+    coding_posture = named and _in_coding_workspace(config, source, cwd)
+    enabled = _resolve_toolsets(params, config, source, safe_mode, coding_posture)
     terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
     # The client's launch folder is a path on THIS host: a remote or container backend keeps its own
     # configured cwd unless the user picked this folder for the session.
@@ -313,7 +310,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     return LocalSessionPolicy(source, SURFACES[source], cwd, model, tuple(sorted(enabled)),
                               json.dumps(config), json.dumps(request, sort_keys=True), json.dumps(terminal),
                               safe_mode=safe_mode, ignore_user_config=ignore_user_config,
-                              coding_posture=posture is not None)
+                              coding_posture=coding_posture)
 
 
 def terminal_uses_host_cwd(terminal):
@@ -396,10 +393,11 @@ def _apply_launch_overrides(params, config):
         config['agent'].pop('reasoning_overrides', None)
 
 
-def _resolve_toolsets(params, config, source, safe_mode, posture=None):
-    """Validate explicit toolsets and return the session's enabled toolset set. Without a pick, the
-    coding *posture* (``_coding_posture``) replaces the profile default; the gateway decides it, never
-    the client."""
+def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False):
+    """Validate explicit toolsets and return the session's enabled toolset set. Without a pick, a
+    *coding_posture* session runs ``focus_toolsets`` instead of the profile default while the profile
+    stays on ``focus``; the gateway decides it, never the client."""
+    from agent.coding_context import focus_toolsets
     from hermes_cli.tools_config import _get_platform_tools
     from toolsets import validate_toolset
     explicit = params.get('toolsets')
@@ -408,15 +406,14 @@ def _resolve_toolsets(params, config, source, safe_mode, posture=None):
                 or ('desktop_ui' in explicit and source != 'gui')):
             raise RuntimeStoreError('invalid_params')
         config.setdefault('platform_toolsets', {})['acp' if source == 'acp' else 'cli'] = explicit
-    enabled = _get_platform_tools(config, 'acp' if source == 'acp' else 'cli')
+    posture = focus_toolsets(config) if explicit is None and coding_posture else None
+    enabled = set(posture) if posture is not None else _get_platform_tools(config, 'acp' if source == 'acp' else 'cli')
     if explicit is not None:
         from toolsets import resolve_toolset
         requested = {t for name in explicit for t in resolve_toolset(name)}
         effective = {t for name in enabled for t in resolve_toolset(name)}
         if not requested <= effective:
             raise RuntimeStoreError('invalid_params')
-    elif posture is not None:
-        enabled = set(posture)
     if explicit is None and source in {'tui', 'gui'}:
         # Same surface toolsets as the native TUI factory, without its env inference.
         # The fold-in lands after _get_platform_tools subtracted agent.disabled_toolsets, so
@@ -434,16 +431,15 @@ def _resolve_toolsets(params, config, source, safe_mode, posture=None):
     return enabled
 
 
-def _coding_posture(config, source, cwd):
-    """The coding posture's toolsets for *cwd* (``agent.coding_context: focus`` in a code workspace),
-    else None. A detection failure keeps the profile default rather than refusing the session."""
+def _in_coding_workspace(config, source, cwd):
+    """Whether *cwd* selects the coding posture (``agent.coding_context: focus`` in a code workspace).
+    A detection failure keeps the profile default rather than refusing the session."""
     from agent.coding_context import coding_selection
     try:
-        selection = coding_selection(platform=SURFACES[source], cwd=cwd, config=config)
+        return coding_selection(platform=SURFACES[source], cwd=cwd, config=config) is not None
     except Exception:
         logger.debug('coding posture detection failed for %s; keeping the profile default', cwd, exc_info=True)
-        return None
-    return selection
+        return False
 
 
 def _extract_config_secrets(value, private, path=()):

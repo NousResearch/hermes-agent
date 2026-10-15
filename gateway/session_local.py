@@ -176,7 +176,8 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         config = _load_gateway_config()
         raw_model = params.get('model')
         params = resolve_launch_route(params, config)
-        policy = build_policy(params, config, private_secrets=private_secrets)
+        # A client's session.create is the one caller whose named folder may select the coding posture.
+        policy = build_policy(params, config, private_secrets=private_secrets, workspace_posture=True)
         if isinstance(raw_model, str) and params.get('model') != raw_model:
             # Owner-stamped provenance (not a create field): a remote client cannot re-resolve the
             # typed `-m` alias against its own home, so resume compares a repeat against this.

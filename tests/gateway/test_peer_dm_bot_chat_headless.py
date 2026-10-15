@@ -111,6 +111,20 @@ async def test_bot_chat_create_refuses_parameters_its_owner_cannot_honour(headle
 
 
 @pytest.mark.asyncio
+async def test_concurrent_peer_creates_mint_one_local_bot_chat(headless):
+    import asyncio
+    body = {"title": "Bot Chat", "source": "bot_peer_dm"}
+    first, second = await asyncio.gather(*(headless.cli.post("/api/sessions", json=body) for _ in range(2)))
+    statuses = sorted([first.status, second.status])
+    assert statuses == [201, 400], statuses
+    loser = second if second.status == 400 else first
+    assert (await loser.json())['error']['code'] == 'invalid_title'
+    rows = headless.authority.db._read_all("SELECT id, chat_id FROM sessions")
+    assert len(rows) == 1 and str(rows[0][1]).startswith('local-'), rows
+    assert headless.authority.db.get_session_by_title('Bot Chat')['id'] == rows[0][0]
+
+
+@pytest.mark.asyncio
 async def test_peer_created_api_bot_chat_is_refused_by_name(headless):
     # A row an older gateway minted through the plain API create: no FIFO can own it.
     db = headless.authority.db

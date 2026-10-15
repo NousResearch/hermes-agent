@@ -45,7 +45,7 @@ def _tuple_agent(entry: Any) -> Any:
 
 def _resolve_session_override_credentials(model: str, runtime: dict) -> dict:
     """Re-resolve a known pooled Codex route without promoting its saved key to an explicit key."""
-    from gateway.run import _credential_pool_for_provider, _resolve_runtime_agent_kwargs_for_provider
+    from gateway.run import _credential_pool_for_provider
     provider = str(runtime.get("provider") or "").strip().lower()
     token = runtime.get("api_key")
     if not token or not provider:
@@ -57,10 +57,11 @@ def _resolve_session_override_credentials(model: str, runtime: dict) -> dict:
 
     from hermes_cli.auth import read_credential_pool
     from hermes_cli.auth_codex import _codex_pool_route_base_url
-    base_url = str(runtime.get("base_url") or "").strip().rstrip("/")
+    from hermes_cli.route_identity import normalize_route_base_url
+    base_url = normalize_route_base_url(runtime.get("base_url"))
     known_route = any(
         isinstance(row, dict) and row.get("access_token") == token
-        and _codex_pool_route_base_url(row.get("base_url")) == base_url
+        and normalize_route_base_url(_codex_pool_route_base_url(row.get("base_url"))) == base_url
         for row in read_credential_pool(provider)
     )
     if not known_route:
@@ -68,14 +69,14 @@ def _resolve_session_override_credentials(model: str, runtime: dict) -> dict:
         runtime["credential_pool"] = None
         return runtime
 
-    # The pool and first wire credential must come from the SAME model-aware resolution, including
-    # when an in-memory pool was attached before the account was benched. Propagate refusal instead
-    # of silently converting a rejected pool token into a standalone credential.
-    resolved = _resolve_runtime_agent_kwargs_for_provider(provider, target_model=model)
-    if (resolved.get("provider") != provider
-            or str(resolved.get("base_url") or "").rstrip("/") != base_url):
+    # Pin the pool before selection: a foreign account must neither hide a healthy local sibling
+    # nor become a later rotation target. Keep the first wire key and its pool on the same route.
+    from agent.credential_pool import load_pool
+    pool = load_pool(provider, base_url=base_url)
+    entry = pool.select(model=model)
+    if entry is None or not entry.runtime_api_key:
         raise RuntimeError("No eligible Codex credential for the session endpoint; select a new /model route.")
-    return {**runtime, **resolved}
+    return {**runtime, "api_key": entry.runtime_api_key, "credential_pool": pool}
 
 
 class GatewayAgentCacheMixin:

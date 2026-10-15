@@ -1,11 +1,13 @@
-import base64
 import json
-import time
 from types import SimpleNamespace
 
 import pytest
 
 from hermes_cli import runtime_provider as rp
+from tests.hermes_cli import runtime_provider_fixtures as fixtures
+from tests.hermes_cli.runtime_provider_fixtures import _fake_invoke_jwt
+
+offline_provider_catalog = fixtures.offline_provider_catalog
 
 
 def test_configured_api_key_provider_without_key_fails_closed(monkeypatch):
@@ -47,19 +49,6 @@ def test_noauth_lmstudio_still_resolves(monkeypatch):
 
     assert resolved["provider"] == "lmstudio"
     assert resolved["api_key"]
-
-
-def _fake_invoke_jwt(ttl_seconds=3600):
-    header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip("=")
-    payload = base64.urlsafe_b64encode(
-        json.dumps(
-            {
-                "scope": "inference:invoke",
-                "exp": int(time.time() + ttl_seconds),
-            }
-        ).encode()
-    ).decode().rstrip("=")
-    return f"{header}.{payload}.sig"
 
 
 def test_runtime_selected_copilot_exchanges_ambient_pool_token(tmp_path, monkeypatch):

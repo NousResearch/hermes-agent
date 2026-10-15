@@ -8,6 +8,7 @@ only on ``select()``; the fallback restore gates on the two cooldowns and never 
 import json
 import time
 from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
 
 from run_agent import AIAgent
 
@@ -58,7 +59,11 @@ def _fallback_agent():
 def _pin_to_fallback(agent):
     agent._fallback_index = 0
     client = MagicMock(api_key="fallback-key-1234", base_url="https://openrouter.ai/api/v1")
-    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(client, None)):
+    with (
+        patch("agent.auxiliary_client.resolve_provider_client", return_value=(client, None)),
+        patch("agent.model_metadata.model_metadata_http.get",
+              return_value=SimpleNamespace(status_code=200, json=lambda: {"data": []})),
+    ):
         assert agent._try_activate_fallback() is True
     # The weekly reset the provider declared, armed by _arm_rate_limit_cooldown.
     agent._rate_limited_until = time.monotonic() + 3 * 86400

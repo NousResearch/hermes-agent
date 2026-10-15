@@ -62,6 +62,8 @@ def _persisted_pool(home) -> list:
 
 
 def test_status_snapshot_does_not_refresh_or_bench_an_expiring_pool_entry(tmp_path, monkeypatch):
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda **kw: {})
+    monkeypatch.setattr("hermes_cli.model_catalog._fetch_manifest", lambda *a: None)
     home, refresh_calls = _pool_only_codex_home(tmp_path, monkeypatch, access_tokens=[_jwt_with_exp(-3600)])
 
     status = get_codex_auth_status()

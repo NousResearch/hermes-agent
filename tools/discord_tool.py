@@ -391,9 +391,19 @@ _remove_role = _mutation(
 # ── channel/role/server management actions ──────────────────────────────────
 # _CHANNEL_TYPES maps human-readable channel type names (used in action parameters)
 # to their integer IDs in the Discord API (channel object channel-types field).
+# Derived from _CHANNEL_TYPE_NAMES so the two tables cannot drift; only the
+# channel types create_channel accepts are listed.
+_CREATABLE_CHANNEL_TYPES = ("text", "voice", "category", "announcement", "forum")
 _CHANNEL_TYPES = {
-    "text": 0, "voice": 2, "category": 4, "announcement": 5, "forum": 15,
+    name: type_id
+    for type_id, name in _CHANNEL_TYPE_NAMES.items()
+    if name in _CREATABLE_CHANNEL_TYPES
 }
+# Discord only accepts a `topic` on these channel types; any other type answers
+# 400 Invalid Form Body when the field is present.
+_TOPIC_CHANNEL_TYPES = frozenset(
+    type_id for type_id, name in _CHANNEL_TYPE_NAMES.items()
+    if name in ("text", "announcement", "forum"))
 
 # _PERMISSION_FLAGS maps Discord permission name strings (uppercase, e.g. "SEND_MESSAGES")
 # to their bitfield integer values. Used by _parse_permission_flags to convert
@@ -420,17 +430,34 @@ _PERMISSION_FLAGS = {
 
 
 def _parse_permission_flags(raw: str) -> int:
-    """Parse comma-separated permission names into a bitfield integer."""
+    """Parse comma-separated permission names into a bitfield integer.
+
+    Raises:
+        ValueError: an unknown name must fail loudly — a typo silently dropping
+            the bit would answer ``success: true`` while revoking nothing.
+    """
     if raw == "0":
         return 0
     value = 0
     for name in raw.split(","):
         name = name.strip().upper()
-        if name in _PERMISSION_FLAGS:
-            value |= _PERMISSION_FLAGS[name]
-        else:
-            logger.warning("Unknown permission name: %s", name)
+        if not name:
+            continue
+        if name not in _PERMISSION_FLAGS:
+            raise ValueError(
+                f"Unknown permission name: {name}. Valid names: "
+                f"{', '.join(sorted(_PERMISSION_FLAGS))}")
+        value |= _PERMISSION_FLAGS[name]
     return value
+
+
+def _existing_overwrite(token: str, channel_id: str, overwrite_id: str) -> Optional[Dict[str, Any]]:
+    """Current permission overwrite for ``overwrite_id`` on ``channel_id``, or None."""
+    channel = _discord_request("GET", f"/channels/{channel_id}", token)
+    for overwrite in channel.get("permission_overwrites") or []:
+        if str(overwrite.get("id")) == str(overwrite_id):
+            return overwrite
+    return None
 
 
 def _create_channel(
@@ -443,7 +470,17 @@ def _create_channel(
         topic: Channel topic string (optional, shown in channel header for text channels).
         parent_id: Category channel ID to nest this channel under (optional).
     """
-    type_id = _CHANNEL_TYPES.get(channel_type.lower(), 0)
+    type_id = _CHANNEL_TYPES.get((channel_type or "").strip().lower())
+    if type_id is None:
+        return json.dumps({
+            "success": False,
+            "error": f"Unknown channel_type: {channel_type!r}. Valid: {', '.join(_CHANNEL_TYPES)}."})
+    if topic and type_id not in _TOPIC_CHANNEL_TYPES:
+        return json.dumps({
+            "success": False,
+            "error": f"channel_type {channel_type!r} does not support topic "
+                     "(Discord answers 400 Invalid Form Body); topic is only valid on "
+                     "text, announcement, and forum channels."})
     body: Dict[str, Any] = {"name": name, "type": type_id}
     if topic:
         body["topic"] = topic
@@ -460,15 +497,22 @@ def _edit_channel(
 
     Only fields with non-empty values are included in the API request, so existing
     fields that are not provided remain unchanged. Passing all empty values returns
-    an error with no fields to update.
+    an error with no fields to update. ``topic`` is refused for channel types Discord
+    rejects it on (voice, category, ...) instead of forwarding a guaranteed 400.
     """
     body: Dict[str, Any] = {}
     if name:
         body["name"] = name
-    if topic:
-        body["topic"] = topic
     if parent_id:
         body["parent_id"] = parent_id
+    if topic:
+        channel_type = _discord_request("GET", f"/channels/{channel_id}", token).get("type")
+        if channel_type not in _TOPIC_CHANNEL_TYPES:
+            return json.dumps({
+                "success": False,
+                "error": f"Channel {channel_id} is a {_channel_type_name(channel_type)} channel "
+                         "and does not support topic (Discord answers 400 Invalid Form Body)."})
+        body["topic"] = topic
     if not body:
         return json.dumps({"success": False, "error": "No fields to update."})
     ch = _discord_request("PATCH", f"/channels/{channel_id}", token, body=body)
@@ -484,15 +528,22 @@ def _delete_channel(token: str, channel_id: str, **_kw: Any) -> str:
 
 def _create_role(
     token: str, guild_id: str, name: str, color: str = "",
-    hoist: bool = False, mentionable: bool = False, **_kw: Any) -> str:
+    hoist: Optional[bool] = None, mentionable: Optional[bool] = None, **_kw: Any) -> str:
     """Create a role in a guild.
 
     Parameters:
         color: Role color as a hex string, e.g. "#FF5733" or "FF5733" (optional).
         hoist: If True, the role is displayed separately in the member list.
         mentionable: If True, the role can be @mentioned by anyone.
+
+    ``hoist``/``mentionable`` are sent only when explicitly provided: Discord expects
+    booleans there, and the dispatcher's untyped defaults are None.
     """
-    body: Dict[str, Any] = {"name": name, "hoist": hoist, "mentionable": mentionable}
+    body: Dict[str, Any] = {"name": name}
+    if hoist is not None:
+        body["hoist"] = bool(hoist)
+    if mentionable is not None:
+        body["mentionable"] = bool(mentionable)
     if color:
         body["color"] = int(color.lstrip("#"), 16)
     role = _discord_request("POST", f"/guilds/{guild_id}/roles", token, body=body)
@@ -545,19 +596,43 @@ def _edit_server(
 
 def _edit_channel_permissions(
     token: str, channel_id: str, overwrite_id: str,
-    overwrite_type: str = "role", allow: str = "0", deny: str = "0",
+    overwrite_type: str = "role", allow: str = "", deny: str = "",
     **_kw: Any) -> str:
-    """Edit permission overwrites for a channel.
+    """Edit permission overwrites for a channel (PUT replaces the whole overwrite).
 
     Parameters:
         allow: Comma-separated permission names to allow (e.g. "VIEW_CHANNEL,SEND_MESSAGES").
         deny: Comma-separated permission names to deny.
-        Use "0" for no permissions in a category (allow/deny).
+        overwrite_type: "role" (default) or "member".
+        At least one of allow/deny is required. The side you omit is copied from the
+        overwrite currently on the channel, so permissions you never mentioned keep
+        their existing value; pass "0" explicitly for a side you want empty.
     """
-    type_int = 0 if overwrite_type.lower() == "role" else 1
-    body = {"allow": str(_parse_permission_flags(allow)), "deny": str(_parse_permission_flags(deny)), "type": type_int}
+    if not allow and not deny:
+        return json.dumps({
+            "success": False,
+            "error": "edit_channel_permissions needs 'allow' and/or 'deny': sending neither "
+                     "resets the overwrite to no permissions and revokes permissions the "
+                     "caller never mentioned."})
+    type_int = 0 if (overwrite_type or "").strip().lower() == "role" else 1
+    try:
+        parsed_allow = _parse_permission_flags(allow) if allow else None
+        parsed_deny = _parse_permission_flags(deny) if deny else None
+    except ValueError as exc:
+        return json.dumps({"success": False, "error": str(exc)})
+    if parsed_allow is not None and parsed_deny is not None:
+        allow_bits, deny_bits = parsed_allow, parsed_deny
+    else:
+        existing = _existing_overwrite(token, channel_id, overwrite_id)
+        existing_allow = int(existing.get("allow", "0") or 0) if existing else 0
+        existing_deny = int(existing.get("deny", "0") or 0) if existing else 0
+        allow_bits = parsed_allow if parsed_allow is not None else existing_allow
+        deny_bits = parsed_deny if parsed_deny is not None else existing_deny
+    body = {"allow": str(allow_bits), "deny": str(deny_bits), "type": type_int}
     _discord_request("PUT", f"/channels/{channel_id}/permissions/{overwrite_id}", token, body=body)
-    return json.dumps({"success": True, "message": f"Permissions updated for {overwrite_id}."})
+    return json.dumps({
+        "success": True,
+        "message": f"Permissions updated for {overwrite_id} (allow={allow_bits}, deny={deny_bits})."})
 
 
 # ── action dispatch + metadata ───────────────────────────────────────────────
@@ -585,7 +660,7 @@ _ACTION_MANIFEST = [
     ("create_role", _create_role, "(guild_id, name)", "create a role; optional color, hoist, mentionable"),
     ("edit_role", _edit_role, "(guild_id, role_id)", "edit a role; optional name, color, hoist, mentionable"),
     ("edit_server", _edit_server, "(guild_id)", "edit server; optional name, verification_level"),
-    ("edit_channel_permissions", _edit_channel_permissions, "(channel_id, overwrite_id)", "edit permission overwrites; optional overwrite_type, allow, deny"),
+    ("edit_channel_permissions", _edit_channel_permissions, "(channel_id, overwrite_id)", "edit permission overwrites; needs allow and/or deny (never both omitted)"),
 ]
 _ACTIONS = {name: fn for name, fn, _sig, _desc in _ACTION_MANIFEST}
 _REQUIRED_PARAMS: Dict[str, List[str]] = {
@@ -693,8 +768,18 @@ _SCHEMA_PROPERTIES: Dict[str, Any] = {
         "enum": ["role", "member"],
         "description": "Permission overwrite target type (edit_channel_permissions, default: role).",
     },
-    "allow": {"type": "string", "description": "Comma-separated allowed permissions (edit_channel_permissions)."},
-    "deny": {"type": "string", "description": "Comma-separated denied permissions (edit_channel_permissions)."},
+    "allow": {
+        "type": "string",
+        "description": "Comma-separated allowed permissions (edit_channel_permissions); "
+                       "provide allow and/or deny — omitting a side keeps that side's "
+                       "existing value, omitting both is an error.",
+    },
+    "deny": {
+        "type": "string",
+        "description": "Comma-separated denied permissions (edit_channel_permissions); "
+                       "provide allow and/or deny — omitting a side keeps that side's "
+                       "existing value, omitting both is an error.",
+    },
 }
 
 _CONTENT_NOTE = (
@@ -770,7 +855,7 @@ _ACTION_403_HINT = {
     "edit_channel": "Bot lacks MANAGE_CHANNELS permission in this channel.",
     "delete_channel": "Bot lacks MANAGE_CHANNELS permission in this channel.",
     "create_role": "Bot lacks MANAGE_ROLES permission in this guild.",
-    "edit_role": f"({_ROLE_HIERARCHY}) Bot must have MANAGE_ROLES and the target role must be below the bot's highest role.",
+    "edit_role": "Bot must have MANAGE_ROLES, and the target role must sit below the bot's highest role.",
     "edit_server": "Bot lacks MANAGE_GUILD permission in this guild.",
     "edit_channel_permissions": "Bot lacks MANAGE_CHANNELS permission in this channel."}
 
@@ -793,7 +878,7 @@ _HANDLER_DEFAULTS = {
     "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
     "topic": "", "channel_type": "text", "parent_id": "", "color": "", "hoist": None,
     "mentionable": None, "verification_level": None, "overwrite_id": "", "overwrite_type": "role",
-    "allow": "0", "deny": "0"}
+    "allow": "", "deny": ""}
 
 
 def _run_discord_action(action: str, valid_actions: Dict[str, Any], tool_label: str, **params: Any) -> str:

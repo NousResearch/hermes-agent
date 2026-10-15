@@ -3000,6 +3000,8 @@ class _RunDelivery:
     # error string, so composition must not run it through the provider-error heuristics.
     agent_declared: bool = False
     incident_acked: bool = False
+    failure_incident_id: Optional[str] = None
+    side_effect_ownership_lost: bool = False
     # Cron agent session that produced this run (best-effort; None when unknown). Threaded to the
     # pre_result_delivery hook so a plugin can attribute an externally posted card.
     session_id: Optional[str] = None

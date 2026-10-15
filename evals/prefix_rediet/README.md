@@ -30,7 +30,7 @@ discovery, not browser plumbing. Terminal, files, cron and the session DB are re
 ```bash
 git worktree add .worktrees/main-snap origin/main
 export PRD_BASE_TREE=$PWD/.worktrees/main-snap PRD_PR_TREE=$PWD
-export PRD_PYTHON=<the install's committed env python>   # see hermes-agent-dev: worktree probes
+export PRD_PYTHON=<the install's committed env python>   # use the committed interpreter for both worktrees
 export PRD_RESULTS=$HERMES_HOME/cache/scratch/prefix_rediet
 python3 evals/prefix_rediet/run.py qwen/qwen3.8-27b 3 --parallel=7
 python3 evals/prefix_rediet/run.py --report

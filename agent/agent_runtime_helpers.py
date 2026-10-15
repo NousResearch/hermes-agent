@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- Three restore/switch lines keep fallback service-tier state atomic with the existing runtime snapshot transitions.
 """Assorted AIAgent runtime helpers (message repair/sanitization, credential recovery, primary
 runtime restore, prompt-cache policy, client construction, model switching, tool invocation).
 Each function takes the parent ``AIAgent`` as ``agent`` except the stateless message helpers.
@@ -1476,6 +1477,7 @@ def restore_primary_runtime(agent) -> bool:
         reinstall_primary_runtime(
             agent, rt, primary_provider, primary_model, _matches_primary, _load_primary_pool, prefetched_pool, prefetched,
         )
+        agent._active_fallback_service_tier_override = rt.get("fallback_service_tier_override")
         logger.info("Primary runtime restored for new turn: %s (%s)", agent.model, agent.provider)
         agent._provider_fallback_active = False
         agent._provider_fallback_route = None
@@ -2395,6 +2397,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "client_kwargs": dict(agent._client_kwargs),
+        "fallback_service_tier_override": None,
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
@@ -2424,6 +2427,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
 def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
     """Post-switch bookkeeping: fallback reset/prune, request_overrides, billing route."""
     agent._fallback_activated = False
+    agent._active_fallback_service_tier_override = None
     agent._provider_fallback_active = False
     agent._provider_fallback_route = None
     agent._fallback_index = 0

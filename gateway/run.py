@@ -2349,7 +2349,7 @@ def _runtime_agent_kwargs(runtime: dict) -> dict:
         "base_url": runtime.get("base_url"),
         "provider": runtime.get("provider"),
         "requested_provider": runtime.get("requested_provider"),
-        "api_mode": runtime.get("api_mode"),
+        "api_mode": runtime.get("api_mode"), "extra_headers": runtime.get("extra_headers"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),

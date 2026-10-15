@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- Four constructor/snapshot lines keep service-tier fallback activation beside the existing runtime owner; moving initialization would split ownership.
 """Implementation of :meth:`AIAgent.__init__` as ``init_agent(agent, ...)``.
 
 ``init_agent`` is a thin, ordered orchestrator over ``_init_*`` / ``_build_*`` phase
@@ -25,6 +26,7 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 from agent.context_compressor import ContextCompressor
 from agent.agent_init_fallback import _fallback_entries, _init_fallback_chain, recompute_init_fallback_api_mode
 from agent.agent_init_params import _CALLBACK_PARAMS, _GATEWAY_IDENTITY_PARAMS, _PASSTHROUGH_PARAMS
+from agent.fallback_policy import activate_fallback_service_tier_override
 from agent.agent_runtime_helpers import _ra
 from agent.iteration_budget import IterationBudget, normalize_budget_warning_ratio
 from agent.memory_manager import StreamingContextScrubber
@@ -783,7 +785,10 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     # cause 401/403 on their endpoints. See #1739.
     from agent.anthropic_credentials import anthropic_route_is_oauth
     agent._is_anthropic_oauth = anthropic_route_is_oauth(base_url, effective_key, provider=agent.provider)
-    agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+    _named_headers = ({"extra_headers": agent._resolved_extra_headers}
+                      if agent._resolved_extra_headers is not None else {})
+    agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout,
+                                                       **_named_headers)
     if not agent.quiet_mode:
         print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic native)")
         _print_key_banner(effective_key, "token")
@@ -893,6 +898,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             _refused_entries.append((_fb_provider, "no usable credentials"))
             continue
         agent._fallback_activated = True
+        activate_fallback_service_tier_override(agent, _fb, log=logger)
         if _fb_provider.strip().lower() == "moa":
             # The chokepoint handed back the preset's aggregator client, which only proves the
             # preset resolves and its aggregator has credentials. A MoA entry means the preset
@@ -982,7 +988,12 @@ def _apply_openai_header_policy(agent, client_kwargs: dict[str, Any]) -> None:
         apply_custom_provider_tls_to_client_kwargs(client_kwargs, _cp_base_url, _cp_entries)
         # Per-provider extra_headers applied last so the most specific config level wins.
         # SECURITY: values may carry credentials — never log them.
-        apply_custom_provider_extra_headers_to_client_kwargs(client_kwargs, _cp_base_url, _cp_entries)
+        if agent._resolved_extra_headers is None:
+            apply_custom_provider_extra_headers_to_client_kwargs(client_kwargs, _cp_base_url, _cp_entries)
+        else:
+            client_kwargs["default_headers"] = {
+                **(client_kwargs.get("default_headers") or {}), **agent._resolved_extra_headers,
+            }
     except Exception:
         logger.debug("custom-provider TLS resolution skipped", exc_info=True)
 
@@ -2218,6 +2229,7 @@ def _snapshot_primary_runtime(agent):
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "fallback_service_tier_override": agent._active_fallback_service_tier_override,
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
@@ -2316,6 +2328,8 @@ def init_agent(
     requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
+    fallback_service_tier_override: Optional[str] = None,
+    extra_headers: Optional[dict[str, str]] = None,
 ):
     from agent.safe_worker_policy import safe_worker_enabled
 
@@ -2359,6 +2373,7 @@ def init_agent(
         key: value for key, value in (capabilities or {}).items()
         if isinstance(key, str) and isinstance(value, bool)
     }
+    agent._resolved_extra_headers = dict(extra_headers) if extra_headers is not None else None
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
@@ -2389,7 +2404,9 @@ def init_agent(
     _setup_logging(agent)
     _set_defaults(agent, _STREAM_STATE)
     _build_client(agent, api_key, base_url, fallback_model)
-    _init_fallback_chain(agent, fallback_model)
+    agent._resolved_header_api_key = agent.api_key if agent._resolved_extra_headers is not None else None
+    agent._resolved_header_base_url = agent.base_url if agent._resolved_extra_headers is not None else None
+    _init_fallback_chain(agent, fallback_model, fallback_service_tier_override)
     _load_tools(agent, enabled_toolsets, disabled_toolsets)
     _init_session_state(
         agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,

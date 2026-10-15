@@ -256,6 +256,21 @@ class TestNamedCustomProviders:
         assert agent._try_refresh_env_client_credentials() is True
         assert agent.api_key == "lc-new"
 
+    def test_named_header_binding_follows_env_key_edit_and_rolls_back_on_rebuild_failure(self, env, named_custom_provider):
+        agent = self._make_custom_agent(api_key="lc-old")
+        agent._resolved_extra_headers = {"X-Account": "team-one"}
+        agent._resolved_header_api_key = "lc-old"
+        agent._resolved_header_base_url = CUSTOM_BASE
+        env["LONGCAT_API_KEY"] = "lc-old"
+        assert agent._try_refresh_env_client_credentials() is False
+        env["LONGCAT_API_KEY"] = "lc-new"
+        agent._replace_primary_openai_client.return_value = False
+        assert agent._try_refresh_env_client_credentials() is False
+        assert agent._resolved_header_api_key == "lc-old"
+        agent._replace_primary_openai_client.return_value = True
+        assert agent._try_refresh_env_client_credentials() is True
+        assert agent._resolved_header_api_key == "lc-new"
+
     def test_unchanged_env_is_a_noop(self, env, named_custom_provider):
         agent = self._make_custom_agent(api_key="lc-old")
         env["LONGCAT_API_KEY"] = "lc-old"

@@ -7,6 +7,7 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 from agent.error_classifier import FailoverReason
 from run_agent import AIAgent
@@ -39,6 +40,37 @@ def _mock_client(base_url="https://openrouter.ai/api/v1", api_key="fb-key"):
 
 
 # ── Chain initialisation ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("next_policy", [None, "normal", "unsupported"])
+def test_next_route_replaces_or_clears_tier_policy(next_policy, caplog):
+    from copy import deepcopy
+
+    chain = [
+        {"provider": "openai", "model": "gpt-4o", "service_tier_override": " NORMAL "},
+        {"provider": "custom", "model": "gpt-4.1", "service_tier_override": next_policy,
+         "base_url": "https://next.example.test/v1", "api_mode": "chat_completions"},
+    ]
+    before_chain = deepcopy(chain)
+    agent = _make_agent(fallback_model=chain)
+    agent.request_overrides = {"service_tier": "priority", "speed": "fast", "extra_body": {"store": False}}
+    before = deepcopy(agent.request_overrides)
+    with patch("agent.auxiliary_client.resolve_provider_client", return_value=(_mock_client(), None)):
+        assert agent._try_activate_fallback() is True
+        assert agent._active_fallback_service_tier_override == "normal"
+        wire = agent._build_api_kwargs([{"role": "user", "content": "fixture"}])
+        assert "service_tier" not in wire
+        assert "speed" not in wire
+        assert agent._try_activate_fallback() is True
+    assert agent._active_fallback_service_tier_override == ("normal" if next_policy == "normal" else None)
+    wire = agent._build_api_kwargs([{"role": "user", "content": "fixture"}])
+    assert wire.get("service_tier") == (None if next_policy == "normal" else "priority")
+    assert wire.get("speed") == (None if next_policy == "normal" else "fast")
+    assert wire["extra_body"]["store"] is False
+    if next_policy == "unsupported":
+        assert "Ignoring unsupported fallback service_tier_override" in caplog.text
+    assert agent.request_overrides == before
+    assert chain == before_chain
 
 
 class TestFallbackChainInit:
@@ -280,6 +312,128 @@ class TestFallbackChainAdvancement:
 
         assert agent.api_mode == "chat_completions"
         assert agent.client is not None
+
+    def test_named_custom_anthropic_fallback_preserves_selected_headers(self):
+        endpoint = "https://shared.example/v1"
+        headers = {"X-Account": "second"}
+        entry = {
+            "provider": "custom:second",
+            "model": "claude-custom",
+            "base_url": endpoint,
+            "api_mode": "anthropic_messages",
+        }
+        agent = _make_agent(fallback_model=[entry])
+        resolved = _mock_client(base_url=endpoint, api_key="second-key")
+        resolved._real_client = MagicMock()
+        resolved._real_client._custom_headers = headers
+        rebuilt = {}
+
+        def _fake_build(api_key, base_url, timeout=None, **kwargs):
+            rebuilt.update(api_key=api_key, base_url=base_url, extra_headers=kwargs.get("extra_headers"))
+            return MagicMock(name="anthropic-client")
+
+        with (
+            patch(
+                "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+                return_value=None,
+            ),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(resolved, "claude-custom"),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda model, provider: model,
+            ),
+            patch("agent.anthropic_adapter.build_anthropic_client", side_effect=_fake_build),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "custom:second"
+        assert agent.api_mode == "anthropic_messages"
+        assert rebuilt == {"api_key": "second-key", "base_url": endpoint, "extra_headers": headers}
+
+    @pytest.mark.parametrize("reason", ["anthropic_stream_request", "chat_completion_request"])
+    def test_named_custom_anthropic_fallback_request_client_uses_selected_headers(self, reason):
+        pytest.importorskip("anthropic")
+        from tests.agent.test_anthropic_client_auth import wire_headers
+
+        endpoint = "https://shared.example/v1"
+        config = {"custom_providers": [
+            {"name": "first", "base_url": endpoint, "api_key": "first-key",
+             "api_mode": "anthropic_messages", "extra_headers": {
+                 "CF-Access-Client-Secret": "first-secret", "X-First-Only": "first-only",
+             }},
+            {"name": "second", "base_url": endpoint, "api_key": "second-key",
+             "api_mode": "anthropic_messages", "extra_headers": {
+                 "CF-Access-Client-Secret": "second-secret", "X-Second-Only": "second-only",
+             }},
+        ]}
+        agent = _make_agent(fallback_model=[
+            {"provider": "custom:second", "model": "claude-custom", "base_url": endpoint,
+             "api_mode": "anthropic_messages"},
+        ])
+        with (
+            patch("hermes_cli.runtime_provider.load_config", return_value=config),
+            patch("hermes_cli.config.load_config", return_value=config),
+            patch("hermes_cli.config.load_config_readonly", return_value=config),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.provider == "custom:second"
+            shared_headers = {name.lower(): value for name, value in wire_headers(agent._anthropic_client).items()}
+            assert shared_headers["x-api-key"] == "second-key"
+            assert shared_headers["cf-access-client-secret"] == "second-secret"
+            assert shared_headers["x-second-only"] == "second-only"
+            assert "x-first-only" not in shared_headers
+            assert "first-secret" not in shared_headers.values()
+            request_client = agent._create_request_anthropic_client(reason=reason)
+            headers = {name.lower(): value for name, value in wire_headers(request_client).items()}
+            assert headers["x-api-key"] == "second-key"
+            assert headers["cf-access-client-secret"] == "second-secret"
+            assert headers["x-second-only"] == "second-only"
+            assert "x-first-only" not in headers
+            assert "first-secret" not in headers.values()
+            for api_key, base_url in (("other-key", endpoint), ("second-key", endpoint + "/other")):
+                key = ("direct", api_key, base_url, None, False)
+                unrelated = agent._build_anthropic_client_for_key(key)
+                try:
+                    unrelated_headers = {name.lower(): value for name, value in wire_headers(unrelated).items()}
+                    assert "cf-access-client-secret" not in unrelated_headers
+                finally:
+                    unrelated.close()
+            agent._close_request_anthropic_client(request_client, reason="request_complete")
+            agent._close_cached_request_anthropic_client(reason="agent_close")
+
+    def test_named_custom_anthropic_headerless_fallback_drops_shared_endpoint_headers(self):
+        pytest.importorskip("anthropic")
+        from tests.agent.test_anthropic_client_auth import wire_headers
+
+        endpoint = "https://shared.example/v1"
+        config = {"custom_providers": [
+            {"name": "first", "base_url": endpoint, "api_key": "first-key",
+             "api_mode": "anthropic_messages", "extra_headers": {"X-First-Only": "first-only"}},
+            {"name": "second", "base_url": endpoint, "api_key": "second-key",
+             "api_mode": "anthropic_messages"},
+        ]}
+        agent = _make_agent(fallback_model=[
+            {"provider": "custom:second", "model": "claude-custom", "base_url": endpoint,
+             "api_mode": "anthropic_messages"},
+        ])
+        with (
+            patch("hermes_cli.runtime_provider.load_config", return_value=config),
+            patch("hermes_cli.config.load_config", return_value=config),
+            patch("hermes_cli.config.load_config_readonly", return_value=config),
+        ):
+            assert agent._try_activate_fallback() is True
+            shared_headers = {name.lower(): value for name, value in wire_headers(agent._anthropic_client).items()}
+            assert shared_headers["x-api-key"] == "second-key"
+            assert "x-first-only" not in shared_headers
+            request_client = agent._create_request_anthropic_client(reason="headerless_fallback")
+            request_headers = {name.lower(): value for name, value in wire_headers(request_client).items()}
+            assert request_headers["x-api-key"] == "second-key"
+            assert "x-first-only" not in request_headers
+            agent._close_request_anthropic_client(request_client, reason="request_complete")
+            agent._close_cached_request_anthropic_client(reason="agent_close")
 
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
@@ -545,3 +699,77 @@ class TestMoaPresetFallback:
                             fallback_model={"provider": "moa", "model": "default"})
         _assert_bound_to_moa_preset(agent)
         assert agent._fallback_activated is True
+
+
+def test_manual_entry_alias_is_skipped_before_advancing_to_next_fallback():
+    fbs = [
+        {"provider": "openrouter", "model": "claude-sonnet-4.6"},
+        {"provider": "openai", "model": "gpt-4o"},
+    ]
+    agent = _make_agent(fallback_model=fbs)
+    agent.provider = "openrouter"
+    agent.model = "anthropic/claude-sonnet-4.6"
+    agent.base_url = "https://openrouter.ai/api/v1"
+    resolver = MagicMock(
+        return_value=(_mock_client(base_url="https://api.openai.com/v1"), "gpt-4o")
+    )
+
+    def _normalize(model, provider):
+        if provider == "openrouter" and model == "claude-sonnet-4.6":
+            return "anthropic/claude-sonnet-4.6"
+        return model
+
+    with (
+        patch(
+            "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+            return_value=None,
+        ),
+        patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            resolver,
+        ),
+        patch(
+            "hermes_cli.model_normalize.normalize_model_for_provider",
+            side_effect=_normalize,
+        ),
+    ):
+        assert agent._try_activate_fallback() is True
+
+    resolver.assert_called_once()
+    assert resolver.call_args.args[:2] == ("openai",)
+    assert resolver.call_args.kwargs["model"] == "gpt-4o"
+    assert agent._fallback_index == 2
+    assert agent.provider == "openai"
+    assert agent.model == "gpt-4o"
+
+@pytest.mark.parametrize("setup_policy", [None, "normal"])
+def test_manual_policy_preserves_native_setup_fallback(setup_policy, monkeypatch):
+    from types import SimpleNamespace
+    client = SimpleNamespace(api_key="setup-fixture", base_url="https://openrouter.ai/api/v1",
+                             _custom_headers={}, default_headers={}, _default_headers={})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with patch("model_tools.get_tool_definitions", return_value=[]), patch("model_tools.check_toolset_requirements", return_value={}), patch("agent.process_bootstrap.OpenAI"), patch(
+        "agent.auxiliary_client.resolve_provider_client", side_effect=[(None, None), (client, "gpt-4o")]
+    ):
+        agent = AIAgent(provider="openai", model="gpt-5.5", api_mode="chat_completions",
+                        fallback_model=[dict(provider="openrouter", model="gpt-4o", service_tier_override=setup_policy)],
+                        fallback_service_tier_override="normal", quiet_mode=True,
+                        skip_memory=True, skip_context_files=True,
+                        request_overrides={"service_tier": "priority"})
+    try:
+        assert agent._fallback_activated and agent.provider == "openrouter"
+        assert agent._active_fallback_service_tier_override == setup_policy
+        wire = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert wire.get("service_tier") == (None if setup_policy else "priority")
+    finally:
+        agent.shutdown_memory_provider()
+        agent.close()
+
+
+def test_manual_parameter_appended_without_shifting_positional_callers():
+    import inspect
+    from agent.agent_init import init_agent
+    for fn in (AIAgent.__init__, init_agent):
+        params = list(inspect.signature(fn).parameters)
+        assert params[-3:] == ["tool_result_metadata_callback", "fallback_service_tier_override", "extra_headers"]

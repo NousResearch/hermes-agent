@@ -32,7 +32,7 @@ from gateway.response_filters import (
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
-    build_session_context,
+    build_session_context, COMPRESSION_EXHAUSTED_METADATA_KEY,
 )
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
@@ -169,11 +169,13 @@ def hygiene_no_commit_reason(agent) -> str:
 from gateway.run_turn_prepare import GatewayTurnPrepareMixin
 from gateway.run_turn_hygiene import GatewayTurnHygieneMixin
 from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
+from gateway.run_turn_recovery import GatewayTurnRecoveryMixin
+from gateway.run_turn_notifications import GatewayTurnNotificationsMixin
 
 
-class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
+class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin,
+                       GatewayTurnRecoveryMixin, GatewayTurnNotificationsMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
-
 
     def _event_thread_metadata(self, event, source):
         """Thread metadata for a send that replies to ``event`` on ``source``."""
@@ -199,16 +201,25 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
 
 
-    async def _hmwa_stop_typing_for_turn(self, event, source):
-        """Stop the typing indicator (never raises). Slack AI status is scoped to a thread/
-        workspace, so preserve the routing metadata used by the response delivery path."""
-        with suppress(Exception):
-            _typing_adapter = self._delivery_adapter_for(source)
-            _kind = type(_typing_adapter)
-            if _typing_adapter and callable(getattr(_kind, "_stop_typing_with_metadata", None)):
-                await _typing_adapter._stop_typing_with_metadata(source.chat_id, self._event_thread_metadata(event, source))
-            elif _typing_adapter and callable(getattr(_kind, "stop_typing", None)):
-                await _typing_adapter.stop_typing(source.chat_id)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -228,6 +239,21 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         if resolved is None:
             return
         source, session_entry, session_key = resolved
+        if getattr(session_entry, "compression_paused", False) is True:
+            event._gateway_skip_goal_continuation = True
+            event._gateway_preserve_pending = True
+            event._gateway_compression_session_id = session_entry.session_id
+            action = await self._compression_exhaustion_action(source)
+            if action == "reset" and self._is_session_run_current(_quick_key, run_generation):
+                try:
+                    await self._reset_session_after_compression_exhaustion(
+                        session_key, session_entry, source, event=event,
+                    )
+                except Exception:
+                    logger.warning("Paused session recovery could not be persisted", exc_info=True)
+                    return self._compression_pause_notice(persistence_failed=True)
+                return "Session reset after compression pause. Your next message will start a fresh session."
+            return self._compression_pause_notice()
         prepared, _session_env_tokens = await self._hmwa_prepare_turn(
             event, source, session_entry, session_key, _quick_key, run_generation,
         )
@@ -323,6 +349,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
                 agent_result, response, session_entry, session_key, source,
+                event=event, run_generation=run_generation,
             )
             await self._hmwa_persist_turn_transcript(
                 event=event, source=source, session_entry=session_entry, session_key=session_key,
@@ -528,9 +555,13 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     logger.warning("Background task vision enrichment failed: %s", e)
 
             def run_sync():
+                from gateway.run_manual_fallback import _runtime_kwargs_for_agent_constructor
+                runtime = _runtime_kwargs_for_agent_constructor(turn_route["runtime"])
+                if "fallback_model" not in runtime:
+                    runtime["fallback_model"] = self._refresh_fallback_model()
                 agent = AIAgent(
                     model=turn_route["model"],
-                    **turn_route["runtime"],
+                    **runtime,
                     **_checkpoint_agent_kwargs(user_config),
                     max_iterations=max_iterations,
                     quiet_mode=True,
@@ -552,9 +583,6 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                         "user_id", "user_id_alt", "user_name", "chat_id", "chat_name", "chat_type", "thread_id",
                     )},
                     session_db=getattr(self._session_db, "_db", self._session_db),
-                    # Reload from disk — do not reuse the startup snapshot.
-                    # See #60955.
-                    fallback_model=self._refresh_fallback_model(),
                 )
                 try:
                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)
@@ -1670,6 +1698,15 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         _result_for_fb = turn_ctx.result_holder[0]
         if _agent is None or not hasattr(_agent, 'model') or (_result_for_fb and _result_for_fb.get("failed")):
             return
+        manual_fallback_activated = False
+        if getattr(_agent, "_fallback_activated", False) is True:
+            with suppress(Exception):
+                manual_fallback_activated = (
+                    self.session_store.get_session_metadata(session_key, "manual_fallback_index") is not None
+                )
+        if manual_fallback_activated:
+            self._evict_cached_agent(session_key)
+            return
         # A provider fallback is drift even when it serves the configured model name on another endpoint.
         if getattr(_agent, "_provider_fallback_active", False) is True:
             self._evict_cached_agent(session_key)
@@ -1789,7 +1826,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 )
 
         # Safety net: a pending slash command is never passed to the agent as user input.
-        if pending and pending.strip().startswith("/"):
+        if (pending and pending.strip().startswith("/")
+                and (pending_event is None or pending_event.allow_gateway_control)):
             _pending_cmd_word = pending.strip().split(None, 1)[0][1:].lower()
             if _pending_cmd_word:
                 with suppress(Exception):
@@ -2266,81 +2304,6 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         turn_ctx._status_thread_metadata = _status_thread_metadata
         return _status_thread_metadata
 
-    async def _run_agent_notify_long_running(
-        self, disp: GatewayRunner._RunAgentDisplay, turn_ctx: TurnContext, _executor_task_holder: list,
-    ) -> None:
-        """Periodic "still working" heartbeat, edited in place where supported. Stops once this run
-        no longer owns the session slot or the executor finished. ``_executor_task_holder[0]`` is
-        bound just after this task is scheduled (reads as None until then).
-
-        Interval: agent.gateway_notify_interval / HERMES_AGENT_NOTIFY_INTERVAL (default 180s; 0 or
-        long_running_notifications=off disables)."""
-        from gateway.run import _float_env, _interim_metadata, _non_conversational_metadata
-        _notify_start = time.time()
-        _NOTIFY_INTERVAL = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
-        _long_running_mode = disp._display_surface_mode("long_running_notifications", default=True, allow_generic=True)
-        if _NOTIFY_INTERVAL <= 0 or _long_running_mode == "off":
-            return
-        source, session_key, agent_holder = turn_ctx.source, turn_ctx.session_key, turn_ctx.agent_holder
-        _status_thread_metadata = turn_ctx._status_thread_metadata
-        _notify_adapter = self._delivery_adapter_for(source)
-        if not _notify_adapter:
-            return
-        _heartbeat_msg_id: Optional[str] = None
-        while True:
-            await asyncio.sleep(_NOTIFY_INTERVAL)
-            if not self._should_emit_long_running_notification(
-                session_key, agent_holder[0], _executor_task_holder[0]
-            ):
-                break
-            _elapsed_mins = int((time.time() - _notify_start) // 60)
-            # Terse heartbeat by default; the iteration counter is gated on busy_ack_detail.
-            _status_detail = ""
-            _want_iteration_detail = bool(
-                disp.resolve_display_setting(disp.user_config, disp.platform_key, "busy_ack_detail", True)
-            )
-            _a = self._agent_activity_summary(agent_holder[0])
-            with suppress(Exception):
-                if _a:
-                    _parts = []
-                    if _want_iteration_detail:
-                        _parts.append(format_iteration_progress(_a["api_call_count"], _a["max_iterations"]))
-                    _action = _a.get("current_tool") or _a.get("last_activity_desc")
-                    if _action:
-                        _parts.append(str(_action))
-                    if _parts:
-                        _status_detail = " — " + ", ".join(_parts)
-            _heartbeat_text = (
-                disp._generic_status_phrase("status")
-                if _long_running_mode == "generic"
-                else t("gateway.progress.working_heartbeat", minutes=_elapsed_mins, detail=_status_detail)
-            )
-            try:
-                _notify_res = None
-                if _heartbeat_msg_id:
-                    try:
-                        _notify_res = await _notify_adapter.edit_message(source.chat_id, _heartbeat_msg_id, _heartbeat_text)
-                    except Exception as _ee:
-                        logger.debug("Heartbeat edit failed: %s", _ee)
-                        _notify_res = None
-                if not (_notify_res and getattr(_notify_res, "success", False)):
-                    # The edit above awaited; a drain/restart notice may have gone out meanwhile, and
-                    # a fresh "Working" bubble after it reads as a contradiction (#10990).
-                    if not self._should_emit_long_running_notification(
-                        session_key, agent_holder[0], _executor_task_holder[0]
-                    ):
-                        break
-                    _notify_res = await _notify_adapter.send(
-                        source.chat_id, _heartbeat_text,
-                        metadata=_interim_metadata(_non_conversational_metadata(_status_thread_metadata, platform=source.platform)),
-                    )
-                    if getattr(_notify_res, "success", False) and getattr(_notify_res, "message_id", None):
-                        _heartbeat_msg_id = str(_notify_res.message_id)
-                        if turn_ctx._cleanup_progress:
-                            turn_ctx._cleanup_msg_ids.append(_heartbeat_msg_id)
-            except Exception as _ne:
-                logger.debug("Long-running notification error: %s", _ne)
-
     async def _run_agent_inner(
         self, message: str, context_prompt: str, history: list[dict[str, Any]],
         source: SessionSource, session_id: str, session_key: str | None = None,
@@ -2438,7 +2401,18 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             result = turn_ctx.result_holder[0]
             adapter = self._delivery_adapter_for(source)
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
-            pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
+            terminal_exhaustion = (result and result.get("compression_exhausted")
+                                   and not result.get("compression_deferred"))
+            if (terminal_exhaustion and result.get("pending_steer") and adapter and session_key
+                    and turn_ctx._run_still_current()):
+                # The model owns late steering until finalization. Hand it back to the
+                # existing FIFO before reset/pause, without granting slash-command authority.
+                self._enqueue_fifo(session_key, MessageEvent(
+                    text=result["pending_steer"], source=source, allow_gateway_control=False,
+                ), adapter)
+            pending_event, pending = (None, None) if terminal_exhaustion else await self._run_agent_drain_pending(
+                result, adapter, source, session_key,
+            )
             if pending_event or pending:
                 return await self._run_agent_queued_followup(
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,

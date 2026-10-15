@@ -19,7 +19,7 @@ def _fallback_entries(fallback_model) -> list[dict[str, Any]]:
     ]
 
 
-def _init_fallback_chain(agent, fallback_model):
+def _init_fallback_chain(agent, fallback_model, fallback_service_tier_override=None):
     # Stable pool-entry identity: OAuth refreshes can replace the token before a failed
     # request is recovered, so the key value alone can't attribute the failure.
     from agent.agent_runtime_helpers import sync_credential_pool_entry_id
@@ -29,6 +29,14 @@ def _init_fallback_chain(agent, fallback_model):
     agent._fallback_chain = _fallback_entries(fallback_model)
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
+    agent._active_fallback_service_tier_override = getattr(
+        agent, "_active_fallback_service_tier_override", None,
+    )
+    if not agent._fallback_activated:
+        from agent.fallback_policy import activate_fallback_service_tier_override
+        activate_fallback_service_tier_override(
+            agent, {"service_tier_override": fallback_service_tier_override}, log=logger,
+        )
     # Legacy attribute kept for backward compat (tests, external callers)
     agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
     chain = agent._fallback_chain

@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- The explicit reset default belongs beside the existing compression defaults so the CLI schema and gateway policy agree.
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing
@@ -583,6 +584,8 @@ DEFAULT_CONFIG = {
         # preflight/pre-API/idle/retry) reach chat gateways instead of being filtered as noise.
         # Failure notices and manual /compress feedback are always visible.
         "progress_notices": False,
+        # Gateway terminal exhaustion: preserve native reset unless explicitly set to pause.
+        "exhaustion_action": "reset",
         # threshold: compress when context usage exceeds this ratio. Models with windows below 512K
         # are floored at 0.75 (raise-only) so compaction doesn't fire with half the window free; set
         # above 0.75 to override the floor.

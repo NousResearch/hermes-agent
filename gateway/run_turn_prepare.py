@@ -116,6 +116,22 @@ def _recover_or_remember_model(runner, skey, model):
     return model
 
 
+def _explicit_session_runtime(runner, source, skey):
+    """Manual index wins over channel policy; neither may consult stale runtime state."""
+    from gateway.session_policy import policy_for_source
+    store = getattr(runner, "session_store", None)
+    if skey and callable(getattr(type(store), "get_session_metadata", None)):
+        missing = object()
+        index = store.get_session_metadata(skey, "manual_fallback_index", missing)
+        if index is not missing:
+            from gateway.run_manual_fallback import _manual_fallback_runtime
+            return _manual_fallback_runtime(index)
+    policy = policy_for_source(runner, source) if source is not None else None
+    if policy is not None:
+        return _resolve_policy_agent_runtime(runner, policy)
+    return None
+
+
 class GatewayTurnPrepareMixin:
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
@@ -129,14 +145,13 @@ class GatewayTurnPrepareMixin:
             _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
             _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
         )
-        from gateway.session_policy import policy_for_source
         # Every exit path starts clean: a stale notice must never attach to another session's next
         # turn (#74349). Set again below only when THIS resolution fell back.
         self._pre_agent_fallback_notice = None
-        policy = policy_for_source(self, source) if source is not None else None
-        if policy is not None:
-            return _resolve_policy_agent_runtime(self, policy)
         skey = self._resolve_session_key_or_none(source, session_key)
+        explicit_runtime = _explicit_session_runtime(self, source, skey)
+        if explicit_runtime is not None:
+            return explicit_runtime
         model = _resolve_gateway_model(user_config)
         if skey:
             self._rehydrate_session_model_override(skey)
@@ -245,9 +260,12 @@ class GatewayTurnPrepareMixin:
         runtime = {
             k: runtime_kwargs.get(k) for k in (
                 "api_key", "base_url", "provider", "requested_provider", "api_mode", "command", "args",
-                "credential_pool", "max_tokens", "capabilities",
+                "credential_pool", "max_tokens", "capabilities", "extra_headers",
             )
         }
+        for key in ("manual_fallback_index", "fallback_model", "has_header_auth", "fallback_service_tier_override"):
+            if key in runtime_kwargs:
+                runtime[key] = runtime_kwargs[key]
         runtime["args"] = list(runtime["args"] or [])
         runtime["capabilities"] = dict(runtime["capabilities"] or {})
         base_request_overrides = dict(runtime_kwargs.get("request_overrides") or {})
@@ -257,6 +275,7 @@ class GatewayTurnPrepareMixin:
             "signature": (
                 model, runtime["provider"], runtime["requested_provider"], runtime["base_url"],
                 runtime["api_mode"], runtime["command"], tuple(runtime["args"]),
+                runtime.get("manual_fallback_index"), runtime.get("fallback_service_tier_override"),
             ),
         }
         tier = getattr(self, "_service_tier", None)
@@ -274,7 +293,7 @@ class GatewayTurnPrepareMixin:
         route["request_overrides"] = _deep_merge_request_overrides(base_request_overrides, overrides or {})
         return route
 
-    def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
+    def _sync_session_model_from_agent(self, session_id: str, agent: Any, *, manual_fallback: bool = False) -> None:
         """Persist the runtime model/provider a gateway turn actually used (provider fallback can
         switch them after the row was created). Runs in the ``run_sync`` executor thread, so it
         uses the sync ``SessionDB`` (``_db``), not the AsyncSessionDB forwarder."""
@@ -284,6 +303,9 @@ class GatewayTurnPrepareMixin:
         if not model:
             return
         runtime = {k: getattr(agent, k, None) for k in ("provider", "base_url", "api_mode")}
+        if manual_fallback:
+            # The configured endpoint can contain credentials; retain it only in the runtime route.
+            runtime.pop("base_url", None)
         runtime["fallback_active"] = bool(getattr(agent, "_fallback_activated", False))
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
         try:
@@ -304,7 +326,9 @@ class GatewayTurnPrepareMixin:
             if not isinstance(config, dict):
                 config = {}
             gateway_runtime = dict(config.get("gateway_runtime") or {})
-            if row.get("model") == model and all(gateway_runtime.get(k) == v for k, v in runtime.items()):
+            if (row.get("model") == model
+                    and all(gateway_runtime.get(k) == v for k, v in runtime.items())
+                    and not (manual_fallback and "base_url" in gateway_runtime)):
                 return
             config["gateway_runtime"] = runtime
             db.update_session_meta(session_id, json.dumps(config), model=model)
@@ -339,6 +363,7 @@ class GatewayTurnPrepareMixin:
                 )
                 return
 
+        topic_lane = await asyncio.to_thread(self._is_telegram_topic_lane, source)
         strict_session = bool(event_metadata.get("gateway_session_strict"))
         pinned_session_id = str(event_metadata.get("gateway_session_id") or "").strip()
         if strict_session:
@@ -350,10 +375,22 @@ class GatewayTurnPrepareMixin:
                 )
                 return
         else:
-            # Internal wakes observe reset policy without counting as user activity, or periodic
-            # notifications keep the routing key alive across every daily/idle boundary.
+            recovery = {}
+            if topic_lane and self._session_db is not None:
+                try:
+                    binding = await self._session_db.get_telegram_topic_binding(
+                        chat_id=str(source.chat_id), thread_id=str(source.thread_id),
+                        profile_name=self._telegram_topic_profile_name(source),
+                    )
+                    if binding:
+                        recovery["recovery_session_id"] = str(binding.get("session_id") or "")
+                except Exception:
+                    logger.debug("Failed to read Telegram topic binding", exc_info=True)
+            # Bindings are recovery hints only. The store decides under its lock whether the
+            # route is absent; a route committed during this lookup must also win.
+            # Internal wakes preserve the user-activity clock.
             session_entry = await self.async_session_store.get_or_create_session(
-                source, touch_activity=not bool(getattr(event, "internal", False)),
+                source, touch_activity=not bool(getattr(event, "internal", False)), **recovery,
             )
         session_key = session_entry.session_key
         if not strict_session and pinned_session_id:
@@ -362,7 +399,7 @@ class GatewayTurnPrepareMixin:
                 return
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
-        if await asyncio.to_thread(self._is_telegram_topic_lane, source):
+        if topic_lane:
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
         from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner
         if not await resolve_heartbeat_owner(self, event, session_entry):
@@ -370,52 +407,13 @@ class GatewayTurnPrepareMixin:
         return source, session_entry, session_key
 
     async def _hmwa_heal_telegram_topic_binding(self, source, session_entry, session_key):
-        """Follow the (chat_id, thread_id) topic binding — healed to its compression tip — or record
-        a fresh one. Returns the (possibly switched) session entry."""
-        binding = None
-        try:
-            if self._session_db:
-                binding = await self._session_db.get_telegram_topic_binding(
-                    chat_id=str(source.chat_id), thread_id=str(source.thread_id),
-                    profile_name=self._telegram_topic_profile_name(source),
-                )
-        except Exception:
-            logger.debug("Failed to read Telegram topic binding", exc_info=True)
-        if not binding:
-            try:
-                await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
-            except Exception:
-                logger.debug("Failed to record Telegram topic binding", exc_info=True)
+        """Repair the secondary topic binding from the committed route, never the reverse."""
+        if getattr(session_entry, "compression_paused", False) is True:
             return session_entry
-        stored_session_id = str(binding.get("session_id") or "")
-        bound_session_id = stored_session_id
-        # A binding pointing at a pre-compression parent is walked forward to the tip so the next
-        # message resumes the compressed child instead of reloading the oversized parent.
-        # Returns the input unchanged when the session isn't a compression parent, so this is cheap and
-        # safe. See #20470, #29712, #33414.
-        if bound_session_id and self._session_db is not None:
-            try:
-                canonical_session_id = await self._session_db.get_compression_tip(bound_session_id)
-            except Exception:
-                logger.debug("compression-tip lookup failed for %s", bound_session_id, exc_info=True)
-                canonical_session_id = bound_session_id
-            if canonical_session_id and canonical_session_id != bound_session_id:
-                bound_session_id = canonical_session_id
-        if bound_session_id and bound_session_id != session_entry.session_id:
-            # Route through SessionStore so the key → id mapping persists and the previous lane
-            # session ends cleanly (in-place mutation split-brained the JSON index). The two DB
-            # awaits above are a window for /new or /resume to move the route; the CAS on the
-            # snapshot id lets that win instead of being clobbered by a stale binding.
-            switched = await self.async_session_store.switch_session(
-                session_key, bound_session_id, expected_session_id=session_entry.session_id,
-            )
-            if switched is not None:
-                session_entry = switched
-        if bound_session_id and bound_session_id != stored_session_id:
-            # The stored binding pointed at a parent: rewrite it to the canonical descendant.
-            await asyncio.to_thread(
-                self._sync_telegram_topic_binding, source, session_entry, reason="compression-tip-walk",
-            )
+        await asyncio.to_thread(
+            self._sync_compression_recovery_binding, source, session_entry, session_entry.session_id,
+            reason="committed-route",
+        )
         return session_entry
 
     async def _hmwa_open_session(self, session_entry, session_key, source):

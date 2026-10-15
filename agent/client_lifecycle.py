@@ -6,6 +6,7 @@
 import logging
 import threading
 import time
+from collections.abc import Mapping
 from contextlib import suppress
 from typing import Any, Optional
 
@@ -64,6 +65,28 @@ def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
     return bool(isinstance(api_key, str) and api_key.strip() and isinstance(base_url, str) and base_url.strip())
 
 
+def _rebind_rotated_headers(agent, key: str, base_url: str, *, entry: Any = None) -> None:
+    """Follow a verified rotation on the selected route, never a different pool or endpoint."""
+    old_pair = (getattr(agent, "api_key", None), getattr(agent, "base_url", None))
+    if base_url != old_pair[1]:
+        return
+    if entry is not None:
+        pool = getattr(agent, "_credential_pool", None)
+        if pool is None or getattr(entry, "provider", None) != getattr(pool, "provider", None):
+            return
+    if (getattr(agent, "provider", None) == "custom"
+            and str(getattr(agent, "requested_provider", "")) not in ("", "custom")
+            and not getattr(agent, "_fallback_activated", False)
+            and old_pair == (getattr(agent, "_resolved_header_api_key", None),
+                             getattr(agent, "_resolved_header_base_url", None))):
+        agent._resolved_header_api_key = key
+    binding = getattr(agent, "_fallback_anthropic_header_binding", None)
+    if entry is not None and getattr(agent, "_fallback_activated", False) and binding is not None:
+        bound_key, bound_url, headers = binding
+        if old_pair == (bound_key, bound_url):
+            agent._fallback_anthropic_header_binding = (key, base_url, headers)
+
+
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
     timeout = get_provider_request_timeout(fb_provider, fb_model)
@@ -75,6 +98,11 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
     # The SDK exposes an empty/stale api_key when a rotating source is installed.
     key_provider = vars(fb_client).get("_api_key_provider")
     credential = key_provider if callable(key_provider) else fb_client.api_key
+    nested_client = getattr(fb_client, "_real_client", None)
+    direct_headers = getattr(fb_client, "_custom_headers", None)
+    nested_headers = getattr(nested_client, "_custom_headers", None)
+    fb_headers = direct_headers if isinstance(direct_headers, Mapping) else nested_headers
+    fb_headers = dict(fb_headers) if isinstance(fb_headers, Mapping) else {}
     if fb_api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
         from agent.anthropic_credentials import resolve_anthropic_token, anthropic_route_is_oauth
@@ -82,7 +110,15 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
         effective_key = credential or (resolve_anthropic_token(model=getattr(agent, "model", None)) if is_anthropic else None) or ""
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = fb_base_url
-        agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
+        # Request-local clients must use this selected provider's headers, not a URL-only
+        # lookup that could pick a different named provider on the same endpoint.
+        agent._fallback_anthropic_header_binding = (effective_key, fb_base_url, fb_headers)
+        agent._anthropic_client = build_anthropic_client(
+            effective_key,
+            fb_base_url,
+            timeout=timeout,
+            extra_headers=dict(fb_headers),
+        )
         agent._is_anthropic_oauth = anthropic_route_is_oauth(fb_base_url, effective_key, provider=fb_provider)
         agent.client, agent._client_kwargs = None, {}
         return
@@ -90,7 +126,7 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
     agent.client = fb_client
     # Keep provider headers resolve_provider_client() baked into fb_client (SDK: _custom_headers), else
     # later request-client rebuilds drop them and User-Agent-sentinel providers (Kimi Coding) 403.
-    fb_headers = getattr(fb_client, "_custom_headers", None) or getattr(fb_client, "default_headers", None)
+    fb_headers = fb_headers or getattr(fb_client, "default_headers", None)
     agent._client_kwargs = {"api_key": credential, "base_url": fb_base_url}
     if fb_headers:
         agent._client_kwargs["default_headers"] = dict(fb_headers)
@@ -495,7 +531,16 @@ class ClientLifecycleMixin:
     def _build_direct_anthropic_client(self, token: str, base_url: Any) -> Any:
         """Native Anthropic client for ``token``/``base_url`` with the provider/model request timeout."""
         from agent.anthropic_adapter import build_anthropic_client
-        return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model))
+        binding = getattr(self, "_fallback_anthropic_header_binding", None)
+        if getattr(self, "_fallback_activated", False) and binding is not None:
+            bound_key, bound_url, headers = binding
+            extra = {"extra_headers": headers if (token, base_url) == (bound_key, bound_url) else {}}
+        else:
+            selected = getattr(self, "_resolved_extra_headers", None)
+            extra = ({"extra_headers": selected if token == getattr(self, "_resolved_header_api_key", None)
+                      and base_url == getattr(self, "_resolved_header_base_url", None) else {}} if selected is not None else {})
+        return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model),
+                                      **extra)
 
     def _anthropic_oauth_flag(self, token: str) -> bool:
         """OAuth flag only on native Anthropic routes; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
@@ -506,7 +551,17 @@ class ClientLifecycleMixin:
         from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client
         if key[0] == "bedrock":
             return build_anthropic_bedrock_client(key[1])
-        return build_anthropic_client(key[1], key[2], timeout=key[3], drop_context_1m_beta=key[4])
+        binding = getattr(self, "_fallback_anthropic_header_binding", None)
+        if getattr(self, "_fallback_activated", False) and binding is not None:
+            bound_key, bound_url, headers = binding
+            extra = {"extra_headers": headers if (key[1], key[2]) == (bound_key, bound_url) else {}}
+        else:
+            selected = getattr(self, "_resolved_extra_headers", None)
+            extra = ({"extra_headers": selected if key[1] == getattr(self, "_resolved_header_api_key", None)
+                      and key[2] == getattr(self, "_resolved_header_base_url", None)
+                      and not getattr(self, "_fallback_activated", False)
+                      else {}} if selected is not None else {})
+        return build_anthropic_client(key[1], key[2], timeout=key[3], drop_context_1m_beta=key[4], **extra)
 
     def _create_request_anthropic_client(self, *, reason: str) -> Any:
         """Build (or reuse) a request-local Anthropic client for one in-flight call.
@@ -768,7 +823,10 @@ class ClientLifecycleMixin:
         from hermes_cli.route_identity import normalize_route_base_url
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(base_url)
         prior_api_key, prior_base_url = self.api_key, self.base_url
+        prior_header_key = getattr(self, "_resolved_header_api_key", None)
         prior_client_kwargs = dict(self._client_kwargs)
+        if not route_changed:
+            _rebind_rotated_headers(self, api_key, base_url)
         self.api_key, self.base_url = api_key, base_url
         self._sync_client_kwargs_credentials()
         # A base-url change moves the route: recompute TLS material and default headers.
@@ -776,6 +834,7 @@ class ClientLifecycleMixin:
         if not self._replace_primary_openai_client(reason="env_credential_refresh"):
             # Leave the baseline un-advanced (retry next turn); roll the agent back to match the live client.
             self.api_key, self.base_url = prior_api_key, prior_base_url
+            self._resolved_header_api_key = prior_header_key
             self._client_kwargs.clear()
             self._client_kwargs.update(prior_client_kwargs)
             return False
@@ -956,7 +1015,19 @@ class ClientLifecycleMixin:
         if self.api_mode not in ("anthropic_messages", "bedrock_converse"):
             try:
                 from hermes_cli.config import apply_custom_provider_extra_headers_to_client_kwargs
-                apply_custom_provider_extra_headers_to_client_kwargs(self._client_kwargs, base_url)
+                selected = getattr(self, "_resolved_extra_headers", None)
+                if (selected is None and not getattr(self, "_fallback_activated", False)
+                        and getattr(self, "requested_provider", None) in (None, "", "custom")):
+                    apply_custom_provider_extra_headers_to_client_kwargs(self._client_kwargs, base_url)
+                elif (selected is not None and self.provider == "custom"
+                      and getattr(self, "requested_provider", "") not in ("", "custom")
+                      and str(self.base_url or "") == base_url
+                      and base_url == getattr(self, "_resolved_header_base_url", None)
+                      and self._client_kwargs.get("api_key") == getattr(self, "_resolved_header_api_key", None)
+                      and not getattr(self, "_fallback_activated", False)):
+                    self._client_kwargs["default_headers"] = {
+                        **(self._client_kwargs.get("default_headers") or {}), **selected,
+                    }
             except Exception:
                 logger.debug("custom-provider extra_headers skipped", exc_info=True)
 
@@ -994,6 +1065,7 @@ class ClientLifecycleMixin:
         self._credential_pool_entry_id = getattr(entry, "id", None)
         from hermes_cli.route_identity import normalize_route_base_url
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(runtime_base)
+        _rebind_rotated_headers(self, runtime_key, stripped_base, entry=entry)
         if self.api_mode == "anthropic_messages":
             with suppress(Exception):
                 self._anthropic_client.close()

@@ -215,6 +215,21 @@ def test_codex_override_never_runs_on_the_default_providers_endpoint(store_facto
     assert bool(runner._pre_agent_fallback_notice) is (codex_on_turn == "still_unavailable")
 
 
+@pytest.mark.parametrize("selected", ["claude-sonnet-4", "gpt-5"])
+def test_restart_passes_persisted_model_to_runtime_resolver(store_factory, selected):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    store.set_model_override(entry.session_key, {"model": selected, "provider": "opencode"})
+    runner = _make_runner(store_factory())
+    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={
+        "provider": "opencode", "api_mode": "chat_completions",
+        "base_url": "https://provider.example/v1",
+    }) as resolve:
+        runner._rehydrate_session_model_override(entry.session_key)
+    resolve.assert_called_once_with(requested="opencode", target_model=selected)
+    assert runner._session_model_overrides[entry.session_key]["model"] == selected
+
+
 def test_sanitize_model_override():
     assert sanitize_model_override(None) is None
     assert sanitize_model_override({}) is None

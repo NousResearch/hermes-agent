@@ -685,8 +685,10 @@ class GatewayTurnHygieneMixin:
         _hyg_checkpoint_required = _is_truthy(
             ((_load_cfg() or {}).get("compression") or {}).get("checkpoint_required"), default=False,
         )
+        from gateway.run_manual_fallback import _runtime_kwargs_for_agent_constructor
         _hyg_agent = AIAgent(
-            **_hyg_runtime, model=_hyg_model, max_iterations=4, quiet_mode=True,
+            **_runtime_kwargs_for_agent_constructor(_hyg_runtime), model=_hyg_model,
+            max_iterations=4, quiet_mode=True,
             skip_memory=not _hyg_checkpoint_required, enabled_toolsets=["memory"],
             session_id=session_entry.session_id, session_db=_hyg_session_db,
         )
@@ -791,7 +793,7 @@ class GatewayTurnHygieneMixin:
             )
             if str(_hyg_runtime.get("api_mode") or "").lower() == "codex_app_server":
                 await self._hmwa_hygiene_codex_compaction(hs, plan, history, session_entry, session_key, _hyg_runtime)
-            elif _hyg_runtime.get("api_key"):
+            elif _hyg_runtime.get("api_key") or _hyg_runtime.get("has_header_auth"):
                 # Pass the FULL transcript (tool results included) as the agent loop does: filtering
                 # to user/assistant starved the compressor (tool results are the bulk of context).
                 _hyg_msgs = [m for m in history if m.get("role") in {"user", "assistant", "tool"}]

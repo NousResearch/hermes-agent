@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- Nine lines preserve an accepted adapter queue across paused recovery at the existing session-task ownership boundary.
 """Base platform adapter interface; every platform adapter inherits from BasePlatformAdapter."""
 
 import asyncio
@@ -4516,12 +4517,14 @@ class BasePlatformAdapter(ABC):
                 if inspect.isawaitable(_post_result):
                     await asyncio.wait_for(_post_result, timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
 
-    def _finish_session_task(self, session_key: str, interrupt_event: asyncio.Event) -> None:
+    def _finish_session_task(
+        self, session_key: str, interrupt_event: asyncio.Event, *, drain_pending: bool = True,
+    ) -> None:
         """End-of-task guard/ownership reconciliation. A late ``_pending_messages`` arrival must not
         drop: re-queue it if another task already owns the session (drain handoff), else spawn the
         drain task and leave it the guard. Nothing pending: release the guard only if we still own
         it."""
-        late_pending = self._pending_messages.pop(session_key, None)
+        late_pending = self._pending_messages.pop(session_key, None) if drain_pending else None
         current_task = asyncio.current_task()
         if late_pending is not None:
             existing_task = self._session_tasks.get(session_key)
@@ -4628,7 +4631,8 @@ class BasePlatformAdapter(ABC):
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)
-            if session_key in self._pending_messages:
+            if (getattr(event, "_gateway_preserve_pending", False) is not True
+                    and session_key in self._pending_messages):
                 pending_event = self._pending_messages[session_key]
                 delay = self._requeue_backoff_delay(session_key, pending_event, event)
                 if not delay:  # a backed-off event stays queued until the drain task wakes
@@ -4663,7 +4667,11 @@ class BasePlatformAdapter(ABC):
                 event.source.chat_id, None, metadata=_thread_metadata, stop_attempts=1)
             # Flush any timer that missed the in-band drain, then reconcile ownership.
             await self._flush_text_debounce_now(session_key)
-            self._finish_session_task(session_key, interrupt_event)
+            # Terminal compression preserves the queue for explicit recovery;
+            # A committed reset can drain queued work; a paused or failed recovery cannot.
+            self._finish_session_task(
+                session_key, interrupt_event,
+                drain_pending=getattr(event, "_gateway_preserve_pending", False) is not True)
 
     _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
     # Kept at 1s: nothing wakes the back-off sleep, so a genuine message merged into the slot
@@ -4708,6 +4716,8 @@ class BasePlatformAdapter(ABC):
         the event stays in ``_pending_messages`` and the new owner task pops the slot only after
         sleeping, so a cancel/discard during the back-off needs no put-back and can't drop a
         newer message."""
+        # This is the older pending slot, not a new arrival behind FIFO overflow.
+        pending_event._gateway_pending_drain = True
         self._clear_session_guard(session_key)
         # Capture the guard this drain owns now: a /stop//new guard swapped in during the
         # back-off must survive the slot-empty exit (#48300).

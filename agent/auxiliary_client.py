@@ -5204,11 +5204,11 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
         try:
             from agent.anthropic_adapter import build_anthropic_client
             from agent.anthropic_credentials import anthropic_route_is_oauth
-            real_client = build_anthropic_client(custom_key, custom_base)
-            if entry_headers:
-                # Same entry headers as the two OpenAI-wire arms; ``with_options`` merges onto the
-                # beta/credential-Omit headers the builder installed (#109595).
-                real_client = real_client.with_options(default_headers=entry_headers)
+            real_client = build_anthropic_client(
+                custom_key,
+                custom_base,
+                extra_headers=entry_headers,
+            )
         except ImportError:
             logger.warning("Named custom provider %r declares api_mode=anthropic_messages but the anthropic SDK "
                            "is not installed — falling back to OpenAI-wire.", provider)

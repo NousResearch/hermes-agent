@@ -27,6 +27,7 @@ from gateway.run_busy import approval_input_words
 from gateway.run_common import _UNSET
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_inbound_hooks import GatewayInboundHooksMixin
+from gateway.run_inbound_recovery import GatewayInboundRecoveryMixin
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
 from gateway.run_inbound_unauthorized import (
     UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg, pairing_rate_limited_reply,
@@ -68,7 +69,7 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text.removeprefix(prefix)
 
 
-class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin):
+class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin, GatewayInboundRecoveryMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
     async def _hm_offer_pairing_code(self, source: SessionSource) -> None:
@@ -1133,6 +1134,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         never promoted, e.g. a compression-demoted follow-up) silently orphaned those events. The
         oldest orphan runs as THIS turn and the incoming event is parked behind the chain. Skipped
         for control commands and internal events."""
+        if getattr(event, "_gateway_pending_drain", False) is True:
+            event._gateway_pending_drain = False
+            return event, source, is_internal
         try:
             # ── FIFO orphan rescue (#99882) ──────────────────────────────── If this session went idle with
             # a populated overflow (queued during a busy window whose post-turn drain never promoted — e.g.
@@ -1218,14 +1222,23 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             return _paused_notice
 
         _quick_key = self._session_key_for_source(source)
+        # /resume can recover a stripped Telegram topic before deriving its key.
+        # Check that effective identity too, without changing native event routing.
+        _recovery_source = await asyncio.to_thread(self._normalize_source_for_session_key, source)
+        _recovery_key = self._session_key_for_source(_recovery_source)
+        _recovery_busy = (self._paused_recovery_busy_reply(_quick_key)
+                          or self._paused_recovery_busy_reply(_recovery_key))
+        if _recovery_busy is not None:
+            return _recovery_busy
         _reply = None if is_internal else await self._hm_pending_reply_intercepts(event, source, _quick_key)
         if _reply is not None:
             return _reply
 
-        _owned, _authority_reply = await self._hm_authority_admission(event, source, _quick_key, is_internal)
+        _owned, _authority_reply = await self._authority_or_recovery_reply(
+            event, source, _quick_key, _recovery_key, is_internal,
+        )
         if _owned:
             return _authority_reply
-
         # Evict a leaked/reaped ``_running_agents`` slot before the busy-session fast-path.
         self._hm_evict_idle_stale_agent(_quick_key)
         if self._is_session_running(_quick_key):
@@ -1233,28 +1246,26 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         if self._is_session_running(_quick_key):
             return await self._hm_handle_running_session_message(event, source, _quick_key)
 
-        _handled, _result = await self._hm_dispatch_idle_commands(event, source, _quick_key)
+        _handled, _result = await self._dispatch_idle_with_pause_preservation(
+            event, source, _quick_key, _recovery_key,
+        )
         if _handled:
             return _result
 
-        # Pending exec approvals go through /approve and /deny only — no bare-text matching, or a
-        # conversational "yes" would execute a dangerous command.
+        # Pending exec approvals go through /approve and /deny only — no bare-text matching.
         if not is_internal:
-            if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
-                # Debounced so a user who forgets about topic mode doesn't get ten reminders.
-                if self._should_send_telegram_lobby_reminder(source):
-                    return self._telegram_topic_root_lobby_message()
-                return None
-            # External-drain new-turn gate: when NAS engaged an external drain (.drain_request.json,
-            # seen by _drain_control_watcher), refuse to START new turns so the in-flight set can
-            # only fall to zero. Reversible.
-            if self._external_drain_active:
-                logger.info("Refusing new turn for session %s — external drain active.", _quick_key)
-                return t("gateway.busy.draining_maintenance")
+            _blocked, _answer = await self._idle_turn_gate(source, _quick_key)
+            if _blocked:
+                return _answer
 
         # Claim this session before any await: many awaits sit between here and _run_agent
         # registering the real AIAgent; without this sentinel a second message during any of them
         # passes the "already running" guard and spins up a duplicate agent for the same session.
+        # This event may have passed the early busy check before a command claimed.
+        _recovery_busy = (self._paused_recovery_busy_reply(_quick_key)
+                          or self._paused_recovery_busy_reply(_recovery_key))
+        if _recovery_busy is not None:
+            return _recovery_busy
         _active_session_lease, _limit_message = self._claim_active_session_slot(_quick_key, source)
         if _limit_message is not None:
             logger.info("Rejecting new active session %s: max_concurrent_sessions reached", _quick_key)

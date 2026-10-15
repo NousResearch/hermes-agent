@@ -369,19 +369,16 @@ class SurfaceLabelReader:
     def _has_created_source_column(self) -> bool:
         """Whether ``sessions.created_source`` is on this connection.
 
-        A positive answer is cached. An absent answer is re-probed: a later
-        ``ALTER TABLE`` from another connection is visible to the next statement.
-        ``sqlite3.Error`` (lock, I/O) propagates and is not stored — it is not
-        evidence the column is missing. This read does not write.
+        The probe is a read, so it uses the same disk-I/O retry as every other
+        read (``_read_retrying_ioerr``). A positive answer is cached. An absent
+        answer is re-probed: a later ``ALTER TABLE`` from another connection is
+        visible to the next statement. A lock or an I/O error that survives the
+        retry budget propagates and is not stored. This read does not write.
         """
         if self._created_source_column is True:
             return True
-        conn = getattr(self._wrapped, "_conn", None)
-        if conn is None:
-            return False
-        present = any(
-            row[1] == "created_source" for row in conn.execute("PRAGMA table_info(sessions)")
-        )
+        rows = self._wrapped._read_all("PRAGMA table_info(sessions)")
+        present = any(row[1] == "created_source" for row in rows)
         if present:
             self._created_source_column = True
         return present

@@ -111,6 +111,46 @@ def test_routing_resolution_failure_falls_back_to_parent():
     assert rt["provider"] == "openai-codex"
 
 
+def test_unrouted_fork_uses_pending_primary_snapshot_when_fallback_active():
+    """#138979: a fork spawned while a fallback is active must run on the primary
+    runtime the next turn restores to — not keep billing the fallback provider for
+    the whole review."""
+    agent = _FakeAgent(provider="anthropic", model="claude-haiku-4.5")  # live = fallback
+    agent._current_main_runtime = lambda: {  # live runtime is the one-off fallback
+        "provider": "anthropic", "model": "claude-haiku-4.5",
+        "api_key": "fallback-key", "base_url": "https://api.anthropic.com",
+        "api_mode": "messages",
+    }
+    agent._fallback_activated = True
+    agent._primary_runtime = {
+        "provider": "openai-codex", "model": "gpt-5.5",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_key": "primary-key", "api_mode": "codex_app_server",
+    }
+    with patch("hermes_cli.config.load_config", return_value={}), patch("hermes_cli.config.load_config_readonly", return_value={}):
+        rt = br._resolve_review_runtime(agent)
+    assert rt["routed"] is False
+    assert rt["provider"] == "openai-codex"
+    assert rt["model"] == "gpt-5.5"
+    assert rt["api_key"] == "primary-key"
+    assert rt["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert rt["api_mode"] == "codex_responses"  # snapshot api_mode, downgrade still applied
+
+
+def test_unrouted_fork_with_unusable_snapshot_keeps_live_runtime_fail_open():
+    """Fail-open: fallback active but no usable primary snapshot → keep the live
+    runtime exactly as before; never skip or block the review."""
+    agent = _FakeAgent(provider="anthropic", model="claude-haiku-4.5")
+    agent._fallback_activated = True
+    agent._primary_runtime = {}  # unusable snapshot
+    with patch("hermes_cli.config.load_config", return_value={}), patch("hermes_cli.config.load_config_readonly", return_value={}):
+        rt = br._resolve_review_runtime(agent)
+    assert rt["routed"] is False
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-haiku-4.5"
+    assert rt["api_key"] == "parent-key"
+
+
 # ---------------------------------------------------------------------------
 # _digest_history — routed-path compact replay
 # ---------------------------------------------------------------------------

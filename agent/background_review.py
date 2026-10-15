@@ -250,15 +250,44 @@ def load_background_review_settings() -> tuple[bool, dict[str, Any]]:
         return True, {}
 
 
+def _pending_primary_runtime(agent: Any) -> Optional[dict[str, Any]]:
+    """The primary runtime snapshot the next turn restores to, when a fallback is active.
+
+    A review fork spawned mid-fallback would otherwise inherit the fallback provider for
+    its whole run — a one-off failover becomes a string of paid calls the user never sees
+    (#138979). Fail-open: no fallback / no usable snapshot / any error → None, and the
+    caller keeps the live runtime exactly as before."""
+    try:
+        if not getattr(agent, "_fallback_activated", False):
+            return None
+        rt = getattr(agent, "_primary_runtime", None)
+        if not isinstance(rt, dict):
+            return None
+        provider = str(rt.get("provider") or "").strip()
+        model = str(rt.get("model") or "").strip()
+        return rt if provider and model else None
+    except Exception:
+        return None
+
+
 def _resolve_review_runtime(agent: Any, task_cfg: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Resolve provider/model/credentials for the review fork. Default (auto / unset / same as
     parent): the parent's live runtime with ``routed=False`` (codex_app_server -> codex_responses
     downgrade applied). When ``auxiliary.background_review.{provider,model}`` names a different
     concrete model, resolve that runtime and set ``routed=True``."""
     parent_runtime = agent._current_main_runtime()
+    snapshot = _pending_primary_runtime(agent)
+    if snapshot is not None:
+        # The live runtime is the one-off fallback; the fork should run on the primary
+        # the next turn restores to, not bill the fallback for the whole review.
+        for key in ("model", "provider", "base_url", "api_key", "api_mode"):
+            value = snapshot.get(key)
+            if value:
+                parent_runtime[key] = value
     parent_api_mode = parent_runtime.get("api_mode") or None
     parent = {
-        "provider": agent.provider, "model": agent.model,
+        "provider": parent_runtime.get("provider") or agent.provider,
+        "model": parent_runtime.get("model") or agent.model,
         "api_key": parent_runtime.get("api_key") or None, "base_url": parent_runtime.get("base_url") or None,
         "api_mode": "codex_responses" if parent_api_mode == "codex_app_server" else parent_api_mode,
         "credential_pool": getattr(agent, "_credential_pool", None),

@@ -1434,6 +1434,8 @@ def restore_primary_runtime(agent) -> bool:
         _revert_credential_rotation(agent)
         return False
     rt = agent._primary_runtime
+    # Gate changes here must stay in sync with primary_runtime_restore_blocked() below —
+    # background-review fork resolution reads the same verdict (#138979).
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_model = str((rt or {}).get("model") or "").strip()
     from agent.fallback_cooldown import _is_entitlement_rejected
@@ -1489,6 +1491,51 @@ def restore_primary_runtime(agent) -> bool:
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)
+        return False
+
+
+def primary_runtime_restore_blocked(agent) -> bool:
+    """Read-only answer to "would restore_primary_runtime() restore the primary snapshot on
+    the next turn?" — True when any of its three gates is armed: entitlement / known-non-chat
+    rejection, the 429 cooldown (``_rate_limited_until``), or the pool reset gate.
+
+    Background-review fork resolution (#138979) targets the pending primary runtime and must
+    hold off while a gate is armed — otherwise the fork aims at a primary the very next turn
+    refuses to restore and fails every review of the fallback window.
+
+    Read-only: the Codex early-reopen probe is NOT run here (it mutates cooldown state), so
+    an armed-but-stale cooldown reads as blocked for one more turn. Fails open (False) on any
+    error so a broken pool/probe never changes the caller's behavior.
+    """
+    try:
+        rt = getattr(agent, "_primary_runtime", None)
+        if not isinstance(rt, dict):
+            return False
+        primary_provider = str(rt.get("provider") or "").strip().lower()
+        primary_model = str(rt.get("model") or "").strip()
+        if primary_model:
+            from agent.fallback_cooldown import _is_entitlement_rejected
+            from hermes_cli.chat_catalog import is_known_non_chat_model
+            if _is_entitlement_rejected(agent, primary_provider, primary_model) or is_known_non_chat_model(primary_model):
+                return True
+        if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
+            return True
+        primary_runtime_base_url = str(rt.get("base_url") or "")
+
+        def _matches_primary(candidate) -> bool:
+            return credential_pool_matches_provider(candidate, primary_provider, base_url=primary_runtime_base_url)
+
+        def _load_primary_pool():
+            from agent.credential_pool import load_pool
+            key = resolve_runtime_pool_key(primary_provider, primary_runtime_base_url)
+            loaded = load_pool(key) if key else None
+            return loaded if loaded is not None and _matches_primary(loaded) else None
+
+        blocked, _prefetched_pool, _prefetched = _primary_reset_gate_blocks(
+            agent, rt, primary_provider, primary_runtime_base_url, _matches_primary, _load_primary_pool,
+        )
+        return bool(blocked)
+    except Exception:
         return False
 
 

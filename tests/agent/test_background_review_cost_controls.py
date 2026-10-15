@@ -8,6 +8,7 @@ Covers the two behaviors this change adds:
 
 Pure-function / config-driven; no live model calls.
 """
+import time
 from typing import Any
 from unittest.mock import patch
 
@@ -149,6 +150,71 @@ def test_unrouted_fork_with_unusable_snapshot_keeps_live_runtime_fail_open():
     assert rt["provider"] == "anthropic"
     assert rt["model"] == "claude-haiku-4.5"
     assert rt["api_key"] == "parent-key"
+
+
+# ---------------------------------------------------------------------------
+# #138979 follow-ups — gates, pin precedence, all-or-nothing shaping, /btw scope
+# ---------------------------------------------------------------------------
+
+def _fallback_agent() -> _FakeAgent:
+    """Live runtime is the one-off fallback; the primary snapshot is complete and
+    carries its own request shaping."""
+    agent = _FakeAgent(provider="anthropic", model="claude-haiku-4.5")
+    agent._current_main_runtime = lambda: {
+        "provider": "anthropic", "model": "claude-haiku-4.5",
+        "api_key": "fallback-key", "base_url": "https://api.anthropic.com",
+        "api_mode": "messages",
+    }
+    agent._fallback_activated = True
+    agent._primary_runtime = {
+        "provider": "openai-codex", "model": "gpt-5.5",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_key": "primary-key", "api_mode": "codex_app_server",
+        "request_overrides": {"extra_body": {"store": False}},
+        "reasoning_config": {"effort": "low"},
+    }
+    return agent
+
+
+def _resolve(agent, cfg=None, reset_gate=(False, None, False), **kwargs):
+    cfg = cfg or {}
+    with patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("hermes_cli.config.load_config_readonly", return_value=cfg), \
+         patch("agent.agent_runtime_helpers._primary_reset_gate_blocks", return_value=reset_gate):
+        return br._resolve_review_runtime(agent, **kwargs)
+
+
+def test_pending_primary_skipped_while_primary_in_429_cooldown():
+    """#138979: a snapshot the next turn would NOT restore (primary still in 429
+    cooldown) is not the pending primary. The fork keeps the live fallback runtime
+    (fail-open: the review still runs) instead of aiming at a known-unavailable
+    primary and failing every turn of the fallback window."""
+    agent = _fallback_agent()
+    agent._rate_limited_until = time.monotonic() + 3600
+    rt = _resolve(agent)
+    assert rt["routed"] is False
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-haiku-4.5"
+    assert rt["api_key"] == "fallback-key"
+
+
+def test_pending_primary_skipped_when_primary_entitlement_rejected():
+    """Same gate discipline as restore_primary_runtime: an entitlement-rejected
+    (or known non-chat) primary is not restored next turn, so the fork stays live."""
+    agent = _fallback_agent()
+    agent._entitlement_rejected_models = {("openai-codex", "gpt-5.5")}
+    rt = _resolve(agent)
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-haiku-4.5"
+
+
+def test_pending_primary_skipped_when_reset_gate_blocks():
+    """The pool reset gate (primary benched until a future resets_at) also vetoes
+    the snapshot, mirroring restore_primary_runtime."""
+    agent = _fallback_agent()
+    rt = _resolve(agent, reset_gate=(True, None, False))
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-haiku-4.5"
 
 
 # ---------------------------------------------------------------------------

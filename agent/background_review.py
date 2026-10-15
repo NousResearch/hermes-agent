@@ -256,7 +256,15 @@ def _pending_primary_runtime(agent: Any) -> Optional[dict[str, Any]]:
     A review fork spawned mid-fallback would otherwise inherit the fallback provider for
     its whole run — a one-off failover becomes a string of paid calls the user never sees
     (#138979). Fail-open: no fallback / no usable snapshot / any error → None, and the
-    caller keeps the live runtime exactly as before."""
+    caller keeps the live runtime exactly as before.
+
+    The snapshot is only "pending" when restore_primary_runtime would actually take it next
+    turn: its gates (entitlement / known-non-chat rejection, 429 cooldown, pool reset gate)
+    are checked via agent_runtime_helpers.primary_runtime_restore_blocked. When a gate is
+    armed the fork keeps the live fallback runtime — the review still runs (fail-open), on
+    the runtime the turn is already paying for, instead of failing against a primary the
+    next turn refuses to restore.
+    """
     try:
         if not getattr(agent, "_fallback_activated", False):
             return None
@@ -265,7 +273,12 @@ def _pending_primary_runtime(agent: Any) -> Optional[dict[str, Any]]:
             return None
         provider = str(rt.get("provider") or "").strip()
         model = str(rt.get("model") or "").strip()
-        return rt if provider and model else None
+        if not (provider and model):
+            return None
+        from agent.agent_runtime_helpers import primary_runtime_restore_blocked
+        if primary_runtime_restore_blocked(agent):
+            return None
+        return rt
     except Exception:
         return None
 

@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
+import sys
 import threading
 
+logger = logging.getLogger(__name__)
 
 _worker_process = False
 
@@ -39,6 +42,18 @@ class WorkerPersistenceError(RuntimeError):
     pass
 
 
+def _caller_summary(limit=8):
+    """module:function:line of the frames above this store (its own frames skipped), never
+    locals or argument values: best-effort callers swallow the guard's raise (#139029)."""
+    frame, frames = sys._getframe(2), []
+    while frame is not None and len(frames) < limit:
+        module = frame.f_globals.get('__name__', '?')
+        if not module.startswith('agent.runtime_session_'):
+            frames.append(f'{module}:{frame.f_code.co_name}:{frame.f_lineno}')
+        frame = frame.f_back
+    return ' <- '.join(frames)
+
+
 class WorkerRPC:
     """Bounded authenticated calls to an existing owner; never starts a daemon.
 
@@ -59,6 +74,8 @@ class WorkerRPC:
         except RuntimeError:
             pass
         else:
+            logger.warning('synchronous_rpc_on_event_loop: %s on thread %s; caller: %s',
+                           method, threading.current_thread().name, _caller_summary())
             raise WorkerPersistenceError('synchronous_rpc_on_event_loop')
         with self.lock:
             # A served secondary has no socket; its multiplexer's descriptor names it.

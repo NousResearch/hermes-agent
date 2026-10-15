@@ -290,6 +290,26 @@ def test_pairing_probe_reuses_live_profile_roots_until_the_profile_set_moves(wat
     assert sorted(live_calls) == ["play", "work", "work"]
 
 
+
+def test_pairing_ledger_created_in_the_previous_ledgers_timestamp_tick_broadcasts(watcher_home):
+    """Coarse kernel timestamps: a new ledger can carry exactly the newest existing mtime, which a
+    newest-mtime signature cannot see."""
+    home, events = watcher_home
+    store = home / "platforms" / "pairing"
+    store.mkdir(parents=True)
+    tick = 1_700_000_000_000_000_000
+    first = store / "telegram-pending.json"
+    first.write_text("{}", encoding="utf-8")
+    os.utime(first, ns=(tick, tick))
+    server._broadcast_watched_changes(now=0.0)
+
+    second = store / "discord-approved.json"
+    second.write_text("{}", encoding="utf-8")
+    os.utime(second, ns=(tick, tick))
+    server._broadcast_watched_changes(now=10.0)
+
+    assert events == [("pairing.changed", {})]
+
 def test_rate_limit_churn_does_not_broadcast_pairing_changed(watcher_home):
     """_rate_limits.json moves on every unauthorized DM, including ones that
     produce no new row — signalling on it would refetch for nothing."""

@@ -287,16 +287,21 @@ def _projects_sig():
 
 
 def _pairing_sig():
-    """Newest mtime across every profile's pairing ledgers (legacy ``pairing/`` and
+    """(path, mtime, size) of every profile's pairing ledgers (legacy ``pairing/`` and
     ``platforms/pairing/``): the gateway process writes pending codes, so the files are the only
-    shared signal (a pairing request moves nothing in gateway_state.json)."""
-    entries = []
+    shared signal (a pairing request moves nothing in gateway_state.json). Per-file, not the newest
+    mtime: a ledger created inside the same coarse timestamp tick as the previous newest one would
+    leave a max-mtime signature unchanged."""
+    sig = []
     for root in _pairing_roots(_watcher_home()):
         with contextlib.suppress(OSError):
-            # Only the ledgers: _rate_limits.json moves on every unauthorized DM.
-            entries += [
-                e for e in root.iterdir() if e.name.endswith(("-pending.json", "-approved.json"))]
-    return _newest_mtime_ns(entries)
+            for e in root.iterdir():
+                # Only the ledgers: _rate_limits.json moves on every unauthorized DM.
+                if e.name.endswith(("-pending.json", "-approved.json")):
+                    with contextlib.suppress(OSError):
+                        st = e.stat()
+                        sig.append((str(e), st.st_mtime_ns, st.st_size))
+    return tuple(sorted(sig)) or None
 
 
 # Live-profile pairing roots, cached on (home, ``profiles/`` dir mtime) with a TTL. The liveness

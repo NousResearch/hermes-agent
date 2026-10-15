@@ -23,6 +23,26 @@ def test_repeat_backups_dedupe_and_rotate(tmp_path: Path, monkeypatch):
     assert [p.name for p in tmp_path.iterdir() if p.is_file()] == ["config.yaml"]
 
 
+
+def test_same_size_rewrite_inside_one_timestamp_tick_is_still_backed_up(tmp_path: Path, monkeypatch):
+    """Coarse kernel timestamps: two writes in one tick share an mtime. The dedupe must compare
+    bytes, not a (size, mtime)-keyed cache, or the changed config is never backed up."""
+    import os
+
+    cfg = tmp_path / "config.yaml"
+    stamps = iter(f"2026010100000{i}" for i in range(10))
+    monkeypatch.setattr("hermes_cli.config_backups.time.strftime", lambda _fmt: next(stamps))
+    tick = 1_700_000_000_000_000_000
+    cfg.write_text("model: a\n")
+    os.utime(cfg, ns=(tick, tick))
+    backup_config(cfg, "pre-setup", keep=5)
+    assert backup_config(cfg, "pre-setup", keep=5) is None  # identical bytes
+    cfg.write_text("model: b\n")  # same size, same tick
+    os.utime(cfg, ns=(tick, tick))
+
+    assert backup_config(cfg, "pre-setup", keep=5) is not None
+    assert list_config_backups(cfg, "pre-setup")[0].read_text() == "model: b\n"
+
 def test_legacy_siblings_move_but_user_named_copies_stay(tmp_path: Path):
     cfg = tmp_path / "config.yaml"
     cfg.write_text("model: a\n")

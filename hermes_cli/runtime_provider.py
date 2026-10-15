@@ -367,10 +367,30 @@ def _anthropic_token_or_raise(*, model: str | None = None) -> str:
         # A key the pool benched for *this* model is not a missing credential; telling the
         # user to re-authenticate would send them chasing a cooldown that lifts on its own.
         if model and resolve_anthropic_token():
-            raise AuthError(f"Anthropic credentials are rate-limited for {model}; "
-                            "other Claude models remain available (see `hermes auth list`).")
+            raise AuthError(
+                f"Anthropic credentials are rate-limited for {model}; "
+                "other Claude models remain available (see `hermes auth list`).",
+                provider="anthropic",
+                # Carry the pool's remaining bench so a scheduled caller can park the job until
+                # the window reopens instead of re-firing into a known-closed provider.
+                retry_after=_anthropic_model_cooldown_seconds(model),
+                retryable=True,
+            )
         raise AuthError(_NO_ANTHROPIC_CREDENTIALS_MSG)
     return token
+
+
+def _anthropic_model_cooldown_seconds(model: str) -> float | None:
+    """Seconds the pool keeps *model* benched, or ``None`` when no cooldown is attributable."""
+    try:
+        from agent.anthropic_credentials import resolve_anthropic_token
+        from agent.credential_pool import load_pool
+        token = resolve_anthropic_token()
+        if not token:
+            return None
+        return load_pool("anthropic").token_cooldown_seconds(token, model=model)
+    except Exception:
+        return None
 
 
 def _host_derived_api_key(base_url: str) -> str:

@@ -58,6 +58,23 @@ class CredentialPoolModelCooldownMixin:
                 for entry in self._entries
             )
 
+    def token_cooldown_seconds(self, token: str, *, model: Optional[str] = None) -> Optional[float]:
+        """Seconds *token* stays benched for *model*, or ``None`` when it is not benched.
+
+        Rounds up to whole seconds so a caller can pass it as an ``AuthError.retry_after``
+        hint, letting a scheduled job park until the window reopens instead of failing.
+        """
+        with self._lock:
+            until = [
+                model_cooldown_until(entry, model)
+                for entry in self._entries
+                if entry.runtime_api_key == token
+            ]
+        active = [u for u in until if u is not None]
+        if not active:
+            return None
+        return max(1.0, max(active) - time.time())
+
     def _is_model_scoped_failure(
         self, status_code: Optional[int], model: Optional[str], failure_reason: Optional[str],
     ) -> bool:

@@ -14,9 +14,9 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-mail-mcp@2.20.9`:
+# On macOS, `npx -y apple-mail-mcp@2.20.11`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.20.9 — i.e. the bytes npx resolved are the bytes pinned here;
+#     2.20.11 — i.e. the bytes npx resolved are the bytes pinned here;
 #   - returns a full `tools/list` of 52 tools, every one carrying a description;
 #   - resolves all 18 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
@@ -217,12 +217,28 @@ source: https://github.com/sweetrb/apple-mail-mcp
 # was quit, so the plain "not found" still leaked; -2741 is now classified
 # as not-running too. No new tools: still 52 tools, all 18 default_enabled
 # entries resolve.
+#
+# 2.20.11 is re-pinned on the same footing — a follow-up defect in the
+# default_enabled `search-messages` tool, found by @j5pu testing 2.20.10's
+# new `flagColor` filter on real large iCloud mailboxes (#286 follow-up). An
+# unscoped `flagColor` search (no `mailbox`) compiled to a compound
+# `$MailFlagBit0/1/2` NOT/OR keyword clause, which cost a near-linear scan of
+# each mailbox even ANDed with `FLAGGED` — on a 255k/794k-message account
+# this burned the whole shared 45s search deadline on one or two huge
+# mailboxes before the ~30 smaller ones, including the one holding the real
+# match, were ever reached (reported as `partial: true` with a known
+# orange/yellow match returning 0 results). The server-side query is now
+# `FLAGGED` alone, with the exact color decided client-side from the flags
+# every row fetch already carries. 2.20.10's addition of `flagColor` to
+# `search-messages`/`list-messages` output and the `flagColor` filter itself
+# rides along — not independently re-pin-worthy, but inseparable from the fix.
+# No new tools: still 52 tools, all 18 default_enabled entries resolve.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-mail-mcp@2.20.9"
+    - "apple-mail-mcp@2.20.11"
 
 # Drives Apple Mail locally via AppleScript; no credentials.
 auth:

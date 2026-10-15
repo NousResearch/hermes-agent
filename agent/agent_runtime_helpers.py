@@ -1096,8 +1096,8 @@ def recover_with_credential_pool(
             agent._credential_pool_revert_id = credential_id
         return swapped
     if effective_reason == FailoverReason.upstream_rate_limit:
-        # Upstream (e.g. DeepSeek behind OpenRouter) is throttling the aggregator; the credential is
-        # healthy. Do not rotate/exhaust; let fallback switch models.
+        # The failure is scoped to a model (Gemini QuotaFailure or an aggregator's
+        # upstream), not this credential. Do not persist global key exhaustion.
         upstream = (error_context or {}).get("upstream_provider") if error_context else None
         if upstream:
             _ra().logger.info(
@@ -1106,7 +1106,7 @@ def recover_with_credential_pool(
             )
         else:
             _ra().logger.info(
-                "Upstream aggregator 429 (provider unknown) — skipping "
+                "Model-scoped upstream 429 — skipping "
                 "credential rotation, deferring to fallback chain"
             )
         return False, has_retried_429

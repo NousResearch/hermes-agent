@@ -37,7 +37,7 @@ class FailoverReason(enum.Enum):
     auth_permanent = "auth_permanent"    # Auth failed after refresh — abort
     billing = "billing"                  # 402 or confirmed credit exhaustion — rotate immediately
     rate_limit = "rate_limit"            # 429 or quota-based throttling — backoff then rotate
-    upstream_rate_limit = "upstream_rate_limit"  # Aggregator's upstream model 429 — fallback model, key is healthy
+    upstream_rate_limit = "upstream_rate_limit"  # Model-scoped upstream 429 — fallback model, key is healthy
     upstream_blocked = "upstream_blocked"  # 403 from a WAF/CDN/proxy in front of the provider — key is healthy, fallback
     overloaded = "overloaded"            # 503/529 — provider overloaded, backoff
     server_error = "server_error"        # 500/502 — internal server error, retry
@@ -1061,6 +1061,18 @@ def _status_429(c: _Ctx) -> Verdict:
     # this handler always returns, so _by_error_code never sees the code.
     if c.code in _BILLING_ERROR_CODES:
         return _V_BILLING
+    if c.provider_slug in {"gemini", "google"} or c.error_type == "GeminiAPIError":
+        from agent.gemini_quota import gemini_quota_context, gemini_retry_after_seconds
+
+        quota = gemini_quota_context(c.body)
+        if quota:
+            retry_after = gemini_retry_after_seconds(c.body, c.headers)
+            if retry_after is not None:
+                quota["retry_after"] = retry_after
+            return _v(
+                _R.upstream_rate_limit, retryable=not quota["quota_zero"],
+                should_fallback=True, error_context=quota,
+            )
     # Z.AI/Zhipu reuse 429 for server-wide overload: back off on the same
     # key instead of burning the pool (#14038).
     if any(p in c.msg for p in _OVERLOADED_PATTERNS):

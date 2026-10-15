@@ -58,7 +58,7 @@ BROWSERBASE_PROJECT_ID=your-project-id-here
 BROWSER_USE_API_KEY=***
 ```
 
-在 [browser-use.com](https://browser-use.com) 获取 API 密钥。Browser Use 通过 REST API 提供云端浏览器。若同时设置了 Browserbase 和 Browser Use 凭据，Browserbase 优先。
+在 [browser-use.com](https://cloud.browser-use.com/settings?tab=api-keys&new=1&utm_source=hermes&utm_medium=integration) 获取 API 密钥。Browser Use 通过 REST API 提供云端浏览器。若同时设置了 Browserbase 和 Browser Use 凭据，Browserbase 优先。
 
 ### Firecrawl 云端模式
 

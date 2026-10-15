@@ -23,7 +23,7 @@ _GATEWAY_IDENTITY_PARAMS = (
 _CALLBACK_PARAMS = (
     "tool_progress_callback", "tool_start_callback", "tool_complete_callback",
     "tool_result_metadata_callback",
-    "thinking_callback", "reasoning_callback", "clarify_callback",
+    "thinking_callback", "reasoning_callback", "reasoning_event_callback", "clarify_callback",
     "read_terminal_callback", "read_preview_callback", "drive_preview_callback",
     "read_window_below_callback", "connection_callback", "tour_callback", "theme_callback",
     "setup_beat_callback", "step_callback", "stream_delta_callback",

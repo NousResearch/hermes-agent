@@ -68,6 +68,70 @@ describe('useMessageStream delta flush scheduling', () => {
     expect(assistantText()).toBe('still streaming')
   })
 
+  it('keeps distinct reasoning item ids separate when they flush together', async () => {
+    mountStream()
+    act(() =>
+      stream.handleEvent({
+        type: 'reasoning.delta',
+        session_id: SID,
+        payload: { reasoning_id: 'reasoning-1', text: 'Inspecting' }
+      })
+    )
+    act(() =>
+      stream.handleEvent({
+        type: 'reasoning.delta',
+        session_id: SID,
+        payload: { reasoning_id: 'reasoning-2', text: 'Comparing' }
+      })
+    )
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    const reasoning =
+      states
+        .get(SID)
+        ?.messages.at(-1)
+        ?.parts.filter(part => part.type === 'reasoning') ?? []
+    expect(reasoning.map(part => part.text)).toEqual(['Inspecting', 'Comparing'])
+    expect(reasoning.map(part => part.sourceId)).toEqual(['reasoning-1', 'reasoning-2'])
+  })
+
+  it('settles a reasoning source before later reuse so causal order survives', async () => {
+    mountStream()
+    act(() =>
+      stream.handleEvent({
+        type: 'reasoning.delta',
+        session_id: SID,
+        payload: { reasoning_id: 'reasoning-1', text: 'First', timestamp: 1 }
+      })
+    )
+    act(() =>
+      stream.handleEvent({
+        type: 'reasoning.end',
+        session_id: SID,
+        payload: { reasoning_id: 'reasoning-1', text: '', timestamp: 2 }
+      })
+    )
+    act(() =>
+      stream.handleEvent({ type: 'message.delta', session_id: SID, payload: { text: 'Between', timestamp: 3 } })
+    )
+    act(() =>
+      stream.handleEvent({
+        type: 'reasoning.delta',
+        session_id: SID,
+        payload: { reasoning_id: 'reasoning-1', text: 'Later', timestamp: 4 }
+      })
+    )
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    const parts = states.get(SID)?.messages.at(-1)?.parts ?? []
+    expect(parts.map(part => part.type)).toEqual(['reasoning', 'text', 'reasoning'])
+    expect(parts.map(part => ('text' in part ? part.text : undefined))).toEqual(['First', 'Between', 'Later'])
+    expect(parts[0]).toMatchObject({ sourceId: 'reasoning-1', completedAt: 2 })
+    expect(parts[2]).toMatchObject({ sourceId: 'reasoning-1', timestamp: 4 })
+  })
+
   it('flushes queued text immediately when a hidden window becomes visible', () => {
     vi.mocked(performance.now).mockReturnValue(0)
     mountStream()

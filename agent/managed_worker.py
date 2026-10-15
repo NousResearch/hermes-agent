@@ -338,7 +338,7 @@ def execute(frame, channel):
     agent = None
     try:
         with policy_scope(policy):
-            agent = _construct_agent(frame, AIAgent, model=policy.model, provider=policy.provider, base_url=policy.base_url,
+            agent = _construct_agent(frame, AIAgent, policy, model=policy.model, provider=policy.provider, base_url=policy.base_url,
                 api_key=frame['api_key'], session_db=store, session_id=scope['session_id'],
                 enabled_toolsets=list(policy.toolsets), max_iterations=policy.max_turns,
                 # A delegated child needs its own owner-registered execution, which this single-turn
@@ -399,10 +399,13 @@ def execute(frame, channel):
         store.close()
 
 
-def _construct_agent(frame, factory, **kwargs):
+def _construct_agent(frame, factory, policy, **kwargs):
     """Agent construction resolves the provider credentials; a Kanban attempt that fails here
     still books the one-shot exit mapping (quota wall 75, re-login 78) before the crash."""
     try:
+        if kwargs['api_key'] is None:
+            from gateway.session_worker_construct import worker_api_key
+            kwargs['api_key'] = worker_api_key(policy)
         return factory(**kwargs)
     except Exception as exc:
         from gateway.session_kanban import record_start_failure

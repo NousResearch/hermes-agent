@@ -136,6 +136,22 @@ describe('no union roster', () => {
   })
 })
 
+describe('active SSH attribution during reconnect', () => {
+  it.each<[string, Union | null]>([
+    ['inventory is still loading', { agents: [], sources: [{ connectionId: 'windows-ssh', kind: 'ssh' }] }],
+    ['inventory request fails', null]
+  ])('keeps the known connection when %s', async (_reason, union) => {
+    const rows = await mergedRoster(
+      { profiles: [{ last_session: { id: 'existing-chat', last_active: 1 }, name: 'assistant' }] },
+      union,
+      'windows-ssh'
+    )
+
+    expect(identities(rows)).toEqual(['windows-ssh:assistant'])
+    expect(rows[0].last_session?.id).toBe('existing-chat')
+  })
+})
+
 describe('the active source annotates; other sources append', () => {
   it('keeps rich fields on the annotated row and tags the rest by source', async () => {
     const rows = await mergedRoster(

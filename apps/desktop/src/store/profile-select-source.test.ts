@@ -1,5 +1,18 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
 import { atom } from 'nanostores'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// Keep Electron's permissively typed dependency graph out of the strict
+// renderer compilation while exercising its real writer through the IPC seam.
+const { createDesktopProfilePreferences } = await vi.importActual<{
+  createDesktopProfilePreferences: (configPath: string) => {
+    readActive: () => null | string
+    remember: (name: unknown) => null | string
+  }
+}>('../../electron/desktop-profile')
 
 // Picking a profile must stay on the source the user is LOOKING at. $profiles
 // is the active gateway's list, so a pick made while a registry source is live
@@ -32,6 +45,8 @@ vi.mock('@/hermes', () => ({
 }))
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
+// Notification presentation is external to selection and persistence.
+vi.mock('@/store/notifications', () => ({ notifyError: vi.fn() }))
 
 const { $activeGatewayProfile, newSessionInProfile, selectProfile } = await import('./profile')
 
@@ -115,14 +130,20 @@ describe('newSessionInProfile', () => {
 })
 
 describe('selectProfile startup preference (#79886)', () => {
-  const rememberProfile = vi.fn(async (name: null | string) => ({ profile: name }))
+  let root: string
+  let preferences: ReturnType<typeof createDesktopProfilePreferences>
+  const rememberProfile = vi.fn(async (name: null | string) => ({ profile: preferences.remember(name) }))
+  const getConnectionConfig = vi.fn(async () => ({ mode: 'local' }))
 
   beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'profile-selection-'))
+    preferences = createDesktopProfilePreferences(path.join(root, 'active-profile.json'))
+    preferences.remember('default')
     rememberProfile.mockClear()
+    getConnectionConfig.mockReset()
+    getConnectionConfig.mockResolvedValue({ mode: 'local' })
 
     const getConnection = vi.fn(async () => ({ mode: 'local' }))
-
-    const getConnectionConfig = vi.fn(async () => ({ mode: 'local' }))
 
     ;(globalThis as { window?: unknown }).window = {
       hermesDesktop: {
@@ -131,6 +152,86 @@ describe('selectProfile startup preference (#79886)', () => {
         profile: { remember: rememberProfile }
       }
     }
+  })
+
+  afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
+
+  it.each(['beta', 'alpha'])('ignores late eligibility after a newer %s pick', async latest => {
+    let resolveOlder!: (config: { mode: 'local' }) => void
+
+    const olderConfig = new Promise<{ mode: 'local' }>(resolve => {
+      resolveOlder = resolve
+    })
+
+    getConnectionConfig.mockImplementationOnce(() => olderConfig)
+    selectProfile('alpha')
+    await vi.waitFor(() => expect($activeGatewayProfile.get()).toBe('alpha'))
+    expect(rememberProfile).not.toHaveBeenCalled()
+
+    selectProfile(latest)
+    await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledOnce())
+    expect(preferences.readActive()).toBe(latest)
+
+    resolveOlder({ mode: 'local' })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect($activeGatewayProfile.get()).toBe(latest)
+    expect(preferences.readActive()).toBe(latest)
+    expect(rememberProfile).toHaveBeenCalledOnce()
+  })
+
+  it.each(['registry', 'ssh', 'failed'])(
+    'preserves the last successful local selection after a newer %s pick',
+    async kind => {
+      let resolveOlder!: (config: { mode: string }) => void
+
+      const olderConfig = new Promise<{ mode: string }>(resolve => {
+        resolveOlder = resolve
+      })
+
+      getConnectionConfig.mockImplementationOnce(() => olderConfig)
+      selectProfile('alpha')
+      await vi.waitFor(() => expect($activeGatewayProfile.get()).toBe('alpha'))
+
+      if (kind === 'registry') {
+        // A registry pick must not discard the last successful local choice.
+        activeGatewayConnectionId.mockReturnValue('mini')
+      } else if (kind === 'ssh') {
+        getConnectionConfig.mockResolvedValue({ mode: 'ssh' })
+      } else {
+        ensureGatewayForProfile.mockRejectedValueOnce(new Error('backend unavailable'))
+      }
+
+      const latest = kind === 'registry' ? 'alpha' : 'beta'
+      selectProfile(latest)
+
+      if (kind === 'registry') {
+        await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledWith('mini', latest))
+      } else {
+        await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith(latest))
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(rememberProfile).not.toHaveBeenCalled()
+
+      resolveOlder({ mode: 'local' })
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      expect($activeGatewayProfile.get()).toBe(kind === 'failed' ? 'alpha' : latest)
+      expect(preferences.readActive()).toBe('alpha')
+      expect(rememberProfile).toHaveBeenCalledOnce()
+      expect(rememberProfile).toHaveBeenCalledWith('alpha')
+    }
+  )
+
+  it('does not persist a pick whose gateway activation fails', async () => {
+    ensureGatewayForProfile.mockRejectedValueOnce(new Error('backend unavailable'))
+    selectProfile('unreachable')
+    await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('unreachable'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect(preferences.readActive()).toBe('default')
+    expect(rememberProfile).not.toHaveBeenCalled()
   })
 
   it('remembers the selected workspace for the next Desktop launch', async () => {

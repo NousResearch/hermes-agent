@@ -135,7 +135,10 @@ export function createDesktopProfilePreferences(
       throw new Error(`Invalid profile name: ${profile}`)
     }
 
-    write({ ...read(true), profile: profile || null })
+    const preference: Record<string, unknown> = { ...read(true), profile: profile || null }
+    // A user choice is authoritative; only untouched heuristic picks are re-scored.
+    delete preference._migrated
+    write(preference)
 
     return profile || null
   }

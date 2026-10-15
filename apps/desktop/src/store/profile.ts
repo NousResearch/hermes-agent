@@ -945,10 +945,14 @@ export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile],
   showAll ? ALL_PROFILES : normalizeProfileKey(gateway)
 )
 
+let profileSelectionGeneration = 0
+let startupProfileSelectionGeneration = 0
+
 // Switch the active context to `name`: leave "All profiles" mode, point new
 // chats at it, and swap the single live gateway onto its backend (which moves
 // $activeGatewayProfile → name, so $profileScope follows).
 export function selectProfile(name: string): void {
+  const selectionGeneration = ++profileSelectionGeneration
   const target = normalizeProfileKey(name)
   // Switching profiles (or coming back from the all-profiles browse view) starts
   // fresh; re-tapping the profile you're already in leaves your session be.
@@ -986,7 +990,11 @@ export function selectProfile(name: string): void {
 
   void Promise.all([activateOnCurrentSource(target), shouldRememberStartupProfile])
     .then(([, shouldRemember]) => {
-      if (shouldRemember) {
+      // Config eligibility can finish after another pick has already activated.
+      // Only a newer successful, eligible pick supersedes the local preference.
+      if (shouldRemember && selectionGeneration > startupProfileSelectionGeneration) {
+        startupProfileSelectionGeneration = selectionGeneration
+
         return window.hermesDesktop?.profile?.remember(target)
       }
 

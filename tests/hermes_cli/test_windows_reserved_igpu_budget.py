@@ -4,10 +4,11 @@ Regression for #102593. The backend's heap total is not an additional physical m
 """
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.local_runtime import hardware as hw
+from hermes_cli.local_runtime import devices, hardware as hw
 from hermes_cli.local_runtime.devices import GGML_DEVICE_IGPU
 from hermes_platform.host import gpu_adapters
 from hermes_platform.host.gpu_adapters import Adapter
@@ -18,7 +19,7 @@ AMD = Adapter("AMD Radeon(TM) 8060S Graphics", 0x1002, 96 * GIB, 16 * GIB, False
 
 
 @pytest.fixture
-def machine(monkeypatch):
+def machine(monkeypatch, tmp_path):
     device = {
         "description": AMD.description, "type": GGML_DEVICE_IGPU,
         "total": 114 * GIB, "free": 108 * GIB,
@@ -26,7 +27,10 @@ def machine(monkeypatch):
     monkeypatch.setattr(hw, "_ram_bytes", lambda: (32 * GIB, 20 * GIB))
     monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
     monkeypatch.setattr(hw, "_device_pool_view", lambda: None)
-    monkeypatch.setattr(hw, "_accelerator_device", lambda **_: dict(device))
+    monkeypatch.setattr(hw, "_accelerator_cache", {})
+    monkeypatch.setattr(hw, "_configured_engine",
+                        lambda: SimpleNamespace(backend="vulkan", binary=tmp_path / "llama-server.exe"))
+    monkeypatch.setattr(devices, "probe_devices", lambda directory, backend: [dict(device)])
     monkeypatch.setattr(hw, "_gpu_engine_runs_the_model", lambda: True)
     monkeypatch.setattr(hw, "gpu_class", lambda: "amd")
     # DXGI can enumerate this same adapter twice, including over Remote Desktop.
@@ -90,3 +94,18 @@ def test_reserved_launch_requires_valid_fresh_free_memory(machine, monkeypatch):
     monkeypatch.setattr(hw, "_accelerator_device", lambda **_: machine)
     del machine["free"]
     assert hw.launch_budget(capacity) is None
+
+
+@pytest.mark.parametrize("reading", ["launch", "live"])
+def test_failed_fresh_probe_preserves_reserved_capacity(machine, monkeypatch, reading):
+    capacity = hw.probe_budget(planning=True)
+    assert capacity.total_device_bytes == 112 * GIB
+    monkeypatch.setattr(devices, "probe_devices", lambda directory, backend: [])
+
+    if reading == "launch":
+        assert hw.launch_budget(capacity) is None
+    else:
+        assert hw.probe_budget().total_device_bytes <= 32 * GIB
+
+    assert hw._accelerator_device(fresh=True) is None
+    assert hw.probe_budget(planning=True) == capacity

@@ -363,7 +363,8 @@ def _accelerator_device(*, fresh: bool = False) -> dict | None:
     otherwise; among discrete devices the largest. Cached per engine binary like
     ``_device_pool_view`` (a hit lasts the process, a miss retries after the TTL): the hardware
     endpoint polls this every few seconds and each probe initializes the GPU driver. ``fresh`` skips
-    the cache read for a launch-time free-memory answer.
+    the cache read for a launch-time free-memory answer. A failed fresh read returns None without
+    discarding a known device's capacity.
     """
     with suppress(Exception):  # a probe miss must never block budgeting
         from hermes_cli.local_runtime.devices import probe_devices
@@ -377,7 +378,8 @@ def _accelerator_device(*, fresh: bool = False) -> dict | None:
             return cached[1]
         devices = probe_devices(engine.binary.parent, engine.backend)
         device = max(devices, key=lambda d: (d["type"] == GGML_DEVICE_GPU, d["total"]), default=None)
-        _accelerator_cache[key] = (now, device)
+        if device is not None or cached is None or cached[1] is None:
+            _accelerator_cache[key] = (now, device)
         return device
     return None
 

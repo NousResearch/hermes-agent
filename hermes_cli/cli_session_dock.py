@@ -48,9 +48,10 @@ def loop_row(cli, now: float | None = None) -> tuple[str, str, str]:
     only the manager the CLI already holds is read, never state.db.
     """
     mgr = getattr(cli, "_loop_manager", None)
-    if mgr is None or mgr.session_id != getattr(cli, "session_id", None) or not mgr.has_loop():
+    # One read of ``state``: the input thread's ``/loop stop`` sets it to None under this spinner-thread poll.
+    s = mgr.state if mgr is not None and mgr.session_id == getattr(cli, "session_id", None) else None
+    if s is None or s.status not in {"active", "paused"}:
         return "", "", ""
-    s = mgr.state
     runs = f"{s.ticks_fired}/{s.times} runs" if s.times else f"{s.ticks_fired} run{'s' if s.ticks_fired != 1 else ''}"
     if s.status == "paused":
         reason = f" · {s.paused_reason}" if s.paused_reason else ""

@@ -68,6 +68,22 @@ def native_callback(runner, event, transport_home, profile=None):
         _callback.reset(token)
 
 
+@contextmanager
+def redispatched_native(runner, event):
+    """Re-enter the ambient native callback for an event a handler re-sends itself.
+
+    A slash handler's re-dispatched turn (``/retry``) is not a new inbound event: admission
+    matches provenance by event identity, so a freshly built event carries none and native
+    admission refuses it as ``invalid_params`` under session authority.
+    """
+    context = _callback.get()
+    if context is None or context[0] is not runner:
+        yield
+        return
+    with native_callback(runner, event, context[2], context[3]):
+        yield
+
+
 def _binding(runner, source, profile):
     registries = [(None, runner.adapters), *getattr(runner, '_profile_adapters', {}).items()]
     from gateway.config import Platform

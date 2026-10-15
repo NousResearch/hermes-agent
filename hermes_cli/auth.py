@@ -1092,6 +1092,13 @@ def _entry_ids(entries: Iterable[Any]) -> dict[str, dict[str, Any]]:
     return {e.get("id"): e for e in entries if isinstance(e, dict) and e.get("id")}
 
 
+# How long a removal tombstone stays binding (#138756). A long-running process (Desktop
+# backend, cron daemon) that loaded the pool before the removal keeps the row in memory
+# and would write it back on its next flush; the tombstone outlives that only for this
+# window, after which the section entry is dropped so auth.json cannot grow unboundedly.
+_POOL_REMOVAL_TOMBSTONE_TTL = 7 * 24 * 3600
+
+
 def write_credential_pool(
     provider_id: str, entries: list[dict[str, Any]], *,
     removed_ids: Optional[Iterable[str]] = None,
@@ -1105,12 +1112,28 @@ def write_credential_pool(
     so a rotation/exhaustion rewrite never drops a concurrent credential. Entries in
     *status_cleared_ids* were cleared deliberately (``hermes auth reset``) and skip the
     recency merge, which would otherwise read their cleared ``last_status_at`` (None ->
-    epoch 0) as a stale snapshot and copy a still-binding cooldown back."""
+    epoch 0) as a stale snapshot and copy a still-binding cooldown back.
+
+    Rows in *removed_ids* are also recorded as removal tombstones in the store, and every
+    write drops rows whose id is tombstoned: ``removed_ids`` alone only filters that one
+    write's merge-back, so a process still holding the removed row in memory would
+    resurrect it on its next flush. Re-adding the credential gets a fresh uuid id and is
+    unaffected."""
     removed = {rid for rid in (removed_ids or ()) if rid}
     bases = token_bases or {}
     with _auth_store_lock():
         auth_store = _load_auth_store()
         pool = _store_section(auth_store, "credential_pool")
+        now = time.time()
+        tombstone_section = auth_store.get("credential_pool_removals")
+        raw_tombstones = (
+            tombstone_section.get(provider_id)
+            if isinstance(tombstone_section, dict) else None)
+        tombstones = {
+            row_id: ts for row_id, ts in (raw_tombstones if isinstance(raw_tombstones, dict) else {}).items()
+            if isinstance(ts, (int, float)) and now - ts < _POOL_REMOVAL_TOMBSTONE_TTL
+        }
+        tombstones.update({rid: now for rid in removed})
         sanitized = [
             sanitize_borrowed_credential_payload(e, provider_id) if isinstance(e, dict) else e
             for e in entries]
@@ -1131,6 +1154,15 @@ def write_credential_pool(
             disk_id = disk_entry.get("id") if isinstance(disk_entry, dict) else None
             if disk_id and disk_id not in new_ids and disk_id not in removed:
                 merged.append(sanitize_borrowed_credential_payload(disk_entry, provider_id))
+        if tombstones or tombstone_section is not None:
+            section = _store_section(auth_store, "credential_pool_removals")
+            if tombstones:
+                section[provider_id] = tombstones
+                merged = [
+                    e for e in merged
+                    if not (isinstance(e, dict) and e.get("id") in tombstones)]
+            else:
+                section.pop(provider_id, None)
         pool[provider_id] = merged
         _save_auth_store(auth_store)
         return merged

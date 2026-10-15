@@ -1,4 +1,4 @@
-import type { MemoryProviderSetupInfo } from "@/lib/api";
+import type { MemoryProviderSetupInfo } from "@/lib/api-types";
 
 export function setupHasDetails(setup?: MemoryProviderSetupInfo): boolean {
   return Boolean(

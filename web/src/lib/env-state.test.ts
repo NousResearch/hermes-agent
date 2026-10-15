@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { EnvVarInfo } from "./api";
+import type { EnvVarInfo } from "./api-types";
 import { removeDeletedEnvVarFromState } from "./env-state";
 
 function envVar(overrides: Partial<EnvVarInfo> = {}): EnvVarInfo {

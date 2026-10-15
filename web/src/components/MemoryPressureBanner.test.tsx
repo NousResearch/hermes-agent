@@ -13,7 +13,7 @@ import type {
   StatusResponse,
   MemoryPressureStatus,
   DiskPressureStatus,
-} from "@/lib/api";
+} from "@/lib/api-types";
 
 let container: HTMLDivElement;
 let root: Root;

@@ -24,6 +24,13 @@ def _fail(msg: str, exit_code: int | None = None) -> int:
     return _FAILURE_EXIT
 
 
+def _positive_message_id(value: str) -> int:
+    """argparse ``type`` for ``--reply-to``: a Telegram message id is a positive integer (ASCII digits)."""
+    if not (value.isascii() and value.isdigit()) or int(value) <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive message id, got {value!r}")
+    return int(value)
+
+
 def _read_message_body(positional: Optional[str], file_path: Optional[str]) -> Optional[str]:
     """Resolve the message body: positional arg, then ``--file PATH`` / ``--file -`` (stdin), then
     piped stdin when not attached to a TTY. ``None`` when nothing is available (a usage error)."""
@@ -216,6 +223,11 @@ def cmd_send(args: argparse.Namespace) -> None:
             "hermes send: invalid --mention value(s): "
             f"{', '.join(invalid_mentions)}. Use a phone number or participant JID.",
             _USAGE_EXIT)
+    reply_to = getattr(args, "reply_to", None)
+    platform_name, _, target_ref = target.partition(":")
+    if reply_to is not None and (platform_name.strip().lower() != "telegram" or not target_ref.strip()):
+        # No home-channel fallback: a message id only means something in the chat it was taken from.
+        _fail("hermes send: --reply-to needs an explicit Telegram chat: telegram:chat_id[:thread_id]", _USAGE_EXIT)
     message = _read_message_body(getattr(args, "message", None), getattr(args, "file", None))
     if message is None or not message.strip():
         _fail(
@@ -236,6 +248,8 @@ def cmd_send(args: argparse.Namespace) -> None:
     tool_args = {"action": "send", "target": target, "message": message}
     if mentions:
         tool_args["mentions"] = mentions
+    if reply_to is not None:
+        tool_args["reply_to_message_id"] = reply_to
     result = send_message_tool(tool_args)
     sys.exit(_emit_result(result, json_mode=getattr(args, "json", False), quiet=getattr(args, "quiet", False)))
 
@@ -255,6 +269,9 @@ _SEND_ARGUMENTS = (
     (("--mention",), dict(dest="mentions", action="append", default=None, metavar="PHONE_OR_JID", help=(
         "WhatsApp only: add a native participant mention. Repeat for multiple recipients; "
         "bare phone numbers are normalized to JIDs. Include each matching @<number> near the start of the message text."))),
+    (("--reply-to",), dict(dest="reply_to", type=_positive_message_id, default=None, metavar="MESSAGE_ID", help=(
+        "Telegram only: send as a reply to this message id. Needs an explicit telegram:chat_id[:thread_id] "
+        "target; fails instead of posting unanchored when the message is gone."))),
     (("-l", "--list"), dict(dest="list_targets", action="store_true", default=False,
                             help="List available targets. Optional positional filter: `hermes send --list telegram`.")),
     (("-q", "--quiet"), dict(action="store_true", default=False, help="Suppress stdout on success (exit code only).")),
@@ -281,6 +298,7 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
             "Examples:\n"
             "  hermes send --to telegram \"deploy finished\"\n"
             "  echo \"RAM 92%\" | hermes send --to telegram:-1001234567890\n"
+            "  hermes send --to telegram:-1001234567890:17585 --reply-to 4567 \"answer\"\n"
             "  hermes send --to discord:#ops --file ./report.md\n"
             "  hermes send --to slack:#eng --subject \"[CI]\" --file build.log\n"
             "  hermes send --to whatsapp:GROUP@g.us --mention 15551234567 \"@15551234567 hello\"\n"

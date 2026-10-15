@@ -171,6 +171,150 @@ def test_whatsapp_mentions_ride_the_first_bridge_payload_only(whatsapp_bridge, t
     assert "does not support native mentions" in capsys.readouterr().err
     assert calls == []
 
+
+@pytest.fixture
+def telegram_bot(monkeypatch):
+    """Route ``hermes send --to telegram:...`` through the real tool and Telegram sender into a fake
+    Bot that answers like the Bot API: a topic message that is not an in-topic reply points its
+    ``reply_to_message`` at the topic root (#118678), and a reply to a message in another topic comes
+    back as ``external_reply``. Switches in ``state``: ``missing_anchor`` (reply target gone),
+    ``drop_anchor`` (delivered without the anchor), ``external_anchor`` (anchored across topics),
+    ``missing_thread`` (topic gone). Records ``(method, kwargs)`` calls and session mirrors."""
+    import asyncio
+    import contextlib
+    import importlib
+    import sys
+    from functools import partial
+    from types import SimpleNamespace
+
+    from gateway.config import Platform
+
+    calls, mirrored = [], []
+    state = {"missing_anchor": False, "drop_anchor": False, "external_anchor": False, "missing_thread": False}
+
+    async def send(method, **kwargs):
+        calls.append((method, kwargs))
+        thread, anchor = kwargs.get("message_thread_id"), kwargs.get("reply_to_message_id")
+        if thread is not None and state["missing_thread"]:
+            raise Exception("Bad Request: message thread not found")
+        if anchor is not None and state["missing_anchor"]:
+            if not kwargs.get("allow_sending_without_reply"):
+                raise Exception("Bad Request: message to be replied not found")
+            anchor = None  # allow_sending_without_reply=True posts it unanchored
+        if state["drop_anchor"]:
+            anchor = None
+        external = SimpleNamespace(message_id=anchor) if anchor is not None and state["external_anchor"] else None
+        replied_id = thread if anchor is None or external else anchor
+        return SimpleNamespace(message_id=100 + len(calls), external_reply=external,
+                               reply_to_message=None if replied_id is None else SimpleNamespace(message_id=replied_id))
+
+    # Import the real adapter first so the fake PTB below can't leave it cached as "PTB unavailable".
+    with contextlib.suppress(Exception):
+        importlib.import_module("plugins.platforms.telegram.adapter")
+    bot = SimpleNamespace(**{name: partial(send, name) for name in (
+        "send_message", "send_photo", "send_video", "send_voice", "send_audio", "send_document")})
+    constants = SimpleNamespace(ParseMode=SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML"))
+    monkeypatch.setitem(sys.modules, "telegram", SimpleNamespace(
+        Bot=lambda **_kwargs: bot, MessageEntity=lambda **kw: SimpleNamespace(**kw), constants=constants))
+    monkeypatch.setitem(sys.modules, "telegram.constants", constants)
+    monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
+    config = SimpleNamespace(
+        platforms={Platform.TELEGRAM: SimpleNamespace(enabled=True, token="***", extra={})},
+        get_home_channel=lambda _platform: None,
+    )
+    monkeypatch.setattr(send_cmd, "_load_hermes_env", lambda: None)
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: config)
+    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+    monkeypatch.setattr("model_tools._run_async", lambda coro: asyncio.run(coro))
+    monkeypatch.setattr("tools.send_message_tool._mirror_sent_message", lambda *args: bool(mirrored.append(args)))
+    return SimpleNamespace(calls=calls, mirrored=mirrored, state=state)
+
+
+_TOPIC = "telegram:-1001234567890:17585"
+
+
+def _send_exit_code(argv):
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(_parse(argv))
+    return exc.value.code
+
+
+@pytest.mark.parametrize("argv, expected", [
+    (["--to", "telegram", "--reply-to", "4567", "hello"], "telegram:chat_id"),
+    (["--to", "discord:123456", "--reply-to", "4567", "hello"], "telegram:chat_id"),
+    (["--to", _TOPIC, "--reply-to", "0", "hello"], "positive message id"),
+    (["--to", _TOPIC, "--reply-to", "abc", "hello"], "positive message id"),
+    (["--to", _TOPIC, "--reply-to", "+4567", "hello"], "positive message id"),
+])
+def test_telegram_reply_to_rejections_never_reach_telegram(telegram_bot, capsys, argv, expected):
+    """--reply-to needs an explicit Telegram chat (no home-channel fallback) and a message id made of
+    ASCII digits; anything else is a usage error (exit 2) raised before any delivery attempt."""
+    assert _send_exit_code(argv) == 2
+    assert expected in capsys.readouterr().err
+    assert telegram_bot.calls == []
+
+
+def test_telegram_reply_to_anchors_the_first_delivered_message_only(telegram_bot, tmp_path, capsys):
+    """The anchor rides on the first delivered message only (text chunk, else media), with
+    allow_sending_without_reply=False; the result names that message and the anchor Telegram confirmed."""
+    calls = telegram_bot.calls
+    assert _send_exit_code(["--to", _TOPIC, "--reply-to", "4567", "--json", "word " * 1000]) == 0
+    (_, first), *rest = calls
+    assert rest and first["message_thread_id"] == 17585
+    assert first["reply_to_message_id"] == 4567 and first["allow_sending_without_reply"] is False
+    assert all("reply_to_message_id" not in kwargs for _, kwargs in rest)
+    result = json.loads(capsys.readouterr().out)
+    assert (result["reply_message_id"], result["reply_to_message_id"]) == ("101", "4567")
+    assert result["message_id"] == str(100 + len(calls))
+
+    first_image, second_image = tmp_path / "a.png", tmp_path / "b.png"
+    for image in (first_image, second_image):
+        image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    for body, methods in ((f"chart MEDIA:{first_image}", ["send_photo"]),
+                          (f"charts MEDIA:{first_image} MEDIA:{second_image}",
+                           ["send_message", "send_photo", "send_photo"])):
+        calls.clear()
+        assert _send_exit_code(["--to", _TOPIC, "--reply-to", "4567", body]) == 0
+        assert [method for method, _ in calls] == methods
+        assert [kwargs.get("reply_to_message_id") for _, kwargs in calls] == [4567] + [None] * (len(methods) - 1)
+
+
+def test_telegram_reply_to_missing_message_fails_closed(telegram_bot, capsys):
+    """A reply target the Bot API cannot find fails the send; it is never retried unanchored."""
+    telegram_bot.state["missing_anchor"] = True
+    assert _send_exit_code(["--to", "telegram:-1001234567890:1", "--reply-to", "4567", "hello"]) == 1
+    assert [kwargs.get("reply_to_message_id") for _, kwargs in telegram_bot.calls] == [4567]
+    assert "message to be replied not found" in capsys.readouterr().err
+    assert telegram_bot.mirrored == []
+
+
+def test_telegram_reply_to_survives_the_thread_not_found_fallback(telegram_bot):
+    """The topic fallback (#27012) resends without the thread id but keeps the reply anchor."""
+    telegram_bot.state["missing_thread"] = True
+    assert _send_exit_code(["--to", _TOPIC, "--reply-to", "4567", "hello"]) == 0
+    assert [(kwargs.get("message_thread_id"), kwargs.get("reply_to_message_id"))
+            for _, kwargs in telegram_bot.calls] == [(17585, 4567), (None, 4567)]
+
+
+def test_telegram_reply_to_is_confirmed_by_telegram_not_by_the_request(telegram_bot, capsys):
+    """The confirmation is read from the message Telegram returns (``reply_to_message`` or, across
+    topics, ``external_reply``), never echoed from the request. A message delivered without the anchor
+    is still mirrored, but exits 1 with its id so a script neither books it as a reply nor resends it;
+    the topic root Telegram links it to is not reported as the anchor."""
+    telegram_bot.state["external_anchor"] = True
+    assert _send_exit_code(["--to", _TOPIC, "--reply-to", "4567", "--json", "hello"]) == 0
+    assert json.loads(capsys.readouterr().out)["reply_to_message_id"] == "4567"
+
+    telegram_bot.state.update(external_anchor=False, drop_anchor=True)
+    telegram_bot.calls.clear()
+    telegram_bot.mirrored.clear()
+    assert _send_exit_code(["--to", _TOPIC, "--reply-to", "4567", "--json", "hello"]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert (result["partial_success"], result["reply_message_id"], result["reply_to_message_id"]) == (True, "101", None)
+    assert "4567" in result["error"] and "17585" not in json.dumps(result)
+    assert len(telegram_bot.calls) == 1 and len(telegram_bot.mirrored) == 1
+
+
 # ---------------------------------------------------------------------------
 # --list
 # ---------------------------------------------------------------------------

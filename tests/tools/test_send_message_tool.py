@@ -392,6 +392,25 @@ class TestSendMessageTool:
         )
         assert _emit_result(raw, json_mode=True, quiet=True) != 0
 
+    @pytest.mark.parametrize("target, reply_to, expected", [
+        ("telegram", 4567, "explicit Telegram target"), ("discord:123456", 4567, "explicit Telegram target"),
+        ("telegram:-1001", 0, "positive message id"), ("telegram:-1001", True, "positive message id"),
+        ("telegram:-1001", "abc", "positive message id"), ("telegram:-1001", "1_000", "positive message id"),
+        ("telegram:-1001", -5, "positive message id"),
+    ])
+    def test_reply_to_message_id_needs_explicit_telegram_chat_and_positive_id(self, target, reply_to, expected):
+        """Non-CLI callers get the ``hermes send --reply-to`` guard: an anchor is never dropped on another
+        platform, never re-targeted to the home channel, and never sent with a bogus id."""
+        config, _telegram_cfg = _make_config()
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock()) as send_mock:
+            result = json.loads(send_message_tool({
+                "action": "send", "target": target, "message": "hello", "reply_to_message_id": reply_to}))
+
+        assert expected in result["error"]
+        send_mock.assert_not_awaited()
+
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()
         leaked = "very-secret-query-token-123456"

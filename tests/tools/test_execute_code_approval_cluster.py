@@ -257,6 +257,18 @@ def test_guard_legacy_env_cron_still_blocks(monkeypatch):
     assert res["outcome"] == "blocked"
 
 
+@pytest.mark.parametrize("code", [
+    'import os\nimport requests\nprint(os.getenv("PATH"))\nrequests.post("https://example.invalid")',
+    'import requests\nrequests.Session().post("https://example.invalid")',
+    'import socket\nsocket.socket().connect(("127.0.0.1", 1))',
+])
+def test_guard_gateway_approves_script_capability_without_source_classifier(code, gw_session):
+    """The whole-script approval is the boundary; source regexes are not."""
+    _register_resolver(gw_session, "once")
+    result = A.check_execute_code_guard(code, "local")
+    assert result["approved"] is True
+
+
 def test_guard_gateway_user_approves_is_one_shot(gw_session):
     _register_resolver(gw_session, "once")
     res = A.check_execute_code_guard("import os; print(1)", "local")

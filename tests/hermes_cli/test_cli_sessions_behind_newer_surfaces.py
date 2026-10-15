@@ -258,3 +258,71 @@ def test_sessions_list_stays_a_recency_page_across_surfaces(tmp_path, capsys):
     assert "cli-session" in full
     assert "desk-059" in full
     db.close()
+
+
+def _column_names(db: SessionDB) -> set[str]:
+    return {row[1] for row in db._conn.execute("PRAGMA table_info(sessions)")}
+
+
+def _pre_column_readonly(tmp_path) -> SessionDB:
+    """A store last written before ``created_source``, reopened read-only.
+
+    Writable open adds the column. Bare ``-c``, ``--resume latest``, ``/sessions``
+    and ``hermes sessions list`` never do that.
+    """
+    path = tmp_path / "state.db"
+    writer = SessionDB(db_path=path)
+    writer.create_session("legacy-cli", source="cli")
+    writer.append_message("legacy-cli", role="user", content="hello from cli")
+    with writer._lock:
+        writer._conn.execute("DROP INDEX IF EXISTS idx_sessions_local_created_started")
+        writer._conn.execute("ALTER TABLE sessions DROP COLUMN created_source")
+        writer._conn.commit()
+    writer.close()
+    reader = SessionDB(db_path=path, read_only=True)
+    assert "created_source" not in _column_names(reader)
+    return reader
+
+
+def test_readonly_pre_column_continue_finds_legacy_cli_session(tmp_path, monkeypatch):
+    """Bare ``-c`` and ``--resume latest`` share ``_resolve_last_session`` and open read-only.
+
+    A missing ``created_source`` column must not become "no previous session".
+    The lookup must not migrate the file.
+    """
+    _pre_column_readonly(tmp_path).close()
+
+    assert _resolve_cli(monkeypatch, tmp_path) == "legacy-cli"
+    healed = SessionDB(db_path=tmp_path / "state.db", read_only=True)
+    try:
+        assert "created_source" not in _column_names(healed)
+    finally:
+        healed.close()
+
+
+def test_readonly_pre_column_session_listing_finds_legacy_cli_session(tmp_path):
+    """In-chat ``/sessions`` and ``/resume`` list the legacy CLI row on a pre-column store."""
+    db = _pre_column_readonly(tmp_path)
+    try:
+        listed, via_command = _recent_cli_ids(db)
+        assert listed == ["legacy-cli"]
+        assert via_command == ["legacy-cli"]
+        assert "created_source" not in _column_names(db)
+    finally:
+        db.close()
+
+
+def test_readonly_sessions_list_shows_pre_column_cli_row_without_migrating(tmp_path, capsys):
+    """Control: ``hermes sessions list`` is read-only and does not use the surface predicate.
+
+    It still prints the legacy row, and it does not add ``created_source``.
+    """
+    from hermes_cli.sessions_cmd import _cmd_list
+
+    db = _pre_column_readonly(tmp_path)
+    try:
+        _cmd_list(db, SimpleNamespace(limit=20, source=None, workspace=None))
+        assert "legacy-cli" in capsys.readouterr().out
+        assert "created_source" not in _column_names(db)
+    finally:
+        db.close()

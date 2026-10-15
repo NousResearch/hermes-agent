@@ -19,6 +19,7 @@ import argparse
 import logging
 import os
 import re
+import sqlite3
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
@@ -352,18 +353,43 @@ class SurfaceLabelReader:
 
     The surface predicate runs in SQL before LIMIT/OFFSET. Filtering a fixed over-fetch of every
     ``local`` row dropped CLI sessions once newer Desktop/TUI rows filled that window.
+
+    Read-only opens do not migrate. A store that has no ``created_source`` column is matched on
+    ``source`` alone (there are no gateway ``local`` rows yet). ``created_source='unknown'`` stays
+    unmatched once the column exists.
     """
 
     def __init__(self, db):
         self._wrapped = db
+        self._created_source_column: bool | None = None
 
     def __getattr__(self, name):
         return getattr(self._wrapped, name)
 
+    def _has_created_source_column(self) -> bool:
+        """Cached ``PRAGMA table_info`` read. A connection does not gain the column after open."""
+        if self._created_source_column is not None:
+            return self._created_source_column
+        present = False
+        conn = getattr(self._wrapped, "_conn", None)
+        if conn is not None:
+            try:
+                present = any(
+                    row[1] == "created_source"
+                    for row in conn.execute("PRAGMA table_info(sessions)")
+                )
+            except sqlite3.Error:
+                present = False
+        self._created_source_column = present
+        return present
+
     def _labelled(self, requested, limit, offset, call):
         wanted = {requested} if isinstance(requested, str) else set(requested or ())
         surfaces = wanted & _LOCAL_LABELLED
-        if not surfaces:
+        # No column: naming ``created_source`` raises, and the read-only caller swallows that
+        # into an empty page. Match the requested labels only, as the old filter did when the
+        # key was absent (a ``local`` row could not prove its surface).
+        if not surfaces or not self._has_created_source_column():
             return call(requested, limit, offset, None)
         # ``local`` is the gateway label; ``created_source`` is the surface. Page the rows this
         # surface can see, not a window of every local row.

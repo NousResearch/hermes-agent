@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from hermes_cli.web_deps import late
 from hermes_cli.config import cfg_get
 from hermes_cli.web_server_cron import (
-    _create_cron_job_sync, _cron_optional_text, _cron_string_list, _mutate_cron_for_profile, _normalize_dashboard_cron_script, _raise_if_cron_registration_error, _run_cron_dashboard_io, _validate_dashboard_cron_context_from, _validate_dashboard_cron_effective_job,
+    _create_cron_job_sync, _cron_optional_text, _cron_store_health_sync, _cron_string_list, _mutate_cron_for_profile, _normalize_dashboard_cron_script, _raise_if_cron_registration_error, _run_cron_dashboard_io, _validate_dashboard_cron_context_from, _validate_dashboard_cron_effective_job,
 )
 from hermes_cli.web_models import AutomationBlueprintInstantiate, CronJobCreate, CronJobUpdate
 from hermes_cli.web_routers._common import log as _log
@@ -683,6 +683,11 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
 @router.post("/api/cron/jobs")
 async def create_cron_job(body: CronJobCreate, profile: Optional[str] = None):
     return await _run_cron_dashboard_io(_create_cron_job_sync, body, profile)
+
+
+@router.get("/api/cron/store-health")
+async def get_cron_store_health(profile: Optional[str] = None):
+    return await _run_cron_dashboard_io(_cron_store_health_sync, profile)
 
 
 @router.get("/api/cron/delivery-targets")

@@ -450,7 +450,7 @@ The web dashboard exposes a REST API that the frontend consumes. You can also ca
 The management endpoint families — `/api/config`, `/api/env`, `/api/skills`,
 `/api/tools/toolsets`, `/api/mcp`,
 `/api/model/{info,options,auxiliary,set,recommended-default}`,
-`/api/cron/{delivery-targets,blueprints}`, `/api/audio/voice-config`,
+`/api/cron/{delivery-targets,blueprints,store-health}`, `/api/audio/voice-config`,
 `/api/ops/debug-share`, `/api/learning/{graph,node}`, and `/api/dashboard/plugins/hub` —
 accept an optional `?profile=<name>` query parameter (or `"profile"` in the
 JSON body for writes) that scopes the read/write to that profile's
@@ -593,6 +593,10 @@ Immediately triggers a cron job outside its schedule.
 ### DELETE /api/cron/jobs/\{job_id\}
 
 Deletes a cron job.
+
+### GET /api/cron/store-health
+
+Runs the same write probe as `hermes cron status` against the profile's cron store. Returns `{"profile": ..., "writable": true, "unwritable": null}` when the store accepts writes. When it does not (full disk, read-only mount, wrong owner), `writable` is `false` and `unwritable` holds the `store`, `error`, `since` and `fix` fields the CLI prints.
 
 ### GET /api/skills
 

@@ -178,3 +178,76 @@ async def test_delete_retires_owner_receipts_and_never_resurrects_the_id(tmp_pat
         bind_api_session(authority, 'api-owner')
     assert authority.db.get_session(local.session_id) is None
     assert authority.db.get_session('api-owner') is None
+
+
+async def _local_fixture(tmp_path, monkeypatch):
+    """A store + authority holding one created local session; returns the pieces a test needs."""
+    from gateway.config import GatewayConfig, Platform
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_contract import Principal
+    from gateway.session_local import create_local_session
+    from gateway import run
+
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
+    authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='first')
+    actor = Principal('owner', 'fixture', frozenset({'session:create', 'session:read'}), 'socket')
+    ref = create_local_session(authority, actor, {
+        'request_id': 'r', 'source': 'gui', 'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
+    live = authority.sessions[ref.session_id]
+    return SimpleNamespace(store=store, authority=authority, actor=actor, ref=ref, route=live.route,
+                           source=live.source, platform=Platform)
+
+
+@pytest.mark.asyncio
+async def test_stamped_local_route_reopens_its_own_row_instead_of_minting(tmp_path, monkeypatch):
+    """A local route whose row was stamped by its viewer heals to that row, never to a fresh id.
+
+    The row's id is minted from the local identity, so the creation receipt is the only valid target:
+    SessionStore's stale-route heal (#54878) answers with a freshly minted id otherwise, and a second
+    row then sits on the same route — the routing index names an id no receipt owns.
+    """
+    from gateway.session_local_recovery import restore_local_session
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    fx = await _local_fixture(tmp_path, monkeypatch)
+    fx.authority.db.end_session(fx.ref.session_id, 'tui_close')
+    entry = fx.store.get_or_create_session(fx.source)
+    rows = fx.authority.db._read_all(
+        'SELECT id, end_reason FROM sessions WHERE session_key=?', (fx.route,))
+    assert entry.session_id == fx.ref.session_id, 'the heal minted a fresh id for a local route'
+    assert [r['id'] for r in rows] == [fx.ref.session_id], 'a second row landed on the local route'
+    assert rows[0]['end_reason'] is None, 'the reopened row kept its viewer stamp'
+    restore_local_session(fx.authority, fx.ref.session_id)
+
+
+@pytest.mark.asyncio
+async def test_local_mount_repoints_a_stale_route_entry_instead_of_refusing(tmp_path, monkeypatch):
+    """A route entry naming a session the receipt does not own is repaired on mount.
+
+    The receipt owns the local route; refusing the mount instead is what leaves a conversation that
+    once took a minted id permanently dark (every mount answers ``admission_conflict``).
+    """
+    from gateway.session import SessionEntry
+    from gateway.session_local_recovery import restore_local_session
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    fx = await _local_fixture(tmp_path, monkeypatch)
+    with fx.store._lock:
+        fx.store._ensure_loaded_locked()
+        current = fx.store._entries[fx.route]
+        fx.store._entries[fx.route] = SessionEntry(
+            fx.route, '20261015_201623_3e9eeb2a', current.created_at, current.updated_at,
+            origin=fx.source, platform=fx.platform.LOCAL)
+    restore_local_session(fx.authority, fx.ref.session_id)
+    assert fx.store._entries[fx.route].session_id == fx.ref.session_id
+
+
+@pytest.mark.asyncio
+async def test_peer_recorder_contains_a_refused_local_label(tmp_path, monkeypatch):
+    """Recording a local peer is best-effort: a refused label is a no-op, not a failed turn/create."""
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    fx = await _local_fixture(tmp_path, monkeypatch)
+    fx.store._record_gateway_session_peer('20261015_201623_3e9eeb2a', fx.route, fx.source)

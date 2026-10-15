@@ -21,7 +21,7 @@ import logging
 import threading
 import uuid
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_state_runtime import RuntimeStoreError, classify_loc, publish_client_value
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,6 @@ def _spec_problem(exc):
     so a schema error is its failing locs and error types. Any other message is one line, and
     only when it may be echoed."""
     from pydantic import ValidationError
-    from hermes_state_runtime import classify_loc, publish_client_value
     if not isinstance(exc, ValidationError):
         return publish_client_value(' '.join(str(exc).split()))
     problems = []

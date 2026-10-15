@@ -11,7 +11,7 @@ import uuid
 from gateway.config import Platform
 from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, Principal, SessionRef, Submission
 from hermes_constants import get_hermes_home, profile_name_for_home
-from hermes_state_runtime import RuntimeStoreError
+from hermes_state_runtime import RuntimeStoreError, published_fields, refusal_clause
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,6 @@ def _schema_refusal(owner, rid, method, problems):
     path already returned; each loc is sealed the same way, so a client key is not copied
     raw into the frame, the log, or the CLI line. One warning, because the check is named.
     """
-    from hermes_state_runtime import published_fields, refusal_clause
     verb = method if isinstance(method, str) else None
     exc = RuntimeStoreError('invalid_params', field=refusal_clause(problems, method=verb),
                             detail='does not match the session contract')

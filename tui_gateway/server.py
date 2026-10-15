@@ -95,6 +95,21 @@ from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
+
+
+def in_memory_draft_session_keys() -> set:
+    """Durable session keys of live sessions whose DB row does not exist yet (lazy drafts).
+
+    The REST layer uses this to answer 200-empty for a draft's transcript reads instead of 404:
+    the renderer fetches /messages immediately after ``session.create`` while the row is still
+    created lazily on the first prompt, and the spurious 404 fail-latches the transcript bind
+    (see tui_gateway/methods_session.py ``session.create`` — the same reason seeded branch
+    children persist their row up front). Records carry ``_db_row_pending`` from creation and
+    drop it at the single persist chokepoint (``_ensure_session_db_row``) or the seeded-row
+    paths."""
+    with _sessions_lock:
+        return {rec["session_key"] for rec in _sessions.values()
+                if rec.get("session_key") and rec.get("_db_row_pending")}
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()

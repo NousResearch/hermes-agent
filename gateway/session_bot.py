@@ -479,6 +479,15 @@ async def deliver(connection, params):
     return await asyncio.shield(track_mutation(connection.authority, _deliver(connection, params)))
 
 
+def _require_same_delivery(record, actor, message, author, category):
+    """A delivery id names one delivery: the same message, principal, author and category (the
+    mailbox writer's identity), whether its receipt is admission-backed or refused."""
+    if (record['message'] != message or record['principal_id'] != actor.subject
+            or record.get('author') != author
+            or record.get('notification_category', 'result') != category):
+        raise RuntimeStoreError('admission_conflict')
+
+
 async def _deliver(connection, params):
     authority, actor = connection.authority, connection.actor
     home = _home(authority, actor, params.get('profile'))
@@ -506,26 +515,19 @@ async def _deliver(connection, params):
         root, record = await read_receipt(home, key)
         path = root / f'{key}.json'
         if record is not None and record.get('admission_id'):
-            if (record['message'] != message or record['principal_id'] != actor.subject
-                    or record.get('author') != author
-                    or record.get('notification_category', 'result') != category):
-                raise RuntimeStoreError('admission_conflict')
+            _require_same_delivery(record, actor, message, author, category)
             authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
             await _maybe_retry(authority, home, path, record)
             return await _publish_result(authority, home, record)
         await _migrate(authority, actor, home, root)
         _, record = await read_receipt(home, key)
         if record is not None and record.get('admission_id'):
-            if (record['message'] != message or record['principal_id'] != actor.subject
-                    or record.get('author') != author
-                    or record.get('notification_category', 'result') != category):
-                raise RuntimeStoreError('admission_conflict')
+            _require_same_delivery(record, actor, message, author, category)
             authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
             await _maybe_retry(authority, home, path, record)
             return await _publish_result(authority, home, record)
         if record is not None and record.get('refused') is True:
-            if record['message'] != message or record['principal_id'] != actor.subject:
-                raise RuntimeStoreError('admission_conflict')
+            _require_same_delivery(record, actor, message, author, category)
             return {k: record[k] for k in ('status', 'delivery_id', 'profile_home', 'session_id', 'message',
                                            'reply', 'error', 'reason')}
         if record is not None:

@@ -1403,7 +1403,9 @@ def compute_error_backoff(
     is_zai_coding_overload: bool, base_url: Any, model: Any,
 ) -> float:
     """Pick the wait before the next API retry and announce it. Retry-After wins for
-    rate limits and any other retryable error (capped at ``RETRY_AFTER_CAP_S``); otherwise
+    rate limits and any other retryable error (capped at ``RETRY_AFTER_CAP_S``; a rate limit
+    past the cap is a spent quota window no in-turn wait reaches, so it takes the backoff instead
+    unless ``fallback.min_switch_reset_seconds`` keeps the turn on the primary); otherwise
     jittered backoff, replaced by the adaptive policy for 429s / Z.AI overloads. Retries are
     buffered (replayed only if every retry fails); a long Z.AI Coding wait or a non-rate-limit
     ``Retry-After`` over ``LIVE_RETRY_WAIT_CAP_S`` is announced when it starts."""
@@ -1413,6 +1415,7 @@ def compute_error_backoff(
         LIVE_RETRY_WAIT_CAP_S, RETRY_AFTER_CAP_S, adaptive_rate_limit_backoff, jittered_backoff,
         provider_retry_after_seconds,
     )
+    from agent.fallback_cooldown import switch_deferred_by_reset
     from hermes_cli.anon_auth import on_free_model
 
     # Respect Retry-After on every retryable provider error, not just 429s. Retryable
@@ -1421,10 +1424,13 @@ def compute_error_backoff(
     # outage into a retry storm.
     _retry_after = provider_retry_after_seconds(api_error)
     if _retry_after is not None:
-        if is_rate_limited and _retry_after > RETRY_AFTER_CAP_S:
+        if is_rate_limited and _retry_after > RETRY_AFTER_CAP_S and not switch_deferred_by_reset(
+            agent, FailoverReason.rate_limit, time.time() + _retry_after,
+        ):
             # A rate limit that reopens past the cap is a spent quota window (hours to days), not
             # a request bucket: no in-turn wait reaches it, and sleeping the cap only delays the
-            # fallback / terminal error by 10 minutes per attempt. Take the short backoff instead.
+            # fallback / terminal error by 10 minutes per attempt. Take the short backoff instead,
+            # unless fallback.min_switch_reset_seconds asked the primary to wait this reset out.
             _retry_after = None
         else:
             _retry_after = min(_retry_after, RETRY_AFTER_CAP_S)
@@ -1476,7 +1482,7 @@ def free_tier_cooldown_ends_turn(agent: Any, api_error: Exception, base_url: Any
     sits through. The free tier's pause is service-wide: a 600 s retry met a second 429 while its
     1069 s window ran, so the caller ends the attempt cycle now (fallback, or the reset time and
     the sign-in / model doors). Every other provider, and every unattended run (cron, messaging,
-    ``hermes chat -q``), waits out its ``Retry-After``: a paid bucket reopens on time, and
+    ``hermes chat -q``), waits out a ``Retry-After`` up to the cap: a paid bucket reopens on time, and
     ``fallback.min_switch_reset_seconds`` relies on that wait."""
     from agent.retry_utils import LIVE_RETRY_WAIT_CAP_S, provider_retry_after_seconds
     from agent.session_source import is_attended

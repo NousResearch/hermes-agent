@@ -1,5 +1,6 @@
 """Provider ``Retry-After`` handling in the retry loop: honoured up to a 600-second cap (#26293),
-also on retryable 5xx responses; a rate limit that reopens past the cap takes the short backoff."""
+also on retryable 5xx responses; a rate limit that reopens past the cap takes the short backoff
+unless ``fallback.min_switch_reset_seconds`` keeps the turn on the primary."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -139,3 +140,13 @@ class TestRetryAfterCap:
         assert "Waiting 600.0s" not in status
         # jittered_backoff is patched to 0.0 by the conftest fast-backoff fixture.
         assert "Waiting 0.0s" in status
+
+    def test_rate_limit_past_the_cap_is_waited_when_the_primary_is_kept(self, agent):
+        """fallback.min_switch_reset_seconds above the reset keeps the turn on the primary so the
+        retry backoff rides out the window; dropping the over-cap value there would exhaust the
+        retries long before the reset and end the turn with no fallback tried."""
+        error = self._retryable_error(429, {"retry-after": "1000"})
+        config = {"fallback": {"min_switch_reset_seconds": 3600}}
+        with patch("hermes_cli.config.load_config", return_value=config):
+            status, _ = self._drive_once(agent, error, "Waiting")
+        assert "Waiting 600.0s" in status

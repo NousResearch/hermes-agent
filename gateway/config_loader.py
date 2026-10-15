@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from gateway.config import UNAUTHORIZED_DM_BEHAVIORS, Platform, PlatformConfig, _coerce_dict, _dict_slot, _normalize_choice
+from gateway.outbound_suppression import normalize_suppress_outbound
 
 # Logger name parity with the origin module: records stay under "gateway.config".
 logger = logging.getLogger("gateway.config")
@@ -100,7 +101,7 @@ _TOPLEVEL_BRIDGE: tuple = (
         "filter_silence_narration",
     ),
     ("unauthorized_dm_behavior", "unauthorized_dm_behavior", "presence", None, _dm_behavior_choice),
-    *_presence("unauthorized_dm_decline_message"),
+    *_presence("unauthorized_dm_decline_message", "suppress_outbound"),
 )
 
 
@@ -223,6 +224,7 @@ _SHARED_KEYS: tuple = (
     ("channel_skill_bindings", _DISCORD_SLACK, None),
     ("channel_prompts", None, _str_keyed),
     *_plain("gateway_restart_notification", "typing_indicator", "typing_status_text"),
+    ("suppress_outbound", None, normalize_suppress_outbound),
 )
 
 def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict, *, root_block: bool = False) -> dict:

@@ -637,6 +637,8 @@ class GatewayConfig:
     on_all_adapters_down: str = "exit"  # "exit" | "stay_alive"; GATEWAY_ON_ALL_ADAPTERS_DOWN overrides
     unauthorized_dm_behavior: str = "pair"  # UNAUTHORIZED_DM_BEHAVIORS
     unauthorized_dm_decline_message: str = ""  # "decline" reply text; empty → DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
+    # Opt-in outbound drop patterns (gateway/outbound_suppression.py); platforms.<p>.suppress_outbound extends it.
+    suppress_outbound: List[str] = field(default_factory=list)
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     # Prune SessionEntry records older than this (a resumed chat gets a fresh session). 0 = off.
     session_store_max_age_days: int = 90
@@ -651,6 +653,7 @@ class GatewayConfig:
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+        "suppress_outbound",
     )
 
     def __post_init__(self) -> None:
@@ -790,6 +793,7 @@ class GatewayConfig:
             session_store_max_age_days = 90
 
         from gateway.profile_routing import parse_profile_routes
+        from gateway.outbound_suppression import normalize_suppress_outbound
 
         return cls(
             platforms=by_platform("platforms", PlatformConfig.from_dict, dicts_only=True),
@@ -810,6 +814,7 @@ class GatewayConfig:
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), UNAUTHORIZED_DM_BEHAVIORS, "pair"),
             unauthorized_dm_decline_message=str(data.get("unauthorized_dm_decline_message") or "").strip(),
+            suppress_outbound=normalize_suppress_outbound(pick("suppress_outbound")),
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=parse_profile_routes(data.get("profile_routes") or []),
@@ -834,6 +839,15 @@ class GatewayConfig:
         """Effective notice-delivery mode ("public"/"private") for a platform."""
         choice = self._extra_choice(platform, "notice_delivery", {"public", "private"}, "public")
         return "public" if choice is None else choice
+
+    def get_suppress_outbound(self, platform: Optional[Platform] = None) -> List[str]:
+        """Effective ``suppress_outbound`` patterns: the global list, extended (never replaced) by
+        ``platforms.<platform>.suppress_outbound``; order kept, duplicates dropped."""
+        from gateway.outbound_suppression import normalize_suppress_outbound
+
+        platform_cfg = self.platforms.get(platform) if platform else None
+        extra = normalize_suppress_outbound(platform_cfg.extra.get("suppress_outbound")) if platform_cfg else []
+        return list(dict.fromkeys([*self.suppress_outbound, *extra]))
 
 
 def load_gateway_config() -> GatewayConfig:

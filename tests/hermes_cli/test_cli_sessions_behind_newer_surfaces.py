@@ -329,6 +329,89 @@ def test_readonly_sessions_list_shows_pre_column_cli_row_without_migrating(tmp_p
         db.close()
 
 
+def test_schema_probe_retries_one_disk_io_error(tmp_path, monkeypatch):
+    """One ``disk I/O error`` on ``PRAGMA table_info`` still resolves the CLI session.
+
+    The session SELECT already replays that blip (``_read_retrying_ioerr``). The
+    schema probe is the same read. An unretried error is swallowed by bare ``-c``
+    and in-chat ``/sessions``, which then look empty.
+    """
+    path = tmp_path / "state.db"
+    writer = SessionDB(db_path=path)
+    _populate(writer, [_cli_row("local-cli", 4_000_000_000)])
+    writer.close()
+
+    probes: list[dict[str, int]] = []
+
+    def fail_first_table_info(conn):
+        real = conn.execute
+        seen = {"n": 0}
+
+        def execute(sql, *args, **kwargs):
+            if isinstance(sql, str) and "table_info(sessions)" in sql:
+                seen["n"] += 1
+                if seen["n"] == 1:
+                    raise sqlite3.OperationalError("disk I/O error")
+            return real(sql, *args, **kwargs)
+
+        conn.execute = execute
+        probes.append(seen)
+
+    import hermes_state
+
+    real_open = hermes_state.SessionDB._open_read_only
+
+    def open_read_only(self):
+        real_open(self)
+        fail_first_table_info(self._conn)
+
+    monkeypatch.setattr(hermes_state.SessionDB, "_open_read_only", open_read_only)
+    assert _resolve_cli(monkeypatch, tmp_path) == "local-cli"
+    assert probes[0]["n"] >= 2
+
+    ro = SessionDB(db_path=path, read_only=True)
+    try:
+        listed, via_command = _recent_cli_ids(ro)
+    finally:
+        ro.close()
+    assert listed == ["local-cli"]
+    assert via_command == ["local-cli"]
+    assert probes[-1]["n"] >= 2
+
+
+def test_persistent_disk_io_on_schema_probe_is_not_cached(tmp_path):
+    """A disk I/O error that survives the retry budget still propagates and is not stored."""
+    path = tmp_path / "state.db"
+    writer = SessionDB(db_path=path)
+    _populate(writer, [_cli_row("local-cli", 4_000_000_000)])
+    writer.close()
+    ro = SessionDB(db_path=path, read_only=True)
+    real = ro._conn.execute
+
+    def execute(sql, *args, **kwargs):
+        if isinstance(sql, str) and "table_info(sessions)" in sql:
+            raise sqlite3.OperationalError("disk I/O error")
+        return real(sql, *args, **kwargs)
+
+    ro._conn.execute = execute
+    from hermes_cli.gateway_session_store import SurfaceLabelReader
+
+    reader = SurfaceLabelReader(ro)
+    try:
+        caught = None
+        try:
+            reader.search_sessions(source=["cli", "oneshot"], limit=1)
+        except sqlite3.OperationalError as exc:
+            caught = str(exc)
+        assert caught and "disk I/O error" in caught
+        assert reader._created_source_column is None
+        ro._conn.execute = real
+        found = [row["id"] for row in reader.search_sessions(source=["cli", "oneshot"], limit=1)]
+        assert found == ["local-cli"]
+    finally:
+        ro.close()
+
+
 def test_locked_schema_probe_is_not_remembered_as_a_missing_column(tmp_path):
     """A ``PRAGMA table_info`` failure is not proof the column is missing.
 
@@ -344,16 +427,29 @@ def test_locked_schema_probe_is_not_remembered_as_a_missing_column(tmp_path):
     from hermes_cli.gateway_session_store import SurfaceLabelReader
 
     reader = SurfaceLabelReader(db)
-    real_execute = db._conn.execute
     raised = {"done": False}
+    real_ctx = db._read_ctx
 
-    def execute(sql, *args, **kwargs):
-        if isinstance(sql, str) and "table_info" in sql and not raised["done"]:
-            raised["done"] = True
-            raise sqlite3.OperationalError("database is locked")
-        return real_execute(sql, *args, **kwargs)
+    from contextlib import contextmanager
 
-    db._conn.execute = execute
+    @contextmanager
+    def read_ctx():
+        with real_ctx() as conn:
+            real_execute = conn.execute
+
+            def execute(sql, *args, **kwargs):
+                if isinstance(sql, str) and "table_info" in sql and not raised["done"]:
+                    raised["done"] = True
+                    raise sqlite3.OperationalError("database is locked")
+                return real_execute(sql, *args, **kwargs)
+
+            conn.execute = execute
+            try:
+                yield conn
+            finally:
+                conn.execute = real_execute
+
+    db._read_ctx = read_ctx
     caught = None
     try:
         first = [row["id"] for row in reader.search_sessions(source=["cli", "oneshot"], limit=1)]

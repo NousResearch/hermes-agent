@@ -42,6 +42,28 @@ class TestModelDefaultDeclaration:
         )
 
 
+    def test_default_model_accepted_across_endpoints_of_its_provider(self):
+        # The model.default declaration is provider-scoped, not endpoint-scoped:
+        # a default declared for a provider is accepted for any endpoint of that
+        # provider. Pinned so this cannot diverge silently between fix heads.
+        config = {
+            "model": {"provider": "fireworks", "default": ROUTER_ID},
+            "providers": {
+                "fireworks": {"base_url": "https://api.fireworks.ai/inference/v1"}
+            },
+        }
+        with patch("hermes_cli.config.load_config", return_value=config):
+            assert (
+                _config_declares_model(
+                    ROUTER_ID,
+                    "fireworks",
+                    "https://other-host.example.com/v1",
+                    None,
+                    None,
+                )
+                is True
+            )
+
     def test_string_default_without_provider_is_no_wildcard(self):
         # A bare-string default with no model.provider sibling has no provider
         # scope; it must not act as a wildcard accept for an unscoped target.

@@ -291,9 +291,11 @@ def verify_windows_task(xml: str | bytes, home: Path, account: str, sid: str) ->
         _unverified()
     if user.casefold() not in {account.casefold(), sid.casefold()}:
         raise ValueError("service_account_mismatch")
-    if principal.findtext("t:RunLevel", "", ns) != "LeastPrivilege" or actions.get("Context") != principal.get("id"):
+    # Task Scheduler may omit default-valued elements when exporting a task.
+    # Defaults apply only to absent elements, never explicit empty/unknown values.
+    if principal.findtext("t:RunLevel", "LeastPrivilege", ns) != "LeastPrivilege" or actions.get("Context") != principal.get("id"):
         _unverified()
-    if task.findtext("t:Settings/t:Enabled", "", ns) != "true":
+    if task.findtext("t:Settings/t:Enabled", "true", ns) != "true":
         raise ValueError("service_disabled")
     action = actions[0]
     if action.tag != '{' + ns['t'] + '}Exec' or action.findtext('t:Command', '', ns).lower() not in {"wscript.exe", r"c:\windows\system32\wscript.exe"}:

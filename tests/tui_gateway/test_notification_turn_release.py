@@ -15,7 +15,6 @@ from types import SimpleNamespace
 import pytest
 
 from tui_gateway import server
-from tui_gateway.session_notifications import _notif_handle_event
 
 DELEGATION = {"type": "async_delegation", "delegation_id": "deleg-1", "session_key": "stored"}
 
@@ -47,8 +46,8 @@ def test_a_lost_delivery_claim_hands_the_turn_back(monkeypatch, claim):
     started = _no_turn(monkeypatch)
     session = {"history_lock": threading.RLock(), "running": False, "history": []}
     registry = SimpleNamespace(completion_queue=queue.Queue(), completion_routing_lock=threading.RLock())
-    _notif_handle_event("sid", session, dict(DELEGATION), set(), registry,
-                        lambda evt: "text", "reserved", [])
+    server._notif_handle_ready("sid", session, [dict(DELEGATION)], set(), registry,
+                               lambda evt: "text", None, owned=True)
 
     assert session["running"] is False
     assert started == []

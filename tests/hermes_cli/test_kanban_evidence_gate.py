@@ -285,3 +285,136 @@ def test_metadata_evidence_is_bounded():
     assert len(text) < METADATA_EVIDENCE_LIMIT + 200
     assert evidence_text("  only text  ", None) == "only text"
     assert evidence_text("t", {}) == "t"
+
+
+# --- Part 3: decomposition-only completion -> dependency wait ----------------------------------
+
+
+def _decomposed(monkeypatch) -> tuple[str, str, str, str]:
+    """T (verify-line card, claimed) created c1 + c2 as its children (parent=T, the
+    usual orchestrator shape) and c3, which is already done."""
+    tid = _claimed(monkeypatch, body=VERIFY_BODY)
+    with kbc.connect() as conn:
+        c1 = kb.create_task(conn, title="child 1", assignee="builder", parents=[tid],
+                            creator_task_id=tid)
+        c2 = kb.create_task(conn, title="child 2", assignee="builder", parents=[tid],
+                            creator_task_id=tid)
+        c3 = kb.create_task(conn, title="child 3 (done)", assignee="builder", creator_task_id=tid)
+        assert kb.complete_task(conn, c3, summary="done already")
+        assert kb.get_task(conn, c1).status == "todo"  # waits on T: the deadlock shape
+    return tid, c1, c2, c3
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_decomposition_only_completion_becomes_dependency_wait(home, judge, monkeypatch, surface):
+    _set_gate(home, "verify_line")
+    judge.verdict, judge.reason = "continue", "only split into new cards; nothing fixed"
+    tid, c1, c2, _c3 = _decomposed(monkeypatch)
+
+    out = _complete(surface, tid, "split into c1 and c2")
+
+    assert "dependency wait" in out and c1 in out and c2 in out
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task.status == "todo"
+        assert task.block_kind == "dependency"
+        assert sorted(kb.parent_ids(conn, tid)) == sorted([c1, c2])  # c3 (done) ignored
+        assert c1 not in kb.child_ids(conn, tid) and c2 not in kb.child_ids(conn, tid)
+        for child in (c1, c2):
+            assert tid not in kb.parent_ids(conn, child)
+            assert kb.get_task(conn, child).status == "ready"  # nobody is blocked on T
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "dependency_wait" in kinds and "completed" not in kinds
+
+        # Finishing both children promotes T so the dispatcher re-runs it.
+        assert kb.complete_task(conn, c1, summary="fixed 1")
+        assert kb.get_task(conn, tid).status == "todo"
+        assert kb.complete_task(conn, c2, summary="fixed 2")
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_decomposition_with_judged_evidence_completes_normally(home, judge, monkeypatch, surface):
+    _set_gate(home, "verify_line")
+    tid, c1, _c2, _ = _decomposed(monkeypatch)
+    _complete(surface, tid, "fixed in abc123; tests 9 passed; follow-ups filed")
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, tid).status == "done"
+        assert kb.parent_ids(conn, tid) == []
+        assert tid in kb.parent_ids(conn, c1)
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_decomposition_blocked_verdict_is_a_block_hint_not_a_wait(home, judge, monkeypatch, surface):
+    _set_gate(home, "verify_line")
+    judge.verdict, judge.reason = "blocked", "needs a credential nobody has"
+    tid, c1, _, _ = _decomposed(monkeypatch)
+    out = _complete(surface, tid, "split")
+    assert "unachievable" in out and "needs a credential nobody has" in out
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+        assert tid in kb.parent_ids(conn, c1)
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_decomposition_default_scope_is_untouched(home, judge, monkeypatch, surface):
+    """goal_mode scope: a non-goal decomposition completes exactly as upstream does."""
+    _set_gate(home, None)
+    judge.verdict = "continue"
+    tid, c1, _, _ = _decomposed(monkeypatch)
+    _complete(surface, tid, "split")
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, tid).status == "done"
+        assert tid in kb.parent_ids(conn, c1)
+    assert judge.calls == []
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_decomposition_inversion_that_would_cycle_is_refused_untouched(home, judge, monkeypatch, surface):
+    """c2 is still a descendant of T through c1 (T -> c1 -> c2); c2 -> T would be a
+    cycle, so nothing is inverted and the judge's rejection stands."""
+    _set_gate(home, "verify_line")
+    judge.verdict, judge.reason = "continue", "only split"
+    tid = _claimed(monkeypatch, body=VERIFY_BODY)
+    with kbc.connect() as conn:
+        c1 = kb.create_task(conn, title="c1", assignee="builder", parents=[tid])  # not created by T
+        c2 = kb.create_task(conn, title="c2", assignee="builder", parents=[c1], creator_task_id=tid)
+    out = _complete(surface, tid, "split")
+    assert "only split" in out
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+        assert kb.parent_ids(conn, tid) == []
+        assert kb.parent_ids(conn, c1) == [tid]
+        assert kb.parent_ids(conn, c2) == [c1]
+
+
+def test_tool_created_cards_claim_counts_as_created(home, judge, monkeypatch):
+    """A child the worker claims in ``created_cards`` (and actually created) is waited on."""
+    _set_gate(home, "verify_line")
+    judge.verdict, judge.reason = "continue", "only split"
+    tid = _claimed(monkeypatch, body=VERIFY_BODY)
+    with kbc.connect() as conn:
+        child = kb.create_task(conn, title="claimed child", assignee="builder",
+                               created_by="builder", creator_task_id=tid)
+    out = _complete("tool", tid, "split", created_cards=[child])
+    assert child in out
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, tid).status == "todo"
+        assert kb.parent_ids(conn, tid) == [child]
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_default_scope_goal_mode_decomposition_is_refused_as_upstream(home, judge, monkeypatch, surface):
+    """Default scope changes nothing upstream: a goal_mode card whose judge says ``continue`` is
+    refused even with open created children — no inversion unless the operator opted in."""
+    _set_gate(home, None)
+    judge.verdict, judge.reason = "continue", "goal not met"
+    tid = _claimed(monkeypatch, body=PLAIN_BODY, goal_mode=True)
+    with kbc.connect() as conn:
+        child = kb.create_task(conn, title="c", assignee="builder", parents=[tid], creator_task_id=tid)
+    out = _complete(surface, tid, "split")
+    assert "goal not met" in out
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, tid).status == "running"
+        assert kb.parent_ids(conn, child) == [tid]

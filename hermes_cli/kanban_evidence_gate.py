@@ -107,3 +107,27 @@ def evidence_text(text: Optional[str], metadata: Any = None) -> str:
     if len(blob) > METADATA_EVIDENCE_LIMIT:
         blob = blob[:METADATA_EVIDENCE_LIMIT] + "…[metadata truncated]"
     return f"{text}\n\nmetadata: {blob}".strip()
+
+
+def dependency_wait_message(task_id: str, waits: list[str]) -> str:
+    """What both surfaces tell the caller after a decomposition-only handoff was converted."""
+    return (f"{task_id} converted to a dependency wait on {', '.join(waits)}; it completes when "
+            f"they do (the dispatcher re-runs it once they are done, then hand off with evidence)")
+
+
+def dependency_wait_reason(handoff: str, judge_reason: Optional[str], summary: Optional[str]) -> str:
+    """Run summary recorded on the converted task so its re-run sees why it is waiting."""
+    head = (summary or "").strip()[:1000]
+    note = (f"[evidence gate] decomposition-only {handoff}: the judge found no evidence that the "
+            f"work itself is done ({judge_reason or 'no reason given'}); waiting on the cards it "
+            f"created instead of completing.")
+    return f"{head}\n\n{note}".strip()
+
+
+def decomposition_wait_enabled(scope: Optional[str] = None) -> bool:
+    """Whether a rejected decomposition-only handoff is converted into a dependency wait.
+
+    Only when the operator opted into a wider scope: the default (``goal_mode``) keeps upstream
+    behaviour exactly, including refusing a goal_mode card's decomposition-only completion.
+    """
+    return (scope or configured_scope()) != DEFAULT_SCOPE

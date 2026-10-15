@@ -37,10 +37,6 @@ _MAX_CLAUSE = 80
 _MAX_LOCS = 16
 _FIELD_LIMIT = 80
 _DETAIL_LIMIT = 160
-_DEV_CLAUSE = re.compile(
-    r'^(?:[A-Za-z_][A-Za-z0-9_]{0,40})(?:\.[A-Za-z_][A-Za-z0-9_]{0,40})*'
-    r'\([A-Za-z_][A-Za-z0-9_]{0,40}\)$'
-)
 REDACTED_KEY = '<redacted-key>'
 _redactor_log = logging.getLogger('gateway.runtime')
 
@@ -95,19 +91,6 @@ def _clause_path(path):
     return not _secret_text(path)
 
 
-def is_published_clause(detail):
-    """True when *detail* is a loc, a placeholder, or a ``name(arg)`` clause."""
-    if detail == REDACTED_KEY:
-        return True
-    if _clause_path(detail):
-        return True
-    if not isinstance(detail, str) or not _DEV_CLAUSE.fullmatch(detail):
-        return False
-    head, _, inner = detail.rpartition('(')
-    inner = inner[:-1]
-    return _clause_path(head) and bool(_SEGMENT.fullmatch(inner)) and not _secret_text(inner)
-
-
 def _method_fallback(method):
     leaf = method.split('.')[-1] if isinstance(method, str) and '.' in method else (method or 'params')
     if isinstance(leaf, str) and _SEGMENT.fullmatch(leaf) and not _secret_text(leaf):
@@ -155,7 +138,7 @@ def refusal_clause(names, *, method=None):
     if len(tokens) == 1:
         return tokens[0]
     joined = '.'.join(tokens)
-    return joined if is_published_clause(joined) else tokens[0]
+    return joined if _clause_path(joined) else tokens[0]
 
 
 def published_key(prefix, key):

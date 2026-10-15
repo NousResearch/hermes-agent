@@ -1,4 +1,5 @@
-"""Clauses #139140 does not name, in that PR's ``field`` + ``detail`` shape.
+"""Named refusals beyond the create-path checks: native admission, role re-authorization,
+attachments, the canonical schema gate, the CLI line, the messaging notice and the chat upload.
 
 ``reason``, ``str(exc)`` and the JSON-RPC message stay the bare code. ``field`` is the
 check, ``detail`` is why. A client-chosen value is echoed only when the log redactor

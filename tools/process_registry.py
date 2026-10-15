@@ -214,8 +214,11 @@ def systemd_user_bus_env(base_env: Optional[dict[str, str]] = None) -> dict[str,
 
     System-level gateway units run as an unprivileged ``User=`` but normally do
     not inherit login-session variables.  When the conventional runtime
-    directory is owned by this uid and its bus exists, derive the two standard
-    variables.  Derived fresh on every call rather than adopted once at boot:
+    directory is owned by this uid, derive ``XDG_RUNTIME_DIR`` -- enough for
+    ``systemd-run --user`` to reach the manager's own ``systemd/private``
+    socket even without a session bus (#139300) -- and, only when its bus
+    socket exists, ``DBUS_SESSION_BUS_ADDRESS``.  Derived fresh on every call
+    rather than adopted once at boot:
     linger may be enabled after the gateway started (existing installs), so
     the bus can appear later and the probe's failure TTL must be able to
     recover (#104893).
@@ -233,16 +236,14 @@ def systemd_user_bus_env(base_env: Optional[dict[str, str]] = None) -> dict[str,
         if not _secure_user_runtime_dir(runtime_dir):
             return env
 
+    env["XDG_RUNTIME_DIR"] = str(runtime_dir)
     bus_path = runtime_dir / "bus"
     try:
         bus_metadata = bus_path.lstat()
     except OSError:
         return env
-    if not stat.S_ISSOCK(bus_metadata.st_mode) or bus_metadata.st_uid != os.getuid():  # windows-footgun: ok — behind the _IS_LINUX gate above
-        return env
-
-    env["XDG_RUNTIME_DIR"] = str(runtime_dir)
-    env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
+    if stat.S_ISSOCK(bus_metadata.st_mode) and bus_metadata.st_uid == os.getuid():  # windows-footgun: ok — behind the _IS_LINUX gate above
+        env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
     return env
 
 

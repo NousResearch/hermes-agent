@@ -27,7 +27,7 @@ import {
   type SessionControlLoop
 } from '@/store/session-control'
 
-import { type ConfirmState, formatApproximateTime, formatInterval } from './session-control-utils'
+import { type ConfirmState, formatCountdown, formatInterval, useCountdownClock } from './session-control-utils'
 
 interface LoopSectionProps {
   loop: SessionControlLoop
@@ -89,10 +89,15 @@ export const SessionControlLoopSection = memo(function SessionControlLoopSection
   const runCountLabel =
     loop.times > 0 ? ctrl.loopRunCount(loop.ticks_fired, loop.times) : ctrl.loopRuns(loop.ticks_fired)
 
-  const nextRunLabel =
-    loop.status === 'active' && !loop.deferred_by_goal && loop.next_due_at
-      ? ` · ${ctrl.loopNext(formatApproximateTime(loop.next_due_at))}`
-      : ''
+  // The gateway re-publishes next_due_at when a wakeup fires and completes; between those the
+  // countdown runs on the local clock (it used to be computed once per render and sat frozen).
+  const counting = loop.status === 'active' && !loop.deferred_by_goal && !loop.awaiting_response && loop.next_due_at > 0
+  const now = useCountdownClock(counting)
+  const isDue = counting && loop.next_due_at * 1_000 <= now
+
+  const nextRunLabel = counting
+    ? ` · ${isDue ? ctrl.loopDueWaitingForIdle : ctrl.loopNext(formatCountdown(loop.next_due_at, now))}`
+    : ''
 
   const headerLabel = `${stateLabel} · ${runCountLabel}${nextRunLabel}`
 

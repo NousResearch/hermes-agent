@@ -296,6 +296,7 @@ export const zhHantChat = {
       loopUntilLabel: '截止條件',
       loopDeferredNotice: '目前由進行中的目標控制工作階段。',
       loopAwaitingResponse: '等待回應中',
+      loopDueWaitingForIdle: '已到期 — 等待會話閒置',
       heartbeatActive: '活動訊號進行中',
       heartbeatPaused: '活動訊號已暫停',
       heartbeatEveryMinutes: minutes => `每 ${minutes} 分鐘`,

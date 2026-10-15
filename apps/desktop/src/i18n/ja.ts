@@ -2632,6 +2632,7 @@ export const jaOverrides = {
       loopUntilLabel: '終了条件',
       loopDeferredNotice: '現在アクティブなゴールがセッションを制御しています。',
       loopAwaitingResponse: '応答待ち',
+      loopDueWaitingForIdle: '期限到来 — アイドル待ち',
       heartbeatActive: 'ハートビート実行中',
       heartbeatPaused: 'ハートビート一時停止',
       heartbeatEveryMinutes: minutes => `${minutes}分ごと`,

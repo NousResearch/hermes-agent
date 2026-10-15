@@ -3603,6 +3603,7 @@ export const zhOverrides = {
       loopUntilLabel: '终止条件',
       loopDeferredNotice: '活跃目标当前正在控制会话。',
       loopAwaitingResponse: '等待响应中',
+      loopDueWaitingForIdle: '已到期，等待会话空闲',
       heartbeatActive: '心跳活跃',
       heartbeatPaused: '心跳暂停',
       heartbeatEveryMinutes: minutes => `每 ${minutes} 分钟`,

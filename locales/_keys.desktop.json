@@ -4764,6 +4764,7 @@
     "statusStack.control.loopCadenceLabel",
     "statusStack.control.loopDeferred",
     "statusStack.control.loopDeferredNotice",
+    "statusStack.control.loopDueWaitingForIdle",
     "statusStack.control.loopEveryHours",
     "statusStack.control.loopEveryMinutes",
     "statusStack.control.loopEverySeconds",

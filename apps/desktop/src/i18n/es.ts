@@ -4142,6 +4142,7 @@ export const esOverrides = {
       loopUntilLabel: 'Condición de fin',
       loopDeferredNotice: 'Un objetivo activo controla la sesión en este momento.',
       loopAwaitingResponse: 'Esperando respuesta',
+      loopDueWaitingForIdle: 'pendiente: esperando inactividad',
       heartbeatActive: 'Heartbeat activo',
       heartbeatPaused: 'Heartbeat en pausa',
       heartbeatEveryMinutes: (minutes: number) => `cada ${minutes} min`,

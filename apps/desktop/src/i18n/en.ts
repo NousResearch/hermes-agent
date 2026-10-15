@@ -3713,6 +3713,7 @@ export const en: Translations = {
       loopUntilLabel: 'Until condition',
       loopDeferredNotice: 'An active goal currently controls the session.',
       loopAwaitingResponse: 'Awaiting response',
+      loopDueWaitingForIdle: 'due — waiting for idle',
       heartbeatActive: 'Heartbeat active',
       heartbeatPaused: 'Heartbeat paused',
       heartbeatEveryMinutes: minutes => `every ${minutes}m`,

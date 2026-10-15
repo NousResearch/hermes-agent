@@ -4159,6 +4159,7 @@ export const frOverrides = {
       loopUntilLabel: "Condition d'arrêt",
       loopDeferredNotice: 'Un objectif actif contrôle actuellement la session.',
       loopAwaitingResponse: "En attente d'une réponse",
+      loopDueWaitingForIdle: 'échu — en attente de disponibilité',
       heartbeatActive: 'Suivi périodique actif',
       heartbeatPaused: 'Suivi périodique en pause',
       heartbeatEveryMinutes: minutes => `toutes les ${minutes} min`,

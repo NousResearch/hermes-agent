@@ -2942,6 +2942,7 @@ export const ruOverrides = {
       loopUntilLabel: 'Условие окончания',
       loopDeferredNotice: 'Активная цель в данный момент управляет сессией.',
       loopAwaitingResponse: 'Ожидание ответа',
+      loopDueWaitingForIdle: 'пора — ожидание простоя',
       heartbeatActive: 'Пульс активен',
       heartbeatPaused: 'Пульс приостановлен',
       heartbeatEveryMinutes: minutes => `каждые ${minutes}м`,

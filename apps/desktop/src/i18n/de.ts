@@ -4148,6 +4148,7 @@ export const deOverrides = {
       loopUntilLabel: 'Bis-Bedingung',
       loopDeferredNotice: 'Ein aktives Ziel steuert derzeit die Session.',
       loopAwaitingResponse: 'Warten auf Antwort',
+      loopDueWaitingForIdle: 'fällig — wartet auf Ruhezustand',
       heartbeatActive: 'Heartbeat aktiv',
       heartbeatPaused: 'Heartbeat pausiert',
       heartbeatEveryMinutes: minutes => `alle ${minutes}m`,

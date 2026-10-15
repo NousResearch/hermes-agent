@@ -30,7 +30,25 @@ def test_unknown_connection_board_never_uses_ambient_board(
     finally:
         conn.close()
 
-def test_complete_task_stages_dir_workspace_legacy_artifact(
+def test_oversized_scratch_prose_preserves_workspace_on_refusal(kanban_home):
+    """A failed preservation must not report done and clean away the output."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="oversized report")
+        workspace = kbw.resolve_workspace(kb.get_task(conn, task_id))
+        kbw.set_workspace_path(conn, task_id, workspace)
+        artifact = workspace / "large-report.bin"
+        with artifact.open("wb") as stream:
+            stream.truncate(kb.KANBAN_ATTACHMENT_MAX_BYTES + 1)
+        with pytest.raises(kb.ArtifactPreservationError, match="exceeds"):
+            kb.complete_task(conn, task_id, summary=f"Produced {artifact}", fire_lifecycle_hook=False)
+        assert kb.get_task(conn, task_id).status == "ready"
+        assert not kb.list_attachments(conn, task_id)
+        assert not any(event.kind == "completed" for event in kb.list_events(conn, task_id))
+        assert artifact.stat().st_size == kb.KANBAN_ATTACHMENT_MAX_BYTES + 1
+        assert not list(kb.task_attachments_dir(task_id).glob("*"))
+
+
+def test_complete_task_stages_dir_workspace_declared_artifact(
     kanban_home,
     tmp_path,
 ):
@@ -51,6 +69,7 @@ def test_complete_task_stages_dir_workspace_legacy_artifact(
             conn,
             task_id,
             summary=f"produced {artifact}",
+            metadata={"artifacts": [str(artifact)]},
         )
         completed = [
             event for event in kb.list_events(conn, task_id)

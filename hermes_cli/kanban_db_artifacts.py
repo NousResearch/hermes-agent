@@ -16,11 +16,20 @@ def _connection_board(conn: sqlite3.Connection) -> str:
         default_db = (kanban_home() / "kanban.db").resolve(strict=False)
         if db_path == default_db:
             return DEFAULT_BOARD
-        relative = db_path.relative_to(boards_root().resolve(strict=False))
-        if len(relative.parts) == 2 and relative.parts[1] == "kanban.db":
+        try:
+            relative = db_path.relative_to(boards_root().resolve(strict=False))
+        except ValueError:
+            relative = None
+        if relative is not None and len(relative.parts) == 2 and relative.parts[1] == "kanban.db":
             board = _normalize_board_slug(relative.parts[0])
             if board:
                 return board
+        # A nonstandard database needs an explicit pair, not ambient UI state.
+        # Canonical paths above remain authoritative even with conflicting pins.
+        pinned_db = os.environ.get("HERMES_KANBAN_DB", "").strip()
+        pinned_board = _normalize_board_slug(os.environ.get("HERMES_KANBAN_BOARD"))
+        if pinned_db and pinned_board and db_path == Path(pinned_db).expanduser().resolve(strict=False):
+            return pinned_board
     except (OSError, RuntimeError, TypeError, ValueError):
         pass
     raise ArtifactPreservationError(
@@ -91,6 +100,21 @@ def _scope_completion_artifacts(
     updated["artifacts"] = canonical
     return updated
 
+_SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".keystore")
+_SECRET_NAMES = {"credentials", "credentials.json", "auth.json", "secrets.json",
+                 "secrets.yaml", "secrets.yml", "vault.key"}
+_SECRET_PREFIXES = ("id_rsa", "id_dsa", "id_ecdsa", "id_ed25519")
+
+
+def _looks_secret(relative: Path) -> bool:
+    """Hidden path component or a conventional key/credential file name."""
+    if any(part.startswith(".") for part in relative.parts):
+        return True
+    name = relative.name.lower()
+    return (name in _SECRET_NAMES or name.endswith(_SECRET_SUFFIXES)
+            or name.startswith(_SECRET_PREFIXES))
+
+
 def _merge_completion_prose_artifacts(
     conn: sqlite3.Connection,
     task_id: str,
@@ -106,10 +130,12 @@ def _merge_completion_prose_artifacts(
     so it can be staged outside the worker-controlled workspace.
     """
     row = conn.execute(
-        "SELECT workspace_path FROM tasks WHERE id = ?",
+        "SELECT workspace_path, workspace_kind FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
-    if not row or not row["workspace_path"]:
+    # A repository or persistent directory contains inputs and secrets, not
+    # only deliverables. Mentioning a path is not consent to attach it.
+    if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
         return metadata
     workspace = Path(row["workspace_path"]).expanduser()
     try:
@@ -126,8 +152,12 @@ def _merge_completion_prose_artifacts(
         candidate = Path(raw)
         try:
             resolved = candidate.resolve(strict=True)
-            resolved.relative_to(workspace_root)
+            relative = resolved.relative_to(workspace_root)
         except (OSError, RuntimeError, ValueError):
+            continue
+        # Prose is not a declaration: never infer hidden or credential files.
+        # An explicit ``artifacts=[...]`` entry remains the way to ship one.
+        if _looks_secret(relative):
             continue
         if resolved.is_file():
             discovered.append(str(resolved))
@@ -188,6 +218,14 @@ def _persist_completion_artifacts(
     changed = False
 
     try:
+        # Configuration owns the Kanban root, not the worker. Resolve aliases
+        # only through that root (e.g. /var -> /private/var on macOS), then
+        # retain no-follow traversal for every board/attachment/task component.
+        from hermes_cli.kanban_db import kanban_home
+        configured_root = Path(os.path.abspath(kanban_home().expanduser()))
+        absolute_dir = Path(os.path.abspath(attachment_dir.expanduser()))
+        if absolute_dir.is_relative_to(configured_root):
+            attachment_dir = configured_root.resolve(strict=True) / absolute_dir.relative_to(configured_root)
         with _open_pinned_attachment_directory(attachment_dir) as (
             pinned_attachment_dir,
             attachment_dir_fd,

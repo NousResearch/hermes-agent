@@ -1989,28 +1989,23 @@ DEFAULT_CONFIG = {
     # may include cold, event-triggered built-ins as well as plugin/MCP tools.
     "tools": {
         "tool_search": {
-            # Tiered: tier 0 (no deferred tools) = everything eager; tier 1 = bridge + a
-            # name+description manifest when it fits the budget (degrades to names-only); tier 2
-            # (over budget even names-only, e.g. ~3,300-tool APIs) = bare bridge + a
-            # one-line-per-server summary (name + tool count). "auto"|"on" = activate when at least
-            # one deferred tool exists ("auto" is an alias of "on" today, reserved for a future
-            # budget-gated mode; keep it the default so explicit "on"/"off" pins are unaffected).
-            # "off" = pass-through, no bridge.
+            # Tier 0 (no deferred tools) = everything eager; tier 1 = bridge + a name+description
+            # manifest when it fits the budget (degrades to names-only); tier 2 (over budget even
+            # names-only, e.g. ~3,300-tool APIs) = bare bridge + one line per server. "auto" (alias of
+            # "on" today, reserved for a budget-gated mode) and "on" activate when any deferred tool
+            # exists; "off" = pass-through, no bridge.
             "enabled": "auto",
-            # Listing budget as % of the model's context length; effective budget = min(this % of
-            # context, listing_max_tokens). Range 0..100.
+            # Listing budget as % of context; effective budget = min(this, listing_max_tokens). 0..100.
             "threshold_pct": 5,
             # Hits per query when the model omits `limit`. Range 1..max_search_limit.
             "search_default_limit": 5,
             # Hard upper bound the model may request via `limit` (per query). Range 1..50.
             "max_search_limit": 25,
-            # Catalog listing embedded in the bridge description (name + first sentence ≤60 chars,
-            # grouped by server/toolset). "auto" = include when it fits (falls back to names-only,
-            # then bare tier-2 bridge); "on" = same rendering, explicit intent; "off" = always the
-            # bare bridge.
+            # Catalog listing in the bridge description (name + first sentence ≤60 chars, grouped by
+            # server/toolset). "auto" = include when it fits (falls back to names-only, then the bare
+            # tier-2 bridge); "on" = same rendering, explicit intent; "off" = always the bare bridge.
             "listing": "auto",
-            # Absolute cap on the embedded listing in tokens (chars/4), regardless of context size.
-            # Range 200..60000.
+            # Absolute cap on the embedded listing in tokens (chars/4), any context. 200..60000.
             "listing_max_tokens": 4000,
             # Tools replaced by the bridge by default. This list intentionally includes cold,
             # event-triggered built-ins; an explicit list replaces it wholesale and [] keeps every
@@ -2023,11 +2018,9 @@ DEFAULT_CONFIG = {
                 "show_tip", "desktop_project", "close_terminal",
                 "set_theme", "read_terminal", "read_window_below", "focus_pane",
             ],
-            # Deferrable tools always sent directly; wins over ``defer``.
-            "eager": [],
-            # Also send directly the deferrable tools used in at least this many sessions of the
-            # last 14 days (read from state.db, refreshed every 6 h so the tools array rarely
-            # changes), at most eager_learned_max of them and only small schemas. 0 = no learning.
+            "eager": [],  # deferrable tools always sent directly; wins over ``defer``
+            # Also sent directly: up to eager_learned_max deferrable tools (small schemas) used in >=
+            # this many sessions of the last 14 days (state.db, refreshed every 6 h). 0 = no learning.
             "eager_learned_min_sessions": 10,
             "eager_learned_max": 8,
         },

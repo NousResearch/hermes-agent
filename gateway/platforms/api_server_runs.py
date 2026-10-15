@@ -441,14 +441,41 @@ def _durable_run_status(self, request: web.Request, run_id: str) -> dict[str, An
     return status
 
 
+def _history_entry_from_body(entry: dict) -> tuple[dict[str, Any] | None, str | None]:
+    """Project one caller-supplied ``conversation_history`` entry -> ``(message, error)``.
+
+    Plain turns stay ``{"role", "content"}``. Tool scaffolding survives too: an assistant row keeps its
+    ``tool_calls`` and a tool row keeps ``tool_call_id`` / ``tool_name``, so a client that replays its own
+    transcript does not strip the model's view of what its tools did. ``None`` content (the usual shape of an
+    assistant row that only carries tool calls) becomes ``""`` rather than the string ``"None"``."""
+    role = str(entry["role"])
+    content = entry["content"]
+    message: dict[str, Any] = {"role": role, "content": "" if content is None else str(content)}
+    if role == "assistant" and entry.get("tool_calls"):
+        calls = entry["tool_calls"]
+        if not isinstance(calls, list) or not all(
+                isinstance(call, dict) and call.get("id") and isinstance(call.get("function"), dict)
+                and call["function"].get("name") for call in calls):
+            return None, "'tool_calls' must be a list of objects with 'id' and 'function.name'"
+        message["tool_calls"] = calls
+    elif role == "tool":
+        if not entry.get("tool_call_id"):
+            return None, "tool messages must carry 'tool_call_id'"
+        message["tool_call_id"] = str(entry["tool_call_id"])
+        tool_name = entry.get("tool_name") or entry.get("name")
+        if tool_name:
+            message["tool_name"] = str(tool_name)
+    return message, None
+
+
 def _resolve_conversation_history(
     self, body: dict, raw_input: Any, *, _openai_error
-) -> tuple[list[dict[str, str]], Any, Any, web.Response | None]:
+) -> tuple[list[dict[str, Any]], Any, Any, web.Response | None]:
     """Return ``(history, instructions, stored_session_id, error)``; precedence:
     ``conversation_history`` > ``previous_response_id`` chain > all-but-last ``input`` messages."""
     instructions = body.get("instructions")
     previous_response_id = body.get("previous_response_id")
-    conversation_history: list[dict[str, str]] = []
+    conversation_history: list[dict[str, Any]] = []
     raw_history = body.get("conversation_history")
     if raw_history:
         if not isinstance(raw_history, list):
@@ -459,7 +486,11 @@ def _resolve_conversation_history(
                 return [], instructions, None, _json_error(
                     _openai_error, f"conversation_history[{i}] must have 'role' and 'content' fields",
                     status=400)
-            conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+            message, message_error = _history_entry_from_body(entry)
+            if message_error:
+                return [], instructions, None, _json_error(
+                    _openai_error, f"conversation_history[{i}]: {message_error}", status=400)
+            conversation_history.append(message)
         if previous_response_id:
             logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
     stored_session_id = None
@@ -513,7 +544,7 @@ class _RunLaunch:
     gateway_session_key: Optional[str]
     declared_selected: bool
     user_message: str
-    conversation_history: list[dict[str, str]]
+    conversation_history: list[dict[str, Any]]
     # #98619: only continuation paths that reload session history may grant wake authority —
     # a previous_response_id continuation consumes its ResponseStore snapshot instead, and a
     # caller-supplied conversation_history is authoritative for the turn; neither consumes a

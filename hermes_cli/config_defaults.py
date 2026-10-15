@@ -1596,6 +1596,17 @@ DEFAULT_CONFIG = {
         "approval_mentions": False,
         # Voice-channel inactivity timeout (seconds); 0 = stay until `/voice leave`.
         "voice_channel_inactivity_timeout_seconds": 300,
+        # Optional transcription mode, latched on a fresh voice join.
+        "voice_stt": {
+            "mode": "configured",
+            "openai_live": {
+                "model": "gpt-live-transcribe",
+                "delay": "high",
+                "completion_timeout_seconds": 20.0,
+                "send_timeout_seconds": 5.0,
+                "max_session_seconds": 3300.0,
+            },
+        },
         # Minimum seconds before force-stopping a VC playback; the adapter probes clip duration and
         # extends this floor so long TTS isn't cut off.
         "voice_playback_timeout_seconds": 120,
@@ -2722,31 +2733,8 @@ DEFAULT_CONFIG = {
 }
 
 
-def _env(description, prompt, **keys):
-    """One OPTIONAL_ENV_VARS entry; keyword order is preserved as dict key order."""
-    return {"description": description, "prompt": prompt, **keys}
+from hermes_cli.config_env_defaults import _env, _category
 
-
-_OMIT = object()
-
-
-def _category(category, password, advanced):
-    """Entry factory for one category with its usual password/advanced defaults.
-
-    ``url``/``help``/``tools`` are only written when passed; ``password=None`` omits the key;
-    ``advanced`` is only written when true. Key order matches the plain ``_env`` entries.
-    """
-    def make(description, prompt, url=_OMIT, *, help=_OMIT, tools=_OMIT, password=password,
-             advanced=advanced):
-        d = {"description": description, "prompt": prompt}
-        d.update((k, v) for k, v in (("help", help), ("url", url), ("tools", tools)) if v is not _OMIT)
-        if password is not None:
-            d["password"] = password
-        d["category"] = category
-        if advanced:
-            d["advanced"] = True
-        return d
-    return make
 
 
 _prov = _category("provider", password=True, advanced=True)

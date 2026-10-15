@@ -36,6 +36,9 @@ class _OneBatchReceiver:
     def __init__(self) -> None:
         self._running = True
 
+    def drain_stream_chunks(self) -> list:
+        return []
+
     def check_silence(self) -> list[tuple[int, bytes]]:
         self._running = False
         return [(_USER, b"\x00" * 9600), (_USER + 1, b"\x00" * 9600)]
@@ -213,3 +216,170 @@ async def test_a_programmatic_join_while_connected_applies_the_requested_binding
     assert adapter._voice_sources.get(_GUILD) == bound_source
     _fall_silent(receiver)
     assert await _transcribed_pcm(adapter, lambda: _one_poll(adapter, receiver)) == (len(reaching), reaching)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text_channel", [700, None])
+async def test_voice_move_invalidates_old_pcm_and_requires_fresh_ssrc_mapping(text_channel):
+    adapter, receiver = _listening_adapter()
+    adapter._client = MagicMock()
+    adapter._voice_clients[_GUILD] = _ConnectedVoiceClient(900)
+    _speak(receiver, 0.6)
+    old_token = receiver.snapshot_sources()[_USER][0]
+    target = SimpleNamespace(id=901, guild=SimpleNamespace(id=_GUILD))
+    with patch("plugins.platforms.discord.adapter.DISCORD_AVAILABLE", True):
+        assert await adapter.join_voice_channel(target, text_channel_id=text_channel)
+    assert not receiver.stream_chunk_is_current(*old_token)
+    assert not receiver._ssrc_to_user
+    assert not receiver._buffers
+    assert adapter._voice_text_channels[_GUILD] == 700
+    receiver.map_ssrc(_SSRC, _USER)
+    _speak(receiver, 0.6)
+    _fall_silent(receiver)
+    assert await _transcribed_pcm(adapter, lambda: _one_poll(adapter, receiver)) == (1, [int(0.6 * _BYTES_PER_SECOND)])
+
+
+@pytest.mark.asyncio
+async def test_voice_move_retires_pending_live_work_even_with_same_binding():
+    adapter, receiver = _listening_adapter()
+    adapter._client = MagicMock()
+    adapter._voice_clients[_GUILD] = _ConnectedVoiceClient(900)
+    controller = SimpleNamespace(abort_pending=AsyncMock())
+    adapter._voice_live_transcribers[_GUILD] = controller
+    receiver._running = True
+    receiver._ssrc_generation[_SSRC] = 1
+    _speak(receiver, 0.6)
+    tokens = receiver.snapshot_sources()[_USER]
+    admit = adapter._voice_stt_admission(_GUILD, receiver, controller, _USER, None, tokens)
+    with patch("plugins.platforms.discord.adapter.DISCORD_AVAILABLE", True), \
+         patch("plugins.platforms.discord.adapter._read_runtime_stt_enabled", return_value=True):
+        assert admit()
+        target = SimpleNamespace(id=901, guild=SimpleNamespace(id=_GUILD))
+        assert await adapter.join_voice_channel(target, text_channel_id=700)
+        assert not admit()
+    controller.abort_pending.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_voice_move_fences_packets_and_speaking_until_move_completes():
+    adapter, receiver = _listening_adapter()
+    adapter._client = MagicMock()
+    receiver._running = True
+    vc = _ConnectedVoiceClient(900)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def move_to(channel):
+        entered.set()
+        await release.wait()
+        vc.channel = channel
+
+    vc.move_to.side_effect = move_to
+    adapter._voice_clients[_GUILD] = vc
+    target = SimpleNamespace(id=901, guild=SimpleNamespace(id=_GUILD))
+    with patch("plugins.platforms.discord.adapter.DISCORD_AVAILABLE", True):
+        moving = asyncio.create_task(adapter.join_voice_channel(target, text_channel_id=700))
+        try:
+            await asyncio.wait_for(entered.wait(), 0.5)
+            receiver.map_ssrc(_SSRC, _USER)
+            receiver._buffer_decoded_pcm(_SSRC, b"\x01\x00" * 4800)
+            assert not receiver._ssrc_to_user
+            assert not receiver._buffers
+            assert receiver.drain_stream_chunks() == []
+        finally:
+            release.set()
+            await moving
+    receiver.map_ssrc(_SSRC, _USER)
+    receiver._buffer_decoded_pcm(_SSRC, b"\x02\x00" * 4800)
+    assert receiver.drain_stream_chunks()[0][-1] == b"\x02\x00" * 4800
+
+
+@pytest.mark.asyncio
+async def test_failed_voice_move_restores_old_mapping_without_replaying_move_audio():
+    adapter, receiver = _listening_adapter()
+    adapter._client = MagicMock()
+    receiver._running = True
+    receiver._ssrc_generation[_SSRC] = 7
+    decoder = object()
+    receiver._decoders[_SSRC] = decoder
+    _speak(receiver, 0.3)
+    old_token = receiver.snapshot_sources()[_USER][0]
+    vc = _ConnectedVoiceClient(900)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def fail_move(channel):
+        entered.set()
+        await release.wait()
+        raise RuntimeError("move failed")
+
+    vc.move_to.side_effect = fail_move
+    adapter._voice_clients[_GUILD] = vc
+    target = SimpleNamespace(id=901, guild=SimpleNamespace(id=_GUILD))
+
+    with patch("plugins.platforms.discord.adapter.DISCORD_AVAILABLE", True):
+        moving = asyncio.create_task(adapter.join_voice_channel(target, text_channel_id=700))
+        await asyncio.wait_for(entered.wait(), 2)
+        attempted_token = receiver._snapshot_packet_generation(_SSRC)
+        receiver.map_ssrc(_SSRC, _USER + 1)
+        receiver._buffer_decoded_pcm(_SSRC, b"\x02\x00" * 4800)
+        assert receiver.drain_stream_chunks() == []
+        release.set()
+        with pytest.raises(RuntimeError, match="move failed"):
+            await moving
+
+    assert vc.channel.id == 900
+    assert receiver._ssrc_to_user == {_SSRC: _USER}
+    assert receiver._ssrc_generation[_SSRC] == 7
+    assert receiver._decoders[_SSRC] is decoder
+    assert receiver.require_explicit_mapping is False
+    assert not receiver._channel_move_pending
+    assert not receiver._buffers
+    assert not receiver.stream_chunk_is_current(*old_token)
+    receiver._buffer_decoded_pcm(_SSRC, b"\x02\x00" * 4800, *attempted_token)
+    assert receiver.drain_stream_chunks() == []
+    receiver._buffer_decoded_pcm(_SSRC, b"\x03\x00" * 4800)
+    assert receiver.drain_stream_chunks()[0][-1] == b"\x03\x00" * 4800
+
+
+def test_text_binding_discard_invalidates_live_controller_synchronously():
+    adapter, _receiver = _listening_adapter()
+    controller = SimpleNamespace(invalidate_pending=MagicMock())
+    adapter._voice_live_transcribers[_GUILD] = controller
+
+    adapter.discard_pending_voice_input(_GUILD)
+
+    controller.invalidate_pending.assert_called_once_with()
+
+@pytest.mark.asyncio
+async def test_leave_bounds_cancellation_resistant_listener_and_drops_unflushed_audio(monkeypatch):
+    from plugins.platforms.discord import live_transcription
+    monkeypatch.setattr(live_transcription, "LIVE_TEARDOWN_SECONDS", 0.02)
+    adapter, receiver = _listening_adapter()
+    adapter._client = MagicMock()
+    vc = MagicMock()
+    vc.is_connected.return_value = True
+    vc.is_playing.return_value = False
+    vc.disconnect = AsyncMock()
+    adapter._voice_clients[_GUILD] = vc
+    _speak(receiver, 0.6)
+    release = asyncio.Event()
+    started = asyncio.Event()
+    async def resistant_listener():
+        started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                pass
+    listener = asyncio.create_task(resistant_listener())
+    adapter._voice_listen_tasks[_GUILD] = listener
+    await started.wait()
+    try:
+        leaving = asyncio.create_task(adapter.leave_voice_channel(_GUILD))
+        done, _ = await asyncio.wait({leaving}, timeout=0.5)
+        assert done
+        assert not receiver._buffers
+        assert not adapter._voice_receivers
+        assert not adapter._voice_clients
+    finally:
+        release.set()
+        await asyncio.sleep(0)

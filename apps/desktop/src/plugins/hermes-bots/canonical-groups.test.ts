@@ -116,3 +116,16 @@ it('sends text-only messages to gateways without attachment support, including r
   })).rejects.toThrow('unknown fields: attachments')
   expect(host.requestProfile.mock.lastCall?.[2].payload.attachments).toEqual([{ attachment_id: 'image' }])
 })
+
+it('preserves the exact prepared payload on current gateways and never retries ambiguous failures', async () => {
+  const route = captureCanonicalGroupRoute()
+  const params = { room_id: 'room', event_id: 'original', payload: { text: 'Hello', attachments: [] } }
+  host.requestProfile.mockResolvedValueOnce({ accepted: true })
+  await canonicalGroupRequest(route, 'groups.send', params)
+  expect(host.requestProfile.mock.lastCall?.[2]).toEqual({ ...params, profile: 'default' })
+  host.requestProfile.mockClear()
+  host.requestProfile.mockRejectedValue(new Error('lost ACK'))
+  await expect(canonicalGroupRequest(route, 'groups.send', params)).rejects.toThrow('lost ACK')
+  expect(host.requestProfile).toHaveBeenCalledTimes(1)
+  expect(host.requestProfile.mock.lastCall?.[2]).toEqual({ ...params, profile: 'default' })
+})

@@ -57,6 +57,11 @@ try:  # sibling module; support both package and flat plugin-dir import
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
 
+try:
+    from .message_delivery import _post_chunks, format_literal_message, _split_literal_text, _literal_payload
+except ImportError:  # pragma: no cover - plugin loaded outside package context
+    from message_delivery import _post_chunks, format_literal_message, _split_literal_text, _literal_payload
+
 
 logger = logging.getLogger(__name__)
 
@@ -2225,6 +2230,9 @@ class SlackAdapter(BasePlatformAdapter):
         blocked = self._outbound_blocked(chat_id, "outbound generic send to")
         if blocked:
             return blocked
+        metadata = dict(metadata) if metadata is not None else None
+        interim = metadata.pop("_interim_send", False) if metadata is not None else False
+        literal = (metadata or {}).get("_literal_text") is True
         chat_id = await self._dm_target(chat_id, metadata)
         thread_ts = None
         try:
@@ -2233,23 +2241,27 @@ class SlackAdapter(BasePlatformAdapter):
             if slash_ctx:
                 return await self._send_slash_reply(chat_id, slash_ctx, content, metadata)
             # An active native stream that this content finalizes IS the final
-            # message: seal it instead of posting a duplicate.
-            stream_result = await self._try_finalize_stream(chat_id, content, metadata)
-            if stream_result is not None:
-                return stream_result
-            formatted = self.format_message(content)
+            # message: seal it instead of posting a duplicate. Interim progress
+            # can share its prefix without owning the answer stream.
+            if not interim:
+                stream_result = await self._try_finalize_stream(chat_id, content, metadata)
+                if stream_result is not None:
+                    return stream_result
+            formatted = self.format_literal_message(content) if literal else self.format_message(content)
             if not formatted or not formatted.strip():
                 # Slack returns ``no_text`` for blank posts; still the end of a
                 # delivery attempt, so the "is thinking..." status must clear.
-                await self._clear_thread_status_quietly(chat_id, metadata)
+                if not interim:
+                    await self._clear_thread_status_quietly(chat_id, metadata)
                 # This is still the end of a delivery attempt: if the turn produced no visible text (e.g.
                 # "(empty)" final responses are filtered upstream), the assistant thread status must not
                 # stay stuck on "is thinking..." (#24117).
                 return SendResult(success=True)
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
-            last_result = await self._post_chunks(chat_id, team_id, content, formatted, thread_ts)
-            # Clear Slack Assistant status as soon as the final message is posted.
-            if thread_ts:
+            last_result = await self._post_chunks(chat_id, team_id, content, formatted, thread_ts, literal=literal,
+                                                  unfurl_kwargs=_slack_unfurl_kwargs)
+            # Interim progress does not finish the assistant turn.
+            if thread_ts and not interim:
                 await self.stop_typing(chat_id, metadata=metadata)
             # Track sent ts (and the thread root) so thread replies get answered
             # without an @mention.
@@ -2263,7 +2275,8 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             # Clear the status even when the failure preceded thread_ts resolution:
             # stop_typing falls back to metadata / the uniquely tracked status.
-            await self._clear_thread_status_quietly(chat_id, metadata)
+            if not interim:
+                await self._clear_thread_status_quietly(chat_id, metadata)
             # Clear the assistant status even when the failure happened BEFORE thread_ts was resolved
             # (formatting, slash-context, DM resolution): stop_typing falls back to metadata / the uniquely
             # tracked status for this channel, so a failed turn cannot leave "is thinking..." visible
@@ -2274,31 +2287,7 @@ class SlackAdapter(BasePlatformAdapter):
                 success=False, error=str(e), retryable=_retryable,
                 retry_after=self._retry_after_from_exc(e) if _retryable else None)
 
-    async def _post_chunks(
-        self, chat_id: str, team_id: str, content: str, formatted: str, thread_ts: Optional[str]
-    ) -> Any:
-        """``chat.postMessage`` each ``MAX_MESSAGE_LENGTH`` chunk; returns the last response.
-        Block Kit only for single-chunk messages (a >39k response is pathological for the 50-block /
-        3000-char limits); ``text`` stays the notification/accessibility fallback. With
-        ``reply_broadcast`` only the first chunk is also posted to the main channel."""
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-        broadcast = self.config.extra.get("reply_broadcast", False)
-        blocks = self._maybe_blocks(content) if len(chunks) == 1 else None
-        last_result = None
-        for i, chunk in enumerate(chunks):
-            kwargs = {
-                "channel": chat_id, "text": chunk,
-                "mrkdwn": True, **_slack_unfurl_kwargs(self.config.extra)}
-            if blocks and i == 0:
-                kwargs["blocks"] = blocks
-            if thread_ts:
-                kwargs["thread_ts"] = thread_ts
-                if broadcast and i == 0:
-                    kwargs["reply_broadcast"] = True
-            client_fn = lambda: self._get_client(chat_id, team_id=team_id)
-            last_result = await self._call_with_block_fallback(
-                client_fn, "chat_postMessage", kwargs, "send")
-        return last_result
+    _post_chunks = _post_chunks
 
     @staticmethod
     def _retry_after_from_exc(e: BaseException) -> Optional[float]:
@@ -2393,21 +2382,27 @@ class SlackAdapter(BasePlatformAdapter):
         if blocked:
             return blocked
         try:
-            formatted = self.format_message(content)
+            literal = (metadata or {}).get("_literal_text") is True
+            formatted = self.format_literal_message(content) if literal else self.format_message(content)
             # chat.update has postMessage's ~40k limit but cannot split, so truncate to fit
             # (an oversized payload fails the whole edit with ``msg_too_long``).
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = (self._split_literal_text(formatted, self.MAX_MESSAGE_LENGTH) if literal
+                      else self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH))
             formatted = chunks[0] if chunks else formatted
             update_kwargs: dict[str, Any] = {
                 "channel": chat_id, "ts": message_id, "text": formatted}
             # Block Kit only on the FINAL edit: re-deriving a layout on every streaming flush
             # would be wasteful and jittery. ``text`` is the fallback either way.
-            if finalize:
-                blocks = self._maybe_blocks(content)
-                if blocks:
-                    update_kwargs["blocks"] = blocks
-            await self._call_with_block_fallback(
-                lambda: self._client_for(chat_id, metadata), "chat_update", update_kwargs, "edit")
+            if literal:
+                update_kwargs.update(self._literal_payload(formatted))
+                await self._client_for(chat_id, metadata).chat_update(**update_kwargs)
+            else:
+                if finalize:
+                    blocks = self._maybe_blocks(content)
+                    if blocks:
+                        update_kwargs["blocks"] = blocks
+                await self._call_with_block_fallback(
+                    lambda: self._client_for(chat_id, metadata), "chat_update", update_kwargs, "edit")
             if finalize:
                 await self._clear_thread_status_quietly(chat_id, metadata)
             return SendResult(success=True, message_id=message_id)
@@ -3148,6 +3143,10 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception:  # pragma: no cover - renderer already guards itself
             logger.debug("[Slack] block render failed; using plain text", exc_info=True)
             return None
+
+    format_literal_message = staticmethod(format_literal_message)
+    _split_literal_text = staticmethod(_split_literal_text)
+    _literal_payload = classmethod(_literal_payload)
 
     def format_tool_preview(self, preview) -> str:
         """Keep compact tool arguments out of mrkdwn emphasis conversion."""

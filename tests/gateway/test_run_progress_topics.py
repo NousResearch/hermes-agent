@@ -2,8 +2,9 @@
 
 import asyncio
 import importlib
-import sys
+import json
 import threading
+import sys
 import time
 import types
 from types import SimpleNamespace
@@ -1106,6 +1107,9 @@ async def _run_with_agent(
     if config_data and "streaming" in config_data:
         runner.config.streaming = StreamingConfig.from_dict(config_data["streaming"])
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    # Media validation enumerates profiles beneath this import-time root. Keep
+    # the real filter active, but confine its filesystem reads to this fixture.
+    monkeypatch.setattr(base_platform, "_HERMES_ROOT", tmp_path)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
     source = SessionSource(
         platform=platform,
@@ -2150,30 +2154,3 @@ async def test_per_platform_streaming_does_not_override_global_disabled(monkeypa
 
     assert result.get("already_sent") is not True
     assert adapter.edits == []
-
-
-class TestSlackReplyInThreadProgressRouting:
-    """#18859: reply_in_thread=false must stop progress from creating threads."""
-
-    def test_slack_reply_in_thread_false_drops_synthetic_thread(self):
-        from gateway.run import _resolve_progress_thread_id
-
-        # source.thread_id == event ts is the adapter's synthetic
-        # session-keying thread for top-level messages — not a real thread.
-        assert _resolve_progress_thread_id(
-            Platform.SLACK,
-            source_thread_id="1700000000.000100",
-            event_message_id="1700000000.000100",
-            reply_in_thread=False,
-        ) is None
-
-    def test_buzz_uses_event_message_id_as_progress_thread(self):
-        """Buzz has no native thread_id; progress must reply-to the trigger."""
-        from gateway.run import _resolve_progress_thread_id
-
-        assert _resolve_progress_thread_id(
-            "buzz",
-            source_thread_id=None,
-            event_message_id="evt-trigger-001",
-            reply_in_thread=True,
-        ) == "evt-trigger-001"

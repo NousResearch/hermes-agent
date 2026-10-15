@@ -1,4 +1,5 @@
 """Telegram platform adapter (python-telegram-bot): inbound messages/media/commands, outbound replies."""
+# health: allow FILE_LINES -- Partial-send receipt IDs belong with Telegram delivery and resume logic in this adapter.
 
 import asyncio
 import contextlib
@@ -3738,7 +3739,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return result
         raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
         raw.update({
-            "partial_overflow": True, "delivered_chunks": len(delivered), "total_chunks": len(delivered) + len(undelivered),
+            "partial_overflow": True, "delivered_chunks": len(delivered), "message_ids": list(delivered),
+            "total_chunks": len(delivered) + len(undelivered),
             "last_message_id": delivered[-1], "continuation_message_ids": tuple(delivered[1:])})
         if tail_certain and undelivered:
             raw["undelivered_chunks"] = tuple(undelivered)

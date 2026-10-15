@@ -1561,3 +1561,85 @@ class TestCronRunHistoryFallback:
         assert older["id"] == f"cron_output:{job_id}:2026-09-25_10-00-00"
         assert older["title"].startswith("COMPLETED · successful older run")
         assert older["started_at"] == _at("2026-09-25_10-00-00").timestamp()
+
+
+class TestDashboardScriptArguments:
+    """#20300 / #43: the dashboard must accept and PRESERVE script arguments.
+
+    ``_normalize_dashboard_cron_script`` treated the whole value as a filename, so
+    an argument-bearing entry was rejected as "script does not exist". It also
+    returned the relativised path, which would have dropped any arguments it did
+    accept — silently turning ``"job.py expire"`` into ``"job.py"``.
+    """
+
+    def test_arguments_are_validated_and_preserved(self, tmp_path):
+        from hermes_cli.web_server_cron import _normalize_dashboard_cron_script
+
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "job.py").write_text("print('hi')\n")
+
+        assert _normalize_dashboard_cron_script("job.py expire", tmp_path) == "job.py expire"
+
+    def test_multiple_arguments_preserved(self, tmp_path):
+        from hermes_cli.web_server_cron import _normalize_dashboard_cron_script
+
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "job.py").write_text("print('hi')\n")
+
+        assert (_normalize_dashboard_cron_script("job.py --limit 5 expire", tmp_path)
+                == "job.py --limit 5 expire")
+
+    def test_quoted_argument_survives_round_trip(self, tmp_path):
+        from hermes_cli.web_server_cron import _normalize_dashboard_cron_script
+
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "job.py").write_text("print('hi')\n")
+
+        out = _normalize_dashboard_cron_script('job.py "hello world"', tmp_path)
+        # Re-splitting what we returned must give the same shape the scheduler sees.
+        from cron.scheduler_script import _split_script_command
+
+        path_part, args, err = _split_script_command(out)
+        assert err is None
+        assert path_part == "job.py"
+        assert args == ["hello world"]
+
+    def test_missing_script_reports_the_path(self, tmp_path):
+        from fastapi import HTTPException
+
+        from hermes_cli.web_server_cron import _normalize_dashboard_cron_script
+
+        (tmp_path / "scripts").mkdir()
+        try:
+            _normalize_dashboard_cron_script("nope.py expire", tmp_path)
+            assert False, "expected a 400"
+        except HTTPException as exc:
+            assert exc.status_code == 400
+            assert "nope.py" in exc.detail
+            assert "nope.py expire" not in exc.detail
+
+    def test_containment_still_enforced_with_arguments(self, tmp_path):
+        from fastapi import HTTPException
+
+        from hermes_cli.web_server_cron import _normalize_dashboard_cron_script
+
+        (tmp_path / "scripts").mkdir()
+        try:
+            _normalize_dashboard_cron_script("../../etc/passwd read", tmp_path)
+            assert False, "expected a 400"
+        except HTTPException as exc:
+            assert exc.status_code == 400
+            assert "inside" in exc.detail
+
+    def test_plain_filename_unchanged(self, tmp_path):
+        from hermes_cli.web_server_cron import _normalize_dashboard_cron_script
+
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "job.py").write_text("print('hi')\n")
+
+        assert _normalize_dashboard_cron_script("job.py", tmp_path) == "job.py"
+        assert _normalize_dashboard_cron_script("", tmp_path) is None

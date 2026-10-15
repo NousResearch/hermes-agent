@@ -13,7 +13,7 @@ import logging
 import re
 import threading
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -208,6 +208,7 @@ class MemoryPrefetchResult:
 
     context: str = ""
     observations: list[MemoryObservation] | tuple[MemoryObservation, ...] = ()
+    _wire_truncated: bool = field(default=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # A provider may conveniently pass a list. Exact builtin lists are

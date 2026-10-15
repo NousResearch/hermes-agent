@@ -4405,10 +4405,10 @@ class BasePlatformAdapter(ABC):
         _thread_metadata = None
         try:
             _thread_metadata = _thread_metadata_for_event(event)
-            # Policy reads stay in the routed profile; the send stays in the launch scope.
+            # Policy reads and the refusal log line bind the routed profile; the send stays in the launch scope.
             from gateway.session_controls import named_turn_error
-            error_type, error_detail = named_turn_error(e, t("gateway.notify.turn_error_no_details"))
             with self._media_delivery_scope(event.source):
+                error_type, error_detail = named_turn_error(e, t("gateway.notify.turn_error_no_details"))
                 content = None if diagnostic_wake_muted(event) else self.warning_text(
                     t("gateway.notify.turn_error_detailed", error_type=error_type, error_detail=error_detail),
                     t("gateway.notify.turn_error"),

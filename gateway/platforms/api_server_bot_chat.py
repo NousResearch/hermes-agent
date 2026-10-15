@@ -33,7 +33,8 @@ def bot_chat_tip(authority, session_id):
 
 async def admit_peer_turn(authority, session_id, message, author):
     """``(profile home, receipt)`` when *session_id* is the Bot Chat and the turn was admitted to its
-    FIFO; None when the target is any other session (the caller runs it as an API turn)."""
+    FIFO; None when the target is any other session — or a titled Bot Chat no authority FIFO owns
+    (a headless gateway's peer-created API row) — and the caller runs it as an API turn."""
     from gateway.session_authorities import served_profile_name
     from gateway.session_bot import deliver
     tip = bot_chat_tip(authority, session_id)
@@ -51,6 +52,12 @@ async def admit_peer_turn(authority, session_id, message, author):
     try:
         record = await deliver(SimpleNamespace(authority=authority, actor=actor), params)
     except RuntimeStoreError as exc:
+        if exc.reason == 'not_found':
+            # The titled chat exists but is no session this authority admits: a headless gateway's
+            # peer-created API row (``source: bot_peer_dm``), never a bound local session, so no
+            # FIFO owns it. The caller runs the turn as an ordinary API turn instead of answering
+            # a documented headless peer DM with 502 "admission refused: not_found" (#139370).
+            return None
         record = {'status': 'failed', 'delivery_id': key, 'reason': exc.reason,
                   'error': f'Bot Chat admission refused: {exc.reason}'}
     return home, record

@@ -260,6 +260,27 @@ An agent CLI driven over stdio is not an HTTP endpoint. Set `auth_type="external
 
 The client your `create_client` returns receives `command` and `args` in `client_kwargs`. If it is already complete and async-safe, declare `HERMES_SKIP_TRANSPORT_WRAP = True` / `HERMES_SKIP_ASYNC_WRAP = True` as class attributes so the auxiliary client does not re-dispatch it through an HTTP wire adapter.
 
+```python
+    def fetch_model_metadata(self, *, api_key=None, base_url=None, timeout=8.0):
+        """Raw live catalog entries used by fetch_models and, when opted in,
+        context-length resolution. Override this instead of fetch_models when
+        custom auth or response parsing must preserve model metadata."""
+        return super().fetch_model_metadata(
+            api_key=api_key, base_url=base_url, timeout=timeout
+        )
+```
+
+`use_live_model_metadata` is a class-only, default-off opt-in. Enable it only
+when `fetch_model_metadata()` returns an accurate `context_length`,
+`max_model_len`, or equivalent supported field. The default hook honors
+`models_url`, Bearer authentication, and `default_headers`; override it for
+other catalog contracts. Results and initial failures are cached in memory for
+five minutes, scoped by provider, catalog URL, and a non-secret credential
+fingerprint. If a refresh fails after a successful lookup, Hermes retains the
+last valid catalog; an initial failure falls through to the normal
+provider-aware resolution chain. Providers that leave the flag disabled are
+not affected.
+
 ### Picker rows for non-api-key plugins
 
 Every registered profile joins `CANONICAL_PROVIDERS` by slug (a plugin re-declaring a built-in slug such as `bedrock` is deduped, never doubled), so external-process and OAuth plugins appear in `hermes model`, `/model` and the Desktop model selector alongside `copilot-acp`. Visibility is gated by credentials, not by `auth_type`:

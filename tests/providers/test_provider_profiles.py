@@ -1,6 +1,9 @@
 """Tests for the provider module registry and profiles."""
 
+from dataclasses import fields
+
 from providers import get_provider_profile
+from providers.base import ProviderProfile
 
 
 class TestOpenRouterProfile:
@@ -168,3 +171,20 @@ class TestAlibabaRegionalAndTokenPlanProfiles:
             assert resolve_provider(pid) == pid
             assert (PROVIDER_REGISTRY[pid].inference_base_url
                     == get_provider_profile(pid).base_url)
+
+
+class TestBaseProfile:
+    def test_live_model_metadata_opt_in_is_class_only(self):
+        class LiveMetadataProfile(ProviderProfile):
+            use_live_model_metadata = True
+
+        assert ProviderProfile(name="default").use_live_model_metadata is False
+        assert LiveMetadataProfile(name="live").use_live_model_metadata is True
+        assert "use_live_model_metadata" not in {
+            profile_field.name for profile_field in fields(ProviderProfile)
+        }
+
+    def test_prepare_messages_passthrough(self):
+        p = ProviderProfile(name="test")
+        msgs = [{"role": "user", "content": "hi"}]
+        assert p.prepare_messages(msgs) is msgs

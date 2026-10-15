@@ -17,6 +17,7 @@ import {
   branchTipApiUrl,
   cacheIsFresh,
   describeUpdateCheckFailure,
+  gatewayProtocolsMatch,
   githubRepoSlug,
   listLocalCommits,
   parseCompare,
@@ -45,6 +46,12 @@ test('cache serves a passive check for 24h, but not once HEAD or the branch chan
   assert.equal(cacheIsFresh(failed, { branch: 'main', currentSha: SHA_A, now: 2 * HOUR }), false)
 })
 
+test('Desktop releases require an exact Gateway RPC contract match', () => {
+  assert.equal(gatewayProtocolsMatch('{"methods":[]}', '{"methods":[]}'), true)
+  assert.equal(gatewayProtocolsMatch('{"methods":[]}', '{"methods":["new.method"]}'), false)
+  assert.equal(gatewayProtocolsMatch('', ''), false)
+})
+
 test('compare payload maps to the behind count and a newest-first commit list; malformed = null', () => {
   const payload = {
     ahead_by: 2,
@@ -63,6 +70,7 @@ test('compare payload maps to the behind count and a newest-first commit list; m
 
   const parsed = parseCompare(payload)
   assert.equal(parsed?.behind, 2)
+  assert.equal(parsed?.status, 'ahead')
   assert.deepEqual(
     parsed?.commits.map(c => [c.sha, c.summary, c.author]),
     [
@@ -77,6 +85,7 @@ test('compare payload maps to the behind count and a newest-first commit list; m
 
   // Forks and SSH forms hit the API for their own repo; non-GitHub origins don't.
   assert.equal(githubRepoSlug('git@github.com:Someone/hermes-agent.git'), 'someone/hermes-agent')
+  assert.equal(githubRepoSlug('git+https://github.com/NousResearch/hermes-agent.git'), 'nousresearch/hermes-agent')
   assert.equal(githubRepoSlug('https://gitlab.example/x/y.git'), null)
   assert.equal(
     branchTipApiUrl('nousresearch/hermes-agent', 'bb/gui'),

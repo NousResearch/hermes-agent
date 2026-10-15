@@ -34,6 +34,7 @@ export interface UpdaterChild {
 export interface ResolveUpdateScriptHandoffDeps {
   isWindows?: boolean
   fileExists?: (candidate: string) => boolean
+  resourcesPath?: string
 }
 
 export interface UpdateScriptHandoff {
@@ -91,7 +92,7 @@ export function resolveUpdateScriptHandoff(
 }
 
 /**
- * Repo-owned POSIX update hand-off (the mac/linux twin of the above).
+ * POSIX update hand-off (the mac/linux twin of the above).
  *
  * Replaces the in-app posix updater: the Desktop spawns the script detached
  * and QUITS, the script waits it out, runs `hermes update`, swaps/relaunches
@@ -99,8 +100,8 @@ export function resolveUpdateScriptHandoff(
  * the update starts, the HERMES_DESKTOP_CHILD_PID reaper-exclusion dance is
  * unnecessary — there are no live desktop backends to spare.
  *
- * Null when the checkout predates the script (caller surfaces the manual
- * `hermes update` card — old checkouts pull the script on their next update).
+ * Packaged apps must supply their bundled script path; development installs
+ * resolve the repo script from the update root.
  */
 export function resolvePosixScriptHandoff(
   updateRoot: string,
@@ -112,8 +113,11 @@ export function resolvePosixScriptHandoff(
     return null
   }
 
-  const scriptPath = path.join(updateRoot, 'scripts', 'desktop-update', 'posix.sh')
   const exists = deps.fileExists ?? stagedFileExists
+
+  const scriptPath = deps.resourcesPath
+    ? path.join(deps.resourcesPath, 'desktop-update', 'posix.sh')
+    : path.join(updateRoot, 'scripts', 'desktop-update', 'posix.sh')
 
   if (!exists(scriptPath)) {
     return null

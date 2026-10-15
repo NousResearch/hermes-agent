@@ -13,8 +13,8 @@ import {
 
 test('fromCI reads GITHUB_SHA / GITHUB_REF_NAME', () => {
   assert.deepEqual(
-    fromCI({ GITHUB_SHA: 'a'.repeat(40), GITHUB_REF_NAME: 'release' }),
-    { commit: 'a'.repeat(40), branch: 'release', dirty: false, source: 'ci' }
+    fromCI({ GITHUB_SHA: 'a'.repeat(40), GITHUB_REF_NAME: 'release', GITHUB_REPOSITORY: 'davetwchiu/hermes-agent' }),
+    { commit: 'a'.repeat(40), branch: 'release', repository: 'davetwchiu/hermes-agent', dirty: false, source: 'ci' }
   )
   assert.equal(fromCI({}), null)
 })
@@ -30,12 +30,14 @@ test('fromLocalGit reads HEAD + branch + dirty status', () => {
     calls.push(cmd)
     if (cmd === 'git rev-parse HEAD') return 'b'.repeat(40)
     if (cmd === 'git rev-parse --abbrev-ref HEAD') return 'main'
+    if (cmd === 'git remote get-url origin') return 'git@github.com:David/Hermes-Agent.git'
     if (cmd === 'git status --porcelain -uno') return ' M apps/desktop/package.json'
     return null
   }
   assert.deepEqual(fromLocalGit('/repo', execFn), {
     commit: 'b'.repeat(40),
     branch: 'main',
+    repository: 'david/hermes-agent',
     dirty: true,
     source: 'local'
   })
@@ -46,6 +48,7 @@ test('fromFallback uses the all-zero placeholder commit', () => {
   assert.deepEqual(fromFallback(), {
     commit: FALLBACK_COMMIT,
     branch: FALLBACK_BRANCH,
+    repository: null,
     dirty: false,
     source: 'fallback'
   })
@@ -66,6 +69,7 @@ test('resolveStamp prefers CI over local git over fallback', () => {
     execFn: (cmd) => {
       if (cmd === 'git rev-parse HEAD') return 'd'.repeat(40)
       if (cmd === 'git rev-parse --abbrev-ref HEAD') return 'main'
+    if (cmd === 'git remote get-url origin') return 'ssh://git@github.com/David/hermes-agent.git'
       if (cmd === 'git status --porcelain -uno') return ''
       return null
     }
@@ -73,6 +77,7 @@ test('resolveStamp prefers CI over local git over fallback', () => {
   assert.equal(local.source, 'local')
   assert.equal(local.commit, 'd'.repeat(40))
   assert.equal(local.dirty, false)
+  assert.equal(local.repository, 'david/hermes-agent')
 })
 
 test('resolveStamp falls back when neither CI nor git is available', () => {
@@ -80,6 +85,7 @@ test('resolveStamp falls back when neither CI nor git is available', () => {
   assert.deepEqual(stamp, {
     commit: FALLBACK_COMMIT,
     branch: FALLBACK_BRANCH,
+    repository: null,
     dirty: false,
     source: 'fallback'
   })

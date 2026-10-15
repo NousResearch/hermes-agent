@@ -1,18 +1,20 @@
 #!/bin/bash
-# posix.sh -- repo-owned macOS/Linux Desktop update hand-off.
+# posix.sh -- macOS/Linux Desktop update hand-off, bundled with Desktop builds.
 #
-# The whole job: wait for the Desktop to exit, run `hermes update`, tell the
-# shim how it went, reopen the app. The Desktop spawns this detached and
-# quits; because it lives in the checkout, every update refreshes the code
-# that drives the next one. Replaces the in-app updater
-# (applyUpdatesPosixInApp) -- with the app gone before the update starts,
-# the HERMES_DESKTOP_CHILD_PID reaper-exclusion dance dies with it.
+# Packaged macOS Desktop updates build an exact approved commit in a temporary
+# clean checkout and swap only the app bundle. Development and CLI installs
+# keep their existing runtime update flow. The Desktop spawns this detached
+# and quits before either route starts.
 #
 # CONTRACT (keep in sync with apps/desktop/electron/main.ts):
 #   bash scripts/desktop-update/posix.sh
 #     --install-root <path>    repo checkout (HERMES_HOME/hermes-agent)
 #     --branch <ref>           branch to update against
 #     --desktop-pid <pid>      the Electron main process to wait out
+#     --desktop-only           build only the approved Desktop commit
+#     --hermes-home <path>     Hermes home for the pinned Gateway read-back
+#     --source-repository <r>  GitHub owner/repo for the Desktop source
+#     --target-sha <sha>       full approved Desktop commit SHA
 #     [--relaunch-target <p>]  mac: running .app to swap+reopen;
 #                              linux: running binary (omit = no relaunch)
 #     [--relaunch-cwd <p>]     linux: working directory to restore on relaunch
@@ -37,6 +39,7 @@ set -u
 
 ORIGINAL_ARGS=("$@")
 INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
+DESKTOP_ONLY=0 HERMES_HOME_OVERRIDE="" SOURCE_REPOSITORY="" TARGET_SHA="" UPDATE_SOURCE_DIR=""
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
 NO_GATEWAY=0
 NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
@@ -46,6 +49,10 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --install-root) INSTALL_ROOT="$2"; shift 2 ;;
     --branch) BRANCH="$2"; shift 2 ;;
+    --desktop-only) DESKTOP_ONLY=1; shift ;;
+    --hermes-home) HERMES_HOME_OVERRIDE="$2"; shift 2 ;;
+    --source-repository) SOURCE_REPOSITORY="$2"; shift 2 ;;
+    --target-sha) TARGET_SHA="$2"; shift 2 ;;
     --desktop-pid) DESKTOP_PID="$2"; shift 2 ;;
     --relaunch-target) RELAUNCH_TARGET="$2"; shift 2 ;;
     --relaunch-cwd) RELAUNCH_CWD="$2"; shift 2 ;;
@@ -62,10 +69,16 @@ while [ $# -gt 0 ]; do
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
 done
-[ "$SELF_TEST_UI" -eq 1 ] || [ -n "$INSTALL_ROOT" ] || { echo "--install-root is required" >&2; exit 64; }
+[ "$SELF_TEST_UI" -eq 1 ] || [ -n "$INSTALL_ROOT" ] || [ "$DESKTOP_ONLY" -eq 1 ] || { echo "--install-root is required" >&2; exit 64; }
+[ "$DESKTOP_ONLY" -eq 0 ] || {
+  [[ "$SOURCE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+    && [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]] \
+    && [ -n "$HERMES_HOME_OVERRIDE" ] \
+    || { echo "Desktop-only updates require a GitHub repository, full target SHA, and Hermes home" >&2; exit 64; }
+}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HERMES_HOME="${INSTALL_ROOT:+$(dirname "$INSTALL_ROOT")}"
+HERMES_HOME="${HERMES_HOME_OVERRIDE:-${INSTALL_ROOT:+$(dirname "$INSTALL_ROOT")}}"
 HERMES_HOME="${HERMES_HOME:-${TMPDIR:-/tmp}}"
 MARKER="$HERMES_HOME/.hermes-update-in-progress"
 LOG_DIR="$HERMES_HOME/logs"; mkdir -p "$LOG_DIR" 2>/dev/null || true
@@ -79,6 +92,12 @@ FINAL_MSG="update did not complete"
 DONE_NOTE=""  # set when the update succeeded but the app will NOT reopen itself
 
 log() { echo "$(date +%Y-%m-%dT%H:%M:%S%z) $1" | tee -a "$LOG" 2>/dev/null; }
+
+cleanup_update_source() {
+  [ -n "$UPDATE_SOURCE_DIR" ] || return 0
+  rm -rf "$UPDATE_SOURCE_DIR" 2>/dev/null || true
+  UPDATE_SOURCE_DIR=""
+}
 
 # Keep a durable signal breadcrumb.  A detached hand-off used to leave only the
 # generic FINAL_MSG when it was terminated while the updater child was running,
@@ -464,6 +483,7 @@ finish() {
     publish "error" "$FINAL_MSG"; stop_ui leave-window
     launch_app || true   # error path still tries to bring the app back
     rm -f "$STATUS" "$STATUS.tmp" "$LOG_DIR/desktop-update-ui-port" 2>/dev/null || true
+    cleanup_update_source
     return
   fi
 
@@ -491,6 +511,7 @@ finish() {
     publish "manual" "$FINAL_MSG"; stop_ui leave-window
   fi
   rm -f "$STATUS" "$STATUS.tmp" "$LOG_DIR/desktop-update-ui-port" 2>/dev/null || true
+  cleanup_update_source
 }
 trap finish EXIT
 
@@ -658,6 +679,89 @@ if [ "$SELF_TEST_UI" -eq 1 ]; then
   exit "$FINAL_CODE"
 fi
 
+desktop_update_fail() {
+  FINAL_CODE=5
+  FINAL_MSG="$1"
+  log "$FINAL_MSG"
+  return 1
+}
+
+build_desktop_release() {
+  local gateway_root deployments gateway_head gateway_name gateway_sha gateway_contract source_contract
+  local source_head dirty pack_arch rebuilt=""
+
+  command -v git >/dev/null 2>&1 || { desktop_update_fail "Desktop update failed: git is unavailable."; return 1; }
+  command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 \
+    || { desktop_update_fail "Desktop update failed: Node.js and npm are required to build the approved Desktop release."; return 1; }
+
+  gateway_root="$(cd "$HERMES_HOME/current" 2>/dev/null && pwd -P)" \
+    || { desktop_update_fail "Desktop update stopped: the pinned Gateway release could not be resolved."; return 1; }
+  deployments="$(cd "$HERMES_HOME/deployments" 2>/dev/null && pwd -P)" \
+    || { desktop_update_fail "Desktop update stopped: the immutable Gateway releases could not be resolved."; return 1; }
+  gateway_name="$(basename "$gateway_root")"
+  gateway_sha="${gateway_name#hermes-agent-}"
+  [[ "$gateway_sha" =~ ^[0-9a-f]{40}$ ]] && [ "$(dirname "$gateway_root")" = "$deployments" ] \
+    || { desktop_update_fail "Desktop update stopped: current does not point to a named immutable Gateway release."; return 1; }
+
+  gateway_head="$(git -C "$gateway_root" rev-parse HEAD 2>/dev/null)" \
+    || { desktop_update_fail "Desktop update stopped: the pinned Gateway release has no readable commit."; return 1; }
+  [ "$gateway_head" = "$gateway_sha" ] \
+    || { desktop_update_fail "Desktop update stopped: the pinned Gateway release commit does not match its release path."; return 1; }
+  dirty="$(git -C "$gateway_root" status --porcelain --untracked-files=all 2>/dev/null)" \
+    || { desktop_update_fail "Desktop update stopped: the pinned Gateway release state could not be verified."; return 1; }
+  [ -z "$dirty" ] \
+    || { desktop_update_fail "Desktop update stopped: the pinned Gateway release is not clean."; return 1; }
+
+  gateway_contract="$gateway_root/apps/shared/src/gateway-contract.openrpc.json"
+  [ -f "$gateway_contract" ] \
+    || { desktop_update_fail "Desktop update stopped: the pinned Gateway release has no RPC contract to verify."; return 1; }
+
+  UPDATE_SOURCE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hermes-desktop-release.XXXXXXXX")" \
+    || { desktop_update_fail "Desktop update failed: could not allocate a clean build directory."; return 1; }
+  git -C "$UPDATE_SOURCE_DIR" init --quiet >> "$LOG" 2>&1 \
+    && git -C "$UPDATE_SOURCE_DIR" remote add origin "https://github.com/$SOURCE_REPOSITORY.git" >> "$LOG" 2>&1 \
+    && git -C "$UPDATE_SOURCE_DIR" fetch --quiet --depth=1 origin "$TARGET_SHA" >> "$LOG" 2>&1 \
+    && git -C "$UPDATE_SOURCE_DIR" checkout --quiet --detach FETCH_HEAD >> "$LOG" 2>&1 \
+    || { desktop_update_fail "Desktop update failed: could not fetch the approved Desktop source commit."; return 1; }
+
+  source_head="$(git -C "$UPDATE_SOURCE_DIR" rev-parse HEAD 2>/dev/null)" \
+    || { desktop_update_fail "Desktop update failed: the downloaded source commit could not be read."; return 1; }
+  [ "$source_head" = "$TARGET_SHA" ] \
+    || { desktop_update_fail "Desktop update stopped: downloaded source did not match the approved commit."; return 1; }
+  dirty="$(git -C "$UPDATE_SOURCE_DIR" status --porcelain --untracked-files=all 2>/dev/null)" \
+    || { desktop_update_fail "Desktop update failed: downloaded source state could not be verified."; return 1; }
+  [ -z "$dirty" ] \
+    || { desktop_update_fail "Desktop update stopped: downloaded Desktop source is not clean."; return 1; }
+
+  source_contract="$UPDATE_SOURCE_DIR/apps/shared/src/gateway-contract.openrpc.json"
+  cmp -s "$gateway_contract" "$source_contract" \
+    || { desktop_update_fail "Desktop update stopped: its Gateway RPC contract does not match the pinned Gateway release."; return 1; }
+
+  case "$(uname -m)" in arm64|aarch64) pack_arch=--arm64 ;; *) pack_arch=--x64 ;; esac
+  log "building Desktop source $TARGET_SHA from $SOURCE_REPOSITORY (Gateway remains pinned at $gateway_sha)"
+  publish_stage "Building Desktop update"
+  if ! (cd "$UPDATE_SOURCE_DIR" && \
+      npm ci --workspace apps/desktop --workspace apps/shared --include-workspace-root >> "$LOG" 2>&1 && \
+      npm run pack --workspace apps/desktop -- "$pack_arch" >> "$LOG" 2>&1); then
+    desktop_update_fail "Desktop update failed while installing build dependencies or packaging the app."
+    return 1
+  fi
+
+  for rebuilt in "$UPDATE_SOURCE_DIR/apps/desktop/release/mac-arm64/Hermes.app" \
+                 "$UPDATE_SOURCE_DIR/apps/desktop/release/mac/Hermes.app"; do
+    [ -d "$rebuilt" ] && break
+    rebuilt=""
+  done
+  [ -n "$rebuilt" ] && [ -x "$rebuilt/Contents/MacOS/Hermes" ] \
+    || { desktop_update_fail "Desktop update failed: the build did not produce a launchable Hermes app."; return 1; }
+
+  INSTALL_ROOT="$UPDATE_SOURCE_DIR"
+  BRANCH="main"
+  FINAL_CODE=0
+  FINAL_MSG="Desktop update complete."
+  log "built Desktop bundle: $rebuilt"
+}
+
 # ── the actual job ──────────────────────────────────────────────────────────
 # Electron's macOS quit teardown sends SIGTERM to its still-parented updater
 # child on this machine. `detached + unref` gives the child a process group but
@@ -731,6 +835,11 @@ fi
 # update marker above prevents a second click during this short UI-less gap.
 sleep 1
 start_ui
+
+if [ "$DESKTOP_ONLY" -eq 1 ]; then
+  build_desktop_release || exit "$FINAL_CODE"
+  exit 0
+fi
 
 HERMES_BIN="$INSTALL_ROOT/venv/bin/hermes"
 [ -x "$HERMES_BIN" ] || { FINAL_CODE=3 FINAL_MSG="Update aborted: $HERMES_BIN is missing. The install needs repair (run the Hermes installer or hermes doctor)."; log "$FINAL_MSG"; exit 3; }

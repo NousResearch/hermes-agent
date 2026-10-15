@@ -224,6 +224,18 @@
         "to": "install-stamp.json"
       },
       {
+        "from": "../../scripts/desktop-update/posix.sh",
+        "to": "desktop-update/posix.sh"
+      },
+      {
+        "from": "../../scripts/desktop-update/ui.html",
+        "to": "desktop-update/ui.html"
+      },
+      {
+        "from": "../../scripts/desktop-update/serve-ui.py",
+        "to": "desktop-update/serve-ui.py"
+      },
+      {
         "from": "assets/icon.ico",
         "to": "icon.ico"
       }

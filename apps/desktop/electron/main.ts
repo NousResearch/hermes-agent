@@ -453,6 +453,7 @@ import {
   cacheIsFresh,
   compareApiUrl,
   describeUpdateCheckFailure,
+  gatewayProtocolsMatch,
   githubRepoSlug,
   listLocalCommits,
   parseCompare,
@@ -810,6 +811,10 @@ function loadInstallStamp() {
           schemaVersion: parsed.schemaVersion,
           commit: parsed.commit,
           branch: parsed.branch || null,
+          repository:
+            typeof parsed.repository === 'string' && /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(parsed.repository)
+              ? parsed.repository.toLowerCase()
+              : null,
           builtAt: parsed.builtAt || null,
           dirty: Boolean(parsed.dirty),
           source: parsed.source || null,
@@ -3240,6 +3245,147 @@ function resolveUpdateRoot() {
   return candidates.find(c => directoryExists(path.join(c, '.git'))) || candidates[0] || ACTIVE_HERMES_ROOT
 }
 
+function packagedDesktopRepositorySlug() {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8'))
+
+    return githubRepoSlug(typeof pkg.repository === 'string' ? pkg.repository : pkg.repository?.url)
+  } catch {
+    return null
+  }
+}
+
+async function resolvePinnedGatewayRelease() {
+  let root
+  let deployments
+
+  try {
+    root = fs.realpathSync(path.join(HERMES_HOME, 'current'))
+    deployments = fs.realpathSync(path.join(HERMES_HOME, 'deployments'))
+  } catch {
+    return null
+  }
+
+  const releaseSha = path.basename(root).match(/^hermes-agent-([0-9a-f]{40})$/i)?.[1]
+
+  if (path.dirname(root) !== deployments || !releaseSha) {
+    return null
+  }
+
+  const [head, dirty] = await Promise.all([
+    runGit(['rev-parse', 'HEAD'], { cwd: root }),
+    runGit(['status', '--porcelain', '--untracked-files=all'], { cwd: root })
+  ])
+
+  const contract = path.join(root, 'apps', 'shared', 'src', 'gateway-contract.openrpc.json')
+
+  if (
+    head.code !== 0 ||
+    head.stdout.trim().toLowerCase() !== releaseSha.toLowerCase() ||
+    dirty.code !== 0 ||
+    dirty.stdout.trim() ||
+    !fileExists(contract)
+  ) {
+    return null
+  }
+
+  return { root, sha: releaseSha.toLowerCase(), contract }
+}
+
+async function checkDesktopReleaseUpdates({ force = false }: { force?: boolean } = {}) {
+  const unavailable = (reason, message) => ({ supported: false, reason, message, branch: 'main' })
+  const appSha = INSTALL_STAMP?.commit || ''
+
+  if (!/^[0-9a-f]{40}$/i.test(appSha) || INSTALL_STAMP?.dirty) {
+    return unavailable('unverified-desktop-build', 'This Desktop build has no clean, full commit stamp to update from.')
+  }
+
+  const gateway = await resolvePinnedGatewayRelease()
+
+  if (!gateway) {
+    return unavailable(
+      'unverified-gateway-release',
+      'The pinned Gateway release could not be verified for Desktop protocol compatibility.'
+    )
+  }
+
+  const sourceRepository = INSTALL_STAMP.repository || packagedDesktopRepositorySlug() || ''
+
+  const sourceRepoPattern = /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i
+
+  if (!sourceRepoPattern.test(sourceRepository)) {
+    return unavailable('desktop-source-unavailable', 'The canonical Desktop source repository could not be resolved.')
+  }
+
+  const branch = 'main'
+  const currentSha = appSha.toLowerCase()
+  const cacheSha = `${currentSha}:${gateway.sha}`
+  const cached = readUpdateCheckCache()
+  const now = Date.now()
+
+  if (!force && cacheIsFresh(cached, { branch, currentSha: cacheSha, now })) {
+    return cached.status
+  }
+
+  const update = await checkUpdatesViaApi({
+    slug: sourceRepository.toLowerCase(),
+    branch,
+    currentSha,
+    updateRoot: null
+  })
+
+  const result = {
+    supported: true,
+    branch,
+    currentBranch: branch,
+    currentSha,
+    sourceRepository: sourceRepository.toLowerCase(),
+    dirty: false,
+    hermesRoot: gateway.root,
+    fetchedAt: now,
+    ...update
+  }
+
+  if (update.updateAvailable) {
+    if (!update.targetSha || update.behind === null || update.compareStatus !== 'ahead') {
+      return unavailable(
+        'unverified-desktop-release',
+        'GitHub could not prove that the Desktop update is on the approved main branch.'
+      )
+    }
+
+    try {
+      const contractResponse = (await fetchGitHubApi(
+        `https://api.github.com/repos/${sourceRepository}/contents/apps/shared/src/gateway-contract.openrpc.json?ref=${update.targetSha}`,
+        'application/vnd.github+json'
+      )) as { encoding?: string; content?: string } | null
+
+      const targetContract =
+        contractResponse?.encoding === 'base64' && typeof contractResponse.content === 'string'
+          ? Buffer.from(contractResponse.content.replace(/\s/g, ''), 'base64').toString('utf8')
+          : ''
+
+      const currentContract = fs.readFileSync(gateway.contract, 'utf8')
+
+      if (typeof targetContract !== 'string' || !gatewayProtocolsMatch(currentContract, targetContract)) {
+        return unavailable(
+          'incompatible-gateway-protocol',
+          'This Desktop update requires a different Gateway RPC protocol; it was not offered while the Gateway release remains pinned.'
+        )
+      }
+    } catch (error) {
+      return unavailable(
+        'gateway-protocol-check-failed',
+        `Gateway protocol compatibility could not be verified: ${error.message || error}`
+      )
+    }
+  }
+
+  writeUpdateCheckCache({ fetchedAt: now, currentSha: cacheSha, branch, status: result })
+
+  return result
+}
+
 function runGit(args, options: any = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const gitBinary = resolveGitBinary()
@@ -3335,6 +3481,10 @@ async function resolveHealedBranch(updateRoot, branch) {
 // inside applyUpdates. `force` (menu item, Settings "Check now") skips the
 // cache; the renderer's background poller never passes it.
 async function checkUpdates({ force = false }: { force?: boolean } = {}) {
+  if (IS_PACKAGED && IS_MAC) {
+    return checkDesktopReleaseUpdates({ force })
+  }
+
   const updateRoot = resolveUpdateRoot()
   let { branch } = readDesktopUpdateConfig()
   const gitDir = path.join(updateRoot, '.git')
@@ -3427,7 +3577,7 @@ async function checkUpdatesViaApi({ slug, branch, currentSha, updateRoot }) {
   }
 
   if (targetSha === currentSha) {
-    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
+    return { behind: 0, updateAvailable: false, targetSha, compareStatus: 'identical', commits: [] }
   }
 
   // Compare failure (rate-limited, local-only HEAD 404) keeps the honest
@@ -3446,7 +3596,7 @@ async function checkUpdatesViaApi({ slug, branch, currentSha, updateRoot }) {
   // HEAD — a local commit sitting AHEAD, not behind. Flagging that as an update
   // nudges the user into wiping their work.
   if (compared?.behind === 0) {
-    return { behind: 0, updateAvailable: false, targetSha, commits: [] }
+    return { behind: 0, updateAvailable: false, targetSha, compareStatus: compared.status, commits: [] }
   }
 
   // A local-only HEAD (a patched checkout's merge/rebase commits exist nowhere
@@ -3464,6 +3614,7 @@ async function checkUpdatesViaApi({ slug, branch, currentSha, updateRoot }) {
         behind: local,
         updateAvailable: local > 0,
         targetSha,
+        compareStatus: compared?.status ?? null,
         commits: local > 0 ? await listLocalCommits(runGit, updateRoot, currentSha, targetSha) : []
       }
     }
@@ -3473,6 +3624,7 @@ async function checkUpdatesViaApi({ slug, branch, currentSha, updateRoot }) {
     behind: compared ? compared.behind : null,
     updateAvailable: true,
     targetSha,
+    compareStatus: compared?.status ?? null,
     commits: compared?.commits ?? []
   }
 }
@@ -4187,6 +4339,10 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
   updateInFlight = true
 
   try {
+    if (IS_PACKAGED && IS_MAC) {
+      return await applyUpdatesPosixHandoff(opts)
+    }
+
     const updater = resolveUpdaterBinary()
 
     if (!updater && !IS_WINDOWS) {
@@ -4770,17 +4926,39 @@ async function preflightStateDb(hermesHome, rememberLog) {
   }
 }
 
-// macOS/Linux update hand-off: spawn the repo-owned posix orchestrator
-// (scripts/desktop-update/posix.sh) detached and QUIT. The script waits us
-// out, runs `hermes update`, swaps/relaunches the app bundle, and writes
-// .hermes-update-result.json for the relaunched Desktop to surface. It shows
-// its own tiny shim window (or nothing, headless) — this process only needs
-// to leave. Checkouts that predate the script get the manual card once.
+// Packaged macOS updates use the app-bundled hand-off to build only the
+// approved Desktop commit and swap its bundle; development and CLI installs
+// retain the existing repo-owned runtime updater path.
 async function applyUpdatesPosixHandoff(opts: any) {
-  const updateRoot = resolveUpdateRoot()
-  const handoff = resolvePosixScriptHandoff(updateRoot)
+  const desktopOnly = IS_PACKAGED && IS_MAC
+  const updateRoot = desktopOnly ? null : resolveUpdateRoot()
+  const desktopRelease = desktopOnly ? await checkDesktopReleaseUpdates({ force: true }) : null
+
+  if (
+    desktopOnly &&
+    (!desktopRelease?.supported ||
+      !desktopRelease.updateAvailable ||
+      !desktopRelease.targetSha ||
+      !desktopRelease.sourceRepository)
+  ) {
+    const message = desktopRelease?.message || 'No verified Desktop release is currently available.'
+    emitUpdateProgress({ stage: 'error', message, percent: null })
+
+    return { ok: false, error: 'desktop-release-unavailable', message }
+  }
+
+  const handoff = resolvePosixScriptHandoff(updateRoot || '', {
+    resourcesPath: desktopOnly ? process.resourcesPath : undefined
+  })
 
   if (!handoff) {
+    if (desktopOnly) {
+      const message = 'This Desktop build is missing its packaged updater. Reinstall Hermes Desktop to enable updates.'
+      emitUpdateProgress({ stage: 'error', message, percent: null })
+
+      return { ok: false, error: 'desktop-updater-not-packaged', message }
+    }
+
     emitUpdateProgress({ stage: 'manual', message: 'hermes update', percent: null })
 
     return { ok: true, manual: true, command: 'hermes update', hermesRoot: updateRoot }
@@ -4797,31 +4975,51 @@ async function applyUpdatesPosixHandoff(opts: any) {
     return { ok: false, error: 'update-already-running', message: handoffConflict.message }
   }
 
-  // ── Pre-flight state.db integrity guard (#68474) ──
-  await preflightStateDb(HERMES_HOME, rememberLog)
+  if (!desktopOnly) {
+    // ── Pre-flight state.db integrity guard (#68474) ──
+    await preflightStateDb(HERMES_HOME, rememberLog)
+  }
 
   // Branch-pin so a non-main checkout doesn't get switched to main (and
   // self-heal to main when the pinned branch no longer exists on origin).
   let branch = 'main'
 
-  try {
-    const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
-    const current = (head.stdout || '').trim()
+  if (!desktopOnly) {
+    try {
+      const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
+      const current = (head.stdout || '').trim()
 
-    if (head.code === 0 && current && current !== 'HEAD') {
-      branch = await resolveHealedBranch(updateRoot, current)
+      if (head.code === 0 && current && current !== 'HEAD') {
+        branch = await resolveHealedBranch(updateRoot, current)
+      }
+    } catch {
+      // best effort
     }
-  } catch {
-    // best effort
   }
 
-  const args = [...handoff.args, '--install-root', updateRoot, '--branch', branch, '--desktop-pid', String(process.pid)]
+  const args = [...handoff.args]
+
+  if (desktopOnly) {
+    args.push(
+      '--desktop-only',
+      '--hermes-home',
+      HERMES_HOME,
+      '--source-repository',
+      desktopRelease.sourceRepository,
+      '--target-sha',
+      desktopRelease.targetSha.toLowerCase()
+    )
+  } else {
+    args.push('--install-root', updateRoot, '--branch', branch)
+  }
+
+  args.push('--desktop-pid', String(process.pid))
 
   // A remote-served Desktop owns no local messaging gateway: `hermes update
   // --gateway` would (re)start one here anyway, and with the same channel
   // credentials as the remote host it becomes a competing long-poll consumer
   // (#117529). Keep --gateway for the local-ownership default.
-  if (globalRemoteActive()) {
+  if (!desktopOnly && globalRemoteActive()) {
     args.push('--no-gateway')
   }
 
@@ -4859,7 +5057,9 @@ async function applyUpdatesPosixHandoff(opts: any) {
       ...process.env,
       HERMES_HOME,
       HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
-      PATH: pathWithHermesManagedNode(path.join(resolveVenvDir(updateRoot), 'bin'))
+      PATH: desktopOnly
+        ? pathWithHermesManagedNode(path.join(os.homedir(), '.local', 'bin'), '/opt/homebrew/bin', '/usr/local/bin')
+        : pathWithHermesManagedNode(path.join(resolveVenvDir(updateRoot), 'bin'))
     },
     detached: true,
     stdio: 'ignore'
@@ -4872,7 +5072,9 @@ async function applyUpdatesPosixHandoff(opts: any) {
     writeUpdateMarker(HERMES_HOME, child.pid, { startedAt: updateStartedAt })
   }
 
-  rememberLog(`[updates] launched posix hand-off: ${handoff.scriptPath} (branch ${branch}); quitting to hand off`)
+  rememberLog(
+    `[updates] launched posix hand-off: ${handoff.scriptPath} (${desktopOnly ? `Desktop ${desktopRelease.targetSha}` : `branch ${branch}`}); quitting to hand off`
+  )
   emitUpdateProgress({
     stage: 'restart',
     message:

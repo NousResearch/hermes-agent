@@ -36,6 +36,10 @@ export function githubRepoSlug(originUrl: string): string | null {
   return match ? match[1] : null
 }
 
+export function gatewayProtocolsMatch(current: string, target: string): boolean {
+  return Boolean(current && target && current === target)
+}
+
 export function branchTipApiUrl(slug: string, branch: string): string {
   return `https://api.github.com/repos/${slug}/commits/${encodeURIComponent(branch)}`
 }
@@ -77,12 +81,15 @@ export interface CompareCommit {
  * behind). Any shape surprise returns null so callers keep the honest
  * "update available, count unknown" state instead of trusting a partial answer.
  */
-export function parseCompare(payload: unknown): { behind: number; commits: CompareCommit[] } | null {
+export function parseCompare(
+  payload: unknown
+): { behind: number; status: string | null; commits: CompareCommit[] } | null {
   if (!payload || typeof payload !== 'object') {
     return null
   }
 
   const ahead = (payload as { ahead_by?: unknown }).ahead_by
+  const status = (payload as { status?: unknown }).status
 
   if (typeof ahead !== 'number' || !Number.isInteger(ahead) || ahead < 0) {
     return null
@@ -107,7 +114,7 @@ export function parseCompare(payload: unknown): { behind: number; commits: Compa
         .reverse()
     : []
 
-  return { behind: ahead, commits }
+  return { behind: ahead, status: typeof status === 'string' ? status : null, commits }
 }
 
 /** GitHub's rate-limit headers off a failed response, when it carried them. */

@@ -725,6 +725,7 @@ export interface DesktopUpdateStatus {
   supported: boolean
   updateAvailable?: boolean
   branch?: string
+  sourceRepository?: string
   currentBranch?: string
   reason?: string
   message?: string

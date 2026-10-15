@@ -58,15 +58,24 @@ export function fromCI(env = process.env) {
   return {
     commit: sha,
     branch: branch,
+    repository: env.GITHUB_REPOSITORY || null,
     dirty: false, // CI builds from a checkout-of-ref by definition
     source: "ci"
   }
+}
+
+function repositorySlug(remote) {
+  const match = typeof remote === "string"
+    ? /^(?:https?:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([^/]+\/[^/]+?)(?:\.git)?$/i.exec(remote.trim())
+    : null
+  return match ? match[1].toLowerCase() : null
 }
 
 export function fromLocalGit(repoRoot = REPO_ROOT, execFn = tryExec) {
   const sha = execFn("git rev-parse HEAD", { cwd: repoRoot })
   if (!sha) return null
   const branch = execFn("git rev-parse --abbrev-ref HEAD", { cwd: repoRoot })
+  const repository = repositorySlug(execFn("git remote get-url origin", { cwd: repoRoot }))
   // `git status --porcelain -uno` is empty iff tracked files match HEAD.
   // We exclude untracked files (-uno) intentionally: a developer who's
   // checked out an installer scratch dir alongside the repo shouldn't
@@ -78,6 +87,7 @@ export function fromLocalGit(repoRoot = REPO_ROOT, execFn = tryExec) {
   return {
     commit: sha,
     branch: branch === "HEAD" ? null : branch, // detached HEAD -> null
+    repository,
     dirty: dirty,
     source: "local"
   }
@@ -92,6 +102,7 @@ export function fromFallback(branch = FALLBACK_BRANCH) {
   return {
     commit: FALLBACK_COMMIT,
     branch: branch || FALLBACK_BRANCH,
+    repository: null,
     dirty: false,
     source: "fallback"
   }
@@ -153,6 +164,7 @@ function main() {
     schemaVersion: STAMP_SCHEMA_VERSION,
     commit: stamp.commit,
     branch: stamp.branch,
+    repository: stamp.repository,
     builtAt: new Date().toISOString(),
     dirty: stamp.dirty,
     source: stamp.source

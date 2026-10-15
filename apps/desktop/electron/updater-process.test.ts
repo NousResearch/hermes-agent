@@ -270,6 +270,31 @@ test('resolvePosixScriptHandoff returns the bash recipe when the script exists',
   assert.deepEqual(handoff.args, [expected])
 })
 
+test('resolvePosixScriptHandoff prefers the packaged updater over checkout files', () => {
+  const root = '/Users/hermes/.hermes/hermes-agent'
+  const packaged = '/Applications/Hermes.app/Contents/Resources/desktop-update/posix.sh'
+
+  const handoff = resolvePosixScriptHandoff(root, {
+    isWindows: false,
+    resourcesPath: '/Applications/Hermes.app/Contents/Resources',
+    fileExists: candidate => candidate === packaged
+  })
+
+  assert.ok(handoff)
+  assert.equal(handoff.scriptPath, packaged)
+  assert.deepEqual(handoff.args, [packaged])
+})
+
+test('resolvePosixScriptHandoff does not fall back to a checkout when a packaged app lacks its updater', () => {
+  const handoff = resolvePosixScriptHandoff('/dirty/checkout', {
+    isWindows: false,
+    resourcesPath: '/Hermes.app/Contents/Resources',
+    fileExists: candidate => candidate === path.join('/dirty/checkout', 'scripts', 'desktop-update', 'posix.sh')
+  })
+
+  assert.equal(handoff, null)
+})
+
 test('resolvePosixScriptHandoff is null when the checkout predates the script', () => {
   const handoff = resolvePosixScriptHandoff('/home/hermes/.hermes/hermes-agent', {
     isWindows: false,

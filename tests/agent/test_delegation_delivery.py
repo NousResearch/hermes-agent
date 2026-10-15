@@ -173,7 +173,7 @@ def _make_loop_agent(tmp_path: Path) -> AIAgent:
             max_iterations=4,
             skip_context_files=True,
             skip_memory=True,
-            session_db=SessionDB(db_path=tmp_path / "state.db"),
+            session_db=SessionDB(db_path=ad._db_path()),
             session_id=f"inject-loop-{uuid.uuid4().hex}",
         )
     agent.client = MagicMock()
@@ -775,9 +775,10 @@ def test_tui_busy_dequeue_cannot_hide_ready_inject_from_tool_boundary(monkeypatc
 
 
 # #104299 integration: preserve its real completion-unit partition/finalizer.
-def _gated_unit_call(monkeypatch, gates, *, delivery="inject"):
+def _gated_unit_call(monkeypatch, gates, *, delivery="inject", independent=False):
     import json
 
+    monkeypatch.setattr(delegate_tool, "_load_config", lambda: {"independent_completions": independent})
     parent = MagicMock()
     parent._delegate_depth = 0
     parent.session_id = "parent-session"
@@ -837,7 +838,7 @@ def test_inject_uses_completed_units_without_splitting_groups_or_capacity(monkey
         return messages[-1]["content"]
 
     try:
-        handle = _gated_unit_call(monkeypatch, gates)
+        handle = _gated_unit_call(monkeypatch, gates, independent=True)
         assert handle["status"] == "dispatched"
         units = {tuple(u["task_indexes"]): u for u in handle["units"]}
         assert set(units) == {(0, 1), (2,)}
@@ -895,7 +896,11 @@ def test_unit_dispatch_propagates_policy_and_default_uses_same_after_turn_claim(
         ("unknown-mode", "after_turn"),
         (" INJECT ", "inject"),
     ]
-    for requested, expected in cases:
+    for independent, requested, expected in (
+        (independent, requested, expected)
+        for independent in (False, True) for requested, expected in cases
+    ):
+        expected_units = 2 if independent else 1
         ad._reset_for_tests()
         while not process_registry.completion_queue.empty():
             process_registry.completion_queue.get_nowait()
@@ -905,17 +910,21 @@ def test_unit_dispatch_propagates_policy_and_default_uses_same_after_turn_claim(
             {"role": "tool", "tool_call_id": "current", "content": "unchanged"}
         ]
         try:
-            handle = _gated_unit_call(monkeypatch, gates, delivery=requested)
+            handle = _gated_unit_call(monkeypatch, gates, delivery=requested, independent=independent)
             assert handle["status"] == "dispatched"
             assert handle["result_delivery"] == expected
             for gate in gates:
                 gate.set()
             events = [
-                process_registry.completion_queue.get(timeout=5) for _ in range(2)
+                process_registry.completion_queue.get(timeout=5) for _ in range(expected_units)
             ]
+            assert len(handle.get("units", [handle])) == expected_units
             assert {event["delegation_id"] for event in events} == {
-                unit["delegation_id"] for unit in handle["units"]
+                unit["delegation_id"] for unit in handle.get("units", [handle])
             }
+            assert sum(len(event["results"]) for event in events) == len(gates)
+            if expected == "inject":
+                assert f"{expected_units} completion unit(s)" in handle["note"]
             for event in events:
                 assert event["result_delivery"] == expected
                 assert event["parent_turn_id"] == "turn-current"
@@ -923,13 +932,13 @@ def test_unit_dispatch_propagates_policy_and_default_uses_same_after_turn_claim(
 
             attached = attach_ready_injects_to_tool_results(agent, messages, 1)
             if expected == "inject":
-                assert attached == 2  # two units, never three child rows
-                assert release_pending_injects(agent, messages) == 2
+                assert attached == expected_units  # timing never changes the configured units
+                assert release_pending_injects(agent, messages) == expected_units
             else:
                 assert attached == 0
             assert messages[-1]["content"] == "unchanged"
 
-            for _ in range(2):
+            for _ in range(expected_units):
                 event = process_registry.completion_queue.get(timeout=5)
                 claim = ad.claim_event_delivery(event, "ordinary-after-turn")
                 assert claim

@@ -199,4 +199,13 @@ describe('ModelEditSubmenu pricing section', () => {
     expect(screen.getByText('$1.25')).toBeTruthy()
     expect(screen.getByText('—')).toBeTruthy()
   })
+  it('hides the whole section when the model has no pricing', () => {
+    renderSubmenu({
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      reasoning: true
+    })
+
+    expect(screen.queryByText(/Pricing/)).toBeNull()
+  })
 })

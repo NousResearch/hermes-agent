@@ -969,8 +969,9 @@ export const host = {
       // nothing else is coming to clear it. Skip only when a newer wake has
       // since taken ownership of the target.
       if (gatewaySwapTargetOwnerGeneration === generation) {
-        $gatewaySwapTarget.set(null)
+        // Nanostores notifies synchronously; a subscriber may start a new wake.
         gatewaySwapTargetOwnerGeneration = null
+        $gatewaySwapTarget.set(null)
       }
     }
   },

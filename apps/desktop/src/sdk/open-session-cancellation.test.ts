@@ -339,6 +339,57 @@ describe('caller-revocable SDK session opens', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it.each([false, true])(
+    'retains cleanup authority for hydration started by an overlay teardown subscriber (signal=%s)',
+    async withSignal => {
+      const controller = new AbortController()
+      const first = outcome(host.openSession('old', { ...options(controller.signal), route: undefined }))
+      await flush()
+      expect($gatewaySwapTarget.get()).toBe('alpha')
+
+      let second: Promise<void> | undefined
+
+      const unbind = $gatewaySwapTarget.listen(target => {
+        if (target === null && !second) {
+          second = host.openSession('new', {
+            ...options(withSignal ? new AbortController().signal : undefined),
+            route: undefined
+          })
+        }
+      })
+
+      try {
+        controller.abort()
+        await flush()
+        expect(await first).toBe('AbortError')
+        expect(second).toBeDefined()
+        expect($gatewaySwapTarget.get()).toBe('alpha')
+        expect(vi.mocked(openSessionTile).mock.calls.filter(([id]) => id === 'new')).toHaveLength(1)
+      } finally {
+        unbind()
+      }
+
+      paint('new')
+      await second
+      expect($gatewaySwapTarget.get()).toBeNull()
+      expect(vi.getTimerCount()).toBe(0)
+    }
+  )
+
+  it('cleans the overlay for a sequential signal-less open after cancellation', async () => {
+    const controller = new AbortController()
+    const first = outcome(host.openSession('old', { ...options(controller.signal), route: undefined }))
+    await flush()
+    controller.abort()
+    await flush()
+    expect(await first).toBe('AbortError')
+    const second = host.openSession('new', { ...options(), route: undefined })
+    paint('new')
+    await second
+    expect($gatewaySwapTarget.get()).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('older cancellation does not clear a newer same-profile overlay or workspace scope', async () => {
     const a = new AbortController(),
       b = new AbortController()

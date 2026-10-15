@@ -822,10 +822,6 @@ function releaseWhenAborted(promise: Promise<void>, signal?: AbortSignal): Promi
     return promise
   }
 
-  if (signal.aborted) {
-    return Promise.resolve()
-  }
-
   return new Promise<void>((resolve, reject) => {
     const onAbort = () => {
       signal.removeEventListener('abort', onAbort)
@@ -837,11 +833,18 @@ function releaseWhenAborted(promise: Promise<void>, signal?: AbortSignal): Promi
       callback()
     }
 
-    signal.addEventListener('abort', onAbort, { once: true })
+    // Work may have aborted synchronously during setup. Still observe its
+    // eventual result even when this caller has already released the mutex.
     promise.then(
       () => settle(resolve),
       error => settle(() => reject(error))
     )
+
+    if (signal.aborted) {
+      resolve()
+    } else {
+      signal.addEventListener('abort', onAbort, { once: true })
+    }
   })
 }
 

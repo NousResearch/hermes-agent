@@ -104,6 +104,95 @@ describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () =
     expect($connection.get()?.profile).toBe('research')
   })
 
+  it.each([false, true])(
+    'settles synchronous descriptor-setup cancellation and observes late profile work (reject=%s)',
+    async rejectDescriptor => {
+      vi.useFakeTimers()
+      const held = deferred<HermesConnection>()
+      const controller = new AbortController()
+      const add = vi.spyOn(controller.signal, 'addEventListener')
+      getConnection.mockImplementationOnce(() => {
+        controller.abort()
+
+        return held.promise
+      })
+
+      try {
+        const opening = ensureGatewayProfile('worker', { signal: controller.signal })
+        let settled = false
+        void opening.then(() => {
+          settled = true
+        })
+        await vi.advanceTimersByTimeAsync(0)
+        expect(settled).toBe(true)
+        await opening
+        expect($activeGatewayProfile.get()).toBe('default')
+        expect($connection.get()?.profile).toBe('default')
+
+        getConnectionFor.mockResolvedValueOnce(agentConn())
+        await ensureGatewayAgent('homelab', 'research')
+
+        if (rejectDescriptor) {
+          held.reject(new Error('abandoned descriptor failed'))
+        } else {
+          held.resolve(localConn({ profile: 'worker' }))
+        }
+
+        // Let the real rejection monitor see any unobserved activationWork.
+        await vi.advanceTimersByTimeAsync(0)
+        expect($activeGatewayProfile.get()).toBe('research')
+        expect($connection.get()?.profile).toBe('research')
+        expect(add).not.toHaveBeenCalled()
+        expect(vi.getTimerCount()).toBe(0)
+      } finally {
+        vi.restoreAllMocks()
+        vi.useRealTimers()
+      }
+    }
+  )
+
+  it.each([false, true])(
+    'observes the agent sibling work after synchronous activation cancellation (reject=%s)',
+    async rejectActivation => {
+      vi.useFakeTimers()
+      const held = deferred<boolean>()
+      const controller = new AbortController()
+      ensureGatewayForAgent.mockImplementationOnce(() => {
+        controller.abort()
+
+        return held.promise
+      })
+      getConnectionFor.mockImplementation(async ({ profile }) => agentConn({ profile: profile ?? 'default' }))
+
+      try {
+        const opening = ensureGatewayAgent('homelab', 'research', { signal: controller.signal })
+        let settled = false
+        void opening.then(() => {
+          settled = true
+        })
+        await vi.advanceTimersByTimeAsync(0)
+        expect(settled).toBe(true)
+        await opening
+        expect($activeGatewayProfile.get()).toBe('default')
+        expect($connection.get()?.profile).toBe('default')
+        await ensureGatewayAgent('homelab', 'writer')
+
+        if (rejectActivation) {
+          held.reject(new Error('abandoned agent activation failed'))
+        } else {
+          held.resolve(true)
+        }
+
+        await vi.advanceTimersByTimeAsync(0)
+        expect($activeGatewayProfile.get()).toBe('writer')
+        expect($connection.get()?.profile).toBe('writer')
+        expect(vi.getTimerCount()).toBe(0)
+      } finally {
+        vi.useRealTimers()
+      }
+    }
+  )
+
   it('resyncs $connection and $activeGatewayProfile even when the agent socket is already open', async () => {
     // The store-level activation resolves instantly (socket already open) —
     // exactly the case that used to skip the sync entirely.

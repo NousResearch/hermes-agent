@@ -539,6 +539,55 @@ def _profile_install(args):
         _die(f"Error: {e}")
 
 
+def _profile_update_clients(args):
+    """Update all profiles whose names start with 'client' or 'device'."""
+    from hermes_cli.profile_distribution import DistributionError, read_manifest, update_distribution
+    from hermes_cli.profiles import get_profile_dir, list_profiles, normalize_profile_name
+
+    profiles = list_profiles()
+    targets = [
+        p for p in profiles
+        if p.name.startswith("client") or p.name.startswith("device")
+    ]
+    if not targets:
+        print("No profiles starting with 'client' or 'device' found.")
+        return
+
+    print(f"\nFound {len(targets)} profile(s) to update:")
+    for p in targets:
+        dist = f" ({p.distribution_name}@{p.distribution_version})" if p.distribution_name else " (no distribution)"
+        print(f"  {p.name}{dist}")
+
+    if not getattr(args, "yes", False):
+        if not _confirm("\nProceed? [y/N] "):
+            print("Update cancelled.")
+            return
+
+    force_config = getattr(args, "force_config", False)
+    errors = []
+    for p in targets:
+        try:
+            canon = normalize_profile_name(p.name)
+            current = read_manifest(get_profile_dir(canon))
+            if current is None:
+                print(f"\n⚠ Skipping '{canon}': not a distribution (no distribution.yaml).")
+                continue
+            print(f"\nUpdating '{canon}'…")
+            plan = update_distribution(canon, force_config=force_config)
+            print(f"✓ Updated '{plan.manifest.name}' → v{plan.manifest.version}")
+            if plan.has_cron:
+                print(f"  Cron files were refreshed.  Review with:  hermes -p {plan.manifest.name} cron list")
+        except (DistributionError, ValueError) as e:
+            msg = f"Error updating '{p.name}': {e}"
+            print(f"✗ {msg}")
+            errors.append(msg)
+
+    if errors:
+        print(f"\n{len(errors)} error(s) occurred during update.")
+    else:
+        print(f"\n✓ All {len(targets)} profile(s) updated successfully.")
+
+
 def _profile_update(args):
     from hermes_cli.profile_distribution import DistributionError, read_manifest, update_distribution
     from hermes_cli.profiles import get_profile_dir, normalize_profile_name
@@ -625,6 +674,7 @@ PROFILE_ACTIONS = {
     'import': _profile_import,
     'install': _profile_install,
     'update': _profile_update,
+    'update-clients': _profile_update_clients,
     'info': _profile_info,
 }
 

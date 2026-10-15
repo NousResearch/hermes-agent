@@ -259,6 +259,31 @@ def _launchd_owner_for_ledger_entry(entry: dict, pid: int, jobs: list) -> tuple[
     return None
 
 
+def _systemd_owner_for_ledger_entry(pid: int) -> tuple[str, str] | None:
+    """``(scope, unit)`` of the systemd unit whose live ``MainPID`` is this ledger row, if any.
+
+    A unit-managed serve/dashboard records no live spawner — systemd started it, not the CLI — so
+    the spawner probe alone reads the row as ``manual-serve``: the plan then advertises a
+    respawn-argv restart and owes a durable manual handoff for a backend systemd brings back by
+    itself (#139387). ``_get_systemd_service_for_pid`` proves ownership through the unit's own live
+    ``MainPID`` before it names a unit, so a backend that merely runs under some ``.service`` cgroup
+    (started by hand from a shell that happens to be that unit's main process) is never claimed.
+    Linux only, and advisory like the launchd matcher: ``None`` on another host and on any probe
+    failure, which falls back to the spawner classification rather than aborting the inventory.
+    """
+    if sys.platform != "linux":
+        return None
+    with suppress(Exception):
+        from hermes_cli import main_dashboard as _dash
+
+        unit = _dash._get_systemd_service_for_pid(pid)
+        if unit:
+            cgroup = _dash._get_pid_cgroup_path(pid)
+            scope = _dash._extract_scope_from_cgroup(cgroup) if cgroup else None
+            return (scope or "unknown", unit)
+    return None
+
+
 def _is_desktop_ssh_ledger_entry(entry: dict) -> bool:
     """Is this row the backend a (possibly remote) Desktop spawned over SSH? The canonical argv
     predicate also classifies rows written before the ledger carried ``isolated``, which is exactly
@@ -277,7 +302,9 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
     ledger_entries() live-verifies (pid, create_time) so PID reuse never fabricates a row. Desktop-
     supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours.
     A backend owned by a loaded launchd job is classified ``launchd`` (kickstart restart, never a
-    detached argv respawn) — the spawner probe cannot see that (#116503)."""
+    detached argv respawn) — the spawner probe cannot see that (#116503) — and one owned by a
+    systemd unit is classified ``systemd`` for the same reason: the unit's own restart pass brings
+    it back, so the row owes no manual handoff (#139387)."""
     with _probe("Serve/dashboard ledger inventory"):
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
 
@@ -294,8 +321,16 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
                 "port": entry.get("port"), "create_time": entry.get("create_time"),
             }
             job = _launchd_owner_for_ledger_entry(entry, pid, launchd_jobs) if launchd_jobs else None
+            unit = _systemd_owner_for_ledger_entry(pid) if job is None else None
             if job:
                 supervisor, detail["launchd_domain"], detail["launchd_label"] = "launchd", job[0], job[1]
+            elif unit:
+                # A unit owns this backend: `Restart=always` would revive it mid-pull under a
+                # respawn-argv restart, and a manual handoff reminder would outlive the update that
+                # systemd's own restart already discharged. The fresh child's systemd pass covers
+                # `hermes-serve*`/`hermes-dashboard*` units, exactly as the gateway rows are.
+                supervisor = "systemd"
+                detail["systemd_scope"], detail["systemd_unit"] = unit
             elif _is_desktop_ssh_ledger_entry(entry):
                 # No local spawner, so the probe below would read manual-serve and file a reminder
                 # nobody here can discharge; its token file and owner nonce belong to the client.

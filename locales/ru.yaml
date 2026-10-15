@@ -1509,7 +1509,7 @@ slash:
   undo:
     description: "Откатиться на N реплик пользователя и задать промпт заново (по умолчанию 1)"
   title:
-    description: "Задать название текущего сеанса"
+    description: "Задать заголовок беседы"
   handoff:
     description: "Передать этот сеанс в мессенджер (Telegram, Discord и т. д.)"
   branch:

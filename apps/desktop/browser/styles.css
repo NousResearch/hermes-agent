@@ -1,0 +1,7 @@
+/* Safari zooms focused text fields below 16px, shifting the whole page after
+   the keyboard closes. Keep touch composers readable without limiting zoom. */
+@media (hover: none) and (pointer: coarse) {
+  html [data-slot='composer-rich-input'] {
+    font-size: max(16px, var(--conversation-text-font-size));
+  }
+}

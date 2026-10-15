@@ -77,7 +77,7 @@ npm run typecheck:browser --workspace apps/desktop
 npm run test:browser --workspace apps/desktop
 npm run build:browser --workspace apps/desktop
 scripts/run_tests.sh tests/hermes_cli/test_browser_frontend.py tests/hermes_cli/test_browser_terminal.py
-scripts/run-in-hermes-env npm run test:browser:e2e --workspace apps/desktop
+scripts/run-in-hermes-env env HERMES_PYTHON=python3 npm run test:browser:e2e --workspace apps/desktop
 python scripts/check
 ```
 
@@ -97,3 +97,7 @@ The browser build preloads the renderer during host/locale initialization withou
 evaluating it before host installation. Overlapping configuration reads share a
 request within the same backend/profile/auth/timeout scope; results are not cached,
 and writes invalidate overlapping reads at both start and completion.
+
+On coarse-pointer touch devices the browser composer uses a 16px minimum font
+size to prevent Safari focus zoom; larger user-selected text sizes remain intact.
+The mobile journey checks focused composer sizing and horizontal overflow.

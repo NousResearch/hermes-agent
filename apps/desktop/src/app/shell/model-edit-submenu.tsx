@@ -1,4 +1,4 @@
-import { REASONING_EFFORTS } from '@hermes/shared'
+import { type ModelPricing, REASONING_EFFORTS } from '@hermes/shared'
 
 import {
   DropdownMenuItem,
@@ -91,6 +91,8 @@ interface ModelEditSubmenuProps {
    *  controller decides what an edit means. That's what lets the same submenu
    *  drive a live chat session and a detached per-task override. */
   onSetOptions: (patch: { effort?: string; fast?: boolean; serviceTier?: string }) => void
+  /** This row's live $/Mtok pricing, when the provider ships it. */
+  pricing?: ModelPricing
   /** This row's provider slug. */
   provider: string
   /** Whether this model supports reasoning effort. */
@@ -106,7 +108,25 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
   return (
     <DropdownMenuSubContent className="w-52 p-0" sideOffset={4}>
       <ModelOptionsContent {...props} />
+            {props.pricing ? <ModelPricingSection pricing={props.pricing} /> : null}
     </DropdownMenuSubContent>
+  )
+}
+
+/** Read-only price list for this row's model. A `<dl>`, not menu items, so
+ *  keyboard navigation skips it. */
+function ModelPricingSection({ pricing }: { pricing: ModelPricing }) {
+  return (
+    <dl>
+      <div>
+        <dt>Input</dt>
+        <dd>{pricing.input}</dd>
+      </div>
+      <div>
+        <dt>Output</dt>
+        <dd>{pricing.output}</dd>
+      </div>
+    </dl>
   )
 }
 

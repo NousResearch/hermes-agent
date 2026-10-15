@@ -1,3 +1,4 @@
+import type { ModelPricing } from '@hermes/shared'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
@@ -30,6 +31,7 @@ function renderSubmenu(opts: {
   isActive?: boolean
   onSelectModel?: (model: string) => void
   onSetOptions: (patch: { effort?: string; fast?: boolean }) => void
+  pricing?: ModelPricing
   reasoning: boolean
 }) {
   return render(
@@ -45,6 +47,7 @@ function renderSubmenu(opts: {
             model="m1"
             onSelectModel={opts.onSelectModel ?? vi.fn()}
             onSetOptions={opts.onSetOptions}
+            pricing={opts.pricing}
             provider="p1"
             reasoning={opts.reasoning}
           />
@@ -127,5 +130,21 @@ describe('ModelEditSubmenu reports edits without performing them', () => {
     fireEvent.click(screen.getByRole('switch'))
 
     expect(onSelectModel).toHaveBeenCalledWith('m1-fast')
+  })
+})
+
+describe('ModelEditSubmenu pricing section', () => {
+  it('shows the input and output price', () => {
+    renderSubmenu({
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      pricing: { free: false, input: '$3.00', output: '$15.00' },
+      reasoning: true
+    })
+
+    expect(screen.getByText('Input')).toBeTruthy()
+    expect(screen.getByText('$3.00')).toBeTruthy()
+    expect(screen.getByText('Output')).toBeTruthy()
+    expect(screen.getByText('$15.00')).toBeTruthy()
   })
 })

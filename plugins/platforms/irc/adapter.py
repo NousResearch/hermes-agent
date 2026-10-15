@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 
 _TRUTHY = {"1", "true", "yes"}
 _EOF = object()  # _standalone_send: server closed the connection
+# A dead network path (NAT eviction, Wi-Fi switch, sleep) never closes the socket, so the receive loop
+# would wait forever. Servers PING idle clients every minute or two: after this much silence we PING,
+# and after twice this much we drop the connection so the gateway reconnects.
+_LIVENESS_INTERVAL = 120.0
 _MARKDOWN_RULES = (
     (r"\*\*(.+?)\*\*", r"\1"),  # bold
     (r"__(.+?)__", r"\1"),
@@ -249,9 +253,20 @@ class IRCAdapter(BasePlatformAdapter):
         """Main receive loop — reads lines and dispatches them."""
         buffer = b""
         try:
+            silent_for = 0.0
             while self._reader and not self._reader.at_eof():
-                if not (data := await self._reader.read(4096)):
+                try:
+                    data = await asyncio.wait_for(self._reader.read(4096), timeout=_LIVENESS_INTERVAL)
+                except TimeoutError:
+                    silent_for += _LIVENESS_INTERVAL
+                    if silent_for >= 2 * _LIVENESS_INTERVAL:
+                        logger.warning("IRC: server sent nothing for %ds; reconnecting", silent_for)
+                        break
+                    await self._send_raw("PING :hermes")
+                    continue
+                if not data:
                     break
+                silent_for = 0.0
                 buffer += data
                 while b"\r\n" in buffer:
                     line, buffer = buffer.split(b"\r\n", 1)

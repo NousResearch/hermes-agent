@@ -449,12 +449,9 @@ class SessionAuthority:
         def admitted():
             # The exact durable identity (authenticated principal + target + request id); the
             # attachment fields it yields still pass the full payload-digest comparison below.
-            with self.db._read_ctx() as conn:
-                row = conn.execute('SELECT * FROM session_admissions WHERE principal_id=? AND '
-                                   'target_session_id=? AND request_id=?', (actor.subject,
-                                   request.ref.session_id, request.request_id)).fetchone()
-            from hermes_state_runtime import _row
-            return _row(row) if row is not None else None
+            from hermes_state_runtime import find_session_admission
+            return find_session_admission(self.db, principal_id=actor.subject,
+                                          session_id=request.ref.session_id, request_id=request.request_id)
         payload = {'text': request.payload['text'], **finite, **admit_surface(request.payload),
                    **admit_display(request.payload), **admit_cli_turn(request.payload),
                    **admit_attachments(request.payload.get('attachments'), admitted=admitted)}

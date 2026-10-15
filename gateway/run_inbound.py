@@ -179,10 +179,14 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             logger.info("Dropping Slack message from configured ignored channel %s", _chat_id)
             return None
 
+        # An admission the authority is executing is already ordered by its durable FIFO; parking it
+        # here would settle the row with no turn and replay the input outside it (GW-2).
+        from gateway.session_ingress import executing_admission
         if (
             getattr(self, "_startup_restore_in_progress", False)
             and not is_internal
             and not getattr(event, "_hermes_startup_restore_replay", False)
+            and not executing_admission.get()
         ):
             self._queue_startup_restore_event(event)
             return None

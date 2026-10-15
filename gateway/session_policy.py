@@ -32,6 +32,16 @@ _TURN_PROFILE: ContextVar = ContextVar('follow_profile_read', default=None)  # (
 SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp', 'tool': 'cli', 'oneshot': 'cli'}
 
 
+def _refuse(field, detail=None):
+    """One named refusal: the launch field the check read, and why it failed.
+
+    ``reason`` stays the bounded wire code every caller compares as a string; ``field`` and
+    ``detail`` are what tells ~20 different create checks apart, in the client and in the
+    gateway log, without a second run to find out which one fired (``RuntimeStoreError`` bounds
+    and flattens both)."""
+    raise RuntimeStoreError('invalid_params', field=field, detail=detail)
+
+
 @dataclass(frozen=True)
 class LocalSessionPolicy:
     source: str
@@ -263,23 +273,26 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     if source == 'a2a':
         from gateway.session_a2a import build_forward_policy
         return build_forward_policy(params, config, private_secrets=private_secrets)
-    if set(params) - CREATE_FIELDS or not isinstance(source, str) or source not in SURFACES:
-        raise RuntimeStoreError('invalid_params')
-    if any(name in params and type(params[name]) is not bool for name in BYPASS_FIELDS):
-        raise RuntimeStoreError('invalid_params')
+    unknown = sorted(set(params) - CREATE_FIELDS)
+    if unknown or not isinstance(source, str) or source not in SURFACES:
+        _refuse(f'params.{unknown[0]}' if unknown else 'source',
+                'unknown create field' if unknown else f'not a surface: {source!r}')
+    bad_bypass = next((name for name in BYPASS_FIELDS if name in params and type(params[name]) is not bool), None)
+    if bad_bypass:
+        _refuse(bad_bypass, 'must be a boolean')
     safe_mode = params.get('safe_mode', False)
     ignore_user_config = safe_mode or params.get('ignore_user_config', False)
     if 'api_key' in params and (not isinstance(params['api_key'], str) or not params['api_key'].strip()):
-        raise RuntimeStoreError('invalid_params')
+        _refuse('api_key', 'must be a non-empty string')
     model = params.get('model')
     if 'model' in params and (not isinstance(model, str) or not model.strip()):
-        raise RuntimeStoreError('invalid_params')
+        _refuse('model', 'must be a non-empty string')
     cwd = params.get('cwd', str(resolve_agent_cwd()))
     if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
-        raise RuntimeStoreError('invalid_params')
+        _refuse('cwd', 'must be an absolute path to an existing directory')
     row_cwd = params.get('row_cwd')
     if 'row_cwd' in params and (not isinstance(row_cwd, str) or (row_cwd and not Path(row_cwd).is_absolute())):
-        raise RuntimeStoreError('invalid_params')
+        _refuse('row_cwd', 'must be an absolute path when set')
     if params.get('cwd_explicit') is False and 'cwd' in params:
         cwd = _profile_workspace_cwd(get_hermes_home()) or cwd
     from gateway.session_local_editor import validate_editor
@@ -296,7 +309,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     # pick wins anyway; skipping it here also spares the probe.
     named = workspace_posture and source != 'tool' and 'cwd' in params and 'toolsets' not in params
     coding_posture = named and _in_coding_workspace(config, source, cwd)
-    enabled = _resolve_toolsets(params, config, source, safe_mode, coding_posture)
+    enabled = _resolve_toolsets(params, config, source, safe_mode, coding_posture, bypass=ignore_user_config)
     terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
     # The client's launch folder is a path on THIS host: a remote or container backend keeps its own
     # configured cwd unless the user picked this folder for the session.
@@ -345,17 +358,18 @@ def _apply_launch_overrides(params, config):
         if key in params:
             value = params[key]
             if not isinstance(value, str) or not value.strip():
-                raise RuntimeStoreError('invalid_params')
+                _refuse(key, 'must be a non-empty string')
             if key == 'base_url':
                 url = urlsplit(value)
                 if (url.scheme not in {'http', 'https'} or not url.hostname
                         or url.username or url.password or url.query or url.fragment):
-                    raise RuntimeStoreError('invalid_params')
+                    _refuse('base_url', 'must be an http(s) URL without credentials, query or fragment')
             config.setdefault('model', {})[key] = value
-    for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
-                 'cwd_explicit', 'verbose'):
-        if flag in params and type(params[flag]) is not bool:
-            raise RuntimeStoreError('invalid_params')
+    bad_flag = next((flag for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id',
+                                      'follow_profile_config', 'cwd_explicit', 'verbose')
+                     if flag in params and type(params[flag]) is not bool), None)
+    if bad_flag:
+        _refuse(bad_flag, 'must be a boolean')
     if 'service_tier' in params:
         # An explicit speed pick (Desktop Fast / Ultrafast / Normal): normal pins normal over a
         # profile tier; an unknown word is refused, never read as normal.
@@ -365,14 +379,14 @@ def _apply_launch_overrides(params, config):
         except ValueError:
             tier = None
         if tier is None:
-            raise RuntimeStoreError('invalid_params')
+            _refuse('service_tier', f"not a known tier: {params['service_tier']!r}")
         config.setdefault('agent', {})['service_tier'] = tier or 'normal'
     if 'run_budget' in params:
         # `--run-budget SECONDS`: the wall-clock budget per run (80% wrap-up notice, capped provider
         # timeouts), frozen as the session's `agent.run_budget_seconds` like main's CLI flag over config.
         value = params['run_budget']
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
-            raise RuntimeStoreError('invalid_params')
+            _refuse('run_budget', 'must be a positive number of seconds')
         config.setdefault('agent', {})['run_budget_seconds'] = float(value)
     if params.get('checkpoints'):
         section = config.get('checkpoints')
@@ -384,27 +398,42 @@ def _apply_launch_overrides(params, config):
         value = params['max_turns']
         limit = resolve_turn_limit(value, default=0) if isinstance(value, (int, str)) else 0
         if not limit:
-            raise RuntimeStoreError('invalid_params')
+            _refuse('max_turns', f'unreadable cap: {value!r}')
         config.setdefault('agent', {})['max_turns'] = limit
     if 'reasoning' in params:
         if not isinstance(params['reasoning'], str) or parse_reasoning_effort(params['reasoning']) is None:
-            raise RuntimeStoreError('invalid_params')
+            _refuse('reasoning', f"not a known effort level: {params['reasoning']!r}")
         config.setdefault('agent', {})['reasoning_effort'] = params['reasoning']
         # An explicit launch level wins over a per-model default, just like CLI.
         config['agent'].pop('reasoning_overrides', None)
 
 
-def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False):
+def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, bypass=False):
     """Validate explicit toolsets and return the session's enabled toolset set. Without a pick, a
     *coding_posture* session runs ``focus_toolsets`` instead of the profile default while the profile
     stays on ``focus``; the gateway decides it, never the client."""
-    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names
+    from hermes_cli.toolset_validation import saved_toolset_resolver
     from toolsets import validate_toolset
     explicit = params.get('toolsets')
     if 'toolsets' in params:
-        if (not isinstance(explicit, list) or any(not isinstance(x, str) or not validate_toolset(x) for x in explicit)
-                or ('desktop_ui' in explicit and source != 'gui')):
-            raise RuntimeStoreError('invalid_params')
+        if not isinstance(explicit, list):
+            _refuse('toolsets', f'must be a list of toolset names, got {type(explicit).__name__}')
+        # The CLI validator's rule: a configured MCP server's toolset registers only after its first
+        # connect, so an offline server is inactive, not a typo (#138748, #139154). A bypass launch never
+        # reads the profile, so it takes the in-process registry alone.
+        known = validate_toolset if bypass else saved_toolset_resolver(config)
+        configured = config.get('mcp_servers') if isinstance(config.get('mcp_servers'), dict) else {}
+        enabled_servers = enabled_mcp_server_names(config) if configured else set()
+        for name in explicit:
+            if not isinstance(name, str) or not known(name):
+                _refuse('toolsets', f'unknown or invalid toolset name: {name!r}')
+            server = name[4:] if name.startswith('mcp-') and name not in configured else name
+            if server in configured and server not in enabled_servers:
+                # Picking a disabled server must not match nothing and fall through to every enabled one.
+                _refuse('toolsets', f'MCP server {server!r} is disabled in config')
+        if 'desktop_ui' in explicit and source != 'gui':
+            _refuse('toolsets', f'desktop_ui is only available on the Desktop, not on {source}')
         config.setdefault('platform_toolsets', {})['acp' if source == 'acp' else 'cli'] = explicit
     posture = None
     if explicit is None and coding_posture:
@@ -416,7 +445,7 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False):
         requested = {t for name in explicit for t in resolve_toolset(name)}
         effective = {t for name in enabled for t in resolve_toolset(name)}
         if not requested <= effective:
-            raise RuntimeStoreError('invalid_params')
+            _refuse('toolsets', f"not available on this surface: {', '.join(sorted(requested - effective))}")
     if explicit is None and source in {'tui', 'gui'}:
         # Same surface toolsets as the native TUI factory, without its env inference.
         # The fold-in lands after _get_platform_tools subtracted agent.disabled_toolsets, so
@@ -470,10 +499,11 @@ def launch_skills(params):
     """The validated `-s/--skills` identifiers of a create request (empty when absent). Skills
     live in the profile, which a bypass launch must never read: refused there, not dropped."""
     skills = params.get('skills', [])
-    if (('skills' in params and (not isinstance(skills, list) or not skills
-                                 or any(not isinstance(s, str) or not s.strip() for s in skills)))
-            or (skills and any(params.get(name) is True for name in BYPASS_FIELDS))):
-        raise RuntimeStoreError('invalid_params')
+    if 'skills' in params and (not isinstance(skills, list) or not skills
+                               or any(not isinstance(s, str) or not s.strip() for s in skills)):
+        _refuse('skills', 'must be a non-empty list of skill names')
+    if skills and any(params.get(name) is True for name in BYPASS_FIELDS):
+        _refuse('skills', 'a bypass launch never reads the profile, so skills cannot be preloaded')
     return [s.strip() for s in skills]
 
 
@@ -584,7 +614,7 @@ def rebind_launch_key(authority, session, api_key):
     from agent.credential_persistence import fingerprint_secret_value
     from gateway.config import Platform
     if not isinstance(api_key, str) or not api_key.strip():
-        raise RuntimeStoreError('invalid_params')
+        _refuse('api_key', 'must be a non-empty string')
     source = authority.sessions[session.session_id].source
     if source is None or source.platform != Platform.LOCAL:
         raise RuntimeStoreError('admission_conflict')

@@ -29,6 +29,11 @@ _MD_BLOCKQUOTE_RE = re.compile(r"^\s*>\s?", flags=re.MULTILINE)
 _MD_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+", flags=re.MULTILINE)
 _MD_HR_RE = re.compile(r"^\s*[-*_]{3,}\s*$", flags=re.MULTILINE)
 _MD_TABLE_PIPE_RE = re.compile(r"\s*\|\s*")
+# Shell control operators between two commands, and file-descriptor redirects.
+# Both must run before the table-pipe and "&" rules, which would read them as
+# a table cell and as the word "and".
+_SHELL_CHAIN_RE = re.compile(r"(?<=\S)\s+(?:&&|\|\|)\s+(?=\S)")
+_SHELL_FD_REDIRECT_RE = re.compile(r"(?<![\w&>])(?:\d*>>?&\d*-?|&>>?)")
 _URL_RE = re.compile(r"https?://\S+")
 # Local file links ("MEDIA:/Users/me/file.xlsx") are click targets on screen, not
 # speech: voices loop on the hyphenated slug ("eeeeee"). The token is silence; the
@@ -280,13 +285,29 @@ def flatten_newlines_for_payload(text: str) -> str:
     return text.strip()
 
 
+def pause_shell_operators_for_tts(text: str) -> str:
+    """``a && b`` / ``a || b`` -> ``a, b``; ``2>&1`` / ``&>`` -> silence.
+
+    Pauses and silence instead of words, because the reply may be in any language.
+    Table rows keep their pipes: there ``||`` is an empty cell, not an operator.
+    """
+    if not text:
+        return ""
+    return "\n".join(
+        line if line.lstrip().startswith("|")
+        else _SHELL_FD_REDIRECT_RE.sub("", _SHELL_CHAIN_RE.sub(", ", line))
+        for line in text.split("\n")
+    )
+
+
 def prepare_spoken_text(text: str, max_chars: int | None = 4000) -> str:
     """Return a TTS-friendly script from assistant text (deterministic cleanup, not a rewrite).
-    Pipeline: non-spoken blocks > Markdown > symbols/units > identifier-dense tokens >
+    Pipeline: non-spoken blocks > shell operators > Markdown > symbols/units > identifier-dense tokens >
     line formatting into sentence pauses > single line (for newline-sensitive providers),
     then ``max_chars``."""
     spoken = text
-    for step in (strip_nonspoken_blocks, strip_markdown_for_tts, normalize_symbols_for_tts,
+    for step in (strip_nonspoken_blocks, pause_shell_operators_for_tts, strip_markdown_for_tts,
+                 normalize_symbols_for_tts,
                  prune_identifier_tokens_for_tts,
                  smooth_whitespace_for_tts, flatten_newlines_for_payload):
         spoken = step(spoken)

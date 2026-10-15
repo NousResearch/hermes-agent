@@ -16,10 +16,29 @@ def test_placeholder_creator_remains_visible_after_gateway_routing(tmp_path, sur
         db.record_gateway_session_peer(
             "previous", source="local", session_key="local:previous", chat_id="previous",
         )
+        assert db.get_session("previous")["source"] == "local"
         rows = query_session_listing(SurfaceLabelReader(db), source=surface)
         assert [row["id"] for row in rows] == ["previous"]
         assert db.get_session("previous")["created_source"] == surface
         assert db.get_session("previous")["input_tokens"] == 5
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("surface", ["cli", "tui", "gui"])
+def test_worker_echo_cannot_freeze_routing_as_creation_provenance(tmp_path, surface):
+    from hermes_state_worker_lifecycle import worker_create
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.update_token_counts("previous", input_tokens=5)
+        db.record_gateway_session_peer("previous", source="local", session_key="local:previous")
+        db._execute_write(lambda conn: worker_create(db, conn, "previous", {"source": "local"}))
+        assert db.get_session("previous")["created_source"] == "unknown"
+        db.create_session("previous", source=surface)
+        assert db.get_session("previous")["source"] == "local"
+        assert db.get_session("previous")["created_source"] == surface
+        assert [row["id"] for row in SurfaceLabelReader(db).search_sessions(source=surface)] == ["previous"]
     finally:
         db.close()
 

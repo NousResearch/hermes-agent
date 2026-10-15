@@ -471,6 +471,8 @@ export function createCanonicalChat(
       {
         profile: backendTargetProfile(route, name),
         title: CANONICAL_CHAT_TITLE,
+        // A remote gateway has no HERMES_DESKTOP env, so an omitted source falls back to "tui".
+        source: 'desktop',
         // Always born hidden from the global sidebar — Bot Mode sessions are
         // plugin-owned. Core applies this via the generic `hidden` flag
         // (deferred as pending_hidden until the row exists); older gateways

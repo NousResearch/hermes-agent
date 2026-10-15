@@ -29,6 +29,10 @@ export function isFallbackSwitchStatus(kind: string | undefined, text: string): 
   return /model fallback|provider fallback|switched to fallback|switching to fallback/i.test(text)
 }
 
+// Older runtimes send MemoryManager.describe_recall() as lifecycle text. Keep
+// that narrow compatibility path; new runtimes identify recall by kind instead.
+const LEGACY_MEMORY_RECALL_RE = /^.+ — recalled (?:[1-9]\d* memor(?:y|ies)|relevant memory)$/u
+
 /** status.update / review.summary / notification.show / notification.clear /
  *  error — the status-and-notice tail of the dispatcher. */
 export function handleStatusEvent(ctx: GatewayEventContext): boolean {
@@ -119,6 +123,29 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       void refreshBackgroundProcesses(sessionId)
     } else if (sessionId && payload?.kind === 'goal') {
       applyGoalStatusText(sessionId, coerceGatewayText(payload?.text))
+    } else if (sessionId) {
+      const text = typeof payload?.text === 'string' ? payload.text.trim() : ''
+
+      const isRecall =
+        payload?.kind === 'memory_recall' || (payload?.kind === 'lifecycle' && LEGACY_MEMORY_RECALL_RE.test(text))
+
+      if (text && isRecall) {
+        // Recall is not model prose or a transient spinner. Keep the provider's
+        // summary in this session's live transcript, including background chats.
+        flushQueuedDeltas(sessionId)
+        updateSessionState(sessionId, state => ({
+          ...state,
+          messages: [
+            ...state.messages,
+            {
+              id: `memory-recall-${crypto.randomUUID()}`,
+              role: 'system',
+              parts: [textPart(text, occurredAt)],
+              timestamp: occurredAt
+            }
+          ]
+        }))
+      }
     } else if (sessionId && isFallbackSwitchStatus(payload?.kind, coerceGatewayText(payload?.text))) {
       // A provider/model switch is durable: the TUI paints it on the status rail, but Desktop
       // used to swallow every non-compaction status.update, so the reply came from a different

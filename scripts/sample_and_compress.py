@@ -115,7 +115,7 @@ def sample_from_datasets(
     tokenizer_name: str = "moonshotai/Kimi-K2-Thinking",
     seed: int = 42,
     num_proc: int = 8,
-    tokenizer_revision: str = None,
+    tokenizer_revision: str | None = None,
     trust_remote_code: bool = True,
 ) -> list[dict[str, Any]]:
     """

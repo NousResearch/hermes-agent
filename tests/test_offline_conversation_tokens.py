@@ -209,7 +209,7 @@ def test_invalid_tokenizer_cli_reports_error_without_traceback(tmp_path):
             "PYTHON_DOTENV_DISABLED": "1",
             **{key: os.environ[key] for key in ("SystemRoot", "WINDIR") if key in os.environ},
         },
-        capture_output=True, text=True, encoding="utf-8", timeout=30,
+        capture_output=True, text=True, encoding="utf-8", timeout=30, check=False,
     )
     assert result.returncode == 1
     assert "Cannot resolve tokenizer" in result.stderr

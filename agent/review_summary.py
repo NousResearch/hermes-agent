@@ -9,6 +9,8 @@ import contextvars
 import logging
 import time
 import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -20,7 +22,29 @@ REVIEW_SOURCE_SESSION_ID: contextvars.ContextVar[str | None] = contextvars.Conte
 )
 
 
-def publish_review_summary(agent: Any, actions: list[str], *, source_session_id: str | None = None) -> None:
+@dataclass(frozen=True)
+class ReviewSummaryDelivery:
+    callback: Callable[[Any], Any] | None
+    structured: bool
+
+
+# A captured absence is still an owner decision: never pick up a later turn's
+# callback. Deferred dispatch and preemption requeues preserve this context.
+REVIEW_SUMMARY_DELIVERY: contextvars.ContextVar[ReviewSummaryDelivery | None] = contextvars.ContextVar(
+    "review_summary_delivery", default=None,
+)
+
+
+def capture_review_summary_delivery(agent: Any) -> ReviewSummaryDelivery:
+    structured = vars(agent).get("background_review_event_callback")
+    callback = structured if callable(structured) else getattr(agent, "background_review_callback", None)
+    return ReviewSummaryDelivery(callback if callable(callback) else None, callable(structured))
+
+
+def publish_review_summary(
+    agent: Any, actions: list[str], *, source_session_id: str | None = None,
+    delivery: ReviewSummaryDelivery | None = None,
+) -> None:
     if not actions:
         return
     from agent.i18n import t
@@ -60,10 +84,9 @@ def publish_review_summary(agent: Any, actions: list[str], *, source_session_id:
     agent._safe_print(t("display.review.summary_cli", summary=summary))
     # Keep the text callback contract for CLI, messaging and third-party consumers.
     # The Desktop gateway opts into metadata so live and stored rows share an identity.
-    structured = vars(agent).get("background_review_event_callback")
-    callback = structured if callable(structured) else getattr(agent, "background_review_callback", None)
-    if callable(callback):
+    delivery = delivery if delivery is not None else capture_review_summary_delivery(agent)
+    if delivery.callback is not None:
         try:
-            callback(event if callable(structured) else text)
+            delivery.callback(event if delivery.structured else text)
         except Exception:
             logger.warning("Could not deliver self-improvement receipt for session=%s", session_id, exc_info=True)

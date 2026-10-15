@@ -75,8 +75,9 @@ def _optional_lock(agent: Any, attr: str) -> Iterator[None]:
 def prepare_background_review_run(agent: Any) -> Optional[_BackgroundReviewRun]:
     """Install a unique run token on the parent before ``Thread.start()``."""
     run = _BackgroundReviewRun()
-    from agent.review_summary import REVIEW_SOURCE_SESSION_ID
+    from agent.review_summary import REVIEW_SOURCE_SESSION_ID, REVIEW_SUMMARY_DELIVERY, capture_review_summary_delivery
     run.source_session_id = REVIEW_SOURCE_SESSION_ID.get() or getattr(agent, "session_id", None)
+    run.summary_delivery = REVIEW_SUMMARY_DELIVERY.get() or capture_review_summary_delivery(agent)
     try:
         lock = getattr(agent, "_background_review_lock", None)
         if lock is None:
@@ -1212,9 +1213,10 @@ def _run_review_fork(
 
 def _publish_review_summary(
     agent: Any, actions: list[str], *, source_session_id: Optional[str] = None,
+    delivery: Any = None,
 ) -> None:
     from agent.review_summary import publish_review_summary
-    publish_review_summary(agent, actions, source_session_id=source_session_id)
+    publish_review_summary(agent, actions, source_session_id=source_session_id, delivery=delivery)
 
 
 def _run_review_in_thread(
@@ -1231,6 +1233,12 @@ def _run_review_in_thread(
     """
     # Completion can overlap a new live turn: never attribute the receipt to its session.
     source_session_id = getattr(review_run, "source_session_id", None) or getattr(agent, "session_id", None)
+    from agent.review_summary import REVIEW_SUMMARY_DELIVERY, capture_review_summary_delivery
+    summary_delivery = (
+        getattr(review_run, "summary_delivery", None)
+        or REVIEW_SUMMARY_DELIVERY.get()
+        or capture_review_summary_delivery(agent)
+    )
     if review_run is not None and review_run.cancel_requested.is_set():
         finish_background_review_run(agent, review_run)
         return
@@ -1284,7 +1292,7 @@ def _run_review_in_thread(
             actions = []
         _log_review_completion(st.review_usage, _classify_review_result(actions))
         if actions:
-            _publish_review_summary(agent, actions, source_session_id=source_session_id)
+            _publish_review_summary(agent, actions, source_session_id=source_session_id, delivery=summary_delivery)
     except Exception as e:
         logger.warning("Background memory/skill review failed: %s", e)
         if st.review_usage:

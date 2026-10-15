@@ -2,6 +2,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from agent import background_review as review
 from hermes_state import SessionDB
 
@@ -91,6 +93,8 @@ def test_idle_queue_freezes_origin_before_new_and_preserves_it_through_requeue(t
     for sid in ("origin", "next-chat"):
         db.create_session(sid, source="desktop")
     agent = parent(db, "origin")
+    original_events, successor_events = [], []
+    agent.background_review_event_callback = original_events.append
     queue = ReviewIdleQueue()
     monkeypatch.setattr(queue, "_ensure_thread", lambda: None)
     monkeypatch.setattr(queue, "_still_enabled", lambda item: True)
@@ -128,6 +132,7 @@ def test_idle_queue_freezes_origin_before_new_and_preserves_it_through_requeue(t
     agent._spawn_background_review_now = dispatch
     queue.enqueue(agent, "origin-key", {"task_cfg": {}})
     agent.session_id = "next-chat"
+    agent.background_review_event_callback = successor_events.append
     clock[0] = 1000.0
 
     class Done(BaseException):
@@ -141,4 +146,57 @@ def test_idle_queue_freezes_origin_before_new_and_preserves_it_through_requeue(t
     assert calls == ["origin", "origin"]
     assert len(receipts(db, "origin")) == 1
     assert receipts(db, "next-chat") == []
+    assert len(original_events) == 1
+    assert original_events[0]["stored_session_id"] == "origin"
+    assert successor_events == []
     db.close()
+
+
+@pytest.mark.parametrize("channel", ["structured", "text", "absent"])
+def test_delayed_review_postlude_keeps_own_delivery_after_successor_starts(tmp_path, monkeypatch, channel):
+    db = SessionDB(tmp_path / "postlude.db")
+    for sid in ("origin", "successor"):
+        db.create_session(sid, source="desktop")
+    agent = parent(db, "origin")
+    original_events, original_texts, successor_events, successor_texts = [], [], [], []
+    if channel == "structured":
+        agent.background_review_event_callback = original_events.append
+    if channel != "absent":
+        agent.background_review_callback = original_texts.append
+    run = review.prepare_background_review_run(agent)
+    assert run is not None
+    successor_runs = []
+
+    def finish_fork(agent, snapshot, prompt, config, run, state, review_memory, explicit):
+        state.review_messages = [
+            {"role": "assistant", "tool_calls": [{"id": "write", "type": "function", "function": {
+                "name": "skill_manage", "arguments": json.dumps({"action": "patch", "name": "canary"})}}]},
+            {"role": "tool", "tool_call_id": "write", "content": json.dumps({
+                "success": True, "message": "Skill 'canary' patched"})},
+        ]
+        # Request completion permits the successor turn while this worker still
+        # has to summarize and deliver the old review's completed writes.
+        review.finish_background_review_run(agent, run)
+        assert run.request_done.is_set()
+        agent.session_id = "successor"
+        agent.background_review_event_callback = successor_events.append
+        agent.background_review_callback = successor_texts.append
+        successor_runs.append(review.prepare_background_review_run(agent))
+
+    monkeypatch.setattr(review, "_run_review_fork", finish_fork)
+    try:
+        review._run_review_in_thread(agent, [], "Review", review_run=run)
+        assert successor_events == successor_texts == []
+        assert len(original_events) == (1 if channel == "structured" else 0)
+        assert len(original_texts) == (1 if channel == "text" else 0)
+        if original_events:
+            assert original_events[0]["stored_session_id"] == "origin"
+            assert original_events[0]["persisted"] is True
+        assert len(receipts(db, "origin")) == 1
+        assert receipts(db, "successor") == []
+        assert successor_runs[0] is not None
+        assert agent._background_review_run is successor_runs[0]
+    finally:
+        for successor in successor_runs:
+            review.finish_background_review_run(agent, successor)
+        db.close()

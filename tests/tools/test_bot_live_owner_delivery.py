@@ -271,3 +271,91 @@ def test_receipt_wait_polls_the_local_receipt_and_outlives_an_unreachable_owner(
     settled = mailbox.await_delivery(tmp_path, key, 5)
     assert (settled["status"], settled["reply"]) == ("settled", "PONG")
     assert dials == []
+
+
+def test_authority_delivery_dials_from_a_loop_hosting_thread(tmp_path, monkeypatch):
+    """#139303: a gateway-hosted sender session runs the handler on a thread with a running
+    event loop, where a bare ``asyncio.run`` raised before the dial — and the definite
+    no-send was then misreported as 'ambiguous / do not resend'. Both faces (loop-hosting
+    tool thread, plain runner thread) must reach the dial and fail with a pre-dial cause,
+    never with 'asyncio.run() cannot be called from a running event loop'."""
+    import asyncio
+    from types import SimpleNamespace
+
+    import hermes_cli.gateway_runtime as runtime
+
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint",
+                        lambda home, timeout: SimpleNamespace(state="absent", endpoint=None))
+    params = {"id": "a" * 32, "message": "hi"}
+
+    async def call_from_loop_thread():
+        with pytest.raises(mailbox.PreDialError, match="not ready"):
+            mailbox.authority_delivery(tmp_path, params)
+
+    asyncio.run(call_from_loop_thread())
+    with pytest.raises(mailbox.PreDialError, match="not ready"):
+        mailbox.authority_delivery(tmp_path, params)
+
+
+def _spy_dm_files(bot_mode_dm, monkeypatch):
+    dm_files = []
+    real_write = bot_mode_dm._write_dm_file
+
+    def spy_write(content):
+        path = real_write(content)
+        dm_files.append(path)
+        return path
+
+    monkeypatch.setattr(bot_mode_dm, "_write_dm_file", spy_write)
+    return dm_files
+
+
+def test_pre_dial_failure_is_a_definite_no_send_not_ambiguous(tmp_path, monkeypatch):
+    """#139303: a dial that dies before ``bot_relay.deliver`` reached the socket admits
+    nothing — the pinned intent is dropped and the sender hears 'safe to resend',
+    instead of the old 'ambiguous / do not resend' that stranded the DM."""
+    from tools import bot_live_delivery as live
+    from tools import bot_mode_dm
+
+    def refused(home, params):
+        raise live.PreDialError("dial refused before the RPC went out")
+
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda home: _owner(tmp_path))
+    monkeypatch.setattr(live, "authority_delivery", refused)
+    dm_files = _spy_dm_files(bot_mode_dm, monkeypatch)
+
+    payload = json.loads(bot_mode_dm._start_delivery(
+        ["hermes", "-p", "researcher"], "hello", "@researcher",
+        stdin_file=False, task_id=None, agent=None, profile_home=tmp_path))
+
+    assert payload["reason"] == "runtime_unavailable"
+    assert "safe to resend" in payload["error"]
+    assert "Do not resend" not in payload["error"]
+    dm_file = Path(dm_files[0])
+    assert not dm_file.exists()  # nothing was admitted: no evidence to retain
+    assert not Path(str(dm_file) + ".live.json").exists()  # the pinned intent can never settle
+
+
+def test_post_dial_failure_stays_ambiguous_with_evidence(tmp_path, monkeypatch):
+    """Failures raised once the RPC may be on the wire keep the old contract: outcome
+    unknown, evidence (dm file and pinned intent) retained, 'Do not resend'."""
+    from tools import bot_live_delivery as live
+    from tools import bot_mode_dm
+
+    def lost_mid_flight(home, params):
+        raise ValueError("connection lost after the deliver RPC was written")
+
+    monkeypatch.setattr(live, "find_canonical_live_owner", lambda home: _owner(tmp_path))
+    monkeypatch.setattr(live, "authority_delivery", lost_mid_flight)
+    dm_files = _spy_dm_files(bot_mode_dm, monkeypatch)
+
+    payload = json.loads(bot_mode_dm._start_delivery(
+        ["hermes", "-p", "researcher"], "hello", "@researcher",
+        stdin_file=False, task_id=None, agent=None, profile_home=tmp_path))
+
+    assert payload["status"] == "ambiguous"
+    assert "Do not resend" in payload["error"]
+    dm_file = Path(dm_files[0])
+    assert payload["evidence_file"] == str(dm_file)
+    assert dm_file.exists()
+    assert Path(str(dm_file) + ".live.json").exists()

@@ -61,6 +61,31 @@ def find_canonical_live_owner(profile_home: Path | str) -> dict[str, Any] | None
                 lease_id=discovery.endpoint.instance_id, live_session_id=tip or '')
 
 
+class PreDialError(RuntimeError):
+    """authority_delivery died before ``bot_relay.deliver`` reached the socket: nothing
+    was admitted, so the DM is a definite no-send the sender may safely retry — never
+    the ambiguous post-admission state that orders 'do not resend' (#139303)."""
+
+
+def _run_coro(coro):
+    """Run an async coroutine from this sync entry point, on a thread that may already
+    host a running event loop. A gateway-hosted sender session executes tool handlers
+    on such a thread, where a bare ``asyncio.run`` raises before the coroutine starts;
+    offload to a worker loop there — the same shape as ``browser_cdp_tool._run_async``."""
+    import asyncio
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        import concurrent.futures
+        import contextvars
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(contextvars.copy_context().run, asyncio.run, coro).result()
+    return asyncio.run(coro)
+
+
 def authority_delivery(home, params):
     """Call only this home's already-running authority; never start a fallback."""
     import asyncio
@@ -69,8 +94,10 @@ def authority_delivery(home, params):
     from websockets.asyncio.client import connect
 
     home = Path(home).resolve()
+    rpc_started = False
 
     async def request():
+        nonlocal rpc_started
         discovery = await asyncio.to_thread(discover_gateway_endpoint, home, timeout=5)
         if discovery.state != 'ready' or discovery.endpoint is None:
             raise ValueError('profile authority is not ready')
@@ -82,9 +109,15 @@ def authority_delivery(home, params):
             if ws.subprotocol != GATEWAY_WS_PROTOCOL:
                 raise ValueError('authority protocol mismatch')
             async with GatewayClient(ws) as client:
+                rpc_started = True  # the RPC is going out: past here a failure may have been admitted
                 return await client.rpc('bot_relay.deliver', **params)
 
-    return asyncio.run(request())
+    try:
+        return _run_coro(request())
+    except Exception as exc:
+        if not rpc_started:
+            raise PreDialError(str(exc)) from exc
+        raise
 
 
 def _owner(home: Path | str, owner: dict[str, Any]) -> dict[str, str]:

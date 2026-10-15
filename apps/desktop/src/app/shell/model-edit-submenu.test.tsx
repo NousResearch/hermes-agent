@@ -158,4 +158,34 @@ describe('ModelEditSubmenu pricing section', () => {
 
     expect(screen.getByText('Pricing · per 1M tokens')).toBeTruthy()
   })
+
+  it('shows a sale badge when the model is discounted', () => {
+    renderSubmenu({
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      pricing: {
+        discount_percent: 75,
+        free: false,
+        input: '$0.075',
+        output: '$0.30',
+        was_input: '$0.30',
+        was_output: '$1.20'
+      },
+      reasoning: true
+    })
+
+    expect(screen.getByText('−75%')).toBeTruthy()
+  })
+  it('shows only a free badge for free models', () => {
+    renderSubmenu({
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      pricing: { free: true, input: '', output: '' },
+      reasoning: true
+    })
+
+    expect(screen.getByText('Pricing')).toBeTruthy()
+    expect(screen.getByText('Free')).toBeTruthy()
+    expect(screen.queryByText('Input')).toBeNull()
+  })
 })

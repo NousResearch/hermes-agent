@@ -1,5 +1,6 @@
 import { type ModelPricing, REASONING_EFFORTS } from '@hermes/shared'
 
+import { Badge } from '@/components/ui/badge'
 import {
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -13,6 +14,7 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
 import { isThinkingEnabled, reasoningEffortClamp, resolveReasoningEffort } from '@/lib/reasoning-effort'
+import { cn } from '@/lib/utils'
 
 // Hermes' real reasoning levels live in lib/reasoning-effort; `none` is owned
 // by the Thinking toggle, not the radio.
@@ -115,24 +117,37 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
 
 /** Read-only price list for this row's model. A `<dl>`, not menu items, so
  *  keyboard navigation skips it. */
-function ModelPricingSection({ pricing }: { pricing: ModelPricing }) {
-  return (
-    <>
-      <DropdownMenuSeparator className="mx-0" />
-      <DropdownMenuLabel className={dropdownMenuSectionLabel}>Pricing · per 1M tokens</DropdownMenuLabel>
-      <dl>
-        <div>
-          <dt>Input</dt>
-          <dd>{pricing.input}</dd>
-        </div>
-        <div>
-          <dt>Output</dt>
-          <dd>{pricing.output}</dd>
-        </div>
-      </dl>
-    </>
-  )
-}
+ function ModelPricingSection({ pricing }: { pricing: ModelPricing }) {
+   const { free } = pricing
+   const discount = free ? null : pricing.discount_percent
+
+   return (
+     <>
+       <DropdownMenuSeparator className="mx-0" />
+       <DropdownMenuLabel className={cn(dropdownMenuSectionLabel, 'flex items-center justify-between')}>
+         {free ? 'Pricing' : 'Pricing · per 1M tokens'}
+         {free ? (
+           <Badge className="uppercase" size="xs">
+             Free
+           </Badge>
+         ) : null}
+         {discount ? <Badge size="xs">−{discount}%</Badge> : null}
+       </DropdownMenuLabel>
+       {free ? null : (
+         <dl>
+           <div>
+             <dt>Input</dt>
+             <dd>{pricing.input}</dd>
+           </div>
+           <div>
+             <dt>Output</dt>
+             <dd>{pricing.output}</dd>
+           </div>
+         </dl>
+       )}
+     </>
+   )
+ }
 
 /** The options rows themselves, container-free: the catalog mounts them in a
  *  per-row submenu, the composer's reasoning pill in its own top-level menu. */

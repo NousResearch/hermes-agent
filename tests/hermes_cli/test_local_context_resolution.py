@@ -8,9 +8,11 @@ so at session start the model is routinely unloaded), and /v1/models/{id}
 name-pattern defaults, and the "qwen" family catch-all (131072) shipped
 as the compressor's budget and the statusbar's denominator.
 
-Contract: for a llama.cpp server, /props default_generation_settings.n_ctx
-(the preset-backed RUNTIME window, served even for unloaded models) is
-the authority, probed before the /v1/models fallbacks.
+Contract: a loaded router child answers with its RUNTIME window from
+``/props?model=``. An unloaded one is never asked: the router loads
+whatever model a request names, so ``/props?model=`` would load it. Its
+``/models`` entry lists the ``--ctx-size`` it will launch with, which
+answers instead.
 """
 
 from __future__ import annotations
@@ -25,24 +27,32 @@ import agent.model_metadata as mm
 
 
 GRANTED = 262144
+RUNTIME = 131072  # a loaded child's /props value, distinct from the launch flag
+MODEL = "Qwen-Test-UD-Q4_K_M"
 
 
 @pytest.fixture
-def router():
-    """Stub of the llama-server router with the model UNLOADED:
-    /v1/models carries meta=null; /props answers from the preset."""
+def router(request):
+    """Stub of llama-server: a router whose child has ``request.param`` status, or
+    (None) a single-model server. The router lists the child's status and launch
+    args on ``/models`` and ``/v1/models`` (meta=null while unloaded) and answers
+    the bare ``/props`` for itself (n_ctx 0); ``/props?model=`` is answered by the
+    child, which the real router loads first."""
+    status = request.param
+    asked: list[str] = []
 
     class _Router(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path.startswith("/props"):
-                body = {"default_generation_settings": {"n_ctx": GRANTED}}
-            elif self.path == "/v1/models":
-                body = {"data": [{
-                    "id": "Qwen-Test-UD-Q4_K_M",
-                    "owned_by": "llamacpp",
-                    "meta": None,
-                    "status": {"value": "unloaded"},
-                }]}
+            asked.append(self.path)
+            if self.path.startswith("/props?model="):
+                body = {"default_generation_settings": {"n_ctx": RUNTIME}}
+            elif self.path == "/props":  # a single-model server is its own model; a router answers for itself
+                body = {"default_generation_settings": {"n_ctx": RUNTIME if status is None else 0}}
+            elif self.path in ("/models", "/v1/models"):
+                entry = {"id": MODEL, "owned_by": "llamacpp", "meta": None}
+                if status is not None:  # router entries carry status; single-model servers list no status
+                    entry["status"] = {"value": status, "args": ["llama-server", "--ctx-size", str(GRANTED)]}
+                body = {"data": [entry]}
             else:  # /v1/models/{id} -> 404, as the real router answers
                 self.send_response(404)
                 self.send_header("Content-Length", "0")
@@ -60,27 +70,31 @@ def router():
 
     server = http.server.HTTPServer(("127.0.0.1", 0), _Router)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{server.server_address[1]}/v1"
+    yield f"http://127.0.0.1:{server.server_address[1]}/v1", asked
     server.shutdown()
 
 
-def test_unloaded_llamacpp_model_resolves_granted_window(router, monkeypatch):
+@pytest.fixture(autouse=True)
+def _llamacpp(monkeypatch):
     monkeypatch.setattr(mm, "detect_local_server_type", lambda *a, **k: "llamacpp")
     monkeypatch.setattr(mm, "_endpoint_blackholed", lambda *a, **k: False)
-    ctx = mm._query_local_context_length_uncached("Qwen-Test-UD-Q4_K_M", router)
+
+
+@pytest.mark.parametrize("router", ["unloaded"], indirect=True)
+def test_unloaded_llamacpp_model_resolves_granted_window(router):
+    url, asked = router
+    ctx = mm._query_local_context_length_uncached(MODEL, url)
     assert ctx == GRANTED, (
-        f"resolved {ctx}; an unloaded model must resolve the preset window "
-        "from /props, not fall through to name-pattern catch-alls")
+        f"resolved {ctx}; an unloaded model must resolve its launch window, "
+        "not fall through to name-pattern catch-alls")
+    assert not any(p.startswith("/props?model=") for p in asked), "asking /props?model= loads the model"
 
 
-def test_props_beats_meta_when_model_loaded(router, monkeypatch):
-    """/props is probed first even when /v1/models would answer: n_ctx from
-    /props is the same runtime value, and probing it first keeps loaded and
-    unloaded models on one code path."""
-    monkeypatch.setattr(mm, "detect_local_server_type", lambda *a, **k: "llamacpp")
-    monkeypatch.setattr(mm, "_endpoint_blackholed", lambda *a, **k: False)
-    ctx = mm._query_local_context_length_uncached("Qwen-Test-UD-Q4_K_M", router)
-    assert ctx == GRANTED
+@pytest.mark.parametrize("router", ["loaded"], indirect=True)
+def test_loaded_model_answers_with_its_runtime_window(router):
+    url, asked = router
+    assert mm._query_local_context_length_uncached(MODEL, url) == RUNTIME
+    assert any(p.startswith(f"/props?model={MODEL}") and "autoload=false" in p for p in asked)
 
 
 def test_non_llamacpp_servers_skip_props(monkeypatch):
@@ -118,3 +132,9 @@ def test_non_llamacpp_servers_skip_props(monkeypatch):
     monkeypatch.setattr(mm, "_endpoint_blackholed", lambda *a, **k: False)
     mm._query_local_context_length_uncached("m", "http://127.0.0.1:9999/v1")
     assert not any("/props" in u for u in calls)
+
+
+@pytest.mark.parametrize("router", [None], indirect=True)
+def test_single_model_server_answers_bare_props(router):
+    url, _asked = router
+    assert mm._query_local_context_length_uncached(MODEL, url) == RUNTIME

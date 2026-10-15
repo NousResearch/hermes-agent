@@ -32,6 +32,10 @@ export function isHermesProcess(pid: number): boolean {
     return false
   }
 
+  if (process.platform === 'win32') {
+    return windowsCommandLine(pid)?.toLowerCase().includes('hermes') ?? false
+  }
+
   // On macOS / Linux, check the command line to avoid PID recycling false positives.
   try {
     const cmdline = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8')
@@ -52,5 +56,34 @@ export function isHermesProcess(pid: number): boolean {
     } catch {
       return false
     }
+  }
+}
+
+/**
+ * `Win32_Process.CommandLine` for `pid`, or null when the probe fails.
+ *
+ * Windows is the one platform with neither `/proc` nor a usable `ps`: the
+ * procps the app ships rejects the BSD-style `-o` that macOS accepts
+ * (`ps: unknown option -- o`), so the macOS fallback above could never
+ * identify a process there. Every call threw, the catch returned `false`, and
+ * `findRunningGatewayProfiles` reported no running gateway on Windows at all.
+ *
+ * Matched case-insensitively because Windows paths are: `Hermes.exe` is the
+ * same executable as `hermes.exe`.
+ */
+function windowsCommandLine(pid: number): string | null {
+  try {
+    return execFileSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CommandLine`
+      ],
+      { ...hiddenWindowsChildOptions(), encoding: 'utf8', timeout: WINDOWS_PROBE_TIMEOUT_MS }
+    )
+  } catch {
+    return null
   }
 }

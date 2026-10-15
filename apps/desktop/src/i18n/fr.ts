@@ -1,8 +1,11 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { frAppTour } from './fr_app_tour'
 import { frAuxTasks } from './fr_aux_tasks'
+import { frBilling } from './fr_billing'
 import { frBoot } from './fr_boot'
+import { frCatalogInstall } from './fr_catalog_install'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
@@ -14,11 +17,13 @@ import { frOnboarding } from './fr_onboarding'
 import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { frThemePicker } from './fr_theme_picker'
+import { frUninstallSection } from './fr_uninstall_section'
 import { frUpdateChannel } from './fr_update_channel'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
   sharedMetrics: frSharedMetrics,
+  appTour: frAppTour,
   firstRun: frFirstRun,
   intro: introFr,
   connectors: frConnectorCard,
@@ -493,14 +498,7 @@ export const frOverrides = {
     }
   },
   ...frNotices,
-  billingBlock: {
-    titleNous: 'Plus de crédits Nous',
-    titleProvider: provider => `Plus de crédits — ${provider}`,
-    fallbackMessage: 'Votre compte est à court de crédits. Ajoutez-en pour continuer.',
-    openBilling: 'Ouvrir la facturation',
-    addCredits: 'Ajouter des crédits',
-    dismiss: 'Fermer'
-  },
+  ...frBilling,
   sendDiagnostics: {
     title: 'Envoyer les diagnostics à Nous',
     privacyNotice:
@@ -1457,41 +1455,7 @@ export const frOverrides = {
           "Quand Hermes se met à jour depuis l'application (sans invite de terminal), conserve les modifications locales (stash) ou les abandonne (discard). Les mises à jour via le terminal demandent toujours confirmation."
       }
     }),
-    uninstallSection: {
-      dangerZone: 'Zone dangereuse',
-      checkingInstalled: 'Vérification des éléments installés…',
-      uninstallHermes: 'Désinstaller Hermes',
-      chooseHowMuch:
-        'Choisissez ce que vous souhaitez supprimer. L’application se ferme pour terminer ; rouvrez le programme d’installation à tout moment pour revenir.',
-      confirmUninstall: 'Confirmer la désinstallation',
-      confirmBody: what => `Cette action supprime ${what}. Elle est irréversible.`,
-      appLabel: 'Application :',
-      couldNotStart: 'La désinstallation n’a pas pu démarrer.',
-      uninstalling: 'Désinstallation…',
-      yesUninstall: 'Oui, désinstaller',
-      options: {
-        gui: {
-          title: 'Désinstaller uniquement l’interface de chat',
-          description:
-            'Supprime cette application de bureau. L’agent Hermes, votre configuration et vos conversations sont conservés.',
-          consequence: 'l’interface de chat de bureau (cette application et ses données)'
-        },
-        lite: {
-          title: 'Désinstaller l’interface et l’agent, conserver mes données',
-          description:
-            'Supprime l’application et l’agent Hermes, mais conserve la configuration, les conversations et les secrets pour une future réinstallation.',
-          consequence:
-            'l’interface de chat et l’agent Hermes (la configuration, les conversations et les secrets sont conservés)'
-        },
-        full: {
-          title: 'Tout désinstaller',
-          description:
-            'Supprime l’application, l’agent et toutes les données utilisateur : configuration, conversations, tâches planifiées, secrets, journaux.',
-          consequence:
-            'TOUT — l’interface de chat, l’agent Hermes et l’ensemble de votre configuration, de vos conversations, secrets et journaux'
-        }
-      }
-    },
+    uninstallSection: frUninstallSection,
     customEndpoints: {
       active: 'Actif',
       apiKeySet: 'Clé API définie',
@@ -5253,39 +5217,7 @@ export const frOverrides = {
     },
     clarify: frClarify,
     themePicker: frThemePicker,
-    catalogInstall: {
-      preparing: 'Préparation de l’installation…',
-      install: 'Installer',
-      advanced: 'Avancé',
-      skip: 'Ignorer',
-      installing: 'Installation…',
-      installed: 'Installé',
-      notInstalled: 'Non installé',
-      failed: 'Échec',
-      showNames: 'afficher les noms',
-      hideNames: 'masquer les noms',
-      skill: (name: string) => `skill ${name}`,
-      kind: {
-        plugin: 'plugin',
-        skill: 'skill'
-      },
-      tier: {
-        official: 'officiel',
-        community: 'communauté'
-      },
-      targetProfile: (profile: string) => `S’installe dans votre profil ${profile}`,
-      sendFailed: 'Impossible d’envoyer votre réponse. Réessayez.',
-      commitLabel: 'Commit',
-      subdirLabel: 'Dossier',
-      securityHeading: 'Sécurité',
-      scan: {
-        passed: 'Analyse réussie',
-        warnings: 'L’analyse a relevé des avertissements',
-        failed: 'Échec de l’analyse'
-      },
-      requirementsLabel: 'Nécessite',
-      credentialsHeading: 'Identifiants'
-    },
+    catalogInstall: frCatalogInstall,
     mcpSetup: {
       installTitle: 'Ajouter des serveurs MCP',
       enableTitle: 'Activer des serveurs MCP',

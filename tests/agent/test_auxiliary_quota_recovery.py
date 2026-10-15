@@ -4,15 +4,16 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 import threading
 import time
+from types import SimpleNamespace
 
 import httpx
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from agent import auxiliary_client as aux
 from agent.credential_pool import CredentialPool, PooledCredential, STATUS_EXHAUSTED, load_pool
 from agent.error_classifier import FailoverReason, classify_api_error
-from agent.gemini_native_adapter import GeminiNativeClient, GeminiAPIError, gemini_http_error
+from agent.gemini_native_adapter import GeminiNativeClient, gemini_http_error
 
 GEMINI = 'https://generativelanguage.googleapis.com/v1beta'
 NVIDIA = 'https://integrate.api.nvidia.com/v1'
@@ -140,10 +141,12 @@ def test_auxiliary_quota_keeps_other_routes_and_credentials_usable(routed_wire, 
         return asyncio.run(aux.async_call_llm(**kwargs)) if mode == 'async' else aux.call_llm(**kwargs)
 
     if kind == 'cross-provider':
-        # The existing auxiliary candidate policy raises non-auth fallback failures.
-        # Both failed routes must remain available on the next call, not get payment bans.
-        with pytest.raises(GeminiAPIError):
-            invoke()
+        # The ordered walker advances past model-scoped fallback failures.
+        # Only that model's candidate is cooled down; other routes keep their keys.
+        first = invoke()
+        assert first.choices[0].message.content == 'healthy route response'
+        assert aux._is_provider_unhealthy('gemini', model=LIMITED)
+        assert not aux._is_provider_unhealthy('gemini', model=HEALTHY)
         assert not aux._is_provider_unhealthy('gemini')
         assert not aux._is_provider_unhealthy('nvidia')
         result = invoke('gemini', LIMITED)
@@ -217,7 +220,6 @@ def test_auxiliary_pool_persists_retry_deadlines_without_losing_real_quota_walls
 @pytest.mark.parametrize('provider,model', [('gemini', HEALTHY), ('nvidia', NIM_HEALTHY)])
 @pytest.mark.parametrize('reason', [FailoverReason.upstream_rate_limit, FailoverReason.rate_limit, FailoverReason.billing])
 def test_fallback_model_failure_does_not_extend_primary_quota_deadline(provider, model, reason):
-    from types import SimpleNamespace
     from agent.fallback_cooldown import _arm_rate_limit_cooldown
     deadline = time.monotonic() + 48.100581664
     agent = SimpleNamespace(
@@ -235,3 +237,127 @@ def test_fallback_model_failure_does_not_extend_primary_quota_deadline(provider,
         assert armed is None
         assert agent._rate_limited_until == deadline
         assert agent._rate_limit_backoff_count == 2
+
+
+class _ReviewError(Exception):
+    def __init__(self, message, status_code=None, body=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
+
+
+def _drive_review_ladder(mode, ladder, perform):
+    if mode == "sync":
+        return aux._drive_ladder(ladder, perform)
+
+    async def async_perform(step):
+        return perform(step)
+
+    return asyncio.run(aux._drive_ladder_async(ladder, async_perform))
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+def test_capacity_after_parameter_strip_reaches_fallback(monkeypatch, mode):
+    client = SimpleNamespace(api_key="offline-key", base_url=NVIDIA)
+    param_error = _ReviewError("Unsupported parameter: temperature", 400)
+    worker_error = _ReviewError(
+        "ResourceExhausted: Worker local total request limit reached (32/32)", 429
+    )
+    assert classify_api_error(worker_error).reason == FailoverReason.overloaded
+    healthy_response = object()
+    fallback_client = object()
+    monkeypatch.setattr(aux, "_recoverable_pool_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        aux, "_try_configured_fallback_chain",
+        lambda *args, **kwargs: (
+            fallback_client, NIM_HEALTHY, "fallback_chain[0](nvidia)"
+        ),
+    )
+    seen = []
+
+    def perform(step):
+        seen.append(step.kind)
+        if step.kind == "call":
+            _, kwargs = step.args
+            assert "temperature" not in kwargs
+            raise worker_error
+        if step.kind == "fallback":
+            return healthy_response
+        raise AssertionError(step)
+
+    ladder = aux._aux_recovery_ladder(
+        param_error, client=client,
+        kwargs={"model": NIM_LIMITED, "messages": [], "temperature": 0.2},
+        task="moa_reference", async_mode=(mode == "async"), base_info=NVIDIA,
+        resolved_provider="nvidia", resolved_model=NIM_LIMITED,
+        resolved_base_url=NVIDIA, resolved_api_key="offline-key",
+        resolved_api_mode="chat_completions", final_model=NIM_LIMITED,
+        max_tokens=None, main_runtime=None, route_info={},
+    )
+    assert _drive_review_ladder(mode, ladder, perform) is healthy_response
+    assert seen == ["call", "fallback"]
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+@pytest.mark.parametrize(
+    "message,status_code,should_quarantine",
+    [("You're out of extra usage", 400, False),
+     ("Payment required: insufficient credits", 402, True)],
+)
+def test_unverified_billing_falls_back_without_health_quarantine(
+    monkeypatch, mode, message, status_code, should_quarantine,
+):
+    base_url = "https://claude-proxy.invalid/v1"
+    client = SimpleNamespace(api_key="offline-key", base_url=base_url)
+    error = _ReviewError(message, status_code)
+    classified = classify_api_error(error, provider="anthropic", model="claude-test")
+    assert classified.reason == FailoverReason.billing
+    assert classified.billing_unverified is (not should_quarantine)
+    fallback_client = object()
+    healthy_response = object()
+    quarantined = []
+    monkeypatch.setattr(aux, "_recoverable_pool_provider", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        aux, "_mark_provider_unhealthy",
+        lambda *args, **kwargs: quarantined.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        aux, "_try_configured_fallback_chain",
+        lambda *args, **kwargs: (fallback_client, "healthy-model", "fallback_chain[0](healthy)"),
+    )
+
+    def perform(step):
+        assert step.kind == "fallback"
+        return healthy_response
+
+    ladder = aux._aux_recovery_ladder(
+        error, client=client, kwargs={"model": "claude-test", "messages": []},
+        task="title", async_mode=(mode == "async"), base_info=base_url,
+        resolved_provider="anthropic", resolved_model="claude-test",
+        resolved_base_url=base_url, resolved_api_key="offline-key",
+        resolved_api_mode="chat_completions", final_model="claude-test",
+        max_tokens=None, main_runtime=None, route_info={},
+    )
+    assert _drive_review_ladder(mode, ladder, perform) is healthy_response
+    assert bool(quarantined) is should_quarantine
+
+
+def test_model_scoped_fallback_health_preserves_retry_minimum(monkeypatch):
+    now = [time.time()]
+    monkeypatch.setattr(time, "time", lambda: now[0])
+    error = gemini_http_error(httpx.Response(429, json=quota_body(delay=750)))
+    aux._reset_aux_unhealthy_cache()
+    try:
+        aux._quarantine_fallback_candidate(
+            "moa_reference", "fallback_chain[0](gemini)", "gemini", error,
+            reason="rate limit", model=LIMITED,
+        )
+        assert aux._is_provider_unhealthy("gemini", model=LIMITED)
+        assert not aux._is_provider_unhealthy("gemini")
+        assert not aux._is_provider_unhealthy("gemini", model=HEALTHY)
+        now[0] += 749
+        assert aux._is_provider_unhealthy("gemini", model=LIMITED)
+        now[0] += 2
+        assert not aux._is_provider_unhealthy("gemini", model=LIMITED)
+    finally:
+        aux._reset_aux_unhealthy_cache()

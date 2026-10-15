@@ -2728,6 +2728,11 @@ def complete_task(
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
+    # Git completion gate: for git-backed workspaces, record whether the
+    # work is landed, in-flight (open PR), or unlanded. Never blocks —
+    # annotates metadata so the board is queryable. Degrades gracefully
+    # on network/gh failure. See hermes_cli.kanban_completion_git_gate.
+    metadata = _apply_git_completion_gate(conn, task_id, metadata)
     handoff_summary = summary if summary is not None else result
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
@@ -2866,6 +2871,58 @@ def _gate_empty_completion(
     raise EmptyCompletionError(task_id)
 
 
+def _apply_git_completion_gate(
+    conn: sqlite3.Connection,
+    task_id: str,
+    metadata: Optional[dict],
+) -> Optional[dict]:
+    """Git completion gate: for git-backed workspaces, record whether the
+    work is landed, in-flight (open PR), or unlanded. Never blocks —
+    annotates metadata so the board is queryable. Degrades gracefully
+    on network/gh failure.
+
+    Rule: if the workspace has a branch with commits not on origin/main,
+    and no open PR references the card id, the completion carries an
+    explicit ``unlanded_work`` metadata field naming the branch, the PR
+    state (none), and the merge owner (nobody — the card completed
+    without landing). This is a warning, not a hard block: the operator's
+    complaint is about silent unlanded work, not about blocking
+    completions.
+
+    Non-git workspaces (scratch, research cards, etc.) return metadata
+    unchanged — the honest path stays open.
+    """
+    from hermes_cli.kanban_completion_git_gate import (
+        evaluate_git_completion,
+        apply_git_gate_to_metadata,
+    )
+
+    # Fetch workspace info for this task.
+    row = conn.execute(
+        "SELECT workspace_kind, workspace_path, branch_name FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return metadata
+
+    workspace_kind = row["workspace_kind"]
+    workspace_path = row["workspace_path"]
+    branch_name = row["branch_name"]
+
+    # Only evaluate for git-backed workspaces (worktree or dir).
+    if workspace_kind not in ("worktree", "dir"):
+        return metadata
+
+    # Evaluate git state (degrades gracefully on failure).
+    git_state = evaluate_git_completion(workspace_path, branch_name, task_id)
+    if git_state is None:
+        # Not a git repo or no branch — non-code card, leave metadata alone.
+        return metadata
+
+    # Merge git gate state into metadata.
+    return apply_git_gate_to_metadata(metadata, git_state, task_id)
+
+
 def _stage_completion_artifacts(
     conn: sqlite3.Connection, task_id: str, metadata: dict, now: int, *,
     uploaded_by: str = "kanban_complete",
@@ -2899,7 +2956,9 @@ def _completed_event_payload(
     """``completed`` event payload: first summary line (400 chars) so gateway
     notifiers / dashboard WS render without a second round-trip; verified
     cards; and ``metadata["artifacts"]`` promoted so the notifier can upload
-    them as native attachments without fetching the run row."""
+    them as native attachments without fetching the run row. Also surfaces
+    ``git_completion`` and ``unlanded_work`` from metadata so the board
+    answers "is anything stuck behind an open PR?" by query, not audit."""
     # Mirror CLI's _show_voice_status: include STT/TTS provider availability so the user can tell at a
     # glance *why* voice mode isn't working ("STT provider: MISSING ..." is the common case). ``record_key``
     # mirrors the configured ``voice.record_key`` so the TUI can both bind it (frontend
@@ -2915,6 +2974,11 @@ def _completed_event_payload(
         cleaned = _cleaned_artifact_paths(metadata)
         if cleaned:
             payload["artifacts"] = cleaned
+        # Surface git completion gate state for queryability.
+        if "git_completion" in metadata:
+            payload["git_completion"] = metadata["git_completion"]
+        if "unlanded_work" in metadata:
+            payload["unlanded_work"] = metadata["unlanded_work"]
     return payload
 
 

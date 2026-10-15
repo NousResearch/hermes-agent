@@ -99,7 +99,10 @@ method("tools.configure", params=ToolsConfigureParams, result=ToolsConfigureResu
 
 
 class ReloadEnvParams(Params):
-    pass
+    """The shared owner serves ``/reload`` for one session the caller controls (``session_id``)."""
+
+    session_id: str | None = None
+    profile: str | None = None
 
 
 class ReloadEnvResult(Result):

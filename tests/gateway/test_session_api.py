@@ -1333,6 +1333,45 @@ async def test_session_stream_records_reply_text_for_post_disconnect_recovery(
 
 
 @pytest.mark.asyncio
+async def test_worker_events_reach_the_session_stream_before_its_terminal_frames(adapter, session_db, monkeypatch):
+    """A commentary the agent's worker thread hands to the loop before returning is delivered
+    before ``assistant.completed``/``done``, however late the loop applies that hand-off (it is
+    not ordered against the worker's own completion; CI saw it land after ``None`` and vanish)."""
+    session_id = session_db.create_session("late-hop-session", "api_server")
+    monkeypatch.setattr("gateway.run._load_gateway_config", dict)
+    loop = asyncio.get_running_loop()
+    real_threadsafe = loop.call_soon_threadsafe
+
+    def late_queue_hops(callback, *args, **kwargs):
+        # Only the hops that feed the session event queue arrive late; executor completions do not.
+        target = getattr(callback, "__self__", None)
+        if isinstance(target, asyncio.Queue) or getattr(callback, "__name__", "") == "_apply":
+            return real_threadsafe(loop.call_later, 0.2, callback, *args)
+        return real_threadsafe(callback, *args, **kwargs)
+    monkeypatch.setattr(loop, "call_soon_threadsafe", late_queue_hops)
+
+    def fake_create_agent(**kwargs):
+        interim = kwargs["interim_assistant_callback"]
+
+        class FakeAgent:
+            provider, model = "openai-codex", "gpt-5"
+            session_prompt_tokens = session_completion_tokens = session_total_tokens = 0
+
+            def run_conversation(self, **_kw):
+                interim("Checking the docs first.", already_streamed=False)
+                return {"final_response": "Done.", "messages": [], "api_calls": 1}
+        return FakeAgent()
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_create_agent", side_effect=fake_create_agent):
+        async with TestClient(TestServer(app)) as cli:
+            body = await (await cli.post(f"/api/sessions/{session_id}/chat/stream", json={"message": "go"})).text()
+    names = [ln[7:] for ln in body.splitlines() if ln.startswith("event: ")]
+    assert "assistant.commentary" in names, names
+    assert names.index("assistant.commentary") < names.index("assistant.completed") < names.index("done"), names
+
+
+@pytest.mark.asyncio
 async def test_interim_commentary_reaches_session_sse_and_responses_stream(adapter, session_db, monkeypatch):
     """Codex commentary / mid-turn assistant text is a typed ``assistant.commentary`` event on the
     session SSE endpoint and a ``phase: commentary`` message item on /v1/responses, never part of

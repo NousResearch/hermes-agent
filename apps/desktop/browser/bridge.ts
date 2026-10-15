@@ -186,8 +186,6 @@ export function createBrowserHost() {
     windowControls: { custom: false, minimize: () => {}, toggleMaximize: () => {}, close: () => window.close() },
     openBrowserWindow: native('Open this preview in a browser tab'),
     onBrowserPopoutClosed: noEvent,
-    getPoolLimits: native('The backend manages agent concurrency'),
-    setPoolLimits: native('The backend manages agent concurrency'),
     glassSupported: false,
     translucencySupported: false,
     getConnection: async (profile) => connection(profile),
@@ -205,7 +203,6 @@ export function createBrowserHost() {
 
       return { ok: true, rebuilt: false }
     },
-    touchBackend: async () => ({ ok: true }),
     getGatewayWsUrl: gatewayWsUrl,
     getGatewayWsUrlFor: ({ connectionId: id, profile }) => gatewayWsUrl(profile, id),
     getAgentRoster: roster,

@@ -26,6 +26,42 @@ The SQLite database stores:
 - Timestamps (started_at, ended_at)
 - Parent session ID (for compression-triggered session splitting)
 
+### Authenticated gateway session access and attribution
+
+The gateway owns execution; a client does not own the running agent. Verified
+operators of the same gateway profile can attach to canonical local CLI, TUI, or
+Desktop sessions created through another operator authentication method. For
+example, a native local operator and an authenticated dashboard operator can
+access the same conversation without creating another runtime. Closing a client
+connection detaches that client; accepted work remains with the gateway.
+
+This deliberately replaces creator-only access for verified operators, preserving
+the dashboard's existing operator permissions. Password and OAuth identities stay
+distinct but do not create separate access barriers to canonical local sessions
+when both connections have operator access to the profile. The trusted server
+paths include native interactive bootstrap, authenticated dashboard tickets,
+internal credentials used by server-spawned PTY clients, and the verified legacy
+dashboard token. HTTP session mutations also accept the verified native HTTP owner
+grant. This does not grant operator permissions to restricted worker, messaging,
+room, or service credentials, or remove profile and operation-specific checks.
+
+Attribution remains identity-specific. Dashboard identities include the provider,
+verified OAuth issuer (when present), and subject. Creation receipts retain the
+original identity; submissions and mutation retries retain the acting identity.
+An operator joining a session does not replace its recorded owner or merge retry
+identities. Native bootstrap owner keys and session IDs remain unchanged.
+
+Older remote sessions whose receipts contain only a bare subject cannot establish
+which provider owned them. They remain stored but are not automatically assigned
+to the first authenticated account requesting them. Operator access does not permit
+remote first-claim adoption of unowned historical transcripts.
+
+Cross-device attachment also requires a supported, authenticated route to the same
+gateway. Shared operator access does not itself expose a remote listener or add
+OpenAI-compatible API continuation of local sessions. A gateway crash is different
+from a client disconnect: interrupted work becomes `unknown` rather than being
+automatically replayed, and may need resolution before queued followers proceed.
+
 ### What Counts Toward Context
 
 Hermes stores session history so it can resume conversations, but it does not
@@ -62,9 +98,10 @@ Use `/compress` when a session gets long, `/new` for a fresh thread, and
 `hermes sessions prune` only when you want to delete old ended sessions from
 storage. If `state.db` has simply grown large, start with the non-destructive
 option first: `hermes sessions optimize` merges FTS5 index segments and
-VACUUMs the database without touching any session data. Both `optimize` and `prune` refuse
-while another Hermes process (gateway, Desktop, dashboard, cron) holds `state.db` — stop it
-first, or pass `--force`; see [Session storage recovery](session-storage-recovery.md).
+VACUUMs the database without touching any session data. With the gateway running, `prune`
+asks the gateway to delete the sessions it selected. `optimize`, and `prune` with no gateway
+running, refuse while another Hermes process (Desktop, dashboard, cron) holds `state.db`. Stop
+it first, or pass `--force`; see [Session storage recovery](session-storage-recovery.md).
 Compression reduces the active context; it is not a privacy delete.
 Pass a name to `/new` (e.g. `/new payments-refactor`) to set the new session's
 initial title up front — useful for finding it later with `/resume <name>` or
@@ -485,6 +522,26 @@ hermes sessions rename 20250305_091523_a1b2c3d4 debugging auth flow
 ```
 
 If the title is already in use by another session, an error is shown.
+
+### Discard a Turn Lost in a Gateway Crash
+
+If the gateway stops in the middle of a turn, that turn's outcome is unknown and it is never replayed. It blocks
+the session until you acknowledge it. Interactive `hermes chat --resume <id>` lists it and accepts
+`/discard <admission_id>`. A scripted `hermes chat --resume <id> -q` refuses with exit code 3 and submits nothing.
+To clear it from a script:
+
+```bash
+# Acknowledge every unknown (lost) turn on the session, then continue it
+hermes sessions discard 20250305_091523_a1b2c3d4 --yes
+hermes chat --resume 20250305_091523_a1b2c3d4 -q "next question"
+
+# Only one specific admission (repeatable); the session may also be named by title
+hermes sessions discard "debugging auth flow" --admission a9b59ad3ee914d75967def2a33435c88 --yes
+```
+
+Without `--yes` the command asks for confirmation, and it refuses (exit code 2) when stdin is not a terminal.
+The lost input stays in the transcript. Some of its actions may already have run, so check their effects before
+you resend it. Inputs queued behind it run once it is discarded.
 
 ### Pin a Session
 
@@ -975,6 +1032,15 @@ install the catalog plugin that reads the same block unchanged:
 `hermes plugins install hermes-session-reset-policy`. Cached agents may be released to reclaim resources without
 replacing the durable conversation. Restart-recovery freshness limits automatic
 continuation, not the history loaded when you send a message.
+
+**`/new` moves only the view that ran it.** One session can be open in several
+places at once — a Desktop window, the TUI, a `hermes chat --resume` terminal, an
+ACP editor, a Telegram topic — all attached to the same live conversation on the
+gateway. Running `/new` (or `/reset`) in one of them creates a fresh session and
+rebinds *that* window or chat route to it. The other viewers stay on the original
+session, its history is untouched, and a turn already running there keeps running.
+Ending or clearing the shared conversation is a separate, explicit action (Stop, then
+`/new`; or a delete, which is refused while a turn is live).
 
 ### Session hygiene: why you should still run `/new`
 

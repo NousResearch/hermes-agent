@@ -1465,7 +1465,7 @@ slash:
   reload_mcp:
     description: "Перезагрузить MCP-серверы из конфигурации"
   resume:
-    description: "Возобновить ранее названный сеанс"
+    description: "Вернуться к беседе"
   sethome:
     description: "Сделать этот чат домашним каналом"
   update:

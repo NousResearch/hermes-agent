@@ -1,96 +1,74 @@
-"""Retryable receive failures must not consume peer-session messages.
+"""Failed hints and explicit ACKs do not destroy unread coordination messages.
 
-The registry/SessionDB round trip is covered by test_peer_messaging.py. These
-receive-side tests use real inbox files and inject failures at the read/steer
-boundaries; no new delivery or acknowledgement protocol is assumed.
+Supersedes the earlier consume-after-steer tests: steer now carries only a
+fixed inbox hint, and even successful steering must not consume the envelope.
 """
-
 import json
-from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 
-class _ReceivingAgent:
-    session_id = "target-session"
-
-    def __init__(self):
-        self.steers = []
-        self._peer_inbox_last_drain_mono = float("-inf")
-
-    def steer(self, text):
-        self.steers.append(text)
-        return True
-
-
 @pytest.fixture
-def inbox_env(tmp_path, monkeypatch):
+def receive_env(tmp_path, monkeypatch):
+    from hermes_state import SessionDB
     import tools.peer_messaging_tool as pm
 
-    monkeypatch.setattr(pm, "_inbox_root", lambda: tmp_path)
-    inbox = pm._inbox_dir(_ReceivingAgent.session_id)
-    inbox.mkdir()
-    message = inbox / "001-valid.json"
-    message.write_text(json.dumps({
-        "from_session_id": "sender-session",
-        "message": "I am changing the schema; please leave it alone.",
-    }), encoding="utf-8")
-    return pm, inbox, message
+    monkeypatch.setattr(pm, "_inbox_root", lambda: tmp_path / "runtime" / "peer_messages")
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("target", source="cli")
+    db.close()
+    entry = pm.mailbox.enqueue(pm._inbox_dir("target"), sender="sender", target="target", text="do not edit api.py")
+    agent = SimpleNamespace(session_id="target", valid_tool_names={"peer_receive"},
+                            _peer_inbox_last_drain_mono=float("-inf"))
+    return pm, agent, entry
 
 
-@pytest.mark.parametrize("failure", ["read", "rejected", "raised"])
-def test_receive_failure_retains_message_for_retry(inbox_env, monkeypatch, failure):
-    pm, _, message = inbox_env
-    original = message.read_bytes()
-    agent = _ReceivingAgent()
+@pytest.mark.parametrize("outcome", ["accepted", "rejected", "raised"])
+def test_hint_never_consumes_and_restart_can_read_same_id(receive_env, outcome):
+    pm, agent, entry = receive_env
+    hints = []
 
-    with monkeypatch.context() as patch:
-        if failure == "read":
-            read_text = Path.read_text
+    def steer(note):
+        hints.append(note)
+        if outcome == "raised":
+            raise RuntimeError("hint admission unavailable")
+        return outcome == "accepted"
 
-            def unavailable(path, *args, **kwargs):
-                if path == message:
-                    raise PermissionError("temporary inbox read failure")
-                return read_text(path, *args, **kwargs)
-
-            patch.setattr(Path, "read_text", unavailable)
-        else:
-            def refuse(text):
-                if failure == "raised":
-                    raise RuntimeError("steer unavailable before acceptance")
-                return False
-
-            patch.setattr(agent, "steer", refuse)
-        assert pm.inject_peer_messages(agent) is False
-
-    assert message.exists(), "retryable failures must leave the message queued"
-    assert message.read_bytes() == original
-    assert agent.steers == []
-
-    agent._peer_inbox_last_drain_mono = float("-inf")
-    assert pm.inject_peer_messages(agent) is True
-    assert len(agent.steers) == 1
-    assert "sender-session" in agent.steers[0]
-    assert json.loads(original)["message"] in agent.steers[0]
-    assert not message.exists()
-    # A fresh receiver must not redeliver a successfully consumed file.
-    assert pm.inject_peer_messages(_ReceivingAgent()) is False
+    agent.steer = steer
+    assert pm.inject_peer_messages(agent) is (outcome == "accepted")
+    assert hints == [pm._INBOX_HINT]
+    path = pm._inbox_dir("target") / f"{entry['message_id']}.json"
+    assert path.exists()
+    # No in-memory receipt is required to resume after a failed hint/result.
+    for _ in range(2):
+        received = json.loads(pm.peer_receive(current_session_id="target"))
+        assert received["messages"] == [entry]
+    acknowledged = json.loads(pm.peer_receive(action="ack", message_ids=[entry["message_id"]],
+                                              current_session_id="target"))
+    assert acknowledged["acknowledged"] == [entry["message_id"]]
+    assert not path.exists()
 
 
 @pytest.mark.parametrize("poison", [b"{", b"\xff", b"[]"])
-def test_bad_payload_does_not_discard_a_retryable_neighbor(inbox_env, monkeypatch, poison):
-    pm, inbox, message = inbox_env
-    malformed = inbox / "000-invalid.json"
-    malformed.write_bytes(poison)
-    agent = _ReceivingAgent()
+def test_bad_payload_does_not_discard_unacknowledged_neighbor(receive_env, poison):
+    pm, _, entry = receive_env
+    bad = pm._inbox_dir("target") / "00000000000000000000_deadbeef.json"
+    bad.write_bytes(poison)
+    result = json.loads(pm.peer_receive(current_session_id="target"))
+    assert result["messages"] == [entry]
+    assert not bad.exists()
+    assert (pm._inbox_dir("target") / f"{entry['message_id']}.json").exists()
 
-    with monkeypatch.context() as patch:
-        patch.setattr(agent, "steer", lambda text: False)
-        assert pm.inject_peer_messages(agent) is False
 
-    assert not malformed.exists(), "invalid payloads must not wedge the inbox"
-    assert message.exists(), "a valid neighbor still needs successful acceptance"
+def test_same_pending_batch_does_not_spam_each_activity_tick(receive_env):
+    pm, agent, _ = receive_env
+    hints = []
+    agent.steer = lambda note: hints.append(note) or True
+    assert pm.inject_peer_messages(agent) is True
+    agent._peer_inbox_last_drain_mono = float("-inf")
+    assert pm.inject_peer_messages(agent) is False
+    pm.mailbox.enqueue(pm._inbox_dir("target"), sender="sender", target="target", text="new information")
     agent._peer_inbox_last_drain_mono = float("-inf")
     assert pm.inject_peer_messages(agent) is True
-    assert len(agent.steers) == 1
-    assert not message.exists()
+    assert hints == [pm._INBOX_HINT, pm._INBOX_HINT]

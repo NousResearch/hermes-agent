@@ -11,7 +11,7 @@ import uuid
 from gateway.config import Platform
 from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, Principal, SessionRef, Submission
 from gateway.session_llm_oneshot import DeferredReply
-from hermes_constants import profile_name_for_home
+from hermes_constants import get_hermes_home, profile_name_for_home
 from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -86,11 +86,12 @@ def named_turn_error(exc, empty_detail: str) -> tuple[str, str]:
     """Messaging copy for a failed turn, and the one log line for that notice.
 
     A named ``invalid_params`` is ``field: detail`` in the notice, not the class name. The log
-    follows the create-path rule: warning when the raiser named the check, debug for a bare
-    reason code.
+    follows the create-path rule (warning when the raiser named the check, debug for a bare
+    reason code) and names the profile whose home is current, so the adapter calls this inside
+    the routed delivery scope.
     """
     if isinstance(exc, RuntimeStoreError):
-        _log_refusal(None, 'native.admit', exc)
+        _log_refusal(str(get_hermes_home()), 'native.admit', exc)
         if exc.reason == 'invalid_params' and (exc.field or exc.detail):
             shown = exc.field or 'unnamed field'
             if exc.detail:

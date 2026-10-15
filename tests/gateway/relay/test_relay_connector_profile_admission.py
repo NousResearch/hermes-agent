@@ -110,7 +110,7 @@ async def test_single_profile_gateway_serves_a_connector_stamped_profile(tmp_pat
     turns = _stub_turns(runner, monkeypatch)
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='relay-profile-single')
     try:
-        async with _relay(runner) as (send, outgoing, adapter):
+        async with _relay(runner) as (send, outgoing, _adapter):
             await send('plain', 'chat-plain')
             await send('stamped', 'chat-stamped', profile='work')
             await async_wait_until(lambda: len(turns) == 2 and _replies(outgoing, 'chat-stamped')
@@ -169,7 +169,7 @@ async def test_multiplexed_gateway_admits_a_connector_stamped_profile_into_its_o
         await initialize_gateway_runtime(runner)
         default_authority = runner.session_authorities.for_home(root)
         work_authority = runner.session_authorities.for_home(work)
-        async with _relay(runner) as (send, outgoing, adapter):
+        async with _relay(runner) as (send, outgoing, _adapter):
             await send('plain', 'chat-plain')
             await send('to-default', 'chat-default', profile='default')
             await send('to-work', 'chat-work', profile='work')

@@ -2841,7 +2841,12 @@ export const frOverrides = {
       referenceImageTooLarge: "L'image de référence est trop volumineuse. Utilisez-en une inférieure à 16 Mo.",
       referenceImageInvalid: 'Impossible de lire cette image de référence. Essayez un PNG, JPG, WebP ou GIF.',
       adopt: 'Adopter',
-      startOver: 'Recommencer'
+      startOver: 'Recommencer',
+      unavailableTitle: "Ajouter un moteur d’images pour générer",
+      unavailableBody:
+        'Donner naissance à un animal personnalisé nécessite un fournisseur capable de s’appuyer sur une image de référence.',
+      setUpImageGeneration: "Configurer la génération d’images",
+      grabKeyFrom: 'Obtenir une clé sur'
     },
     installTheme: {
       title: 'Installer un thème…',

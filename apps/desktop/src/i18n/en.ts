@@ -2456,7 +2456,12 @@ export const en: Translations = {
       referenceImageTooLarge: 'Reference image is too large. Use one under 16 MB.',
       referenceImageInvalid: 'Could not read that reference image. Try a PNG, JPG, WebP, or GIF.',
       adopt: 'Adopt',
-      startOver: 'Start over'
+      startOver: 'Start over',
+      unavailableTitle: 'Add an image backend to generate',
+      unavailableBody:
+        'Hatching a custom pet needs a provider that can ground on a reference image.',
+      setUpImageGeneration: 'Set up image generation',
+      grabKeyFrom: 'Grab a key from'
     },
     installTheme: {
       title: 'Install theme…',

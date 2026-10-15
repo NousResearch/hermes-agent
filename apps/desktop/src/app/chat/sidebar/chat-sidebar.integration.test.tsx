@@ -11,7 +11,7 @@ import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $sidebarMessagingOpenIds, setSidebarAgentsGrouped, setSidebarGrouping } from '@/store/layout'
 import { $activeGatewayProfile, $profiles, setShowAllProfiles } from '@/store/profile'
 import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
-import { $projectTree } from '@/store/projects'
+import { $projectTree, resolveNewSessionCwd } from '@/store/projects'
 import {
   $currentCwd,
   $messagingSessions,
@@ -309,6 +309,8 @@ describe('ChatSidebar project entry', () => {
 
     expect(screen.getByText('All projects')).toBeTruthy()
     expect(screen.getByText('No sessions yet')).toBeTruthy()
+    // A session started from this drill-in must target the project root.
+    expect(resolveNewSessionCwd()).toBe(project.path)
   })
 
   it('enters a session-less auto project instead of dropping back to the overview', () => {
@@ -319,6 +321,8 @@ describe('ChatSidebar project entry', () => {
 
     expect(screen.getByText('All projects')).toBeTruthy()
     expect(screen.getByText('No sessions yet')).toBeTruthy()
+    // A session started from this drill-in must target the project root.
+    expect(resolveNewSessionCwd()).toBe(project.path)
   })
 
   it('keeps locally discovered worktree lanes for a session-less project', async () => {

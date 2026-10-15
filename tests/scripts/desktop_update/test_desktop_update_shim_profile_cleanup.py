@@ -6,14 +6,14 @@ import subprocess
 import pytest
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("outcome", ["success", "error", "allocation-failed"])
 def test_shim_removes_only_its_owned_profile(tmp_path, outcome):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     browser = bin_dir / "google-chrome"
     browser.write_text(
-        '#!/bin/bash\ntrap "exit 0" TERM\n'
+        '#!/usr/bin/env bash\ntrap "exit 0" TERM\n'
         'for arg in "$@"; do\n'
         'case "$arg" in --user-data-dir=*) dir="${arg#--user-data-dir=}" ;; esac\n'
         'done\nmkdir -p "$dir"\nprintf "%s" "$dir" > "$HOME/launched-profile"\n'

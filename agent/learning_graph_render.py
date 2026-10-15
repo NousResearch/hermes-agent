@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Iterable, Optional
 
+from agent.learning_graph import memory_node_id
 from hermes_time import safe_strftime
 
 LEAD_IN = 0.06  # time-axis.ts LEAD_IN: the oldest node sits just off recency 0.
@@ -26,7 +27,7 @@ Row = list  # of runs ``[text, style, alpha, hex?]``; a grid is a list of rows
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
-    return lo if v < lo else hi if v > hi else v
+    return lo if v < lo else min(v, hi)
 
 
 def _lerp(a: float, b: float, t: float) -> float:
@@ -47,7 +48,7 @@ def _node_id(node: dict[str, Any]) -> str:
 
 
 def _utc(ts: float) -> datetime:
-    return datetime.fromtimestamp(ts, tz=timezone.utc)
+    return datetime.fromtimestamp(ts, tz=UTC)
 
 
 def _lead_in(ratio: float) -> float:
@@ -190,7 +191,7 @@ def _skill_category_counts(nodes: Iterable[dict[str, Any]]) -> Counter:
 # ── Timeline chart frame ─────────────────────────────────────────────────────
 
 class _ChartBucket:
-    __slots__ = ("label", "ts", "nodes", "rec")
+    __slots__ = ("label", "nodes", "rec", "ts")
 
     def __init__(self, label: str, ts: float):
         self.label, self.ts, self.rec = label, ts, 1.0
@@ -260,7 +261,8 @@ def _build_chart_buckets(nodes: list[dict[str, Any]], rec: dict[str, Any], max_r
 
 def _bucket_rows(buckets: list[_ChartBucket], payload: dict[str, Any]) -> list[dict[str, Any]]:
     cmap = category_color_map(payload)
-    memory_lookup = {f"memory:{card.get('source')}:{idx}": card for idx, card in enumerate(payload.get("memory", []) or []) if isinstance(card, dict)}
+    memory_lookup = {memory_node_id(card, idx): card
+                     for idx, card in enumerate(payload.get("memory", []) or []) if isinstance(card, dict)}
 
     def node_row(node: dict[str, Any]) -> dict[str, Any]:
         card, memory = _node_card(node), memory_lookup.get(_node_id(node))
@@ -419,14 +421,3 @@ def render_frames(payload: dict[str, Any], *, cols: int = 80, rows: int = 16, fr
         "buckets": _bucket_rows(buckets, payload), "summary": build_summary(payload), "axis": axis_labels(payload),
         "count": len(payload.get("nodes", [])), "cols": cols, "rows": rows,
     }
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-Grid = list  # list[Row]
-
-Run = list  # [text, style, alpha, hex?]
-# ---- END PLUGIN-COMPAT ----

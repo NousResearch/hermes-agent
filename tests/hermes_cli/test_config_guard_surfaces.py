@@ -10,7 +10,6 @@ import os
 
 import pytest
 
-
 @pytest.fixture(autouse=True)
 def _isolated_config_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -18,12 +17,10 @@ def _isolated_config_env(monkeypatch, tmp_path):
     yield
     os.environ.pop("HERMES_IGNORE_USER_CONFIG", None)
 
-
 def _write_corrupt_config(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text("model: [unterminated\n", encoding="utf-8")
     return path
-
 
 class TestGatewayGuard:
     def test_gateway_refuses_corrupt_config(self, tmp_path, capsys):
@@ -55,19 +52,42 @@ class TestGatewayGuard:
         monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
         _guard_corrupt_user_config()  # must not raise
 
-
 class TestCronRunJobGuard:
     def _job(self, **overrides):
         job = {"id": "job-test-1", "name": "guard test", "prompt": "hi"}
         job.update(overrides)
         return job
 
-    def test_run_job_fails_closed_on_corrupt_config(self, tmp_path):
-        from cron.scheduler import run_job
+    @pytest.mark.asyncio
+    async def test_run_job_fails_closed_on_corrupt_config(self, tmp_path):
+        import json
+        from types import SimpleNamespace
+
+        from gateway.session_contract import SessionRef
+        from gateway.session_cron import current_execution, execute
+        from hermes_state_registry import acquire, release
 
         _write_corrupt_config(tmp_path)
-
-        success, output_doc, final_response, error = run_job(self._job())
+        # Agent-backed run_job is now a client. Exercise the scheduler's guard
+        # through its owner entry, without launching a daemon or bypassing it.
+        db = acquire(tmp_path / "state.db")
+        ref = SessionRef("default", "cron-guard")
+        db.create_session(ref.session_id, source="cron")
+        owner = SimpleNamespace(db=db, pending_results={}, sessions={
+            ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))})
+        admission = {"admission_id": "guard-fire", "request_id": "guard-fire",
+                     "principal_id": "cron-owner", "payload": {"text": ""}}
+        policy = SimpleNamespace(request_json=json.dumps({
+            "cron_job": self._job(), "extra_prompt": None, "request_id": "guard-fire"}))
+        previous = current_execution()
+        try:
+            with pytest.raises(RuntimeError, match="Hermes stopped because your settings file"):
+                await execute(owner, ref, admission, policy)
+            success, _output_doc, final_response, error = owner.pending_results["guard-fire"]["result"]["cron_result"]
+            assert current_execution() is previous
+            assert not owner._cron_cancellations
+        finally:
+            release(db)
 
         assert success is False
         assert error is not None
@@ -75,17 +95,15 @@ class TestCronRunJobGuard:
         assert "config.yaml" in error
         assert final_response == ""
 
-
     def test_run_job_no_agent_exempt(self, tmp_path):
         from cron.scheduler import run_job
 
         _write_corrupt_config(tmp_path)
 
-        success, output_doc, final_response, error = run_job(
+        _success, _output_doc, _final_response, error = run_job(
             self._job(no_agent=True, script="true", deliver="none")
         )
         assert "Hermes stopped because your settings file" not in (error or "")
-
 
 class TestServeGuard:
     def test_serve_headless_refuses_corrupt_config(self, tmp_path, capsys):
@@ -109,4 +127,3 @@ class TestServeGuard:
 
         assert exc_info.value.code == 2
         assert "Hermes stopped because your settings file" in capsys.readouterr().err
-

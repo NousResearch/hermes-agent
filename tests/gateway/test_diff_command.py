@@ -21,13 +21,11 @@ pytestmark = pytest.mark.skipif(
     shutil.which("git") is None, reason="git required for /diff"
 )
 
-
 def _runner():
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.session_store = None
     runner.config = None
     return runner
-
 
 def _event(text: str) -> MessageEvent:
     source = SessionSource(
@@ -39,14 +37,12 @@ def _event(text: str) -> MessageEvent:
     )
     return MessageEvent(text=text, source=source)
 
-
 def _git(repo, *args):
     subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True,
                    env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
                         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
                         "HOME": str(repo),
                         "PATH": __import__("os").environ["PATH"]})
-
 
 @pytest.fixture()
 def repo(tmp_path, monkeypatch):
@@ -59,7 +55,6 @@ def repo(tmp_path, monkeypatch):
     monkeypatch.setenv("TERMINAL_CWD", str(d))
     return d
 
-
 def _enable_checkpoints(tmp_path, monkeypatch, enabled=True):
     home = tmp_path / "home"
     home.mkdir()
@@ -69,11 +64,9 @@ def _enable_checkpoints(tmp_path, monkeypatch, enabled=True):
     monkeypatch.setattr(gateway_run, "_hermes_home", home, raising=False)
     monkeypatch.setattr(cpm, "CHECKPOINT_BASE", tmp_path / "checkpoints")
 
-
 # ---------------------------------------------------------------------------
 # Default (working-tree) mode
 # ---------------------------------------------------------------------------
-
 
 @pytest.mark.asyncio
 async def test_diff_long_output_truncated(repo):
@@ -86,7 +79,6 @@ async def test_diff_long_output_truncated(repo):
     # own message-splitting limits (3-layer tool-progress-style truncation).
     assert "truncated" in result
     assert len(result) < 6000
-
 
 # ---------------------------------------------------------------------------
 # Session mode — checkpoint baseline
@@ -109,7 +101,3 @@ async def test_diff_session_reports_cumulative_changes(tmp_path, monkeypatch):
 
     assert "-print('hello')" in result
     assert "+print('changed')" in result
-
-
-
-

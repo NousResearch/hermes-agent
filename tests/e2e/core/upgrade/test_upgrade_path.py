@@ -12,7 +12,9 @@ Class C6 (bricked installs, stale code, lost state after `hermes update`). Each 
    job, and a hand-edited config.yaml at the N-1 schema version with comments, long quoted
    unicode values and a legacy MCP ``disabled: true`` entry (the one documented N-1 -> HEAD
    migration);
-4. moves ``origin/main`` to HEAD and runs the real ``hermes update --yes`` non-interactively.
+4. moves ``origin/main`` to HEAD and runs the real ``hermes update --yes --branch main``
+   non-interactively. A branch-explicit update follows the historical git-source path,
+   without depending on the separately published R2 channel record.
 
 Legs: ``clean``; ``autostash`` (local edits + an orphan update autostash from an earlier run);
 ``kill_mid_pull`` (SIGKILL while the fast-forward holds ``index.lock``, then the user retries
@@ -51,19 +53,20 @@ import shutil
 import sqlite3
 import subprocess
 import time
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
 pytestmark = [
-    pytest.mark.linux_only,
+    pytest.mark.platforms("linux"),
     # The real updater runs against a throwaway local origin + install inside the sandbox, never
     # this checkout (the guard this bypasses exists to stop `hermes update` on the real repo).
     pytest.mark.live_system_guard_bypass,
@@ -78,7 +81,7 @@ CLI_TIMEOUT = 600
 
 def _git(*args: str, cwd: Path, check: bool = True) -> str:
     cp = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True,
-                        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+                        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}, check=False)
     if check and cp.returncode != 0:
         raise AssertionError(f"git {args} failed in {cwd}: {cp.stderr}")
     return cp.stdout.strip()
@@ -102,14 +105,16 @@ class _Refs(NamedTuple):
 def _refs() -> _Refs:
     """HEAD and release N-1, resolved on first use: collection (every CI shard) runs no git.
 
-    N-1 is ``git describe --tags --abbrev=0 HEAD~1``; HERMES_E2E_UPGRADE_BASE=<ref> starts from any
+    N-1 is the nearest CalVer release tag before HEAD; HERMES_E2E_UPGRADE_BASE=<ref> starts from any
     older ref instead (e.g. the pre-handoff v2026.9.14, or a patched base when proving a leg red
     against the N-1 side).
     """
     head = _git("rev-parse", "HEAD", cwd=H.WORKTREE)
     try:
-        tag = os.environ.get("HERMES_E2E_UPGRADE_BASE") or _git("describe", "--tags", "--abbrev=0", "HEAD~1",
-                                                                  cwd=H.WORKTREE)
+        tag = os.environ.get("HERMES_E2E_UPGRADE_BASE") or _git(
+            "describe", "--tags", "--match", "v20[0-9][0-9].*", "--abbrev=0", "HEAD~1",
+            cwd=H.WORKTREE,
+        )
         return _Refs(head, tag, _git("rev-parse", f"{tag}^{{commit}}", cwd=H.WORKTREE))
     except AssertionError:  # shallow CI checkout without tags
         return _Refs(head, "", "")
@@ -129,6 +134,11 @@ from pathlib import Path
 root, base = Path(sys.argv[1]), sys.argv[2]
 cfg = tomllib.load(open(root / "pyproject.toml", "rb"))
 tops = [p for p in cfg["tool"]["setuptools"]["packages"]["find"]["include"] if "*" not in p]
+# Import name -> the optional extra that ships it. Only these may be absent from a HEAD-added
+# module's imports; any other missing module (a core dependency, a typo) is a real failure.
+OPTIONAL_SDKS = {"acp": "acp"}
+extras = cfg["project"].get("optional-dependencies", {})
+assert set(OPTIONAL_SDKS.values()) <= set(extras), f"stale OPTIONAL_SDKS extras: {OPTIONAL_SDKS}"
 added = subprocess.run(["git", "-C", str(root), "diff", "--name-only", "--diff-filter=A", base, "HEAD", "--",
                         *[f"{t}/*.py" for t in tops]], capture_output=True, text=True).stdout.split()
 added = [a[:-3].replace("/", ".") for a in added if "/tests/" not in a and not a.endswith("__init__.py")][:3]
@@ -137,11 +147,19 @@ for name in tops + ["hermes_cli.main", "run_agent", "hermes_state"] + added:
     try:
         mod = importlib.import_module(name)
     except BaseException as exc:
+        missing = (getattr(exc, "name", None) or "").split(".")[0]
+        if name in added and isinstance(exc, ModuleNotFoundError) and missing in OPTIONAL_SDKS:
+            continue  # an optional extra's SDK; a stale finder misses the module itself, not an SDK
         bad.append(f"{name}: {type(exc).__name__}: {exc}")
         continue
-    where = getattr(mod, "__file__", None) or str(list(getattr(mod, "__path__", [""]))[0])
-    if not str(Path(where).resolve()).startswith(str(root.resolve())):
-        bad.append(f"{name}: resolved outside the checkout: {where}")
+    where = Path(getattr(mod, "__file__", None) or str(list(getattr(mod, "__path__", [""]))[0])).resolve()
+    if where.is_relative_to(root.resolve()):
+        continue  # N-1's editable venv serves the source tree directly.
+    workspace = Path(sys.prefix).resolve().parent / "workspace"
+    if not where.is_relative_to(workspace) or not (root / where.relative_to(workspace)).is_file():
+        bad.append(f"{name}: resolved outside the checkout and PM workspace: {where}")
+    elif where.read_bytes() != (root / where.relative_to(workspace)).read_bytes():
+        bad.append(f"{name}: PM workspace differs from the updated checkout: {where}")
 if bad:
     sys.exit("\n".join(bad))
 """
@@ -252,10 +270,17 @@ class Leg:
 
     @property
     def hermes(self) -> str:
-        return str(self.install / "venv" / "bin" / "hermes")
+        published = self.install / ".hermes" / "bin" / "hermes"
+        return str(published if published.exists() else self.install / "venv" / "bin" / "hermes")
 
     @property
     def python(self) -> str:
+        from pm.environments import install_key
+
+        facts = self.hermes_home / "installs" / install_key(self.install) / "facts.json"
+        if facts.exists():
+            selected = json.loads(facts.read_text(encoding="utf-8"))["packages"]["venv"]["environment"]
+            return str(Path(selected) / "bin" / "python")
         return str(self.install / "venv" / "bin" / "python")
 
     def run(self, *args: str, timeout: float = CLI_TIMEOUT, argv0: str | None = None,
@@ -264,7 +289,7 @@ class Leg:
                      writable=[self.root], timeout=timeout)
 
     def popen(self, *args: str) -> subprocess.Popen:
-        log = open(self.root / f"popen-{int(time.monotonic() * 1000)}.log", "w")  # noqa: SIM115
+        log = open(self.root / f"popen-{int(time.monotonic() * 1000)}.log", "w")
         return subprocess.Popen(
             H.sandbox_argv([*_KILLED_RUN_PREFIX, self.hermes, *args], writable=[self.root]),
             env=self.env, cwd=str(self.install), stdin=subprocess.DEVNULL,
@@ -279,7 +304,7 @@ class Leg:
 # the killed run's updater is pid 3 (a non-exec shell is pid 2) and every retry's updater is
 # pid 2 with pid 3 a process that already exited.
 _KILLED_RUN_PREFIX = ["/bin/sh", "-c", '"$0" "$@"; exit $?']
-_RETRY_PREFIX = ["/bin/sh", "-c", '/bin/true; exec "$0" "$@"']
+_RETRY_PREFIX = ["/bin/sh", "-c", 'true; exec "$0" "$@"']
 
 
 def _make_origin(root: Path) -> Path:
@@ -292,7 +317,7 @@ def _make_origin(root: Path) -> Path:
 
 
 def _write_wrappers(leg_root: Path, install: Path, hermes_home: Path) -> Path:
-    """Managed uv (as the installer provisions it) and a PATH git wrapper; both armable to freeze."""
+    """Managed uv (as the installer provisions it) and an armable PATH git wrapper."""
     real_uv = _real_uv()
     real_git = shutil.which("git")
     bin_dir = hermes_home / "bin"
@@ -302,9 +327,6 @@ def _write_wrappers(leg_root: Path, install: Path, hermes_home: Path) -> Path:
         "#!/bin/sh\n"
         # `uv self update` would reach the network and the real binary; the pinned copy is current.
         'if [ "$1" = self ]; then exit 0; fi\n'
-        f'if [ "$1" = pip ] && [ "$2" = install ] && [ -f "{leg_root}/arm-deps" ]; then\n'
-        f'  rm -f "{leg_root}/arm-deps"; : > "{leg_root}/frozen-deps"; exec sleep 3600\n'
-        "fi\n"
         f'exec "{real_uv}" "$@"\n',
         encoding="utf-8",
     )
@@ -314,6 +336,9 @@ def _write_wrappers(leg_root: Path, install: Path, hermes_home: Path) -> Path:
     git = wrap / "git"
     git.write_text(
         "#!/bin/sh\n"
+        # `git remote get-url` expands insteadOf before the updater classifies a
+        # fork. Report the configured official URL; only transport is redirected.
+        f'if [ "$1" = remote ] && [ "$2" = get-url ] && [ "$3" = origin ]; then printf "%s\\n" "{OFFICIAL_URL}"; exit 0; fi\n'
         f'if [ -f "{leg_root}/arm-pull" ] && echo " $* " | grep -q " merge --ff-only "; then\n'
         f'  rm -f "{leg_root}/arm-pull"\n'
         # Model a SIGKILL half-way through the fast-forward: git writes the tree in index order,
@@ -321,6 +346,12 @@ def _write_wrappers(leg_root: Path, install: Path, hermes_home: Path) -> Path:
         # lock the dead git held stays behind.
         f'  xargs -r -a "{leg_root}/torn-paths" "{real_git}" -C "{install}" checkout origin/main -- >/dev/null 2>&1\n'
         f'  : > "{install}/.git/index.lock"; : > "{leg_root}/frozen-pull"; exec sleep 3600\n'
+        "fi\n"
+        # N-1 ran `uv pip install`, but HEAD's PM sync uses its pinned uv directly.
+        # The first post-swap HEAD probe is a stable seam before PM starts syncing.
+        f'if [ -f "{leg_root}/arm-deps" ] && [ "$1" = rev-parse ] && [ "$2" = HEAD ] '
+        f'&& [ "$("{real_git}" -C "{install}" rev-parse HEAD)" = "{_refs().head}" ]; then\n'
+        f'  rm -f "{leg_root}/arm-deps"; : > "{leg_root}/frozen-deps"; exec sleep 3600\n'
         "fi\n"
         f'exec "{real_git}" "$@"\n',
         encoding="utf-8",
@@ -340,16 +371,19 @@ def make_leg(root: Path, template_home: Path | None) -> Leg:
     _git("remote", "set-url", "origin", OFFICIAL_URL, cwd=install)
     _git("config", f"url.{origin}.insteadOf", OFFICIAL_URL, cwd=install)
     uv = _real_uv()
-    py = H.WORKTREE / ".venv" / "bin" / "python"
-    base_python = str(Path(os.path.realpath(py))) if py.exists() else "python3"
+    assert uv is not None  # _upgrade_prerequisites checked the tool before staging.
+    with (install / "pyproject.toml").open("rb") as manifest:
+        base_python = tomllib.load(manifest)["project"]["requires-python"]
     # The installer's tier 0: N-1's own uv.lock (hash-pinned, `--extra all`) into install/venv, with the
-    # user's uv config hidden, so the N-1 venv is the one users of that release actually have.
+    # user's uv config hidden. Select a managed interpreter allowed by N-1, not HEAD's pinned 3.14;
+    # the updater must cross that interpreter boundary during the retry.
     no_cfg = root / "uv-config"
     no_cfg.mkdir()
     uv_env = {k: v for k, v in os.environ.items() if k not in ("VIRTUAL_ENV", "UV_NO_CONFIG", "UV_CONFIG_FILE")}
     uv_env.update(UV_PROJECT_ENVIRONMENT=str(install / "venv"), XDG_CONFIG_HOME=str(no_cfg), XDG_CONFIG_DIRS=str(no_cfg))
-    cp = subprocess.run([uv, "sync", "-q", "--locked", "--extra", "all", "--python", base_python], cwd=str(install),
-                        env=uv_env, capture_output=True, text=True, timeout=1800)
+    cp = subprocess.run([uv, "sync", "-q", "--locked", "--extra", "all", "--managed-python",
+                         "--python", base_python], cwd=str(install),
+                        env=uv_env, capture_output=True, text=True, timeout=1800, check=False)
     assert cp.returncode == 0, f"N-1 venv install from its uv.lock failed:\n{cp.stderr[-4000:]}"
     env_probe = H.isolated_env(root)
     hermes_home = Path(env_probe["HERMES_HOME"])
@@ -442,15 +476,15 @@ def assert_healthy_at_head(leg: Leg, provider: FakeLLMServer, final: subprocess.
     assert final.returncode == 0, "final `hermes update` failed:\n" + H.describe(final)
     assert _git("rev-parse", "HEAD", cwd=leg.install) == _refs().head, "update exited 0 but HEAD is not the target"
     assert not (leg.install / ".git" / "index.lock").exists(), "update left .git/index.lock behind"
-    # The editable install must serve the pulled tree (stale editable finder, #119466): every
-    # top-level package HEAD ships plus a module that only exists at HEAD import from the venv's
-    # own interpreter in a fresh process whose cwd is OUTSIDE the checkout (no implicit sys.path).
+    # The active interpreter must serve the pulled tree (stale editable finder, #119466):
+    # every top-level package and a HEAD-only module import from PM's selected interpreter.
+    # PM snapshots the checkout into its workspace; compare imported source bytes.
     cp = leg.run("-c", IMPORT_PROBE, str(leg.install), _refs().base, argv0=leg.python, cwd=leg.root)
     assert cp.returncode == 0, "the updated venv does not serve HEAD's tree:\n" + H.describe(cp)
     # The venv satisfies HEAD's declared dependency set (not just "the old release still imports"):
     # every core requirement in the pulled pyproject is installed at a satisfying version, and the
     # installed hermes-agent distribution was built from the pulled pyproject.
-    cp = leg.run("-c", DEPS_PROBE, str(leg.install / "pyproject.toml"), argv0=leg.python)
+    cp = leg.run("-c", DEPS_PROBE, str(leg.install / "pyproject.toml"), argv0=leg.python, cwd=leg.root)
     assert cp.returncode == 0, "venv does not satisfy HEAD's dependencies:\n" + H.describe(cp)
     # 2. state integrity: nothing lost, nothing corrupted (measured BEFORE any new turn)
     for name, home in _profile_homes(leg).items():
@@ -563,11 +597,12 @@ def _publish_head(leg: Leg) -> None:
 
 
 def _update(leg: Leg) -> subprocess.CompletedProcess:
-    return leg.run(*_RETRY_PREFIX[1:], leg.hermes, "update", "--yes", argv0=_RETRY_PREFIX[0], timeout=UPDATE_TIMEOUT)
+    return leg.run(*_RETRY_PREFIX[1:], leg.hermes, "update", "--yes", "--branch", "main",
+                   argv0=_RETRY_PREFIX[0], timeout=UPDATE_TIMEOUT)
 
 
 def _freeze_update_at(leg: Leg, marker: str) -> None:
-    proc = leg.popen("update", "--yes")
+    proc = leg.popen("update", "--yes", "--branch", "main")
     try:
         H.wait_for(lambda: (leg.root / marker).exists() or proc.poll() is not None,
                    timeout=UPDATE_TIMEOUT, interval=0.5, what=marker)

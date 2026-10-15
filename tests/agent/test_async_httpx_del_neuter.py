@@ -17,7 +17,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Layer 1: neuter_async_httpx_del
 # ---------------------------------------------------------------------------
@@ -46,9 +45,6 @@ class TestNeuterAsyncHttpxDel:
         finally:
             # Restore original to avoid leaking into other tests
             AsyncHttpxClientWrapper.__del__ = original_del
-
-
-
 
 # ---------------------------------------------------------------------------
 # Layer 3: cleanup_stale_async_clients
@@ -119,7 +115,6 @@ class TestCleanupStaleAsyncClients:
         finally:
             with _client_cache_lock:
                 _client_cache.pop(key, None)
-
 
     def test_shutdown_closes_outside_cache_lock(self):
         from agent.auxiliary_client import (
@@ -235,7 +230,6 @@ class TestCleanupStaleAsyncClients:
             with _client_cache_lock:
                 _client_cache.pop(key, None)
 
-
 # ---------------------------------------------------------------------------
 # Cache bounded growth (#10200)
 # ---------------------------------------------------------------------------
@@ -277,7 +271,7 @@ class TestClientCacheBoundedGrowth:
             # Now call _get_cached_client — should detect stale loop and evict
             with patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
                 mock_resolve.return_value = (MagicMock(), "new-model")
-                client, model = _get_cached_client(
+                _client, _model = _get_cached_client(
                     "test_replace", async_mode=True,
                 )
             # The old entry should have been replaced
@@ -288,5 +282,3 @@ class TestClientCacheBoundedGrowth:
         finally:
             with _client_cache_lock:
                 _client_cache.pop(key, None)
-
-

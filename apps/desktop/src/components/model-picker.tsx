@@ -2,24 +2,31 @@ import type { ModelOptionProvider, ModelPricing } from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactElement, useMemo, useRef, useState } from 'react'
 
-import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
+import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { foldIncludes, normalize } from '@/lib/text'
-import { useStoreSelector } from '@/lib/use-session-slice'
+import { cn } from '@/lib/utils'
 import { $customModels, addCustomModel, customModelCandidate, withCustomModels } from '@/store/custom-models'
 import { $localModelsEnabled } from '@/store/local-models-flag'
-import { $localRuntimeJobs, runningModelDownloads, watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
-import type { LocalModelLoadProgress } from '@/types/hermes'
+import {
+  type LocalModelsOwner,
+  runningModelDownloads,
+  useLocalModelsOwner,
+  useLocalModelsStatus,
+  useLocalRuntimeJobs
+} from '@/store/local-runtime-jobs'
+import type { LocalModelLoadProgress, LocalRuntimeJob } from '@/types/hermes'
 
 import type { HermesGateway } from '../hermes'
-import { cn } from '../lib/utils'
 import { startManualOnboarding } from '../store/onboarding'
 
 import { InlineNotice } from './notifications'
+import { ProviderStatusChip } from './provider-status-chip'
+import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from './ui/command'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
@@ -61,7 +68,7 @@ export function ModelPickerDialog({
   request,
   setupProfile,
   contentClassName
-}: ModelPickerDialogProps) {
+}: ModelPickerDialogProps): ReactElement {
   const { t } = useI18n()
   const copy = t.modelPicker
   // Own the search term so we can filter manually. cmdk's built-in
@@ -69,7 +76,7 @@ export function ModelPickerDialog({
   // an empty query), which destroys the backend's curated order. We disable
   // it: an empty query shows the curated list verbatim (like the `hermes
   // model` CLI picker) and a query ranks with the shared fuzzyRank.
-  const [search, setSearch] = useState('')
+  const [search, setSearch] = useState<string>('')
   // "Add custom model…" flips the search into slug entry: the typed id is
   // offered per provider even while it fuzzy-matches catalog rows.
   const [slugEntry, setSlugEntry] = useState(false)
@@ -90,13 +97,8 @@ export function ModelPickerDialog({
   // the llamacpp provider group hides even with staged models on disk).
   const localModelsEnabled = $localModelsEnabled.get()
 
-  const localStatus = useQuery({
-    queryKey: ['local-models-loading', profile],
-    queryFn: () => getLocalModelsStatus(),
-    enabled: open && localModelsEnabled,
-    refetchInterval: 2_000,
-    retry: false
-  })
+  const owner: LocalModelsOwner = useLocalModelsOwner(profile, ownerConnectionId)
+  const localStatus = useLocalModelsStatus(owner, open && localModelsEnabled, true)
 
   const loadingModels: Record<string, LocalModelLoadProgress> = localStatus.data?.loading ?? {}
 
@@ -106,12 +108,15 @@ export function ModelPickerDialog({
   // and this dialog stays MOUNTED app-wide when closed — so subscribe only
   // to download identity (changes when a download starts/ends, and never
   // while closed); each row selects its own percent scalar (#72163 class).
-  const downloadsKey = useStoreSelector($localRuntimeJobs, jobs =>
+  const downloadsKey: string = useLocalRuntimeJobs(
+    owner,
+    (jobs: readonly LocalRuntimeJob[]): string =>
+      open && localModelsEnabled
+        ? runningModelDownloads(jobs)
+            .map(job => `${job.job_id}\u0000${job.target}`)
+            .join('\u0001')
+        : '',
     open && localModelsEnabled
-      ? runningModelDownloads(jobs)
-          .map(job => `${job.job_id}\u0000${job.target}`)
-          .join('\u0001')
-      : ''
   )
 
   const downloads = useMemo(
@@ -125,36 +130,6 @@ export function ModelPickerDialog({
           }),
     [downloadsKey]
   )
-
-  // Rediscover in-flight work on open: the poller idles when nothing was
-  // running, and a download can start from any surface.
-  useEffect(() => {
-    if (open && localModelsEnabled) {
-      watchLocalRuntimeJobs()
-    }
-  }, [open, localModelsEnabled])
-
-  // A finished download turns into a real selectable model — refetch the
-  // options so the placeholder row is replaced while the picker is open.
-  const refetchOptions = modelOptions.refetch
-
-  useEffect(() => {
-    if (!open) {
-      return
-    }
-
-    let prevActive = runningModelDownloads($localRuntimeJobs.get()).length > 0
-
-    return $localRuntimeJobs.listen(next => {
-      const active = runningModelDownloads(next).length > 0
-
-      if (prevActive && !active) {
-        void refetchOptions()
-      }
-
-      prevActive = active
-    })
-  }, [open, refetchOptions])
 
   const customModels = useStore($customModels)
   const providers = withCustomModels(modelOptions.data?.providers ?? [], customModels)
@@ -235,6 +210,7 @@ export function ModelPickerDialog({
               offerCustom={slugEntry}
               onSelectCustomModel={selectCustomModel}
               onSelectModel={selectModel}
+              owner={owner}
               providers={providers}
               search={search}
             />
@@ -258,6 +234,7 @@ export function ModelPickerDialog({
 }
 
 function ModelResults({
+  owner,
   loading,
   error,
   providers,
@@ -270,6 +247,7 @@ function ModelResults({
   offerCustom,
   search
 }: {
+  owner: LocalModelsOwner
   loading: boolean
   error: string | null
   providers: readonly ModelOptionProvider[]
@@ -282,7 +260,7 @@ function ModelResults({
   /** Offer the typed id as a custom model even while catalog rows match. */
   offerCustom: boolean
   search: string
-}) {
+}): ReactElement {
   const { t } = useI18n()
   const copy = t.modelPicker
 
@@ -365,6 +343,7 @@ function ModelResults({
         }
 
         const unavailable = new Set(provider.unavailable_models ?? [])
+        const accountLimited = accountResetMs(provider) !== null
 
         return (
           <CommandGroup heading={<ProviderHeading provider={provider} />} key={provider.slug}>
@@ -379,6 +358,9 @@ function ModelResults({
               const isCurrent = model === currentModel && catalogProviderMatches(provider, currentProvider)
               const price = provider.pricing?.[model]
               const locked = unavailable.has(model)
+              const resetMs = modelResetMs(provider, model)
+              const resetLabel = resetMs === null ? null : formatReset(resetMs)
+              const dimmed = !locked && (accountLimited || resetLabel !== null)
               // Managed local model loading into memory right now: show the
               // real load percent inline (keyed by exact model id — remote
               // providers never match).
@@ -401,7 +383,7 @@ function ModelResults({
                   }}
                   value={`${provider.slug}:${model}`}
                 >
-                  <span className="min-w-0 flex-1 truncate">
+                  <span className={cn('min-w-0 flex-1 truncate', dimmed && !isCurrent && 'text-muted-foreground')}>
                     <HighlightMatches foldSeparators query={search} text={model} />
                   </span>
                   {loadProgress && (
@@ -418,12 +400,22 @@ function ModelResults({
                   {locked && (
                     <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>
                   )}
+                  {resetLabel && (
+                    <Badge
+                      className="font-sans tabular-nums"
+                      size="xs"
+                      title={t.shell.modelMenu.modelLimitedTip(resetLabel)}
+                      variant="warn"
+                    >
+                      {t.shell.modelMenu.modelResets(resetLabel)}
+                    </Badge>
+                  )}
                   <ModelPrice isCurrent={isCurrent} price={price} />
                 </CommandItem>
               )
             })}
             {groupDownloads.map(job => (
-              <DownloadingModelRow jobId={job.jobId} key={job.jobId} target={job.target} />
+              <DownloadingModelRow jobId={job.jobId} key={job.jobId} owner={owner} target={job.target} />
             ))}
             {unavailable.size > 0 && (
               <div className="px-6 pb-2 pt-1 text-[0.62rem] leading-relaxed text-muted-foreground">
@@ -436,7 +428,7 @@ function ModelResults({
       {!hasLocalGroup && visibleDownloads.length > 0 && (
         <CommandGroup heading={copy.localDownloadsHeading} key="local-downloads">
           {visibleDownloads.map(job => (
-            <DownloadingModelRow jobId={job.jobId} key={job.jobId} target={job.target} />
+            <DownloadingModelRow jobId={job.jobId} key={job.jobId} owner={owner} target={job.target} />
           ))}
         </CommandGroup>
       )}
@@ -467,24 +459,51 @@ const LOCAL_PROVIDER_SLUG = 'llamacpp'
 // where it will land), disabled so it can't be selected early, with the
 // same byte progress the settings pane shows. Percent is selected here, per
 // row, so the poller's 700ms byte ticks repaint this leaf only.
-function DownloadingModelRow({ jobId, target }: { jobId: string; target: string }) {
+function DownloadingModelRow({
+  owner,
+  jobId,
+  target
+}: {
+  owner: LocalModelsOwner
+  jobId: string
+  target: string
+}): ReactElement {
   const { t } = useI18n()
   const copy = t.modelPicker
+  const copyLocal = t.settings.localModels
 
-  const percent = useStoreSelector($localRuntimeJobs, jobs => jobs.find(job => job.job_id === jobId)?.percent ?? null)
+  const percent: number | null = useLocalRuntimeJobs(
+    owner,
+    (jobs: readonly LocalRuntimeJob[]): number | null =>
+      jobs.find((job: LocalRuntimeJob): boolean => job.job_id === jobId)?.percent ?? null,
+    false
+  )
+
+  const paused: boolean = useLocalRuntimeJobs(
+    owner,
+    (jobs: readonly LocalRuntimeJob[]): boolean =>
+      jobs.find((job: LocalRuntimeJob): boolean => job.job_id === jobId)?.status === 'paused',
+    false
+  )
 
   return (
     <CommandItem className="flex items-center gap-2 pl-6 font-mono opacity-60" disabled value={`downloading:${jobId}`}>
       <span className="min-w-0 flex-1 truncate">{target}</span>
-      <span className="flex shrink-0 items-center gap-1.5" title={copy.downloading}>
+      <span
+        className="flex shrink-0 items-center gap-1.5"
+        title={paused ? copyLocal.downloadPausedLabel : copy.downloading}
+      >
         <span className="h-1 w-16 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
           <span
-            className="block h-full rounded-full bg-primary transition-[width] duration-500"
+            className={cn(
+              'block h-full rounded-full',
+              paused ? 'bg-muted-foreground/60' : 'bg-primary transition-[width] duration-500'
+            )}
             style={{ width: `${Math.max(2, percent ?? 0)}%` }}
           />
         </span>
         <span className="text-[0.62rem] tabular-nums text-muted-foreground">
-          {typeof percent === 'number' ? `${percent}%` : copy.downloading}
+          {paused ? copyLocal.downloadPausedLabel : typeof percent === 'number' ? `${percent}%` : copy.downloading}
         </span>
       </span>
     </CommandItem>
@@ -601,6 +620,7 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
         {provider.slug} · {provider.total_models ?? provider.models?.length ?? 0}
       </span>
       {tierBadge}
+      <ProviderStatusChip provider={provider} />
     </span>
   )
 }

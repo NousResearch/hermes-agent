@@ -251,7 +251,7 @@ class TestSearchHandler:
 class TestWindowsMsysPathResolution:
     """File tools must translate Git Bash drive paths before Path resolution."""
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_absolute_msys_path_normalized_before_windows_resolve(self, monkeypatch):
         """Windows-only: ``_resolve_path_for_task`` hands the translated path
         to ``ntpath``/``Path``, and only a real Windows ``Path`` renders
@@ -264,7 +264,7 @@ class TestWindowsMsysPathResolution:
         assert str(resolved) == r"C:\Users\Mark\project\app.py"
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_container_paths_skip_msys_translation(self, monkeypatch):
         """WSL/docker Linux paths must not be rewritten as Windows drives.
 
@@ -918,6 +918,20 @@ class TestSSHConfigWriteGate:
         assert "single-query" in result["error"]
         assert not ssh_config.exists()
 
+    def test_relative_path_is_gated_from_the_task_cwd_not_the_process_cwd(self, ssh_config, tmp_path,
+                                                                           monkeypatch):
+        """A gateway-hosted turn's workspace is not the process cwd: the gate must judge the path
+        the write will actually land on, or a relative spelling skips approval."""
+        ws, elsewhere = tmp_path / "ws", tmp_path / "elsewhere"
+        for d in (ws, elsewhere, ssh_config.parent):
+            d.mkdir()
+        (ws / "sshdir").symlink_to(ssh_config.parent, target_is_directory=True)
+        monkeypatch.setenv("TERMINAL_CWD", str(ws))
+        monkeypatch.chdir(elsewhere)
+        from tools.file_tools_write_guards import _check_approval_required_write
+
+        assert "BLOCKED" in (_check_approval_required_write(["sshdir/config"], "ssh-gate-task") or "")
+
 
 class TestSecretFileReadRedaction:
     """#110567: read_file / search_files must classify the RESOLVED path and run the
@@ -947,7 +961,7 @@ class TestSecretFileReadRedaction:
     @pytest.fixture
     def hermes_home(self, tmp_path, monkeypatch):
         """A Hermes home with no ``.hermes`` segment, like ``%LOCALAPPDATA%\\hermes``."""
-        import agent.file_safety as file_safety
+        from agent import file_safety
 
         home = tmp_path / "hermes"
         home.mkdir()

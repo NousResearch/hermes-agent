@@ -30,7 +30,7 @@ class TestRecordNousRateLimit:
 
         path = _state_path()
         assert os.path.exists(path)
-        with open(path) as f:
+        with open(path, encoding="utf-8-sig") as f:
             state = json.load(f)
         assert state["reset_seconds"] == pytest.approx(1800, abs=2)
         assert state["reset_at"] > time.time()
@@ -47,17 +47,32 @@ class TestRecordNousRateLimit:
             error_context={"reset_at": future_reset},
         )
 
-        with open(_state_path()) as f:
+        with open(_state_path(), encoding="utf-8-sig") as f:
             state = json.load(f)
         assert state["reset_at"] == pytest.approx(future_reset, abs=1)
 
+
+    def test_the_429_bodys_wait_outranks_the_hourly_window_end(self, rate_guard_env):
+        # A welcome-tier fair-share 429 said retry after 410 s; the hourly bucket's reset header (its
+        # window end, ~1 h) turned that into an hour-long block on the next turns.
+        from agent.nous_rate_guard import record_nous_rate_limit, _state_path
+
+        record_nous_rate_limit(
+            headers={"x-ratelimit-remaining-requests-1h": "37", "x-ratelimit-reset-requests-1h": "3594"},
+            error_context={"reset_at": time.time() + 410},
+            anonymous=True,
+        )
+
+        with open(_state_path(anonymous=True), encoding="utf-8-sig") as f:
+            state = json.load(f)
+        assert state["reset_seconds"] == pytest.approx(410, abs=2)
 
     def test_custom_default_cooldown(self, rate_guard_env):
         from agent.nous_rate_guard import record_nous_rate_limit, _state_path
 
         record_nous_rate_limit(headers=None, default_cooldown=120.0)
 
-        with open(_state_path()) as f:
+        with open(_state_path(), encoding="utf-8-sig") as f:
             state = json.load(f)
         assert state["reset_seconds"] == pytest.approx(120, abs=2)
 
@@ -79,9 +94,10 @@ class TestNousRateLimitRemaining:
         from agent.nous_rate_guard import nous_rate_limit_remaining, _state_path
 
         # Write an already-expired state
-        state_dir = os.path.dirname(_state_path())
+        path = _state_path()
+        state_dir = os.path.dirname(path)
         os.makedirs(state_dir, exist_ok=True)
-        with open(_state_path(), "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump({"reset_at": time.time() - 10, "recorded_at": time.time() - 100}, f)
 
         assert nous_rate_limit_remaining() is None
@@ -318,8 +334,7 @@ class TestRateGuardStateEncoding:
         # which is what this guards against.
         with open(path, "w", encoding="utf-8") as f:
             f.write(
-                '{"reset_at": %d, "provider": "中文", "recorded_at": 0}'
-                % (int(time.time()) + 3600)
+                f'{{"reset_at": {int(time.time()) + 3600:d}, "provider": "中文", "recorded_at": 0}}'
             )
 
         real_open = builtins.open
@@ -329,7 +344,13 @@ class TestRateGuardStateEncoding:
                 is_target = str(file) == str(path)
             except Exception:
                 is_target = False
-            if is_target and "b" not in mode and kwargs.get("encoding") != "utf-8":
+            # The repo encoding policy makes reads BOM-tolerant, so both
+            # UTF-8 family codecs satisfy this regression guard.
+            if (
+                is_target
+                and "b" not in mode
+                and kwargs.get("encoding") not in ("utf-8", "utf-8-sig")
+            ):
                 raise UnicodeDecodeError(
                     "gbk", b"\x94", 0, 1, "illegal multibyte sequence"
                 )

@@ -172,6 +172,7 @@ class TestSignalHelpers:
                  "-i", "anullsrc=r=44100:cl=mono", "-t", "0.5",
                  "-c:a", "aac", "-f", "adts", adts_path],
                 capture_output=True, timeout=30,
+                check=False,
             )
             if gen.returncode != 0:
                 import pytest
@@ -305,7 +306,7 @@ class TestSignalPhoneRedaction:
         # HERMES_REDACT_SECRETS env var. monkeypatch.delenv is too late —
         # the module was already imported during test collection with
         # whatever value was in the env then. Force the flag directly.
-        # See skill: xdist-cross-test-pollution Pattern 5.
+        # See skill: cross-test-pollution Pattern 5.
         monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
         monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
 
@@ -829,7 +830,6 @@ class TestSignalTypingBackoff:
 
         async def _fake_rpc(method, params, rpc_id=None, *, log_failures=True):
             call_count["n"] += 1
-            return None
 
         adapter._rpc = _fake_rpc
 

@@ -115,7 +115,7 @@ def test_unreadable_status_still_serves_a_running_state(progress):
 # Stands in for `hermes update`, and reports the stage that was on screen
 # while it ran -- the update child is the only thing that can observe the
 # window's state at the exact moment of the longest wait in the hand-off.
-FAKE_HERMES = """#!/bin/bash
+FAKE_HERMES = """#!/usr/bin/env bash
 # The hand-off probes `update --help` for --keep-stash support before the
 # real update call; answer it without consuming a counted call so the
 # exits.N mapping below still refers to actual update attempts.
@@ -150,6 +150,7 @@ def _run_handoff(tmp_path, exits: dict[int, int]) -> list[dict]:
         "HERMES_TEST_CALLS": str(calls),
         "HERMES_TEST_EXITS": str(tmp_path / "exits"),
     }
+    env.pop("HERMES_HOME", None)  # Exercise the legacy install-parent fallback.
     # The hand-off daemonizes and the launcher exits immediately; the result
     # file is the orchestrator's own completion signal.
     subprocess.run(

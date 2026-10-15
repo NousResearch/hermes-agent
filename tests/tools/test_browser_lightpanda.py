@@ -133,7 +133,6 @@ class TestLightpandaRequirements:
         with patch("tools.browser_tool._is_camofox_mode", return_value=False), \
              patch("tools.browser_tool_cdp._get_cdp_override", return_value=""), \
              patch("tools.browser_tool_install._find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch("tools.browser_tool_install._requires_real_termux_browser_install", return_value=False), \
              patch("tools.browser_tool_cloud._get_cloud_provider", return_value=None), \
              patch("tools.browser_tool_cloud._get_browser_engine", return_value="lightpanda"), \
              patch("tools.browser_tool_install._chromium_installed", return_value=False):
@@ -144,7 +143,6 @@ class TestLightpandaRequirements:
         with patch("tools.browser_tool._is_camofox_mode", return_value=False), \
              patch("tools.browser_tool_cdp._get_cdp_override", return_value=""), \
              patch("tools.browser_tool_install._find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch("tools.browser_tool_install._requires_real_termux_browser_install", return_value=False), \
              patch("tools.browser_tool_cloud._get_cloud_provider", return_value=None), \
              patch("tools.browser_tool_cloud._get_browser_engine", return_value="auto"), \
              patch("tools.browser_tool_install._chromium_installed", return_value=False):
@@ -384,7 +382,7 @@ class TestEngineOverride:
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch("tools.browser_tool_session._needs_chromium_sandbox_bypass", return_value=True), \
              patch("tools.browser_tool_lifecycle._write_owner_pid"), \
-             patch.dict(os.environ, {}, clear=True):
+             patch.dict(os.environ, {}, clear=False):
             # AppArmor/root detection would normally auto-inject Chromium args.
             bt_session._run_browser_command("task1", "snapshot", [])
 
@@ -571,7 +569,7 @@ class TestLightpandaSessionCreation:
         return bt, calls
 
     def test_spawns_lightpanda_in_browser_use_mode(self, monkeypatch):
-        bt, calls = self._common(monkeypatch)
+        _bt, calls = self._common(monkeypatch)
         info = bt_session._create_local_session("task-1")
         assert info["session_name"].startswith("lp_")
         assert info["cdp_url"] == "http://127.0.0.1:4321"
@@ -580,19 +578,19 @@ class TestLightpandaSessionCreation:
         assert calls == [(info["session_name"], False)]
 
     def test_blocks_private_networks_for_containerised_terminal(self, monkeypatch):
-        bt, calls = self._common(monkeypatch, local_backend=False)
+        _bt, calls = self._common(monkeypatch, local_backend=False)
         bt_session._create_local_session("task-1")
         assert calls[0][1] is True
 
     def test_ignores_engine_outside_browser_use_mode(self, monkeypatch):
-        bt, calls = self._common(monkeypatch, bu_mode=False)
+        _bt, calls = self._common(monkeypatch, bu_mode=False)
         info = bt_session._create_local_session("task-1")
         assert info["features"] == {"local": True}
         assert info["cdp_url"] is None
         assert calls == []
 
     def test_launch_failure_raises(self, monkeypatch):
-        bt, _ = self._common(monkeypatch, launch=(None, "no lightpanda binary was found"))
+        _bt, _ = self._common(monkeypatch, launch=(None, "no lightpanda binary was found"))
         with pytest.raises(RuntimeError, match="no lightpanda binary"):
             bt_session._create_local_session("task-1")
 

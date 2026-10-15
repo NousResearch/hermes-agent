@@ -33,12 +33,9 @@ import asyncio
 import logging
 from unittest.mock import MagicMock, patch
 
-
-
 # ---------------------------------------------------------------------------
 # _resolve_identity_header helper
 # ---------------------------------------------------------------------------
-
 
 class TestResolveIdentityHeader:
     def test_returns_none_when_unset(self):
@@ -126,11 +123,9 @@ class TestResolveIdentityHeader:
         assert result is None
         assert any("identity_header" in r.message for r in caplog.records)
 
-
 # ---------------------------------------------------------------------------
 # HTTP transport — header attached to httpx.AsyncClient
 # ---------------------------------------------------------------------------
-
 
 def _drive_http(server, config):
     """Run ``_run_http`` with the SDK boundary mocked out, capturing the
@@ -187,7 +182,6 @@ def _drive_http(server, config):
     asyncio.run(_drive())
     return captured
 
-
 class TestHTTPIdentityHeader:
     def test_header_attached_when_configured(self):
         from tools.mcp_tool import MCPServerTask
@@ -231,10 +225,6 @@ class TestHTTPIdentityHeader:
         assert headers.get("x-user-id") == "explicit-wins"
         assert "X-User-Id" not in headers
 
-
-
 # ---------------------------------------------------------------------------
 # stdio transport — identity_header is warn-and-ignore
 # ---------------------------------------------------------------------------
-
-

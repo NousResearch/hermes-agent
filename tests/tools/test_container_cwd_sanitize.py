@@ -19,19 +19,14 @@ behaviour so neither path can regress.
 
 import tools.terminal_tool as tt
 
-
 class TestIsUnusableContainerCwd:
     def test_windows_backslash_host_path_rejected(self):
         # The exact shape from the bug report: a Windows host cwd reaching a
         # Linux container's -w flag.
         assert tt._is_unusable_container_cwd(r"C:\Users\someuser") is True
 
-
     def test_posix_home_host_path_rejected(self):
         assert tt._is_unusable_container_cwd("/home/ben/projects") is True
-
-
-
 
 class TestOverrideCwdSanitizedAtCallSite:
     """E2E pin: a per-task cwd OVERRIDE that is a host path must NOT reach the
@@ -103,12 +98,10 @@ class TestOverrideCwdSanitizedAtCallSite:
             "It must be sanitized back to config['cwd']."
         )
 
-
     def test_valid_container_override_is_preserved(self, monkeypatch):
         # RL/benchmark envs set an in-container path; it must pass through.
         cwd = self._run_and_capture_cwd(monkeypatch, "/workspace/task42")
         assert cwd == "/workspace/task42"
-
 
 class TestFileOpsCwdSanitizedAtCallSite:
     """E2E pin: file tools (_get_file_ops) must sanitize a host/relative cwd
@@ -193,7 +186,6 @@ class TestFileOpsCwdSanitizedAtCallSite:
             "It must be sanitized back to config['cwd']."
         )
 
-
     def test_valid_container_override_is_preserved(self, monkeypatch):
         # RL/benchmark envs set an in-container path; it must pass through.
         cwd = self._run_and_capture_cwd(monkeypatch, "/workspace/task42")
@@ -203,4 +195,3 @@ class TestFileOpsCwdSanitizedAtCallSite:
         cwd = self._run_and_capture_cwd(
             monkeypatch, "/Users/me/workspace", env_type="singularity")
         assert cwd == "/workspace"
-

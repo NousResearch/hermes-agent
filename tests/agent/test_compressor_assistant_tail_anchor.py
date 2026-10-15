@@ -47,7 +47,6 @@ from unittest.mock import patch
 
 import pytest
 
-
 @pytest.fixture()
 def compressor():
     """ContextCompressor with mocked deps and a tight tail budget so
@@ -67,11 +66,9 @@ def compressor():
         c.tail_token_budget = 50
         return c
 
-
 # ---------------------------------------------------------------------------
 # Helper: _find_last_assistant_message_idx
 # ---------------------------------------------------------------------------
-
 
 class TestFindLastAssistantMessageIdx:
     def test_skips_assistant_role_context_summary_marker(self, compressor):
@@ -92,10 +89,6 @@ class TestFindLastAssistantMessageIdx:
             messages, head_end=0
         ) == 2
 
-
-
-
-
     def test_multimodal_text_block_counts(self, compressor):
         """An assistant with multimodal list-content carrying a text
         block (Anthropic / GPT-style ``[{type:text,text:...}]``)
@@ -107,8 +100,6 @@ class TestFindLastAssistantMessageIdx:
         ]
         idx = compressor._find_last_assistant_message_idx(messages, head_end=0)
         assert idx == 1
-
-
 
     def test_respects_head_end_lower_bound(self, compressor):
         """An assistant message at or before ``head_end`` must be
@@ -123,11 +114,9 @@ class TestFindLastAssistantMessageIdx:
         idx = compressor._find_last_assistant_message_idx(messages, head_end=2)
         assert idx == -1
 
-
 # ---------------------------------------------------------------------------
 # Helper: _ensure_last_assistant_message_in_tail
 # ---------------------------------------------------------------------------
-
 
 class TestEnsureLastAssistantMessageInTail:
     def test_no_op_when_already_in_tail(self, compressor):
@@ -159,7 +148,6 @@ class TestEnsureLastAssistantMessageInTail:
             isinstance(m.get("content"), str) and "REPLY" in m["content"]
             for m in messages[new_cut:]
         )
-
 
     def test_re_aligns_through_preceding_tool_group(self, compressor):
         """When the anchored assistant is preceded by a
@@ -193,11 +181,9 @@ class TestEnsureLastAssistantMessageInTail:
             # Otherwise the anchor must land at the reply itself (3).
             assert new_cut == 3
 
-
 # ---------------------------------------------------------------------------
 # Integration with _find_tail_cut_by_tokens
 # ---------------------------------------------------------------------------
-
 
 class TestFindTailCutByTokensAnchorsAssistant:
     def test_reporter_repro_long_tool_run_after_visible_reply(
@@ -282,11 +268,9 @@ class TestFindTailCutByTokensAnchorsAssistant:
         ]
         assert any("VISIBLE REPLY" in (t or "") for t in tail_contents)
 
-
 # ---------------------------------------------------------------------------
 # End-to-end: compress() preserves the reply
 # ---------------------------------------------------------------------------
-
 
 class TestCompactionRollupReproduction:
     """End-to-end through ``compress()``: the visible reply text must
@@ -420,11 +404,9 @@ class TestCompactionRollupReproduction:
             f"{len(reply_rows)}"
         )
 
-
 # ---------------------------------------------------------------------------
 # Source guardrail
 # ---------------------------------------------------------------------------
-
 
 class TestFindLastUserMessageIdxSkipsSummaryMarker:
     """A context-compaction handoff banner is inserted with ``role="user"``
@@ -469,7 +451,3 @@ class TestFindLastUserMessageIdxSkipsSummaryMarker:
             {"role": "user", "content": f"{SUMMARY_PREFIX}\nhandoff"},
         ]
         assert compressor._find_last_user_message_idx(messages, head_end=1) == -1
-
-
-
-

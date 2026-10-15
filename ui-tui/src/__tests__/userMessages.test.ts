@@ -1,8 +1,9 @@
 import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   backendGaveUp,
+  backendRestarting,
   describeCredentialWarning,
   describeRpcError,
   describeSlashExecError,
@@ -15,6 +16,7 @@ import {
   stderrLooksLikeProblem,
   stderrProblemActivity
 } from '../app/userMessages.js'
+import { applyLocale, resetLocale } from '../i18n/runtime.js'
 
 // Behaviour contracts for the user-facing wording, not snapshots: each test
 // asserts the message names what happened and cites the real next step.
@@ -221,6 +223,10 @@ describe('backend lifecycle copy', () => {
     expect(stderrLooksLikeProblem('[gateway-turn] ValueError: nope')).toBe(true)
     expect(stderrLooksLikeProblem('ValueError: nope')).toBe(true)
     expect(stderrLooksLikeProblem('INFO hermes.mcp: discovered 3 servers')).toBe(false)
+    // The canonical bootstrap's verdict (and its remedy line) is the reason a TUI cannot connect.
+    expect(stderrLooksLikeProblem('gateway incompatible: runtime_protocol')).toBe(true)
+    expect(stderrLooksLikeProblem('gateway inaccessible: profile_parked')).toBe(true)
+    expect(stderrLooksLikeProblem('the gateway incompatible: x')).toBe(false)
   })
 
   it('ignores dependency warning lines and does not call the failure a "backend" problem', () => {
@@ -255,5 +261,28 @@ describe('describeCredentialWarning', () => {
     expect(text).toContain('/model')
     expect(text).toContain('/setup')
     expect(describeCredentialWarning('something else')).toBe('something else')
+  })
+})
+
+describe('locale-aware resolution', () => {
+  afterEach(() => {
+    resetLocale()
+  })
+
+  it('resolves the turn-failure and prompt-timeout tables at call time so a pack swap is observed', () => {
+    applyLocale('xx', {
+      lang: 'xx',
+      messages: {
+        'userMessages.backend.restarting': 'RESTART-XX',
+        'userMessages.promptTimeout.sudo': 'SUDO-XX',
+        'userMessages.turn.code.auth.title': 'AUTH-XX',
+        'userMessages.turn.notAnswered': '{0} // XX'
+      },
+      surface: 'tui'
+    })
+
+    expect(backendRestarting()).toBe('RESTART-XX')
+    expect(promptTimeoutNotice('sudo', 'timeout')).toBe('SUDO-XX')
+    expect(describeTurnFailure({ error_surface: { code: 'auth', layer: 'auth' } }).split('\n')[0]).toBe('AUTH-XX // XX')
   })
 })

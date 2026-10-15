@@ -19,6 +19,7 @@ from typing import Optional
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_db_dispatch_gates as kbg
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_swarm as ks
@@ -678,7 +679,7 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                 meta[r["id"]] = {k: r[k] for k in ("title", "status", "assignee")}
 
     # What this home believes it may claim on a shared board (#113620).
-    allowlist = kbd.dispatch_profile_allowlist_summary()
+    allowlist = kbg.dispatch_profile_allowlist_summary()
 
     if getattr(args, "json", False):
         # Per-task rows unchanged; the home-scope allowlist rides as a trailing row

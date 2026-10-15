@@ -101,6 +101,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
+            "skipped_model_unselected": [
+                {"task_id": tid, "missing": missing}
+                for (tid, missing) in res.skipped_model_unselected
+            ],
             "skipped_per_profile_capped": [
                 {"task_id": tid, "assignee": who, "current": current}
                 for (tid, who, current) in res.skipped_per_profile_capped
@@ -146,6 +150,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             f"Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
+    for tid, missing in res.skipped_model_unselected:
+        print(f"Held (kanban.require_model_selection, missing {'/'.join(missing)}): {tid}")
     for tid, reason in res.respawn_guarded:
         print(f"Guarded ({reason}): {tid}")
     if res.rate_limited:

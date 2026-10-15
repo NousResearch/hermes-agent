@@ -178,6 +178,69 @@ _UNSTAMPED_EDGE_CHILD_SQL = f"""
 {_non_continuation_child_sql("child.", "parent.id")}"""
 
 
+def _projected_tip_source_sql(session_alias: str = "s") -> str:
+    """SQL expression for a listable session's projected live-tip source.
+
+    Keep the child eligibility and ordering in lockstep with
+    :meth:`SessionDB.get_compression_tip`. The recursive walk is bounded and
+    cycle-safe so malformed lineage cannot make a listing/count query loop.
+    """
+    return f"""
+        COALESCE(NULLIF((
+            WITH RECURSIVE
+            ranked_children(parent_id, child_id) AS (
+                SELECT parent_id, child_id
+                FROM (
+                    SELECT
+                        parent.id AS parent_id,
+                        child.id AS child_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY parent.id
+                            ORDER BY
+                                CASE
+                                    WHEN child.end_reason = 'compression' THEN 0
+                                    WHEN child.ended_at IS NULL THEN 1
+                                    ELSE 2
+                                END,
+                                {_sql_session_last_active("child")} DESC,
+                                child.started_at DESC,
+                                child.id DESC
+                        ) AS child_rank
+                    FROM sessions parent
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.end_reason = 'compression'
+                      AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
+                      AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
+                      AND NOT ({_RESET_CHILD_SQL.format(a='child')})
+                      AND COALESCE(child.source, '') != 'tool'
+                )
+                WHERE child_rank = 1
+            ),
+            tip(id, depth, visited) AS (
+                SELECT {session_alias}.id, 0, ',' || {session_alias}.id || ','
+                UNION ALL
+                SELECT
+                    child.child_id,
+                    tip.depth + 1,
+                    tip.visited || child.child_id || ','
+                FROM tip
+                JOIN ranked_children child ON child.parent_id = tip.id
+                WHERE tip.depth < {_CHAIN_CAP}
+                  AND INSTR(tip.visited, ',' || child.child_id || ',') = 0
+            )
+            SELECT leaf.source
+            FROM tip
+            JOIN sessions leaf ON leaf.id = tip.id
+            ORDER BY
+                tip.depth DESC,
+                {_sql_session_last_active("leaf")} DESC,
+                leaf.started_at DESC,
+                leaf.id DESC
+            LIMIT 1
+        ), ''), 'cli')
+    """
+
+
 class SessionCompressionMixin:
     """Compression lineage, cooldown/streak counters, locks and turn leases."""
 
@@ -893,6 +956,51 @@ class SessionCompressionMixin:
             with self._read_ctx() as conn:
                 return conn.execute(_CHAIN_STEP_SQL, (current,)).fetchone()
         return _walk_compression_chain(session_id, step)
+
+    def _project_compression_tips(self, sessions: list[dict[str, Any]], compact_rows: bool) -> list[dict[str, Any]]:
+        """Replace each compression root's surfaced fields with its live tip's (root ``started_at`` kept
+        for stable ordering), one batched query. ``_lineage_ids`` carries every chain id (a tile may
+        hold a MIDDLE segment's id)."""
+        chain_by_root: dict[str, list[str]] = {}  # only roots whose tip differs from themselves
+        for s in sessions:
+            if s.get("end_reason") == "compression":
+                chain = self.get_compression_chain(s["id"])
+                if chain and chain[-1] != s["id"]:
+                    chain_by_root[s["id"]] = chain
+        tip_rows = (
+            self._get_session_rich_rows_batch(
+                {chain[-1] for chain in chain_by_root.values()}, compact_rows=compact_rows,
+            ) if chain_by_root else {}
+        )
+        projected = []
+        for s in sessions:
+            chain = chain_by_root.get(s["id"])
+            tip_row = tip_rows.get(chain[-1]) if chain else None
+            if not tip_row:
+                projected.append(s)
+                continue
+            merged = dict(s)
+            for key in (
+                "id", "ended_at", "end_reason", "message_count", "tool_call_count", "title", "last_active",
+                "preview", "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
+                "source",
+            ):
+                if key in tip_row:
+                    merged[key] = tip_row[key]
+            if merged.get("title") is None:
+                # The title is carried root->tip AFTER the publish transaction; a rotation cut off in
+                # between leaves it on the ended root, and exact-title lookups (`hermes peer dm` ->
+                # canonical "Bot Chat") must still see the lineage under its name (#106165).
+                merged["title"] = s.get("title")
+            merged["_lineage_root_id"] = s["id"]
+            merged["_lineage_ids"] = chain
+            # #121148: the projected row IS an automatic continuation, not a fresh conversation and
+            # not a user branch. The server already classifies the edge (_COMPRESSION_CHILD_SQL) but
+            # only ever used it to hide rows — surface the kind so clients can label the provenance
+            # instead of rendering a sealed-and-rotated chat as a brand-new session.
+            merged["continuation_kind"] = "compression"
+            projected.append(merged)
+        return projected
 
     def get_compression_tip(self, session_id: str) -> Optional[str]:
         """Live tip of a compression chain (``get_compression_chain`` semantics); the input

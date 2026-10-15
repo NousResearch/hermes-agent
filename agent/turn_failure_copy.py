@@ -366,14 +366,14 @@ def site_copy(code: str, **fields: Any) -> str:
     return _SITE_COPY[code].format_map(_Defaults(fields))
 
 
-def switch_advice_viable(agent: Any, provider: Any, model: Any, reason: str) -> bool:
+def switch_advice_viable(agent: Any, provider: Any, model: Any, reason: str, *, base_url: str = "") -> bool:
     """Whether the exhausted-turn copy may advise "switch models with /model".
 
     Default True (keep the hint) — it is withheld only on positive proof that a switch cannot
     change the outcome: the failure is an ACCOUNT-scoped quota wall (rate_limit / billing —
     the credential surface is exhausted for a long window) AND every fallback-providers entry
     lives on that same credential surface, so the whole configured detour path serves the
-    quota that just failed.backend identity comparison is delegated to
+    quota that just failed. Backend identity comparison is delegated to
     :mod:`agent.backend_identity` — labels never compared inline (#22548 lesson). An empty
     chain proves nothing about the wider /model route set, so the hint stays."""
     if reason not in _ACCOUNT_QUOTA_REASONS:
@@ -383,15 +383,14 @@ def switch_advice_viable(agent: Any, provider: Any, model: Any, reason: str) -> 
         return True
     from agent.backend_identity import BackendIdentity, same_credential_surface
     failed = BackendIdentity.build(
-        provider=str(provider or ""), model=str(model or ""),
-        base_url=str(getattr(agent, "base_url", "") or ""),
+        provider=str(provider or ""), model=str(model or ""), base_url=str(base_url or ""),
     )
     for entry in chain:
         if not isinstance(entry, dict):
             return True  # malformed entry: no proof, keep the hint
         candidate = BackendIdentity.build(
             provider=str(entry.get("provider") or ""), model=str(entry.get("model") or ""),
-            base_url=str(entry.get("base_url") or "") or "",
+            base_url=str(entry.get("base_url") or ""),
         )
         if not same_credential_surface(candidate, failed):
             return True

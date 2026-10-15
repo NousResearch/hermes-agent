@@ -1216,7 +1216,8 @@ def max_retries_exhausted_result(
         _final_response = exhausted_copy(
             classified.reason.value, label=provider_label_for(provider), attempts=attempts,
             summary=_final_summary, reset_seconds=_reset_at - time.time() if _reset_at else None,
-            viable_switch=switch_advice_viable(agent, provider, model, classified.reason.value),
+            viable_switch=switch_advice_viable(
+                agent, provider, model, classified.reason.value, base_url=str(base_url or "")),
         )
         if _welcome_hint:
             _final_response = _welcome_tier_guidance(classified, model=model, in_chat=True)

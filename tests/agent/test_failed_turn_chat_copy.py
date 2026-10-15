@@ -102,9 +102,8 @@ def test_oauth_rejection_chat_text_names_the_provider_slug_and_the_failing_profi
 
 
 def test_max_retries_exhausted_chat_text_has_next_step_and_no_mechanism_lead():
-    """No unconsumed hop with a DIFFERENT model -> /retry stays, /model must not be advertised:
-    suggesting a model switch when every configured route serves the failing quota is the
-    advice that tells the user to open a door the gateway itself keeps locked."""
+    """Default-keep: with no chain configured the hint stays — an empty chain proves nothing
+    about the wider /model route set, and the lead stays mechanism-free either way."""
     error = _Http(503, "HTTP 503: upstream unavailable")
     classified = classify_api_error(error, provider="openrouter", model="m")
     result = max_retries_exhausted_result(
@@ -120,18 +119,15 @@ def test_max_retries_exhausted_chat_text_has_next_step_and_no_mechanism_lead():
 
 
 class _AgentSameSurfaceChain(_Agent):
-    """Realistic post-walk state: index at the end of the chain (the walker consumed it),
-    every hop on the SAME credential surface as the failed primary (alias/custom variants
-    of one corp router). A switch relists the quota that just died."""
+    """Every hop on the SAME credential surface as the failed primary (alias/custom variants
+    of one corp router): under an account-quota wall a switch relists the quota that died."""
     _fallback_chain = ({"provider": "openrouter", "model": "m-alt"},
                        {"provider": "openrouter", "model": "m-alt2"})
-    _fallback_index = 2
 
 
 class _AgentCrossSurfaceChain(_Agent):
-    """Hops living on a DIFFERENT credential surface: their own account envelope governs."""
+    """Hops on a DIFFERENT credential surface: their own account envelope governs them."""
     _fallback_chain = ({"provider": "openai-codex", "model": "gpt-5.6-sol"},)
-    _fallback_index = 1
 
 
 def _exhausted_kwargs(**over):

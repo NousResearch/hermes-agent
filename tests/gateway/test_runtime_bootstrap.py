@@ -232,3 +232,39 @@ def test_native_pipe_never_drops_a_client_that_lands_between_idle_accepts(tmp_pa
         server.close()
     assert injected.get("reply") == {"echo": "injected"}, injected.get("error")
     assert server._error is None, server._error
+
+
+def test_native_peer_check_serves_a_peer_that_exited_before_its_sid_was_read(monkeypatch, caplog):
+    """A one-shot client (the Desktop's boot-time ensure child) can exit before the server's
+    peer check reads its SID; OpenProcess then fails and the same-user client was refused as
+    a foreign one on every auto-start. Unreadable must not mean foreign: the pipe DACL admits
+    the owner only, and a readable, different SID still refuses."""
+    import logging
+    import gateway.runtime_bootstrap_windows as rbw
+
+    class _FakeApi:  # a plain method cannot take the restype/argtypes _api() assigns
+        def __call__(self, _handle, out):
+            out._obj.value = 4242
+            return 1
+
+    class _FakeKernel:
+        def __getattr__(self, _name):
+            return _FakeApi()
+
+    monkeypatch.setattr(rbw.ctypes, "WinDLL", lambda *_a, **_k: _FakeKernel(), raising=False)
+
+    def unreadable(_pid):
+        raise PermissionError("cannot verify bootstrap peer process")
+
+    monkeypatch.setattr(rbw, "_process_sid", unreadable)
+    with caplog.at_level(logging.WARNING, logger="gateway.runtime_bootstrap_windows"):
+        assert rbw._peer_subject(object(), server=False) == "sid:unresolved"
+    assert "4242" in caplog.text
+
+    monkeypatch.setattr(rbw, "_process_sid",
+                        lambda pid: "S-1-5-21-foreign" if pid == 4242 else "S-1-5-21-self")
+    with pytest.raises(PermissionError, match="another user"):
+        rbw._peer_subject(object(), server=False)
+
+    monkeypatch.setattr(rbw, "_process_sid", lambda _pid: "S-1-5-21-self")
+    assert rbw._peer_subject(object(), server=False) == "sid:S-1-5-21-self"

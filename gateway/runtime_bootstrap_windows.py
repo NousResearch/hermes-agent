@@ -73,7 +73,15 @@ def _peer_subject(handle, *, server: bool) -> str:
     pid = wintypes.ULONG()
     if not get_pid(handle, ctypes.byref(pid)):
         raise PermissionError('cannot identify named-pipe peer')
-    sid = _process_sid(pid.value)
+    try:
+        sid = _process_sid(pid.value)
+    except PermissionError:
+        # A one-shot client (the Desktop's boot-time ensure child) can exit before the
+        # server reads its SID. The pipe DACL admits the owner only, so an unreadable
+        # peer is not a foreign one; a readable, different SID still refuses below.
+        logger.warning('named-pipe peer pid %s unreadable (likely exited); '
+                       'the owner-only pipe DACL still arbitrates', pid.value)
+        return 'sid:unresolved'
     if sid != _process_sid(os.getpid()):
         raise PermissionError('named-pipe peer belongs to another user')
     return 'sid:' + sid

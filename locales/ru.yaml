@@ -1677,7 +1677,7 @@ slash:
   version:
     description: "Версия Hermes Agent"
   debug:
-    description: "Отчёт для диагностики"
+    description: "Отправить диагностический отчёт (сведения о системе и журналы) и получить ссылку"
   quit:
     description: "Выйти из CLI (--delete также удаляет историю сеанса)"
 cli:

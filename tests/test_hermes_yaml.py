@@ -90,3 +90,34 @@ def test_parallel_calls_do_not_share_parser_or_emitter_state():
     with pytest.raises(yaml.YAMLError):
         yaml.safe_dump(object())
     assert yaml.safe_load(yaml.safe_dump({"healthy": True})) == {"healthy": True}
+
+
+def test_safe_load_reuses_one_parser_per_thread_and_mode(monkeypatch):
+    # Building a ruamel YAML() globs its plug-in dir: ~7 ms per call on a phone, ~95% of a frontmatter load.
+    made = []
+    real = yaml.YAML
+
+    def counting(*args, **kwargs):
+        made.append(kwargs.get("pure"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(yaml, "YAML", counting)
+
+    def many():
+        return [yaml.safe_load(f"count: {i}\nflag: on\n") for i in range(50)]
+
+    with ThreadPoolExecutor(1) as pool:  # a fresh thread: nothing cached yet
+        first = pool.submit(many).result()
+    assert first == [{"count": i, "flag": True} for i in range(50)]
+    assert made == [False]
+    first[0]["count"] = "changed"  # results are independent objects
+    with ThreadPoolExecutor(1) as pool:  # another thread builds its own
+        assert pool.submit(yaml.safe_load, "count: 0\n").result() == {"count": 0}
+    assert made == [False, False]
+
+
+def test_safe_load_recovers_after_a_parse_error():
+    for _ in range(3):
+        with pytest.raises(yaml.YAMLError):
+            yaml.safe_load("a: [unclosed\n")
+        assert yaml.safe_load("a: [1, 2]\nb: off\n") == {"a": [1, 2], "b": False}

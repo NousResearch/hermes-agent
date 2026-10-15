@@ -72,6 +72,16 @@ def test_tool_progress_off_keeps_interim_consumer(cli_shell):
     assert printed == []
 
 
+def test_parseable_quiet_suppresses_interim_output(cli_shell):
+    shell, printed, _ = cli_shell
+    shell.agent = SimpleNamespace(suppress_status_output=True)
+
+    shell._on_interim_assistant("Must stay out of -Q stdout.")
+
+    assert printed == []
+    assert shell._stream_started is False
+
+
 def test_explicit_interim_opt_out_does_not_install_consumer(cli_shell):
     shell, printed, cli_mod = cli_shell
     cli_mod.CLI_CONFIG["display"] = {"interim_assistant_messages": False}
@@ -108,7 +118,7 @@ def test_interim_sanitizes_terminal_control_sequences(cli_shell):
 @pytest.mark.parametrize("streaming_enabled", [False, True])
 def test_init_agent_installs_interim_consumer_even_without_reasoning(cli_shell, monkeypatch, streaming_enabled):
     shell, _, cli_mod = cli_shell
-    import run_agent
+    import hermes_cli.gateway_agent as gateway_agent
     import hermes_cli.mcp_startup as mcp_startup
     import agent.credits_tracker as credits_tracker
 
@@ -141,6 +151,7 @@ def test_init_agent_installs_interim_consumer_even_without_reasoning(cli_shell, 
     ):
         setattr(shell, name, None)
     for name in (
+        "_ensure_gateway_session",
         "finalize_preloaded_skills", "_install_tool_callbacks", "_ensure_tirith_security",
         "_clarify_callback", "_on_reaction",
     ):
@@ -157,7 +168,7 @@ def test_init_agent_installs_interim_consumer_even_without_reasoning(cli_shell, 
         captured.update(kwargs)
         return SimpleNamespace()
 
-    monkeypatch.setattr(run_agent, "AIAgent", fake_agent)
+    monkeypatch.setattr(gateway_agent, "GatewayAgent", fake_agent)
     assert shell._init_agent(runtime_override={
         "provider": "openai-codex", "api_mode": "codex_responses",
         "base_url": "https://chatgpt.com/backend-api/codex", "api_key": "test-key",

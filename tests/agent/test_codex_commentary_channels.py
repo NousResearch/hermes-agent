@@ -86,12 +86,14 @@ def test_normalized_commentary_and_encrypted_state_replay_without_reclassificati
     replay = _chat_messages_to_responses_input(history, current_issuer_kind="codex_backend")
 
     assert replay == [
-        {"role": "user", "content": "Check the file."},
+        {"type": "message", "role": "user",
+         "content": [{"type": "input_text", "text": "Check the file."}]},
         {
             "type": "reasoning", "encrypted_content": "opaque-replay-state",
             "summary": [{"type": "summary_text", "text": "Reasoning summary."}],
         },
-        *message.codex_message_items,
+        *[{k: v for k, v in item.items() if k != "id"}
+          for item in message.codex_message_items],
     ]
     assert history == original
 

@@ -53,24 +53,37 @@ def check_peer_messaging_requirements() -> bool:
 
 def _local_session(db, session_id: str, *, follow_compression: bool = False) -> dict:
     mailbox.session_component(session_id)
-    row = db.get_session(session_id)
-    if row is None:
-        raise ValueError("Unknown session; copy an exact ID from peer_sessions")
-    tip = db.get_compression_tip(session_id) or session_id
-    if tip != session_id:
-        if not follow_compression:
-            raise ValueError("This session rotated; receive from its current conversation, not a stale owner")
-        row = db.get_session(tip)
-    if not row or row.get("ended_at") is not None or row.get("archived"):
-        # An explicit close/archive is not permission to wake or reuse that context.
-        raise ValueError("Session has ended or been archived; refresh peer_sessions")
-    if row.get("source") not in _LOCAL_SOURCES:
-        raise ValueError("Peer messaging is for local CLI/Desktop/TUI sessions, not managed messaging or workers")
-    config = row.get("model_config") or {}
-    if isinstance(config, str):
-        config = json.loads(config)
-    if not isinstance(config, dict) or config.get("_delegate_from"):
-        raise ValueError("Delegated workers use their owning delegation channel")
+    # Reuse the store's continuation selection, but validate the whole selected
+    # route: jumping straight to its tip can bypass an archived/foreign segment.
+    chain = db.get_compression_chain(session_id) or [session_id]
+    if len(chain) > 1 and not follow_compression:
+        raise ValueError("This session rotated; receive from its current conversation, not a stale owner")
+    previous = None
+    profile = None
+    for index, sid in enumerate(chain):
+        mailbox.session_component(sid)
+        row = db.get_session(sid)
+        if row is None:
+            raise ValueError("Unknown session; copy an exact ID from peer_sessions")
+        continuing = index < len(chain) - 1
+        if (row.get("archived") or (row.get("ended_at") is not None
+                and not (continuing and row.get("end_reason") == "compression"))):
+            raise ValueError("Session has ended or been archived; refresh peer_sessions")
+        if row.get("source") not in _LOCAL_SOURCES:
+            raise ValueError("Peer messaging is for local CLI/Desktop/TUI sessions, not managed messaging or workers")
+        config = row.get("model_config") or {}
+        if isinstance(config, str):
+            config = json.loads(config)
+        if not isinstance(config, dict) or config.get("_delegate_from"):
+            raise ValueError("Delegated workers use their owning delegation channel")
+        if previous and (row.get("parent_session_id") != previous["id"]
+                         or previous.get("end_reason") != "compression"
+                         or any(config.get(key) == previous["id"] for key in ("_branched_from", "_reset_from"))):
+            raise ValueError("Peer target no longer follows the selected compression route")
+        if profile and row.get("profile_name") and profile != row["profile_name"]:
+            raise ValueError("Peer compression route cannot cross profile identities")
+        profile = profile or row.get("profile_name")
+        previous = row
     return row
 
 
@@ -82,8 +95,14 @@ def _receive_scope(session_id: str) -> list[Path]:
         ids, seen = [row["id"]], {row["id"]}
         while (parent := row.get("parent_session_id")) and parent not in seen:
             ancestor = db.get_session(parent)
-            if (not ancestor or ancestor.get("end_reason") != "compression"
-                    or db.get_compression_tip(parent) != session_id):
+            if not ancestor or ancestor.get("end_reason") != "compression":
+                break
+            try:
+                if _local_session(db, parent, follow_compression=True)["id"] != session_id:
+                    break
+            except ValueError:
+                # Keep this session's own inbox usable, without reading/acking
+                # across an archived, ineligible or conflicting-profile ancestor.
                 break
             seen.add(parent)
             ids.append(parent)
@@ -128,7 +147,8 @@ def peer_sessions(active_within_minutes: int = _DEFAULT_ACTIVE_WITHIN_MINUTES, *
             if same_project and project is None:
                 raise ValueError("This session has no project path; use same_project=false for local discovery")
             # The projection does not promise full-table discovery.
-            rows = db.list_sessions_rich(limit=100, order_by_last_active=True)
+            rows = db.list_sessions_rich(
+                limit=100, order_by_last_active=True, sources=sorted(_LOCAL_SOURCES), compact_rows=True)
             peers, seen = [], {own["id"]}
             cutoff = time.time() - active_within_minutes * 60
             for row in rows:
@@ -144,18 +164,19 @@ def peer_sessions(active_within_minutes: int = _DEFAULT_ACTIVE_WITHIN_MINUTES, *
                     # A concurrently closed/archived or ineligible neighbor is not
                     # a failure of the entire discovery request.
                     continue
+                # Preserve only derived activity from the browse snapshot. Its
+                # stale profile/cwd/labels must not overwrite the revalidated row.
+                activity = [row.get(k) for k in ("last_active", "last_activity_at", "started_at")]
                 if row["id"] == sid:
-                    # list_sessions_rich includes transcript-derived last_active;
-                    # get_session alone only has the stored heartbeat/start time.
-                    row = {**row, **projected}
+                    activity.append(projected.get("last_active"))
                 if row["id"] in seen:
                     continue
                 if (own.get("profile_name") and row.get("profile_name")
                         and own["profile_name"] != row["profile_name"]):
                     continue
                 seen.add(row["id"])
-                active = _to_epoch(row.get("last_active") or row.get("last_activity_at") or row.get("started_at"))
-                if active is None or active < cutoff or (same_project and _project(row) != project):
+                active = max((_to_epoch(value) or 0 for value in activity), default=0)
+                if active < cutoff or (same_project and _project(row) != project):
                     continue
                 peers.append({"session_id": row["id"], "title": row.get("title"), "source": row.get("source"),
                               "cwd": row.get("cwd"), "git_repo_root": row.get("git_repo_root"),

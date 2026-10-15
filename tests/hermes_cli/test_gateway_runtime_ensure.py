@@ -437,6 +437,30 @@ def test_reserved_root_never_suppresses_a_standalone_profile_start(tmp_path, mon
     assert spawned == [home.resolve()]
 
 
+def test_ensure_reports_a_standalone_host_reason_for_an_unserved_named_profile(tmp_path, monkeypatch):
+    """A live standalone host cannot later add this profile, so do not wait on its root lock."""
+    from gateway import status
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_discovery as discovery
+
+    root = tmp_path / ".hermes"
+    home = root / "profiles" / "alpha"
+    home.mkdir(parents=True, mode=0o700)
+    monkeypatch.setattr(runtime, "_update_fenced", lambda homes: False)
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", lambda *a, **k: runtime.GatewayDiscovery("absent"))
+    monkeypatch.setattr(discovery, "missing_owner_state", lambda path: "starting")
+    monkeypatch.setattr(status, "read_runtime_status", lambda path: {
+        "gateway_state": "running",
+        "served_profiles": [],
+        "multiplex_standalone_reason": "duplicate Telegram token; run hermes gateway migrate --multiplex",
+    })
+    monkeypatch.setattr(status, "runtime_status_pid_is_live", lambda record: True)
+
+    result = runtime.ensure_gateway_runtime(home, timeout=1)
+
+    assert (result.state, result.reason_code) == ("inaccessible", "profile_parked")
+    assert result.detail == "duplicate Telegram token; run hermes gateway migrate --multiplex"
+
+
 @pytest.mark.platforms("linux", "macos")
 def test_dead_unmanaged_start_is_a_prompt_terminal_verdict(tmp_path, monkeypatch):
     """The one start this call requested exited without leaving an owner: report it with the

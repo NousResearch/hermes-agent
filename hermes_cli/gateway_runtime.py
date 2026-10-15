@@ -122,6 +122,27 @@ def _multiplexer_starting(home: Path) -> bool:
     return root is not None and missing_owner_state(root) == "starting"
 
 
+def _standalone_multiplexer_reason(home: Path) -> str | None:
+    """Return a live host's reason for not serving *home*, if it has one.
+
+    A held root lock ordinarily means that a named profile should wait for its
+    multiplexer.  A host which published a guard refusal is different: it is a
+    standalone gateway and can never add the named profile during that boot.
+    """
+    from hermes_cli.gateway_runtime_discovery import missing_owner_state
+    from hermes_cli.gateway_runtime_multiplex import implied_host_root
+
+    root = implied_host_root(home)
+    if root is None or missing_owner_state(root) != "starting":
+        return None
+    from gateway.status import read_runtime_status, runtime_status_pid_is_live
+    record = read_runtime_status(root / "gateway_state.json")
+    if not runtime_status_pid_is_live(record):
+        return None
+    reason = record.get("multiplex_standalone_reason") if isinstance(record, dict) else None
+    return str(reason)[:500] if isinstance(reason, str) and reason else None
+
+
 def _parked_by_multiplexer(payload: dict, home: Path) -> GatewayDiscovery | None:
     """A secondary the multiplexer could not serve (unusable store, home owned elsewhere) is
     published under ``parked_profiles`` (name -> reason). That is a terminal verdict for its
@@ -309,6 +330,8 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
                 requested = True
             if observed.state == "absent":
                 retiring = False
+            if observed.state == "absent" and not requested and (reason := _standalone_multiplexer_reason(home)):
+                return GatewayDiscovery("inaccessible", reason_code="profile_parked", detail=reason)
             # A default multiplexer that is still starting will serve this named profile; never
             # spawn a competing per-profile daemon while its reservation is pending.
             if observed.state == "absent" and not requested and _multiplexer_starting(home):

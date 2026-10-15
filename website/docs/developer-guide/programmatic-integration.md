@@ -83,7 +83,7 @@ On a successful truncating submit against a durable session, the `prompt.submit`
 
 ### Continuing a failed provider request on `prompt.retry`
 
-A retained provider rate-limit failure can carry `retry_token` on `message.complete` and on `session.resume.inflight`. Send `prompt.retry {session_id, retry_token}` to continue the durable context, including completed tool results, without adding user input or truncating history. The token is consumed once; busy retries refuse with `4009` and never enter the input queue. Explicit Regenerate still uses the rewind contract above.
+A retained provider rate-limit failure can carry `retry_token` on `message.complete` and on `session.resume.inflight`. Send `prompt.retry {session_id, retry_token}` to continue the durable context, including completed tool results, without adding user input or truncating history. The token is consumed once; busy retries refuse with `4009` on standalone serve or `4001 session_busy` on the canonical owner and never enter the input queue. Explicit Regenerate still uses the rewind contract above.
 
 The canonical `hermes-gateway-v1` owner supports this for Desktop (`source: gui`) sessions using the same retained agent. Its result is an `AdmissionStatus` receipt: execution runs through the durable FIFO, but continues the existing user row and skips inbound command/plugin dispatch. `session.resume.inflight` uses the same `user`/`retry_token` projection. Standalone TUI/serve returns `status: streaming`.
 

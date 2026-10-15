@@ -113,7 +113,7 @@ export function launcherTargetsInstallation(launcher: string, root: string): boo
 }
 
 /** The real install directory a launcher's `--version` reports, or null. */
-function launcherInstallDirectory(launcher: string, root?: string): string | null {
+export function launcherInstallDirectory(launcher: string, root?: string): string | null {
   try {
     // Node refuses to exec a .cmd directly (CVE-2024-27980), and `shell:true`
     // would hand an interpolated path to cmd.exe wholesale. Invoke cmd.exe

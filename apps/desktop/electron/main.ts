@@ -609,6 +609,7 @@ import {
   type UpdaterStrategy
 } from './updater'
 import {
+  launcherInstallDirectory,
   observeUpdaterHandoff,
   repairMacUpdaterHelper,
   resolveInstallationLauncher,
@@ -5005,6 +5006,19 @@ function writeDefaultProjectDir(dir) {
 
 const installedRuntimeGate = createInstalledRuntimeGate(process.env, rememberLog)
 
+// resolveHermesBackend runs once per surface (startup, TUI resume, config
+// refresh, pool backends), and a launcher's install directory cannot move
+// while this process lives, so probe each launcher path at most once.
+const launcherInstallRoots = new Map<string, string | undefined>()
+
+function launcherInstallRoot(launcher: string): string | undefined {
+  if (!launcherInstallRoots.has(launcher)) {
+    launcherInstallRoots.set(launcher, launcherInstallDirectory(launcher) ?? undefined)
+  }
+
+  return launcherInstallRoots.get(launcher)
+}
+
 async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHermesBackend> {
   const payload = bundledPayload(process.resourcesPath)
 
@@ -5103,7 +5117,12 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
             env: {},
             kind: 'command',
             shell: shellForProbe,
-            local: 'installed'
+            local: 'installed',
+            // ticketRuntimeFor() mints gateway tickets only from a python
+            // backend or a command backend that names its installation root
+            // (launcher probe cwd + PYTHONPATH), so pin the root the launcher
+            // itself reports (#138774).
+            root: launcherInstallRoot(hermesCommand)
           }
         }
 

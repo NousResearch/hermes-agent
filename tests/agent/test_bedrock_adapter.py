@@ -289,6 +289,29 @@ class TestConvertToolsToConverse:
         result = convert_tools_to_converse(tools)
         assert result[0]["toolSpec"]["inputSchema"]["json"] == original
 
+    def test_plugin_conditional_required_hint_is_stripped_only_at_top_level(self):
+        # #139065: a plugin tool's Pydantic ``allOf: [{if/then}]`` hint 400'd every Converse
+        # call. Only the root is the wall; nested combinators must reach Bedrock untouched.
+        from agent.bedrock_adapter import convert_tools_to_converse
+        nested = {"anyOf": [{"type": "string"}, {"type": "integer"}]}
+        params = {
+            "type": "object",
+            "properties": {"mode": {"type": "string"}, "target": nested},
+            "allOf": [{"if": {"properties": {"mode": {"const": "file"}}},
+                       "then": {"required": ["target"]}}],
+        }
+        plain = {"type": "object", "properties": {"q": {"type": "string"}}}
+        result = convert_tools_to_converse([
+            {"type": "function", "function": {"name": "core", "parameters": plain}},
+            {"type": "function", "function": {"name": "plugin_tool", "parameters": params}},
+        ])
+        core_schema = result[0]["toolSpec"]["inputSchema"]["json"]
+        plugin_schema = result[1]["toolSpec"]["inputSchema"]["json"]
+        assert not {"allOf", "anyOf", "oneOf"} & plugin_schema.keys()
+        assert plugin_schema["properties"]["target"] == nested
+        assert core_schema == plain
+        assert "allOf" in params  # caller's registry schema is not mutated
+
 
 # ---------------------------------------------------------------------------
 # Message conversion: OpenAI → Converse

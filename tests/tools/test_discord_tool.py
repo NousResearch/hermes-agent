@@ -844,6 +844,17 @@ class TestEditChannelPermissions:
         assert "SEND_MESSGES" in result["error"]
         mock_req.assert_not_called()
 
+    @patch("tools.discord_tool._discord_request")
+    def test_every_unknown_name_is_reported(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        result = json.loads(discord_admin_handler(
+            action="edit_channel_permissions", channel_id="1", overwrite_id="2",
+            allow="VIEW_CHANEL", deny="SEND_MESSGES"))
+        assert result["success"] is False
+        assert "VIEW_CHANEL" in result["error"]
+        assert "SEND_MESSGES" in result["error"]
+        mock_req.assert_not_called()
+
 
 class TestCreateChannel:
     @patch("tools.discord_tool._discord_request")

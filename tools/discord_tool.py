@@ -407,7 +407,8 @@ _TOPIC_CHANNEL_TYPES = frozenset(
 
 # _PERMISSION_FLAGS maps Discord permission name strings (uppercase, e.g. "SEND_MESSAGES")
 # to their bitfield integer values. Used by _parse_permission_flags to convert
-# comma-separated permission strings into the integer the API expects.
+# comma-separated permission strings into the integer the API expects, reporting
+# every name that is not in this table instead of dropping it.
 _PERMISSION_FLAGS = {
     "CREATE_INSTANT_INVITE": 0x1, "KICK_MEMBERS": 0x2, "BAN_MEMBERS": 0x4,
     "ADMINISTRATOR": 0x8, "MANAGE_CHANNELS": 0x10, "MANAGE_GUILD": 0x20,
@@ -429,26 +430,26 @@ _PERMISSION_FLAGS = {
 }
 
 
-def _parse_permission_flags(raw: str) -> int:
-    """Parse comma-separated permission names into a bitfield integer.
+def _parse_permission_flags(raw: str) -> "tuple[int, List[str]]":
+    """Bitfield for a comma-separated permission list, plus every unknown name.
 
-    Raises:
-        ValueError: an unknown name must fail loudly — a typo silently dropping
-            the bit would answer ``success: true`` while revoking nothing.
+    Unknown names are returned rather than dropped: a typo silently discarded
+    would answer ``success: true`` while revoking nothing.
     """
     if raw == "0":
-        return 0
+        return 0, []
     value = 0
+    unknown: List[str] = []
     for name in raw.split(","):
         name = name.strip().upper()
         if not name:
             continue
-        if name not in _PERMISSION_FLAGS:
-            raise ValueError(
-                f"Unknown permission name: {name}. Valid names: "
-                f"{', '.join(sorted(_PERMISSION_FLAGS))}")
-        value |= _PERMISSION_FLAGS[name]
-    return value
+        flag = _PERMISSION_FLAGS.get(name)
+        if flag is None:
+            unknown.append(name)
+        else:
+            value |= flag
+    return value, unknown
 
 
 def _existing_overwrite(token: str, channel_id: str, overwrite_id: str) -> Optional[Dict[str, Any]]:
@@ -615,19 +616,28 @@ def _edit_channel_permissions(
                      "resets the overwrite to no permissions and revokes permissions the "
                      "caller never mentioned."})
     type_int = 0 if (overwrite_type or "").strip().lower() == "role" else 1
-    try:
-        parsed_allow = _parse_permission_flags(allow) if allow else None
-        parsed_deny = _parse_permission_flags(deny) if deny else None
-    except ValueError as exc:
-        return json.dumps({"success": False, "error": str(exc)})
-    if parsed_allow is not None and parsed_deny is not None:
-        allow_bits, deny_bits = parsed_allow, parsed_deny
+    parsed_allow = _parse_permission_flags(allow) if allow else None
+    parsed_deny = _parse_permission_flags(deny) if deny else None
+    unknown: List[str] = []
+    if parsed_allow is not None:
+        unknown += parsed_allow[1]
+    if parsed_deny is not None:
+        unknown += parsed_deny[1]
+    if unknown:
+        return json.dumps({
+            "success": False,
+            "error": f"Unknown permission name(s): {', '.join(unknown)}. Valid names: "
+                     f"{', '.join(sorted(_PERMISSION_FLAGS))}."})
+    given_allow = parsed_allow[0] if parsed_allow is not None else None
+    given_deny = parsed_deny[0] if parsed_deny is not None else None
+    if given_allow is not None and given_deny is not None:
+        allow_bits, deny_bits = given_allow, given_deny
     else:
         existing = _existing_overwrite(token, channel_id, overwrite_id)
         existing_allow = int(existing.get("allow", "0") or 0) if existing else 0
         existing_deny = int(existing.get("deny", "0") or 0) if existing else 0
-        allow_bits = parsed_allow if parsed_allow is not None else existing_allow
-        deny_bits = parsed_deny if parsed_deny is not None else existing_deny
+        allow_bits = given_allow if given_allow is not None else existing_allow
+        deny_bits = given_deny if given_deny is not None else existing_deny
     body = {"allow": str(allow_bits), "deny": str(deny_bits), "type": type_int}
     _discord_request("PUT", f"/channels/{channel_id}/permissions/{overwrite_id}", token, body=body)
     return json.dumps({
@@ -655,11 +665,11 @@ _ACTION_MANIFEST = [
     ("add_role", _add_role, "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", _remove_role, "(guild_id, user_id, role_id)", "remove a role"),
     ("create_channel", _create_channel, "(guild_id, name)", "create a channel; optional channel_type, topic, parent_id"),
-    ("edit_channel", _edit_channel, "(channel_id)", "edit channel; optional name, topic, parent_id"),
+    ("edit_channel", _edit_channel, "(channel_id)", "edit channel; optional name, topic, parent_id (empty values are omitted — a field cannot be cleared)"),
     ("delete_channel", _delete_channel, "(channel_id)", "delete a channel"),
     ("create_role", _create_role, "(guild_id, name)", "create a role; optional color, hoist, mentionable"),
-    ("edit_role", _edit_role, "(guild_id, role_id)", "edit a role; optional name, color, hoist, mentionable"),
-    ("edit_server", _edit_server, "(guild_id)", "edit server; optional name, verification_level"),
+    ("edit_role", _edit_role, "(guild_id, role_id)", "edit a role; optional name, color, hoist, mentionable (empty values are omitted — a field cannot be cleared)"),
+    ("edit_server", _edit_server, "(guild_id)", "edit server; optional name, verification_level (absent values are omitted — a field cannot be cleared)"),
     ("edit_channel_permissions", _edit_channel_permissions, "(channel_id, overwrite_id)", "edit permission overwrites; needs allow and/or deny (never both omitted)"),
 ]
 _ACTIONS = {name: fn for name, fn, _sig, _desc in _ACTION_MANIFEST}

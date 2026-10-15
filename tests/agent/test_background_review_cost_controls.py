@@ -249,6 +249,29 @@ def test_snapshot_overlay_carries_snapshot_request_shaping():
     assert kwargs["reasoning_config"] == {"effort": "low"}
 
 
+def test_explicit_pin_to_live_fallback_model_wins_over_pending_primary():
+    """An explicit auxiliary.background_review pin is a cost control (run the review
+    on a cheaper model). During a fallback window the pin must stay pinned — the
+    pending-primary overlay must never rewrite it onto the main model."""
+    agent = _fallback_agent()
+    cfg = {"auxiliary": {"background_review": {"provider": "anthropic", "model": "claude-haiku-4.5"}}}
+    rt = _resolve(agent, cfg)
+    assert rt["routed"] is False
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-haiku-4.5"
+    assert rt["api_key"] == "fallback-key"
+
+
+def test_side_question_path_keeps_live_runtime_during_fallback():
+    """/btw is user-initiated mid-turn: the pending-primary overlay is scoped to the
+    background-review path (write_origin) and does not rewrite the side-question fork."""
+    agent = _fallback_agent()
+    rt = _resolve(agent, write_origin="side_question")
+    assert rt["provider"] == "anthropic"
+    assert rt["model"] == "claude-haiku-4.5"
+    assert rt["api_key"] == "fallback-key"
+
+
 # ---------------------------------------------------------------------------
 # _digest_history — routed-path compact replay
 # ---------------------------------------------------------------------------

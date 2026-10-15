@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestConnection } from '@/api/client'
 import { markSessionCreatedThisRun } from '@/app/session/hooks/use-session-actions/created-this-run'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -479,6 +480,97 @@ describe('active transcript refresh', () => {
     expect(updateSessionState).toHaveBeenCalledWith('runtime-a', expect.any(Function), 'stored-a')
     expect(updateSessionState).toHaveBeenCalledWith('runtime-b', expect.any(Function), 'stored-b')
     expect(updateSessionState).toHaveBeenCalledWith('runtime-local', expect.any(Function), 'stored-local')
+  })
+
+  it('stops re-polling a tile whose stored session 404s on the serving connection (#128071)', async () => {
+    const runtimeId = 'runtime-gone-tile'
+    const storedId = 'stored-gone-tile'
+    publishSessionState(runtimeId, createClientSessionState(storedId))
+    vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error('404: {"detail":"Session not found"}'))
+
+    const updateSessionState = vi.fn()
+    const signatureRef = { current: new Map<string, string>() }
+    const requestSequenceRef = { current: 0 }
+
+    const reconcile = () =>
+      reconcileTileTranscriptsForTest({
+        tiles: [{ runtimeId, storedSessionId: storedId }],
+        requestSequenceRef,
+        signatureRef,
+        updateSessionState
+      })
+
+    await reconcile()
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+
+    // The stored id is not on this backend and no tick can change that — the
+    // next gap-limited pass must not fire another doomed request.
+    vi.mocked(getLatestSessionMessages).mockClear()
+    await reconcile()
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+  })
+
+  it('keeps retrying a tile whose read fails transiently (a 404 is the only latched miss)', async () => {
+    const runtimeId = 'runtime-cold-tile'
+    const storedId = 'stored-cold-tile'
+    publishSessionState(runtimeId, createClientSessionState(storedId))
+    // No warm backend (#103375) — a retry-next-tick condition, never a latch.
+    vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error('Passive read: no warm backend for "local::default"'))
+
+    const updateSessionState = vi.fn()
+    const signatureRef = { current: new Map<string, string>() }
+    const requestSequenceRef = { current: 0 }
+
+    const reconcile = () =>
+      reconcileTileTranscriptsForTest({
+        tiles: [{ runtimeId, storedSessionId: storedId }],
+        requestSequenceRef,
+        signatureRef,
+        updateSessionState
+      })
+
+    await reconcile()
+    await reconcile()
+    expect(getLatestSessionMessages).toHaveBeenCalledTimes(2)
+  })
+
+  it('re-reads a latched 404 tile once the ambient connection changes', async () => {
+    const runtimeId = 'runtime-elsewhere-tile'
+    const storedId = 'stored-elsewhere-tile'
+    publishSessionState(runtimeId, createClientSessionState(storedId))
+
+    const updateSessionState: Parameters<typeof reconcileTileTranscriptsForTest>[0]['updateSessionState'] = vi.fn(
+      (_sessionId, updater) => updater({} as Parameters<typeof updater>[0])
+    )
+
+    const signatureRef = { current: new Map<string, string>() }
+    const requestSequenceRef = { current: 0 }
+
+    const reconcile = () =>
+      reconcileTileTranscriptsForTest({
+        tiles: [{ runtimeId, storedSessionId: storedId }],
+        requestSequenceRef,
+        signatureRef,
+        updateSessionState
+      })
+
+    try {
+      // 404 while the local pool is the serving connection...
+      vi.mocked(getLatestSessionMessages).mockRejectedValueOnce(new Error('404: {"detail":"Session not found"}'))
+      await reconcile()
+      expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+
+      // ...the session lives on a registered remote gateway: once that
+      // connection is active the latch no longer applies and the tile reads.
+      setApiRequestConnection('remote-gateway')
+      vi.mocked(getLatestSessionMessages).mockResolvedValueOnce(transcript('answer from the owning backend', storedId) as never)
+      vi.mocked(getLatestSessionMessages).mockClear()
+      await reconcile()
+      expect(getLatestSessionMessages).toHaveBeenCalledTimes(1)
+      expect(updateSessionState).toHaveBeenCalledWith(runtimeId, expect.any(Function), storedId)
+    } finally {
+      setApiRequestConnection(null)
+    }
   })
 
   it('skips the tile fetch entirely when nothing changed (signature-gated)', async () => {

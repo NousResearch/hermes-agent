@@ -9,7 +9,7 @@ def test_entra_preflight_selects_and_preserves_account_options(monkeypatch, sour
     from hermes_cli import model_setup_flows_azure as flow
 
     current = {"credential_source": "azure_cli", "scope": "https://audience.example/.default",
-               "tenant_id": "tenant-a", "subscription": "subscription-a"}
+               "tenant_id": "tenant-a"}
     answers = iter(["2", "", ""] if source == "azure_cli" else ["1"])
     monkeypatch.setattr(flow, "_ask", lambda *args, **kwargs: next(answers))
     monkeypatch.setattr(adapter, "has_azure_identity_installed", lambda: True)

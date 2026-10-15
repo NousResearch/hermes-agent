@@ -2,7 +2,11 @@ import { capabilityScoped, hermesApi, type ProfileScope } from './client'
 
 export type FoundryCredential =
   | { credential_source: 'default'; scope: string }
-  | { credential_source: 'azure_cli'; scope: string; tenant_id: string; subscription: string }
+  | ({ credential_source: 'azure_cli'; scope: string } & (
+      | { tenant_id?: never; subscription?: never }
+      | { tenant_id: string; subscription?: never }
+      | { tenant_id?: never; subscription: string }
+    ))
 
 export type FoundryAuth = { kind: 'api_key'; api_key?: string } | { kind: 'entra_id'; entra: FoundryCredential }
 

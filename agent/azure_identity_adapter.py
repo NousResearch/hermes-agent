@@ -90,6 +90,8 @@ class EntraIdentityConfig:
             raise ValueError("Unknown Entra credential source. Choose default or azure_cli.")
         for key in ("tenant_id", "subscription"):
             object.__setattr__(self, key, str(getattr(self, key) or "").strip())
+        if self.tenant_id and self.subscription:
+            raise ValueError("Azure CLI accepts a tenant or a subscription selector, not both.")
         if self.credential_source == "default" and (self.tenant_id or self.subscription):
             raise ValueError("Entra tenant_id and subscription selectors require the azure_cli credential source.")
         object.__setattr__(self, "scope", str(self.scope or "").strip() or SCOPE_AI_AZURE_DEFAULT)

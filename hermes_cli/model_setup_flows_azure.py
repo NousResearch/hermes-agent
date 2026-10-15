@@ -71,13 +71,19 @@ def _azure_entra_preflight(current_entra: dict):
     entra_overrides = {k: current_entra[k] for k in ("scope",) if current_entra.get(k)}
     if (choice or default_source) == "2":
         entra_overrides["credential_source"] = "azure_cli"
-        for key, label in (("tenant_id", "Tenant ID"), ("subscription", "Subscription name or ID")):
-            value = _ask(f"{label} [{current_entra.get(key) or 'Azure CLI default'}]: ", raw=True)
+        _say("Azure CLI account:", "  1. Azure CLI default", "  2. Tenant ID", "  3. Subscription name or ID")
+        default_account = "2" if current_entra.get("tenant_id") else "3" if current_entra.get("subscription") else "1"
+        account = _ask(f"Account selection [1/2/3] ({default_account}): ", raw=True)
+        if account is None:
+            return None
+        selected_key = {"2": "tenant_id", "3": "subscription"}.get(account or default_account)
+        if selected_key:
+            previous = current_entra.get(selected_key) or ""
+            value = _ask(f"{selected_key} [{previous or 'Azure CLI default'}]: ", raw=True)
             if value is None:
                 return None
-            selected = value or current_entra.get(key)
-            if selected:
-                entra_overrides[key] = selected
+            if value or previous:
+                entra_overrides[selected_key] = value or previous
     _config = EntraIdentityConfig.from_dict(entra_overrides)
     entra_scope = _config.scope
     _say("", "◐ Probing Microsoft Entra ID credentials (up to 10s)...")

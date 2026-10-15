@@ -102,7 +102,7 @@ def _delete(db, conn, session_id, payload):
 
 
 def _rewind(db, conn, session_id, payload):
-    from hermes_state_messages import REVIEW_LEASE_YIELD
+    from hermes_state_write_guards import REVIEW_LEASE_YIELD
     from hermes_state_mutation_guards import require_idle
     from hermes_state_mutation_transcript import rewind_in_transaction
     from hermes_state_local_lineage import local_physical_target

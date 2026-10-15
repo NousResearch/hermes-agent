@@ -4,7 +4,7 @@ import uuid
 
 from hermes_state_local import POLICY_PREFIX
 from hermes_state_local_lineage import validate_local_lineage
-from hermes_state_messages import REVIEW_LEASE_IGNORE
+from hermes_state_write_guards import REVIEW_LEASE_IGNORE
 from hermes_state_mutation_guards import require_idle
 from hermes_state_runtime import RuntimeStoreError, _json
 from hermes_state_titles import lineage_title_on_conn

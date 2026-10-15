@@ -3,7 +3,7 @@
 A review fork holds the session's ``session_turn_leases`` row while it decodes an immutable
 snapshot with persistence disabled, so its lease can never justify answering a user mutation
 ``session_busy`` for the review's lifetime. The canonical receipts carry the same policy the
-storage facade applies (``hermes_state_messages.REVIEW_LEASE_*``): a rewind asks the holder to
+storage facade applies (``hermes_state_write_guards.REVIEW_LEASE_*``): a rewind asks the holder to
 yield (the rewrite invalidated its replay basis); a reset or branch publishes a new physical
 target and leaves the review beside the closed transcript; a delete removes the fork's replay
 basis outright and asks it to yield the same way, over the canonical receipt and the facade's

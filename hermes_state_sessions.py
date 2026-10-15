@@ -1714,7 +1714,7 @@ class SessionSessionsMixin:
             ) > 0
         removed_ids: list[str] = []
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
-        from hermes_state_messages import REVIEW_LEASE_YIELD
+        from hermes_state_write_guards import REVIEW_LEASE_YIELD
         def _do(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 return False
@@ -1837,7 +1837,7 @@ class SessionSessionsMixin:
         if not unique_ids:
             return 0
         removed_ids: list[str] = []
-        from hermes_state_messages import REVIEW_LEASE_IGNORE, REVIEW_LEASE_YIELD
+        from hermes_state_write_guards import REVIEW_LEASE_IGNORE, REVIEW_LEASE_YIELD
         def _do(conn):
             existing = [row["id"] for chunk in _id_chunks(unique_ids) for row in conn.execute(
                 f"SELECT id FROM sessions WHERE id IN ({_session_ids_placeholders(chunk)})", chunk,

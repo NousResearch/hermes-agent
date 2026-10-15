@@ -29,9 +29,9 @@ def _require_transcript_unleased(db, conn, sid, *, review_lease_policy=None):
     # target; its live successor (also in session_ids) carries the lease/lock.
     if _ended_by_compression(conn.execute(_ENDED_ROW_SQL, (sid,)).fetchone()):
         return
-    # ``review_lease_policy`` (``hermes_state_messages.REVIEW_LEASE_*``) is what a live
+    # ``review_lease_policy`` (``hermes_state_write_guards.REVIEW_LEASE_*``) is what a live
     # BACKGROUND-REVIEW holder means to this mutation; a foreground holder always refuses.
-    from hermes_state_messages import REVIEW_LEASE_REFUSE
+    from hermes_state_write_guards import REVIEW_LEASE_REFUSE
     db._check_transcript_write_guards(conn, sid, None,
         reject_active_turn_lease=True, reject_active_compression_lock=True,
         review_lease_policy=review_lease_policy or REVIEW_LEASE_REFUSE)

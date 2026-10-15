@@ -1,5 +1,6 @@
 """Transaction-scoped rewind shared by storage and canonical mutations."""
-from hermes_state_messages import _ACTIVE_IDS_SQL, _SET_COUNTERS_SQL, _placeholders, REVIEW_LEASE_YIELD
+from hermes_state_messages import _ACTIVE_IDS_SQL, _SET_COUNTERS_SQL, _placeholders
+from hermes_state_write_guards import REVIEW_LEASE_YIELD
 
 
 def rewind_in_transaction(self, conn, session_id, target_message_id, *,

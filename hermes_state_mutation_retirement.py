@@ -167,7 +167,7 @@ def retire_prunable(conn, session_ids):
 
 
 def delete_in_transaction(db, conn, session_id, payload):
-    from hermes_state_messages import REVIEW_LEASE_YIELD
+    from hermes_state_write_guards import REVIEW_LEASE_YIELD
     from hermes_state_mutation_guards import require_idle, delete_targets
     targets = delete_targets(conn, session_id)
     # A background review of a deleted transcript is asked to yield, never refused: the delete

@@ -174,3 +174,49 @@ it('projects a compressed tip snapshot onto the lineage key the panel reads', ()
     $sessions.set([])
   }
 })
+
+// The tip->root row can load after a snapshot was already journaled under the tip. The fence that
+// snapshot recorded must follow the card to the root, or a delayed older empty one hides it.
+it('late lineage discovery keeps the ordering fence: an older empty snapshot leaves the card', () => {
+  try {
+    reconcilePendingSubmissions('tip', [{ admission_id: 'x', status: 'queued', user: 'waiting' }], { epoch: 'e', sequence: 10 })
+    expect(getQueuedPrompts('tip').map(entry => entry.id)).toEqual(['x'])
+
+    $sessions.set([{ id: 'tip', _lineage_root_id: 'root' } as SessionInfo])
+    migrateQueuedPrompts('tip', 'root')
+
+    reconcilePendingSubmissions('tip', [], { epoch: 'e', sequence: 7 })
+    expect(getQueuedPrompts('root').map(entry => [entry.id, entry.serverStatus])).toEqual([['x', 'queued']])
+    expect(readPendingSubmissions('root').x?.status).toBe('queued')
+
+    // A current empty snapshot still retires it.
+    reconcilePendingSubmissions('tip', [], { epoch: 'e', sequence: 12 })
+    expect(getQueuedPrompts('root')).toEqual([])
+  } finally {
+    $sessions.set([])
+  }
+})
+
+// Submit tracks under the stored id it targets, which can be the tip. Its stronger status and the
+// display text only it knows must still meet the root-projected snapshots.
+it('a tip-keyed tracked receipt keeps its status, text and Discard across root projection', () => {
+  try {
+    trackPendingSubmission('tip', { id: 'u', text: 'full prompt', displayText: '/cmd', status: 'unknown' })
+    $sessions.set([{ id: 'tip', _lineage_root_id: 'root' } as SessionInfo])
+
+    // A replayed `started` is stale for an admission already answered `unknown`.
+    reconcilePendingSubmissions('tip', [{ admission_id: 'u', status: 'started', user: 'full prompt' }], { epoch: 'e', sequence: 1 })
+    reconcilePendingSubmissions('tip', [{ admission_id: 'u', status: 'started', user: 'full prompt' }], { epoch: 'e', sequence: 2 })
+
+    expect(getQueuedPrompts('root').map(({ id, text, displayText, serverStatus }) => ({ id, text, displayText, serverStatus })))
+      .toEqual([{ id: 'u', text: 'full prompt', displayText: '/cmd', serverStatus: 'unknown' }])
+    expect(readPendingSubmissions('root').u).toMatchObject({ status: 'unknown', displayText: '/cmd' })
+    expect(readPendingSubmissions('tip')).toEqual({})
+
+    // Tracking once the lineage is known lands where reconciliation reads.
+    trackPendingSubmission('tip', { id: 'v', text: 'next', displayText: '/next' })
+    expect(readPendingSubmissions('root').v).toMatchObject({ displayText: '/next' })
+  } finally {
+    $sessions.set([])
+  }
+})

@@ -353,6 +353,31 @@ def _placeholders(items) -> str:
     return ",".join("?" for _ in range(items if isinstance(items, int) else len(items)))
 
 
+def _source_match_clause(sources, local_created_sources=None) -> tuple[str, list]:
+    """``sessions s`` source predicate, applied before LIMIT/OFFSET.
+
+    With ``local_created_sources``, a ``source='local'`` row matches only when
+    ``created_source`` is one of those surfaces. Every other requested source
+    matches on its own label, whatever ``created_source`` says. A placeholder
+    ``created_source='unknown'`` is not a surface: it stays unmatched until an
+    upsert stamps the real creator (#138838, #139058).
+    """
+    labels = list(sources or [])
+    if not labels:
+        return "", []
+    surfaces = [item for item in (local_created_sources or ()) if item]
+    if not surfaces:
+        return f"s.source IN ({_placeholders(labels)})", labels
+    non_local = [item for item in labels if item != "local"]
+    local_sql = f"(s.source = 'local' AND s.created_source IN ({_placeholders(surfaces)}))"
+    if not non_local:
+        return local_sql, list(surfaces)
+    return (
+        f"(s.source IN ({_placeholders(non_local)}) OR {local_sql})",
+        [*non_local, *surfaces],
+    )
+
+
 # Ids per ``IN (?,...)`` list: SQLite caps bound parameters at SQLITE_MAX_VARIABLE_NUMBER (999 on builds
 # < 3.32, 32766 after); a bulk prune of a cron-heavy store bound tens of thousands of ids into one list and
 # died with "too many SQL variables". Every IN-list over session ids goes through ``_id_chunks``.
@@ -802,6 +827,13 @@ CREATE INDEX IF NOT EXISTS idx_sessions_tool_names
 -- a small candidate set before compression-chain and preview hydration.
 CREATE INDEX IF NOT EXISTS idx_sessions_effective_activity
     ON sessions(COALESCE(last_activity_at, started_at) DESC, started_at DESC);
+-- CLI/TUI listings match gateway rows stored as source='local' by created_source,
+-- before LIMIT. created_source is reconciled onto legacy DBs, so this index lives
+-- here rather than in SCHEMA_SQL. A source-only index would walk every local row
+-- (Desktop and TUI included) to find one surface.
+CREATE INDEX IF NOT EXISTS idx_sessions_local_created_started
+    ON sessions(created_source, started_at DESC)
+    WHERE source = 'local';
 """
 
 

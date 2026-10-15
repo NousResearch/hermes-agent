@@ -119,7 +119,7 @@ def _bootstrap(monkeypatch, tmp_path, db):
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "fake"}
     )
     monkeypatch.setattr(
         "agent.model_metadata.get_model_context_length",

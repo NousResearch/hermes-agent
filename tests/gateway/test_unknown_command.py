@@ -107,7 +107,7 @@ async def test_unknown_slash_command_returns_guidance(monkeypatch):
     )
 
     monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"}
     )
 
     result = await runner._handle_message(_make_event("/definitely-not-a-command"))
@@ -162,7 +162,7 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
     runner._handle_reload_mcp_command = _noop_reload  # type: ignore[attr-defined]
 
     monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"}
     )
 
     result = await runner._handle_message(_make_event("/reload_mcp"))
@@ -204,7 +204,7 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     runner.hooks.emit_collect = AsyncMock(side_effect=_emit_collect)
 
     monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"}
     )
     from hermes_cli import plugins as _plugins_mod
 
@@ -251,7 +251,7 @@ async def test_sync_plugin_command_runs_off_loop_thread(monkeypatch):
         lambda name: _blocking_handler if name == "slow-api" else None,
     )
     monkeypatch.setattr(
-        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda target_model=None: {"api_key": "***"}
     )
 
     result = await runner._handle_message(_make_event("/slow-api arg"))

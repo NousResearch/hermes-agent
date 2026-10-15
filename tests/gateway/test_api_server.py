@@ -220,7 +220,7 @@ class TestAdapterInit:
         monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
         monkeypatch.setattr(
             "gateway.run._resolve_runtime_agent_kwargs",
-            lambda: {
+            lambda target_model=None: {
                 "provider": "openai-codex",
                 "base_url": "https://example.test/v1",
                 "api_mode": "codex_responses",
@@ -2571,7 +2571,7 @@ def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
     monkeypatch.setattr("run_agent.AIAgent", fake_agent_cls)
     monkeypatch.setattr(
         "gateway.run._resolve_runtime_agent_kwargs",
-        lambda: {
+        lambda target_model=None: {
             "provider": "openrouter",
             "api_key": "sk-global",
             "base_url": "https://openrouter.ai/api/v1",
@@ -3022,7 +3022,7 @@ class TestCreateAgentModelRecovery:
         _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
         monkeypatch.setattr(
             "gateway.run._resolve_runtime_agent_kwargs",
-            lambda: {"provider": "openai-codex", "base_url": "https://example.test/v1",
+            lambda target_model=None: {"provider": "openai-codex", "base_url": "https://example.test/v1",
                      "api_mode": "codex_responses"},
         )
         monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
@@ -3068,7 +3068,7 @@ class TestCreateAgentModelRecovery:
         monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
         monkeypatch.setattr(
             "gateway.run._resolve_runtime_agent_kwargs",
-            lambda: {"provider": None, "base_url": None, "api_mode": None},
+            lambda target_model=None: {"provider": None, "base_url": None, "api_mode": None},
         )
         adapter._create_agent(session_id="another-session", gateway_session_key="stable-chan-1")
         assert captured[1]["model"] == "minimax/minimax-m3"
@@ -3126,7 +3126,7 @@ class TestCreateAgentModelRecovery:
         monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
         monkeypatch.setattr(
             "gateway.run._resolve_runtime_agent_kwargs",
-            lambda: {"provider": None, "base_url": None, "api_mode": None},
+            lambda target_model=None: {"provider": None, "base_url": None, "api_mode": None},
         )
         adapter._create_agent(session_id="s1", gateway_session_key="ch")
 
@@ -3163,7 +3163,7 @@ class TestCreateAgentModelRecovery:
         monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "")
         monkeypatch.setattr(
             "gateway.run._resolve_runtime_agent_kwargs",
-            lambda: {"provider": None, "base_url": None, "api_mode": None},
+            lambda target_model=None: {"provider": None, "base_url": None, "api_mode": None},
         )
         adapter._create_agent(session_id="s2", gateway_session_key="ch")
         assert captured[1]["model"] == "anthropic/claude-opus-4.6"

@@ -1,0 +1,85 @@
+"""Completion evidence gate shared by both Kanban lifecycle surfaces.
+
+The CLI (``hermes kanban complete`` / ``request-review`` in ``hermes_cli/kanban.py``) and the
+worker tools (``kanban_complete`` / ``kanban_request_review`` in ``tools/kanban_tools.py``) each
+call the goal judge before a terminal handoff. This module owns the one decision both of them
+must make identically: *which cards are judged at all*.
+
+``kanban.evidence_gate`` in ``config.yaml``:
+
+``goal_mode`` (default)
+    Only ``goal_mode`` cards are judged — exactly the upstream behaviour.
+``verify_line``
+    ``goal_mode`` cards, plus any card whose body carries a ``verify:`` line (a line that starts,
+    after optional whitespace, with ``verify:`` in any casing). Lines inside fenced code blocks are
+    quoted material, not the card's own contract, and do not count.
+``all``
+    Every card.
+
+An unknown value logs a warning and falls back to the default, so a typo never wedges the board.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
+SCOPES = ("goal_mode", "verify_line", "all")
+DEFAULT_SCOPE = "goal_mode"
+
+_VERIFY_LINE = re.compile(r"^\s*verify:", re.IGNORECASE)
+_FENCE = re.compile(r"^\s*(```|~~~)")
+
+
+def configured_scope() -> str:
+    """``kanban.evidence_gate`` from config, normalised; the default on any problem."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        kanban_cfg = (load_config_readonly() or {}).get("kanban") or {}
+        raw = kanban_cfg.get("evidence_gate") if isinstance(kanban_cfg, dict) else None
+    except Exception:
+        # The gate runs on every terminal handoff; an unreadable config must not block them.
+        logger.warning("kanban.evidence_gate: config unreadable; using %r", DEFAULT_SCOPE,
+                       exc_info=True)
+        return DEFAULT_SCOPE
+    if raw is None:
+        return DEFAULT_SCOPE
+    scope = str(raw).strip().lower()
+    if scope in SCOPES:
+        return scope
+    logger.warning("kanban.evidence_gate=%r is not one of %s; using %r", raw, SCOPES, DEFAULT_SCOPE)
+    return DEFAULT_SCOPE
+
+
+def has_verify_line(body: Optional[str]) -> bool:
+    """True iff ``body`` has a ``verify:`` line outside fenced code blocks."""
+    fence: Optional[str] = None
+    for line in (body or "").splitlines():
+        marker = _FENCE.match(line)
+        if marker:
+            if fence is None:
+                fence = marker.group(1)
+            elif marker.group(1) == fence:
+                fence = None
+            continue
+        if fence is None and _VERIFY_LINE.match(line):
+            return True
+    return False
+
+
+def gate_applies(task: Any, scope: Optional[str] = None) -> bool:
+    """Whether a terminal handoff of ``task`` must pass the evidence judge."""
+    if task is None:
+        return False
+    if getattr(task, "goal_mode", False):
+        return True
+    scope = scope or configured_scope()
+    if scope == "all":
+        return True
+    if scope == "verify_line":
+        return has_verify_line(getattr(task, "body", None))
+    return False

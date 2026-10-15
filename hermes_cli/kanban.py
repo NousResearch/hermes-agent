@@ -837,7 +837,10 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     disambiguates the guidance the caller gives the worker (``continue`` = not done yet, ``blocked`` =
     judged unachievable — see #100954).
     """
-    if task is None or not task.goal_mode:
+    from hermes_cli.kanban_evidence_gate import gate_applies
+
+    # Scope is ``kanban.evidence_gate`` (default ``goal_mode`` = upstream); shared with the tool surface.
+    if not gate_applies(task):
         return ("done", None)
     try:
         from agent.auxiliary_client import get_text_auxiliary_client

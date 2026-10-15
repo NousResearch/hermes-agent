@@ -488,7 +488,10 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
     review before acceptance criteria are met. ``blocked`` gets its own
     guidance; any other non-``done`` verdict gets the ``continue`` guidance.
     A broken judge fails open (logged) so it cannot permanently wedge work."""
-    if not task or not task.goal_mode or not _goal_judge_available():
+    from hermes_cli.kanban_evidence_gate import gate_applies
+
+    # Scope is ``kanban.evidence_gate`` (default ``goal_mode`` = upstream); shared with the CLI surface.
+    if not gate_applies(task) or not _goal_judge_available():
         return
     try:
         # Headless gate runs outside any agent turn: bind the per-task relay-affinity scope

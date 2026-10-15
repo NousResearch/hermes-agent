@@ -759,6 +759,23 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
     _is_native_anthropic = agent.provider == "anthropic"
     effective_key = api_key or (resolve_anthropic_token(model=getattr(agent, "model", None)) if _is_native_anthropic else None) or ""
+    if not effective_key and not _is_native_anthropic:
+        # A key-less non-native provider still needs its OWN credential: workers that construct
+        # the agent without a launch key (Kanban tasks, #139155) otherwise reached the SDK with
+        # ``api_key=""`` and every request died on ``Authorization: Bearer ``. Resolve the key
+        # through the same router the OpenAI-wire branch uses (custom_providers[].key_env /
+        # api_key, provider env vars, the credential pool). The Anthropic token is deliberately
+        # not consulted — see #1739 above.
+        try:
+            from agent.auxiliary_client import resolve_provider_client
+            _routed, _ = resolve_provider_client(
+                agent.provider or "", model=getattr(agent, "model", None), raw_codex=True)
+            _routed_key = getattr(_routed, "api_key", None)
+            if isinstance(_routed_key, str) and _routed_key:
+                effective_key = _routed_key
+        except Exception:
+            logger.debug("anthropic_messages: router key fallback for %s failed",
+                         agent.provider, exc_info=True)
 
     # MiniMax OAuth tokens live ~15 min and the SDK freezes api_key at construction, so use a
     # callable provider: build_anthropic_client mints a fresh bearer per request (re-reading

@@ -85,7 +85,9 @@ truncated or the first paragraph only.
   Chain them through `reddit-reading`, which waits out the window, when you need more
   than one Reddit call.
 - Dates: RSS `pubDate` is RFC 822 and Atom uses ISO 8601; the script normalises both to
-  UTC. Feeds that omit dates sort to the bottom and are dropped by `--since`.
+  UTC. `--since` excludes entries whose publication date is missing or unparseable (valid
+  entries still come through); without `--since` an unparseable date is preserved verbatim
+  and undated entries sort to the bottom.
 - Some feeds are Cloudflare-fronted and 403 non-browser clients; `blocked-page-recovery`
   handles that class.
 

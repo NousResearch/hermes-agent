@@ -4086,6 +4086,7 @@ export interface Translations extends NoticeTranslations {
       goForward: string
       sendEdited: string
       attachingFile: string
+      quoteInChat: string
     }
     approval: {
       gatewayDisconnected: string

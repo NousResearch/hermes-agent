@@ -347,6 +347,8 @@ def test_large_codex_lifecycle_only_stream_hits_attempt_progress_budget(tmp_path
     from agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
+    agent._consecutive_stale_streams = 1
+    monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "2")
     _shorten_implicit_idle_watchdog(monkeypatch, h, ttfb_timeout=0.9, progress_timeout=0.9)
     closes = []
 
@@ -364,6 +366,9 @@ def test_large_codex_lifecycle_only_stream_hits_attempt_progress_budget(tmp_path
 
     assert time.monotonic() - started < 1.5
     assert "codex_progress_kill" in closes
+    assert h._stale_streak(agent) == 2
+    with pytest.raises(RuntimeError, match="2 consecutive stale attempts"):
+        h.interruptible_api_call(agent, {"model": "gpt-5.6-sol", "input": "x" * 40_004})
 
 
 @pytest.mark.parametrize(
@@ -376,6 +381,8 @@ def test_event_stale_phase_is_scoped_to_physical_stream_attempt(
     from agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
+    agent._consecutive_stale_streams = 1
+    monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "2")
     _shorten_implicit_idle_watchdog(monkeypatch, h)
     monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "2")
     monkeypatch.setenv("HERMES_CODEX_TTFB_STRICT", "1")
@@ -430,9 +437,15 @@ def test_event_stale_phase_is_scoped_to_physical_stream_attempt(
         )
         assert response.output_text == "done"
         assert attempts["count"] == (1 if mode == "initial_gap" else 2)
+        assert h._stale_streak(agent) == 0
     else:
         error_match = "no parsed stream event" if mode == "retry_no_event" else "no SSE events"
         with pytest.raises(TimeoutError, match=error_match):
+            h.interruptible_api_call(
+                agent, {"model": "gpt-5.6-sol", "input": "x" * 40_004}
+            )
+        assert h._stale_streak(agent) == 2
+        with pytest.raises(RuntimeError, match="2 consecutive stale attempts"):
             h.interruptible_api_call(
                 agent, {"model": "gpt-5.6-sol", "input": "x" * 40_004}
             )

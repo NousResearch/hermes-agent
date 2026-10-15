@@ -100,6 +100,12 @@ def _submit_fingerprint(session_id, text, attachments):
     return session_id, digest.hexdigest()
 
 
+def _tools_changed_notice(payload):
+    """The owner re-froze this session's editor MCP tools (a changed config or changed schemas)."""
+    servers = ", ".join(payload.get("mcp_servers") or []) or "none"
+    return f"Editor MCP tools changed (servers: {servers}); the new tool list applies from the next turn.\n"
+
+
 class GatewayACPAgent(acp.Agent):
     def __init__(self):
         self._conn = None
@@ -321,6 +327,7 @@ class GatewayACPAgent(acp.Agent):
     async def _resume(self, cwd, held_id, mcp_servers):
         client = await self._client()
         from acp_adapter.catalog import logical_session_id
+        from hermes_cli.gateway_client import GatewayRPCError
         session_id = await asyncio.to_thread(logical_session_id, self._home / "state.db", held_id)
         # The latest load names the id this editor addresses the conversation by.
         self._aliases = {held: sid for held, sid in self._aliases.items() if sid != session_id}
@@ -338,7 +345,15 @@ class GatewayACPAgent(acp.Agent):
             if "acp-session-mcp-v1" not in descriptor.get("capabilities", []):
                 raise GatewayClientError("acp_mcp_policy_unavailable")
             resume_params['editor'] = {'mcp_servers': [s.model_dump(by_alias=True) for s in mcp_servers]}
-        snapshot = await client.rpc("session.resume", session_id=session_id, **resume_params)
+        try:
+            snapshot = await client.rpc("session.resume", session_id=session_id, **resume_params)
+        except GatewayRPCError as exc:
+            if str(exc) != "acp_mcp_policy_conflict":
+                raise
+            # The editor's MCP config changed: the owner re-binds the session's servers (control
+            # capability, idle only), as the workspace move above, instead of refusing the thread.
+            await self._rebind_editor_mcp(client, session_id, resume_params['editor'])
+            snapshot = await client.rpc("session.resume", session_id=session_id, **resume_params)
         self._snapshots[session_id] = snapshot
         if 'editor' in resume_params:
             self._editor_mcp[session_id] = resume_params['editor']
@@ -363,6 +378,12 @@ class GatewayACPAgent(acp.Agent):
         await self._mutations.apply(client, session_id, 'workspace', payload)
         self._mutations.acknowledge(session_id, 'workspace', payload)
         return await client.rpc("session.info", session_id=session_id)
+
+    async def _rebind_editor_mcp(self, client, session_id, editor):
+        """The owner's ``editor_mcp`` mutation: rediscovers *editor*'s servers into the session's policy."""
+        self._unacked.pop(session_id, None)
+        await self._mutations.apply(client, session_id, 'editor_mcp', editor)
+        self._mutations.acknowledge(session_id, 'editor_mcp', editor)
 
     async def load_session(self, cwd, session_id, mcp_servers=None, **kwargs):
         return LoadSessionResponse(**await self._resume(cwd, session_id, mcp_servers))
@@ -412,17 +433,18 @@ class GatewayACPAgent(acp.Agent):
         session_id = self._aliases.get(session_id, session_id)
         client = await self._client()
         info = await client.rpc('session.info', session_id=session_id)
-        if mcp_servers:
-            # The branch inherits the parent's borrowed-MCP scope; binding other servers to the child
-            # (or giving it its own scope) has no owner verb.
-            raise GatewayClientError('cwd_policy_conflict')
+        # The owner binds the child's editor servers under the child's own scope: these, or else a
+        # copy of the parent's.
+        payload = {'mcp_servers': [s.model_dump(by_alias=True) for s in mcp_servers]} if mcp_servers else {}
         self._unacked.pop(session_id, None)
-        result = await self._mutations.apply(client, session_id, 'branch', {})
+        result = await self._mutations.apply(client, session_id, 'branch', payload)
         child = result['branched_session_id']
         if self._moved(info, cwd):
             await self._move_workspace(client, child, cwd)
         self._snapshots[child] = await client.rpc('session.resume', session_id=child)
-        self._mutations.acknowledge(session_id, 'branch', {})
+        if payload or session_id in self._editor_mcp:
+            self._editor_mcp[child] = payload or self._editor_mcp[session_id]
+        self._mutations.acknowledge(session_id, 'branch', payload)
         info = self._snapshots[child].get('info') or await client.rpc('session.info', session_id=child)
         return ForkSessionResponse(session_id=child, **await self._session_fields(child, info, child))
 
@@ -671,7 +693,7 @@ class GatewayACPAgent(acp.Agent):
         kind, payload = event.get("type"), event.get("payload", {})
         sid, editor_id = event["session_id"], self._editor_id(event["session_id"])
         aid = event.get("admission_id")
-        if kind in {"session.info", "session.updated", "session.usage"}:
+        if kind in {"session.info", "session.updated", "session.usage", "session.tools_changed"}:
             await self._project_session_state(kind, sid, editor_id, payload)
             return
         if kind == "session.replay_gap":
@@ -744,6 +766,11 @@ class GatewayACPAgent(acp.Agent):
     async def _project_session_state(self, kind, sid, editor_id, payload):
         if kind == "session.usage":
             await self._project_usage(sid, editor_id, payload)
+            return
+        if kind == "session.tools_changed":
+            if self._conn:
+                await self._conn.session_update(session_id=editor_id, update=acp.update_agent_message_text(
+                    _tools_changed_notice(payload)))
             return
         if kind == "session.info" and sid in self._snapshots and "pending" in payload:
             async with self._changed:

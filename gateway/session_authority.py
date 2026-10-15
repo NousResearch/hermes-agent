@@ -246,6 +246,8 @@ class SessionAuthority:
                 if transport is not None:
                     live.event_stream.fanout.detach(transport)
                 if not live.subscribers:
+                    from gateway.session_local_mcp import release_editor_mcp
+                    await asyncio.to_thread(release_editor_mcp, self, [session_id])
                     from gateway.session_acp_lifecycle import (
                         end_idle_acp_session, end_idle_viewer_session, reopen_if_reattached)
                     from gateway.session_runtime_workers import tracked_write
@@ -773,6 +775,9 @@ class SessionAuthority:
             if first is not None and live.source.platform == Platform.LOCAL:
                 from gateway.session_local_recovery import restore_local_session
                 restore_local_session(self, ref.session_id)
+                # Editor MCP schema drift re-freezes here, at this admission's start: a turn boundary.
+                from gateway.session_local_mcp import refreeze_editor_mcp
+                await refreeze_editor_mcp(self, ref, live)
                 if first['request_id'].startswith('hosted:'):
                     from gateway.session_hosted_transport import check_remote_hosted_admission
                     if not await asyncio.to_thread(check_remote_hosted_admission, self, ref, first):

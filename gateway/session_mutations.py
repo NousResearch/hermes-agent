@@ -6,12 +6,13 @@ branch/compress/model still require their own prepared runtime publication.
 """
 import asyncio
 from contextlib import nullcontext
+from functools import partial
 
 from hermes_state_runtime import RuntimeStoreError, mutate_runtime_session
 
 _METADATA = frozenset({'rename', 'archive', 'sidebar'})
 # Prepared off the commit like model, then published as a new frozen policy.
-_POLICY = frozenset({'model', 'reasoning', 'workspace'})
+_POLICY = frozenset({'model', 'reasoning', 'workspace', 'editor_mcp'})
 _FIELDS = frozenset({'session_id', 'request_id', 'expected_revision', 'operation', 'payload'})
 
 
@@ -104,6 +105,10 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
     operation = params['operation']
     if not isinstance(operation, str) or (operation in _POLICY and params.get('expected_generation') is None):
         raise RuntimeStoreError('invalid_params')
+    from gateway.session_local_mcp import private_mutation_payload
+    # Editor MCP transport specs (credentials) stay in owner memory; the store sees a fingerprint.
+    payload, editor_servers = private_mutation_payload(operation, params['payload'])
+    params = {**params, 'payload': payload}
     cold_history = False
     imported_ids = None
     if operation == 'import':
@@ -141,7 +146,10 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
         if not authorize_history(conn, actor, ref.session_id, claim=True):
             raise RuntimeStoreError('permission_denied')
 
-    prepared = None
+    prepared = branch_editor = None
+    if operation == 'branch':
+        from gateway.session_local_mcp import prepare_branch_editor
+        branch_editor, editor_servers = await prepare_branch_editor(authority, ref, editor_servers)
     if operation in {*_POLICY, 'compress'}:
         # Its own BEGIN IMMEDIATE, so off the loop like the commit below.
         prepared = await asyncio.to_thread(mutate_runtime_session, authority.db, epoch=authority.epoch,
@@ -152,7 +160,9 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
             from gateway.session_mutation_model import prepare_model
             from gateway.session_mutation_compress import prepare_compress
             from gateway.session_mutation_policy import PREPARE
-            prepare = {'model': prepare_model, 'compress': prepare_compress, **PREPARE}[operation]
+            from gateway.session_local_mcp import prepare_editor_mcp
+            prepare = {'model': prepare_model, 'compress': prepare_compress, **PREPARE,
+                       'editor_mcp': partial(prepare_editor_mcp, servers=editor_servers)}[operation]
             prepared = await prepare(authority, live, params['payload'], prepared)
             applied = False
             if prepared.get('status') in {'preview', 'noop', 'confirmation_required'}:
@@ -172,7 +182,7 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
             result = await asyncio.to_thread(mutate_runtime_session, authority.db, epoch=authority.epoch,
                 principal_id=actor.subject, session_id=ref.session_id, request_id=params['request_id'],
                 expected_revision=params['expected_revision'], expected_generation=params.get('expected_generation'),
-                operation=operation, payload=params['payload'], _live_guard=live_guard, _prepared=prepared,
+                operation=operation, payload=params['payload'], _live_guard=live_guard, _prepared=branch_editor or prepared,
                 _authorize_write=authorize_write if cold_history or operation == 'import' else None)
         # Post-commit projections are idempotent reads of the committed receipt, so exact
         # retries repeat them (like delete's retirement); only the one-shot event is fenced.
@@ -185,6 +195,10 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
             note_compression(authority, ref, live)
         elif operation == 'reset' and applied and live is not None:
             live.compression_count = 0  # a fresh conversation, as main's /new builds a fresh agent
+        if editor_servers is not None and (operation == 'branch' or owns_projection):
+            # Before the policy publication below, so no execution sees the policy without them.
+            from gateway.session_local_mcp import install_editor_mcp
+            install_editor_mcp(authority, result.get('branched_session_id', ref.session_id), editor_servers)
         if operation not in {*_POLICY, 'reset', 'compress', 'rewind'} or owns_projection:
             _project_committed(authority, ref, operation, result)
         if live is not None:
@@ -192,6 +206,8 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
                 authority.runner._evict_cached_agent(live.route)
             if applied:
                 live.event_stream.publish(ref.session_id, result, event_type='session.updated')
+                from gateway.session_local_mcp import announce_tools_changed
+                announce_tools_changed(live, ref.session_id, result)
     if operation == 'delete':
         # After the synchronous projections (no yield before retirement), off the loop: the
         # retired-media owner check is a messages-table pass (exact retries repeat it too).
@@ -262,3 +278,5 @@ def retire_live_sessions(authority, session_ids):
             evict = getattr(authority.runner, '_evict_cached_agent', None)
             if callable(evict):
                 evict(candidate.route)
+    from gateway.session_local_mcp import release_editor_mcp
+    release_editor_mcp(authority, session_ids)

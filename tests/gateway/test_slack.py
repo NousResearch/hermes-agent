@@ -114,8 +114,12 @@ def _pin_legacy_assistant_threads_api():
     """
     prev = _slack_mod._AGENT_SESSIONS_SUPPORTED
     _slack_mod._AGENT_SESSIONS_SUPPORTED = False
+    _slack_mod._AGENT_SESSIONS_STATUS_REJECTED.clear()
+    _slack_mod._AGENT_SESSIONS_STATUS_WARNED = False
     yield
     _slack_mod._AGENT_SESSIONS_SUPPORTED = prev
+    _slack_mod._AGENT_SESSIONS_STATUS_REJECTED.clear()
+    _slack_mod._AGENT_SESSIONS_STATUS_WARNED = False
 
 
 def _rich_text_blocks(*elements):

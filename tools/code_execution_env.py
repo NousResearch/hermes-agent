@@ -132,8 +132,15 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     _tz_name = get_timezone_name()
     # Windows CPython does not support IANA names in TZ.  Leaving TZ unset
     # preserves the OS-configured local timezone for the child process.
-    if _tz_name and not _IS_WINDOWS:
-        child_env["TZ"] = _tz_name
+    if not _IS_WINDOWS:
+        # Precedence: Hermes's configured timezone stays authoritative; otherwise the
+        # deployment's own TZ — the `docker run -e TZ=...` idiom — is inherited like
+        # PATH/HOME instead of being silently vacuumed (#138741), so the sandbox no longer
+        # runs on the image's system zone while terminal/cron in the same container follow
+        # the operator's TZ. Neither set → the child keeps system local time.
+        _inherited_tz = os.environ.get("TZ", "")
+        if _tz_name or _inherited_tz:
+            child_env["TZ"] = _tz_name or _inherited_tz
     child_env.pop("HERMES_TIMEZONE", None)
     apply_subprocess_home_env(child_env)
     # Multiplexed gateway/Desktop (#110303): the server process env carries the machine-default

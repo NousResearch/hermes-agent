@@ -52,6 +52,35 @@ async def test_refused_delivery_leaves_a_terminal_receipt_the_scan_accepts(bot, 
     assert list_session_admissions(bot.authority.db, session_id=bot.chat, pending_only=False) == []
 
 
+def _rpc_connection(bot):
+    """The relay Desktop's own connection: ``bot_relay.deliver`` crosses the contract-checked dispatch."""
+    from gateway.session_controls import AuthorityConnection
+    return AuthorityConnection(bot.authority, object(), {
+        'user_id': 'uid:1000', 'provider': 'local', 'profile_id': bot.authority.profile_id,
+        'instance_id': bot.authority.instance_id,
+        'capabilities': ['session:read', 'session:submit', 'session:control', 'session:create']})
+
+
+@pytest.mark.asyncio
+async def test_a_refused_delivery_answers_through_the_deliver_contract(bot, monkeypatch):
+    """The first refusal is a JSON-RPC refusal; the same-id resend is the declared refused result
+    (terminal ``failed``, ``refused``, no admission), never a ``ContractViolation``."""
+    connection = _rpc_connection(bot)
+    # The fixture's profile_id is no home path: route ``profile`` to this authority, as for a real home.
+    monkeypatch.setattr(connection, '_sibling_for', lambda profile: None)
+    request = {'id': 1, 'method': 'bot_relay.deliver', 'params': dict(id=KEY, profile='default', message='ping')}
+    refusing = _refuse(monkeypatch, 'permission_denied')
+    first = await connection.dispatch(request)
+    assert first['error']['data']['reason'] == 'permission_denied', first
+    refusing.clear()
+    again = await connection.dispatch(request)
+    assert 'result' in again, again
+    result = again['result']
+    assert (result['status'], result['refused'], result['reason']) == ('failed', True, 'agent_blocked'), result
+    assert result['delivery_id'] == KEY and 'admission_id' not in result
+    assert list_session_admissions(bot.authority.db, session_id=bot.chat, pending_only=False) == []
+
+
 AUTHOR = {'id': 'bot:cto', 'name': 'cto', 'is_bot': True}
 
 

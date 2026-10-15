@@ -528,8 +528,8 @@ async def _deliver(connection, params):
             return await _publish_result(authority, home, record)
         if record is not None and record.get('refused') is True:
             _require_same_delivery(record, actor, message, author, category)
-            return {k: record[k] for k in ('status', 'delivery_id', 'profile_home', 'session_id', 'message',
-                                           'reply', 'error', 'reason')}
+            return {k: record[k] for k in ('status', 'refused', 'delivery_id', 'profile_home', 'session_id',
+                                           'message', 'reply', 'error', 'reason')}
         if record is not None:
             raise RuntimeStoreError('unknown_execution')
         ref, live, entry = await _target(authority, actor)

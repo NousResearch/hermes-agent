@@ -63,6 +63,20 @@ def _newest_mtime_ns(paths) -> int | None:
     return max((m for m in map(_watcher_mtime_ns, paths) if m is not None), default=None)
 
 
+def _files_sig(paths) -> tuple:
+    """Sorted ``(path, mtime_ns, size)`` per stat-able file in ``paths``.
+
+    For multi-file signatures, unlike a newest-mtime max: a file added, removed or rewritten in
+    the same timestamp tick as the current newest one (coarse-mtime filesystems) still moves it.
+    """
+    entries = []
+    for path in paths:
+        with contextlib.suppress(OSError):
+            st = path.stat()
+            entries.append((str(path), st.st_mtime_ns, st.st_size))
+    return tuple(sorted(entries))
+
+
 def _skin_sig() -> tuple[str, float | None]:
     """(active skin name, its user-file mtime). Built-ins have no file, so only
     their name moves; a user skin's mtime lets an in-place color edit repaint too."""
@@ -276,18 +290,18 @@ def _sessions_sig():
 
 
 def _projects_sig():
-    """Newest mtime across projects.db (+ WAL) for the watcher home and every served
+    """Per-file stat signature of projects.db (+ WAL) for the watcher home and every served
     sibling profile. The CLI and other windows write projects.db directly — nothing in
     their process touches this gateway's transports — so the file is the only shared
     signal, exactly like state.db (#53046, #56757)."""
-    return _newest_mtime_ns(
+    return _files_sig(
         root / name
         for root in (_watcher_home(), *_served_profile_homes)
         for name in ("projects.db", "projects.db-wal"))
 
 
 def _pairing_sig():
-    """Newest mtime across every profile's pairing ledgers (legacy ``pairing/`` and
+    """Per-file stat signature of every profile's pairing ledgers (legacy ``pairing/`` and
     ``platforms/pairing/``): the gateway process writes pending codes, so the files are the only
     shared signal (a pairing request moves nothing in gateway_state.json)."""
     entries = []
@@ -296,7 +310,7 @@ def _pairing_sig():
             # Only the ledgers: _rate_limits.json moves on every unauthorized DM.
             entries += [
                 e for e in root.iterdir() if e.name.endswith(("-pending.json", "-approved.json"))]
-    return _newest_mtime_ns(entries)
+    return _files_sig(entries)
 
 
 # Live-profile pairing roots, cached on (home, ``profiles/`` dir mtime) with a TTL. The liveness

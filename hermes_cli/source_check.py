@@ -137,9 +137,19 @@ def _request_with(url: str, accept: str, token: str | None) -> str:
     headers = {"Accept": accept, "User-Agent": "hermes-update-check"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    from hermes_cli.github_api import GITHUB_REQUEST_TIMEOUT_SECONDS
+
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=10) as response:
-        return response.read(2 * 1024 * 1024).decode("utf-8-sig").strip()
+    # A cold proxy handshake can time out while the next connection succeeds.
+    # Retry only typed timeouts, once; HTTP errors keep their existing policy.
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=GITHUB_REQUEST_TIMEOUT_SECONDS) as response:
+                return response.read(2 * 1024 * 1024).decode("utf-8-sig").strip()
+        except (TimeoutError, urllib.error.URLError) as exc:
+            reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+            if attempt or not isinstance(reason, TimeoutError):
+                raise
 
 
 def _branch_tip(repository: str | None, branch: str, root: Path, git: str,

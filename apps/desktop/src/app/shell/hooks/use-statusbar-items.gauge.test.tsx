@@ -9,6 +9,8 @@ import { resolveContextGaugeUsage } from './use-statusbar-items'
 // otherwise the bar stays frozen at the turn-start value and jumps at turn end.
 const CURRENT: UsageStats = {
   calls: 1,
+  context_estimated: true,
+  context_source: 'provider_usage_plus_estimate',
   context_max: 1_000_000,
   context_percent: 27,
   context_used: 267_700,
@@ -19,6 +21,8 @@ const CURRENT: UsageStats = {
 
 const BREAKDOWN: ContextBreakdown = {
   categories: [],
+  context_estimated: false,
+  context_source: 'provider_usage',
   context_max: 1_000_000,
   context_percent: 30,
   context_used: 320_000,
@@ -33,6 +37,8 @@ describe('resolveContextGaugeUsage', () => {
     expect(out.context_used).toBe(267_700)
     expect(out.context_percent).toBe(27)
     expect(out.input).toBe(10_000)
+    expect(out.context_estimated).toBe(true)
+    expect(out.context_source).toBe('provider_usage_plus_estimate')
   })
 
   it('falls back to the streamed usage mid-turn when no breakdown is held', () => {
@@ -50,6 +56,8 @@ describe('resolveContextGaugeUsage', () => {
     // Non-context fields still come from the streamed usage object.
     expect(out.input).toBe(10_000)
     expect(out.calls).toBe(1)
+    expect(out.context_estimated).toBe(false)
+    expect(out.context_source).toBe('provider_usage')
   })
 
   it('keeps the streamed usage when idle without a breakdown', () => {

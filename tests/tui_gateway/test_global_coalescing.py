@@ -1,5 +1,8 @@
 import threading
 
+# FanoutTransport._drain imports tui_gateway.ws lazily, which loads tui_gateway.server. Load it here so the
+# drain thread's first write doesn't pay a cold server import inside the 3s waits below.
+import tui_gateway.ws  # noqa: F401
 from tui_gateway.transport import FanoutTransport
 
 

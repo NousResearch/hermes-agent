@@ -12,6 +12,7 @@ placeholder on upsert; this reader does not admit it.
 
 from __future__ import annotations
 
+import sqlite3
 from types import SimpleNamespace
 
 from hermes_state import SessionDB
@@ -324,5 +325,72 @@ def test_readonly_sessions_list_shows_pre_column_cli_row_without_migrating(tmp_p
         _cmd_list(db, SimpleNamespace(limit=20, source=None, workspace=None))
         assert "legacy-cli" in capsys.readouterr().out
         assert "created_source" not in _column_names(db)
+    finally:
+        db.close()
+
+
+def test_locked_schema_probe_is_not_remembered_as_a_missing_column(tmp_path):
+    """A ``PRAGMA table_info`` failure is not proof the column is missing.
+
+    Caching that failure makes the next lookup, after the lock is gone, match
+    ``source`` only and drop the newer ``source='local'`` / ``created_source='cli'``
+    row. The error has to surface, and the following call has to see the column.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _populate(db, [
+        _cli_row("legacy-cli", 1_000_000, source="cli", created="cli"),
+        _cli_row("local-cli", 4_000_000_000),
+    ])
+    from hermes_cli.gateway_session_store import SurfaceLabelReader
+
+    reader = SurfaceLabelReader(db)
+    real_execute = db._conn.execute
+    raised = {"done": False}
+
+    def execute(sql, *args, **kwargs):
+        if isinstance(sql, str) and "table_info" in sql and not raised["done"]:
+            raised["done"] = True
+            raise sqlite3.OperationalError("database is locked")
+        return real_execute(sql, *args, **kwargs)
+
+    db._conn.execute = execute
+    caught = None
+    try:
+        first = [row["id"] for row in reader.search_sessions(source=["cli", "oneshot"], limit=1)]
+    except sqlite3.OperationalError as exc:
+        caught = str(exc)
+        first = None
+    assert caught and "database is locked" in caught, first
+    assert reader._created_source_column is None
+    assert [row["id"] for row in reader.search_sessions(source=["cli", "oneshot"], limit=1)] == ["local-cli"]
+    db.close()
+
+
+def test_absent_schema_probe_sees_a_column_added_later(tmp_path):
+    """A successful "column absent" answer is not permanent.
+
+    In-chat ``/sessions`` keeps one reader. After another connection adds
+    ``created_source`` and a newer local CLI row, that same reader must return it.
+    """
+    db = _pre_column_readonly(tmp_path)
+    from hermes_cli.gateway_session_store import SurfaceLabelReader
+
+    reader = SurfaceLabelReader(db)
+    try:
+        assert [row["id"] for row in reader.search_sessions(source="cli", limit=5)] == ["legacy-cli"]
+        other = sqlite3.connect(tmp_path / "state.db")
+        try:
+            other.execute("ALTER TABLE sessions ADD COLUMN created_source TEXT")
+            other.execute(
+                "INSERT INTO sessions (id, source, created_source, started_at) VALUES (?, ?, ?, ?)",
+                ("local-new", "local", "cli", 4_000_000_000),
+            )
+            other.commit()
+        finally:
+            other.close()
+        found = [row["id"] for row in reader.search_sessions(source="cli", limit=5)]
+        assert found[0] == "local-new"
+        listed = [row["id"] for row in reader.list_sessions_rich(source="cli", limit=5)]
+        assert "local-new" in listed
     finally:
         db.close()

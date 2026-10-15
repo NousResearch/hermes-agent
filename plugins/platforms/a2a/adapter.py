@@ -21,7 +21,7 @@ from collections import OrderedDict, deque
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -341,7 +341,7 @@ class A2AAdapter(BasePlatformAdapter):
         # are bounded by _job_timeout() instead of the reply window. Maps task_id -> the pending
         # record, because the budget sweep needs that record to mark the task tombstoned before it
         # tears the pending entry down (otherwise its late reply steals the next reply on the context).
-        self._parked: Dict[str, dict] = {}
+        self._parked: dict[str, dict] = {}
         self._pending_lock = threading.Lock()
 
     @property
@@ -629,7 +629,8 @@ class A2AAdapter(BasePlatformAdapter):
             return
         pending["late_finalizer"] = True
 
-        def _land(fut: Future, owned: dict = dict(pending)) -> None:
+        def _land(fut: Future, owned: Optional[dict] = None) -> None:
+            owned = owned if owned is not None else dict(pending)
             try:
                 state, reply = fut.result()
             except Exception:
@@ -735,7 +736,6 @@ class A2AAdapter(BasePlatformAdapter):
     def _forward_to_profile(self, agent: dict, peer: str, context_id: str, framed_text: str,
                             *, input_id: Optional[str] = None) -> tuple[str, str]:
         """Forward to the destination owner; never open its canonical database here."""
-        from gateway.session_a2a import forward_to_owner
         profile = str(agent.get("profile") or agent.get("slug") or "").strip()
         slug = str(agent.get("slug") or profile or "agent")
         safe_ctx = _safe_context_slug(context_id)

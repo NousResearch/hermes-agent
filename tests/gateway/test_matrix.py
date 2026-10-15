@@ -760,7 +760,7 @@ class TestMatrixRequirements:
         """
         monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
         monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
-        monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)
+        monkeypatch.setenv("MATRIX_E2EE_MODE", "optional")  # asyncpg is E2EE-only (#139398)
 
         import plugins.platforms.matrix.adapter as matrix_mod
 

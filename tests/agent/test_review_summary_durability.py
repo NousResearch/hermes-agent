@@ -81,3 +81,64 @@ def test_completed_review_stays_with_its_origin_when_parent_moves_to_another_ses
     assert receipts(other, "origin") == []
     other.close()
     db.close()
+
+
+def test_idle_queue_freezes_origin_before_new_and_preserves_it_through_requeue(tmp_path, monkeypatch):
+    from agent.review_idle_queue import ReviewIdleQueue
+    import pytest
+
+    db = SessionDB(tmp_path / "queued.db")
+    for sid in ("origin", "next-chat"):
+        db.create_session(sid, source="desktop")
+    agent = parent(db, "origin")
+    queue = ReviewIdleQueue()
+    monkeypatch.setattr(queue, "_ensure_thread", lambda: None)
+    monkeypatch.setattr(queue, "_still_enabled", lambda item: True)
+    clock = [0.0]
+    queue._now = lambda: clock[0]
+    queue._server_idle = lambda: True
+    queue._quiet_since = -1000.0
+    calls = []
+
+    def finish_fork(agent, snapshot, prompt, config, run, state, review_memory, explicit):
+        state.review_messages = [
+            {"role": "assistant", "tool_calls": [{"id": "queued-write", "type": "function", "function": {
+                "name": "skill_manage", "arguments": json.dumps({"action": "patch", "name": "queued"})}}]},
+            {"role": "tool", "tool_call_id": "queued-write", "content": json.dumps({
+                "success": True, "message": "Skill 'queued' patched"})},
+        ]
+    monkeypatch.setattr(review, "_run_review_fork", finish_fork)
+
+    def dispatch(**kwargs):
+        run = review.prepare_background_review_run(agent)
+        assert run is not None
+        calls.append(run.source_session_id)
+        try:
+            if len(calls) == 1:
+                # A foreground preemption requeues while the worker still carries
+                # origin's Context; /new has already moved the reusable parent.
+                queue.enqueue(agent, "origin-key", kwargs)
+            else:
+                review._run_review_in_thread(agent, [], "Review", review_run=run)
+        finally:
+            review.finish_background_review_run(agent, run)
+            if hasattr(run, "worker_done"):
+                from agent.review_lifecycle import finish_review_worker
+                finish_review_worker(agent, run)
+    agent._spawn_background_review_now = dispatch
+    queue.enqueue(agent, "origin-key", {"task_cfg": {}})
+    agent.session_id = "next-chat"
+    clock[0] = 1000.0
+
+    class Done(BaseException):
+        pass
+    def wake():
+        if len(calls) >= 2:
+            raise Done
+    monkeypatch.setattr(queue._wake, "wait", wake)
+    with pytest.raises(Done):
+        queue._run()
+    assert calls == ["origin", "origin"]
+    assert len(receipts(db, "origin")) == 1
+    assert receipts(db, "next-chat") == []
+    db.close()

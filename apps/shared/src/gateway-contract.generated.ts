@@ -5606,9 +5606,14 @@ export interface SessionTitlePayload {
 export interface ReactionPayload {
   kind: string
 }
-/** ``server`` background_review_callback. */
+/** Display-only durable receipt or a legacy text-only review notification. */
 export interface ReviewSummaryPayload {
   text: string
+  review_id?: string | null
+  timestamp?: number | null
+  row_id?: number | null
+  stored_session_id?: string | null
+  persisted?: boolean | null
 }
 /** A session-authority local-viewer turn: one line the agent printed through ``_print_fn`` (subagent completion, compaction, errors, budget notices), which main's classic CLI rendered through ``_agent_status_print``. */
 export interface AgentPrintPayload {

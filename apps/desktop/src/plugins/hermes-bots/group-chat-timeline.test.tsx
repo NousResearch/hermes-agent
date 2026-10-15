@@ -91,6 +91,7 @@ it('interleaves read-only review receipts by authored time without adding them t
     }
   })
   const { container } = render(<GroupChatWorkspace group="Room" members={[]} />)
+  await waitFor(() => expect(container.textContent).toContain('REVIEW SAVED'))
   const text = container.textContent || ''
   expect(text.indexOf('REVIEW SAVED')).toBeGreaterThan(text.indexOf('BEFORE'))
   expect(text.indexOf('AFTER')).toBeGreaterThan(text.indexOf('REVIEW SAVED'))

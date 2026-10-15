@@ -1,3 +1,5 @@
+import { registryBackendScopeKey } from '@hermes/shared'
+
 import { isSessionNotOwnedError } from '@/app/session/hooks/use-prompt-actions/utils'
 import { runtimeTranslations, translateNow } from '@/i18n'
 import { textPart } from '@/lib/chat-messages'
@@ -10,14 +12,17 @@ import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgent
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting, setSessionCompacting, takeCompressDeferred } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
+import { activeGatewayConnectionId } from '@/store/gateway'
 import { applyGoalStatusText } from '@/store/goals'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { clearAllPrompts } from '@/store/prompts'
 import { setTurnStartedAt } from '@/store/session'
-import { $focusedStoredSessionId } from '@/store/session-states'
+import { $focusedStoredSessionId } from '@/store/session-focus'
+import { $focusedRuntimeId, knownOwnerForSession } from '@/store/session-states'
 import { markSessionUnreadFinished } from '@/store/session-unread'
 import { clearActiveSessionTodos } from '@/store/todos'
 
@@ -197,8 +202,24 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       const storedId =
         next.storedSessionId || (typeof payload?.stored_session_id === 'string' ? payload.stored_session_id : null)
 
-      if (added && storedId && storedId !== $focusedStoredSessionId.get()) {
-        markSessionUnreadFinished(storedId)
+      const profile = normalizeProfileKey(
+        event.profile || next.transcriptProvenance?.profile || deps.activeGatewayProfile
+      )
+
+      const focusedOwner = knownOwnerForSession($focusedRuntimeId.get() || $focusedStoredSessionId.get())
+
+      const focusedProfile =
+        typeof focusedOwner === 'string' ? focusedOwner : focusedOwner?.profile || $activeGatewayProfile.get()
+
+      const focusedConnection =
+        typeof focusedOwner === 'object' && focusedOwner ? focusedOwner.connectionId : activeGatewayConnectionId()
+
+      const fromFocusedOwner =
+        registryBackendScopeKey(event.connectionId ?? activeGatewayConnectionId(), profile) ===
+        registryBackendScopeKey(focusedConnection, normalizeProfileKey(focusedProfile))
+
+      if (added && storedId && !(storedId === $focusedStoredSessionId.get() && fromFocusedOwner)) {
+        markSessionUnreadFinished(storedId, profile)
       }
     }
 

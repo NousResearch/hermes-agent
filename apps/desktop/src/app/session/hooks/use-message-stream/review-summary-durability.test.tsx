@@ -70,3 +70,57 @@ describe('durable review confirmations', () => {
     expect(refresh([], current)).toHaveLength(0)
   })
 })
+
+// The same stored id in a focused A chat must not swallow a hidden B receipt.
+// Exercise the real unread writer as well: a visible A row is not B's owner.
+describe('review receipt owner scope', () => {
+  it.each([false, true])('marks hidden profile B, not focused A (A row loaded: %s)', async loaded => {
+    const { $activeGatewayProfile } = await import('@/store/profile')
+
+    const { $activeSessionId, $selectedStoredSessionId, $sessions, $unreadFinishedSessionIds } =
+      await import('@/store/session')
+
+    const { $unreadFinishedMarkers } = await import('@/store/session-unread')
+    const { makeSessionInfo } = await import('@/test/session-info')
+    const { clearAllSessionStates } = await import('@/store/session-states')
+    clearAllSessionStates()
+    act(() => {
+      $activeGatewayProfile.set('A')
+      $activeSessionId.set('runtime-A')
+      $selectedStoredSessionId.set('same-id')
+      $sessions.set(loaded ? [makeSessionInfo({ id: 'same-id', profile: 'A' })] : [])
+      $unreadFinishedMarkers.set({})
+      $unreadFinishedSessionIds.set([])
+    })
+    const stream = renderMessageStream('runtime-A')
+    act(() =>
+      stream.handleEvent({
+        type: 'review.summary',
+        session_id: 'runtime-B',
+        profile: 'B',
+        payload: { text: TEXT, review_id: 'scope-b', timestamp: 103, stored_session_id: 'same-id' }
+      })
+    )
+    expect($unreadFinishedMarkers.get().B).toEqual(['same-id'])
+    expect($unreadFinishedMarkers.get().A).toBeUndefined()
+    // The actual focused A receipt stays read; replay of B stays idempotent.
+    act(() =>
+      stream.handleEvent({
+        type: 'review.summary',
+        session_id: 'runtime-A',
+        profile: 'A',
+        payload: { text: TEXT, review_id: 'scope-a', timestamp: 104, stored_session_id: 'same-id' }
+      })
+    )
+    expect($unreadFinishedMarkers.get().A).toBeUndefined()
+    act(() => {
+      clearAllSessionStates()
+      $sessions.set([])
+      $selectedStoredSessionId.set(null)
+      $activeSessionId.set(null)
+      $activeGatewayProfile.set('default')
+      $unreadFinishedMarkers.set({})
+      $unreadFinishedSessionIds.set([])
+    })
+  })
+})

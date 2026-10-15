@@ -5,6 +5,7 @@ and these receipts are excluded from the model projection on every resume.
 """
 from __future__ import annotations
 
+import contextvars
 import logging
 import time
 import uuid
@@ -12,11 +13,20 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Deferred reviews retain their origin across /new and bounded requeues. The
+# idle queue captures this in its Context, not on the reusable parent agent.
+REVIEW_SOURCE_SESSION_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "review_source_session_id", default=None,
+)
+
 
 def publish_review_summary(agent: Any, actions: list[str], *, source_session_id: str | None = None) -> None:
     if not actions:
         return
-    text = "💾 Self-improvement review: " + " · ".join(dict.fromkeys(actions))
+    from agent.i18n import t
+
+    summary = " · ".join(dict.fromkeys(actions))
+    text = t("display.review.summary_callback", summary=summary)
     event: dict[str, Any] = {
         "text": text, "review_id": uuid.uuid4().hex, "timestamp": time.time(),
     }
@@ -47,7 +57,7 @@ def publish_review_summary(agent: Any, actions: list[str], *, source_session_id:
             # persistence succeeded. Legacy live delivery is still useful on disk failure.
             logger.warning("Could not persist self-improvement receipt for session=%s", session_id, exc_info=True)
     event["persisted"] = "row_id" in event
-    agent._safe_print(f"  {text}")
+    agent._safe_print(t("display.review.summary_cli", summary=summary))
     # Keep the text callback contract for CLI, messaging and third-party consumers.
     # The Desktop gateway opts into metadata so live and stored rows share an identity.
     structured = vars(agent).get("background_review_event_callback")

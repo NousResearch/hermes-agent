@@ -1319,3 +1319,40 @@ async def test_oversized_cron_output_is_sent_as_successive_markdown_replies():
     adapter._send_request.assert_not_awaited()
     # Each chunk is its own queued send, so each draws a token from the 30 msgs/min bucket.
     assert adapter._get_token_usage("group-1")["normal"] == len(sent)
+
+
+class TestWeComCommandClassification:
+    """Commands must classify as COMMAND so they skip text batching.
+
+    _process_message sends only TEXT through _enqueue_text_event, whose
+    debounce window merges a pending command with the next message — so a
+    "/deny" followed by "never mind" would arrive as a deny reason.
+    """
+
+    @staticmethod
+    def _derive(text: str, media_types=None):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from gateway.platforms.event import MessageType
+
+        return WeComAdapter._derive_message_type({}, text, media_types or []), MessageType
+
+    def test_plain_command_classifies_as_command(self):
+        result, MessageType = self._derive("/deny")
+        assert result == MessageType.COMMAND
+
+    def test_invisible_padded_command_classifies_as_command(self):
+        result, MessageType = self._derive("⁠/deny⁠")
+        assert result == MessageType.COMMAND
+
+    def test_plain_text_still_classifies_as_text(self):
+        result, MessageType = self._derive("hello")
+        assert result == MessageType.TEXT
+
+    def test_voice_still_wins_over_command_text(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from gateway.platforms.event import MessageType
+
+        assert (
+            WeComAdapter._derive_message_type({"msgtype": "voice"}, "/deny", [])
+            == MessageType.VOICE
+        )

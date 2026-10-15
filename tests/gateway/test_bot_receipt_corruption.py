@@ -181,3 +181,51 @@ async def test_legacy_migration_skips_structurally_corrupt_neighbor(monkeypatch,
     await _migrate(authority, object(), tmp_path, root)
 
     assert migrated == [(healthy_key, "healthy legacy", "queued")]
+
+
+@pytest.mark.asyncio
+async def test_scan_does_not_warn_on_a_refusal_left_pin(tmp_path, caplog):
+    """A pin ``_admit`` wrote and a non-queue_full refusal left behind (#139138) is skipped
+    like a corrupt record, but quietly: every delivery's migrate scan and every owner startup
+    would otherwise re-warn about the same refused delivery forever. Genuinely malformed
+    records keep the warning."""
+    import logging
+
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        db.create_session("bot", source="gui")
+        begin_runtime_epoch(db, instance_id="owner")
+        pin_key = "f" * 32
+        damaged_key = "0" * 32
+        with _locked(tmp_path) as root:
+            _write(root / f"{pin_key}.json", {
+                "status": "ambiguous",
+                "delivery_id": pin_key,
+                "profile_home": str(tmp_path),
+                "session_id": "bot",
+                "principal_id": "sender",
+                "message": "admission was refused",
+            })
+            _write(root / f"{damaged_key}.json", {
+                "status": "canonical",
+                "admission_id": "admission",
+                "delivery_id": damaged_key,
+                "profile_home": str(tmp_path),
+                "session_id": "bot",
+                "principal_id": "sender",
+                # message missing: structurally incomplete canonical record.
+            })
+
+        with caplog.at_level(logging.DEBUG, logger="gateway.session_bot"):
+            await recover_bot_deliveries(SimpleNamespace(db=db, waiters={}))
+
+        pin_records = [r for r in caplog.records if pin_key in r.message]
+        assert [r.levelname for r in pin_records] == ["DEBUG"], (
+            "a refusal-left pin is a known terminal record, not a per-scan warning")
+        damaged_warnings = [r for r in caplog.records if damaged_key in r.message
+                            and r.levelname == "WARNING"]
+        assert len(damaged_warnings) == 1
+        with _locked(tmp_path) as root:
+            assert _read(root / f"{pin_key}.json")["status"] == "ambiguous"
+    finally:
+        db.close()

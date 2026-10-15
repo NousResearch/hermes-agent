@@ -58,6 +58,16 @@ def _record_shape_error(path, record):
     return 'unknown receipt schema'
 
 
+def _refusal_left_pin(path, record):
+    """A pin ``_admit`` wrote and a non-queue-full refusal left behind: its own delivery id,
+    a principal, terminal-ambiguous, never admitted. Bulk recovery skips it either way;
+    re-warning on every scan turns one refused delivery into permanent log noise (#139138)."""
+    return (record.get('delivery_id') == path.stem
+            and record.get('status') == 'ambiguous'
+            and not record.get('admission_id')
+            and isinstance(record.get('principal_id'), str) and bool(record['principal_id']))
+
+
 def _scan_records(root):
     """Bulk mailbox scan: isolate unreadable/malformed records; exact-id reads still fail closed."""
     for path in root.glob('*.json'):
@@ -67,6 +77,10 @@ def _scan_records(root):
         except (OSError, ValueError) as exc:
             record, problem = None, str(exc)
         if problem is not None:
+            if record is not None and _refusal_left_pin(path, record):
+                logging.getLogger(__name__).debug(
+                    "Skipping unadmitted Bot mailbox pin %s (%s)", path, problem)
+                continue
             logging.getLogger(__name__).warning(
                 "Skipping malformed Bot mailbox receipt %s (%s)", path, problem)
             continue

@@ -179,6 +179,28 @@ def test_cross_surface_chain_keeps_the_model_hint_through_a_quota_wall():
     assert "/model" in result["final_response"]
 
 
+def test_generic_429_without_reset_envelope_keeps_the_model_hint():
+    """GPT-review contract: rate_limit ALSO covers RPM/TPM/concurrency throttles with no
+    account envelope. Withholding the hint there would hide /model exactly when a sibling
+    deployment on the same provider would work — so without a structured long reset, KEEP."""
+    error = _Http(429, "HTTP 429: Rate limit exceeded")
+    classified = classify_api_error(error, provider="openrouter", model="m")
+    result = max_retries_exhausted_result(
+        _AgentSameSurfaceChain(), error, classified, is_rate_limited=True, **_exhausted_kwargs())
+    text = result["final_response"]
+    assert "/model" in text and "/retry" in text
+
+
+def test_short_reset_burst_throttle_keeps_the_model_hint():
+    """Reset under the 2-minute horizon is an imminent recovery, not a plan envelope."""
+    error = _rate_limit_with_reset_window()
+    classified = classify_api_error(error, provider="openrouter", model="m")
+    classified.error_context = {"reset_at": __import__("time").time() + 60}
+    result = max_retries_exhausted_result(
+        _AgentSameSurfaceChain(), error, classified, is_rate_limited=True, **_exhausted_kwargs())
+    assert "/model" in result["final_response"]
+
+
 def test_deployment_scoped_failure_never_withholds_the_model_hint():
     """Server/overload failures invalidate ONE deployment: even a same-surface chain keeps
     the hint, because another deployment on that surface can genuinely serve the turn."""
@@ -190,31 +212,40 @@ def test_deployment_scoped_failure_never_withholds_the_model_hint():
     assert "/model" in result["final_response"]
 
 
-def test_switch_advice_viable_reason_axis_and_chain_shapes():
-    """Unit contract for the gate itself. Billing never reaches it — an account-envelope 402
-    renders through the static billing-guidance family, not exhausted_copy — so the reason
-    axis here covers the scopes exhausted_copy can actually receive."""
+def test_switch_advice_viable_requires_structural_proof_not_reason_alone():
+    """Unit contract for the gate itself (GPT-review semantics). Billing never reaches
+    exhausted_copy — an account-envelope 402 renders through the static billing family —
+    and rate_limit alone is NOT proof of an account envelope: only a LONG structured
+    reset window (+ same-surface chain) withholds."""
     from agent.turn_failure_copy import switch_advice_viable
 
     same_surface = _AgentSameSurfaceChain()
     cross_surface = _AgentCrossSurfaceChain()
     no_chain = _Agent()
 
-    # account-quota scope: withheld ONLY when every hop shares the failed credential surface
-    assert switch_advice_viable(same_surface, "openrouter", "m", "rate_limit") is False
-    assert switch_advice_viable(same_surface, "openrouter", "m", "billing") is False
-    assert switch_advice_viable(cross_surface, "openrouter", "m", "rate_limit") is True
-    # empty chain proves nothing about the wider /model route set: hint stays
-    assert switch_advice_viable(no_chain, "openrouter", "m", "rate_limit") is True
-    # deployment-scoped failures never withhold: another deployment can genuinely serve
+    # structural proof: long reset + same-surface chain -> withhold
+    assert switch_advice_viable(same_surface, "openrouter", "m", "rate_limit",
+                                reset_seconds=900.0) is False
+    # reason matches but NO envelope -> generic throttle: hint stays (regression guard)
+    assert switch_advice_viable(same_surface, "openrouter", "m", "rate_limit") is True
+    # envelope but SHORT reset -> imminent recovery: hint stays
+    assert switch_advice_viable(same_surface, "openrouter", "m", "rate_limit",
+                                reset_seconds=60.0) is True
+    # envelope + reset but a cross-surface hop exists -> their own envelope governs
+    assert switch_advice_viable(cross_surface, "openrouter", "m", "rate_limit",
+                                reset_seconds=900.0) is True
+    # envelope + reset + empty chain -> no chain proof, /model wider than the chain
+    assert switch_advice_viable(no_chain, "openrouter", "m", "rate_limit",
+                                reset_seconds=900.0) is True
+    # deployment-scoped failures never withhold, envelope or not
     for reason in ("server_error", "timeout", "overloaded", "upstream_rate_limit"):
-        assert switch_advice_viable(same_surface, "openrouter", "m", reason) is True
-    # unknown/odd reason: default-keep
-    assert switch_advice_viable(same_surface, "openrouter", "m", "ssl_cert_verification") is True
+        assert switch_advice_viable(same_surface, "openrouter", "m", reason,
+                                    reset_seconds=900.0) is True
     # malformed chain entry: no proof of same-surface, keep the hint
     class _Malformed(_Agent):
         _fallback_chain = ({"oops": True}, "garbage")
-    assert switch_advice_viable(_Malformed(), "openrouter", "m", "rate_limit") is True
+    assert switch_advice_viable(_Malformed(), "openrouter", "m", "rate_limit",
+                                reset_seconds=900.0) is True
 
 
 def test_exhausted_plan_quota_429_names_the_reset_window_not_wait_a_minute():

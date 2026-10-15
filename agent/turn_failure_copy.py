@@ -160,6 +160,10 @@ def is_max_iteration_handoff(result: Any) -> bool:
     return bool(str(result.get("final_response") or "").strip())
 
 
+# Beyond this horizon a usage-limit reset is a plan/quota envelope, not a burst throttle:
+# the same threshold at which exhausted_copy switches to naming the reset window (#89401).
+_LONG_RESET_WINDOW_SECONDS = 120
+
 # ---- chat copy tables -----------------------------------------------------------------------
 
 _NEXT_STEPS_RETRY_BASE = "Wait a minute and send /retry"
@@ -168,11 +172,6 @@ _NEXT_STEPS_LOOP = (
     "Your message is saved. Send `continue` to try again, or start a new session with /new. "
     "If it happens again, run `hermes doctor` and share the error details."
 )
-
-# FailoverReasons whose scope invalidates the whole credential surface (account envelope),
-# not just one deployment: every configured route sharing that surface is equally dead for
-# the window, named reset or not (#89401 family).
-_ACCOUNT_QUOTA_REASONS = frozenset({FailoverReason.rate_limit.value, FailoverReason.billing.value})
 
 # Lead sentence per classifier reason once retries and fallback are exhausted.
 _EXHAUSTED_LEADS: dict[str, str] = {
@@ -366,22 +365,34 @@ def site_copy(code: str, **fields: Any) -> str:
     return _SITE_COPY[code].format_map(_Defaults(fields))
 
 
-def switch_advice_viable(agent: Any, provider: Any, model: Any, reason: str, *, base_url: str = "") -> bool:
+def switch_advice_viable(
+    agent: Any, provider: Any, model: Any, reason: str, *,
+    base_url: str = "", reset_seconds: Optional[float] = None,
+) -> bool:
     """Whether the exhausted-turn copy may advise "switch models with /model".
 
-    Default True (keep the hint) — it is withheld only on positive proof that the CONFIGURED
-    detour path cannot change the outcome: an account-scoped quota wall (rate_limit / billing
-    scope, regardless of whether the provider named a reset window — the chain's hops were
-    already walked by exhaustion time, so reset distance cannot revive them) AND every
-    fallback_providers entry lives on that same credential surface. Scope note: /model can
-    reach providers OUTSIDE fallback_providers too, so this withholds on chain-proof only —
-    deliberately conservative. Backend-identity comparison is delegated to
-    :mod:`agent.backend_identity` — labels never compared inline (#22548 lesson); note its
-    label rule treats two bare ``custom`` entries as one credential surface even with
+    Default True (keep the hint) — it is withheld only on POSITIVE proof that the CONFIGURED
+    detour path cannot change the outcome, and the proof must be structural, never inferred
+    from the reason alone (``rate_limit`` also covers RPM/TPM/concurrency throttles where a
+    sibling deployment works fine):
+
+    1. the failure is a rate limit carrying a LONG usage-limit reset window (>= 120s — the
+       same threshold at which :func:`exhausted_copy` stops calling it "a minute"; a short
+       burst throttle recovers imminently and the hint stays useful), AND
+    2. every fallback_providers entry lives on the SAME credential surface as the failed
+       route, so the switch would relist the exact quota that just died for that window.
+
+    Billing never reaches :func:`exhausted_copy` (the billing terminal renders the static
+    family), so no billing case exists here. ``/model`` can reach providers OUTSIDE
+    fallback_providers; this withholds on chain-proof only — deliberately conservative.
+    Identity comparison is delegated to :mod:`agent.backend_identity` (#22548 lesson); note
+    its label rule treats two bare ``custom`` entries as one credential surface even with
     distinct URLs/keys (pre-existing helper semantics the gate inherits). An empty or
     malformed chain proves nothing, so the hint stays."""
-    if reason not in _ACCOUNT_QUOTA_REASONS:
+    if reason != FailoverReason.rate_limit.value:
         return True
+    if reset_seconds is None or reset_seconds < _LONG_RESET_WINDOW_SECONDS:
+        return True  # no structured envelope / imminent recovery: hint stays
     chain = getattr(agent, "_fallback_chain", ()) or ()
     if not chain:
         return True

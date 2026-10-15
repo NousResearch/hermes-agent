@@ -4,7 +4,7 @@ import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
 import { isFileMediaPath, mediaKind } from '@/lib/media'
 import { summarizeShellCommand } from '@/lib/summarize-command'
-import { capitalize, firstStringField, normalize } from '@/lib/text'
+import { capitalize, firstStringField, inlineTextPrefix, normalize } from '@/lib/text'
 import { CONNECTION_CARD_KEY, isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
 import { envelopeErrorText, toolResultRecord } from '@/lib/tool-result-metadata'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
@@ -563,9 +563,10 @@ export function looksRedundant(title: string, detail: string): boolean {
     return true
   }
 
-  const norm = (input: string) => input.toLowerCase().replace(/\s+/g, ' ').trim()
+  const normalizedTitle = title.toLowerCase().replace(/\s+/g, ' ').trim()
 
-  return norm(title) === norm(detail)
+  // One character past the title is enough to prove a long payload differs.
+  return normalizedTitle === inlineTextPrefix(detail, normalizedTitle.length + 1).toLowerCase()
 }
 
 export function cleanVisibleText(text: string): string {
@@ -1036,10 +1037,9 @@ function toolSubtitle(
     const previewSource = (output || lines).trim()
 
     if (previewSource) {
-      const firstMeaningfulLine = previewSource
-        .split('\n')
-        .map(line => line.trim())
-        .find(line => line.length > 0)
+      // trim() above already removed leading empty lines. Splitting the whole
+      // stdout allocated thousands of strings to use only the first one.
+      const firstMeaningfulLine = previewSource.split('\n', 1)[0]
 
       if (firstMeaningfulLine) {
         return compactPreview(firstMeaningfulLine, 160)

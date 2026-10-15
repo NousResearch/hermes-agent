@@ -1,6 +1,20 @@
 name: Desktop bundle smoke
 
 on:
+  # Re-smoke an artifact that is already built, with the test scripts of any
+  # pushed ref (the ref this is dispatched on): `gh workflow run
+  # desktop-bundle-smoke.yml --ref <test-branch> -f platform=win32 -f arch=x64
+  # -f format=msix -f sha=<built commit> -f commit-build=true
+  # -f public-base=https://hermes-assets.nousresearch.com/`. No rebuild per test.
+  workflow_dispatch:
+    inputs:
+      platform: {required: true, type: string}
+      arch: {required: true, type: string}
+      format: {required: true, type: string}
+      sha: {description: Commit whose staged artifact is smoked, required: true, type: string}
+      tag: {default: '', type: string}
+      commit-build: {default: false, type: boolean}
+      public-base: {required: true, type: string}
   workflow_call:
     inputs:
       platform:
@@ -50,7 +64,7 @@ permissions:
 jobs:
   validate:
     name: Require a supported native smoke target
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     env:
       TARGET: ${{ inputs.platform }}/${{ inputs.arch }}/${{ inputs.format }}
@@ -89,9 +103,10 @@ jobs:
         shell: bash
         run: printf 'SMOKE_ROOT=%s/bundle-smoke\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
-          ref: ${{ inputs.channel-build != '' && inputs.controller-sha || inputs.sha }}
+          # A dispatch tests the artifact of `sha` with the dispatched ref's scripts.
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || inputs.channel-build != '' && inputs.controller-sha || inputs.sha }}
           persist-credentials: false
 
       - name: Set up driver tools only
@@ -230,7 +245,7 @@ jobs:
     name: Windows install and chat
     needs: validate
     if: inputs.platform == 'win32'
-    runs-on: ${{ inputs.arch == 'arm64' && 'windows-latest-32-arm-core' || 'windows-latest-32-core' }}
+    runs-on: ${{ inputs.arch == 'arm64' && 'windows-latest-32-arm-core' || 'blacksmith-32vcpu-windows-2025' }}
     # windows-11-arm runners are much slower (npm ci alone runs 12+ minutes and
     # the MSIX leg exceeds 30 total); x64 legs complete in ~14.
     timeout-minutes: 45

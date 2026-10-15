@@ -40,6 +40,22 @@ export const $petChange = atom<{ meta?: PetChangeMeta; tick: number }>({ tick: 0
  *  waiting for its next ambient tick. */
 export const $setupReadyTick = atom(0)
 
+/** Monotonic clock for "how fresh is this backend boot?" — bumped on every
+ *  `setup.ready` from the active source and on every gateway switch/wipe, so
+ *  onboarding can tell a round that answered inside the boot window (secrets
+ *  may still be hydrating; a `runtime_check` ok:false is not yet evidence)
+ *  from a steady-state one. Kept here, beside the tick, so both come from the
+ *  same lifecycle seam. */
+export const $gatewayBootGeneration = atom(0)
+
+/** When the active source's socket last said `gateway.ready` (the backend dispatches requests from
+ *  then on); null before the first. The onboarding due check counts its way-out budget from it. */
+export const $gatewayReadyAt = atom<null | number>(null)
+
+export function noteGatewayReady(): void {
+  $gatewayReadyAt.set(Date.now())
+}
+
 export function setChangeEventsAvailable(available: boolean): void {
   $changeEventsAvailable.set(available)
 }
@@ -70,6 +86,7 @@ export function notifyPairingChanged(): void {
 
 export function notifySetupReady(): void {
   $setupReadyTick.set($setupReadyTick.get() + 1)
+  $gatewayBootGeneration.set($gatewayBootGeneration.get() + 1)
 }
 
 /** Reset on gateway wipe/reconnect — a new backend re-advertises capability on
@@ -77,4 +94,5 @@ export function notifySetupReady(): void {
  *  the wipe just cleared. */
 export function resetLiveSync(): void {
   $changeEventsAvailable.set(false)
+  $gatewayBootGeneration.set($gatewayBootGeneration.get() + 1)
 }

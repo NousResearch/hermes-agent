@@ -131,3 +131,79 @@ def test_init_openrouter_exhausted_without_chain_keeps_generic_error():
                 fallback_model=[{"provider": "openrouter",
                                  "model": "poolside/laguna-s-2.1:free"}],
             )
+
+
+def test_init_fallback_recomputes_api_mode_for_copilot_gpt5_mini():
+    """#46527: Nous primary (api_mode=codex_responses, no creds) -> Copilot gpt-5-mini
+    fallback must end up with api_mode=chat_completions, not codex_responses.
+
+    Copilot's gpt-5-mini is the documented exception that uses Chat Completions,
+    not the Responses API. Before the fix, ``agent.api_mode`` stayed
+    ``"codex_responses"`` after the init-time fallback activated, so every request
+    for the fallback model went out via the Responses API and silently returned no
+    reasoning/thinking content.
+    """
+    fb_client = _mock_client(base_url="https://api.githubcopilot.com")
+
+    def fake_resolve(provider, model=None, raw_codex=False,
+                     explicit_base_url=None, explicit_api_key=None):
+        if provider == "copilot":
+            return fb_client, "gpt-5-mini"
+        return None, None  # primary (nous) has no usable credentials
+
+    with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
+         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("model_tools.check_toolset_requirements", return_value={}), \
+         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+
+        agent = AIAgent(
+            provider="nous",
+            model="gpt-5.4-mini",
+            api_mode="codex_responses",
+            api_key=None,
+            base_url=None,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            fallback_model=[{"provider": "copilot", "model": "gpt-5-mini"}],
+        )
+
+        assert agent.provider == "copilot"
+        assert agent.model == "gpt-5-mini"
+        assert agent._fallback_activated is True
+        assert agent.api_mode == "chat_completions"
+
+
+def test_init_fallback_keeps_codex_responses_for_openai_codex():
+    """#46527: Nous primary (api_mode=codex_responses, no creds) -> openai-codex
+    fallback must keep api_mode=codex_responses (openai-codex always uses the
+    Responses API)."""
+    fb_client = _mock_client(base_url="https://chatgpt.com/backend-api/codex")
+
+    def fake_resolve(provider, model=None, raw_codex=False,
+                     explicit_base_url=None, explicit_api_key=None):
+        if provider == "openai-codex":
+            return fb_client, "gpt-5.4-mini"
+        return None, None
+
+    with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
+         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("model_tools.check_toolset_requirements", return_value={}), \
+         patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+
+        agent = AIAgent(
+            provider="nous",
+            model="gpt-5.4-mini",
+            api_mode="codex_responses",
+            api_key=None,
+            base_url=None,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            fallback_model=[{"provider": "openai-codex", "model": "gpt-5.4-mini"}],
+        )
+
+        assert agent.provider == "openai-codex"
+        assert agent.model == "gpt-5.4-mini"
+        assert agent._fallback_activated is True
+        assert agent.api_mode == "codex_responses"

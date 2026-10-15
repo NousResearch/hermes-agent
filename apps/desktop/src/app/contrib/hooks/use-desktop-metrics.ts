@@ -36,7 +36,8 @@ import { $switcherOpen } from '@/store/session-switcher'
 import {
   $sharedMetricsConsent,
   readSharedMetricsConsent,
-  type SharedMetricsConsent
+  type SharedMetricsConsent,
+  sharedMetricsProfileRequester
 } from '@/store/shared-metrics'
 
 import { observeOnboardingMetrics } from './desktop-onboarding-metrics'
@@ -61,7 +62,12 @@ function observeSlowFrames(): () => void {
   }
 
   const types = PerformanceObserver.supportedEntryTypes ?? []
-  const type = types.includes('long-animation-frame') ? 'long-animation-frame' : types.includes('longtask') ? 'longtask' : null
+
+  const type = types.includes('long-animation-frame')
+    ? 'long-animation-frame'
+    : types.includes('longtask')
+      ? 'longtask'
+      : null
 
   if (!type) {
     return () => undefined
@@ -107,8 +113,11 @@ export function useDesktopMetrics({
   // Pinned to the focused (connection, profile): never whichever session tile is focused.
   const request = useMemo(
     () =>
-      <T>(method: string, params: Record<string, unknown> = {}) =>
-        requestGatewayForAgent<T>(connectionId, profileKey, method, params),
+      sharedMetricsProfileRequester(
+        <T>(method: string, params: Record<string, unknown> = {}) =>
+          requestGatewayForAgent<T>(connectionId, profileKey, method, params),
+        profileKey
+      ),
     [connectionId, profileKey]
   )
 
@@ -155,7 +164,12 @@ export function useDesktopMetrics({
   }, [enabled])
 
   useEffect(() => {
-    const area = enabled ? routeArea(pathname, contributedRoutes().map(route => route.path)) : null
+    const area = enabled
+      ? routeArea(
+          pathname,
+          contributedRoutes().map(route => route.path)
+        )
+      : null
 
     if (area) {
       recordFeatureUse(area)
@@ -167,13 +181,14 @@ export function useDesktopMetrics({
       return
     }
 
-    const overlay = (area: 'command_palette' | 'model_picker' | 'session_picker' | 'session_switcher') => (open: boolean) => {
-      if (open) {
-        recordFeatureUse(area)
-      }
+    const overlay =
+      (area: 'command_palette' | 'model_picker' | 'session_picker' | 'session_switcher') => (open: boolean) => {
+        if (open) {
+          recordFeatureUse(area)
+        }
 
-      trackFlow(area, open)
-    }
+        trackFlow(area, open)
+      }
 
     let findActive = $findInPage.get().active
     const onSessionSearch = () => recordFeatureUse('session_search')

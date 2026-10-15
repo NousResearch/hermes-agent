@@ -80,7 +80,8 @@ def _fail(errors: list[str], message: str) -> None:
 def _git(repo: Path, *args: str) -> str | None:
     try:
         result = subprocess.run(
-            [_GIT, *args], cwd=str(repo), capture_output=True, text=True, timeout=15
+            [_GIT, *args], cwd=str(repo), capture_output=True, text=True, timeout=15,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -122,7 +123,7 @@ def verify_stamp(stamp_path: Path, repo: Path, expect_commit: str | None, expect
         _fail(errors, f"completedAt {completed!r} is missing")
     else:
         try:
-            parsed = datetime.fromisoformat(completed.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(completed)
             if parsed.utcoffset() is None or parsed.utcoffset().total_seconds() != 0:
                 _fail(errors, f"completedAt {completed!r} is not UTC")
         except ValueError:

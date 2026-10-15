@@ -34,7 +34,7 @@ def _publish(tmp_path: Path, home: Path, name: str, old: dict, new: dict) -> sub
     return subprocess.run(
         [sys.executable, "-c", PROGRAM, str(project), str(staged), str(home / "plugins" / name),
          json.dumps(old), json.dumps(new)],
-        env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60)
+        env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60, check=False)
 
 
 def test_second_install_keeps_the_first_install_record(tmp_path):

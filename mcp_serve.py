@@ -200,7 +200,7 @@ def _extract_message_content(msg: dict) -> str:
     return str(content) if content else ""
 
 
-def _extract_attachments(msg: dict) -> List[dict]:
+def _extract_attachments(msg: dict) -> list[dict]:
     """Non-text attachments: image/file content blocks plus MEDIA: tags in the text."""
     attachments = []
     content = msg.get("content", "")
@@ -267,14 +267,14 @@ class EventBridge:
     gateway bridge, polling SQLite instead)."""
 
     def __init__(self):
-        self._queue: List[QueueEvent] = []
+        self._queue: list[QueueEvent] = []
         self._cursor = 0
         self._lock = threading.Lock()
         self._new_event = threading.Event()
         self._running = False
         self._thread: Optional[threading.Thread] = None
-        self._last_poll_timestamps: Dict[str, float] = {}  # session_key -> unix timestamp
-        self._pending_approvals: Dict[str, dict] = {}  # populated from events
+        self._last_poll_timestamps: dict[str, float] = {}  # session_key -> unix timestamp
+        self._pending_approvals: dict[str, dict] = {}  # populated from events
         self._state_db_mtime: float = 0.0  # skip polling work when state.db is unchanged
         self._cached_sessions_index: dict = {}
 
@@ -301,7 +301,7 @@ class EventBridge:
             self._thread.join(timeout=5)
         logger.debug("EventBridge stopped")
 
-    def _matching(self, after_cursor: int, session_key: Optional[str], limit: int) -> List[dict]:
+    def _matching(self, after_cursor: int, session_key: Optional[str], limit: int) -> list[dict]:
         with self._lock:
             return [e.as_dict() for e in self._queue
                     if e.cursor > after_cursor and (not session_key or e.session_key == session_key)][:limit]
@@ -325,7 +325,7 @@ class EventBridge:
             self._new_event.wait(timeout=min(remaining, POLL_INTERVAL))
         return None
 
-    def list_pending_approvals(self) -> List[dict]:
+    def list_pending_approvals(self) -> list[dict]:
         """List approval requests observed during this bridge session."""
         with self._lock:
             return sorted(self._pending_approvals.values(), key=lambda a: a.get("created_at", ""))
@@ -689,7 +689,7 @@ _TOOL_NAMES = (
 )
 
 
-def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "MCPServer":
+def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> MCPServer:
     """Create and return the Hermes MCP server with all tools registered."""
     if not _MCP_SERVER_AVAILABLE:
         raise ImportError(f"MCP server requires the 'mcp' package. Install with: {sys.executable} -m pip install 'mcp'")

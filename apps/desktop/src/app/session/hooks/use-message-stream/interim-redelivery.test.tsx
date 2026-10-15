@@ -32,6 +32,7 @@ const ev = (type: string, payload: Record<string, unknown> = {}): GatewayEvent =
 
 const start = () => act(() => stream.handleEvent(ev('message.start')))
 const delta = (text: string) => act(() => stream.handleEvent(ev('message.delta', { text })))
+
 const interim = (text: string, extra: Record<string, unknown> = {}) =>
   act(() => stream.handleEvent(ev('message.interim', { text, ...extra })))
 

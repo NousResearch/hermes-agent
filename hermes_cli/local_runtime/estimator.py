@@ -6,7 +6,7 @@ ground truth after it. Unknown shapes round UP (never underestimate memory).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from hermes_cli.local_runtime.gguf import GGUFHeader
@@ -42,6 +42,13 @@ def _expand_swa_period(period: int, n_layer: int, dense_first: bool) -> list[int
 # right order; unknown SSM shapes must never underestimate.
 _RECURRENT_STATE_PER_LAYER = 4 << 20
 
+# Compute-buffer bytes per microbatch token per window token, per llama.cpp context, for
+# architectures whose attention scores the whole window each microbatch. qwen4exp's QSA indexer:
+# measured on b11370 with the router's unified KV (every slot sees the full window), device plus
+# host buffers, target and MTP head contexts alike (39.5 + 6.1 B; 5.9 GiB per context at 256K and
+# -ub 512, ~23 GiB at -ub 2048).
+_WINDOW_COMPUTE_BYTES = {"qwen4exp": 46}
+
 
 class LayerKind(Enum):
     FULL = "full"
@@ -55,6 +62,8 @@ class ModelProfile:
     construct profiles directly."""
 
     name: str
+    # Weights the engine loads when it reads lazy_bytes from disk on demand; as_loaded() adds them
+    # back on a machine where it reads them up front.
     weights_bytes: int
     embd_table_bytes: int
     n_ctx_train: int
@@ -68,6 +77,18 @@ class ModelProfile:
     # postures): the draft adds ~17% to per-token KV; 1.2 rounds up so the error stays on the safe
     # side (+250 MiB at 256K, never negative).
     kv_scale: float = 1.0
+    # block index -> FFN weight bytes (from the tensor table); empty when unknown.
+    ffn_block_bytes: dict[int, int] = field(default_factory=dict)
+    # Bytes of architecture-marked tensors (gguf._LAZY_READ_TENSORS) the engine can read from disk
+    # on demand instead of loading.
+    lazy_bytes: int = 0
+    # Compute-buffer bytes per window token at the launch posture (plan_launch sets it from
+    # window_compute_bytes, the microbatch and the context count); zero prices none.
+    window_compute_per_token: int = 0
+
+    @property
+    def window_compute_bytes(self) -> int:
+        return _WINDOW_COMPUTE_BYTES.get(self.architecture, 0)
 
     @property
     def per_token_kv_f16(self) -> int:
@@ -89,8 +110,21 @@ class HardwareBudget:
     total_device_bytes: int
     ram_available_bytes: int
     uma: bool = False
-    gpu_name: str = ""          # detected identity for shipped performance estimates
+    gpu_name: str = ""          # display name; legacy fallback for performance estimates
     platform: str = ""          # sys.platform of the machine being priced
+    gpu_pci_id: int | None = None  # nvidia-smi's packed PCI device/vendor ID
+    # The engine reads lazy tensors from disk here. llama.cpp's own default does so everywhere
+    # except integrated GPUs (b11370 #28160); Hermes passes --lazy-mode on to NVIDIA's, so only
+    # AMD/Intel integrated GPUs load them up front.
+    lazy_reads: bool = True
+
+
+def as_loaded(profile: ModelProfile, budget: HardwareBudget) -> ModelProfile:
+    """The profile as this machine loads it: on-demand tensors count as weights where the engine
+    reads them up front."""
+    if profile.lazy_bytes and not budget.lazy_reads:
+        return replace(profile, weights_bytes=profile.weights_bytes + profile.lazy_bytes, lazy_bytes=0)
+    return profile
 
 
 def profile_from_gguf(header: GGUFHeader) -> ModelProfile:
@@ -132,9 +166,11 @@ def profile_from_gguf(header: GGUFHeader) -> ModelProfile:
         n_attn_seen += 1
 
     return ModelProfile(
-        name=header.path, weights_bytes=header.tensor_bytes, embd_table_bytes=header.embd_table_bytes,
+        name=header.path, weights_bytes=header.tensor_bytes - header.lazy_bytes,
+        embd_table_bytes=header.embd_table_bytes,
         n_ctx_train=header.n_ctx_train, layers=layers, swa_window=header.sliding_window,
-        moe=header.expert_count > 0, architecture=header.architecture, n_vocab=header.n_vocab)
+        moe=header.expert_count > 0, architecture=header.architecture, n_vocab=header.n_vocab,
+        ffn_block_bytes=dict(header.ffn_block_bytes), lazy_bytes=header.lazy_bytes)
 
 
 def kv_dtype_factor(flash_attention: bool) -> float:
@@ -144,8 +180,9 @@ def kv_dtype_factor(flash_attention: bool) -> float:
 
 
 def ctx_bytes(profile: ModelProfile, window: int, *, flash_attention: bool = True) -> int:
-    """Context memory for one window: full layers linear in T, SWA layers capped at the sliding
-    window, recurrent layers constant. Scaled by profile.kv_scale (MTP draft context)."""
+    """Memory that grows with the window: full layers linear in T, SWA layers capped at the sliding
+    window, recurrent layers constant, KV scaled by profile.kv_scale (MTP draft context), plus the
+    posture's window-scaled compute buffers."""
     factor = kv_dtype_factor(flash_attention)
     total = 0.0
     for kind, per_token_f16 in profile.layers:
@@ -155,7 +192,7 @@ def ctx_bytes(profile: ModelProfile, window: int, *, flash_attention: bool = Tru
             total += per_token_f16 * factor * min(window, profile.swa_window)
         else:
             total += per_token_f16 * factor * window
-    return int(total * profile.kv_scale)
+    return int(total * profile.kv_scale) + profile.window_compute_per_token * window
 
 
 @dataclass

@@ -70,12 +70,14 @@ interface ProjectRowSnapshot {
 }
 
 function snapshotProjectRows(excludeId: null | string): ProjectRowSnapshot[] {
-  return queryAllVisible<HTMLElement>('[data-sessions-project]')
-    .map(el => ({ el, id: el.dataset.sessionsProject || '', rect: snapRect(el) }))
-    // Home (no folder to move into) and the session's own current project
-    // (nothing to move) aren't drop targets — same exclusion the row's
-    // "Move to project" menu applies to its own list.
-    .filter(row => row.id !== NO_PROJECT_ID && row.id !== excludeId)
+  return (
+    queryAllVisible<HTMLElement>('[data-sessions-project]')
+      .map(el => ({ el, id: el.dataset.sessionsProject || '', rect: snapRect(el) }))
+      // Home (no folder to move into) and the session's own current project
+      // (nothing to move) aren't drop targets — same exclusion the row's
+      // "Move to project" menu applies to its own list.
+      .filter(row => row.id !== NO_PROJECT_ID && row.id !== excludeId)
+  )
 }
 
 /** A chat surface's drag-start geometry: the anchor pane id it advertises

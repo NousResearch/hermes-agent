@@ -30,7 +30,7 @@ import {
   retainBotScreen,
   viewerHash
 } from './screen-connection'
-import { ScreenInstallCard } from './screen-install'
+import { ScreenNotInstalled } from './screen-install'
 import {
   $screenState,
   beginScreenStatusRequest,
@@ -425,7 +425,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   }
 
   if (status && !status.installed) {
-    return <ScreenInstallCard bot={bot} onInstalled={next => setScreenStatus(bot, next)} status={status} />
+    return <ScreenNotInstalled bot={bot} onInstalled={next => setScreenStatus(bot, next)} status={status} />
   }
 
   if (status && !status.running && status.image_switch) {

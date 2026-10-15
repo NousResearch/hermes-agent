@@ -9,7 +9,8 @@ import {
   enqueueQueuedPrompt,
   getQueuedPrompts,
   MAX_AUTO_DRAIN_ATTEMPTS,
-  parkQueuedPrompts
+  parkQueuedPrompts,
+  resetFrozenQueuedTransportsForTests
 } from '@/store/composer-queue'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import {
@@ -76,6 +77,7 @@ describe('useBackgroundQueueDrain', () => {
     // #46732) — stale persisted entries from an earlier test would be adopted
     // into the atom and drained here as if they were fresh queue state.
     window.localStorage.removeItem('hermes.desktop.composerQueue.v1')
+    resetFrozenQueuedTransportsForTests()
     // Production drain waits for the sidebar list. Tests that assert drain
     // behavior are post-load unless they opt into the loading gate.
     setSessionsLoading(false)
@@ -87,6 +89,7 @@ describe('useBackgroundQueueDrain', () => {
     vi.useRealTimers()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    resetFrozenQueuedTransportsForTests()
     $sessions.set([])
     setSessionsLoading(true)
     clearNotifications()
@@ -97,13 +100,14 @@ describe('useBackgroundQueueDrain', () => {
     const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
     const submitText = vi.fn(async () => true)
 
-    enqueueQueuedPrompt('stored-session-a', { text: 'continue in the background', attachments: [] })
+    const entry = enqueueQueuedPrompt('stored-session-a', { text: 'continue in the background', attachments: [] })!
     clearAllSessionStates()
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
     await waitFor(() => {
       expect(submitText).toHaveBeenCalledWith('continue in the background', {
+        submission_id: entry.id,
         attachments: [],
         fromQueue: true,
         sessionId: 'rt-session-a',
@@ -112,6 +116,77 @@ describe('useBackgroundQueueDrain', () => {
     })
 
     await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toHaveLength(0))
+  })
+
+  it('submits a queued entry once when two idle windows both drain it', async () => {
+    // Web Locks are arbitrated across windows by the browser; jsdom has none.
+    // A FIFO mutex per lock name stands in for it.
+    const tails = new Map<string, Promise<unknown>>()
+
+    const request = (name: string, callback: () => Promise<unknown>) => {
+      const granted = (tails.get(name) ?? Promise.resolve()).then(callback)
+      tails.set(
+        name,
+        granted.catch(() => {})
+      )
+
+      return granted
+    }
+
+    Object.defineProperty(window.navigator, 'locks', { configurable: true, value: { request } })
+
+    try {
+      const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+      let accept!: (accepted: boolean) => void
+      const submitText = vi.fn(() => new Promise<boolean>(resolve => (accept = resolve)))
+
+      enqueueQueuedPrompt('stored-session-a', { text: 'send me once', attachments: [] })
+      clearAllSessionStates()
+
+      // Two windows, each viewing another chat, share session A's queue.
+      render(<Harness runtimeMap={runtimeMap} selectedStoredSessionId="stored-session-b" submitText={submitText} />)
+      render(<Harness runtimeMap={runtimeMap} selectedStoredSessionId="stored-session-c" submitText={submitText} />)
+
+      await waitFor(() => expect(submitText).toHaveBeenCalled())
+      await new Promise(resolve => window.setTimeout(resolve, 0))
+      await act(async () => accept(true))
+
+      await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toHaveLength(0))
+      // Let the window that waited on the claim finish its turn at the queue.
+      await act(async () => {
+        await Promise.all(tails.values())
+      })
+
+      expect(submitText).toHaveBeenCalledTimes(1)
+    } finally {
+      delete (window.navigator as { locks?: unknown }).locks
+    }
+  })
+
+  it('forwards queued displayText so frozen @terminal chips render in the bubble', async () => {
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    enqueueQueuedPrompt('stored-session-a', {
+      text: 'look at @terminal:`zsh:23-58`',
+      displayText: 'look at @terminal:`zsh:23-58`',
+      attachments: [],
+      frozenTransport: '```terminal\nselection A\n```\n\nlook at'
+    })
+    clearAllSessionStates()
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await waitFor(() => {
+      expect(submitText).toHaveBeenCalledWith('```terminal\nselection A\n```\n\nlook at', {
+        attachments: [],
+        displayText: 'look at @terminal:`zsh:23-58`',
+        fromQueue: true,
+        submission_id: expect.any(String),
+        sessionId: 'rt-session-a',
+        storedSessionId: 'stored-session-a'
+      })
+    })
   })
 
   it('leaves the selected session queue to the mounted ChatBar drainer', async () => {
@@ -202,12 +277,13 @@ describe('useBackgroundQueueDrain', () => {
     const runtimeMap = { current: new Map<string, string>() }
     const submitText = vi.fn(async () => true)
 
-    enqueueQueuedPrompt('stored-session-a', { text: 'resume then send', attachments: [] })
+    const entry = enqueueQueuedPrompt('stored-session-a', { text: 'resume then send', attachments: [] })!
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
     await waitFor(() => {
       expect(submitText).toHaveBeenCalledWith('resume then send', {
+        submission_id: entry.id,
         attachments: [],
         fromQueue: true,
         sessionId: null,
@@ -271,19 +347,22 @@ describe('useBackgroundQueueDrain', () => {
 
     enqueueQueuedPrompt('stored-session-a', { text: 'send after load', attachments: [] })
 
+    const queuedId = getQueuedPrompts('stored-session-a')[0].id
+
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
     await new Promise(resolve => window.setTimeout(resolve, 0))
     expect(submitText).not.toHaveBeenCalled()
 
-    setSessionsLoading(false)
+    act(() => setSessionsLoading(false))
 
     await waitFor(() => {
       expect(submitText).toHaveBeenCalledWith('send after load', {
         attachments: [],
         fromQueue: true,
         sessionId: 'rt-session-a',
-        storedSessionId: 'stored-session-a'
+        storedSessionId: 'stored-session-a',
+        submission_id: queuedId
       })
     })
 

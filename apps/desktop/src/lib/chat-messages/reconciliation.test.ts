@@ -430,6 +430,7 @@ it('preserveLocalSystemNotices re-grafts trailing client-local system notices', 
     role: 'system',
     timestamp: 1234
   }
+
   const refreshed = [row('s1', 'user', 'prompt'), row('s2', 'assistant', 'reply')]
 
   const preserved = preserveLocalSystemNotices(refreshed, [...refreshed, notice])
@@ -444,6 +445,7 @@ it('preserveLocalSystemNotices does not duplicate a notice the page already carr
     role: 'system',
     timestamp: 1234
   }
+
   const refreshed = [
     row('s1', 'user', 'prompt'),
     row('s2', 'assistant', 'reply'),

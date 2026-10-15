@@ -23,10 +23,12 @@ import {
   messageContentText,
   pickPrimaryPreviewTarget
 } from '@/components/assistant-ui/thread/content'
+import { MessageHoverTime } from '@/components/assistant-ui/thread/message-hover-time'
 import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/message-parts'
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { ResponseMessageIds } from '@/components/assistant-ui/thread/response-group'
 import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
+import { threadMessageIndex } from '@/components/assistant-ui/thread/thread-message-index'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useMessageReactions, useTapbackDoubleClick } from '@/components/assistant-ui/thread/use-message-reactions'
 import { AGENT_MESSAGE_RE } from '@/components/assistant-ui/thread/user-message'
@@ -126,32 +128,26 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
   const interAgentSender = useAuiState(s => {
     const messages = s.thread.messages
 
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].id !== s.message.id) {
-        continue
+    // Shared id->index map: a per-row scan for its own position was
+    // mounted-rows x transcript-length on every streamed chunk (#126486).
+    for (let j = threadMessageIndex(messages, s.message.id) - 1; j >= 0; j--) {
+      const prev = messages[j] as { content?: unknown; role?: string }
+
+      if (prev.role === 'assistant') {
+        return null
       }
 
-      for (let j = i - 1; j >= 0; j--) {
-        const prev = messages[j] as { content?: unknown; role?: string }
+      if (prev.role === 'user') {
+        const match = AGENT_MESSAGE_RE.exec(messageContentText(prev.content as never).trim())
 
-        if (prev.role === 'assistant') {
+        if (!match) {
           return null
         }
 
-        if (prev.role === 'user') {
-          const match = AGENT_MESSAGE_RE.exec(messageContentText(prev.content as never).trim())
+        const sender = (match[1] || match[3] || 'agent').trim()
 
-          if (!match) {
-            return null
-          }
-
-          const sender = (match[1] || match[3] || 'agent').trim()
-
-          return dispatchedTo(messages.slice(0, j), [match[1], match[2], match[3]]) ? null : sender
-        }
+        return dispatchedTo(messages.slice(0, j), [match[1], match[2], match[3]]) ? null : sender
       }
-
-      return null
     }
 
     return null
@@ -313,6 +309,7 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
           >
             {/* Todos render in the composer status stack now, not inline. */}
             {MESSAGE_PARTS}
+            <StoppedNotice />
             <AssistantStatusSlot />
             <AssistantPreviewEmbeds />
             <MessagePrimitive.Error>
@@ -367,6 +364,28 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   )
 }
 
+const StoppedNotice: FC = () => {
+  const { t } = useI18n()
+
+  const stopped = useAuiState(
+    s => s.message.status?.type !== 'running' && s.message.metadata?.custom?.interrupted === true
+  )
+
+  if (!stopped) {
+    return null
+  }
+
+  return (
+    <div
+      className="flex items-center gap-1 px-(--message-text-indent) pt-1 text-[0.72rem] text-(--ui-text-tertiary)"
+      data-slot="aui_assistant-message-stopped"
+    >
+      <Codicon className="size-3" name="debug-stop" />
+      {t.assistant.thread.responseStopped}
+    </div>
+  )
+}
+
 /**
  * PERF leaf: the only subscriber to this message's streaming status inside the
  * message content. Previously `messageStatus` / `isPlaceholder` /
@@ -404,14 +423,26 @@ const AssistantStatusSlot: FC = () => {
       return 'none'
     }
 
-    return s.message.status?.type === 'running' && s.message.content.length === 0 ? 'placeholder' : 'activity'
+    if (s.message.status?.type !== 'running') {
+      return 'activity'
+    }
+
+    if (s.message.content.length === 0) {
+      return 'placeholder'
+    }
+
+    return s.message.content.every(part => part.type === 'reasoning') ? 'thinking' : 'activity'
   })
 
   if (slot === 'none') {
     return null
   }
 
-  return slot === 'placeholder' ? <ResponseLoadingIndicator /> : <TurnActivityIndicator />
+  return slot === 'placeholder' ? (
+    <ResponseLoadingIndicator />
+  ) : (
+    <TurnActivityIndicator thinking={slot === 'thinking'} />
+  )
 }
 
 /**
@@ -620,12 +651,12 @@ const SwitchProviderAction: FC<{ label: string }> = ({ label }) => {
   )
 }
 
-// Settings → Keys deep link for a rejected API key: `?tab=keys` plus
-// `&key=<ENV>` when the descriptor names the env var (keys-settings.tsx
-// scrolls to and expands that row). Older backends omit `api_key_env`; the
-// tab alone is still the right place.
+// Settings → Providers → API keys deep link for a rejected API key, plus
+// `&key=<ENV>` when the descriptor names the env var (providers-settings.tsx
+// scrolls to and expands that provider). Older backends omit `api_key_env`;
+// the API-keys list alone is still the right place.
 const updateApiKeyRoute = (surface: ErrorSurface | undefined) => {
-  const params = new URLSearchParams({ tab: 'keys' })
+  const params = new URLSearchParams({ tab: 'providers', pview: 'keys' })
 
   if (surface?.apiKeyEnv) {
     params.set('key', surface.apiKeyEnv)
@@ -1025,6 +1056,7 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
         }
         data-slot="aui_msg-actions"
       >
+        <MessageHoverTime className="mr-1 px-0.5" />
         {onBranchInNewChat && (
           <TooltipIconButton
             onClick={() => {

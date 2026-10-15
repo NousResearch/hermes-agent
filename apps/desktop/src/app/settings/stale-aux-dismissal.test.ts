@@ -33,7 +33,10 @@ describe('staleAuxFingerprint', () => {
   })
 
   it('includes the slot endpoint, so a repointed base_url re-arms the banner', () => {
-    const pinned = staleAuxFingerprint('nous', slots([['vision', 'openai', 'gpt-4o-mini', 'https://api.example.com/v1']]))
+    const pinned = staleAuxFingerprint(
+      'nous',
+      slots([['vision', 'openai', 'gpt-4o-mini', 'https://api.example.com/v1']])
+    )
 
     // Same task/provider/model on a different endpoint: different billing
     // surface, so a stored acknowledgement must not cover it.

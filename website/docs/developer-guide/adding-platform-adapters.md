@@ -470,6 +470,15 @@ Why this hook is necessary: built-in platforms (Telegram, Discord, Slack, etc.) 
 
 The function receives the same `pconfig` and `chat_id` that the live adapter would, plus optional `thread_id`, `media_files`, and `force_document` keyword arguments. Returning `{"success": True, "message_id": ...}` is treated as a successful delivery; returning `{"error": "..."}` surfaces the message in cron's `delivery_errors`. Exceptions raised inside the function are caught by the dispatcher and reported as `Plugin standalone send failed: <reason>`. Reference implementations live in `plugins/platforms/{irc,teams,google_chat}/adapter.py`.
 
+`media_files` contains `(local_path, is_voice)` pairs. A sender that uploads these
+files must register `standalone_sender_supports_media=True` and return
+`media_delivered=True` only after all requested attachments succeed. The flag
+defaults to false: accepting `media_files` for signature compatibility alone
+does not promise attachment delivery. Without the flag, attachment-only sends
+are refused before invoking the sender; text sends receive an omission warning.
+Live adapters continue to use their native media methods independently of this
+standalone capability. Webex and Buzz provide media-capable examples.
+
 ## Surfacing Env Vars in `hermes config`
 
 `hermes_cli/config.py` scans `plugins/platforms/*/plugin.yaml` at import time and auto-populates `OPTIONAL_ENV_VARS` from `requires_env` and (optional) `optional_env` blocks. Use the rich-dict form to contribute proper descriptions, prompts, password flags, and URLs — the CLI setup UI picks them up for free.

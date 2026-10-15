@@ -386,6 +386,25 @@ class TestWebexEventBuilding:
 
 
 class TestWebexThreadContext:
+    @pytest.mark.asyncio
+    async def test_direct_thread_history_keeps_unmentioned_messages(self):
+        adapter = _make_adapter()
+        adapter._api_get_json = AsyncMock(side_effect=[
+            {"id": "parent", "text": "Direct conversation", "personId": "sender"},
+            {"items": []},
+        ])
+        adapter._lookup_display_name = AsyncMock(return_value="Alice")
+
+        context = await adapter._fetch_thread_context(
+            room_id="direct-room", parent_id="parent", current_message_id="current",
+            chat_type="dm",
+        )
+
+        assert "Direct conversation" in context
+        adapter._api_get_json.assert_awaited_with("messages", params={
+            "roomId": "direct-room", "parentId": "parent", "max": 31,
+        })
+
     def test_active_thread_lookup_uses_public_profile_scoped_store_api(self):
         from gateway.session import SessionSource, build_session_key
 
@@ -445,6 +464,7 @@ class TestWebexThreadContext:
                     "roomId": room_id,
                     "parentId": "parent-1",
                     "max": 31,
+                    "mentionedPeople": "me",
                 }
                 return {
                     "items": [

@@ -1323,7 +1323,8 @@ class GatewayAdapterLifecycleMixin:
                 owner_origin=owner_origin, incoming_origin=incoming_origin,
             ) or self._refuse_duplicate_claim(listener_claim, claimed, profile_name, platform, "listener"):
                 continue
-            self._configure_profile_adapter(adapter, profile_name, platform)
+            with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+                self._configure_profile_adapter(adapter, profile_name, platform)
             try:
                 with _profile_runtime_scope(profile_home, hydrate_secrets=False):
                     success = await self._connect_initial_adapter_with_timeout(adapter, platform)

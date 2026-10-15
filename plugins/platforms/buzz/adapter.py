@@ -2010,9 +2010,9 @@ def register(ctx):
         install_hint="Requires the buzz CLI binary (https://github.com/block/buzz) on PATH or at BUZZ_CLI_PATH",
         setup_fn=interactive_setup, env_enablement_fn=_env_enablement, apply_yaml_config_fn=_apply_yaml_config,
         cron_deliver_env_var="BUZZ_HOME_CHANNEL", standalone_sender_fn=_standalone_send,
+        standalone_sender_supports_media=True,
         allowed_users_env="BUZZ_ALLOWED_USERS", allow_all_env="BUZZ_ALLOW_ALL_USERS", emoji="🐝",
-        pii_safe=False,  # identities are pubkeys, not phone numbers
-        allow_update_command=True,
+        pii_safe=False, allow_update_command=True,  # identities are pubkeys, not phone numbers
         platform_hint=(
             "You are collaborating in a Buzz workspace (Block's Nostr-based "
             "human+agent platform). Markdown IS supported. Users address you "

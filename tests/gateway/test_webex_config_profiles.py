@@ -1,7 +1,11 @@
 """Webex config and thread lookup follow the owning profile."""
 
+from pathlib import Path
 from types import SimpleNamespace
+
 from unittest.mock import MagicMock
+
+import pytest
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 from gateway.session import build_session_key
@@ -63,3 +67,38 @@ def test_yaml_token_and_scoped_env_mode_agree_on_listener(monkeypatch):
         assert _is_port_binding(config)
     finally:
         secret_scope.reset_secret_scope(scope)
+
+
+@pytest.mark.asyncio
+async def test_secondary_startup_configures_listener_in_own_scope(tmp_path, monkeypatch):
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from hermes_constants import get_hermes_home
+
+    home = tmp_path / "hermes"
+    profile = home / "profiles" / "work"
+    profile.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_constants._default_hermes_root_memo", None)
+    monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", True)
+    (profile / ".env").write_text(
+        "WEBEX_CONNECTION_MODE=webhook\n"
+        "WEBEX_WEBHOOK_SECRET=profile-secret\n"
+        "WEBEX_WEBHOOK_PUBLIC_URL=https://bot.example/p/work\n"
+    )
+    (profile / "config.yaml").write_text(
+        "platforms:\n  webex:\n    enabled: true\n    token: yaml-bot-credential\n"
+    )
+    connected = []
+
+    async def connect(adapter, _platform):
+        connected.append((adapter._connection_mode,
+                          getattr(adapter, "_shared_listener_profile", None),
+                          get_hermes_home()))
+        return True
+
+    runner = GatewayRunner(GatewayConfig(multiplex_profiles=True))
+    monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", connect)
+    assert await runner._start_one_profile_adapters("work", profile, {}) == 1
+    assert connected == [("webhook", "work", profile)]

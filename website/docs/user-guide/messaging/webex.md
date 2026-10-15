@@ -134,7 +134,7 @@ public listener or profile prefix.
 | **Direct space** | Hermes replies normally to messages and slash commands |
 | **Group space** | Free-form chat requires directly mentioning the bot |
 | **Group space slash command** | Mention the bot before the command so Webex delivers the message to Hermes |
-| **Thread replies** | Hermes replies in the same Webex thread when `parentId` is present and loads recent thread context when first tagged in an existing thread |
+| **Thread replies** | Hermes replies in the same Webex thread when `parentId` is present and loads accessible thread context when first tagged in an existing thread |
 
 Examples in a group space:
 
@@ -145,6 +145,10 @@ Examples in a group space:
 ```
 
 Hermes does **not** auto-tag the user in outbound replies.
+
+Webex bot permissions limit group-thread history to messages that mention the
+bot. Hermes can include an accessible parent message and prior mentions; it
+cannot read the complete unmentioned history of a group space.
 
 ## Home Room
 

@@ -108,6 +108,10 @@ class PlatformEntry:
     # ``async (pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False)
     # -> {"success": True, "message_id": ...} | {"error": str}``.
     standalone_sender_fn: Optional[Callable[..., Awaitable[dict]]] = None
+    # Explicit opt-in: accepting media_files for signature compatibility does not
+    # mean the standalone sender uploads attachments. Successful uploads return
+    # media_delivered=True; live adapter media methods are checked independently.
+    standalone_sender_supports_media: bool = False
     # Every inbound event is produced by the service the adapter authenticated to with its own
     # credential (an event bus, not a person), so user allowlists and pairing do not apply. Never
     # set it for a chat platform: any sender would reach the agent. Consumer: Home Assistant.

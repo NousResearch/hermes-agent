@@ -46,8 +46,8 @@ def _complete_install(listener_dir: Path, lock_digest: str) -> None:
     (listener_dir / _INSTALL_COMPLETION_FILE).write_text(lock_digest, encoding="ascii")
 
 
-async def _finish_owned_task(task: asyncio.Task[_T]) -> _T:
-    """Finish a mutation or reap before cancellation releases the install lock."""
+async def _finish_owned_task(task: asyncio.Future[_T]) -> _T:
+    """Finish owned cleanup before propagating a caller's cancellation."""
     cancelled = False
     while not task.done():
         try:

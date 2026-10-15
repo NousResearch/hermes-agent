@@ -23,7 +23,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 try:
@@ -64,9 +64,11 @@ from hermes_constants import (
     with_hermes_node_path,
 )
 from .listener_runtime import (
+    _finish_owned_task,
     install_listener_dependencies,
     listener_installation_complete,
 )
+from .text import MAX_MESSAGE_BYTES, split_message, utf8_length
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +192,11 @@ class WebexAdapter(BasePlatformAdapter):
 
     SUPPORTS_MESSAGE_EDITING = True
     serves_profile_prefix = True
+    MAX_MESSAGE_LENGTH = MAX_MESSAGE_BYTES
+
+    @property
+    def message_len_fn(self) -> Callable[[str], int]:
+        return utf8_length
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("webex"))
@@ -385,28 +392,43 @@ class WebexAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._running = False
-        if self._poll_task and not self._poll_task.done():
-            self._poll_task.cancel()
+        try:
             try:
-                await self._poll_task
-            except asyncio.CancelledError:
-                pass
-        self._poll_task = None
-        await self._cleanup()
-        self._release_platform_lock()
-        self._mark_disconnected()
-        logger.info("[Webex] Disconnected")
+                if self._poll_task and not self._poll_task.done():
+                    self._poll_task.cancel()
+                    try:
+                        await self._poll_task
+                    except asyncio.CancelledError:
+                        if asyncio.current_task().cancelling():
+                            raise
+            finally:
+                self._poll_task = None
+                await self._cleanup()
+        finally:
+            self._release_platform_lock()
+            self._mark_disconnected()
+            logger.info("[Webex] Disconnected")
 
     async def _cleanup(self) -> None:
-        await self._stop_websocket_listener()
-        self._shared_ingress_app = None
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
-        self._app = None
-        if self._session:
-            await self._session.close()
-            self._session = None
+        try:
+            await self._stop_websocket_listener()
+        finally:
+            self._shared_ingress_app = None
+            try:
+                if self._runner:
+                    await _finish_owned_task(
+                        asyncio.create_task(self._runner.cleanup())
+                    )
+            finally:
+                self._runner = None
+                self._app = None
+                try:
+                    if self._session:
+                        await _finish_owned_task(
+                            asyncio.create_task(self._session.close())
+                        )
+                finally:
+                    self._session = None
 
     async def _start_webhook_listener(self) -> None:
         from gateway.platforms.shared_ingress import bind_listener
@@ -433,18 +455,22 @@ class WebexAdapter(BasePlatformAdapter):
         if not message:
             return SendResult(success=True)
 
-        payload = self._build_text_payload(chat_id, message, metadata=metadata)
-        if payload is None:
-            return SendResult(success=False, error="Missing room target")
-
-        data = await self._api_post_json("messages", payload)
-        if not data:
-            return SendResult(success=False, error="Webex send returned no data")
-        if data.get("id"):
-            return SendResult(
-                success=True, message_id=str(data["id"]), raw_response=data
-            )
-        return SendResult(success=False, error=json.dumps(data))
+        sent_ids = []
+        for chunk in split_message(message):
+            payload = self._build_text_payload(chat_id, chunk, metadata=metadata)
+            if payload is None:
+                return SendResult(success=False, error="Missing room target")
+            data = await self._api_post_json("messages", payload)
+            if not data or not data.get("id"):
+                return SendResult(
+                    success=False,
+                    error=json.dumps(data) if data else "Webex send returned no data",
+                )
+            sent_ids.append(str(data["id"]))
+        return SendResult(
+            success=True, message_id=sent_ids[-1], raw_response=data,
+            continuation_message_ids=tuple(sent_ids[:-1]),
+        )
 
     async def edit_message(
         self,
@@ -457,6 +483,11 @@ class WebexAdapter(BasePlatformAdapter):
         message = self.format_message(content).strip()
         if not message:
             return SendResult(success=True, message_id=message_id)
+        if utf8_length(message) > MAX_MESSAGE_BYTES:
+            return SendResult(
+                success=False, message_id=message_id, error_kind="too_long",
+                error=f"Webex edits are limited to {MAX_MESSAGE_BYTES} UTF-8 bytes",
+            )
 
         room_id = await self._resolve_edit_room_id(chat_id, message_id)
         if not room_id:
@@ -664,33 +695,57 @@ class WebexAdapter(BasePlatformAdapter):
 
     async def _stop_websocket_listener(self) -> None:
         process = self._listener_process
-        self._listener_process = None
-
-        if process and process.returncode is None:
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=5)
-            except TimeoutError:
-                process.kill()
-                await process.wait()
-
-        for attr in (
-            "_listener_stdout_task",
-            "_listener_stderr_task",
-            "_listener_exit_task",
-        ):
-            task = getattr(self, attr)
-            if task and not task.done():
-                task.cancel()
+        try:
+            if process and process.returncode is None:
                 try:
-                    await task
-                except asyncio.CancelledError:
+                    process.terminate()
+                except ProcessLookupError:
                     pass
-            setattr(self, attr, None)
-
-        if self._listener_ready and not self._listener_ready.done():
-            self._listener_ready.cancel()
-        self._listener_ready = None
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except TimeoutError:
+                    pass
+        finally:
+            try:
+                if process and process.returncode is None:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    # health: allow HX006 -- cancelled shutdown must reap its killed child before releasing ownership
+                    reap = asyncio.create_task(process.wait())
+                    await _finish_owned_task(reap)
+            finally:
+                if self._listener_process is process and (
+                    process is None or process.returncode is not None
+                ):
+                    self._listener_process = None
+                tasks = []
+                for attr in (
+                    "_listener_stdout_task",
+                    "_listener_stderr_task",
+                    "_listener_exit_task",
+                ):
+                    task = getattr(self, attr)
+                    if task is not None:
+                        task.cancel()
+                        tasks.append(task)
+                    setattr(self, attr, None)
+                try:
+                    results = await _finish_owned_task(
+                        asyncio.gather(*tasks, return_exceptions=True)
+                    )
+                    for result in results:
+                        if isinstance(result, BaseException) and not isinstance(
+                            result, asyncio.CancelledError
+                        ):
+                            logger.warning(
+                                "[Webex] Listener task failed during shutdown: %s", result
+                            )
+                finally:
+                    if self._listener_ready and not self._listener_ready.done():
+                        self._listener_ready.cancel()
+                    self._listener_ready = None
 
     async def _listener_stdout_loop(self, process: asyncio.subprocess.Process) -> None:
         stream = process.stdout
@@ -925,6 +980,7 @@ class WebexAdapter(BasePlatformAdapter):
                     room_id=room_id,
                     parent_id=parent_id,
                     current_message_id=message_id,
+                    chat_type=chat_type,
                 )
                 if thread_context:
                     channel_context = thread_context
@@ -1406,6 +1462,7 @@ class WebexAdapter(BasePlatformAdapter):
         room_id: str,
         parent_id: str,
         current_message_id: str,
+        chat_type: str,
         limit: int = THREAD_CONTEXT_DEFAULT_LIMIT,
     ) -> str:
         """Fetch prior Webex thread messages for first-contact thread context."""
@@ -1420,14 +1477,10 @@ class WebexAdapter(BasePlatformAdapter):
         if not parent:
             return ""
 
-        replies_result = await self._api_get_json(
-            "messages",
-            params={
-                "roomId": room_id,
-                "parentId": parent_id,
-                "max": limit + 1,
-            },
-        )
+        params = {"roomId": room_id, "parentId": parent_id, "max": limit + 1}
+        if chat_type == "group":
+            params["mentionedPeople"] = "me"
+        replies_result = await self._api_get_json("messages", params=params)
         replies = replies_result.get("items")
         if not isinstance(replies, list):
             replies = []
@@ -1665,42 +1718,61 @@ async def _standalone_send(
     target_field = (
         "toPersonEmail" if "@" in chat_id and " " not in chat_id else "roomId"
     )
-    payload: dict[str, Any] = {target_field: chat_id, "markdown": message}
-    if thread_id:
-        payload["parentId"] = thread_id
     headers = {"Authorization": f"Bearer {token}"}
+    delivered_files = 0
+    sent_messages = 0
+
+    async def post_message(session, text, media_path=None):
+        payload = {target_field: chat_id}
+        if text or media_path is None:
+            payload["markdown"] = text
+        if thread_id:
+            payload["parentId"] = thread_id
+        handle = None
+        try:
+            if media_path is not None:
+                form = FormData()
+                for key, value in payload.items():
+                    form.add_field(key, value)
+                handle = await asyncio.to_thread(open, media_path, "rb")
+                form.add_field("files", handle, filename=Path(media_path).name)
+                response = await session.post(f"{API_BASE}/messages", headers=headers, data=form)
+            else:
+                response = await session.post(f"{API_BASE}/messages", headers=headers, json=payload)
+            async with response:
+                if response.status >= 400:
+                    raise _WebexAPIRequestError("messages", response.status)
+                return await response.json(content_type=None)
+        finally:
+            if handle is not None:
+                handle.close()
+
     try:
         timeout = aiohttp.ClientTimeout(total=30)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            if media_files:
-                form = FormData()
-                form.add_field(target_field, chat_id)
-                form.add_field("markdown", message)
-                if thread_id:
-                    form.add_field("parentId", thread_id)
-                handles = []
-                try:
-                    for path, _is_voice in media_files:
-                        handle = await asyncio.to_thread(open, path, "rb")
-                        handles.append(handle)
-                        form.add_field("files", handle, filename=Path(path).name)
-                    response = await session.post(
-                        f"{API_BASE}/messages", headers=headers, data=form
-                    )
-                finally:
-                    for handle in handles:
-                        handle.close()
-            else:
-                response = await session.post(
-                    f"{API_BASE}/messages", headers=headers, json=payload
-                )
-            async with response:
-                body = await response.json(content_type=None)
-                if response.status >= 400:
-                    return {"error": f"Webex HTTP {response.status}"}
-                return {"success": True, "message_id": body.get("id", "")}
-    except (TimeoutError, aiohttp.ClientError, OSError, ValueError) as exc:
-        return {"error": str(exc)}
+            chunks = split_message(message)
+            for chunk in chunks[:-1] if media_files else chunks:
+                body = await post_message(session, chunk)
+                sent_messages += 1
+            # Webex permits one file per message, including multipart uploads:
+            # https://github.com/WebexCommunity/WebexPythonSDK/blob/main/src/webexpythonsdk/api/messages.py
+            for index, (path, _is_voice) in enumerate(media_files or []):
+                body = await post_message(session, chunks[-1] if index == 0 else "", path)
+                delivered_files += 1
+                sent_messages += 1
+        result = {"success": True, "message_id": body.get("id", "")}
+        if media_files:
+            result["media_delivered"] = True
+        return result
+    except (TimeoutError, aiohttp.ClientError, OSError, ValueError, _WebexAPIRequestError) as exc:
+        detail = f"Webex HTTP {exc.status}" if isinstance(exc, _WebexAPIRequestError) else str(exc)
+        result = {"error": detail}
+        if media_files:
+            result.update(error=f"Webex media delivery failed after {delivered_files}/{len(media_files)} files: {detail}",
+                          media_delivered=False)
+        if sent_messages:
+            result["partial_success"] = True
+        return result
 
 
 def register(ctx: Any) -> None:
@@ -1718,11 +1790,13 @@ def register(ctx: Any) -> None:
         allowed_users_env="WEBEX_ALLOWED_USERS",
         allow_all_env="WEBEX_ALLOW_ALL_USERS",
         allowlist_user_id_alt=True,
-        max_message_length=7439,
+        # Live and standalone senders split in UTF-8 bytes; the host splitter counts characters.
+        max_message_length=0,
         platform_hint=(
             "You are chatting via Webex. Markdown and threaded replies are supported."
         ),
         standalone_sender_fn=_standalone_send,
+        standalone_sender_supports_media=True,
         is_port_binding_fn=_is_port_binding,
         pii_safe=True,
         emoji="🟢",

@@ -565,15 +565,28 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
         if result.success:
             return {"success": True, "message_id": result.message_id}
         return {"error": f"Adapter send failed: {_bounded_send_error(result.error)}"}
-    try:
-        from gateway.platform_registry import platform_registry
-        sender = platform_registry.get(platform_name).standalone_sender_fn
-    except Exception:
-        sender = None
+    return await _send_standalone_fallback(
+        platform_name, pconfig, chat_id, chunk, thread_id=thread_id,
+        media_files=media_files, force_document=force_document)
+
+
+async def _send_standalone_fallback(platform_name, pconfig, chat_id, chunk, *, thread_id=None,
+                                     media_files=None, force_document=False):
+    """Only opted-in standalone senders receive attachments; parity kwargs alone
+    are also accepted by text-only senders and must not hide omitted files."""
+    from gateway.platform_registry import platform_registry
+    entry = platform_registry.get(platform_name)
+    sender = entry.standalone_sender_fn if entry else None
     if sender is None:
         return {"error": (f"No live adapter for platform '{platform_name}'. Is the gateway running with this platform "
                           f"connected? For out-of-process delivery (e.g. cron in a separate process), the platform "
                           f"plugin must register a standalone_sender_fn on its PlatformEntry.")}
+    warning = None
+    if media_files and getattr(entry, "standalone_sender_supports_media", False) is not True:
+        if not chunk.strip():
+            return {"error": f"Standalone {platform_name} delivery had only media attachments, which its sender cannot upload"}
+        warning = f"MEDIA attachments were omitted for {platform_name}; its standalone sender supports text only"
+        media_files = []
     try:
         result = await sender(pconfig, chat_id, chunk, thread_id=thread_id, media_files=media_files,
                               force_document=force_document)
@@ -583,6 +596,8 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
         logger.debug("Plugin standalone send for %s raised", platform_name, exc_info=True)
         return {"error": f"Plugin standalone send failed: {_bounded_send_error(e)}"}
     if isinstance(result, dict) and (result.get("success") or result.get("error")):
+        if warning and result.get("success"):
+            result["warnings"] = [*result.get("warnings", []), warning]
         return {**result, "error": _bounded_send_error(result["error"])} if result.get("error") else result
     return {"error": (f"Plugin standalone send for '{platform_name}' returned an invalid result: "
                       f"expected a dict with 'success' or 'error' keys, got {type(result).__name__}")}

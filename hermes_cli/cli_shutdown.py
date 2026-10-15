@@ -213,7 +213,8 @@ def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") ->
     with suppress(Exception):
         agent.interrupt(reason.replace("_", " "))
 
-    if session_id in _cli()._handed_off_session_ids:  # gateway owns the lifecycle now
+    # The gateway owns the lifecycle now; a gateway turn fires on_session_end itself when interrupted.
+    if session_id in _cli()._handed_off_session_ids or _gateway_owns_session_end(agent):
         return
     if session_id:
         with suppress(Exception):
@@ -232,7 +233,9 @@ def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> N
     agent, session_id = _oneshot_agent_and_session(cli)
     if session_id in _cli()._single_query_finalize_attempted_session_ids:
         return
-    if session_id in _cli()._handed_off_session_ids:  # gateway owns the lifecycle now
+    # The gateway owns the lifecycle now; for a gateway session the flush's end_session detached with
+    # an end_reason, so the gateway finalizes it.
+    if session_id in _cli()._handed_off_session_ids or _gateway_owns_session_end(agent):
         return
 
     try:

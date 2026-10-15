@@ -33,9 +33,17 @@ def _busy(authority, session_id, target):
         return conn.execute(_BUSY_SQL, (session_id, session_id, target)).fetchone() is not None
 
 
+class _PendingClose:
+    """One viewer close; identity, not the reason, tells a settler its close is still the pending one."""
+    __slots__ = ('reason',)
+
+    def __init__(self, reason):
+        self.reason = reason
+
+
 async def close_viewer_session(authority, session_id, reason):
     """``session.detach {end_reason}`` left *session_id* without viewers: close it now, or once idle."""
-    authority.pending_closes[session_id] = reason
+    authority.pending_closes[session_id] = _PendingClose(reason)
     await settle_viewer_close(authority, session_id)
 
 
@@ -43,25 +51,36 @@ async def settle_viewer_close(authority, session_id):
     """Complete a pending viewer close once *session_id* has no viewer and an idle FIFO: stamp the
     row with the viewer's reason, commit the cached agent's memory and fire ``on_session_finalize``.
     The drain calls this at every idle point; a viewer attaching meanwhile cancels the close."""
-    reason = authority.pending_closes.get(session_id)
+    close = authority.pending_closes.get(session_id)
     live = authority.sessions.get(session_id)
-    if reason is None or live is None or live.subscribers:
+    if close is None or live is None or live.subscribers:
         authority.pending_closes.pop(session_id, None)
         return
     from gateway.session_acp_lifecycle import end_idle_viewer_session, reopen_if_reattached
     from gateway.session_runtime_workers import tracked_write
-    await tracked_write(authority, partial(end_idle_viewer_session, authority, session_id, reason),
+    await tracked_write(authority, partial(end_idle_viewer_session, authority, session_id, close.reason),
                         then=partial(reopen_if_reattached, authority, session_id))
     target = _physical_target(authority, session_id)
-    if live.subscribers or authority.pending_closes.get(session_id) != reason:
+    # Every await below can let a viewer reattach (attach drops the pending close) or another
+    # settler run, so the close is re-checked after each one.
+    if not _still_pending(authority, session_id, live, close):
         return
     if await asyncio.to_thread(_busy, authority, session_id, target):
         return  # the drain's next idle point completes it
-    authority.pending_closes.pop(session_id, None)
-    await _run_close_lifecycle(authority, live, target, reason)
+    row = await asyncio.to_thread(authority.db.get_session, target)
+    if not _still_pending(authority, session_id, live, close):
+        return
+    # Claimed with no await since the check: exactly one settler runs the lifecycle.
+    del authority.pending_closes[session_id]
+    platform = (row or {}).get('source') or (live.source.platform.value if live.source else '')
+    await _run_close_lifecycle(authority, live, target, platform, close.reason)
 
 
-async def _run_close_lifecycle(authority, live, target, reason):
+def _still_pending(authority, session_id, live, close):
+    return not live.subscribers and authority.pending_closes.get(session_id) is close
+
+
+async def _run_close_lifecycle(authority, live, target, platform, reason):
     """What main's client ran at exit and ``/new``, in the process that owns the session: the
     memory providers' end-of-session commit (the cached agent is evicted at a boundary, as a
     gateway ``/new`` does) and the finalize hooks under the owning profile's scope."""
@@ -72,8 +91,6 @@ async def _run_close_lifecycle(authority, live, target, reason):
     finalize = getattr(runner, '_finalize_session_off_loop', None)
     if finalize is None:
         return
-    row = await asyncio.to_thread(authority.db.get_session, target)
-    platform = (row or {}).get('source') or (live.source.platform.value if live.source else '')
     messages = await finalize(session_id=target, platform=platform, reason=reason, session_key=live.route)
     if messages:
         # No viewer is left to show them (session.detach carries no messages yet).

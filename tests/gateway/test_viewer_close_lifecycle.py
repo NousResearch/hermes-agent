@@ -5,6 +5,8 @@ Regression for #134889 LC-1/LC-2/LC-6. Main's classic CLI and TUI ran the memory
 process at exit and ``/new``. Under the gateway the client is a viewer with no memory manager, so
 nothing ran until idle eviction; and a close sent while a turn was live left ``ended_at`` unset for good.
 """
+import asyncio
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -101,3 +103,55 @@ async def test_close_while_a_turn_is_queued_completes_when_the_fifo_goes_idle(tm
     assert db.get_session('chat')['end_reason'] == 'cli_close'
     assert [name for name, _ in calls] == ['commit', 'finalize']
 
+
+
+def _gate_busy_check(monkeypatch):
+    """Hold every settler inside its off-loop idle check until the test releases it."""
+    import gateway.session_viewer_close as viewer_close
+    entered, release = [], threading.Event()
+
+    def busy(*args):
+        entered.append(args)
+        release.wait(timeout=30)
+        return False
+
+    monkeypatch.setattr(viewer_close, '_busy', busy)
+    return entered, release
+
+
+@pytest.mark.asyncio
+async def test_a_viewer_reattaching_during_the_idle_check_cancels_the_close(tmp_path, monkeypatch):
+    db, authority, calls = await _owner(tmp_path, monkeypatch)
+    viewer, subscription = await _open(db, authority, tmp_path)
+    entered, release = _gate_busy_check(monkeypatch)
+
+    closing = asyncio.create_task(_call(viewer, 'session.detach', session_id='chat',
+                                        subscription_id=subscription, end_reason='cli_close'))
+    await async_wait_until(lambda: len(entered) == 1)
+    await _call(_viewer(authority, tmp_path), 'session.resume', session_id='chat')
+    release.set()
+    await closing
+
+    # The conversation is being watched again: its agent stays cached and nothing is finalized.
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_settlers_run_the_close_lifecycle_once(tmp_path, monkeypatch):
+    from gateway.session_viewer_close import settle_viewer_close
+
+    db, authority, calls = await _owner(tmp_path, monkeypatch)
+    viewer, subscription = await _open(db, authority, tmp_path)
+    entered, release = _gate_busy_check(monkeypatch)
+
+    # The detach's own settle and a drain idle point both reach the idle check.
+    closing = asyncio.create_task(_call(viewer, 'session.detach', session_id='chat',
+                                        subscription_id=subscription, end_reason='cli_close'))
+    await async_wait_until(lambda: len(entered) == 1)
+    drain_idle = asyncio.create_task(settle_viewer_close(authority, 'chat'))
+    await async_wait_until(lambda: len(entered) == 2)
+    release.set()
+    await asyncio.gather(closing, drain_idle)
+
+    assert [name for name, _ in calls] == ['commit', 'finalize']
+    assert db.get_session('chat')['end_reason'] == 'cli_close'

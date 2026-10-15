@@ -89,6 +89,10 @@ OLLAMA_CLOUD_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 #: Meta Model API (Muse): rejects ``none``.
 META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
+#: Gemini 4 (``gemini-4-argon``) ``thinkingLevel``: thinking cannot be disabled, ``minimal`` and
+#: ``thinkingBudget`` 400 (live on Vertex global, 2026-10-13).
+GEMINI4_THINKING_LEVELS: tuple[str, ...] = ("low", "medium", "high")
+
 
 def is_astra_model(model: Optional[str]) -> bool:
     """``gpt-6-astra`` or its Hermes-side ``-900k`` picker alias, with or without a ``vendor/`` prefix.

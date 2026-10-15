@@ -123,12 +123,15 @@ the gallery. There is no separate listing to maintain.
    `sys.modules[...]`, writes into a core module's tables). Two plugins
    patching the same seam silently break each other, and every core release
    can break both. `hermes plugins validate` refuses these at admission (`no
-   core override` check). If the hook you need does not exist, open an issue
-   describing it: we would rather add the seam than list a patch.
-10. **Dependency security policy is the plugin's.** Hermes's 14-day
-   `exclude-newer` quarantine covers Hermes's own dependencies only; a plugin's
-   `python_dependencies` / `pyproject.toml` install under the plugin's policy
-   (no quarantine, still inside Hermes's core constraints). Reviewers read the
+   core override` check), and warns (without failing) on each import of an
+   undocumented core module, by file and line. If the hook you need does not
+   exist, open an issue describing it: we would rather add the seam than list
+   a patch.
+10. **Dependency security policy is the plugin's.** Hermes's 3-day
+   `exclude-newer` release-age check covers Hermes's own dependencies only, at
+   the time Hermes locks them; a plugin's `python_dependencies` /
+   `pyproject.toml` install under the plugin's policy (no age check), inside
+   Hermes's core constraints: Hermes's exact pins cannot move. Reviewers read the
    dependency list at the pinned SHA: bare floors (`>=X` with no upper bound)
    and floors on the newest release get a request for the oldest
    API-compatible floor plus an upper bound, and authors are strongly
@@ -176,6 +179,25 @@ the gallery. There is no separate listing to maintain.
    go upstream as a PR to its author. A fork that renames, rebrands or adds small
    changes is declined in favour of the original. A listed fork names its origin
    in its disclosure line (`Derived from <entry>`).
+17. **No unscannable executable payloads.** Everything a reviewer and the
+   install scanner read at the pinned commit must be source they can read. A
+   plugin must not ship a compiled binary (a native executable or library of
+   any OS — detected by file header, not extension: ELF, Mach-O, PE/`MZ`,
+   WebAssembly), committed Python bytecode (`.pyc`/`.pyo`, including sourceless
+   or hash-forged caches that run instead of the `.py` beside them), or an
+   archive whose members are not themselves reviewable source. A plain-text
+   source bundle (a `.tar.gz` of `.py`/`.ts`/`.md` the plugin unpacks) is read
+   like any other source; a bundle hiding a binary is not. The scanner cannot
+   read machine code, and a checksum committed in the same commit only proves
+   the file was not changed after that commit, not where it came from. If a
+   plugin genuinely needs a native component, the binary must be built by the
+   plugin repository's own public GitHub Actions from source in that repository
+   and carry a GitHub build attestation (`actions/attest-build-provenance`) tying
+   it to that workflow and commit; the gate verifies the attestation against the
+   pinned commit (`gh attestation verify --repo <owner/repo> --source-digest
+   <pinned sha>`). A binary a user's own machine fetches at setup time is allowed
+   only from the upstream tool's official source, pinned by checksum, and
+   disclosed (rule 13) — never bundled and never from an unofficial mirror.
 <!-- admission-rules:end -->
 
 ## Updating your entry

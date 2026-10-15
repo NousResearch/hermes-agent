@@ -11,5 +11,9 @@ export const arUpdateChannel = {
   detailsLabel: 'القناة',
   branch: (b: string) => `الفرع: ${b}`,
   change: 'تغيير',
-  latestRelease: (v: string) => `أنت على أحدث إصدار مستقر (${v}).`
+  latestRelease: (v: string) => `أنت على أحدث إصدار مستقر (${v}).`,
+  rollbackTitle: (v: string) => `العودة إلى الإصدار المستقر ${v}`,
+  rollbackBody: (v: string) => `هذا الإصدار أحدث من الإصدار المستقر ${v}. سيعيد التثبيت Hermes إلى ذلك الإصدار.`,
+  rollbackAction: (v: string) => `العودة إلى ${v}`,
+  allChanges: 'عرض كل التغييرات'
 }

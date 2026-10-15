@@ -1,4 +1,5 @@
-"""A native admission refusal names the failing clause in the error, the log and the chat reply."""
+"""A native admission refusal names the failing clause in the error and the log, and in the chat
+reply only for content clauses; trust and provenance clauses stay generic there."""
 import logging
 
 import pytest
@@ -57,6 +58,39 @@ async def test_messaging_user_sees_named_refusal_not_generic_error(tmp_path, mon
         # Was: RuntimeStoreError escaped -> "Sorry, I encountered an error (RuntimeStoreError)".
         assert 'invalid_params' in reply and 'media_urls' in reply, reply
         # Refused before commit: nothing is queued for a retry or a drain to run.
+        assert not any(list_session_admissions(authority.db, session_id=live, pending_only=False)
+                       for live in authority.sessions)
+    finally:
+        authority.db.close()
+
+
+def _forge_multiplex(authority, source):
+    authority.runner.config.multiplex_profiles = True
+
+
+def _forge_authorization_home(authority, source):
+    source._authorization_profile_home = '/forged/home'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('forge, clause', [
+    (_forge_multiplex, 'multiplex_without_provenance'),
+    (_forge_authorization_home, 'authorization_home_without_provenance'),
+])
+async def test_trust_clause_refusal_is_not_named_to_the_chat(tmp_path, monkeypatch, caplog, forge, clause):
+    authority, source = await _authority(tmp_path, monkeypatch)
+    try:
+        forge(authority, source)
+        with caplog.at_level(logging.WARNING, logger='gateway.session_envelope'):
+            with pytest.raises(RuntimeStoreError) as raised:
+                await prepare_native(authority.runner, MessageEvent(text='hi', source=source))
+            reply = await admit_message(authority, MessageEvent(text='hi', source=source, message_id='m1'))
+        assert raised.value.reason == 'invalid_params' and raised.value.field == clause
+        # The reply reaches everyone in a group chat: a trust/provenance check stays generic there,
+        # so a sender probing forged trust fields learns nothing; the operator log keeps the clause.
+        assert 'invalid_params' in reply and clause not in reply and 'provenance' not in reply, reply
+        assert any(clause in record.getMessage() and 'invalid_params' in record.getMessage()
+                   for record in caplog.records), [r.getMessage() for r in caplog.records]
         assert not any(list_session_admissions(authority.db, session_id=live, pending_only=False)
                        for live in authority.sessions)
     finally:

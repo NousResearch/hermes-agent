@@ -90,30 +90,40 @@ def _media_clause(event):
     return None
 
 
+def _event_clause(runner, event, provenance, fresh_roles):
+    source = event.source
+    if source is None:
+        return 'source'
+    if not isinstance(event.text, str):
+        return 'text'
+    if not isinstance(event.message_type, MessageType):
+        return 'message_type'
+    # The ingress router's own classifier: ``/tmp/x is broken`` is text, not a command.
+    if event.message_type == MessageType.COMMAND or event.get_command():
+        return 'command'
+    if event.internal:
+        return 'internal'
+    if _native_metadata(event) is None:
+        return 'metadata'
+    if event.prompt_response:
+        return 'prompt_response'
+    if source.role_authorized and not fresh_roles:
+        return 'role_authorized_without_fresh_roles'
+    if source.delivered_via_upstream_relay and not (provenance and 'relay' in provenance):
+        return 'upstream_relay_without_provenance'
+    if source.profile_route_rejected:
+        return 'profile_route_rejected'
+    if getattr(source, '_authorization_profile_home', None) is not None and provenance is None:
+        return 'authorization_home_without_provenance'
+    if getattr(runner.config, 'multiplex_profiles', False) and provenance is None:
+        return 'multiplex_without_provenance'
+    return None
+
+
 def _validate_native(runner, event, provenance=None, fresh_roles=False):
     source = event.source
-    # First failing clause wins, in the order (and with the short-circuits) of the original check.
-    clauses = (
-        ('source', lambda: source is None),
-        ('text', lambda: not isinstance(event.text, str)),
-        ('message_type', lambda: not isinstance(event.message_type, MessageType)),
-        # The ingress router's own classifier: ``/tmp/x is broken`` is text, not a command.
-        ('command', lambda: event.message_type == MessageType.COMMAND or event.get_command()),
-        ('internal', lambda: event.internal),
-        ('metadata', lambda: _native_metadata(event) is None),
-        ('prompt_response', lambda: event.prompt_response),
-        ('role_authorized_without_fresh_roles', lambda: source.role_authorized and not fresh_roles),
-        ('upstream_relay_without_provenance',
-         lambda: source.delivered_via_upstream_relay and not (provenance and 'relay' in provenance)),
-        ('profile_route_rejected', lambda: source.profile_route_rejected),
-        ('authorization_home_without_provenance',
-         lambda: getattr(source, '_authorization_profile_home', None) is not None and provenance is None),
-        ('multiplex_without_provenance',
-         lambda: getattr(runner.config, 'multiplex_profiles', False) and provenance is None),
-    )
-    for clause, failed in clauses:
-        if failed():
-            _refuse(event, 'invalid_params', clause)
+    if (clause := _event_clause(runner, event, provenance, fresh_roles)) is not None:
+        _refuse(event, 'invalid_params', clause)
     if provenance is not None:
         from gateway.session_ingress_context import restore_provenance
         restore_provenance(runner, source, provenance)

@@ -2120,6 +2120,8 @@ cli:
     shutting_down: "正在关闭…（正在收尾会话）"
     session_deleted: "✓ 会话 {session_id} 已删除"
     session_delete_missing: "✗ 未找到要删除的会话 {session_id}"
+    provider_plugin_load_failed: "⚠ Provider plugin '{name}' ({source}) failed to load: {error}"
+    provider_plugin_load_failed_more: "…and {count} more (see agent.log)"
   voice:
     err_termux_app_missing: "检测到 Termux:API 命令包，但缺少对应的 Android 应用。\n请安装/更新 Termux:API Android 应用，然后重试 /voice on。"
     err_mic_access: "语音模式需要麦克风权限。\n请运行 pkg install termux-api 并安装 Termux:API Android 应用，然后重试 /voice on。"

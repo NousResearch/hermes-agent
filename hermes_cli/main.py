@@ -869,6 +869,7 @@ from hermes_cli.old_updater_main import (
 from hermes_cli.main_install_repair import _cleanup_quarantined_exes, _recover_update_debts_on_startup
 from hermes_cli.main_install_repair import (  # frozen updater surface: update_cmd*.py resolve these via _m()
     _UPDATE_REEXEC_ENV,
+    _clear_bytecode_cache,
     _clear_lazy_refresh_incomplete_marker,
     _clear_marker_file,
     _clear_update_incomplete_marker,
@@ -2253,28 +2254,6 @@ def cmd_uninstall(args):
     from hermes_cli.uninstall import run_uninstall
 
     run_uninstall(args)
-
-
-def _clear_bytecode_cache(root: Path) -> int:
-    """Remove all __pycache__ dirs under *root* (stale .pyc → ImportError after updates).
-
-    Returns the number of directories removed.
-    """
-    removed = 0
-    for dirpath, dirnames, _ in os.walk(root):
-        dirnames[:] = [
-            d
-            for d in dirnames
-            if d not in {"venv", ".venv", "node_modules", ".git", ".worktrees"}
-        ]
-        if os.path.basename(dirpath) == "__pycache__":
-            try:
-                shutil.rmtree(dirpath)
-                removed += 1
-            except OSError:
-                pass
-            dirnames.clear()  # nothing left to recurse into
-    return removed
 
 
 def _finalize_update_receipt(code: int, reason: str) -> None:

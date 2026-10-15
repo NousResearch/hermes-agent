@@ -2120,6 +2120,8 @@ cli:
     shutting_down: "Kapatılıyor… (oturum sonlandırılıyor)"
     session_deleted: "✓ {session_id} oturumu silindi"
     session_delete_missing: "✗ Silinecek {session_id} oturumu bulunamadı"
+    provider_plugin_load_failed: "⚠ Provider plugin '{name}' ({source}) failed to load: {error}"
+    provider_plugin_load_failed_more: "…and {count} more (see agent.log)"
   voice:
     err_termux_app_missing: "Termux:API komut paketi algılandı ancak Android uygulaması eksik.\nTermux:API Android uygulamasını kurun/güncelleyin, ardından /voice on komutunu yeniden deneyin."
     err_mic_access: "Ses modu için mikrofon erişimi gerekir.\npkg install termux-api komutunu çalıştırıp Termux:API Android uygulamasını kurun, ardından /voice on komutunu yeniden deneyin."

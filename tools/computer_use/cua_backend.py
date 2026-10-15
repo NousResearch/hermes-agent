@@ -26,13 +26,14 @@ from tools.computer_use.cua_backend_driver import (
     _CUA_DRIVER_CMD_ENV, cua_driver_binary_available, cua_driver_runtime_contract_status,
     resolve_cua_driver_cmd)
 from tools.computer_use.cua_backend_input import _InputMixin
+from tools.computer_use.cua_env import CUA_NATIVE_WAYLAND_ENV_VAR, CUA_TELEMETRY_ENV_VAR, build_child_env
 from tools.computer_use.cua_backend_parse import _action_result_from
 from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
 
 logger = logging.getLogger(__name__)
 # cua-driver's anonymous PostHog telemetry gate ("0" disables; absent => ON upstream).
-_CUA_TELEMETRY_ENV_VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
-_CUA_NATIVE_WAYLAND_ENV_VAR = "CUA_DRIVER_RS_ENABLE_WAYLAND"
+_CUA_TELEMETRY_ENV_VAR = CUA_TELEMETRY_ENV_VAR
+_CUA_NATIVE_WAYLAND_ENV_VAR = CUA_NATIVE_WAYLAND_ENV_VAR
 
 
 def _computer_use_cfg() -> dict[str, Any]:
@@ -139,16 +140,9 @@ def cua_driver_child_env(base_env: Optional[dict[str, str]] = None) -> dict[str,
     unless the user opted in, plus the native-Wayland bridge (``computer_use.native_wayland`` config opt-in, only when
     the child has a Wayland display). Used by every spawn site (MCP, status, doctor, install) so CLI and gateway
     runtimes share one policy."""
-    env = dict(os.environ if base_env is None else base_env)
-    # A running Bot Desktop for this profile owns the agent's screen: DISPLAY/XAUTHORITY/DBUS point there so
-    # cua-driver never acts on a seat the human is sitting at (#90374 class) and headless hosts get a display.
-    from tools.bot_desktop.runtime import desktop_env as _bot_desktop_env
-    env = _bot_desktop_env(env)
-    if _cua_telemetry_disabled():
-        env[_CUA_TELEMETRY_ENV_VAR] = "0"
-    if sys.platform == "linux" and env.get("WAYLAND_DISPLAY") and bool(_computer_use_cfg().get("native_wayland", False)):
-        env[_CUA_NATIVE_WAYLAND_ENV_VAR] = "1"
-    return env
+    return build_child_env(
+        base_env, telemetry_disabled=_cua_telemetry_disabled(),
+        native_wayland=sys.platform == "linux" and bool(_computer_use_cfg().get("native_wayland", False)))
 
 def sandbox_mcp_invocation() -> Optional[tuple[tuple[str, list[str]], dict[str, str]]]:
     """``((command, args), child_env)`` spawning ``cua-driver mcp`` INSIDE the terminal backend when the Bot

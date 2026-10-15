@@ -953,13 +953,24 @@ class CuaDriver(BinaryPackage):
             shutil.rmtree(sdk, ignore_errors=True)
 
     def _probe_env(self) -> dict:
-        """The probe IS a first run: it must not mint telemetry state."""
-        try:
-            from tools.computer_use.cua_backend import cua_driver_child_env
+        """The probe IS a first run: it must not mint telemetry state.
 
-            return cua_driver_child_env()
+        Built from the pure ``cua_env`` leaf, never ``cua_backend``: that import reaches
+        ``hermes_cli.config`` and provider discovery, which PM's runtime cannot satisfy. The probe
+        therefore ignores the telemetry opt-in and the native-Wayland config; it only checks that
+        the binary runs, on the profile's Bot Desktop screen when one is up.
+        """
+        try:
+            from tools.computer_use.cua_env import build_child_env
+
+            return build_child_env(telemetry_disabled=True, native_wayland=False)
         except Exception:
-            return dict(os.environ, CUA_DRIVER_RS_TELEMETRY_ENABLED="0")
+            # The screen is an optimization for the probe: a broken or unavailable Bot Desktop
+            # must not stop cua-driver from verifying.
+            LOG.debug("cua-driver probe: child env unavailable", exc_info=True)
+            from tools.computer_use.cua_env import CUA_TELEMETRY_ENV_VAR
+
+            return dict(os.environ, **{CUA_TELEMETRY_ENV_VAR: "0"})
 
 
 @register

@@ -98,3 +98,25 @@ def test_brokered_opaque_bearer_rotates_on_stored_expiry_and_keeps_the_refresh_t
     assert pool.try_refresh_current() is None
     pool.mark_exhausted_and_rotate(status_code=401, api_key_hint="ya29.revoked")
     assert json.loads((home / "auth.json").read_text())["credential_pool"][name][0]["last_status"] == STATUS_DEAD
+
+
+def test_profile_registers_in_a_runtime_without_httpx(monkeypatch):
+    """The PM worker runtime ships no httpx yet still discovers bundled providers; the profile must
+    register there too — the transport import happens lazily at client construction (#134107)."""
+    import sys
+    from pathlib import Path
+
+    # Cold cache: force the adapter's top-level `import httpx` to actually run, then make it fail.
+    for name in [n for n in sys.modules
+                 if n.startswith(("agent.gemini_native_adapter", "plugins.model_providers.solstice"))]:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setitem(sys.modules, "httpx", None)  # any `import httpx` now raises
+
+    from providers import _import_plugin_dir
+
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "model-providers" / "solstice"
+    _import_plugin_dir(plugin_dir, "bundled")
+
+    # A failed load is popped from sys.modules and only recorded; a registered one stays.
+    assert "plugins.model_providers.solstice" in sys.modules
+    assert providers.get_provider_profile("solstice").name == "solstice"

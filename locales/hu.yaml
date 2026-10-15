@@ -2137,6 +2137,8 @@ cli:
     shutting_down: "Leállítás… (munkamenet lezárása)"
     session_deleted: "✓ A(z) {session_id} munkamenet törölve"
     session_delete_missing: "✗ A(z) {session_id} munkamenet nem található, nem törölhető"
+    provider_plugin_load_failed: "⚠ Provider plugin '{name}' ({source}) failed to load: {error}"
+    provider_plugin_load_failed_more: "…and {count} more (see agent.log)"
   voice:
     err_termux_app_missing: "A Termux:API parancscsomag megvan, de az Android-alkalmazás hiányzik.\nTelepítsd/frissítsd a Termux:API Android-alkalmazást, majd próbáld újra: /voice on."
     err_mic_access: "A hangmódhoz mikrofon-hozzáférés kell.\nFuttasd: pkg install termux-api, telepítsd a Termux:API Android-alkalmazást, majd próbáld újra: /voice on."

@@ -2120,6 +2120,8 @@ cli:
     shutting_down: "シャットダウン中… (セッションを確定しています)"
     session_deleted: "✓ セッション {session_id} を削除しました"
     session_delete_missing: "✗ 削除対象のセッション {session_id} が見つかりません"
+    provider_plugin_load_failed: "⚠ Provider plugin '{name}' ({source}) failed to load: {error}"
+    provider_plugin_load_failed_more: "…and {count} more (see agent.log)"
   voice:
     err_termux_app_missing: "Termux:API コマンドパッケージは検出されましたが、Android アプリがありません。\nTermux:API Android アプリをインストール/更新してから、/voice on を再試行してください。"
     err_mic_access: "音声モードにはマイクへのアクセスが必要です。\npkg install termux-api を実行し、Termux:API Android アプリをインストールしてから、/voice on を再試行してください。"

@@ -2120,6 +2120,8 @@ cli:
     shutting_down: "종료 중… (세션 마무리)"
     session_deleted: "✓ 세션 {session_id} 삭제됨"
     session_delete_missing: "✗ 삭제할 세션 {session_id}을(를) 찾을 수 없어요"
+    provider_plugin_load_failed: "⚠ Provider plugin '{name}' ({source}) failed to load: {error}"
+    provider_plugin_load_failed_more: "…and {count} more (see agent.log)"
   voice:
     err_termux_app_missing: "Termux:API 명령 패키지는 감지됐지만 Android 앱이 없어요.\nTermux:API Android 앱을 설치/업데이트한 뒤 /voice on을 다시 시도해 주세요."
     err_mic_access: "음성 모드에는 마이크 접근 권한이 필요해요.\npkg install termux-api를 실행하고 Termux:API Android 앱을 설치한 뒤 /voice on을 다시 시도해 주세요."

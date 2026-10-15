@@ -347,6 +347,20 @@ def _adopt_secondary_home(home: Path) -> bool:
     return enable_profile_log_routing([*sorted(known), resolved])
 
 
+def _announce_logging_ready() -> None:
+    """Tell the provider registry handlers exist, so it replays buffered plugin load failures.
+
+    Provider discovery can run before logging is configured; it buffers failures instead of
+    warning (``logging.lastResort`` would paint raw stderr). Best-effort: never blocks startup.
+    """
+    try:
+        from providers import mark_logging_ready
+
+        mark_logging_ready()
+    except Exception:
+        pass
+
+
 def setup_logging(
     *,
     hermes_home: Optional[Path] = None,
@@ -425,6 +439,7 @@ def setup_logging(
         root.setLevel(level)
     _quiet_noisy_loggers()
     _logging_initialized = True
+    _announce_logging_ready()
     return log_dir
 
 

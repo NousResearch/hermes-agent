@@ -2120,6 +2120,8 @@ cli:
     shutting_down: "جارٍ إيقاف التشغيل… (إتمام الجلسة)"
     session_deleted: "✓ حُذفت الجلسة {session_id}"
     session_delete_missing: "✗ لم يُعثر على الجلسة {session_id} لحذفها"
+    provider_plugin_load_failed: "⚠ Provider plugin '{name}' ({source}) failed to load: {error}"
+    provider_plugin_load_failed_more: "…and {count} more (see agent.log)"
   voice:
     err_termux_app_missing: "تم اكتشاف حزمة أوامر Termux:API، لكن تطبيق Android غير موجود.\nثبّت/حدّث تطبيق Termux:API لنظام Android، ثم أعِد المحاولة بـ /voice on."
     err_mic_access: "يحتاج وضع الصوت إلى الوصول إلى الميكروفون.\nشغّل pkg install termux-api وثبّت تطبيق Termux:API لنظام Android، ثم أعِد المحاولة بـ /voice on."

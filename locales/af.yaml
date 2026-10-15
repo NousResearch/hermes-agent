@@ -2120,6 +2120,8 @@ cli:
     shutting_down: "Sluit af… (sessie word afgehandel)"
     session_deleted: "✓ Sessie {session_id} uitgevee"
     session_delete_missing: "✗ Sessie {session_id} nie gevind vir uitvee nie"
+    provider_plugin_load_failed: "⚠ Provider plugin '{name}' ({source}) failed to load: {error}"
+    provider_plugin_load_failed_more: "…and {count} more (see agent.log)"
   voice:
     err_termux_app_missing: "Termux:API-opdragpakket bespeur, maar die Android-toep ontbreek.\nInstalleer/opdateer die Termux:API Android-toep en probeer dan weer /voice on."
     err_mic_access: "Stemmodus benodig mikrofoontoegang.\nVoer pkg install termux-api uit en installeer die Termux:API Android-toep, en probeer dan weer /voice on."

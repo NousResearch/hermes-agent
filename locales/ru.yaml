@@ -2120,6 +2120,8 @@ cli:
     shutting_down: "Завершение работы… (финализация сеанса)"
     session_deleted: "✓ Сеанс {session_id} удалён"
     session_delete_missing: "✗ Сеанс {session_id} не найден для удаления"
+    provider_plugin_load_failed: "⚠ Provider plugin '{name}' ({source}) failed to load: {error}"
+    provider_plugin_load_failed_more: "…and {count} more (see agent.log)"
   voice:
     err_termux_app_missing: "Обнаружен пакет команд Termux:API, но Android-приложение отсутствует.\nУстановите/обновите Android-приложение Termux:API, затем повторите /voice on."
     err_mic_access: "Голосовому режиму нужен доступ к микрофону.\nВыполните pkg install termux-api и установите Android-приложение Termux:API, затем повторите /voice on."

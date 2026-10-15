@@ -95,6 +95,184 @@ _BUNDLED_PLUGINS_DIR = (
 )
 
 
+@dataclass(frozen=True)
+class ProviderLoadFailure:
+    """One swallowed provider-plugin discovery load failure, buffered for replay.
+
+    Provider discovery runs before ``setup_logging()``, when ``logger.warning``
+    falls through to stdlib ``logging.lastResort`` and writes raw stderr —
+    which corrupts the fullscreen prompt_toolkit TUI. Load failures are
+    therefore buffered here (bounded) at debug level and replayed once logging
+    is ready (see :func:`mark_logging_ready`) and once on the console when
+    startup output is safe (see ``cli_tui_runtime_mixin``). Routine policy gates
+    (disabled-plugin skips) are NOT buffered — they are expected config, not
+    failures, and stay bare ``logger.debug``. An enabled entry point refused
+    under host isolation IS buffered: the user explicitly opted in and the
+    refusal carries the config remedy, so silence would read as a bug.
+    """
+
+    plugin_name: str
+    source: str  # "bundled" | "user" | "entry-point" | "legacy"
+    error: str
+
+
+MAX_LOAD_FAILURES = 50
+_LOAD_FAILURES: list[ProviderLoadFailure] = []
+_LOAD_FAILURES_LOCK = threading.Lock()
+
+# Cursors into ``_LOAD_FAILURES``: how many entries the log replay and the console
+# replay have already surfaced. Counts (not bools) because discovery can buffer
+# more failures after an early replay, and each later replay must surface those
+# exactly once. Eviction shifts every index, so ``_record_plugin_failure`` moves
+# both cursors back by the evicted amount.
+_REPLAYED_COUNT = 0
+_CONSOLE_SHOWN_COUNT = 0
+
+# True once the process has configured logging (:func:`mark_logging_ready`), so
+# ``logger.warning`` is safe (no ``logging.lastResort`` raw-stderr write) and late
+# discovery passes may flush inline. Entrypoints that install their own handlers
+# (ACP, gateway) call ``mark_logging_ready()`` too.
+_LOGGING_READY = False
+
+
+def get_provider_load_failures() -> tuple[ProviderLoadFailure, ...]:
+    """Snapshot (oldest first) of buffered provider-plugin load failures."""
+    with _LOAD_FAILURES_LOCK:
+        return tuple(_LOAD_FAILURES)
+
+
+def _log_failure(failure: ProviderLoadFailure) -> None:
+    logger.warning(
+        "Provider plugin %r (%s) failed to load: %s",
+        failure.plugin_name,
+        failure.source,
+        failure.error,
+    )
+
+
+def _record_plugin_failure(plugin_name: str, source: str, exc: BaseException) -> None:
+    """Buffer a swallowed discovery load failure and debug-log it (never warn).
+
+    Warning here would hit ``logging.lastResort``'s raw-stderr handler before
+    ``setup_logging()`` runs and corrupt the fullscreen TUI. An identical entry
+    already in the window is not buffered again (a per-home rescan can retry the
+    same broken plugin).
+    """
+    global _REPLAYED_COUNT, _CONSOLE_SHOWN_COUNT
+    failure = ProviderLoadFailure(plugin_name=str(plugin_name), source=source, error=str(exc))
+    dropped: list[ProviderLoadFailure] = []
+    with _LOAD_FAILURES_LOCK:
+        if failure in _LOAD_FAILURES:
+            return
+        _LOAD_FAILURES.append(failure)
+        evicted = max(0, len(_LOAD_FAILURES) - MAX_LOAD_FAILURES)
+        if evicted:
+            # The buffer is a bounded window: evicting the oldest entries
+            # shifts every index, so the cursors must move back by the same
+            # amount or a later replay slices past the end and silently drops
+            # new failures.
+            dropped = _LOAD_FAILURES[_REPLAYED_COUNT:evicted]
+            del _LOAD_FAILURES[:evicted]
+            _REPLAYED_COUNT = max(0, _REPLAYED_COUNT - evicted)
+            _CONSOLE_SHOWN_COUNT = max(0, _CONSOLE_SHOWN_COUNT - evicted)
+        ready = _LOGGING_READY
+    logger.debug("Failed to load %s provider plugin %s: %s", source, plugin_name, exc)
+    if ready:
+        for lost in dropped:  # evicted before any replay saw them
+            _log_failure(lost)
+
+
+_CONSOLE_ERROR_MAX = 200
+
+
+def _console_error(error: str) -> str:
+    """First line of *error*, capped: the log keeps the full text, the console gets a line."""
+    first = error.strip().splitlines()[0] if error.strip() else ""
+    return first if len(first) <= _CONSOLE_ERROR_MAX else first[: _CONSOLE_ERROR_MAX - 1] + "…"
+
+
+def format_provider_load_failures(
+    failures: tuple[ProviderLoadFailure, ...] | list[ProviderLoadFailure], limit: int = 3
+) -> list[str]:
+    """Format buffered load failures as TUI startup lines (pure: no I/O).
+
+    At most ``limit`` failure lines, plus a trailing overflow line naming the
+    remaining count and pointing at agent.log. Empty input → ``[]``.
+    """
+    from agent.i18n import t  # lazy: this module loads before the i18n catalogs
+
+    failures = list(failures)
+    items = failures[: max(0, limit)]
+    lines = [
+        t(
+            "cli.tui.provider_plugin_load_failed",
+            name=failure.plugin_name,
+            source=failure.source,
+            error=_console_error(failure.error),
+        )
+        for failure in items
+    ]
+    overflow = len(failures) - len(items)
+    if overflow > 0:
+        lines.append(t("cli.tui.provider_plugin_load_failed_more", count=overflow))
+    return lines
+
+
+def drain_console_failures() -> tuple[ProviderLoadFailure, ...]:
+    """Failures the console has not shown yet; marks them shown (each prints once)."""
+    global _CONSOLE_SHOWN_COUNT
+    with _LOAD_FAILURES_LOCK:
+        pending = tuple(_LOAD_FAILURES[_CONSOLE_SHOWN_COUNT:])
+        _CONSOLE_SHOWN_COUNT = len(_LOAD_FAILURES)
+    return pending
+
+
+def replay_provider_load_failures() -> int:
+    """Log buffered discovery failures as warnings, once each.
+
+    Discovery runs before ``setup_logging()``, so failures cannot be warned
+    about when recorded. Idempotent: only failures buffered since the last
+    call are logged. Returns the number newly replayed. Callers outside tests
+    want :func:`mark_logging_ready`, which also opens the late-discovery flush.
+    """
+    global _REPLAYED_COUNT
+    with _LOAD_FAILURES_LOCK:
+        pending = list(_LOAD_FAILURES[_REPLAYED_COUNT:])
+        _REPLAYED_COUNT = len(_LOAD_FAILURES)
+    for failure in pending:
+        _log_failure(failure)
+    return len(pending)
+
+
+def mark_logging_ready() -> int:
+    """Declare that this process has handlers installed, then flush buffered failures.
+
+    Call it right after whatever configures logging (``setup_logging()``, the ACP
+    entrypoint's own handler, ...). From then on late discovery passes flush inline.
+    Never raises; returns the number of failures logged.
+    """
+    global _LOGGING_READY
+    with _LOAD_FAILURES_LOCK:
+        _LOGGING_READY = True
+    try:
+        return replay_provider_load_failures()
+    except Exception:
+        logger.debug("provider failure replay failed", exc_info=True)
+        return 0
+
+
+def _replay_if_logging_ready() -> int:
+    """Flush buffered discovery failures when logging is already configured.
+
+    No-op before :func:`mark_logging_ready` (warning now would hit ``lastResort``
+    raw stderr). Used at the end of lazy discovery passes so failures buffered
+    after the early flush still reach agent.log exactly once. Never raises.
+    """
+    if not _LOGGING_READY:
+        return 0
+    return mark_logging_ready()
+
+
 def _sync_auth_registry() -> None:
     """Mirror profiles into the ``hermes_cli`` snapshots (auth registry, picker catalog) that are loaded.
 
@@ -451,6 +629,9 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
     finally:
         _REGISTRATION_TARGET.reset(token)
         _discovering = prior_discovering
+        # Same late-discovery flush as _discover_providers: the per-home scan
+        # runs lazily at lookup time, possibly after the early replay.
+        _replay_if_logging_ready()
 
 
 def _user_module_name(plugin_dir: Path, home_key: str) -> str:
@@ -476,8 +657,7 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
                 for profile in load_hosted_profiles(plugin_dir, _user_module_name(plugin_dir, home_key)):
                     register_provider(profile)
             except Exception as exc:
-                logger.warning("Failed to load user provider plugin %s in the plugin host: %s",
-                               plugin_dir.name, exc)
+                _record_plugin_failure(plugin_dir.name, "user", exc)
             finally:
                 _current_source = None
             return
@@ -505,9 +685,7 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
     except Exception as exc:
-        logger.warning(
-            "Failed to load %s provider plugin %s: %s", source, plugin_dir.name, exc
-        )
+        _record_plugin_failure(plugin_dir.name, source, exc)
         sys.modules.pop(module_name, None)
     finally:
         _current_source = None
@@ -540,7 +718,9 @@ def _discover_entry_point_providers() -> None:
       provider registration hooks take no arguments by contract.
 
     Failures are swallowed per-entry (a broken third-party package must not
-    break provider discovery) and logged at warning level. This scan runs
+    break provider discovery), buffered via :func:`_record_plugin_failure`
+    for TUI replay, and debug-logged — never warned, so pre-``setup_logging``
+    discovery stays off raw stderr. This scan runs
     first, so filesystem plugins (bundled + ``$HERMES_HOME``) keep their
     documented override precedence via last-writer-wins in
     ``register_provider()`` — a pip package cannot hijack a first-party
@@ -584,14 +764,15 @@ def _discover_entry_point_providers() -> None:
         from hermes_cli.plugin_isolation import in_process_import_refusal
         refusal = in_process_import_refusal(f"pip-installed model-provider plugin {ep.name!r}")
         if refusal:
-            logger.warning("%s", refusal)
+            # Enabled but unloadable: actionable user config, not routine
+            # gating — buffer it (with the remedy text) like a load failure so
+            # the TUI replay and post-setup_logging replay surface it.
+            _record_plugin_failure(ep.name, "entry-point", RuntimeError(refusal))
             continue
         try:
             loaded = ep.load()
         except Exception as exc:
-            logger.warning(
-                "Failed to load entry-point provider plugin %r: %s", ep.name, exc
-            )
+            _record_plugin_failure(ep.name, "entry-point", exc)
             continue
         # ``module:func`` → callable we invoke; bare ``module`` → import side
         # effect already happened during load(). Only call when it's callable
@@ -609,11 +790,7 @@ def _discover_entry_point_providers() -> None:
             try:
                 loaded()
             except Exception as exc:
-                logger.warning(
-                    "Entry-point provider plugin %r raised on invocation: %s",
-                    ep.name,
-                    exc,
-                )
+                _record_plugin_failure(ep.name, "entry-point", exc)
 
 
 def _requires_arguments(fn) -> bool:
@@ -667,6 +844,11 @@ def _discover_providers() -> None:
         # hermes_cli.auth may have been imported by a plugin during discovery and snapshotted a
         # partial profile list — hand it the complete one (no-op unless auth is already loaded).
         _sync_auth_registry()
+        # Lazy discovery can run after the import-time replay (main.py), so a
+        # late-buffered failure would otherwise never reach agent.log. Flush
+        # here when logging is configured; pre-setup this is a no-op and the
+        # buffered entries wait for the normal replay sites.
+        _replay_if_logging_ready()
 
 
 def _run_discovery_steps() -> None:
@@ -708,9 +890,7 @@ def _run_discovery_steps() -> None:
             try:
                 importlib.import_module(f"providers.{modname}")
             except ImportError as exc:
-                logger.warning(
-                    "Failed to import legacy provider module %s: %s", modname, exc
-                )
+                _record_plugin_failure(modname, "legacy", exc)
     except Exception:
         pass
 

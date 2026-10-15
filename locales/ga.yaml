@@ -2120,6 +2120,8 @@ cli:
     shutting_down: "Ag múchadh… (seisiún á chríochnú)"
     session_deleted: "✓ Seisiún {session_id} scriosta"
     session_delete_missing: "✗ Níor aimsíodh seisiún {session_id} le scriosadh"
+    provider_plugin_load_failed: "⚠ Provider plugin '{name}' ({source}) failed to load: {error}"
+    provider_plugin_load_failed_more: "…and {count} more (see agent.log)"
   voice:
     err_termux_app_missing: "Braitheadh pacáiste ordaithe Termux:API, ach tá an aip Android in easnamh.\nSuiteáil/nuashonraigh an aip Android Termux:API, ansin bain triail as /voice on arís."
     err_mic_access: "Teastaíonn rochtain ar an micreafón ón mód gutha.\nRith pkg install termux-api agus suiteáil an aip Android Termux:API, ansin bain triail as /voice on arís."

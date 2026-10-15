@@ -2387,6 +2387,8 @@ cli:
     shutting_down: "Arrêt en cours… (finalisation de la session)"
     session_deleted: "✓ Session {session_id} supprimée"
     session_delete_missing: "✗ Session {session_id} introuvable pour la suppression"
+    provider_plugin_load_failed: "⚠ Provider plugin '{name}' ({source}) failed to load: {error}"
+    provider_plugin_load_failed_more: "…and {count} more (see agent.log)"
   voice:
     err_termux_app_missing: |-
       Paquet de commandes Termux:API détecté, mais l'application Android est absente.

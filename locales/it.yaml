@@ -2120,6 +2120,8 @@ cli:
     shutting_down: "Chiusura in corso… (finalizzazione della sessione)"
     session_deleted: "✓ Sessione {session_id} eliminata"
     session_delete_missing: "✗ Sessione {session_id} non trovata per l'eliminazione"
+    provider_plugin_load_failed: "⚠ Provider plugin '{name}' ({source}) failed to load: {error}"
+    provider_plugin_load_failed_more: "…and {count} more (see agent.log)"
   voice:
     err_termux_app_missing: "Rilevato il pacchetto comandi Termux:API, ma l'app Android manca.\nInstalla/aggiorna l'app Android Termux:API, poi riprova con /voice on."
     err_mic_access: "La modalità vocale richiede l'accesso al microfono.\nEsegui pkg install termux-api e installa l'app Android Termux:API, poi riprova con /voice on."

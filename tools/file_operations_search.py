@@ -401,7 +401,13 @@ class SearchMixin:
                 exit_code = 124
                 break
         if proc.poll() is None:
-            _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
+            try:
+                _kill_process_group_posix(proc)  # native lane is POSIX-only (gate above)
+            except ProcessLookupError:
+                # rg exited between poll() and the helper's getpgid() (macOS answers ESRCH
+                # for an unreaped zombie): nothing is left to kill. proc.kill() polls first,
+                # so it never signals a reaped PID; it only makes sure rg is gone before wait().
+                proc.kill()
         proc.wait()
         drainer.join()
         proc.stdout.close()

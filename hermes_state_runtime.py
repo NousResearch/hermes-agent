@@ -310,7 +310,10 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
             if operation == 'branch':
                 # The branch commit's own idle rule (queued input too), before the owner starts servers.
                 from hermes_state_mutation_guards import require_idle
-                require_idle(db, conn, list({session_id, snapshot['target']}))
+                from hermes_state_write_guards import REVIEW_LEASE_IGNORE
+                # Same answer as the commit: a copy cannot invalidate a background review's snapshot.
+                require_idle(db, conn, list({session_id, snapshot['target']}),
+                             review_lease_policy=REVIEW_LEASE_IGNORE)
             return {'snapshot': snapshot}
         affected, projection = apply_action(db, conn, session_id, operation, payload, prepared=_prepared)
         conn.executemany('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?',

@@ -35,7 +35,7 @@ def _foreground_holder():
     return f"pid={os.getpid()}:turn=foreground"
 
 
-def _mutate(db, epoch, session_id, operation, payload, request_id):
+def _mutate(db, epoch, session_id, operation, payload, request_id, **kw):
     row = db.get_session(session_id)
     return rt.mutate_runtime_session(
         db,
@@ -47,6 +47,7 @@ def _mutate(db, epoch, session_id, operation, payload, request_id):
         expected_generation=row["runtime_generation"],
         operation=operation,
         payload=payload,
+        **kw,
     )
 
 
@@ -351,3 +352,33 @@ def test_branch_copies_the_transcript_beside_a_background_review(tmp_path):
         ] == ["q", "a"]
         assert db.session_turn_lease_yield_requested("physical", holder) is False
         assert db.refresh_session_turn_lease("physical", holder, ttl_seconds=60) is True
+
+
+def test_branch_prepare_returns_the_snapshot_beside_a_background_review(tmp_path):
+    """An ACP editor-MCP session's branch runs the commit's idle rule at its prepare step,
+    before the owner starts the child's servers (``gateway/session_mutations.write_mutation``
+    -> ``session_local_mcp.prepare_branch_editor``). It answers a background-review lease the
+    way the commit does -- the copy lands beside the review -- or a ``/branch`` typed while the
+    post-turn review holds the row is refused ``session_busy`` at prepare although the commit
+    would land it. A foreground holder still refuses at prepare."""
+    from tests.gateway.test_unknown_resolution_physical_worker import _local_reset
+
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        epoch = rt.begin_runtime_epoch(db, instance_id="owner")
+        logical = _local_reset(db, epoch, "logical", "physical")
+        holder = _review_holder()
+        assert db.try_acquire_session_turn_lease("physical", holder, ttl_seconds=60)
+        prepared = _mutate(
+            db, epoch, logical, "branch", {}, "branch", _prepare_only=True
+        )
+        assert set(prepared) == {"snapshot"}
+        assert prepared["snapshot"]["target"] == "physical"
+        assert db.session_turn_lease_yield_requested("physical", holder) is False
+        assert db.refresh_session_turn_lease("physical", holder, ttl_seconds=60) is True
+        db.release_session_turn_lease("physical", holder)
+
+        assert db.try_acquire_session_turn_lease(
+            "physical", _foreground_holder(), ttl_seconds=60
+        )
+        with pytest.raises(MUTATION_GUARD_REFUSALS):
+            _mutate(db, epoch, logical, "branch", {}, "branch", _prepare_only=True)

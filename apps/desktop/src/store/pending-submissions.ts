@@ -73,19 +73,77 @@ function writeEntries(session: string, before: Record<string, PendingSubmission>
   }
 }
 
-// Not an outbox: an uncertain accepted input must never be replayed automatically.
-export function trackPendingSubmission(key: string, entry: PendingSubmission): void {
-  window.localStorage.setItem(entryKey(key, entry.id), JSON.stringify(entry))
-}
-
-// Array.isArray narrows `unknown` to `any[]`; the helpers keep that wire shape.
-type RawReceipts = any[]
-
 // An admission only moves forward: queued -> started -> (unknown after an owner restart) ->
 // retired (gone from the pending set: terminal). Snapshots can arrive out of order (a resume
 // result racing the live fanout, a replayed session.info), so a receipt weaker than the strongest
 // state already observed for its admission is stale and never repaints the queue.
 const STATUS_RANK: Record<string, number> = { queued: 0, started: 1, unknown: 2, retired: 3 }
+
+// The one journal identity for tracking and reconciliation: the key the queue panel reads. After
+// compression that is the lineage root, not the tip a submit targets or the runtime reports.
+const journalKey = (storedId: string) => resolveComposerSessionKey(storedId, $sessions.get()) ?? storedId
+
+const rank = (entry: PendingSubmission) => STATUS_RANK[entry.status ?? ''] ?? -1
+
+// Within one numbering the later sequence; across epochs they cannot be compared, keep the first.
+const laterFence = (a?: PendingSnapshotFence, b?: PendingSnapshotFence) =>
+  a && b && a.epoch === b.epoch && b.sequence > a.sequence ? b : (a ?? b)
+
+/** Two records of one admission as one: the stronger status (the newer on a tie), the text and
+ *  display text either knows, and the later fence. A retirement stays bare. */
+function mergeReceipt(held: PendingSubmission | undefined, next: PendingSubmission): PendingSubmission {
+  if (!held) {
+    return next
+  }
+
+  const [strong, weak] = rank(next) >= rank(held) ? [next, held] : [held, next]
+
+  if (strong.status === 'retired') {
+    return strong
+  }
+
+  const seen = laterFence(strong.seen, weak.seen)
+
+  return {
+    ...weak,
+    ...strong,
+    text: strong.text || weak.text,
+    displayText: strong.displayText ?? weak.displayText,
+    ...(seen ? { seen } : {})
+  }
+}
+
+/** Fold a journal kept under `from` into `to` once `from` resolves there (a tip journaled before
+ *  its lineage row loaded), so its status, display text and fences keep guarding the card. */
+function adoptJournal(from: string, to: string): void {
+  const stray = from === to ? {} : readPendingSubmissions(from)
+
+  if (!Object.keys(stray).length) {
+    return
+  }
+
+  const before = readPendingSubmissions(to)
+  const merged = { ...before }
+
+  for (const [id, entry] of Object.entries(stray)) {
+    merged[id] = mergeReceipt(merged[id], entry)
+  }
+
+  writeEntries(to, before, merged)
+  writeEntries(from, stray, {})
+}
+
+// Not an outbox: an uncertain accepted input must never be replayed automatically.
+export function trackPendingSubmission(storedId: string, entry: PendingSubmission): void {
+  const key = journalKey(storedId)
+  adoptJournal(storedId, key)
+  const held = readPendingSubmissions(key)[entry.id]
+  window.localStorage.setItem(entryKey(key, entry.id), JSON.stringify(mergeReceipt(held, entry)))
+}
+
+// Array.isArray narrows `unknown` to `any[]`; the helpers keep that wire shape.
+type RawReceipts = any[]
+
 // Retired identities are remembered per session only as long as a late snapshot can matter.
 const RETIRED_MEMORY = 200
 
@@ -209,9 +267,10 @@ export function reconcilePendingSubmissions(storedId: string, value: unknown, fe
     return
   }
 
-  // Project onto the key the queue panel reads. After compression that is the lineage root, not
-  // the tip the runtime reports, and only snapshots projected there can retire a card shown there.
-  const key = resolveComposerSessionKey(storedId, $sessions.get()) ?? storedId
+  // Project onto the key the queue panel reads: only snapshots projected there can retire a card
+  // shown there. Receipts journaled under the tip before the lineage was known move along.
+  const key = journalKey(storedId)
+  adoptJournal(storedId, key)
 
   const before = readPendingSubmissions(key)
   const known = { ...before }

@@ -133,11 +133,13 @@ def _install_process_sinks() -> None:
 def _ask_result(turn, agent, method, params, timeout):
     """One structured server request; the viewer's ``result`` dict, or None when none answered."""
     from gateway.session_sudo_prompt import ask_viewer_result
-    authority, session_id, _generation = turn._approval_owner
+    owner = turn._approval_owner
+    authority, session_id, _generation = owner
     live = authority.sessions.get(session_id)
     if live is None:
         return None
     return ask_viewer_result(live.event_stream, session_id, method, dict(params), timeout=timeout,
+                             owner=owner,
                              cancelled=lambda: bool(getattr(agent, "_interrupt_requested", False)))
 
 
@@ -186,11 +188,13 @@ def _setup_beat(turn, agent, payload):
 def _ask(turn, agent, method, params, timeout):
     """One ``ValueResult`` server request to the session's attached viewers; "" when none answered."""
     from gateway.session_sudo_prompt import ask_viewer
-    authority, session_id, _generation = turn._approval_owner
+    owner = turn._approval_owner
+    authority, session_id, _generation = owner
     live = authority.sessions.get(session_id)
     if live is None:
         return ""
     value = ask_viewer(live.event_stream, session_id, method, dict(params), timeout=timeout,
+                       owner=owner,
                        cancelled=lambda: bool(getattr(agent, "_interrupt_requested", False)))
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
+import time
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -22,13 +23,19 @@ _POLL_S = 0.25
 
 
 class _Pending:
-    __slots__ = ("event", "result", "session_id", "value")
+    __slots__ = ("cancelled", "deadline", "event", "owner", "owner_epoch", "owner_live", "result", "session_id", "value")
 
-    def __init__(self, session_id):
+    def __init__(self, session_id, *, owner=None, cancelled=lambda: False, timeout=None):
         self.event = threading.Event()
         self.session_id = session_id
         self.value = ""
         self.result = None
+        self.owner = owner
+        authority = owner[0] if owner is not None else None
+        self.owner_live = authority.sessions.get(session_id) if authority is not None else None
+        self.owner_epoch = getattr(authority, 'epoch', None)
+        self.cancelled = cancelled
+        self.deadline = time.monotonic() + timeout if timeout is not None else None
 
 
 _lock = threading.Lock()
@@ -41,47 +48,58 @@ def is_response_frame(frame) -> bool:
             and frame["id"].startswith("srq-") and ("result" in frame or "error" in frame))
 
 
-def resolve(frame, *, session_ok=lambda session_id: True) -> bool:
+def resolve(frame, *, session_ok=lambda session_id: True, owner_ok=None) -> bool:
     """Settle the open request *frame* answers; False when nothing (here) waits for that id.
-    ``session_ok`` lets the caller refuse an answer from a connection not entitled to that session."""
+    Authenticated dispatch supplies ``owner_ok`` for the captured authoritative lifetime;
+    direct in-process/legacy callers retain their existing ``session_ok`` contract."""
     with _lock:
         pending = _open.get(frame["id"])
         if pending is None or not session_ok(pending.session_id):
             return False
+        if owner_ok is not None and (pending.cancelled()
+                or (pending.deadline is not None and time.monotonic() >= pending.deadline)
+                or not owner_ok(pending)):
+            return False
+        result = frame.get("result") if "error" not in frame else None
+        value = result.get("value") if isinstance(result, dict) else ""
+        pending.value = value if isinstance(value, str) else ""
+        pending.result = result if isinstance(result, dict) else None
+        # Publish the complete answer before removing the registry entry: a timed-out waiter
+        # racing this winner must never observe a removed entry with an unassigned result.
         _open.pop(frame["id"], None)
-    result = frame.get("result") if "error" not in frame else None
-    value = result.get("value") if isinstance(result, dict) else ""
-    pending.value = value if isinstance(value, str) else ""
-    pending.result = result if isinstance(result, dict) else None
-    pending.event.set()
+        pending.event.set()
     return True
 
 
-def ask_sudo(events, session_id, command, *, cancelled=lambda: False, timeout=SUDO_TIMEOUT_S) -> str:
+def ask_sudo(events, session_id, command, *, owner=None, cancelled=lambda: False, timeout=SUDO_TIMEOUT_S) -> str:
     """Send one ``sudo`` request to the session's attached viewers and wait for its ``value``.
     "" when nobody is attached, the viewer skipped, the turn was interrupted, or it timed out."""
-    return ask_viewer(events, session_id, "sudo", {"command": command}, cancelled=cancelled, timeout=timeout)
+    return ask_viewer(events, session_id, "sudo", {"command": command}, owner=owner,
+                      cancelled=cancelled, timeout=timeout)
 
 
-def ask_viewer(events, session_id, method, params, *, cancelled=lambda: False, timeout=SUDO_TIMEOUT_S) -> str:
+def ask_viewer(events, session_id, method, params, *, owner=None, cancelled=lambda: False, timeout=SUDO_TIMEOUT_S) -> str:
     """Send one one-string server→client request (``sudo``, ``secret``: ``ValueResult``) to the
     session's attached viewers and wait for its ``value``; "" on skip, interrupt, timeout or no viewer."""
-    pending = _ask(events, session_id, method, params, cancelled=cancelled, timeout=timeout)
+    pending = _ask(events, session_id, method, params, owner=owner, cancelled=cancelled, timeout=timeout)
     return pending.value if pending is not None else ""
 
 
-def ask_viewer_result(events, session_id, method, params, *, cancelled=lambda: False, timeout=SUDO_TIMEOUT_S):
+def ask_viewer_result(events, session_id, method, params, *, owner=None, cancelled=lambda: False, timeout=SUDO_TIMEOUT_S):
     """The same round trip for a structured answer (``clarify``: ``ClarifyResult``): the viewer's
     ``result`` dict, or None on interrupt, timeout, an error response or no attached viewer."""
-    pending = _ask(events, session_id, method, params, cancelled=cancelled, timeout=timeout)
+    pending = _ask(events, session_id, method, params, owner=owner, cancelled=cancelled, timeout=timeout)
     return pending.result if pending is not None else None
 
 
-def _ask(events, session_id, method, params, *, cancelled, timeout):
+def _ask(events, session_id, method, params, *, cancelled, timeout, owner=None):
     if not events.fanout.transports():
         return None
     request_id = f"srq-{uuid.uuid4().hex[:12]}"
-    pending = _Pending(session_id)
+    pending = _Pending(session_id, owner=owner, cancelled=cancelled, timeout=timeout)
+    if owner is not None and (owner[1] != session_id or pending.owner_live is None
+            or pending.owner_live.event_stream is not events):
+        return None  # The callback's original live session was replaced before request creation.
     with _lock:
         _open[request_id] = pending
     events.fanout.write({"jsonrpc": "2.0", "id": request_id, "method": method,
@@ -115,7 +133,8 @@ def sudo_prompt_scope(turn, agent):
         yield
         return
     from tools.terminal_tool import _get_sudo_password_callback, set_sudo_password_callback
-    authority, session_id, _generation = turn._approval_owner
+    owner = turn._approval_owner
+    authority, session_id, _generation = owner
 
     def callback():
         from gateway.run import _redact_approval_command
@@ -124,6 +143,7 @@ def sudo_prompt_scope(turn, agent):
         if live is None:
             return ""
         return ask_sudo(live.event_stream, session_id, _redact_approval_command(get_sudo_prompt_command()),
+                        owner=owner,
                         cancelled=lambda: bool(getattr(agent, "_interrupt_requested", False)))
 
     previous = _get_sudo_password_callback()

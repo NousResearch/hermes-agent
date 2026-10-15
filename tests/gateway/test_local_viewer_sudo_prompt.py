@@ -100,7 +100,11 @@ async def test_the_viewer_response_frame_is_routed_by_the_authority_connection(t
         return 'ok'
     authority = await _authority(tmp_path, monkeypatch, answer)
     connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
-    pending = session_sudo_prompt._Pending('s')
+    from hermes_state_runtime import admit_session_input, claim_session_input
+    admit_session_input(authority.db, epoch=authority.epoch, principal_id='owner', session_id='s',
+                        request_id='sudo-fixture', payload={'text': 'fixture'})
+    row = claim_session_input(authority.db, epoch=authority.epoch, session_id='s')
+    pending = session_sudo_prompt._Pending('s', owner=(authority, 's', row['generation']))
     session_sudo_prompt._open['srq-abc'] = pending
     try:
         reply = await connection.dispatch({'jsonrpc': '2.0', 'id': 'srq-abc', 'result': {'value': 'pw'}})

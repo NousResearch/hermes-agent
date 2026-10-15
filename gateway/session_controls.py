@@ -15,7 +15,7 @@ from hermes_state_runtime import RuntimeStoreError
 # ``session.detach end_reason``: a short snake_case label, stored verbatim as ``sessions.end_reason``.
 _END_REASON = re.compile(r'[a-z][a-z_]{0,31}')
 # Verbs whose param sets are closed and never carried a ``profile`` key.
-_PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info', 'session.resume', 'session.detach',
+_PROFILE_IMPLICIT = frozenset({'runtime.describe', 'session.create', 'session.list', 'session.info', 'session.resume', 'session.detach',
                                'prompt.submit', 'prompt.receipt', 'prompt.cancel', 'prompt.resolve_unknown',
                                'session.interrupt', 'session.events.since', 'session.mutate', 'session.stats',
                                'approval.respond', 'clarify.respond'})
@@ -66,20 +66,23 @@ class AuthorityConnection:
         from hermes_cli.profiles import profile_matches_home
         if profile_matches_home(profile, Path(self.authority.profile_id)):
             return None
-        if self._identity.get('profile_scope') != 'host':
-            raise RuntimeStoreError('profile_mismatch')
         registry = getattr(getattr(self.authority, 'runner', None), 'session_authorities', None)
         for sibling in (registry or ()):
             if sibling is not self.authority and profile_matches_home(profile, Path(sibling.profile_id)):
-                connection = self._siblings.get(sibling.profile_id)
-                # A re-served profile is a new authority under the same id: never keep routing to
-                # the retired one (it refuses every admission for the rest of this socket's life).
-                if connection is None or connection.authority is not sibling:
-                    identity = dict(self._identity, profile_id=sibling.profile_id, instance_id=sibling.instance_id)
-                    connection = AuthorityConnection(sibling, self.transport, identity, operator=self._operator)
-                    self._siblings[sibling.profile_id] = connection
-                return connection
+                return self._sibling_connection(sibling)
         raise RuntimeStoreError('profile_mismatch')
+
+    def _sibling_connection(self, sibling):
+        """Project the verified host grant onto one already-selected serving authority."""
+        if self._identity.get('profile_scope') != 'host':
+            raise RuntimeStoreError('profile_mismatch')
+        connection = self._siblings.get(sibling.profile_id)
+        # A re-served profile is a new authority under the same id: never keep its retired connection.
+        if connection is None or connection.authority is not sibling:
+            identity = dict(self._identity, profile_id=sibling.profile_id, instance_id=sibling.instance_id)
+            connection = AuthorityConnection(sibling, self.transport, identity, operator=self._operator)
+            self._siblings[sibling.profile_id] = connection
+        return connection
 
     def handlers(self):
         """Method → handler for every verb ``dispatch`` serves outside the group controls; each
@@ -581,13 +584,26 @@ class AuthorityConnection:
     def _resolve_response(self, frame):
         from gateway.session_sudo_prompt import resolve
 
-        def entitled(session_id):
+        def entitled(pending):
+            if pending.owner is None:
+                return False
+            authority, session_id, generation = pending.owner
+            from gateway.session_authorities import all_authorities
+            if (session_id != pending.session_id or pending.owner_live is None
+                    or authority not in all_authorities(self.authority.runner)
+                    or authority.epoch != pending.owner_epoch
+                    or authority.sessions.get(session_id) is not pending.owner_live):
+                return False
             try:
-                self.authority.authorize(self.actor, SessionRef(self.actor.profile_id, session_id), 'session:respond')
+                connection = self if authority is self.authority else self._sibling_connection(authority)
+                if connection.authority is not authority:
+                    return False
+                authority.authorize(connection.actor, SessionRef(authority.profile_id, session_id), 'session:respond')
+                authority.check_approval_generation(session_id, generation)
             except RuntimeStoreError:
                 return False
             return True
-        if not resolve(frame, session_ok=entitled):
+        if not resolve(frame, owner_ok=entitled):
             import logging
             logging.getLogger(__name__).debug('dropping response for unknown server request id=%r', frame.get('id'))
 

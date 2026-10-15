@@ -32,7 +32,8 @@ def secret_prompt_scope(turn, agent):
         yield
         return
     from tools.skills_tool import bind_turn_secret_capture
-    authority, session_id, _generation = turn._approval_owner
+    owner = turn._approval_owner
+    authority, session_id, _generation = owner
 
     def callback(var_name, prompt, metadata=None):
         from gateway.session_sudo_prompt import ask_viewer
@@ -41,6 +42,7 @@ def secret_prompt_scope(turn, agent):
             return _skipped(var_name, "cancelled", "Secret setup was skipped.")
         params = {"env_var": var_name, "prompt": prompt, **({"metadata": metadata} if metadata else {})}
         value = ask_viewer(live.event_stream, session_id, "secret", params, timeout=SECRET_TIMEOUT_S,
+                           owner=owner,
                            cancelled=lambda: bool(getattr(agent, "_interrupt_requested", False)))
         if not value:
             return _skipped(var_name, "cancelled", "Secret setup was skipped.")

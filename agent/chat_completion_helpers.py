@@ -29,7 +29,7 @@ from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     _extract_status_code)
-from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
+from agent.azure_schema_boundary import prepare_chat_request
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
@@ -789,7 +789,7 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     # #93650: keep the bulk wire-format payload out of the SDK's GIL-holding
     # request transform. No-op unless this really is the OpenAI SDK, so the
     # MoA facade above and the suite's stand-in clients are unaffected.
-    api_kwargs = bypass_chat_sdk_request_transform(api_kwargs, request_client)
+    api_kwargs = prepare_chat_request(api_kwargs, request_client, agent.provider)
     return request_client.chat.completions.create(**api_kwargs)
 
 
@@ -2962,7 +2962,7 @@ class _StreamingCall(StreamingWaitMonitor):
         self.agent._touch_activity("waiting for provider response (streaming)")
         # #93650: as above — the streaming path carries the same bulk
         # messages/tools payload and pays the same client-side walk.
-        stream_kwargs = bypass_chat_sdk_request_transform(stream_kwargs, request_client)
+        stream_kwargs = prepare_chat_request(stream_kwargs, request_client, self.agent.provider)
         return request_client.chat.completions.create(**stream_kwargs)
 
     def _chat_stream_created(self, raw_stream: Any) -> None:

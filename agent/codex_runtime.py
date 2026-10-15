@@ -1238,6 +1238,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             )
         stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
         stream_kwargs["stream"] = True
+        from tools.azure_schema import prepare_azure_request
+        stream_kwargs = prepare_azure_request(
+            stream_kwargs, provider=agent.provider, base_url=getattr(active_client, "base_url", ""),
+        )
         return active_client.responses.create(**bypass_sdk_request_transform(stream_kwargs))
 
     def _log_failure(exc: BaseException) -> None:

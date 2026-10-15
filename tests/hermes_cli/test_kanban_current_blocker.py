@@ -278,6 +278,109 @@ def test_current_blocker_supports_rows_and_dataclasses():
     assert asdict(kb.Event(**ev)) == ev
 
 
+@pytest.fixture
+def show_fixture(monkeypatch):
+    import argparse
+    import sqlite3
+    from contextlib import contextmanager
+    from hermes_cli import kanban as kc
+    from hermes_cli import kanban_db as kb
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("""CREATE TABLE task_runs (
+        id INTEGER, task_id TEXT, profile TEXT, step_key TEXT, status TEXT,
+        claim_lock TEXT, claim_expires INTEGER, worker_pid INTEGER,
+        max_runtime_seconds INTEGER, last_heartbeat_at INTEGER, started_at INTEGER,
+        ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT, error TEXT
+    )""")
+    conn.executemany("""INSERT INTO task_runs (id, task_id, profile, status,
+        started_at, ended_at, outcome) VALUES (?, ?, 'fixture', 'closed', 90, 100, ?)""",
+        [(1, TASK_ID, "completed"), (7, TASK_ID, "blocked")])
+    target = kb.Task(id=TASK_ID, title="Fixture", body=None, assignee="fixture",
+                     status="blocked", priority=0, created_by="fixture", created_at=90,
+                     started_at=None, completed_at=None, workspace_kind="scratch",
+                     workspace_path=None, claim_lock=None, claim_expires=None, tenant=None,
+                     max_retries=2)
+
+    @contextmanager
+    def connection():
+        yield conn
+
+    monkeypatch.setattr(kd.time, "time", lambda: 101)
+    monkeypatch.setattr(kc.kbc, "connect_closing", connection)
+    monkeypatch.setattr(kb, "get_task", lambda *_: target)
+    monkeypatch.setattr(kb, "list_comments", lambda *_: [])
+    monkeypatch.setattr(kb, "list_events", lambda *_: [kb.Event(**event(run_id=7))])
+    monkeypatch.setattr(kb, "parent_ids", lambda *_: [])
+    monkeypatch.setattr(kb, "child_ids", lambda *_: [])
+    monkeypatch.setattr(kb, "latest_summary", lambda *_: None)
+    monkeypatch.setattr(kb, "task_graph_context", lambda *_: {"parents": [], "children": []})
+
+    def show(**fields):
+        return kc._cmd_show(argparse.Namespace(
+            **{"task_id": TASK_ID, "json": False, "state_type": "outcome",
+               "state_name": "completed", **fields}))
+
+    try:
+        yield show
+    finally:
+        conn.close()
+
+
+def test_show_state_filter_preserves_current_blocker_diagnostic(show_fixture, capsys):
+    assert show_fixture() == 0
+    output = capsys.readouterr().out
+    assert any("[warning] Blocked: needs approval" in line for line in output.splitlines())
+    runs = output.split("Runs (1):")[1]
+    assert "#1 " in runs
+    assert "#7 " not in runs
+
+
+def test_show_empty_run_filter_preserves_current_blocker_diagnostic(show_fixture, capsys):
+    assert show_fixture(state_name="gave_up") == 0
+    output = capsys.readouterr().out
+    assert "[warning] Blocked: needs approval" in output
+    assert "Runs (" not in output
+
+
+def test_show_without_run_filter_keeps_full_run_history(show_fixture, capsys):
+    assert show_fixture(state_type=None, state_name=None) == 0
+    output = capsys.readouterr().out
+    assert "[warning] Blocked: needs approval" in output
+    runs = output.split("Runs (2):")[1]
+    assert "#1 " in runs and "#7 " in runs
+
+
+def test_show_json_state_filter_preserves_existing_payload(show_fixture, capsys, monkeypatch):
+    import json
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("JSON must not compute diagnostics")
+
+    monkeypatch.setattr(kd, "compute_task_diagnostics", forbidden)
+    assert show_fixture(json=True) == 0
+    output = capsys.readouterr().out
+    data = json.loads(output)
+    assert set(data) == {"task", "latest_summary", "parents", "children", "comments", "events", "runs"}
+    assert data["task"]["id"] == TASK_ID
+    assert [(r["id"], r["outcome"]) for r in data["runs"]] == [(1, "completed")]
+    assert data["events"][0]["run_id"] == 7
+    assert "Diagnostics" not in output
+
+
+@pytest.mark.parametrize("fields", [{"state_type": None}, {"state_name": None}])
+def test_show_rejects_incomplete_state_filter_before_connection(show_fixture, capsys, monkeypatch, fields):
+    from hermes_cli import kanban as kc
+
+    def forbidden():
+        raise AssertionError("incomplete filter must not connect")
+
+    monkeypatch.setattr(kc.kbc, "connect_closing", forbidden)
+    assert show_fixture(**fields) == 2
+    assert "kanban show: pass both --state-type and --state-name, or omit both" in capsys.readouterr().err
+
+
 def test_current_blocker_exposes_ordinary_reason():
     diags = current([event()])
     assert len(diags) == 1

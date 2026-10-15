@@ -489,6 +489,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         # Workers hand off via task_runs.summary; tasks.result stays NULL unless set.
         latest_summary = kb.latest_summary(conn, args.task_id)
         if not want_json:
+            diagnostic_runs = kb.list_runs(conn, args.task_id) if rsk else runs
             graph = kb.task_graph_context(conn, task.id)
 
     if want_json:
@@ -529,7 +530,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
     # Diagnostics up top so CLI users see distress signals before scrolling.
     from hermes_cli import kanban_diagnostics as kd
-    diags = kd.compute_task_diagnostics(task, events, runs, graph=graph)
+    diags = kd.compute_task_diagnostics(task, events, diagnostic_runs, graph=graph)
     if diags:
         print(f"\n  Diagnostics ({len(diags)}):")
         _print_diagnostics(diags, "    ", with_kind=False)

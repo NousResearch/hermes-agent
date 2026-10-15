@@ -348,10 +348,9 @@ def test_a_bare_turn_error_stays_at_debug(caplog):
     assert 'DEBUG' in {rec.levelname for rec in caplog.records}
 
 
-@pytest.mark.asyncio
-async def test_notify_turn_error_sends_the_named_refusal(caplog):
+def _turn_error_adapter():
     from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.platforms.base import BasePlatformAdapter, SendResult
     from gateway.platforms.event import MessageEvent
     from gateway.session import SessionSource
 
@@ -371,12 +370,20 @@ async def test_notify_turn_error_sends_the_named_refusal(caplog):
 
         async def send(self, chat_id, content, reply_to=None, metadata=None):
             self.sent.append(content)
-            from gateway.platforms.base import SendResult
             return SendResult(success=True, message_id='1')
 
-    adapter = _Adapter()
     source = SessionSource(platform=Platform.TELEGRAM, chat_id='42', user_id='42')
-    event = MessageEvent(text='hi', source=source)
+    return _Adapter(), MessageEvent(text='hi', source=source)
+
+
+def _refusal_warnings(caplog):
+    return [rec.getMessage() for rec in caplog.records
+            if rec.levelno >= logging.WARNING and rec.name == 'gateway.session_controls']
+
+
+@pytest.mark.asyncio
+async def test_notify_turn_error_sends_the_named_refusal(caplog):
+    adapter, event = _turn_error_adapter()
     exc = RuntimeStoreError('invalid_params', field='native.media_urls', detail='must be a list of strings')
     with caplog.at_level(logging.WARNING, logger='gateway.session_controls'):
         await adapter._notify_turn_error(event, exc)
@@ -384,9 +391,55 @@ async def test_notify_turn_error_sends_the_named_refusal(caplog):
     body = adapter.sent[0]
     assert 'RuntimeStoreError' not in body
     assert 'native.media_urls' in body
-    warnings = [rec for rec in caplog.records if rec.levelno >= logging.WARNING
-                and rec.name == 'gateway.session_controls']
+    assert len(_refusal_warnings(caplog)) == 1
+
+
+@pytest.mark.asyncio
+async def test_turn_error_log_names_the_gateway_profile(tmp_path, monkeypatch, caplog):
+    """A gateway started for a named profile logs that name, not ``default``."""
+    home = tmp_path / '.hermes' / 'profiles' / 'coder'
+    home.mkdir(parents=True)
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    adapter, event = _turn_error_adapter()
+    exc = RuntimeStoreError('invalid_params', field='native.media_urls', detail='must be a list of strings')
+    with caplog.at_level(logging.WARNING, logger='gateway.session_controls'):
+        await adapter._notify_turn_error(event, exc)
+    warnings = _refusal_warnings(caplog)
     assert len(warnings) == 1
+    assert 'native.admit refused for profile=coder: invalid_params field=native.media_urls' in warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_turn_error_log_names_the_routed_profile(tmp_path, monkeypatch, caplog):
+    """Under multiplexing the line names the profile the delivery scope routes to."""
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    root = tmp_path / '.hermes'
+    routed = root / 'profiles' / 'ops'
+    routed.mkdir(parents=True)
+    monkeypatch.setenv('HERMES_HOME', str(root))
+
+    @contextmanager
+    def routed_scope(source):
+        token = set_hermes_home_override(str(routed))
+        try:
+            yield
+        finally:
+            reset_hermes_home_override(token)
+
+    adapter, event = _turn_error_adapter()
+    adapter.gateway_runner = SimpleNamespace(_media_delivery_scope_for_source=routed_scope)
+    exc = RuntimeStoreError('invalid_params', field='native.provenance_missing(multiplex)',
+                            detail='a multiplex gateway message needs provenance')
+    with caplog.at_level(logging.WARNING, logger='gateway.session_controls'):
+        await adapter._notify_turn_error(event, exc)
+    warnings = _refusal_warnings(caplog)
+    assert adapter.sent
+    assert len(warnings) == 1
+    assert 'profile=ops:' in warnings[0]
 
 
 @pytest.mark.asyncio

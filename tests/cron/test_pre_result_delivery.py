@@ -8,6 +8,7 @@ fail-open behaviour work. Behaviour tests only.
 import asyncio
 import subprocess
 import sys
+from pathlib import Path
 
 from cron.scheduler import _FireOwnership, _RunDelivery, _pre_result_delivery_directive
 from cron.scheduler_bookkeeping import _classify_delivery_outcome
@@ -78,6 +79,20 @@ def test_hold_withholds_as_held(monkeypatch):
     assert reason == "ingest-failed"
     assert _classify_delivery_outcome(
         delivery_error=f"held:{plugin}:{reason}", should_deliver=True, unresolved_origin=False,
+        normalized_deliver="local", incident_acked=False, success=True,
+    ) == "held"
+
+
+def test_plain_error_classifies_failed_while_held_stays_held():
+    """The held: marker must not swallow real delivery errors: a plain error
+    string still classifies as "failed" (upstream semantics), while the
+    plugin-withheld "held:<plugin>:<reason>" marker classifies as "held"."""
+    assert _classify_delivery_outcome(
+        delivery_error="send blew up", should_deliver=True, unresolved_origin=False,
+        normalized_deliver="local", incident_acked=False, success=True,
+    ) == "failed"
+    assert _classify_delivery_outcome(
+        delivery_error="held:kanban:ingest-failed", should_deliver=True, unresolved_origin=False,
         normalized_deliver="local", incident_acked=False, success=True,
     ) == "held"
 
@@ -186,7 +201,7 @@ def test_has_hook_works_in_restart_safe_worker():
     )
     proc = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=120,
-        cwd="/home/kom/proj/ai_pr/hermes-seams", check=False,
+        cwd=str(Path(__file__).resolve().parents[2]), check=False,
         env={"PYTHONNOUSERSITE": "1", "PATH": "/usr/bin:/bin"},
     )
     assert "R2-OK" in proc.stdout, proc.stderr[-2000:]

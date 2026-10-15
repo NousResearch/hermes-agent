@@ -87,7 +87,9 @@ def _reset_model_to_config_default(cli, silent: bool) -> None:
             explicit_provider=_config_provider or "")
         if not r.success:
             return
-        if cli.agent:
+        # A gateway /new already opened the next session on the profile's default (``session.create``
+        # without a model); the stand-in still points at the ended session, which a switch would rewrite.
+        if cli.agent and not getattr(cli, "_gateway_session_open", False):
             cli.agent.switch_model(
                 new_model=r.new_model, new_provider=r.target_provider, api_key=r.api_key,
                 base_url=r.base_url, api_mode=r.api_mode,

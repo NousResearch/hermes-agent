@@ -245,3 +245,20 @@ def test_a_long_subagent_goal_still_admits_its_completion_card():
     card = _claim_card(_delegation_completion("audit " * 1000), "model text")
     assert card["display_kind"] == "async_delegation_complete"
     assert card["display_text"].startswith("Subagent Task Completed: audit")
+
+
+def test_idle_cli_prints_the_gateway_background_review_summary(capsys):
+    """``/refine`` promises "any memory/skill updates will be reported when done" (#134889 M3): the
+    gateway publishes the review's summary to the local session as ``review.summary`` after the turn
+    settled. An idle classic CLI prints it (main's ``display.review.summary_cli`` line) instead of
+    discarding it with the between-turn leftovers."""
+    conn, client = _connected()
+    try:
+        cli = _idle_cli(conn)
+        _play(conn, client, [frame("review.summary", {"text": "💾 Self-improvement review: Memory updated"},
+                                   admission=None)])
+        cli._drain_process_notifications("cli-idle")
+        assert "  💾 Self-improvement review: Memory updated" in capsys.readouterr().out
+        assert cli._pending_input.empty()  # a report, not a turn
+    finally:
+        conn.close()

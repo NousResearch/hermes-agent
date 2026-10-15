@@ -675,6 +675,8 @@ class CLIAgentSetupMixin:
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id, platform="cli", session_db=self._session_db,
                 clarify_callback=clarify_callback, connection_callback=connection_callback,
+                # The gateway's model-guard refusal is asked like main's own guard; -q cannot answer it.
+                model_confirm_callback=None if single_query_mode else self._confirm_owner_model_switch,
                 reasoning_callback=self._current_reasoning_callback(),
                 fallback_model=self._fallback_model, thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,

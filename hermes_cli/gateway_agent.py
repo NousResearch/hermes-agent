@@ -77,7 +77,7 @@ class GatewayAgent:
                  tool_start_callback=None, tool_complete_callback=None, stream_delta_callback=None,
                  tool_gen_callback=None, notice_callback=None, notice_clear_callback=None,
                  reaction_callback=None, interim_assistant_callback=None, connection=None,
-                 push_reasoning=False, **_ignored):
+                 push_reasoning=False, model_confirm_callback=None, **_ignored):
         conn = connection or getattr(session_db, "connection", None)
         if conn is None:
             raise GatewayClientError("Gateway session unavailable; no local fallback")
@@ -106,6 +106,8 @@ class GatewayAgent:
         self.notice_clear_callback = notice_clear_callback
         self.reaction_callback = reaction_callback
         self.interim_assistant_callback = interim_assistant_callback
+        # The CLI's confirm prompt for the owner's model-guard refusal; None where nobody can answer (-q).
+        self.model_confirm_callback = model_confirm_callback
         self.suppress_status_output = False
         self._print_fn = None
         # Inert private attributes main's CLI writes (CALLMAP §3.2).
@@ -217,14 +219,16 @@ class GatewayAgent:
             logger.debug("session.mutate reasoning failed: %s", exc)
 
     def switch_model(self, new_model, new_provider="", api_key="", base_url="", api_mode="", capabilities=None):
-        """Main's in-place swap (``/model``, ``/model --once`` and its restore, /new's reset to the config
-        default, /resume) as ``session.mutate model``: the gateway resolves the target with the same
+        """Main's in-place swap (``/model``, ``/model --once`` and its restore, /resume) as
+        ``session.mutate model``: the gateway resolves the target with the same
         switch pipeline and commits it to the session's policy, so the next turn runs on it; keys and
-        endpoints stay gateway-side. Main's caller already confirmed a guarded target
-        (``_confirm_expensive_model_switch``), so the owner's ``confirmation_required`` is answered once
-        with its token. A refusal raises: main's callers roll their own fields back."""
+        endpoints stay gateway-side. A guarded target (cost, data policy, large context) the owner refuses
+        with ``confirmation_required`` is re-sent with its token only on the user's yes to
+        ``model_confirm_callback`` (the owner's warning, as Ink/Desktop/ACP show it): a no returns False with
+        nothing written; with no prompt the refusal raises. Any refusal raises: main's callers roll their own
+        fields back."""
         if new_model == self.model and (not new_provider or new_provider == self.provider):
-            return
+            return True
         from hermes_cli.gateway_mutations import model_refusal_text
         payload = {"model": new_model, **({"provider": new_provider} if new_provider else {})}
         snapshot = self.connection.call("session.resume", session_id=self.session_id)
@@ -232,6 +236,10 @@ class GatewayAgent:
                      expected_generation=snapshot["execution_generation"])
         result = self.connection.call("session.mutate", request_id=uuid.uuid4().hex, payload=payload, **fence) or {}
         if result.get("status") == "confirmation_required":
+            if self.model_confirm_callback is None:
+                raise GatewayClientError(model_refusal_text(result))
+            if not self.model_confirm_callback(result):
+                return False
             # The refusal wrote nothing: the same fence is re-sent with the owner's token.
             result = self.connection.call("session.mutate", request_id=uuid.uuid4().hex,
                                           payload={**payload, "confirm": result["confirm"]}, **fence) or {}
@@ -248,6 +256,7 @@ class GatewayAgent:
         state.info = {**(state.info or {}), "model": result.get("model") or new_model,
                       **({"provider": provider} if provider else {})}
         self._apply_info(state.info)
+        return True
 
     # -- session identity ----------------------------------------------------------------------
     @property
@@ -757,6 +766,11 @@ class GatewayAgent:
     def _on_print(self, payload, stream_callback, starts):
         self._emit_print(payload.get("text") or "")
 
+    def _on_review_summary(self, payload, stream_callback, starts):
+        line = review_summary_line(payload)
+        if line:
+            self._emit_print(line)
+
     def _emit_print(self, text):
         if self.suppress_status_output:
             return
@@ -1001,6 +1015,14 @@ def _rate_limit_state(data):
                           provider=str(data.get("provider") or ""))
 
 
+def review_summary_line(payload):
+    """Main's ``display.review.summary_cli`` line for the gateway's ``review.summary`` frame: the background
+    review's "💾 Self-improvement review: ..." (``/refine``, the post-turn review), which the gateway
+    publishes to a local viewer once the turn settled. None for an empty one."""
+    text = str(payload.get("text") or "").strip() if isinstance(payload, dict) else ""
+    return f"  {text}" if text else None
+
+
 def _moa_handler(kind):
     def handler(agent, payload, stream_callback, starts):
         if agent.tool_progress_callback is None:
@@ -1039,6 +1061,7 @@ _HANDLERS = {
     "notification.clear": GatewayAgent._on_notice_clear,
     "reaction": GatewayAgent._on_reaction,
     "agent.print": GatewayAgent._on_print,
+    "review.summary": GatewayAgent._on_review_summary,
     "approval.request": GatewayAgent._on_approval,
     "clarify.request": GatewayAgent._on_clarify,
 }

@@ -730,19 +730,33 @@ def test_model_switch_is_the_session_model_mutation_and_a_rebuilt_agent_shows_it
     assert (rebuilt.model, rebuilt.provider) == ("new-model", "anthropic")
 
 
-def test_a_guarded_model_target_is_confirmed_once_with_the_owners_token(make_agent):
-    """Main asked before calling switch_model (``_confirm_expensive_model_switch``); the owner's own
-    guard refusal is answered with its token once. A second refusal (the session moved) raises, so
-    main rolls its fields back and the agent keeps the old model."""
+def test_a_guarded_model_target_commits_only_on_the_users_yes_to_the_owners_warning(make_agent):
+    """The owner's guard refusal (cost, data policy, large context) is the user's to answer: its
+    warning goes to the CLI's prompt and only a yes re-sends with its token. A no commits nothing;
+    with no prompt (-q) the token is never sent. A second refusal after a yes (the session moved)
+    raises, so main rolls its fields back and the agent keeps the old model."""
     refusal = {"status": "confirmation_required", "confirm": "tok-1", "confirm_message": "Expensive model"}
-    agent, client = make_agent([], model="old-model")
+    asked = []
+    agent, client = make_agent([], model="old-model",
+                               model_confirm_callback=lambda r: asked.append(r["confirm_message"]) or True)
     client.mutate_replies = [refusal, {"status": "committed", "model": "pricey-model"}]
-    agent.switch_model(new_model="pricey-model", new_provider="openrouter")
+    assert agent.switch_model(new_model="pricey-model", new_provider="openrouter") is True
+    assert asked == ["Expensive model"]
     sent = [p["payload"] for m, p in client.calls if m == "session.mutate"]
     assert sent == [{"model": "pricey-model", "provider": "openrouter"},
                     {"model": "pricey-model", "provider": "openrouter", "confirm": "tok-1"}]
     assert agent.model == "pricey-model"
-    other, other_client = make_agent([], model="old-model")
+    declined, declined_client = make_agent([], model="old-model", model_confirm_callback=lambda r: False)
+    unattended, unattended_client = make_agent([], model="old-model")
+    declined_client.mutate_replies, unattended_client.mutate_replies = [refusal], [refusal]
+    assert declined.switch_model(new_model="pricey-model", new_provider="openrouter") is False
+    with pytest.raises(GatewayClientError, match="interactive session"):
+        unattended.switch_model(new_model="pricey-model", new_provider="openrouter")
+    for refused, refused_client in ((declined, declined_client), (unattended, unattended_client)):
+        assert [p["payload"] for m, p in refused_client.calls if m == "session.mutate"] == [
+            {"model": "pricey-model", "provider": "openrouter"}]
+        assert refused.model == "old-model"
+    other, other_client = make_agent([], model="old-model", model_confirm_callback=lambda r: True)
     other_client.mutate_replies = [refusal, dict(refusal, confirm="tok-2")]
     with pytest.raises(GatewayClientError, match="Model not switched"):
         other.switch_model(new_model="pricey-model", new_provider="openrouter")
@@ -797,3 +811,15 @@ def test_a_committed_model_switch_stands_when_the_refresh_after_it_fails(make_ag
     assert (agent.model, agent.provider) == ("claude-sonnet-4", "anthropic")
     rebuilt = GatewayAgent(connection=agent.connection, session_id=SID, model="old-model", provider="openrouter")
     assert (rebuilt.model, rebuilt.provider) == ("claude-sonnet-4", "anthropic")
+
+
+def test_a_background_review_summary_during_a_turn_is_printed_like_mains(make_agent):
+    """``/refine`` (#134889 M3) and the post-turn review run in the gateway, which publishes their
+    summary as a ``review.summary`` frame (no admission). One landing while a turn streams is printed
+    as main's ``display.review.summary_cli`` line, never dropped."""
+    printed = []
+    agent, _ = make_agent([frame("review.summary", {"text": "💾 Self-improvement review: Memory updated"}, admission=None),
+                           frame("message.complete", {"text": "ok", "outcome": "completed"})])
+    agent._print_fn = printed.append
+    agent.run_conversation("hi")
+    assert printed == ["  💾 Self-improvement review: Memory updated"]

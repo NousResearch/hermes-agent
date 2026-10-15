@@ -266,18 +266,24 @@ def attach_editor_mcp(authority, policy, servers):
 
 
 def resume_editor_mcp(authority, ref, editor):
-    """Call after ordinary resume authorization, before attaching the viewer."""
+    """Call after ordinary resume authorization, before attaching the viewer. An explicit empty list
+    is a selection too: on a session holding editor servers it conflicts, so the editor removes them
+    through the fenced ``editor_mcp`` change; an omitted list keeps them."""
     if editor is None:
         return
     from gateway.session_local_editor import validate_editor
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
+    servers = editor.get('mcp_servers') if isinstance(editor, dict) else None
+    if servers == [] and (policy is None or not policy.editor_mcp_json):
+        return  # nothing to remove, whichever surface created the session
     if policy is None:
         raise RuntimeStoreError('acp_mcp_policy_conflict')
     validate_editor(policy.source, editor)
-    servers = editor.get('mcp_servers', [])
     if servers:
         attach_editor_mcp(authority, policy, servers)
+    elif servers is not None:
+        raise RuntimeStoreError('acp_mcp_policy_conflict')
 
 
 def retire_editor_mcp(authority, sid):
@@ -387,29 +393,24 @@ async def refreeze_editor_mcp(authority, ref, live):
     if not complete or (schemas == data['schemas'] and not drifted):
         return
     try:
-        await _commit_refreeze(authority, ref, live, servers)
+        await _commit_refreeze(authority, ref, servers)
     except RuntimeStoreError:
         # The FIFO must not pause on it: the turn then reports the drift as before.
         logger.warning('Editor MCP schemas of session %s changed; re-freeze failed', ref.session_id, exc_info=True)
 
 
-async def _commit_refreeze(authority, ref, live, servers):
-    from gateway.session_local import publish_local_policy
+async def _commit_refreeze(authority, ref, servers):
+    """The ``editor_mcp`` change on the owning principal's behalf, through ``session.mutate``'s own
+    writer (the drain holds the session's locks, and a schema re-check needs no capability)."""
+    from gateway.session_mutations import write_mutation
     from hermes_state_local import local_receipt
-    from hermes_state_runtime import mutate_runtime_session
     owner = await asyncio.to_thread(local_receipt, authority.db, ref.session_id)
     row = await asyncio.to_thread(authority.db.get_session, ref.session_id)
     payload, servers = private_mutation_payload('editor_mcp', {'mcp_servers': servers})
-    fields = dict(epoch=authority.epoch, principal_id=owner['principal_id'], session_id=ref.session_id,
-                  request_id='editor-mcp-refreeze:' + uuid.uuid4().hex, expected_revision=row['runtime_revision'],
-                  expected_generation=row['runtime_generation'], operation='editor_mcp', payload=payload)
-    prepared = await asyncio.to_thread(mutate_runtime_session, authority.db, **fields, _prepare_only=True)
-    prepared = await prepare_editor_mcp(authority, live, payload, prepared, servers=servers)
-    result = await asyncio.to_thread(mutate_runtime_session, authority.db, **fields, _prepared=prepared)
-    install_editor_mcp(authority, ref.session_id, servers)
-    publish_local_policy(authority, ref.session_id)
-    live.event_stream.publish(ref.session_id, result, event_type='session.updated')
-    announce_tools_changed(live, ref.session_id, result)
+    params = {'session_id': ref.session_id, 'request_id': 'editor-mcp-refreeze:' + uuid.uuid4().hex,
+              'expected_revision': row['runtime_revision'], 'expected_generation': row['runtime_generation'],
+              'operation': 'editor_mcp', 'payload': payload}
+    await write_mutation(authority, ref, params, servers, principal_id=owner['principal_id'])
 
 
 def _child_secret_ref(authority, child, parent, policy):
@@ -422,10 +423,13 @@ def _child_secret_ref(authority, child, parent, policy):
     return replace(policy, config_secret_ref=config_reference(authority, child, policy, secrets))
 
 
-async def prepare_branch_editor(authority, ref, servers):
+async def prepare_branch_editor(authority, ref, servers, gate):
     """``(prepared, servers)`` for a fork of an editor session: the child's selection under its OWN
     scope, from the fork's list or else a copy of the parent's borrowed servers. The child never
-    shares the parent's scope or connections. ``(None, None)`` when no editor servers are involved."""
+    shares the parent's scope or connections. ``(None, None)`` when no editor servers are involved.
+
+    Discovery starts every server, so *gate* (the branch's prepare-only fences: receipt, revision,
+    generation, idle) runs first; an exact retry's durable receipt comes back as ``prepared``."""
     from gateway.session_policy import restore_policy
     from hermes_state_keys import local_identity
     from hermes_state_local import local_receipt
@@ -443,11 +447,14 @@ async def prepare_branch_editor(authority, ref, servers):
         servers = json.loads(_json(servers))
     elif parent.source != 'acp':
         raise RuntimeStoreError('invalid_params')
+    gated = await gate()
+    if 'snapshot' not in gated:
+        return gated, servers
     request_id = 'branch:' + uuid.uuid4().hex
     child = local_identity(saved['profile_id'], saved['principal_id'], request_id)
     policy, _ = await asyncio.to_thread(rebind_editor_mcp, authority, child, parent, servers)
     policy = _child_secret_ref(authority, child, parent, policy)
-    return {'request_id': request_id, 'child': child, 'parent_editor_mcp_json': parent.editor_mcp_json,
+    return {**gated, 'request_id': request_id, 'child': child, 'parent_editor_mcp_json': parent.editor_mcp_json,
             'editor_mcp_json': policy.editor_mcp_json, 'toolsets': list(policy.toolsets),
             'config_secret_ref': policy.config_secret_ref}, servers
 

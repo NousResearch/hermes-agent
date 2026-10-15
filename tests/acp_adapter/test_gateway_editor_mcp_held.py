@@ -9,8 +9,9 @@ import sys
 
 import pytest
 
-from tests.acp_adapter.test_gateway_editor_mcp import MCPModelPeer, _completed, _peers_running, _policies
-from tests.acp_adapter.test_gateway_sessions import viewer
+from tests.acp_adapter.test_gateway_editor_mcp import (
+    MCPModelPeer, _completed, _peers_running, _policies, initialize, prompt)
+from tests.acp_adapter.test_gateway_sessions import editor, viewer
 from tests.waiting import async_wait_until
 
 # The tool description is read on every tools/list, so one live process can change its tools.
@@ -81,3 +82,28 @@ async def test_empty_selection_closes_the_held_connections(daemon, spec, tmp_pat
         await async_wait_until(lambda: not _peers_running(daemon[1]['pid']), timeout=20,
                                what='held editor server closed by the empty selection')
     assert _policies(daemon[0], sid) == [None]
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.asyncio
+async def test_acp_load_with_no_servers_removes_them_and_resume_without_a_list_keeps_them(daemon, spec, tmp_path):
+    """``session/load`` always carries ``mcpServers`` (the schema requires it), so ``[]`` there is the
+    editor's selection: the owner's ``editor_mcp`` removal. ``session/resume`` may omit the list,
+    which keeps the session's servers."""
+    async with editor(daemon, tmp_path) as acp:
+        await initialize(acp)
+        created = await acp.rpc('session/new', cwd=str(tmp_path), mcpServers=[spec])
+        assert 'result' in created, created
+        sid = created['result']['sessionId']
+        assert 'result' in await prompt(acp, sid)
+        assert _peers_running(daemon[1]['pid']), 'a viewed session holds its editor server between turns'
+        resumed = await acp.rpc('session/resume', sessionId=sid, cwd=str(tmp_path))
+        assert 'result' in resumed, resumed
+        assert _peers_running(daemon[1]['pid']), 'an omitted list keeps the servers'
+        assert _policies(daemon[0], sid) != [None]
+        loaded = await acp.rpc('session/load', sessionId=sid, cwd=str(tmp_path), mcpServers=[])
+        assert 'result' in loaded, loaded
+        # The editor is still attached: only the committed empty selection may close the process.
+        await async_wait_until(lambda: not _peers_running(daemon[1]['pid']), timeout=20,
+                               what='held editor server closed by the empty load')
+        assert _policies(daemon[0], sid) == [None]

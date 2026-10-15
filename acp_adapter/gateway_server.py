@@ -355,11 +355,14 @@ class GatewayACPAgent(acp.Agent):
             await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(
                 "Attached to the gateway's existing session policy; editor cwd is not applied.\n"))
         resume_params = {}
-        if mcp_servers:
+        if mcp_servers is not None:
+            # A list, empty included, is the editor's selection (load always carries one); a resume
+            # that omits it keeps the session's servers. An owner without editor MCP bound none.
             descriptor = await client.rpc("runtime.describe")
-            if "acp-session-mcp-v1" not in descriptor.get("capabilities", []):
+            if "acp-session-mcp-v1" in descriptor.get("capabilities", []):
+                resume_params['editor'] = {'mcp_servers': [s.model_dump(by_alias=True) for s in mcp_servers]}
+            elif mcp_servers:
                 raise GatewayClientError("acp_mcp_policy_unavailable")
-            resume_params['editor'] = {'mcp_servers': [s.model_dump(by_alias=True) for s in mcp_servers]}
         try:
             snapshot = await client.rpc("session.resume", session_id=session_id, **resume_params)
         except GatewayRPCError as exc:
@@ -370,8 +373,10 @@ class GatewayACPAgent(acp.Agent):
             await self._rebind_editor_mcp(client, session_id, resume_params['editor'])
             snapshot = await client.rpc("session.resume", session_id=session_id, **resume_params)
         self._snapshots[session_id] = snapshot
-        if 'editor' in resume_params:
+        if resume_params.get('editor', {}).get('mcp_servers'):
             self._editor_mcp[session_id] = resume_params['editor']
+        elif 'editor' in resume_params:
+            self._editor_mcp.pop(session_id, None)
         from acp_adapter.server import _history_replay_updates
         if self._conn:
             for update in _history_replay_updates(snapshot["messages"]):

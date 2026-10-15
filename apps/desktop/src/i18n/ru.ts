@@ -150,7 +150,6 @@ export const ruOverrides = {
         'Бэкенд приложения отклонил запрос (405 Method Not Allowed). Попробуйте перезапустить Hermes Desktop.',
       microphonePermission: 'Доступ к микрофону запрещён.',
       openaiRejectedApiKey: 'OpenAI отклонил API-ключ.',
-      openaiRejectedApiKeyWithStatus: status => `OpenAI отклонил API-ключ (${status} invalid_api_key).`,
       openaiTtsNeedsKey: 'Для TTS OpenAI нужен VOICE_TOOLS_OPENAI_KEY или OPENAI_API_KEY.',
       codeSkewRestartRequired:
         'После обновления этот бэкенд работает на старом коде. Перезапустите его, чтобы загрузить новый код.',
@@ -1983,7 +1982,7 @@ export const ruOverrides = {
     importMap: 'Импортировать карту',
     importBtn: 'Загрузить',
     importEmpty: 'Вставьте код карты для загрузки.',
-    importSuccess: nodes => `Загружена карта с ${nodes} ${RU_NOUN(nodes, 'узлом', 'узла', 'узлов')}.`,
+    importSuccess: nodes => `Загружена карта с ${nodes} ${RU_NOUN(nodes, 'узлом', 'узлами', 'узлами')}.`,
     importedBadge: 'импортированная карта',
     resetToMine: 'Вернуться к моей карте'
   },

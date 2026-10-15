@@ -8,7 +8,6 @@ import os
 import signal
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -16,10 +15,11 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
+from tests.waiting import wait_until
 
 
 _PAYLOAD = """
-import json, os, signal, subprocess, sys, time
+import json, os, signal, subprocess, sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
@@ -43,17 +43,12 @@ else:
         'run': os.environ['HERMES_KANBAN_RUN_ID'],
     })
 while True:
-    time.sleep(1)
+    signal.pause()
 """
 
 
 def _wait_for(predicate, *, timeout=15):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.02)
-    assert predicate(), "worker lifecycle condition did not arrive before deadline"
+    assert wait_until(predicate, timeout=timeout), "worker lifecycle condition did not arrive before deadline"
 
 
 def _alive(pid):
@@ -106,6 +101,10 @@ def test_reclaim_cleans_the_wrapped_worker_tree(board, tmp_path, monkeypatch, di
         assert child["task"] == tid and child["run"] == str(task.current_run_id)
         assert row["worker_pid"] == wrapper
         assert row["worker_started_at"] == kbd._process_fingerprint(wrapper)
+        run = board.execute("SELECT worker_pid, worker_started_at FROM task_runs WHERE id = ?",
+                            (task.current_run_id,)).fetchone()
+        assert run["worker_pid"] == wrapper
+        assert run["worker_started_at"] == row["worker_started_at"]
         log = kb.worker_logs_dir() / f"{tid}.log"
         assert log.stat().st_mode & 0o777 == 0o600
 
@@ -142,7 +141,7 @@ def test_reclaimed_wrapper_never_launches_its_child(board, tmp_path, monkeypatch
     command = [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).touch()", str(marker)]
     result = subprocess.run(
         [sys.executable, "-m", "hermes_cli.kanban_worker_log", str(tmp_path / "worker.log"), "--", *command],
-        cwd=tmp_path, capture_output=True, timeout=20, start_new_session=True,
+        cwd=tmp_path, capture_output=True, timeout=20, start_new_session=True, check=False,
     )
     assert result.returncode != 0
     assert not marker.exists()

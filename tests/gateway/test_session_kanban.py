@@ -54,7 +54,7 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
         build_policy({'source': 'kanban', 'cwd': str(workspace)}, config)
 
 
-@pytest.mark.parametrize('mode', ['complete', 'timeout', 'rate_limit', 'billing', 'crash'])
+@pytest.mark.parametrize('mode', ['complete', 'redacted_complete', 'timeout', 'rate_limit', 'billing', 'crash'])
 def test_real_dispatcher_lifecycle(tmp_path, mode):
     import os
     import subprocess
@@ -62,19 +62,24 @@ def test_real_dispatcher_lifecycle(tmp_path, mode):
     repo = Path(__file__).resolve().parents[2]
     from tests.gateway.fixtures.local_recovery_probe import child_env
     env = child_env()
-    env.update(HOME=str(tmp_path / 'home'), USERPROFILE=str(tmp_path / 'home'), HERMES_HOME=str(tmp_path / 'state'), PYTHONPATH=str(repo), KANBAN_PROBE_MODE=mode)
+    env.update(HOME=str(tmp_path / 'home'), USERPROFILE=str(tmp_path / 'home'), HERMES_HOME=str(tmp_path / 'state'), PYTHONPATH=str(repo),
+        KANBAN_PROBE_MODE='complete' if mode == 'redacted_complete' else mode,
+        KANBAN_PROBE_LOG_SECRET='1' if mode == 'redacted_complete' else '')
     result = subprocess.run([sys.executable, str(Path(__file__).parent / 'fixtures' / 'kanban_owner_probe.py')],
         env=env, cwd=repo, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=150, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     receipt = json.loads((tmp_path / 'state' / 'receipt.json').read_text())
     print(json.dumps(receipt))
-    if mode != 'complete':
+    if mode not in {'complete', 'redacted_complete'}:
         assert receipt['task_status'] == 'ready'
         return
     assert receipt['task_status'] == 'done' and receipt['source'] == 'kanban'
     assert receipt['tools'] and receipt['task_context'] and receipt['skill_context'] and receipt['hook_effect']
     assert receipt['admissions'] == 1 and receipt['retry_same_session']
     assert receipt['goal_continuation'] and receipt['stable_prefix']
+    if mode == 'redacted_complete':
+        assert receipt['owner_log_redacted']
+        assert receipt['owner_nonprefix_log_redacted']
     print(json.dumps(receipt))
 
 

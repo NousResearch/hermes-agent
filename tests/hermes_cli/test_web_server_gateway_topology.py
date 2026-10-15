@@ -521,6 +521,32 @@ class TestStatusEndpointTopology:
         assert data["gateway_platforms"]["telegram"]["state"] == "connected"
         assert data["gateway_shared_with"] is None
 
+    def test_unscoped_status_on_a_served_profiles_own_backend_uses_multiplexer_record(self, monkeypatch, tmp_path):
+        # `hermes -p coder serve` answers plain /api/status (no ?profile=) for its own home. That
+        # home's gateway.lock is the multiplexer's too, so the same live record applies.
+        import hermes_cli.web_routers.status as status_router
+
+        self._scope_to_served_profile(
+            monkeypatch, tmp_path,
+            own_runtime={"gateway_state": "stopped", "platforms": {"telegram": {"state": "disconnected"}}},
+            lock_pid=4242, mux_pid=4242,
+            mux_runtime={
+                "gateway_state": "running",
+                "served_profiles": ["default", "coder"],
+                "platforms": {"telegram": {"state": "disconnected"},
+                              "coder:telegram": {"state": "connected"}},
+            },
+        )
+        monkeypatch.setattr(status_router, "get_process_hermes_home", lambda: tmp_path / "profiles" / "coder")
+
+        resp = self.client.get("/api/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_state"] == "running"
+        assert data["gateway_platforms"]["telegram"]["state"] == "connected"
+        assert data["gateway_shared_with"] == ["default", "coder"]
+
     def test_profile_scoped_status_keeps_own_record_when_multiplexer_lookup_raises(self, monkeypatch, tmp_path):
         # The multiplexer lookup is optional: a failure there must not 500 the status route or
         # drop the record the ladder already selected.

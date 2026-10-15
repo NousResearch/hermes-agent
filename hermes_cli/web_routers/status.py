@@ -312,14 +312,16 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> di
     if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
         runtime = remote_health_body
     mux_runtime = liveness.runtime
-    if mux_runtime is None and gateway_running and profile_dir is not None:
+    if mux_runtime is None and gateway_running:
         # The PID rung answers before the multiplexer rung, and a served profile's gateway.lock is
         # held by the multiplexer itself, so the ladder returns without its record while the
         # profile's own gateway_state.json may be a retired standalone gateway's (#139080). When the
         # lock holder IS the multiplexer serving this profile, its record is the live one; a
         # profile's own (--force) gateway holds the lock under a different PID and keeps its record.
         try:
-            served = await run_in_threadpool(multiplexer_liveness_for_profile, profile_dir)
+            # Unscoped, the profile is the process's own home (a named `hermes -p X serve`).
+            served = await run_in_threadpool(multiplexer_liveness_for_profile,
+                                             profile_dir or get_process_hermes_home())
         except Exception:  # health: allow BLE001 -- status route must never 500; traceback is logged
             # A failed lookup keeps the profile's own record. A missing multiplexer record does
             # not raise: the helper returns (pid, {}), which still replaces it on a PID match.

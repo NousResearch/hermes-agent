@@ -36,10 +36,10 @@ def clear_review_admission_state():
         review_admission._review_runs.clear()
 
 
-def _review_lease(tmp_path):
+def _review_lease(tmp_path, session_id="shared-session"):
     """An admitted review lease on a real store, with the fork's interrupt observable."""
     db = SessionDB(tmp_path / "state.db")
-    db.create_session("shared-session", source="test")
+    db.create_session(session_id, source="test")
     interrupted = threading.Event()
     fork = types.SimpleNamespace(
         hard_interrupt=lambda *_a, **_k: interrupted.set(),
@@ -48,7 +48,7 @@ def _review_lease(tmp_path):
     run = background_review_module._BackgroundReviewRun()
     assert run.begin_request(fork) is True
     lease, reason = background_review_module._try_acquire_durable_review_lease(
-        types.SimpleNamespace(_session_db=db), fork, "shared-session", run
+        types.SimpleNamespace(_session_db=db), fork, session_id, run
     )
     assert reason is None and lease is not None
     return db, lease, run, interrupted
@@ -237,3 +237,53 @@ def test_lock_after_the_fork_released_the_row_is_not_a_loss(tmp_path, caplog):
     assert not run.cancel_requested.is_set()
     assert _lines(caplog, review_admission.REASON_LEASE_LOST) == []
     assert _lines(caplog, review_admission.REASON_LEASE_RENEWAL_LOCKED) == []
+
+
+def test_a_chain_delete_preempts_the_fork_on_its_next_tick(tmp_path, caplog):
+    """The fork's session id is the compression TIP; its lease row is keyed by the ROOT. A user
+    delete of the chain stamps that row to yield and removes both sessions: the next tick must
+    still read the stamped cause (``review_preempted_by_transcript_edit``, recorded on the run so
+    a deferred review is dropped) — not a holder-fenced miss logged as ``review_lease_lost`` —
+    and the fork's exit must release the row, so a re-created root id is not kept waiting."""
+    db, lease, run, interrupted = _review_lease(tmp_path, "root")
+    lease.stop_refresher()
+    lease.release()
+    db.end_session("root", "compression")
+    db.create_session("tip", source="test", parent_session_id="root")
+    db.append_message("tip", role="user", content="continued")
+    db, lease, run, interrupted = _review_lease_on(db, "tip")
+    assert db.delete_session(
+        "tip", exclude_active_write_guards=True, include_compression_chain=True
+    )
+    try:
+        with caplog.at_level("INFO"):
+            assert lease.refresh_tick() is None
+    finally:
+        lease.stop_refresher()
+        lease.release()
+
+    assert interrupted.is_set()
+    assert (
+        run.lease_yield_reason == review_admission.REASON_PREEMPTED_BY_TRANSCRIPT_EDIT
+    )
+    preempted = _lines(caplog, review_admission.REASON_PREEMPTED_BY_TRANSCRIPT_EDIT)
+    assert len(preempted) == 1 and lease._owner in preempted[0], caplog.text
+    assert _lines(caplog, review_admission.REASON_LEASE_LOST) == []
+    assert db._read_all("SELECT holder FROM session_turn_leases") == []
+    assert db.try_acquire_session_turn_lease("root", "pid=0:turn=next", ttl_seconds=60)
+
+
+def _review_lease_on(db, session_id):
+    """A second admitted review lease on an existing store (no session row created)."""
+    interrupted = threading.Event()
+    fork = types.SimpleNamespace(
+        hard_interrupt=lambda *_a, **_k: interrupted.set(),
+        release_clients=lambda: None,
+    )
+    run = background_review_module._BackgroundReviewRun()
+    assert run.begin_request(fork) is True
+    lease, reason = background_review_module._try_acquire_durable_review_lease(
+        types.SimpleNamespace(_session_db=db), fork, session_id, run
+    )
+    assert reason is None and lease is not None
+    return db, lease, run, interrupted

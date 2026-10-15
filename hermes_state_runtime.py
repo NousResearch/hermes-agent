@@ -606,8 +606,8 @@ def _worker_append(db, conn, session_id, payload):
 def _worker_turn(db, conn, session_id, payload, operation):
     import time
     from hermes_state_compression import (BACKGROUND_REVIEW_LEASE_HOLDER_MARK, _claim_lease_row,
-                                          _log_review_lease_reclaimed, _review_yield_reason_on_conn,
-                                          _stamp_review_yield_for_waiter)
+                                          _held_lease_key_on_conn, _log_review_lease_reclaimed,
+                                          _review_yield_reason_on_conn, _stamp_review_yield_for_waiter)
     from hermes_state import _compression_lock_holder_process_is_dead
     allowed = {'holder'} if operation in ('turn.release', 'turn.yield_reason') else {'holder', 'ttl_seconds'}
     # A waiting (foreground) acquire may ask a background-review holder to yield, as the owner's
@@ -632,14 +632,20 @@ def _worker_turn(db, conn, session_id, payload, operation):
             _stamp_review_yield_for_waiter(conn, key, now)
         if reclaimed_holder and BACKGROUND_REVIEW_LEASE_HOLDER_MARK in reclaimed_holder:
             _log_review_lease_reclaimed(session_id)
-    elif operation == 'turn.yield_reason':
-        value = _review_yield_reason_on_conn(conn, key, holder)
-    elif operation == 'turn.renew':
-        value = conn.execute('UPDATE session_turn_leases SET expires_at=? WHERE conversation_id=? AND holder=?',
-                             (now + ttl, key, holder)).rowcount > 0
     else:
-        conn.execute('DELETE FROM session_turn_leases WHERE conversation_id=? AND holder=?', (key, holder))
-        value = None
+        # The row the holder still owns, by lineage key or by its unique holder alone once the
+        # lineage walk can no longer reproduce the key (a chain deleted under a live holder).
+        held = _held_lease_key_on_conn(conn, key, holder)
+        if operation == 'turn.yield_reason':
+            value = None if held is None else _review_yield_reason_on_conn(conn, held, holder)
+        elif operation == 'turn.renew':
+            value = held is not None and conn.execute(
+                'UPDATE session_turn_leases SET expires_at=? WHERE conversation_id=? AND holder=?',
+                (now + ttl, held, holder)).rowcount > 0
+        else:
+            if held is not None:
+                conn.execute('DELETE FROM session_turn_leases WHERE conversation_id=? AND holder=?', (held, holder))
+            value = None
     return {'value': value}
 
 

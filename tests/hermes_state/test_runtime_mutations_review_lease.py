@@ -9,6 +9,11 @@ target and leaves the review beside the closed transcript; a delete removes the 
 basis outright and asks it to yield the same way, over the canonical receipt and the facade's
 ``delete_session`` alike (only a maintenance probe spares a review-held row). A foreground holder
 still refuses every one of them.
+
+The lease row is keyed by the conversation's compression ROOT while the fork addresses it by its
+own session id, the live TIP; a delete that removed the chain must still let the fork read the
+stamped cause, renew and release THAT row (``hermes_state_compression`` matches the globally
+unique holder when the lineage walk can no longer reproduce the key).
 """
 
 import os
@@ -116,6 +121,78 @@ def test_delete_asks_a_background_review_holder_to_yield_and_proceeds(tmp_path):
         )
         # Asked to yield, never reclaimed: the fork's own exit releases the row.
         assert db.refresh_session_turn_lease("s", holder, ttl_seconds=60) is True
+
+
+def _compression_chain(db, root="root", tip="tip"):
+    """``root`` ended by compression, continued by ``tip``: one lease row, keyed by ``root``."""
+    db.create_session(root, source="test")
+    db.append_message(root, role="user", content="the start")
+    db.end_session(root, "compression")
+    db.create_session(tip, source="test", parent_session_id=root)
+    db.append_messages_batch(
+        tip,
+        [
+            {"role": "user", "content": "continued"},
+            {"role": "assistant", "content": "reply"},
+        ],
+    )
+
+
+def _lease_rows(db):
+    return [
+        (row["conversation_id"], row["holder"], row["yield_reason"])
+        for row in db._read_all(
+            "SELECT conversation_id, holder, yield_reason FROM session_turn_leases"
+        )
+    ]
+
+
+def _assert_fork_still_owns_the_stamped_row(db, holder):
+    """What the fork does from its session id (the deleted tip) after the chain is gone: its
+    next tick reads the stamped cause and renews; its exit releases the row, so a re-created
+    root id (an API client's fixed ``X-Hermes-Session-Id`` IS the root) is not kept waiting."""
+    assert (
+        db.session_turn_lease_yield_reason("tip", holder)
+        == review_admission.REASON_PREEMPTED_BY_TRANSCRIPT_EDIT
+    )
+    assert db.refresh_session_turn_lease("tip", holder, ttl_seconds=60) is True
+    db.release_session_turn_lease("tip", holder)
+    assert _lease_rows(db) == []
+    assert db.try_acquire_session_turn_lease("root", _foreground_holder(), ttl_seconds=60)
+
+
+def test_canonical_chain_delete_leaves_the_review_its_root_keyed_row(tmp_path):
+    """The canonical receipt removes its targets (the tip; the closed root stays): the walk
+    from the fork's session id then stops short of the root the row is keyed by."""
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        _compression_chain(db)
+        holder = _review_holder()
+        assert db.try_acquire_session_turn_lease("tip", holder, ttl_seconds=60)
+        assert _lease_rows(db) == [("root", holder, None)]
+        epoch = rt.begin_runtime_epoch(db, instance_id="owner")
+        receipt = _mutate(db, epoch, "tip", "delete", {}, "delete")
+        assert "tip" in receipt["deleted_ids"]
+        assert db.get_session("tip") is None
+        assert _lease_rows(db) == [
+            ("root", holder, review_admission.REASON_PREEMPTED_BY_TRANSCRIPT_EDIT)
+        ]
+        _assert_fork_still_owns_the_stamped_row(db, holder)
+
+
+def test_facade_chain_delete_leaves_the_review_its_root_keyed_row(tmp_path):
+    """The dashboard's delete: the whole chain, guards on."""
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        _compression_chain(db)
+        holder = _review_holder()
+        assert db.try_acquire_session_turn_lease("tip", holder, ttl_seconds=60)
+        assert (
+            db.delete_session(
+                "tip", exclude_active_write_guards=True, include_compression_chain=True
+            )
+            is True
+        )
+        assert db.get_session("root") is None and db.get_session("tip") is None
+        _assert_fork_still_owns_the_stamped_row(db, holder)
 
 
 def test_delete_still_refuses_a_foreground_holder_without_stamping_it(tmp_path):

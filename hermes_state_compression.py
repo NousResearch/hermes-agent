@@ -99,6 +99,23 @@ def _review_yield_reason_on_conn(conn, conversation_id: str, holder: str) -> Opt
     return REASON_PREEMPTED_CROSS_PROCESS
 
 
+def _held_lease_key_on_conn(conn, conversation_id: str, holder: str) -> Optional[str]:
+    """The key of the ``session_turn_leases`` row ``holder`` holds: ``conversation_id`` when it owns
+    that row, else the row its holder string alone names (a holder is unique per turn or review
+    run: pid + namespace + turn id or review uuid), or None when it holds nothing. The lineage walk
+    derives the key from a session id, and a chain whose root (or tip) was deleted under a live
+    holder — a user delete asks a review fork to yield, not to stop at once — no longer walks to
+    the root the row was keyed by; the holder's next tick, its stamped cause and its own release
+    would all miss the row, leaving it to block a re-created root id until its TTL."""
+    row = conn.execute(
+        "SELECT conversation_id FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
+        (conversation_id, holder)).fetchone()
+    if row is None:
+        row = conn.execute(
+            "SELECT conversation_id FROM session_turn_leases WHERE holder = ?", (holder,)).fetchone()
+    return None if row is None else str(row["conversation_id"])
+
+
 def _claim_lease_row(conn, table: str, key_col: str, key: str, holder: str, now: float, expires_at: float,
                      stale) -> tuple[bool, Optional[str]]:
     """Single-transaction lease claim: DELETE a stale holder's row (``stale(holder,
@@ -702,7 +719,8 @@ class SessionCompressionMixin:
         if not session_id or not holder:
             return None
         with self._read_ctx() as conn:
-            return _review_yield_reason_on_conn(conn, self._session_turn_lease_key_on_conn(conn, session_id), holder)
+            key = _held_lease_key_on_conn(conn, self._session_turn_lease_key_on_conn(conn, session_id), holder)
+            return None if key is None else _review_yield_reason_on_conn(conn, key, holder)
 
     def session_turn_lease_yield_requested(self, session_id: str, holder: str) -> bool:
         """Whether ``holder`` (a background-review lease) was asked to yield, by any stamper."""
@@ -778,37 +796,42 @@ class SessionCompressionMixin:
         if not session_id or not holder:
             return None
         with self._read_ctx() as conn:
-            row = conn.execute(
+            key = _held_lease_key_on_conn(conn, self._session_turn_lease_key_on_conn(conn, session_id), holder)
+            row = None if key is None else conn.execute(
                 "SELECT expires_at FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
-                (self._session_turn_lease_key_on_conn(conn, session_id), holder),
+                (key, holder),
             ).fetchone()
         return float(row[0]) if row else None
 
     def refresh_session_turn_lease(
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0, patience_s: Optional[float] = None,
     ) -> bool:
-        """Extend a turn lease only while ``holder`` still owns it. ``expires_at`` is stamped before
-        the write-lock wait, so a caller timestamp taken before this call never exceeds it."""
+        """Extend a turn lease only while ``holder`` still owns it (the row the lineage key names, or
+        the one its holder alone names once that lineage is gone: ``_held_lease_key_on_conn``).
+        ``expires_at`` is stamped before the write-lock wait, so a caller timestamp taken before this
+        call never exceeds it."""
         if not session_id or not holder:
             return False
         expires_at = time.time() + max(0.1, float(ttl_seconds))
         def _do(conn):
-            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
-            return conn.execute(
+            key = _held_lease_key_on_conn(conn, self._session_turn_lease_key_on_conn(conn, session_id), holder)
+            return key is not None and conn.execute(
                 "UPDATE session_turn_leases SET expires_at = ? "
-                "WHERE conversation_id = ? AND holder = ?", (expires_at, conversation_id, holder),
+                "WHERE conversation_id = ? AND holder = ?", (expires_at, key, holder),
             ).rowcount > 0
         return bool(self._execute_write(_do, patience_s=patience_s))
 
     def release_session_turn_lease(self, session_id: str, holder: str) -> None:
-        """Release a turn lease iff ``holder`` still owns it; idempotent."""
+        """Release a turn lease iff ``holder`` still owns it (by lineage key, else by holder alone:
+        ``_held_lease_key_on_conn``); idempotent."""
         if not session_id or not holder:
             return
         def _do(conn):
-            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
-            conn.execute(
-                "DELETE FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
-                (conversation_id, holder))
+            key = _held_lease_key_on_conn(conn, self._session_turn_lease_key_on_conn(conn, session_id), holder)
+            if key is not None:
+                conn.execute(
+                    "DELETE FROM session_turn_leases WHERE conversation_id = ? AND holder = ?",
+                    (key, holder))
         self._execute_write(_do)
 
     def get_compression_lock_holder(self, session_id: str) -> Optional[str]:

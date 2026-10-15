@@ -67,6 +67,22 @@ const revealPane = (id: string) => {
 const overlayTab = (paneId: string) => document.querySelector<HTMLElement>(`[data-narrow-overlay-tab="${paneId}"]`)
 
 describe('narrow overlay of a stacked zone', () => {
+  it('dismisses on an outside touch, while inside touches and mouse presses keep it open', () => {
+    const { getByTestId, queryByTestId } = render(<NarrowOverlays />)
+    revealPane('sessions')
+
+    const press = (target: Element, pointerType: string) => {
+      fireEvent(target, Object.assign(new Event('pointerdown', { bubbles: true }), { pointerType }))
+    }
+
+    press(getByTestId('sessions-body'), 'touch')
+    expect(getByTestId('sessions-body')).toBeTruthy()
+    press(document.body, 'mouse')
+    expect(getByTestId('sessions-body')).toBeTruthy()
+    press(document.body, 'touch')
+    expect(queryByTestId('sessions-body')).toBeNull()
+  })
+
   it('mirrors the zone tab strip so every stacked collapsible stays reachable', () => {
     const { getByTestId, queryByTestId } = render(<NarrowOverlays />)
 

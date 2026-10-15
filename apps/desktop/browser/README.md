@@ -105,3 +105,7 @@ overflow. At phone widths (640px and below), previews cover the viewport with a
 Close action and safe-area spacing instead of squeezing the chat into a split
 panel. Opening a phone preview dismisses input focus; its overlay blocks the
 chat's type-to-focus behavior until closed. Wider viewports keep docked previews.
+Touch tabs expose their close action without hover and keep it inside the visible
+tab width. Tapping chat outside an expanded narrow sidebar dismisses it. The
+browser footer uses 44px touch controls, wrapping its groups and allowing each
+group to scroll horizontally rather than clipping actions.

@@ -4,6 +4,36 @@
   html :is(input, textarea, select, [contenteditable='true']) {
     font-size: max(16px, var(--conversation-text-font-size, 16px)) !important;
   }
+
+  [data-closeable] {
+    padding-right: 44px;
+    max-width: min(12rem, 100%);
+    --pane-tab-close-width: 44px;
+  }
+
+  [data-slot='pane-tab-close-affordance'] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  [data-slot='statusbar'] {
+    height: auto;
+    min-height: 44px;
+    padding-bottom: env(safe-area-inset-bottom);
+    flex-wrap: wrap;
+  }
+
+  [data-slot='statusbar'] > div {
+    min-height: 44px;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  [data-slot='statusbar'] :is(button, a) {
+    min-height: 44px;
+    min-width: 44px;
+    font-size: 14px;
+  }
 }
 
 .browser-preview-surface {

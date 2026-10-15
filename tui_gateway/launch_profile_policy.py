@@ -34,16 +34,18 @@ _lock = threading.Lock()
 
 @dataclass(frozen=True)
 class LaunchProfileAuthority:
-    """One observation of the launch environment and the home identity it owns."""
+    """One observation of launch env, profile/OS homes, and working directory."""
 
     env: Mapping[str, str]
     home: Path
+    user_home: Path
+    cwd: Path
 
 
 _authority: Optional[LaunchProfileAuthority] = None
 
 
-def _live_launch_env() -> Dict[str, str]:
+def _live_launch_env() -> dict[str, str]:
     """Snapshot process values and pin a missing shell ``PWD`` to the capture cwd."""
     snapshot = dict(os.environ)
     if "PWD" not in snapshot:
@@ -60,7 +62,7 @@ def capture_launch_authority() -> LaunchProfileAuthority:
 
             snapshot = _live_launch_env()
             home = get_routing_process_hermes_home(snapshot)
-            _authority = LaunchProfileAuthority(MappingProxyType(snapshot), home)
+            _authority = LaunchProfileAuthority(MappingProxyType(snapshot), home, Path.home(), Path.cwd())
         return _authority
 
 
@@ -162,7 +164,7 @@ def launch_authority() -> LaunchProfileAuthority:
         if not is_multiplex_active():
             env = _live_launch_env()
             home = get_routing_process_hermes_home(env)
-            return LaunchProfileAuthority(MappingProxyType(env), home)
+            return LaunchProfileAuthority(MappingProxyType(env), home, Path.home(), Path.cwd())
     # A harness may flip multiplexing directly without calling activation.
     return capture_launch_authority()
 

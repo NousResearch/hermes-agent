@@ -625,6 +625,126 @@ class TestProfileScopedTelegramOnboarding:
 
 
 class TestProfileScopedChatPty:
+    def test_chat_host_lock_relative_override_keeps_launch_cwd(
+        self, isolated_profiles, monkeypatch, tmp_path
+    ):
+        """A relative host override must mean the same place from the TUI child cwd."""
+        host_cwd = tmp_path / "host"
+        child_cwd = tmp_path / "ui-tui"
+        late_cwd = tmp_path / "late"
+        for directory in (host_cwd, child_cwd, late_cwd):
+            directory.mkdir()
+        monkeypatch.chdir(host_cwd)
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", "locks")
+        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], child_cwd),
+        )
+
+        expected_lock = host_cwd / "locks"
+        _, cwd, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
+        assert env is not None
+        assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
+        assert env["HERMES_GATEWAY_LOCK_DIR"] == str(expected_lock)
+        observed_lock = subprocess.run(
+            [sys.executable, "-c", "from gateway.status import _get_lock_dir; print(_get_lock_dir())"],
+            cwd=cwd, env=env, capture_output=True, check=True, text=True, timeout=60,
+        ).stdout.strip()
+        assert observed_lock == str(expected_lock)
+
+        monkeypatch.chdir(late_cwd)
+        _, _, again = _web_server_chat._resolve_chat_argv(profile="worker_beta")
+        assert again is not None
+        assert again["HERMES_GATEWAY_LOCK_DIR"] == str(expected_lock)
+
+    @pytest.mark.parametrize("home_case", ["missing", "profile"])
+    def test_chat_host_lock_fallback_uses_captured_os_home(
+        self, isolated_profiles, monkeypatch, tmp_path, home_case
+    ):
+        """Gateway lock fallback uses the launch host's Path.home, not child HOME policy."""
+        launch_home = isolated_profiles["default"]
+        worker_home = isolated_profiles["worker_beta"]
+        monkeypatch.delenv("HERMES_GATEWAY_LOCK_DIR", raising=False)
+        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+        if home_case == "missing":
+            monkeypatch.delenv("HOME", raising=False)
+        else:
+            (launch_home / "home").mkdir()
+            monkeypatch.setenv("HOME", str(launch_home / "home"))
+            monkeypatch.setenv("HERMES_REAL_HOME", str(tmp_path / "real-user-home"))
+        monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+        (worker_home / "home").mkdir()
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+        )
+
+        expected_lock = _gw_status._get_lock_dir()
+        _, _, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
+        assert env is not None
+        assert env["HOME"] == str(worker_home / "home")
+        assert env["HERMES_GATEWAY_LOCK_DIR"] == str(expected_lock)
+        observed_lock = subprocess.run(
+            [sys.executable, "-c", "from gateway.status import _get_lock_dir; print(_get_lock_dir())"],
+            env=env, capture_output=True, check=True, text=True, timeout=60,
+        ).stdout.strip()
+        assert observed_lock == str(expected_lock)
+
+    @pytest.mark.parametrize("launch_lock", [True, False])
+    @pytest.mark.parametrize("launch_state", [True, False])
+    def test_chat_argv_preserves_host_lock_authority(
+        self, isolated_profiles, monkeypatch, tmp_path, launch_lock, launch_state
+    ):
+        """A selected profile cannot relocate the OS-user gateway rendezvous."""
+        worker_home = isolated_profiles["worker_beta"]
+        operator_lock = tmp_path / "operator-locks"
+        operator_state = tmp_path / "operator-state"
+        if launch_lock:
+            monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(operator_lock))
+        else:
+            monkeypatch.delenv("HERMES_GATEWAY_LOCK_DIR", raising=False)
+        if launch_state:
+            monkeypatch.setenv("XDG_STATE_HOME", str(operator_state))
+        else:
+            monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+        monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+        (worker_home / "home").mkdir()
+        (worker_home / ".env").write_text(
+            f"HERMES_GATEWAY_LOCK_DIR={tmp_path / 'worker-locks'}\n"
+            f"XDG_STATE_HOME={tmp_path / 'worker-state'}\n"
+            "ANTHROPIC_API_KEY=worker-only\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+        )
+
+        expected_lock = _gw_status._get_lock_dir()
+        _, _, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
+        assert env is not None
+        assert env["HERMES_HOME"] == str(worker_home)
+        assert env["HOME"] == str(worker_home / "home")
+        assert env["ANTHROPIC_API_KEY"] == "worker-only"
+        assert env["HERMES_GATEWAY_LOCK_DIR"] == str(expected_lock)
+        assert env.get("XDG_STATE_HOME") == (str(operator_state) if launch_state else None)
+        observed_lock = subprocess.run(
+            [sys.executable, "-c", "from gateway.status import _get_lock_dir; print(_get_lock_dir())"],
+            env=env, capture_output=True, check=True, text=True, timeout=60,
+        ).stdout.strip()
+        assert observed_lock == str(expected_lock)
+
+        # Once routed hosting captured the launch authority, late process-global
+        # changes cannot redirect the next selected-profile client either.
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "late-locks"))
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "late-state"))
+        monkeypatch.setenv("HOME", str(tmp_path / "late-home"))
+        _, _, again = _web_server_chat._resolve_chat_argv(profile="worker_beta")
+        assert again is not None
+        assert again["HERMES_GATEWAY_LOCK_DIR"] == str(expected_lock)
+        assert again.get("XDG_STATE_HOME") == (str(operator_state) if launch_state else None)
+
     def test_chat_argv_scopes_hermes_home(self, isolated_profiles, monkeypatch):
 
         monkeypatch.setattr(

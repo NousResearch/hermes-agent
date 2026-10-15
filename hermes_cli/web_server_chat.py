@@ -489,11 +489,24 @@ def _resolve_chat_argv(
         # Profile .env files hold credentials, not routing authority. Re-pin the
         # selected home after overlaying credentials, then apply the subprocess
         # HOME policy using the launch process's real-home baseline.
+        from gateway.status import _get_lock_dir
         from hermes_constants import apply_subprocess_home_env
 
+        real_home = launch_env.get("HERMES_REAL_HOME") or launch_env.get("HOME")
+        # The native gateway bootstrap locates the host-wide owner through this
+        # lock dir. Neither the selected dotenv nor its profile HOME may choose
+        # another rendezvous for the same OS user.
+        for key in list(env):
+            if key.upper() in {"HERMES_GATEWAY_LOCK_DIR", "XDG_STATE_HOME"}:
+                env.pop(key)
+        if "XDG_STATE_HOME" in authority.env:
+            env["XDG_STATE_HOME"] = authority.env["XDG_STATE_HOME"]
+        lock_dir = _get_lock_dir(authority.env, home=authority.user_home)
+        env["HERMES_GATEWAY_LOCK_DIR"] = str(
+            lock_dir if lock_dir.is_absolute() else authority.cwd / lock_dir
+        )
         env["HERMES_HOME"] = str(profile_dir)
         env["HERMES_PROFILE"] = requested
-        real_home = launch_env.get("HERMES_REAL_HOME") or launch_env.get("HOME")
         if real_home:
             env["HERMES_REAL_HOME"] = real_home
             env["HOME"] = real_home

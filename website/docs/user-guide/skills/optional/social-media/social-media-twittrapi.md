@@ -77,7 +77,7 @@ All endpoints are `GET`. Paginated ones take `count` (default 20) and `cursor`.
 |---|---|---|
 | Profile by handle / by ID | `/user/by/username/{username}`, `/user/{userId}` | no |
 | Handle to numeric ID | `/username/to/id/{username}` | no |
-| Up to 100 profiles | `/user/users/by/ids` with `ids=1,2,3` | no |
+| Up to 500 profiles | `/user/users/by/ids` with `ids=1,2,3` | no |
 | Tweets / tweets and replies / media | `/user/{userId}/tweets`, `/tweetsAndReplies`, `/media` | yes |
 | Followers / following / verified followers | `/user/{userId}/followers`, `/followings`, `/verifiedFollowers` | yes |
 | Search | `/search` with `searchItem=<query>`, `category=Top\|Latest\|People\|Photos\|Videos` | yes |
@@ -119,7 +119,8 @@ lookup. The tweet ID is the number at the end of `https://x.com/<user>/status/<t
 - 400, 408, 409 and 5xx are refunded (`X-Refunded: true`): retry with backoff, at most ~4 times.
 - 401/403 is a missing, wrong or deactivated key; 404 a deleted, suspended or protected
   account or tweet; 422 bad input (non-numeric ID, `[` or `]` or an unclosed quote in the query).
-- X made likes private, so `/tweet/{tweetId}/favorites` returns no users; use the tweet's
+- X shows who liked a tweet only to its author. `/tweet/{tweetId}/favorites` needs a `POST`
+  with that author's cookie and a proxy, so this skill does not cover it; use the tweet's
   `counts.likes` instead.
 - The simple format omits cards, polls, edit history and community notes. Drop `format=simple`
   only when you need those, and expect X's large nested JSON.

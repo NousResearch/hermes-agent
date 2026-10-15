@@ -1752,7 +1752,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                             and self._completion_delivery_identity(completion_evt) is not None):
                         from gateway.session_automation import completion_admission
                         try:
-                            committed = completion_admission(self, completion_evt) is not None
+                            # The owning profile's authority, as on the delivery path.
+                            async with self._completion_event_scope(completion_evt):
+                                committed = completion_admission(self, completion_evt) is not None
                         except Exception:
                             # Failing open sends the notice; a dead watcher would send nothing.
                             logger.debug("Process watcher: admission recheck failed for %s", session_id,

@@ -8,6 +8,7 @@ Contributed by @PeterFile (PR #593), reimplemented on current main.
 """
 
 import asyncio
+import contextlib
 import queue
 import threading
 from types import SimpleNamespace
@@ -518,7 +519,19 @@ async def test_agent_notify_refused_completion_backs_off_then_sends_plain_notice
     runner = _build_runner(monkeypatch, tmp_path, "concise")
     runner._enqueue_process_completion_notification = AsyncMock(return_value=False)
     runner.session_authority = object()
+    inside = []
+
+    @contextlib.asynccontextmanager
+    async def _scope(evt):
+        inside.append(evt)
+        try:
+            yield
+        finally:
+            inside.pop()
+    monkeypatch.setattr(runner, "_completion_event_scope", _scope)
+
     def _admission(_runner, _evt):
+        assert inside and inside[-1] is _evt, "recheck ran outside the owning profile scope"
         if committed == "recheck_fails":
             raise RuntimeError("store closed")
         return {"admission_id": "committed"} if committed else None

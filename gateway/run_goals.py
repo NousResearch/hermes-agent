@@ -155,6 +155,8 @@ class GatewayGoalsMixin:
             return
         if local and viewer_driven(adapter.authority, source.chat_id, "viewer_heartbeat"):
             return  # the classic CLI's watchdog fires it: that CLI paints only the turns it submits
+        # Both lanes below answer through this adapter: warm a Relay's egress routing first.
+        prime_revived_egress(adapter, MessageEvent(text="", source=source))
         if getattr(self, 'session_authority', None) is not None:
             from gateway.run_heartbeat_acceptance import admit_heartbeat
             await admit_heartbeat(self, adapter, source, session_id, quick_key)
@@ -187,7 +189,6 @@ class GatewayGoalsMixin:
         # A pinned route skips topic recovery: no await between the idle
         # check and adapter claim. FIFO alone never wakes an idle session.
         try:
-            prime_revived_egress(adapter, event)
             await adapter.handle_message(event)
         finally:
             task = getattr(adapter, "_session_tasks", {}).get(quick_key)

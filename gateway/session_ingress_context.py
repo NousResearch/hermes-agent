@@ -201,8 +201,12 @@ async def reauthorize_roles(runner, source, provenance):
     """A role flag requests a connector check; it never supplies permission."""
     if not source.role_authorized:
         return False
-    if provenance is None or source.delivered_via_upstream_relay:
-        raise RuntimeStoreError('invalid_params')
+    if provenance is None:
+        raise RuntimeStoreError('invalid_params', field='native.provenance_missing(roles)',
+                                detail='a role-gated message needs provenance')
+    if source.delivered_via_upstream_relay:
+        raise RuntimeStoreError('invalid_params', field='native.relay_provenance',
+                                detail='a relayed message needs relay provenance')
     restore_provenance(runner, source, provenance)
     adapter = runner._adapter_for_source(source)
     if runner._is_user_authorized_for_source(source, allow_adapter_delegation=False):

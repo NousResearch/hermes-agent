@@ -386,7 +386,7 @@ def _merge_custom_provider_extra_body(agent, custom_providers: list[dict[str, An
     if not extra_body:
         return
     overrides = dict(getattr(agent, "request_overrides", {}) or {})
-    merged_extra_body = dict(extra_body)
+    merged_extra_body = deepcopy(extra_body)
     existing_extra_body = overrides.get("extra_body")
     if isinstance(existing_extra_body, dict):
         merged_extra_body.update(existing_extra_body)
@@ -2294,7 +2294,8 @@ def _snapshot_primary_runtime(agent):
         "base_url": agent.base_url,
         "api_mode": agent.api_mode,
         "api_key": getattr(agent, "api_key", ""),
-        "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
+        "request_overrides": deepcopy(getattr(agent, "request_overrides", {}) or {}),
+        "custom_provider_injected_extra_body": deepcopy(getattr(agent, "_custom_provider_injected_extra_body", None)),
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,

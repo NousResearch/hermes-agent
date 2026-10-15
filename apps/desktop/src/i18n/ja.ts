@@ -1393,6 +1393,13 @@ export const jaOverrides = {
   },
   skills: {
     plugins: {
+      kanbanToolsHint:
+        'Desktop スイッチはボードを表示します。Agent スイッチは、このプロファイルの CLI と Desktop チャットに Kanban ツールを許可します。ディスパッチャーは起動しません。',
+      kanbanToolsUnavailable:
+        'このバックエンドのツール設定には Kanban がありません。選択したバックエンドの Hermes を更新すると、ここでエージェントのツールを有効にできます。',
+      kanbanToolsUpdateBackend: 'バックエンドを更新',
+      kanbanToolsSaved: (profile: string) =>
+        `${profile} の Kanban ツール設定を保存しました。新しいチャットで適用されます。既存のチャットは変更されません。`,
       pageBlurb:
         'プラグインはこのアプリ、エージェント、または両方を拡張できます。それぞれに独立したスイッチがあります。'
     },

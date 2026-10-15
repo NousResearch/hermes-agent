@@ -882,6 +882,38 @@ class TestTwoFactor:
         assert build_otp_fills(classify_otp_controls(labeled), "246810") == [
             {"index": 0, "token": "one-time-code", "value": "246810"}]
 
+    def test_unlabeled_digit_boxes_classify_as_a_last_resort(self):
+        """#113094 GoHighLevel follow-up: six formless ``maxlength=1`` number inputs with no id, name,
+        label or autocomplete at all. The last-resort structural tier picks the digit row up and the
+        fill spreads one digit per box; anything the row cannot fully explain stays unclassified."""
+        from agent.vault_login_classifier import LoginControl, build_otp_fills, classify_otp_controls
+
+        def box(i, **kw):
+            spec = {"autocomplete": "", "form_index": None, "index": i, "label": "",
+                    "name": "", "type": "number", "max_length": 1}
+            spec.update(kw)
+            return LoginControl(**spec)
+
+        widget = [box(i) for i in range(6)]
+        classified = classify_otp_controls(widget)
+        assert [c.control.index for c in classified] == list(range(6))
+        assert [f["value"] for f in build_otp_fills(classified, "246810")] == list("246810")
+        # two runs, scattered boxes, boxes split across forms, three boxes: nothing classifies
+        assert classify_otp_controls([box(0), box(1), box(2), box(3), box(6), box(7)]) == []
+        assert classify_otp_controls([box(i * 3) for i in range(6)]) == []
+        assert classify_otp_controls([box(i, form_index=i % 2) for i in range(6)]) == []
+        assert classify_otp_controls([box(i) for i in range(3)]) == []
+        # a labelled single-character box breaks the "no signal anywhere" premise — even a
+        # placeholder would make the page explainable, so the tier declines the whole row
+        assert classify_otp_controls([box(0, label="Card digit"), *[box(i) for i in range(1, 6)]]) == []
+        assert classify_otp_controls([box(0, name="pin1"), *[box(i) for i in range(1, 6)]]) == []
+        # a plain login form and any labeled code field never reach this tier
+        assert classify_otp_controls([
+            LoginControl("", 0, 0, "", "email", "email", None),
+            LoginControl("", 0, 1, "", "password", "password", None)]) == []
+        labeled = [LoginControl("", 0, 0, "Verification code", "backup", "text", None)] + widget
+        assert [c.control.index for c in classify_otp_controls(labeled)] == [0]
+
     def test_mixed_indexed_otp_widget_with_autocomplete_only_on_first_box(self):
         """#113094 review follow-up: when only the first box carries ``autocomplete=one-time-code``
         and the rest expose just the indexed id, the authoritative box pulls its silent siblings in

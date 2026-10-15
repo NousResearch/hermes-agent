@@ -167,12 +167,35 @@ def _indexed_split_otp_group(controls: List[LoginControl]) -> List[LoginControl]
     return []
 
 
+def _unlabeled_digit_boxes(controls: List[LoginControl]) -> List[LoginControl]:
+    """The last-resort split-OTP detection: GoHighLevel-style widgets whose boxes carry no signal
+    at all — no id/name, no label, no autocomplete — only ``maxlength=1`` and their shape. The
+    page's single-character inputs must form exactly one 4-8 box run, adjacent in DOM order, all
+    in one form (or all formless), with not one of them carrying any label, name or autocomplete:
+    any labelled single-character box, second run, gap or mixed form means the page does not
+    explain itself as one digit-row widget, and an unexplained page stays unclassified rather
+    than guessed (#113094)."""
+    singles = [c for c in controls if c.max_length == 1 and c.type in ("text", "tel", "number", "")]
+    if not 4 <= len(singles) <= 8:
+        return []
+    if any(c.autocomplete.strip() or c.name.strip() or c.label.strip() for c in singles):
+        return []
+    if len({c.form_index for c in singles}) != 1:
+        return []
+    ordered = sorted(singles, key=lambda c: c.index)
+    if not all(b.index - a.index == 1 for a, b in zip(ordered, ordered[1:])):
+        return []
+    return ordered
+
+
 def classify_otp_controls(controls: List[LoginControl]) -> List[ClassifiedLoginControl]:
     """The controls that take a second-factor code. ``autocomplete=one-time-code`` is authoritative;
     otherwise a text/tel/number input whose name/label says code/OTP/2FA/verification. Some sites split
     the code into one input per digit (``maxlength=1`` boxes): they are returned in DOM order and the
     fill spreads the code across them. A widget whose boxes carry no signal at all except an indexed
-    id pattern is picked up structurally (see ``_indexed_split_otp_group``)."""
+    id pattern is picked up structurally (see ``_indexed_split_otp_group``); one whose boxes carry no
+    signal whatsoever — only ``maxlength=1`` and the row's shape — is a last resort
+    (``_unlabeled_digit_boxes``)."""
     out: List[ClassifiedLoginControl] = []
     for c in controls:
         tokens = c.autocomplete.lower().split()
@@ -184,7 +207,8 @@ def classify_otp_controls(controls: List[LoginControl]) -> List[ClassifiedLoginC
         if _RE_OTP.search(_normalize_text(" ".join(p for p in (c.name, c.label) if p))):
             out.append(ClassifiedLoginControl(c, 70, "one-time-code"))
     if not out:
-        out.extend(ClassifiedLoginControl(c, 70, "one-time-code") for c in _indexed_split_otp_group(controls))
+        group = _indexed_split_otp_group(controls) or _unlabeled_digit_boxes(controls)
+        out.extend(ClassifiedLoginControl(c, 70, "one-time-code") for c in group)
     else:
         # Mixed widgets mark only the first box with ``autocomplete=one-time-code``; an authoritative
         # box inside a verified indexed group speaks for its silent siblings, so pull the whole

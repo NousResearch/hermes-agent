@@ -574,7 +574,9 @@ class CLISessionMixin:
                     _mm.on_session_switch(
                         self.session_id, parent_session_id=old_session_id or "",
                         reset=True, reason="new_session")
-            self._notify_session_boundary("on_session_reset")
+            from hermes_cli.cli_shutdown import _gateway_owns_session_end
+            if not _gateway_owns_session_end(self.agent):  # the gateway resets when end_session closes it
+                self._notify_session_boundary("on_session_reset")
 
         if not silent:
             if title:

@@ -46,6 +46,16 @@ def test_new_does_not_finalize_a_gateway_session_in_the_cli(mock_finalize, mock_
 
 
 @patch("hermes_cli.lifecycle.invoke_hook")
+@patch("hermes_cli.lifecycle.finalize_session")
+def test_new_leaves_on_session_reset_to_the_gateway(mock_finalize, mock_invoke_hook, cli_mod):
+    cli = cli_mod.HermesCLI()
+    cli.agent = _gateway_agent("gw-session")
+    cli.new_session(silent=True)
+    # The detach's ``new_session`` reason makes the owner fire it (tests/gateway/test_viewer_close_lifecycle.py).
+    assert not [c for c in mock_invoke_hook.call_args_list if c.args == ("on_session_reset",)]
+
+
+@patch("hermes_cli.lifecycle.invoke_hook")
 def test_exit_mid_turn_leaves_on_session_end_to_the_gateway_turn(mock_invoke_hook, cli_mod):
     cli = cli_mod.HermesCLI()
     cli.agent = _gateway_agent("gw-session")

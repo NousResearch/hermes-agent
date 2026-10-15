@@ -33,6 +33,11 @@ def _busy(authority, session_id, target):
         return conn.execute(_BUSY_SQL, (session_id, session_id, target)).fetchone() is not None
 
 
+# The viewer's /new: the classic CLI's ``new_session``; Ink's ``tui_close`` (/new or a resume switch,
+# both of which main's TUI followed with on_session_reset for the session it opened next).
+_RESET_REASONS = frozenset({'new_session', 'tui_close'})
+
+
 class _PendingClose:
     """One viewer close; identity, not the reason, tells a settler its close is still the pending one."""
     __slots__ = ('reason',)
@@ -69,14 +74,31 @@ async def settle_viewer_close(authority, session_id):
     del authority.pending_closes[session_id]
     from gateway.session_acp_lifecycle import end_idle_viewer_session, reopen_if_reattached
     from gateway.session_runtime_workers import tracked_write
-    await tracked_write(authority, partial(end_idle_viewer_session, authority, session_id, close.reason),
-                        then=partial(reopen_if_reattached, authority, session_id))
+    ended = await tracked_write(authority, partial(end_idle_viewer_session, authority, session_id, close.reason),
+                                then=partial(reopen_if_reattached, authority, session_id))
+    if not ended:
+        await _requeue_if_busy(authority, session_id, live, target, close)
+        return
+    if live.subscribers:
+        return  # a viewer reattached during the stamp; reopen_if_reattached reopened the row
     platform = (row or {}).get('source') or (live.source.platform.value if live.source else '')
     await _run_close_lifecycle(authority, live, target, platform, close.reason)
 
 
 def _still_pending(authority, session_id, live, close):
     return not live.subscribers and authority.pending_closes.get(session_id) is close
+
+
+async def _requeue_if_busy(authority, session_id, live, target, close):
+    """The stamp was refused. If input was admitted after the idle check, the close goes back to the
+    drain's next idle point; any other refusal (row already ended) leaves nothing to finish."""
+    if not await asyncio.to_thread(_busy, authority, session_id, target):
+        return
+    if live.subscribers or session_id in authority.pending_closes:
+        return  # a reattach cancelled it, or a newer close replaced it
+    authority.pending_closes[session_id] = close
+    # The drain may have passed its idle point while the close was out of the map.
+    await settle_viewer_close(authority, session_id)
 
 
 async def _run_close_lifecycle(authority, live, target, platform, reason):
@@ -94,3 +116,9 @@ async def _run_close_lifecycle(authority, live, target, platform, reason):
     if messages:
         # No viewer is left to show them (session.detach carries no messages yet).
         logger.info('Session-end plugin message(s) for %s dropped: no viewer', target)
+    reset = getattr(runner, '_reset_session_off_loop', None)
+    if reason in _RESET_REASONS and reset is not None:
+        # The gateway's own /new arguments. The viewer opens its next session only after this
+        # detach, so the new id is not known here.
+        await reset(session_key=live.route, session_id=None, reason='new_session', platform=platform,
+                    old_session_id=target, new_session_id=None)

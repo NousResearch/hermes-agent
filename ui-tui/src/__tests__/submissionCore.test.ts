@@ -259,3 +259,62 @@ describe('submissionCore.submitPrompt — voice marker ownership', () => {
     await vi.waitFor(() => expect(request.mock.calls.at(-1)?.[1]).toMatchObject({ voice_turn: true }))
   })
 })
+
+describe('submissionCore.submitPrompt — busy re-queue keeps paste display', () => {
+  beforeEach(() => {
+    resetUiState()
+    patchUiState({ sid: 'sess-1' })
+  })
+
+  it('re-queues expanded paste with the collapsed display and the same expand', async () => {
+    const expand = vi.fn((value: string) => value.replace('[paste]', '!echo pwned'))
+    const enqueue = vi.fn()
+
+    const gw = {
+      request: vi.fn((method: string) => {
+        if (method === 'prompt.submit') {
+          return Promise.reject(new Error('session busy'))
+        }
+
+        return Promise.resolve({ matched: false })
+      })
+    } as unknown as GatewayClient
+
+    submitPrompt('[paste]', makeDeps(gw, { enqueue, expand }))
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(enqueue).toHaveBeenCalledWith('!echo pwned', '[paste]', expect.anything(), undefined, expand)
+  })
+
+  it.each([
+    { payload: '!echo secret-from-paste', display: '[[ pasted shell log ]]' },
+    { payload: 'text {!echo secret-from-paste}', display: '[[ pasted interpolation log ]]' }
+  ])('retains collapsed display after a queued $display retries on a busy gateway', async ({ payload, display }) => {
+    const expand = vi.fn((value: string) => value)
+    const enqueue = vi.fn()
+    const sys = vi.fn()
+    const appendMessage = vi.fn()
+
+    const gw = {
+      request: vi.fn((method: string) =>
+        method === 'prompt.submit'
+          ? Promise.reject(new Error('session busy'))
+          : Promise.resolve({ matched: false })
+      )
+    } as unknown as GatewayClient
+
+    // A previously drained queue sends expanded payload as `text` and the
+    // visible label as displayOverride. Retry must preserve that boundary.
+    submitPrompt(payload, makeDeps(gw, { appendMessage, enqueue, expand, sys }), true, display, {
+      skipDetectDrop: true
+    })
+    await vi.waitFor(() => expect(enqueue).toHaveBeenCalledTimes(1))
+
+    expect(enqueue).toHaveBeenCalledWith(payload, display, expect.anything(), undefined, expand)
+    expect(appendMessage).toHaveBeenCalledWith({ role: 'user', text: display })
+    expect(sys).toHaveBeenCalledWith(`queued: "${display}"`)
+    expect(sys.mock.calls.flat().join(' ')).not.toContain('secret-from-paste')
+  })
+})

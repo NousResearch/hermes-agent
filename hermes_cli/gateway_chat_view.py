@@ -496,7 +496,8 @@ class GatewayChatView:
                     except EOFError:
                         return 0
                     except GatewayClientError as exc:
-                        print(f"Error: {exc}", file=sys.stderr)
+                        from hermes_cli.cli_chat_error_copy import refusal_text
+                        print(f"Error: {refusal_text(exc)}", file=sys.stderr)
                 raise self.failure
         finally:
             renderer.cancel()

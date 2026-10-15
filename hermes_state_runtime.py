@@ -4,6 +4,8 @@ No execution, transport, or authority objects live here. Every mutation uses the
 SessionDB transaction owner, including its inode guard and SQLite retry policy.
 """
 import json
+import logging
+import re
 import uuid
 
 from agent.conversation_compression_archive import ABSORBED_ROW_IDS
@@ -13,9 +15,191 @@ from agent.message_metadata import (
 from hermes_state_keys import admission_fingerprint
 
 
+# A client-chosen loc is published only when every dot-separated segment is a short
+# identifier or a list index. Whether that loc is a secret is the log redactor
+# (``redact_sensitive_text(..., force=True)``), not a second prefix list. Its
+# lookbehind and lookahead both treat ``_`` as part of a token, and some bodies
+# do not cross ``.``, so a hit on any run of the text cut at ``_`` or ``.`` on
+# both ends (dots kept and removed) becomes ``<redacted-key>``. Names longer
+# than ``_MAX_CLAUSE`` get one redactor pass and are never echoed: the run probe
+# is quadratic. At most ``_MAX_LOCS`` locs are classified, the same bound
+# ``rpc_error`` already applies to error-data lists.
+_SEGMENT = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,40}$')
+_INDEX = re.compile(r'^[0-9]{1,6}$')
+_MAX_CLAUSE = 80
+_MAX_LOCS = 16
+_FIELD_LIMIT = 80
+_DETAIL_LIMIT = 160
+REDACTED_KEY = '<redacted-key>'
+_redactor_log = logging.getLogger('gateway.runtime')
+
+
+def _redactor_alters(text):
+    """True when the log redactor would mask or rewrite *text*. Fail closed."""
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(text, force=True) != text
+    except Exception:  # health: allow BLE001 -- a redactor failure must not echo the text
+        _redactor_log.exception('invalid_params redactor failed; treating the text as secret')
+        return True
+
+
+def _secret_probes(text):
+    """Every run of *text* cut at ``_`` or ``.`` on both ends, dots kept and removed."""
+    cuts = [at for at, char in enumerate(text) if char in '_.']
+    starts = (0, *(at + 1 for at in cuts))
+    ends = (*cuts, len(text))
+    runs = (text[start:end] for start in starts for end in ends if end > start)
+    return list(dict.fromkeys(probe for run in runs for probe in (run, run.replace('.', '')) if probe))
+
+
+def _secret_text(text):
+    """True when *text* is not safe to echo.
+
+    Over ``_MAX_CLAUSE`` characters only the redactor's own pass runs. A token
+    hidden by underscores on both sides is caught by sealing the client value
+    before it is interpolated into a longer sentence.
+    """
+    if not isinstance(text, str) or not text:
+        return False
+    if len(text) > _MAX_CLAUSE:
+        return _redactor_alters(text)
+    return any(_redactor_alters(probe) for probe in _secret_probes(text))
+
+
+def _segment_shape_ok(part):
+    return bool(_SEGMENT.fullmatch(part) or _INDEX.fullmatch(part))
+
+
+def _path_shape_ok(path):
+    return (isinstance(path, str) and 0 < len(path) <= _MAX_CLAUSE
+            and all(_segment_shape_ok(part) for part in path.split('.')))
+
+
+def _clause_path(path):
+    if not isinstance(path, str) or not path or len(path) > _MAX_CLAUSE:
+        return False
+    if not all(part == REDACTED_KEY or _segment_shape_ok(part) for part in path.split('.')):
+        return False
+    return not _secret_text(path)
+
+
+def _method_fallback(method):
+    leaf = method.split('.')[-1] if isinstance(method, str) and '.' in method else (method or 'params')
+    if isinstance(leaf, str) and _SEGMENT.fullmatch(leaf) and not _secret_text(leaf):
+        return f'{leaf}.fields'
+    return 'params.fields'
+
+
+def classify_loc(name):
+    """The published token for one loc, or None when it is neither safe nor a secret."""
+    if not isinstance(name, str) or not name:
+        return None
+    if _secret_text(name):
+        return REDACTED_KEY
+    return name if _path_shape_ok(name) else None
+
+
+def _bounded_locs(names):
+    names = [names] if isinstance(names, str) else list(names or ())
+    return names if len(names) <= _MAX_LOCS else [*names[:_MAX_LOCS - 1], None]
+
+
+def published_fields(names, *, method=None):
+    """Locs safe to return on the wire. A secret is the placeholder; any other
+    unsafe loc is the method fallback and does not replace a safe sibling."""
+    out = []
+    fallback = _method_fallback(method)
+    for name in _bounded_locs(names):
+        token = classify_loc(name)
+        if token is None:
+            token = fallback
+        if token not in out:
+            out.append(token)
+    return out or [fallback]
+
+
+def refusal_clause(names, *, method=None):
+    """One clause for ``field``: each loc on its own, joined when the join is still a loc."""
+    tokens = []
+    for name in _bounded_locs(names):
+        token = classify_loc(name)
+        if token and token not in tokens:
+            tokens.append(token)
+    if not tokens:
+        return _method_fallback(method)
+    if len(tokens) == 1:
+        return tokens[0]
+    joined = '.'.join(tokens)
+    return joined if _clause_path(joined) else tokens[0]
+
+
+def published_key(prefix, key):
+    """``prefix.key`` when *key* may be echoed, the placeholder when it is a secret,
+    otherwise *prefix* alone."""
+    if not isinstance(key, str):
+        return prefix
+    printable = ''.join(ch for ch in key if ch.isprintable())
+    token = classify_loc(printable) if printable else None
+    if token == REDACTED_KEY:
+        return REDACTED_KEY
+    if not token:
+        return prefix
+    return f'{prefix}.{token}'
+
+
+def publish_client_value(value):
+    """A client-chosen value safe to interpolate, or the placeholder.
+
+    Longer than ``_MAX_CLAUSE`` is never echoed. One redactor pass cannot see a
+    token with underscores on both sides, and the run probe is not bounded there.
+    """
+    text = value if isinstance(value, str) else repr(value)
+    if _secret_text(text) or len(text) > _MAX_CLAUSE:
+        return REDACTED_KEY
+    return text
+
+
+def publish_client_repr(value):
+    """``repr`` of a client value, or the placeholder when that value cannot be echoed."""
+    if isinstance(value, str):
+        shown = publish_client_value(value)
+        return REDACTED_KEY if shown == REDACTED_KEY else repr(shown)
+    return publish_client_value(value)
+
+
+def _seal(value, limit):
+    """Store *value* only when the redactor would leave it alone, clipped to *limit*."""
+    if value is None:
+        return None
+    text = value if isinstance(value, str) else str(value)
+    if not text:
+        return None
+    if _secret_text(text):
+        return REDACTED_KEY
+    return text[:limit]
+
+
+def seal_display(text):
+    """The panel form of one ``field`` or ``detail``. Empty stays empty."""
+    if not isinstance(text, str) or not text:
+        return ''
+    return _seal(text, 300) or ''
+
+
 class RuntimeStoreError(ValueError):
-    def __init__(self, reason: str):
+    """A refusal by the state authority. ``reason`` is the bounded wire code (callers compare it as a
+    string); ``field`` and ``detail`` name the check that fired and why, so a client and the gateway
+    log can tell the reasons' many checks apart instead of reporting the bare code.
+
+    Client-chosen text that the log redactor would mask is stored as ``<redacted-key>`` instead.
+    Logging stays at the boundary that turns the refusal into a frame or a user notice, so a raise
+    and that boundary do not each write a line."""
+
+    def __init__(self, reason: str, *, field: str | None = None, detail: str | None = None):
         self.reason = reason
+        self.field = _seal(field, _FIELD_LIMIT)
+        self.detail = _seal(detail, _DETAIL_LIMIT)
         super().__init__(reason)
 
 

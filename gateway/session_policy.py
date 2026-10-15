@@ -6,7 +6,7 @@ import json
 import logging
 from pathlib import Path
 
-from hermes_state_runtime import RuntimeStoreError
+from hermes_state_runtime import RuntimeStoreError, publish_client_repr, publish_client_value, published_key
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,17 @@ _TURN_PROFILE: ContextVar = ContextVar('follow_profile_read', default=None)  # (
 # ``oneshot`` (finite ``chat -q`` / ``-z`` runs) run as the CLI but keep their own stored label, so human
 # pickers hide them (INTERNAL_LISTING_SOURCES).
 SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp', 'tool': 'cli', 'oneshot': 'cli'}
+
+
+def _refuse(field, detail=None):
+    """One named refusal: the launch field the check read, and why it failed.
+
+    ``reason`` stays the bounded wire code every caller compares as a string; ``field`` and
+    ``detail`` are what tells ~20 different create checks apart, in the client and in the
+    gateway log, without a second run to find out which one fired. ``RuntimeStoreError``
+    seals both, so a client value the log redactor would mask is not what gets stored."""
+    raise RuntimeStoreError('invalid_params', field=str(field),
+                            detail=None if detail is None else str(detail))
 
 
 @dataclass(frozen=True)
@@ -263,23 +274,28 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     if source == 'a2a':
         from gateway.session_a2a import build_forward_policy
         return build_forward_policy(params, config, private_secrets=private_secrets)
-    if set(params) - CREATE_FIELDS or not isinstance(source, str) or source not in SURFACES:
-        raise RuntimeStoreError('invalid_params')
-    if any(name in params and type(params[name]) is not bool for name in BYPASS_FIELDS):
-        raise RuntimeStoreError('invalid_params')
+    unknown = sorted(set(params) - CREATE_FIELDS)
+    if unknown or not isinstance(source, str) or source not in SURFACES:
+        # The key and the surface word are client text. Publish them only when the
+        # log redactor would leave them alone; a newline cannot reach the log line.
+        _refuse(published_key('params', unknown[0]) if unknown else 'source',
+                'unknown create field' if unknown else f'not a surface: {publish_client_repr(source)}')
+    bad_bypass = next((name for name in BYPASS_FIELDS if name in params and type(params[name]) is not bool), None)
+    if bad_bypass:
+        _refuse(bad_bypass, 'must be a boolean')
     safe_mode = params.get('safe_mode', False)
     ignore_user_config = safe_mode or params.get('ignore_user_config', False)
     if 'api_key' in params and (not isinstance(params['api_key'], str) or not params['api_key'].strip()):
-        raise RuntimeStoreError('invalid_params')
+        _refuse('api_key', 'must be a non-empty string')
     model = params.get('model')
     if 'model' in params and (not isinstance(model, str) or not model.strip()):
-        raise RuntimeStoreError('invalid_params')
+        _refuse('model', 'must be a non-empty string')
     cwd = params.get('cwd', str(resolve_agent_cwd()))
     if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
-        raise RuntimeStoreError('invalid_params')
+        _refuse('cwd', 'must be an absolute path to an existing directory')
     row_cwd = params.get('row_cwd')
     if 'row_cwd' in params and (not isinstance(row_cwd, str) or (row_cwd and not Path(row_cwd).is_absolute())):
-        raise RuntimeStoreError('invalid_params')
+        _refuse('row_cwd', 'must be an absolute path when set')
     if params.get('cwd_explicit') is False and 'cwd' in params:
         cwd = _profile_workspace_cwd(get_hermes_home()) or cwd
     from gateway.session_local_editor import validate_editor
@@ -345,17 +361,18 @@ def _apply_launch_overrides(params, config):
         if key in params:
             value = params[key]
             if not isinstance(value, str) or not value.strip():
-                raise RuntimeStoreError('invalid_params')
+                _refuse(key, 'must be a non-empty string')
             if key == 'base_url':
                 url = urlsplit(value)
                 if (url.scheme not in {'http', 'https'} or not url.hostname
                         or url.username or url.password or url.query or url.fragment):
-                    raise RuntimeStoreError('invalid_params')
+                    _refuse('base_url', 'must be an http(s) URL without credentials, query or fragment')
             config.setdefault('model', {})[key] = value
-    for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
-                 'cwd_explicit', 'verbose'):
-        if flag in params and type(params[flag]) is not bool:
-            raise RuntimeStoreError('invalid_params')
+    bad_flag = next((flag for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id',
+                                      'follow_profile_config', 'cwd_explicit', 'verbose')
+                     if flag in params and type(params[flag]) is not bool), None)
+    if bad_flag:
+        _refuse(bad_flag, 'must be a boolean')
     if 'service_tier' in params:
         # An explicit speed pick (Desktop Fast / Ultrafast / Normal): normal pins normal over a
         # profile tier; an unknown word is refused, never read as normal.
@@ -365,14 +382,14 @@ def _apply_launch_overrides(params, config):
         except ValueError:
             tier = None
         if tier is None:
-            raise RuntimeStoreError('invalid_params')
+            _refuse('service_tier', f"not a known tier: {publish_client_repr(params['service_tier'])}")
         config.setdefault('agent', {})['service_tier'] = tier or 'normal'
     if 'run_budget' in params:
         # `--run-budget SECONDS`: the wall-clock budget per run (80% wrap-up notice, capped provider
         # timeouts), frozen as the session's `agent.run_budget_seconds` like main's CLI flag over config.
         value = params['run_budget']
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
-            raise RuntimeStoreError('invalid_params')
+            _refuse('run_budget', 'must be a positive number of seconds')
         config.setdefault('agent', {})['run_budget_seconds'] = float(value)
     if params.get('checkpoints'):
         section = config.get('checkpoints')
@@ -384,11 +401,11 @@ def _apply_launch_overrides(params, config):
         value = params['max_turns']
         limit = resolve_turn_limit(value, default=0) if isinstance(value, (int, str)) else 0
         if not limit:
-            raise RuntimeStoreError('invalid_params')
+            _refuse('max_turns', f'unreadable cap: {publish_client_repr(value)}')
         config.setdefault('agent', {})['max_turns'] = limit
     if 'reasoning' in params:
         if not isinstance(params['reasoning'], str) or parse_reasoning_effort(params['reasoning']) is None:
-            raise RuntimeStoreError('invalid_params')
+            _refuse('reasoning', f"not a known effort level: {publish_client_repr(params['reasoning'])}")
         config.setdefault('agent', {})['reasoning_effort'] = params['reasoning']
         # An explicit launch level wins over a per-model default, just like CLI.
         config['agent'].pop('reasoning_overrides', None)
@@ -402,9 +419,17 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False):
     from toolsets import validate_toolset
     explicit = params.get('toolsets')
     if 'toolsets' in params:
-        if (not isinstance(explicit, list) or any(not isinstance(x, str) or not validate_toolset(x) for x in explicit)
-                or ('desktop_ui' in explicit and source != 'gui')):
-            raise RuntimeStoreError('invalid_params')
+        if not isinstance(explicit, list):
+            _refuse('toolsets', f'must be a list of toolset names, got {type(explicit).__name__}')
+        # The index, not the value: a literal None in the list is itself the bad element, so a
+        # value-shaped sentinel would read as "no bad element" and crash later in resolve_toolset.
+        bad_index = next((i for i, x in enumerate(explicit)
+                          if not isinstance(x, str) or not validate_toolset(x)), None)
+        if bad_index is not None:
+            _refuse('toolsets', f'unknown or invalid toolset name: {publish_client_repr(explicit[bad_index])}')
+        if 'desktop_ui' in explicit and source != 'gui':
+            _refuse('toolsets', 'desktop_ui is only available on the Desktop, not on '
+                    + publish_client_value(source))
         config.setdefault('platform_toolsets', {})['acp' if source == 'acp' else 'cli'] = explicit
     posture = None
     if explicit is None and coding_posture:
@@ -416,7 +441,8 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False):
         requested = {t for name in explicit for t in resolve_toolset(name)}
         effective = {t for name in enabled for t in resolve_toolset(name)}
         if not requested <= effective:
-            raise RuntimeStoreError('invalid_params')
+            missing = ', '.join(publish_client_value(name) for name in sorted(requested - effective))
+            _refuse('toolsets', f'not available on this surface: {missing}')
     if explicit is None and source in {'tui', 'gui'}:
         # Same surface toolsets as the native TUI factory, without its env inference.
         # The fold-in lands after _get_platform_tools subtracted agent.disabled_toolsets, so
@@ -470,10 +496,11 @@ def launch_skills(params):
     """The validated `-s/--skills` identifiers of a create request (empty when absent). Skills
     live in the profile, which a bypass launch must never read: refused there, not dropped."""
     skills = params.get('skills', [])
-    if (('skills' in params and (not isinstance(skills, list) or not skills
-                                 or any(not isinstance(s, str) or not s.strip() for s in skills)))
-            or (skills and any(params.get(name) is True for name in BYPASS_FIELDS))):
-        raise RuntimeStoreError('invalid_params')
+    if 'skills' in params and (not isinstance(skills, list) or not skills
+                               or any(not isinstance(s, str) or not s.strip() for s in skills)):
+        _refuse('skills', 'must be a non-empty list of skill names')
+    if skills and any(params.get(name) is True for name in BYPASS_FIELDS):
+        _refuse('skills', 'a bypass launch never reads the profile, so skills cannot be preloaded')
     return [s.strip() for s in skills]
 
 
@@ -584,7 +611,7 @@ def rebind_launch_key(authority, session, api_key):
     from agent.credential_persistence import fingerprint_secret_value
     from gateway.config import Platform
     if not isinstance(api_key, str) or not api_key.strip():
-        raise RuntimeStoreError('invalid_params')
+        _refuse('api_key', 'must be a non-empty string')
     source = authority.sessions[session.session_id].source
     if source is None or source.platform != Platform.LOCAL:
         raise RuntimeStoreError('admission_conflict')

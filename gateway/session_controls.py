@@ -1,5 +1,6 @@
 """Authenticated WS projection of the gateway authority; no TUI execution fallback."""
 import asyncio
+import logging
 import re
 from dataclasses import asdict
 from functools import partial
@@ -9,7 +10,88 @@ import uuid
 
 from gateway.config import Platform
 from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, Principal, SessionRef, Submission
-from hermes_state_runtime import RuntimeStoreError
+from hermes_constants import get_hermes_home, profile_name_for_home
+from hermes_state_runtime import RuntimeStoreError, published_fields, refusal_clause
+
+logger = logging.getLogger(__name__)
+
+
+# A refusal names the check that fired: the client prints ``field``/``detail`` beside the reason
+# code, and this log line is what a report can quote when the client's copy is not enough.
+def _refusal_data(exc: RuntimeStoreError) -> dict:
+    """The ``error.data`` for one ``RuntimeStoreError``: always the reason, plus the field and the
+    detail when the raiser named them."""
+    data = {'reason': exc.reason}
+    for key in ('field', 'detail'):
+        value = getattr(exc, key, None)
+        if value:
+            data[key] = value
+    return data
+
+
+def _profile_label(profile_id) -> str:
+    """The profile as a log line should carry it: a named profile by name, a root profile (keyed by its
+    home path) by its name, never the path itself."""
+    if not profile_id:
+        return 'default'
+    text = str(profile_id)
+    if '/' not in text and '\\' not in text:
+        return text
+    return profile_name_for_home(text) or 'default'
+
+
+def _schema_refusal(owner, rid, method, problems):
+    """The canonical schema refused the frame before the handler ran.
+
+    ``field`` and ``detail`` are the create-path shape. ``fields`` is the loc list this
+    path already returned; each loc is sealed the same way, so a client key is not copied
+    raw into the frame, the log, or the CLI line. One warning, because the check is named.
+    """
+    verb = method if isinstance(method, str) else None
+    exc = RuntimeStoreError('invalid_params', field=refusal_clause(problems, method=verb),
+                            detail='does not match the session contract')
+    _log_refusal(getattr(owner.actor, 'profile_id', None), verb or 'params', exc)
+    data = _refusal_data(exc)
+    data['fields'] = published_fields(problems, method=verb)
+    return {'jsonrpc': '2.0', 'id': rid, 'error': {
+        'code': 4001, 'message': 'invalid_params', 'data': data}}
+
+
+def _log_refusal(profile, method, exc: RuntimeStoreError) -> None:
+    """One line per refusal, at the level its audience deserves.
+
+    A refusal that names the check that fired is a launch diagnostic (warning). A bare reason code is
+    the client's own state: ``permission_denied`` on a submit, ``not_found``, ``session_busy`` are
+    routine, and a retrying client must not be able to flood the gateway log, so those stay at debug
+    where they were silent before. The shape follows the gateway's own refusal log lines
+    (``gateway/run_notifications.py``): what was refused, for which profile, and why."""
+    line = '%s refused for profile=%s: %s%s%s'
+    args = (method, _profile_label(profile), exc.reason,
+            f' field={exc.field}' if getattr(exc, 'field', None) else '',
+            f' detail={exc.detail}' if getattr(exc, 'detail', None) else '')
+    if getattr(exc, 'field', None) or getattr(exc, 'detail', None):
+        logger.warning(line, *args)
+    else:
+        logger.debug(line, *args)
+
+
+def named_turn_error(exc, empty_detail: str) -> tuple[str, str]:
+    """Messaging copy for a failed turn, and the one log line for that notice.
+
+    A named ``invalid_params`` is ``field: detail`` in the notice, not the class name. The log
+    follows the create-path rule (warning when the raiser named the check, debug for a bare
+    reason code) and names the profile whose home is current, so the adapter calls this inside
+    the routed delivery scope.
+    """
+    if isinstance(exc, RuntimeStoreError):
+        _log_refusal(str(get_hermes_home()), 'native.admit', exc)
+        if exc.reason == 'invalid_params' and (exc.field or exc.detail):
+            shown = exc.field or 'unnamed field'
+            if exc.detail:
+                shown = f'{shown}: {exc.detail}'
+            return exc.reason, shown[:300]
+    text = str(exc)
+    return type(exc).__name__, (text[:300] if text else empty_detail)
 
 
 # ``session.detach end_reason``: a short snake_case label, stored verbatim as ``sessions.end_reason``.
@@ -149,6 +231,9 @@ class AuthorityConnection:
         params = request.get('params') or {}
         if not isinstance(params, dict):
             # Every handler indexes params as a mapping; refuse the frame before ``.get``.
+            # A bare code stays at debug: a retrying client must not flood the gateway log.
+            _log_refusal(getattr(self.actor, 'profile_id', None), method,
+                         RuntimeStoreError('invalid_params'))
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params'}}}
         profile = params.get('profile')
@@ -156,8 +241,9 @@ class AuthorityConnection:
             try:
                 routed = self._sibling_for(profile)
             except RuntimeStoreError as exc:
+                _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
                 return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                    'code': 4001, 'message': exc.reason, 'data': {'reason': exc.reason}}}
+                    'code': 4001, 'message': exc.reason, 'data': _refusal_data(exc)}}
             if routed is not None:
                 return await routed.dispatch(request)
             # Our own home: the scope is implicit for the strict session verbs, which refuse
@@ -170,10 +256,9 @@ class AuthorityConnection:
         )
         contract = CANONICAL_METHODS.get(method)
         if contract is not None and (problems := canonical_param_problems(contract, params)):
-            # The declared wire contract (``tui_gateway/contracts/canonical.py``) is the closed
-            # key set: an unknown or missing key never reaches the handler.
-            return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params', 'fields': problems}}}
+            # The declared wire contract is the closed key set: an unknown or mistyped
+            # value never reaches the handler. The frame names the loc, sealed.
+            return _schema_refusal(self, rid, method, problems)
         original_params = dict(params)
         contract = contract or METHODS.get(method)
         handlers = self.handlers()
@@ -199,8 +284,9 @@ class AuthorityConnection:
             check_result(contract, result)
             return {'jsonrpc': '2.0', 'id': rid, 'result': result}
         except RuntimeStoreError as exc:
+            _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                'code': 4001, 'message': exc.reason, 'data': {'reason': exc.reason}}}
+                'code': 4001, 'message': exc.reason, 'data': _refusal_data(exc)}}
         except sqlite3.Error:
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 5001, 'message': 'storage_unavailable', 'data': {'reason': 'storage_unavailable'}}}
@@ -304,7 +390,7 @@ class AuthorityConnection:
         # the frozen request: the policy re-reads the profile's current route every turn.
         hidden = params.pop('hidden', False)
         if type(hidden) is not bool:
-            raise RuntimeStoreError('invalid_params')
+            raise RuntimeStoreError('invalid_params', field='hidden', detail='must be a boolean')
         ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
         if not ref:
             skills_prompt = None

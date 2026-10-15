@@ -33,6 +33,24 @@ def _short(text: str, limit: int = _SUMMARY_LIMIT) -> str:
     return first if len(first) <= limit else first[: limit - 1].rstrip() + "…"
 
 
+def refusal_text(error: BaseException | str) -> str:
+    """The refusal as the client shows it: the reason code, plus the check that fired when the owner
+    named one (``invalid_params (toolsets: unknown or invalid toolset name: 'mcp-codegraph')``).
+
+    The gateway sends ``field``/``detail`` in the JSON-RPC error's ``data``
+    (``gateway/session_controls.py``), and ``hermes_cli.gateway_client.rpc_error`` carries the
+    bounded scalars onto ``GatewayRPCError.data``. A refusal from anywhere else has no ``data`` and
+    reads exactly as before."""
+    data = getattr(error, "data", None)
+    data = data if isinstance(data, dict) else {}
+    from hermes_state_runtime import seal_display
+    field = seal_display(str(data.get("field") or "").strip())
+    detail = seal_display(str(data.get("detail") or "").strip())
+    if not field and not detail:
+        return str(error)
+    return f"{error} ({field or 'unnamed field'}{': ' + detail if detail else ''})"
+
+
 def chat_error_response(
     error: Exception | str, *, provider: str = "", model: str = "", failure_reason: str | None = None,
 ) -> str:
@@ -60,9 +78,9 @@ def chat_error_response(
         provider=provider or t("cli.error.the_provider"),
         model=model or t("cli.error.the_current_model"),
     )
-    return t("cli.error.with_details", lead=lead, details=_short(str(error), 300))
+    return t("cli.error.with_details", lead=lead, details=_short(refusal_text(error), 300))
 
 
 def agent_init_failure_message(error: BaseException) -> str:
     """Copy for a failed AIAgent build on first message: the user's turn was dropped."""
-    return t("cli.error.agent_init_failed", error=_short(str(error)) or type(error).__name__)
+    return t("cli.error.agent_init_failed", error=_short(refusal_text(error)) or type(error).__name__)

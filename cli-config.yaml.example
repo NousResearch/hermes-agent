@@ -1002,6 +1002,12 @@ memory:
   # Defaults to keeping the full provider-ranked recall. Restart to apply changes.
   prefetch_spill_enabled: false
   
+  # Require approval for all memory writes; independent of the narrower opt-in below.
+  write_approval: false
+  # Allow unattended reviews to auto-apply only edits retaining every old entry verbatim.
+  # False (default): background replace/remove proposals stay in /memory pending.
+  auto_apply_literal_preserving_reviews: false
+
   # Character limits (~2.75 chars per token, model-independent)
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens

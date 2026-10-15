@@ -9,7 +9,7 @@ import textwrap
 
 import pytest
 
-from tests.pm._fixtures import isolated_python as isolated_python
+from tests.pm._fixtures import isolated_python as isolated_python  # noqa: PLC0414 -- the self-alias is load-bearing: it suppresses F811 for the pytest fixture parameter shadowing this import
 
 
 @pytest.mark.parametrize("streaming", [False, True])

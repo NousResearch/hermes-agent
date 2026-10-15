@@ -27,6 +27,7 @@ def test_bootstrap_and_pm_cli_work_without_site_packages(tmp_path, prefix):
     result = subprocess.run(
         [sys.executable, "-S", "-m", "hermes_cli.main", *prefix, "pm", "repair", "--help"],
         cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "hermes pm repair" in result.stdout

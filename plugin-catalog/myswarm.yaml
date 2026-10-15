@@ -1,0 +1,24 @@
+name: myswarm
+title: MySwarm
+repo: https://github.com/tomkubik/hermes-myswarm
+sha: 5a7cf3ced917234a292359ce436c609c3285c3c4
+description: "Discover, visualize, sanitize/export, and import community agents.md swarm configurations. Outputs abbreviated agent/persona/goal tables, renders ASCII topology diagrams (.svg and .png images + portable 7-bit copy-paste ASCII symbol blocks), generates rich themed swarm illustrations across 12 curated signature themes and orthogonal intensity levels (understated, normal, overstated) via Hermes default model and image_generate, exports sanitized agents.md files, and imports/reverts shared configs with on-screen file preview and best-effort import warnings; every import/revert asks for approval. Disclosure — myswarm_import/myswarm_revert replace the workspace AGENTS.md/agents.md (a file Hermes loads into every session's system prompt) after a Hermes approval prompt; choosing \"always\" approves all later imports. The import security check is a best-effort regex + model warning, not a security boundary — only import files you trust. Swarm file contents are sent to your configured model for parsing and PII scrubbing (also best-effort; review exports before sharing), and myswarm_visualize_image calls your configured image_generate provider (may cost credits). Adds a ~2.8k-character MySwarm guidance section to every session's system prompt. Writes myswarm-ascii.svg/.png and .md exports into the current folder (exports may overwrite an existing .md file there), plus a .agents.md.myswarm.orig sidecar, and keeps import backups under HERMES_HOME/plugin-data/myswarm/."
+maintainer: tomkubik
+tier: community
+category: tools
+requires_hermes: ">=0.19.0"
+version: "1.0.0"
+docs_url: https://github.com/tomkubik/hermes-myswarm#readme
+readme: true
+capabilities:
+  provides_tools:
+    - myswarm_list
+    - myswarm_ascii
+    - myswarm_visualize_image
+    - myswarm_export
+    - myswarm_import
+    - myswarm_revert
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

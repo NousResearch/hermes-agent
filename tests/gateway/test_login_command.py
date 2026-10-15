@@ -524,3 +524,27 @@ async def test_login_dispatches_mid_turn():
 
     assert await runner._dispatch_busy_slash_command(event, command, "", event.source) == "started"
     runner._handle_login_command.assert_awaited_once_with(event)
+
+
+@pytest.mark.asyncio
+async def test_a_local_session_gets_the_sign_in_code_on_its_event_stream(monkeypatch):
+    """A local CLI/TUI/Desktop session is a DM on the LOCAL adapter, whose ``send`` is a no-op: the
+    link, code and outcome reach its viewers as ``notification.show`` events, never the platform push."""
+    from gateway import session_authorities
+    runner = _runner(monkeypatch)
+    published = []
+    live = SimpleNamespace(event_stream=SimpleNamespace(
+        publish=lambda sid, payload, event_type: published.append((sid, event_type, payload["text"]))))
+    authority = SimpleNamespace(sessions={"local-1": live})
+    monkeypatch.setattr(session_authorities, "active_authority", lambda _runner: authority)
+    states = [anon_auth.Code("https://example.test/sign-in", "CODE-1", 900, 5), anon_auth.Declined()]
+    monkeypatch.setattr(anon_auth, "run_sign_in", lambda **_kwargs: iter(states))
+
+    event = SimpleNamespace(source=_source(platform=Platform.LOCAL, chat_id="local-1"))
+    assert await runner._handle_login_command(event) == anon_auth.UPGRADE_START
+    await _finish_tasks(runner)
+
+    assert [(sid, kind) for sid, kind, _ in published] == [("local-1", "notification.show")] * 4
+    assert [text for *_, text in published][:2] == ["https://example.test/sign-in", "CODE-1"]
+    assert published[-1][2] == anon_auth.Declined().copy
+    runner._deliver_platform_notice.assert_not_awaited()

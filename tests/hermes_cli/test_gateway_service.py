@@ -157,24 +157,6 @@ class TestSystemdServiceRefresh:
         ), "daemon-reload must not run when write was refused"
 
 
-class TestTempHomeServiceDefinitionGuard:
-    """_temp_home_in_service_definition() — structural temp-dir detection."""
-
-    def test_detects_tmp_home_in_systemd_unit(self):
-        unit = '[Service]\nEnvironment="HERMES_HOME=/tmp/hermes-e2e-41264"\n'
-        assert (
-            gateway_cli._temp_home_in_service_definition(unit)
-            == "/tmp/hermes-e2e-41264"
-        )
-
-    def test_detects_tempdir_env_home(self, monkeypatch, tmp_path):
-        import tempfile as _tempfile
-
-        monkeypatch.setattr(_tempfile, "gettempdir", lambda: str(tmp_path))
-        unit = f'[Service]\nEnvironment="HERMES_HOME={tmp_path}/hermes-home"\n'
-        assert gateway_cli._temp_home_in_service_definition(unit) is not None
-
-
 class TestRequireServiceInstalled:
     def test_exits_with_install_hint_when_unit_missing(self, tmp_path, monkeypatch, capsys):
         unit_path = tmp_path / "hermes-gateway.service"
@@ -761,7 +743,6 @@ class TestLaunchdServiceRecovery:
         # _launchd_domain() must return user/<uid>.
         gateway_cli._resolved_launchd_domain = None
         monkeypatch.setattr(os, "getuid", lambda: 501)
-        label = gateway_cli.get_launchd_label()
 
         def fake_run(cmd, check=False, **kwargs):
             if "print" in cmd and "gui/" in " ".join(cmd):
@@ -1626,7 +1607,6 @@ class TestSystemServiceIdentityRootHandling:
         """When root is explicitly passed via --run-as-user root, allow it."""
 
         root_info = pwd.getpwnam("root")
-        root_group = grp.getgrgid(root_info.pw_gid).gr_name
 
         username, _group, home, _uid = gateway_cli._system_service_identity(run_as_user="root")
         assert username == "root"

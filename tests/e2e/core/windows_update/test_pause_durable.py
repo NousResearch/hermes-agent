@@ -82,7 +82,7 @@ def _update_killed_after_pause(machine) -> tuple[bool, str]:
     deadline = time.monotonic() + 600
     while not seen.is_set() and proc.poll() is None and time.monotonic() < deadline:
         time.sleep(0.05)
-    subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60)
+    subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=60, check=False)
     proc.wait(timeout=60)
     return seen.is_set(), "\n".join(lines[-40:])
 

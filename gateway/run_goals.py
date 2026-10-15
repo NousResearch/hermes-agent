@@ -14,6 +14,7 @@ import time
 from contextlib import nullcontext, suppress
 from typing import TYPE_CHECKING, Any, Optional
 
+from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -56,7 +57,7 @@ class GatewayGoalsMixin:
         except Exception as exc:
             logger.warning("%s: session DB warm-up failed: %s", label, exc)
 
-    async def _session_entry_for_manager(self, event: "MessageEvent", label: str):
+    async def _session_entry_for_manager(self, event: MessageEvent, label: str):
         """Session entry for a /goal or /heartbeat manager, or None when lookup fails. Warms the
         SessionDB cache first (a cold cache drops the first write while the reply claims it was
         set). Internal events never touch activity (idle/daily reset clock)."""
@@ -70,7 +71,7 @@ class GatewayGoalsMixin:
             return None
         return session_entry if getattr(session_entry, "session_id", None) else None
 
-    async def _manager_for_event(self, event: "MessageEvent", kind: str, load):
+    async def _manager_for_event(self, event: MessageEvent, kind: str, load):
         """``(manager, session_entry)`` for *kind* ("goal"/"heartbeat"), or ``(None, None)``.
         ``load()`` imports the manager class and returns a ``session_id -> manager`` factory."""
         try:
@@ -83,7 +84,7 @@ class GatewayGoalsMixin:
             return None, None
         return factory(session_entry.session_id), session_entry
 
-    async def _get_goal_manager_for_event(self, event: "MessageEvent"):
+    async def _get_goal_manager_for_event(self, event: MessageEvent):
         """Return ``(GoalManager, session_entry)`` for this event, or ``(None, None)``."""
         def _load():
             from hermes_cli.goals import GoalManager
@@ -91,7 +92,7 @@ class GatewayGoalsMixin:
             return lambda sid: GoalManager(session_id=sid, default_max_turns=max_turns)
         return await self._manager_for_event(event, "goal", _load)
 
-    async def _get_heartbeat_manager_for_event(self, event: "MessageEvent"):
+    async def _get_heartbeat_manager_for_event(self, event: MessageEvent):
         """Return ``(HeartbeatManager, session_entry)`` for this event, or ``(None, None)``."""
         def _load():
             from hermes_cli.heartbeat import HeartbeatManager
@@ -141,6 +142,10 @@ class GatewayGoalsMixin:
             watch[quick_key] = (source, session_id)
         adapter = self._delivery_adapter_for(source)
         if adapter is None or not adapter._message_handler:
+            return
+        if getattr(self, 'session_authority', None) is not None:
+            from gateway.run_heartbeat_acceptance import admit_heartbeat
+            await admit_heartbeat(self, adapter, source, session_id, quick_key)
             return
         if (
             self._is_session_running(quick_key)
@@ -216,6 +221,16 @@ class GatewayGoalsMixin:
 
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
         """Send a /goal judge status line back to the originating chat/thread."""
+        if getattr(source, "platform", None) == Platform.LOCAL:
+            # The local adapter's send is a no-op (viewers read the event stream): main's TUI
+            # painted the verdict from ``status.update {kind: goal}``.
+            from gateway.session_authorities import active_authority
+            authority = active_authority(self)
+            live = authority.sessions.get(source.chat_id) if authority is not None else None
+            if live is not None:
+                live.event_stream.publish(source.chat_id, {"kind": "goal", "text": message},
+                                          event_type="status.update")
+            return
         adapter = self._goal_notice_adapter(source)
         if not adapter:
             return
@@ -310,6 +325,15 @@ class GatewayGoalsMixin:
         prompt = decision.get("continuation_prompt") or ""
         if not decision.get("should_continue") or not prompt or source is None:
             return
+        if getattr(source, "platform", None) == Platform.LOCAL:
+            # A local session's adapter FIFO has no reader: its turns are authority admissions.
+            # Commit the continuation there, as main's TUI chained it after the turn.
+            from gateway.session_automation import admit_route_wake
+            try:
+                await admit_route_wake(self, self._delivery_adapter_for(source), source, prompt, "goal-continuation")
+            except Exception:  # health: allow BLE001 -- best-effort like the FIFO enqueue below; traceback logged
+                logger.debug("goal continuation: local admission failed", exc_info=True)
+            return
         # Enqueue via the adapter's FIFO so a user message already in flight preempts naturally.
         try:
             adapter = self._delivery_adapter_for(source)
@@ -323,6 +347,10 @@ class GatewayGoalsMixin:
         self, *, agent_result: Any, source: Any, is_internal: bool, event: Any = None,
     ) -> None:
         """Run goal and loop bookkeeping after an agent turn returns."""
+        from gateway.session_authorities import active_authority
+        from gateway.session_viewer_automation import viewer_driven
+        if viewer_driven(active_authority(self), getattr(source, "chat_id", None)):
+            return  # the classic CLI viewer judges and continues through ``session.automation``
         final_text = self._final_text_for_post_turn_hooks(agent_result, event)
         try:
             session_entry = await self.async_session_store.get_or_create_session(
@@ -450,7 +478,11 @@ class GatewayGoalsMixin:
                 mgr.state.ticks_fired if mgr.state else "?",
                 platform_name, source.chat_id, source.thread_id,
             )
-            await adapter.handle_message(self._synthetic_prompt_event(source, wakeup, internal=True))
+            from gateway.session_automation import admit_route_wake
+            # Under a session authority the tick commits to the FIFO (never a classic turn beside an
+            # admitted one); a slash-command loop is a command and keeps the command path.
+            if wakeup.lstrip().startswith("/") or not await admit_route_wake(self, adapter, source, wakeup, "loop-tick"):
+                await adapter.handle_message(self._synthetic_prompt_event(source, wakeup, internal=True))
             # Slash-command loops dispatch through the command path and never hit the post-turn
             # completion hook — complete the tick immediately (caps + scheduling).
             if wakeup.lstrip().startswith("/"):

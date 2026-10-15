@@ -29,6 +29,10 @@ name: OS-specific tests
 on:
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       desktop_updater:
         description: >-
           Run the Windows desktop-update hand-off integration tests
@@ -66,8 +70,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: tests-os-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  group: tests-os-${{ (github.ref_type == 'tag' || inputs.commit != '') && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && inputs.commit == '' }}
 
 jobs:
   os-tests:
@@ -98,6 +102,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
 
       # No arm64 wheels for some of the extras below: PM builds them from sdist.
       - name: Set up native ARM64 build dependencies
@@ -195,6 +201,13 @@ jobs:
           OPENAI_API_KEY: ''
           NOUS_API_KEY: ''
 
+      - name: Check the checkout is clean
+        # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
+        # leaves an untracked or modified file in the checkout is reported here. Runs only when
+        # every earlier step passed: a step that failed midway can leave its own temp files
+        # (a half-extracted download, a worktree its later cleanup never removed).
+        uses: ./.github/actions/check-clean-worktree
+
   install-update-e2e:
     # The real scripts/install.ps1 -> `hermes update` HEAD -> NEXT journey on a real Windows
     # host (tests/e2e/core/windows_update): fresh install, gateway across the update,
@@ -204,6 +217,7 @@ jobs:
     if: inputs.e2e_upgrade
     uses: ./.github/workflows/windows-install-update-e2e.yml
     with:
+      commit: ${{ inputs.commit }}
       strict_acceptance: ${{ inputs.strict_acceptance }}
 
   e2e-windows:
@@ -229,6 +243,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
 
       - name: Set up locked Python and test dependencies
         uses: ./.github/actions/setup-pm
@@ -271,3 +287,9 @@ jobs:
             "::error::leftover pid=$($p.ProcessId) ppid=$($p.ParentProcessId): $($p.CommandLine)"
           }
           exit 1
+      - name: Check the checkout is clean
+        # Last step of every job (tests/ci/test_clean_worktree_check.py): a test or CI step that
+        # leaves an untracked or modified file in the checkout is reported here. Runs only when
+        # every earlier step passed: a step that failed midway can leave its own temp files
+        # (a half-extracted download, a worktree its later cleanup never removed).
+        uses: ./.github/actions/check-clean-worktree

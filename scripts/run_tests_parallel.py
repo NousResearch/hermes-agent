@@ -402,7 +402,7 @@ def _discover_files(roots: list[Path]) -> list[Path]:
     return sorted(out)
 
 
-def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
+def _kill_tree(proc: subprocess.Popen, pgid: int | None = None) -> None:
     """Kill the pytest subprocess and every descendant it spawned.
 
     A test run can spin up uvicorn servers, async runtimes, or other
@@ -440,6 +440,7 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,
+                check=False,
             )  # windows-footgun: ok
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
@@ -458,6 +459,36 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
         proc.kill()
     except (ProcessLookupError, OSError):
         pass
+
+
+def _kill_detached_leftovers(temproot: str) -> None:
+    """SIGKILL every process whose environment still points into this attempt's temp root.
+
+    ``_kill_tree`` reaches the attempt's process group only. A detached child
+    (``start_new_session=True``: an auto-started ``gateway run``, a ``setsid``
+    server) leaves that group, is reparented to init when its parent exits, and
+    used to run forever: 215 orphan gateways (~52 GB RSS) piled up on one host.
+    Every descendant carries the attempt's unique temproot in its environment
+    (``PYTEST_DEBUG_TEMPROOT``/``TMPDIR``, or a ``HOME``/``HERMES_HOME`` a fixture
+    made under it), so it names exactly this attempt's processes and nothing else.
+    Linux-only (``/proc``); elsewhere the process-group kill is all there is.
+    """
+    if not os.path.isdir("/proc"):
+        return
+    import signal as _signal
+
+    root = os.fsencode(temproot)
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{entry}/environ", "rb") as fh:
+                values = [item.partition(b"=")[2] for item in fh.read().split(b"\0")]
+            if not any(v == root or v.startswith(root + b"/") for v in values):
+                continue
+            os.kill(int(entry), _signal.SIGKILL)  # windows-footgun: ok — /proc exists only on Linux
+        except OSError:
+            continue
 
 
 def _effective_file_timeout(
@@ -669,6 +700,7 @@ def _run_one_file_once(
 
         output +=  "\n"
     finally:
+        _kill_detached_leftovers(temproot)
         # Delete the temp root for this attempt. Nothing reads it after the
         # subprocess exits. More than 3000 of them fill the disk of the
         # runner over one suite. Permission fixtures leave read-only dirs
@@ -890,7 +922,7 @@ def _load_durations(repo_root: Path) -> dict[str, float]:
         return {}
     try:
         return json.loads(path.read_text(encoding="utf-8-sig"))
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, OSError):
         print("[ERROR] Failed to load json durations file! {e}")
         return {}
 
@@ -1061,6 +1093,63 @@ def _pytest_flag_error(tokens: list[str]) -> Optional[str]:
     return f"unrecognized arguments: {' '.join(unknown)}" if unknown else None
 
 
+def _report_skips(
+    skipped_files: list[tuple[Path, int]], repo_root: Path,
+) -> bool:
+    """--fail-on-skip: a skip is a failure of the lane, not of a test.
+
+    Decided from pytest's parsed per-file counts, never from the progress
+    line's display format. Returns True when the run must fail.
+    """
+    total = sum(n for _, n in skipped_files)
+    if not total:
+        return False
+    print()
+    print(f"=== ✗ {total} test{'s' if total != 1 else ''} SKIPPED under --fail-on-skip. This is NOT a pass. ===")
+    for file, n in sorted(skipped_files, key=lambda item: str(item[0])):
+        print(f"  {_format_file(file, repo_root)}  ({n} skipped)")
+    return True
+
+
+def _print_failure_report(
+    failures: list[tuple[Path, str, dict[str, int]]], repo_root: Path,
+) -> None:
+    """Every failing file's output, then the failures grouped by cause."""
+    print()
+    print("=== Failure output ===")
+    for file, output, _summary in failures:
+        print()
+        print(f"--- {_format_file(file, repo_root)} ---")
+        print(output.rstrip())
+    print()
+    # Split: files with actual test failures vs non-zero exit for other reasons
+    crashed_files = [(f, o, s) for f, o, s in failures if s.get("crashed")]
+    rest = [(f, s) for f, _o, s in failures if not s.get("crashed")]
+    test_fail_files = [(f, s) for f, s in rest if s.get("failed", 0) > 0]
+    all_passed_but_nonzero = [(f, s) for f, s in rest
+                              if s.get("failed", 0) == 0 and s.get("passed", 0) > 0]
+    no_tests_ran = [(f, s) for f, s in rest
+                    if s.get("failed", 0) == 0 and s.get("passed", 0) == 0]
+    if crashed_files:
+        print(f"=== {len(crashed_files)} file{'s' if len(crashed_files) != 1 else ''} where the interpreter CRASHED mid-run (native fault — a real bug, not a collection error; the tests that did run are not counted) ===")
+        for file, output, _s in crashed_files:
+            print(f"  {_format_file(file, repo_root)}  {output.splitlines()[0]}")
+    if test_fail_files:
+        total_tf = sum(s.get("failed", 0) for _, s in test_fail_files)
+        print(f"=== {len(test_fail_files)} file{'s' if len(test_fail_files) != 1 else ''} with test failures ({total_tf} test{'s' if total_tf != 1 else ''} failed) ===")
+        for file, s in test_fail_files:
+            nf = s.get("failed", 0)
+            print(f"  {_format_file(file, repo_root)}  ({nf} test{'s' if nf != 1 else ''} failed)")
+    if all_passed_but_nonzero:
+        print(f"=== {len(all_passed_but_nonzero)} file{'s' if len(all_passed_but_nonzero) != 1 else ''} where all tests passed but pytest exited non-zero (warnings-as-errors, hook failures, etc.) ===")
+        for file, s in all_passed_but_nonzero:
+            print(f"  {_format_file(file, repo_root)}  ({s.get('passed', 0)} passed)")
+    if no_tests_ran:
+        print(f"=== {len(no_tests_ran)} file{'s' if len(no_tests_ran) != 1 else ''} where no tests ran (collection/import error, timeout before collection, etc.) ===")
+        for file, s in no_tests_ran:
+            print(f"  {_format_file(file, repo_root)}")
+
+
 def main() -> int:
     _make_stdio_glyph_safe()
     parser = argparse.ArgumentParser(
@@ -1160,6 +1249,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--fail-on-skip",
+        action="store_true",
+        help=(
+            "Fail the run if any test is skipped. For lanes whose whole point "
+            "is coverage a skip would hide (e.g. the real SSH/Docker backend "
+            "tests, which skip when their host is not wired through)."
+        ),
+    )
+    parser.add_argument(
         "paths_positional",
         nargs="*",
         metavar="PATH",
@@ -1188,7 +1286,7 @@ def main() -> int:
     OUR_FLAGS = {
         "-h", "--help", "-j", "--jobs", "--paths", "--include-integration",
         "--file-timeout", "--file-retries", "--slice", "--generate-slices", "--files",
-        "--files-from",
+        "--files-from", "--fail-on-skip",
     }
     # pytest short flags that consume the NEXT token as their value.
     PYTEST_VALUE_FLAGS = {"-k", "-m", "-p", "-o", "-c", "-r", "-W"}
@@ -1371,6 +1469,7 @@ def main() -> int:
     tests_passed = 0
     tests_failed = 0
     tests_skipped = 0
+    skipped_files: list[tuple[Path, int]] = []
     # Every collected outcome, not just pass/fail: a legitimately all-skipped
     # (platform-gated) file reports "2 skipped" and must NOT trip the
     # nothing-ran guard, whereas a file that died before collection reports
@@ -1379,7 +1478,7 @@ def main() -> int:
     files_crashed = 0
     lock = threading.Lock()
 
-    def _on_done(file: Path, started_at: float, fut: "Future[tuple[Path, int, str, dict[str, int], float]]") -> None:
+    def _on_done(file: Path, started_at: float, fut: Future[tuple[Path, int, str, dict[str, int], float]]) -> None:
         nonlocal files_done, tests_done, pass_count, fail_count, tests_passed, tests_failed, tests_skipped
         nonlocal tests_collected, files_crashed
         n_tests = test_counts.get(file, 0)
@@ -1406,6 +1505,8 @@ def main() -> int:
             tests_passed += summary.get("passed", 0)
             tests_failed += summary.get("failed", 0)
             tests_skipped += summary.get("skipped", 0)
+            if summary.get("skipped", 0):
+                skipped_files.append((fpath, summary["skipped"]))
             files_crashed += summary.get("crashed", 0)
             tests_collected += sum(
                 summary.get(k, 0)
@@ -1547,43 +1648,13 @@ def main() -> int:
         for f, t in slowest:
             print(f"    {t:>6.2f}s  {_format_file(f, repo_root)}")
 
+    skips_fail_the_run = bool(args.fail_on_skip) and _report_skips(skipped_files, repo_root)
+
     if failures:
-        print()
-        print("=== Failure output ===")
-        for file, output, _summary in failures:
-            print()
-            print(f"--- {_format_file(file, repo_root)} ---")
-            print(output.rstrip())
-        print()
-        # Split: files with actual test failures vs non-zero exit for other reasons
-        crashed_files = [(f, o, s) for f, o, s in failures if s.get("crashed")]
-        rest = [(f, s) for f, _o, s in failures if not s.get("crashed")]
-        test_fail_files = [(f, s) for f, s in rest if s.get("failed", 0) > 0]
-        all_passed_but_nonzero = [(f, s) for f, s in rest
-                                  if s.get("failed", 0) == 0 and s.get("passed", 0) > 0]
-        no_tests_ran = [(f, s) for f, s in rest
-                        if s.get("failed", 0) == 0 and s.get("passed", 0) == 0]
-        if crashed_files:
-            print(f"=== {len(crashed_files)} file{'s' if len(crashed_files) != 1 else ''} where the interpreter CRASHED mid-run (native fault — a real bug, not a collection error; the tests that did run are not counted) ===")
-            for file, output, _s in crashed_files:
-                print(f"  {_format_file(file, repo_root)}  {output.splitlines()[0]}")
-        if test_fail_files:
-            total_tf = sum(s.get("failed", 0) for _, s in test_fail_files)
-            print(f"=== {len(test_fail_files)} file{'s' if len(test_fail_files) != 1 else ''} with test failures ({total_tf} test{'s' if total_tf != 1 else ''} failed) ===")
-            for file, s in test_fail_files:
-                nf = s.get("failed", 0)
-                print(f"  {_format_file(file, repo_root)}  ({nf} test{'s' if nf != 1 else ''} failed)")
-        if all_passed_but_nonzero:
-            print(f"=== {len(all_passed_but_nonzero)} file{'s' if len(all_passed_but_nonzero) != 1 else ''} where all tests passed but pytest exited non-zero (warnings-as-errors, hook failures, etc.) ===")
-            for file, s in all_passed_but_nonzero:
-                print(f"  {_format_file(file, repo_root)}  ({s.get('passed', 0)} passed)")
-        if no_tests_ran:
-            print(f"=== {len(no_tests_ran)} file{'s' if len(no_tests_ran) != 1 else ''} where no tests ran (collection/import error, timeout before collection, etc.) ===")
-            for file, s in no_tests_ran:
-                print(f"  {_format_file(file, repo_root)}")
+        _print_failure_report(failures, repo_root)
         return 1
 
-    if no_tests_ran_at_all:
+    if no_tests_ran_at_all or skips_fail_the_run:
         return 1
 
     return 0

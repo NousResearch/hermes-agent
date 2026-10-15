@@ -624,6 +624,13 @@ def _member_inputs(plugins: PluginInput | None) -> dict:
     raise TypeError(f"{type(plugins).__name__} changes plugin state; only a sync may carry it")
 
 
+def _extra_key(name: str) -> str:
+    """The PEP 685 name uv matches an extra by (``foo_bar`` is ``foo-bar``)."""
+    import re
+
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
 def _still_declared(package, recorded: list[str]) -> list[str]:
     """The recorded extras this tree still declares.
 
@@ -633,17 +640,13 @@ def _still_declared(package, recorded: list[str]) -> list[str]:
     Membership uses PEP 685 names (uv matches ``foo_bar`` to ``foo-bar``); the
     recorded spelling is what reaches uv.
     """
-    import re
     from pm.features import declared_extras
-
-    def normalized(name: str) -> str:
-        return re.sub(r"[-_.]+", "-", name).lower()
 
     root = package.project_root()
     if not (root / "pyproject.toml").is_file():
         return list(recorded)
-    declared = {normalized(extra) for extra in declared_extras(root)}
-    return [extra for extra in recorded if normalized(extra) in declared]
+    declared = {_extra_key(extra) for extra in declared_extras(root)}
+    return [extra for extra in recorded if _extra_key(extra) in declared]
 
 
 def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candidates | None = None,
@@ -869,7 +872,6 @@ def drift(*, include_venv: bool = True) -> dict[str, str]:
     problems: dict[str, str] = {}
     lockfile = _lockfile()
     facts = _facts()
-    store = _store()
     target = current_target()
     for name in lockfile.names():
         try:
@@ -900,9 +902,30 @@ def check(*, include_venv: bool = True) -> list[str]:
     return [f"{name}: {reason}" for name, reason in drift(include_venv=include_venv).items()]
 
 
+def _dependents_first(names: list[str]) -> list[str]:
+    """*names* with each package moved ahead of the packages it depends on.
+
+    A package that extends its dependency must win on PATH: node's own dir also holds node's
+    bundled npm and npx, so with node first every ``npm`` ran that copy, not the pinned npm.
+    Unrelated packages keep their order.
+    """
+    order = list(names)
+    for name in names:
+        try:
+            deps = {package.name for package in walk([name])} - {name}
+        except KeyError:
+            continue
+        positions = [order.index(dep) for dep in deps if dep in order]
+        if positions and min(positions) < order.index(name):
+            order.remove(name)
+            order.insert(min(positions), name)
+    return order
+
+
 def _store_path_dirs() -> list[str]:
     """Composed PATH dirs of all installed (non-internal, on_path) store
-    packages, deps-first, deduped. Includes optional packages that are
+    packages, each package ahead of its dependencies (``_dependents_first``),
+    deduped. Includes optional packages that are
     *installed* (facts say so) — an installed git/gh must be on PATH even
     though it's not in the root closure. A package whose dependency chain is
     not fully installed contributes nothing: store npm over a missing store
@@ -918,7 +941,7 @@ def _store_path_dirs() -> list[str]:
         return locations[package.name]
 
     dirs: list[str] = []
-    for name in lockfile.names():
+    for name in _dependents_first(lockfile.names()):
         try:
             package = get_package(name)
             chain = walk([name])

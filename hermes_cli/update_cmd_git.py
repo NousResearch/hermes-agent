@@ -9,7 +9,7 @@ import logging
 from contextlib import nullcontext, suppress
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Optional
 
@@ -97,11 +97,11 @@ def _prune_orphan_rescue_refs(
             refs = [line.strip() for line in list_result.stdout.splitlines() if line.strip()]
             stale |= set(refs[:-keep] if keep > 0 else refs)
             if max_age_days > 0:
-                cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+                cutoff = datetime.now(UTC) - timedelta(days=max_age_days)
                 for ref in refs:
                     with suppress(ValueError):
                         stamp = datetime.strptime(ref[len(prefix):][:15], "%Y%m%d-%H%M%S")
-                        if stamp.replace(tzinfo=timezone.utc) < cutoff:
+                        if stamp.replace(tzinfo=UTC) < cutoff:
                             stale.add(ref)
         for ref in sorted(stale):
             _git_run(git_cmd, ["update-ref", "-d", ref], cwd)
@@ -128,7 +128,7 @@ def _park_detached_head(git_cmd, cwd, branch) -> None:
     holders = [r for r in (contains.stdout or "").split() if r != "refs/stash"]
     if contains.returncode == 0 and holders:
         return  # already reachable from a branch, tag, remote or backup ref
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     rescue_ref = f"refs/hermes-update-backups/detached-{branch}-{stamp}-{sha[:12]}"
     if _git_run(git_cmd, ["update-ref", rescue_ref, sha], cwd).returncode != 0:
         print(f"✗ HEAD is detached at {sha[:12]}, which no branch or tag contains, and backing it up "
@@ -291,7 +291,7 @@ def _is_fork(origin_url: Optional[str]) -> bool:
 
     def _norm(url: str) -> str:
         url = url.rstrip("/")
-        return url[:-4] if url.endswith(".git") else url
+        return url.removesuffix(".git")
 
     return _norm(origin_url) not in {_norm(official) for official in OFFICIAL_REPO_URLS}
 

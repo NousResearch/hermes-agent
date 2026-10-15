@@ -239,14 +239,9 @@ def _cmd_subscribe(args):
     cron_job = (getattr(args, "cron_job", "") or "").strip()
     if cron_job:
         # Validate the reference up-front so a typo surfaces here, not on the first inbound event.
-        from contextlib import nullcontext
-        from cron.jobs import AmbiguousJobReference, resolve_job_ref, use_cron_store
-        from hermes_cli.profiles import get_profile_dir
-        # Named routes execute in that profile; bare/default routes keep the caller's home.
-        scope = use_cron_store(get_profile_dir(profile)) if profile != "default" else nullcontext()
+        from cron.jobs import AmbiguousJobReference
         try:
-            with scope:
-                job = resolve_job_ref(cron_job)
+            job = _resolve_route_cron_job(profile, cron_job)
         except AmbiguousJobReference as e:
             print(f"Error: {e}")
             return
@@ -285,6 +280,18 @@ def _cmd_subscribe(args):
     print("\n  Configure your service to POST to the URL above.")
     print("  Use the secret for HMAC-SHA256 signature validation.")
     print("  The gateway must be running to receive events (hermes gateway run).\n")
+
+
+def _resolve_route_cron_job(profile: str, reference: str):
+    """Match runtime routing without changing the caller's subscription/config home."""
+    from cron.jobs import resolve_job_ref, use_cron_store
+    from hermes_cli.profiles import get_profile_dir
+
+    # Bare/default routes execute in the ambient home, including standalone installs.
+    if profile == "default":
+        return resolve_job_ref(reference)
+    with use_cron_store(get_profile_dir(profile)):
+        return resolve_job_ref(reference)
 
 
 def _cmd_list(args):

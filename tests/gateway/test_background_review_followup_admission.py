@@ -128,7 +128,7 @@ def test_recursive_gateway_turn_drops_nonterminal_review_candidate():
     """``bind_agent`` runs once per turn of an in-band chain — the recursive ``_run_agent``
     carries the outer admission (``test_queued_followup_turn_carries_the_outer_review_admission``)
     — so a first turn's non-terminal candidate never outlives the follow-up that superseded it."""
-    from gateway.run_turn import _GatewayReviewAdmission
+    from gateway.run_turn_review import _GatewayReviewAdmission
 
     session_id = "gateway-recursive-candidate"
     profile_key = review_admission.current_profile_key()
@@ -157,7 +157,7 @@ def test_gateway_admission_bind_agent_aliases_rotated_session():
     """Session hygiene may rotate the session BEFORE the agent is bound (the gateway token is
     registered ahead of ``_hmwa_prepare_turn``). Binding must alias the rotated child so the
     delivery window keeps one live owner on it, and finish must release both keys."""
-    from gateway.run_turn import _GatewayReviewAdmission
+    from gateway.run_turn_review import _GatewayReviewAdmission
 
     profile_key = "/profiles/p"
     token = review_admission.note_turn_started("S1", profile_key)
@@ -289,7 +289,7 @@ async def test_gateway_review_cancellation_wait_does_not_block_event_loop(monkey
 
 @pytest.mark.asyncio
 async def test_cancelled_gateway_admission_wait_releases_live_turn_owner(monkeypatch):
-    from gateway.run_turn import _GatewayReviewAdmission
+    from gateway.run_turn_review import _GatewayReviewAdmission
 
     session_id = "gateway-cancelled-admission"
     profile_key = review_admission.current_profile_key()
@@ -869,7 +869,7 @@ async def test_gateway_refine_reports_an_occupied_review_slot(monkeypatch):
 )
 def test_unconfirmed_delivery_logs_owner_and_reason(caplog, cause, expected_slug):
     """Dropping a captured candidate is a skip decision: one owner-tagged, body-free line."""
-    from gateway.run_turn import _GatewayReviewAdmission
+    from gateway.run_turn_review import _GatewayReviewAdmission
 
     session_id = "gateway-unconfirmed-delivery"
     profile_key = review_admission.current_profile_key()
@@ -907,7 +907,7 @@ async def test_gateway_spawns_the_review_once_after_confirmed_delivery():
     """The positive gateway lifecycle: capture -> confirmed delivery -> exactly one spawn, with
     the frozen owner identity, inside the bound Context, after ownership release, and OFF the
     event-loop thread (the spawn pipeline is O(transcript))."""
-    from gateway.run_turn import _GatewayReviewAdmission
+    from gateway.run_turn_review import _GatewayReviewAdmission
 
     marker = contextvars.ContextVar("review_spawn_marker", default="unset")
     session_id = "gateway-positive-spawn"
@@ -1081,7 +1081,7 @@ async def test_review_completion_failure_is_logged_with_owner_and_reason(
     """``finish`` releases ownership and drops the candidate before the spawn hop, so an
     exception inside it silently disables the review: the adapter's delivery finally must log
     one owner-tagged, body-free line and still complete the turn's cleanup."""
-    from gateway.run_turn import _GatewayReviewAdmission
+    from gateway.run_turn_review import _GatewayReviewAdmission
 
     monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
     adapter = BasePlatformAdapter(
@@ -1128,8 +1128,8 @@ def test_finish_logs_a_spawn_failure_with_owner_and_reason(monkeypatch, caplog):
     """A spawn thread that cannot start must not raise out of the delivery finally nor vanish
     silently: ownership is released, the candidate is dropped, and one owner-tagged line
     names the reason."""
-    from gateway import run_turn as run_turn_module
-    from gateway.run_turn import _GatewayReviewAdmission
+    from gateway import run_turn_review as run_turn_module
+    from gateway.run_turn_review import _GatewayReviewAdmission
 
     session_id = "gateway-spawn-failure"
     profile_key = review_admission.current_profile_key()
@@ -1315,7 +1315,7 @@ async def test_inline_dispatched_nested_turn_completes_its_review_ownership(
     live-turn token leaks for the process lifetime and every later automatic review is refused
     as ``live_turn_active``.
     """
-    from gateway.run_turn import _GatewayReviewAdmission
+    from gateway.run_turn_review import _GatewayReviewAdmission
 
     monkeypatch.setattr(BasePlatformAdapter, "__abstractmethods__", frozenset())
     adapter = BasePlatformAdapter(

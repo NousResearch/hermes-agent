@@ -63,10 +63,14 @@ logger = logging.getLogger(__name__)
 # attribute on the compressor: the aborted worker is detached and still alive on the pool, and the
 # compressor object is shared with it. Context is copied per worker (``propagate_context_to_thread``), so
 # the pin reaches the retry's whole synchronous call chain and cannot leak into the stalled attempt or any
-# unrelated auxiliary call. Coverage is the single ``_generate_summary`` LLM call only. That is one call per
-# compression run (its only non-recursive call site is the compress path; the two recursive calls are the
-# deliberate main-model retry that must NOT re-issue the pin). The summary call is the ONLY auxiliary LLM
-# call a lean compaction attempt makes (#96603) — there are no sibling digest calls.
+# unrelated auxiliary call. Coverage is the summary plan of ONE ``_generate_summary`` run: it takes the pin
+# once and gives each bounded chunk's first attempt that same route, so a long transcript never spills its
+# later chunks onto the stalled route. The deliberate main-model retry after a failure never re-issues the
+# pin, and once it has moved the plan to the main model the remaining chunks stay there. Likewise, when
+# call_llm's own recovery ladder rescues a chunk, pinned or not, the remaining chunks are pinned to the
+# dispatch that answered (``_served_lane_route``), and the plan fails closed without adopting anything
+# when that dispatch was not observed. The summary calls
+# are the ONLY auxiliary LLM calls a lean compaction attempt makes (#96603) — there are no sibling digest calls.
 _SUMMARY_ROUTE_PIN: contextvars.ContextVar[Optional[dict[str, Any]]] = (
     contextvars.ContextVar("hermes_summary_route_pin", default=None)
 )
@@ -107,6 +111,39 @@ def take_deterministic_summary_pin() -> bool:
         return False
     _SUMMARY_ROUTE_PIN.set(None)
     return True
+
+
+class _SummaryRouteRecord(dict):
+    """``route_info`` for ONE summary call that also counts route records.
+
+    ``call_llm`` records the route it prepared, then once more for every recovery-ladder lane it tries,
+    writing ``model`` last each time. A second record therefore proves the ladder left the prepared
+    (pinned) route, independently of any model-name normalization in the reported pair.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records = 0
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        super().__setitem__(key, value)
+        if key == "model":
+            self.records += 1
+
+    def update(self, *args: Any, **kwargs: Any) -> None:  # type: ignore[override]
+        incoming = dict(*args, **kwargs)
+        super().update(incoming)
+        if "model" in incoming:
+            self.records += 1
+
+
+# Per-chunk observer: ``_generate_summary`` installs a fresh dict, ``_call_summary_llm`` fills it after a
+# SUCCESSFUL call with the pair that served, whether call_llm's ladder left the prepared route, and the
+# dispatch that answered (``auxiliary_relay_metadata.observe_served_dispatch``). A ContextVar for the same
+# reason as the pin: a detached stalled worker shares the compressor object.
+_SUMMARY_SERVED_ROUTE: contextvars.ContextVar[Optional[dict[str, Any]]] = (
+    contextvars.ContextVar("hermes_summary_served_route", default=None)
+)
 
 
 def _pinned_summary_call_kwargs() -> dict[str, Any]:
@@ -824,8 +861,9 @@ _SUMMARY_TOKENS_CEILING = 10_000
 # After this many failures at one cursor, skip the exchange to avoid busy-looping.
 _MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES = 3
 
-# Prompt-side char cap on the serialized turn block (~40K tokens; head+tail kept,
-# see _bound_summary_input). NEVER add a max_tokens wire cap on the summary call.
+# Conservative pre-existing 160K-character ceiling, now applied to the entire auxiliary prompt.
+# Actual provider context capacity is not inferred from characters; provider errors fail closed.
+# NEVER add a max_tokens wire cap on the summary call.
 _SUMMARY_INPUT_MAX_CHARS = 160_000
 
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
@@ -2368,10 +2406,22 @@ class ContextCompressor(
             previous_overload_aborts = _parent(
                 "get_compression_overload_streak", "compression parent overload streak", previous_overload_aborts,
             )
+            # commit_memory_session() ends the engine before this notification, clearing
+            # the in-memory probe. Recover the parent's durable deadline (also in-place)
+            # rather than deleting the wake-up that the benched compression just armed.
+            found, probe_at = self._durable_read(
+                "get_session_model_config_value", "compression parent summary-model probe deadline", float, 0.0,
+                "_fallback_probe_at", 0.0, session_db=session_db, session_id=old_session_id,
+            )
+            if found and probe_at is not None:
+                previous_probe_at = probe_at
         self.bind_session_state(session_db, session_id)
         if boundary_reason == "compression":
-            # Rotation creates a fresh child row first; carry the streak until boundary bookkeeping persists it.
-            self._fallback_compression_streak = previous_fallback_streak
+            # A deliberate pre-LLM skip is streak-neutral and will not persist it later.
+            # Carry the parent's failures onto a fresh child before boundary bookkeeping.
+            if self._fallback_compression_streak != previous_fallback_streak:
+                self._fallback_compression_streak = previous_fallback_streak
+                self._persist_fallback_compression_streak()
             # The bench probe deadline lives in the model-config blob, which the child row lacks.
             self._set_fallback_probe_at(previous_probe_at)
             # No later bookkeeping writes the strike counter, so persist it onto the child row now (#54923).
@@ -3479,13 +3529,13 @@ class ContextCompressor(
         budget = int(content_tokens * _SUMMARY_RATIO)
         return max(_MIN_SUMMARY_TOKENS, min(budget, self.max_summary_tokens))
 
-    # Summarizer-input limits: the budget is the summary model's window, not the main model's.
-    _CONTENT_MAX = 6000       # total chars per message body
-    _CONTENT_HEAD = 4000      # chars kept from the start
-    _CONTENT_TAIL = 1500      # chars kept from the end
+    # Shared serializer's original micro-compaction bounds. Major compression opts out for tool results.
+    _CONTENT_MAX = 6000
+    _CONTENT_HEAD = 4000
+    _CONTENT_TAIL = 1500
     _TOOL_ARGS_MAX = 1500     # tool call argument chars
     _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
-    # Aggregate cap applied after per-message limits; class alias so subclasses/tests can override.
+    # Pre-existing aggregate ceiling now prices the whole auxiliary prompt, including instructions.
     _SUMMARY_INPUT_MAX_CHARS = _SUMMARY_INPUT_MAX_CHARS
 
     def _render_tool_call_for_summary(self, tc: Any) -> str:
@@ -3501,7 +3551,9 @@ class ContextCompressor(
             args = args[:self._TOOL_ARGS_HEAD] + "..."
         return f"  {fn.get('name', '?')}({args})"
 
-    def _serialize_records_for_summary(self, turns: list[dict[str, Any]]) -> list[str]:
+    def _serialize_records_for_summary(
+        self, turns: list[dict[str, Any]], *, full_tool_results: bool = False,
+    ) -> list[str]:
         """Serialize turns into a list of labeled, redacted records for the summarizer."""
         # Lazy import: agent_runtime_helpers pulls heavy transitive imports.
         from agent.agent_runtime_helpers import strip_think_blocks
@@ -3516,7 +3568,9 @@ class ContextCompressor(
             # Strip inline <think>-style blocks: scratch work wastes summarizer context and risks being kept as fact.
             if role == "assistant" and content:
                 content = strip_think_blocks(None, content)
-            if len(content) > self._CONTENT_MAX:
+            # The shared serializer also feeds micro-compaction: preserve its original per-record
+            # ceiling. Only the major checkpoint opts into complete redacted tool results.
+            if len(content) > self._CONTENT_MAX and not (role == "tool" and full_tool_results):
                 content = elide_middle(content, self._CONTENT_HEAD, self._CONTENT_TAIL)
             if role == "tool":
                 parts.append(f"[TOOL RESULT {msg.get('tool_call_id', '')}]: {content}")
@@ -3875,166 +3929,17 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self.summary_model = ""  # empty = use main model
         self._clear_compression_failure_cooldown()  # no cooldown — retry immediately
 
-    def _call_summary_llm(self, prompt: str, prompt_started_at: float) -> str:
-        """Issue the single aux summary call; return validated content text.
-        Raises RuntimeError for empty content or a length-truncated (PARTIAL) summary so the failure
-        routes through main-model fallback + cooldown instead of wiping the compacted turns."""
-        # call_llm writes the route it actually selected; never pre-resolve a second, stale pair.
-        _aux_route: dict[str, str] = {}
-        call_kwargs: dict[str, Any] = {
-            "task": "compression",
-            "main_runtime": {
-                "model": self.model, "provider": self.provider, "base_url": self.base_url, "api_key": self.api_key,
-                "api_mode": self.api_mode,
-            },
-            "messages": [{"role": "user", "content": prompt}], "route_info": _aux_route,
-            # NO max_tokens: Anthropic/NIM wires forward it and a hard cap truncates summaries
-            # (thinking models burn it on reasoning). Timeout comes from call_llm config.
-        }
-        # Pinned route (stall fallback) replaces task routing so the retry leaves the stalled backend.
-        self._apply_summary_route(call_kwargs, _pinned_summary_call_kwargs())
-        # Compression is atomic: protect the in-flight summary call from a mid-turn gateway interrupt.
-        # Without this, an incoming user message aborts the summary and compression falls back to a degraded
-        # static marker, losing the real handoff (#23975). Re-entrant: a main-model retry (_generate_summary
-        # recursion) re-enters harmlessly.
-        _aux_call_start = time.monotonic()
-        _latency_info: dict[str, int] = {"prompt_build_ms": max(0, int((_aux_call_start - prompt_started_at) * 1000))}
-        call_kwargs["latency_info"] = _latency_info
-        # Per-attempt observable (#114594): with this line a stalled attempt is distinguishable from a slow
-        # one — silence before it is prompt build, silence after it is the summary provider.
-        logger.info(
-            "Compression summary call dispatched: model=%s prompt_chars=%s prompt_build_ms=%s",
-            self.summary_model or self.model, f"{len(prompt):,}", _latency_info["prompt_build_ms"],
-        )
-        try:
-            # Compression is atomic: shield the summary call from gateway interrupts. Re-entrant.
-            with aux_interrupt_protection():
-                response = call_llm(**call_kwargs)
-        finally:
-            route_known = bool(_aux_route.get("provider") and _aux_route.get("model"))
-            _aux_model = _aux_route.get("model") or self.summary_model or self.model or ""
-            # Remember the resolved model for the failure path: an ``auto`` route picks one per call
-            # without setting ``summary_model``, so only this names it in the user warning (#116472).
-            self._last_aux_resolved_model = _aux_model or None
-            self._record_aux_compression_call(
-                prompt_messages=call_kwargs["messages"],
-                # max_tokens is intentionally absent; .get() keeps the telemetry hook from breaking the call.
-                max_tokens=call_kwargs.get("max_tokens"),
-                duration_ms=int((time.monotonic() - _aux_call_start) * 1000),
-                aux_provider=_aux_route.get("provider") or self.provider or "",
-                aux_model=_aux_model,
-                effective_aux_context=self.context_length if route_known and _aux_model == self.model else None,
-                phase_timings=_latency_info,
-            )
-        if self._compression_cancelled():
-            raise AuxiliaryExplicitCancellation()
-        # Reasoning-field fallback (DeepSeek/Qwen/Kimi put the summary in reasoning_content); capped.
-        content = extract_content_or_reasoning(response, max_reasoning_chars=8000)
-        where = f"(provider={self.provider or 'auto'} model={self.summary_model or self.model})"
-        # Some OpenAI-compatible proxies (e.g. cmkey.cn, one-api channels) return a well-formed HTTP 200
-        # with an empty or whitespace-only ``content`` instead of an error or empty ``choices``. That
-        # payload passes ``_validate_llm_response`` (a ``message`` exists), so it reaches here and would
-        # otherwise be stored as a prefix-only summary with no body — silently wiping the compacted turns
-        # and making the model forget the in-progress task (#11978, #11914). Treat empty content as a
-        # failure so it routes through the same main-model fallback + cooldown machinery as a transport
-        # error, rather than replacing real context with an empty summary.
-        if not content.strip():
-            raise RuntimeError(f"Context compression LLM returned empty content {where}")
-        if _is_refusal_response(response, content):
-            # Treat a refusal as unusable content. This deliberately reuses the
-            # established fallback/cooldown/abort path for an empty body, so it
-            # can never be committed as `_previous_summary`.
-            raise RuntimeError(f"Context compression LLM returned refusal content {where}")
-        # A finish_reason of "length" means the summarizer hit its output token cap mid-generation: the text
-        # present is PARTIAL. Persisting a partial summary as the compaction checkpoint silently truncates
-        # the conversation's memory — the cut-off text replaces the real middle turns AND is fed back into
-        # every subsequent iterative update prompt, compounding the loss across compactions. Treat it as a
-        # failure so it routes through the same main-model fallback + abort machinery as other degraded
-        # responses instead of becoming a checkpoint. (Ported from earendil-works/pi#7048.)
-        # A length stop means the merged rolling summary is partial — persisting it would silently drop the
-        # tail of the merge and feed the cut-off text into every later micro-compact pass. Leave the
-        # exchange unabsorbed instead; a later pass retries it. (Same class as _generate_summary's guard;
-        # pi#7048.)
-        if _response_finish_reason(response) == "length":
-            raise RuntimeError(
-                f"Context compression summary was truncated ({_TRUNCATED_SUMMARY_MARKER}): generation hit the output "
-                f"token cap and the summary is incomplete {where}"
-            )
-        return content
 
-    def _generate_summary(
-        self, turns_to_summarize: list[dict[str, Any]], focus_topic: Optional[str] = None,
-        memory_context: str = "", bypass_cooldown: bool = False,
-    ) -> Optional[str]:
-        """Structured summary of the turns (iterative update when a previous summary exists); None if all attempts fail."""
-        prompt_started_at = time.monotonic()
-        if self._compression_cancelled():
-            raise AuxiliaryExplicitCancellation()
-        # bypass_cooldown: provider-proven overflow gets ONE real attempt while armed.
-        if prompt_started_at < self._summary_failure_cooldown_until and not bypass_cooldown:
-            logger.debug(
-                # See #100661.
-                "Skipping context summary during cooldown (%.0fs remaining)",
-                self._summary_failure_cooldown_until - prompt_started_at,
-            )
-            return None
-        # Strict-redact inputs that bypass _serialize_for_summary (focus string, prior summary).
-        if focus_topic:
-            focus_topic = _redact_compaction_text(focus_topic)
-        if self._previous_summary:
-            self._previous_summary = _redact_compaction_text(self._previous_summary)
-        summary_budget = self._compute_summary_budget(turns_to_summarize)
-        # Ghost-skill defense: LLMs paraphrase [SKILL_PRUNED] markers away; collect the names
-        # deterministically BEFORE the call (from the turn LIST, not the bounded text), re-inject after.
-        _pruned_skill_names = list(dict.fromkeys(
-            _collect_ghosted_skill_names(turns_to_summarize) + _extract_pruned_skill_names(self._previous_summary or "")
-        ))[:_MAX_PRUNED_SKILL_MARKERS]
-        # Lean mode even-samples oversized input (one bounded request, never a second).
-        if getattr(self, "tail_mode", "lean") == "lean":
-            records = self._serialize_records_for_summary(turns_to_summarize)
-            content_to_summarize, coverage = self._sample_summary_records(records)
-            self._record_summary_input_coverage(coverage)
-        else:
-            content_to_summarize = self._bound_summary_input(self._serialize_for_summary(turns_to_summarize))
-        has_user_turn = getattr(self, "_summary_has_user_turn", None)
-        if has_user_turn is None:
-            has_user_turn = self._transcript_has_real_user_turn(turns_to_summarize)
-        prompt = self._build_summary_prompt(content_to_summarize, summary_budget, focus_topic, memory_context, has_user_turn)
-        try:
-            content = self._call_summary_llm(prompt, prompt_started_at)
-            # Strip <think> blocks: they would be stored, injected, and compounded on every iterative update.
-            from agent.agent_runtime_helpers import strip_think_blocks
-            content = strip_think_blocks(None, content).strip() or content
-            # The summarizer may echo secrets verbatim; redact the output too.
-            summary = _redact_compaction_text(content.strip())
-            # Restore any [SKILL_PRUNED] marker the summarizer paraphrased away.
-            # See #32106.
-            summary = _reinject_pruned_skill_markers(summary, _pruned_skill_names)
-            summary = self._ground_historical_task_snapshot(summary, turns_to_summarize)
-            summary = self._augment_summary_lean(summary, turns_to_summarize)
-            self._validate_summary_user_provenance(summary, has_user_turn)
-            # A detached stale attempt must not publish its late summary onto shared compressor state:
-            # the fallback already advanced _previous_summary and owns the cooldown/error fields. The
-            # candidate itself is discarded downstream by the working-attempt check; bail here so the
-            # attribute writes never land. Entry-generation claims (lock sit-outs) do not count; the
-            # working marker is the ownership boundary for summary state.
-            from agent.conversation_compression import _raise_if_stale_attempt
+    _MAX_COMPLETE_SUMMARY_CHUNKS = 8
 
-            _raise_if_stale_attempt(self)
-            self._previous_summary = summary
-            self._clear_compression_failure_cooldown()
-            self._summary_model_fallen_back = False
-            self._last_summary_error = None
-            self._clear_terminal_summary_failures()
-            # The provider answered a summary again: the sustained-overload budget restarts (#123167).
-            self._reset_consecutive_overload_aborts()
-            return self._with_summary_prefix(summary)
-        except Exception as e:
-            return self._on_summary_failure(e, turns_to_summarize, focus_topic, memory_context)
+
+
+
+
 
     def _build_summary_prompt(
         self, content_to_summarize: str, summary_budget: int, focus_topic: Optional[str],
-        memory_context: str, has_user_turn: bool,
+        memory_context: str, has_user_turn: bool, previous_summary: Optional[str] = None,
     ) -> str:
         """Assemble the summarizer prompt (fresh or iterative-update form); focus guidance goes last so it takes precedence."""
         _memory_section = _memory_provider_section(memory_context)
@@ -4053,9 +3958,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # Lean mode folds the session log into this SAME single request (one aux call).
         _session_log_section = _LEAN_SESSION_LOG_SECTION if getattr(self, "tail_mode", "lean") == "lean" else ""
         _template_sections = self._summary_template_sections(_section, summary_budget, _session_log_section)
-        if self._previous_summary:
+        if previous_summary:
             # Iterative update. Bound the previous summary too: a rehydrated handoff can be huge.
-            _bounded_previous_summary = self._bound_summary_input(self._previous_summary)
+            _bounded_previous_summary = self._bound_summary_input(previous_summary)
             prompt = f"""{_summarizer_preamble}
 
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
@@ -4167,6 +4072,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _on_summary_failure(
         self, e: Exception, turns_to_summarize: list[dict[str, Any]], focus_topic: Optional[str], memory_context: str,
+        serialized_chunk: Optional[str] = None, previous_summary: Optional[str] = None,
     ) -> Optional[str]:
         """Classify a summary-call failure; retry once on the main model (returning its result) or arm a cooldown (None)."""
         # A detached stale attempt must not arm a failure cooldown or stamp error state the fallback
@@ -4214,8 +4120,13 @@ Write only the summary body. Do not include any preamble or prefix."""
         ).strip()
         if _route_model and _route_model != self.model and not getattr(self, "_summary_model_fallen_back", False):
             self._fallback_to_main_for_compression(e, kind.fallback_reason(), failed_model=_route_model)
-            # Retry immediately on the main model.
-            return self._generate_summary(turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context)
+            # Retry the SAME covered span. Restarting the whole multi-call plan would duplicate
+            # earlier chunks, consume unaccounted calls and risk publishing a partial checkpoint.
+            return self._generate_summary_once(
+                turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context,
+                serialized_chunk=serialized_chunk, bypass_cooldown=True,
+                previous_summary=previous_summary,
+            )
 
         # Transient errors: short cooldown for JSON-decode/streaming-closed/empty-content. Timeouts escalate
         # 60s→300s→900s (structural repeat offenders) and take precedence over the short rung; truncation
@@ -5562,16 +5473,29 @@ Write only the summary body. Do not include any preamble or prefix."""
             return messages
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
         spare_pending_images = bool(self._spared_pending_tool_round(messages))
-        # Unpruned copy for no-op/abort returns (history stays lossless) and finalize; head/tail are
-        # assembled and measured from the pruned copy (#61932).
+        # Unpruned copy for no-op/abort returns and summary source. The reduced copy below still owns
+        # boundary selection and final assembly, so retention does not relax the protected-tail budget.
         canonical_messages = self._drop_blank_echoes(messages)
-        # Phase 1: Prune old tool results (cheap, no LLM call)
+        summary_source_messages = canonical_messages
+        # Phase 1: Prune old tool results (cheap, no LLM call) on the assembly/boundary copy only.
         messages, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
         )
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
         messages = self._drop_blank_echoes(messages)
+        # Preserve established clarify sanitization: its compact result removes headless-control
+        # notices while retaining answered selections. Other tool bodies stay intact for synthesis.
+        # Both views were blank-normalized before this zip, so the row alignment is intentional.
+        if pruned_count and len(summary_source_messages) == len(messages):
+            summary_source_messages = [
+                ({**source, "content": reduced.get("content")}
+                 if source.get("role") == "tool"
+                 and reduced.get("role") == "tool"
+                 and str(reduced.get("content") or "").startswith("[clarify]")
+                 else source)
+                for source, reduced in zip(summary_source_messages, messages)
+            ]
         n_messages = len(messages)
         # Phase 2: Determine boundaries (on the pruned copy so a pressure-demoted tail can compress, #61932)
         compress_start, compress_end = self._compress_window(messages)
@@ -5585,12 +5509,20 @@ Write only the summary body. Do not include any preamble or prefix."""
                 n_messages,
             )
             return canonical_messages
-        turns_to_summarize = messages[compress_start:compress_end]
-        # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
+        # Boundaries are priced from the reduced copy; synthesize from the matching intact rows.
+        # `_prune_old_tool_results` preserves row order, and `_drop_blank_echoes` has already made
+        # both views index-aligned, so summary indices stay valid for final assembly.
+        turns_to_summarize = summary_source_messages[compress_start:compress_end]
+        # Lean mode demotes stale tail tool results before final assembly so stubs exist even if it aborts.
         if getattr(self, "tail_mode", "lean") == "lean":
             messages = self._demote_stale_tail_tools(messages, compress_end)
-        scan = self._scan_window_handoffs(messages, compress_start, compress_end, turns_to_summarize)
-        turns_to_summarize = scan.turns_to_summarize
+        scan = self._scan_window_handoffs(
+            summary_source_messages, compress_start, compress_end, turns_to_summarize,
+        )
+        turns_to_summarize = self._include_demoted_boundary_tools(
+            summary_source_messages, messages, compress_start,
+            max(compress_end, scan.tail_start), scan.turns_to_summarize,
+        )
         self._record_compression_regions(
             head_messages=messages[:compress_start], middle_messages=turns_to_summarize, tail_messages=messages[compress_end:],
         )

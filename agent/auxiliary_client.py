@@ -2592,32 +2592,10 @@ def _set_relay_auxiliary_route(provider: str | None, model: str | None, api_mode
     context["api_mode"] = str(api_mode or "chat_completions")
 
 
-def _record_route_info(
-    route_info: Optional[dict[str, str]], provider: Optional[str], model: Optional[str]
-) -> None:
-    """Expose the concrete route selected for one auxiliary call."""
-    if route_info is not None:
-        route_info["provider"] = provider or "auto"
-        route_info["model"] = model or "default"
-
-
-def _relay_auxiliary_metadata(
-    *, provider: str | None = None, api_mode: str | None = None
-) -> tuple[str, str, dict[str, Any]] | None:
-    context = _RELAY_AUX_CALL_CONTEXT.get()
-    if context is None:
-        return None
-    attempt_count = int(context.get("attempt_count") or 0)
-    context["attempt_count"] = attempt_count + 1
-    provider_name = str(provider or context.get("provider") or "auxiliary")
-    model_name = str(context.get("model") or "unknown")
-    return provider_name, model_name, {
-        "api_mode": str(api_mode or context.get("api_mode") or "chat_completions"),
-        "api_request_id": str(context["request_id"]),
-        "call_role": f"auxiliary:{context['task']}",
-        "retry_count": attempt_count,
-        "auxiliary_task": str(context["task"]),
-    }
+from agent.auxiliary_relay_metadata import (
+    _ServedDispatch, _clear_served_dispatch, _record_route_info, _relay_auxiliary_metadata, _relay_codec_api_mode,
+    _record_swapped_model,
+)
 
 
 def _relay_sync_completion(
@@ -2635,25 +2613,26 @@ def _relay_sync_completion(
     task = relay_context.get("task")
     relay_context["stream_provider"] = provider or relay_context.get("provider")
     callback = create or (lambda request: _create_with_progress(client, request, task))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode, request=kwargs)
+    served = _ServedDispatch(client, kwargs, provider, api_mode)  # named once a response comes back
     # Isolate only the provider callback so the owning thread can unwind its lease/DB
     # transaction on hard cancel without touching the shared client.
+    send = served.sent(lambda request: _run_protected_sync_provider_call(callback, request))
     if route is None:
-        return _run_protected_sync_provider_call(callback, kwargs)
+        return served.answered(send(kwargs))
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     from agent.auxiliary_hooks import run_with_aux_hooks
     model_name = str(kwargs.get("model") or fallback_model)
     try:
-        return run_with_aux_hooks(
+        return served.answered(run_with_aux_hooks(
             lambda: relay_llm.execute_current(
-                kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
-                name=provider_name, model_name=model_name, metadata=metadata,
+                kwargs, send, name=provider_name, model_name=model_name, metadata=metadata,
                 defer_logical_completion=True,
             ),
             aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
             provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
-        )
+        ))
     except Exception as exc:
         _note_relay_auxiliary_error(exc)
         raise
@@ -2668,22 +2647,23 @@ async def _relay_async_completion(
     kwargs = prepare_chat_messages(client, kwargs)
     # Async twin of the seam default above (#98466).
     callback = create or (lambda request: _acreate_with_progress(client, request))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode, request=kwargs)
+    served = _ServedDispatch(client, kwargs, provider, api_mode)  # named once a response comes back
     if route is None:
-        return await callback(kwargs)
+        return served.answered(await served.asent(callback)(kwargs))
     provider_name, fallback_model, metadata = route
     from agent import relay_llm
     from agent.auxiliary_hooks import arun_with_aux_hooks
     model_name = str(kwargs.get("model") or fallback_model)
     try:
-        return await arun_with_aux_hooks(
+        return served.answered(await arun_with_aux_hooks(
             lambda: relay_llm.execute_current_async(
-                kwargs, callback, name=provider_name, model_name=model_name,
+                kwargs, served.asent(callback), name=provider_name, model_name=model_name,
                 metadata=metadata, defer_logical_completion=True,
             ),
             aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
             provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
-        )
+        ))
     except Exception as exc:
         _note_relay_auxiliary_error(exc)
         raise
@@ -2698,7 +2678,8 @@ def _relay_sync_stream(
     # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
     # rewritten) the real conversation; applying it to `kwargs` would hand Relay an empty one.
     create = lambda request: client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client))
-    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
+    _clear_served_dispatch()  # a streamed answer is never recorded: leave no earlier dispatch behind
+    route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode, request=kwargs)
     if route is None:
         return create(kwargs)
     provider_name, fallback_model, metadata = route
@@ -3750,7 +3731,7 @@ def _prepare_same_provider_retry(
     final_model: Optional[str], messages: list, temperature: Optional[float],
     max_tokens: Optional[int], tools: Optional[list], effective_timeout: float,
     effective_extra_body: dict, reasoning_config: Optional[dict], async_mode: bool,
-    extra_headers: Optional[dict[str, str]] = None,
+    extra_headers: Optional[dict[str, str]] = None, route_info: Optional[dict[str, str]] = None,
 ) -> tuple[Any, dict[str, Any]]:
     """Rebuild (client, request kwargs) for a same-provider retry after credential recovery."""
     if task == "vision":
@@ -3768,6 +3749,11 @@ def _prepare_same_provider_retry(
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: provider {resolved_provider} could not be rebuilt after recovery"
         )
+    served_model = retry_model or final_model
+    if route_info is not None and (served_model or "default") != route_info.get("model"):
+        # Another model serves another route: record it as a model-swapping rung does (_record_swapped_model).
+        _record_route_info(route_info, route_info.get("provider") or _fallback_provider_from_label(resolved_provider),
+                           served_model)
     retry_base = str(getattr(retry_client, "base_url", "") or "")
     retry_kwargs = _build_call_kwargs(
         effective_provider or resolved_provider, retry_model or final_model, messages,
@@ -4091,6 +4077,7 @@ def _plan_fallback_auth_retry(
     rebuild: Callable[[str, Any, Optional[str]], tuple[_FallbackDestination, dict[str, Any]]], *,
     async_mode: bool,
     failed_api_key: str = "",
+    route_info: Optional[dict[str, str]] = None,
 ) -> tuple[str, Optional[tuple[Any, dict[str, Any], _FallbackDestination]]]:
     """After an auth error on a fallback candidate: refresh credentials and rebuild the request.
     Returns ``(refresh_provider, retry)``; ``retry`` = ``(client, kwargs, destination)`` or None."""
@@ -4103,6 +4090,10 @@ def _plan_fallback_auth_retry(
         )
         if retry_client is not None:
             retry_destination, retry_kwargs = rebuild(fb_provider, retry_client, retry_model)
+            if route_info is not None and (retry_destination.model or "default") != route_info.get("model"):
+                # Another model serves another route: record it (as _prepare_same_provider_retry does).
+                _record_route_info(route_info, route_info.get("provider") or destination.provider,
+                                   retry_destination.model)
             return fb_provider, (retry_client, retry_kwargs, retry_destination)
     return fb_provider, None
 
@@ -4111,6 +4102,7 @@ def _call_fallback_candidate_sync(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str], messages: list,
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
+    route_info: Optional[dict[str, str]] = None,
 ) -> Optional[Any]:
     """Call one fallback candidate with stale-credential recovery: on an auth error refresh its
     credentials and retry once with a rebuilt client; if that also auth-fails, quarantine the
@@ -4157,7 +4149,8 @@ def _call_fallback_candidate_sync(
                 reason=capacity)
             return None
         fb_provider, retry = _plan_fallback_auth_retry(
-            destination, rebuild, async_mode=False, failed_api_key=getattr(fb_client, "api_key", ""))
+            destination, rebuild, async_mode=False, failed_api_key=getattr(fb_client, "api_key", ""),
+            route_info=route_info)
         failed_destination = destination
         if retry is not None:
             failed_destination = retry[2]
@@ -4176,6 +4169,7 @@ async def _call_fallback_candidate_async(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str], messages: list,
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
+    route_info: Optional[dict[str, str]] = None,
 ) -> Optional[Any]:
     """Async mirror of :func:`_call_fallback_candidate_sync` (no fast-lane cap on this wire)."""
     destination, fb_kwargs, rebuild = _plan_fallback_candidate(
@@ -4209,7 +4203,8 @@ async def _call_fallback_candidate_async(
                 tag=" (async)", reason=capacity)
             return None
         fb_provider, retry = _plan_fallback_auth_retry(
-            destination, rebuild, async_mode=True, failed_api_key=getattr(fb_client, "api_key", ""))
+            destination, rebuild, async_mode=True, failed_api_key=getattr(fb_client, "api_key", ""),
+            route_info=route_info)
         failed_destination = destination
         if retry is not None:
             failed_destination = retry[2]
@@ -7711,6 +7706,7 @@ def _refreshed_nous_step(route: _LadderRoute, kwargs: dict[str, Any], message: s
     logger.info(message, route.task or "call", route.tag)
     if refreshed_model and refreshed_model != kwargs.get("model"):
         kwargs["model"] = refreshed_model
+        _record_swapped_model(route, refreshed_model)
     return _LadderStep("call", (refreshed_client, kwargs))
 
 
@@ -7730,6 +7726,7 @@ def _ladder_nous_rungs(
                            "retrying with refreshed recommendation %r",
                            task or "call", tag, kwargs.get("model"), healed_model)
             kwargs["model"] = healed_model
+            _record_swapped_model(route, healed_model)
             resp, first_err = yield from _rung(_LadderStep("call", (client, kwargs)), lambda exc: True)
             if first_err is None:
                 return resp, None
@@ -8115,6 +8112,7 @@ def _plan_aux_call(
         task=task, messages=messages, temperature=temperature, max_tokens=max_tokens,
         tools=tools, effective_timeout=req.effective_timeout,
         effective_extra_body=req.effective_extra_body, reasoning_config=reasoning_config,
+        route_info=route_info,
     )
     retry_kwargs = dict(
         candidate_kwargs, resolved_base_url=req.resolved_base_url,

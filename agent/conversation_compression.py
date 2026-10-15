@@ -191,19 +191,12 @@ _COMPRESSOR_ATTEMPT_STATE_FIELDS = (
 _COMPRESSOR_COOLDOWN_STATE_FIELDS = ("_summary_failure_cooldown_until", "_last_summary_error", "_cooldown_persist_failed")
 
 
-def _snapshot_compressor_attempt_state(compressor: Any) -> dict[str, Any]:
-    """Copy only the mutable bookkeeping owned by one compression attempt.
-    The allow-list avoids copying clients, DB handles, locks and plugin resources; missing fields are ignored
-    so legacy/third-party compressors keep working."""
-    try:
-        values = vars(compressor)
-    except TypeError:
-        return {}
-    selected = {name: values[name] for name in _COMPRESSOR_ATTEMPT_STATE_FIELDS if name in values}
-    # Copy the collection as one object so aliases between fields (notably
-    # _active_compression_telemetry and _last_compression_telemetry) survive.
-    return copy.deepcopy(selected)
 
+
+from agent.conversation_compression_ownership import (
+    _snapshot_compressor_attempt_state, _summary_adoption_window,
+    _compressor_attempt_serial_lock, _working_attempt_is_current,
+)
 
 # Attempt ownership: stall-fallback detaches a timed-out worker and reuses the compressor, so its late unwind could
 # restore a stale snapshot or clear the fallback's cancel check. Generation guards ATTRIBUTE writes; fence, COMMITs.
@@ -233,22 +226,15 @@ _COMPRESSOR_ATTEMPT_GENERATION: contextvars.ContextVar[Any] = contextvars.Contex
     "hermes_compressor_attempt_generation", default=None
 )
 
+# The calling attempt's commit fence, for the summary adoption window. A ContextVar for the same reason as
+# the generation above: a detached late worker shares the compressor object, never another attempt's fence.
+_SUMMARY_ADOPTION_FENCE: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "hermes_summary_adoption_fence", default=None
+)
 
-def _compressor_attempt_serial_lock(compressor: Any) -> Any:
-    """Per-compressor lock serializing the durable cooldown rollback against claims. The process-wide
-    claim lock must stay cheap (every compressor in a gateway shares it), so the slow SQLite write in
-    ``_restore_compressor_attempt_state`` is fenced by THIS lock instead; ``_claim_compressor_attempt``
-    takes it first so a claim on that compressor waits for the restore while other compressors proceed.
-    A slotted/frozen compressor that cannot hold the attribute gets a no-op (its guard is off anyway)."""
-    with _COMPRESSOR_ATTEMPT_LOCK:
-        lock = getattr(compressor, "_compression_attempt_serial_lock", None)
-        if lock is None:
-            lock = threading.Lock()
-            try:
-                compressor._compression_attempt_serial_lock = lock
-            except Exception:
-                return contextlib.nullcontext()
-        return lock
+
+
+
 
 
 def _claim_compressor_attempt(compressor: Any) -> int:
@@ -300,20 +286,6 @@ def _caller_attempt_is_current(compressor: Any) -> bool:
     return _working_attempt_is_current(compressor, _COMPRESSOR_ATTEMPT_GENERATION.get())
 
 
-def _working_attempt_is_current(compressor: Any, generation: Any) -> bool:
-    """True when *generation* is still the last attempt that began summary work.
-
-    Without a published marker (attribute-less compressor, or the attempt never reached
-    dispatch) supersession falls back to the entry-generation ownership check; a compressor
-    that no attempt has ever claimed cannot have been superseded."""
-    if not generation:
-        return True
-    with _COMPRESSOR_ATTEMPT_LOCK:
-        marker = getattr(compressor, "_compression_working_attempt_generation", None)
-        if marker is None:
-            entry_generation = int(getattr(compressor, "_compression_attempt_generation", 0) or 0)
-            return not entry_generation or entry_generation == generation
-        return int(marker) == int(generation)
 
 
 def _install_compression_cancelled_check(compressor: Any, check: Any, generation: int) -> None:
@@ -573,6 +545,26 @@ class CompressionCommitFence:
         self._lock.release()
         if self._admission_revoked:
             # A revoke during THIS commit deferred its lease release (never free mid-mutation); release now.
+            self.release_cancelled_compression_lock()
+
+    @contextlib.contextmanager
+    def adoption_window(self):
+        """Hold the fence lock while the worker adopts its summary, before any commit.
+
+        Host-side cancellation (:meth:`cancel_before_commit`, :meth:`try_cancel_before_commit`) takes this
+        lock, so it lands either before the window (the worker's check inside sees it and adopts nothing) or
+        after it (the adoption came first; the refused commit rolls the attempt back). Admission revocation
+        and the deadline flip without the lock, so the worker re-checks after its write. A revoke that found
+        the lock held deferred its lease release: a normal exit runs it, as :meth:`finish_commit` does. An
+        exception needs no release here: the worker unwinds through its summary phase, which rolls the
+        attempt back while still holding the lease, then releases it. Lock order is compressor serial lock,
+        then this fence; nothing holding a fence waits on a compressor lock except that fence's own worker.
+        Keep the window to the adoption itself: a durable write inside it would make :meth:`cancel_before_commit`
+        wait on that write and :meth:`try_cancel_before_commit` report a commit that has not begun.
+        """
+        with self._lock:
+            yield
+        if self._admission_revoked:
             self.release_cancelled_compression_lock()
 
     @property
@@ -3030,6 +3022,7 @@ def _run_summary_dispatch(
         )
 
     _attempt_ctx_token = _COMPRESSOR_ATTEMPT_GENERATION.set(attempt_generation)
+    _fence_ctx_token = _SUMMARY_ADOPTION_FENCE.set(commit_fence)
     try:
         # F6: never start expensive summary work for an already-cancelled
         # fence (a stale queued job admitted after host departure).
@@ -3053,6 +3046,7 @@ def _run_summary_dispatch(
                 if hard_cancel_event is not None and hard_cancel_event.is_set():
                     raise AuxiliaryExplicitCancellation()
     finally:
+        _SUMMARY_ADOPTION_FENCE.reset(_fence_ctx_token)
         _COMPRESSOR_ATTEMPT_GENERATION.reset(_attempt_ctx_token)
         if commit_fence is not None:
             _clear_compression_cancelled_check_if_owner(agent.context_compressor, attempt_generation)

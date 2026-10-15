@@ -43,6 +43,41 @@ def _tuple_agent(entry: Any) -> Any:
     return entry[0] if isinstance(entry, tuple) and entry else None
 
 
+def _resolve_session_override_credentials(model: str, runtime: dict) -> dict:
+    """Re-resolve a known pooled Codex route without promoting its saved key to an explicit key."""
+    from gateway.run import _credential_pool_for_provider, _resolve_runtime_agent_kwargs_for_provider
+    provider = str(runtime.get("provider") or "").strip().lower()
+    token = runtime.get("api_key")
+    if not token or not provider:
+        return runtime
+    if provider != "openai-codex":
+        if runtime.get("credential_pool") is None:
+            runtime["credential_pool"] = _credential_pool_for_provider(provider, target_model=model)
+        return runtime
+
+    from hermes_cli.auth import read_credential_pool
+    from hermes_cli.auth_codex import _codex_pool_route_base_url
+    base_url = str(runtime.get("base_url") or "").strip().rstrip("/")
+    known_route = any(
+        isinstance(row, dict) and row.get("access_token") == token
+        and _codex_pool_route_base_url(row.get("base_url")) == base_url
+        for row in read_credential_pool(provider)
+    )
+    if not known_route:
+        # Independent session keys/endpoints must not acquire an unrelated pool on reattachment.
+        runtime["credential_pool"] = None
+        return runtime
+
+    # The pool and first wire credential must come from the SAME model-aware resolution, including
+    # when an in-memory pool was attached before the account was benched. Propagate refusal instead
+    # of silently converting a rejected pool token into a standalone credential.
+    resolved = _resolve_runtime_agent_kwargs_for_provider(provider, target_model=model)
+    if (resolved.get("provider") != provider
+            or str(resolved.get("base_url") or "").rstrip("/") != base_url):
+        raise RuntimeError("No eligible Codex credential for the session endpoint; select a new /model route.")
+    return {**runtime, **resolved}
+
+
 class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
 
@@ -198,7 +233,6 @@ class GatewayAgentCacheMixin:
     def _apply_session_model_override(self, session_key: str, model: str, runtime_kwargs: dict) -> tuple:
         """Apply /model session overrides (precedence over config.yaml defaults; ``None`` fields skipped
         so partial overrides don't clobber defaults), returning (model, runtime_kwargs)."""
-        from gateway.run import _credential_pool_for_provider
         override = self._session_model_override(session_key)
         if not override:
             return model, runtime_kwargs
@@ -213,12 +247,8 @@ class GatewayAgentCacheMixin:
         if "request_overrides" in override:
             ro = override.get("request_overrides")
             runtime_kwargs["request_overrides"] = dict(ro) if isinstance(ro, dict) and ro else ro
-        if (
-            runtime_kwargs.get("api_key")
-            and runtime_kwargs.get("credential_pool") is None
-            and override.get("provider")
-        ):
-            runtime_kwargs["credential_pool"] = _credential_pool_for_provider(override.get("provider"), target_model=model)
+        if override.get("provider"):
+            runtime_kwargs = _resolve_session_override_credentials(model, runtime_kwargs)
         return model, runtime_kwargs
 
     def _snapshot_session_model_override(self, session_key: str) -> dict:

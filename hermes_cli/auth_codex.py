@@ -923,9 +923,17 @@ def _pool_entries(auth_store: dict[str, Any], provider_id: str) -> Optional[list
 
 def _codex_pool_entry_excluded(entry: dict[str, Any], target_model: Optional[str]) -> bool:
     """Read-only eligibility shared by pool fallback and singleton aliases of pool accounts."""
-    from agent.credential_pool import PooledCredential, STATUS_DEAD, model_cooldown_until
+    from agent.credential_pool import (
+        PooledCredential, STATUS_DEAD, _exhausted_until, _parse_absolute_timestamp, model_cooldown_until,
+    )
     credential = PooledCredential.from_dict("openai-codex", entry)
-    return credential.last_status == STATUS_DEAD or model_cooldown_until(credential, target_model) is not None
+    # Normalize persisted seconds/milliseconds/ISO resets for aliases as well as pool-only rows.
+    reset_at = _parse_absolute_timestamp(entry.get("last_error_reset_at")) or _exhausted_until(credential)
+    return (
+        credential.last_status == STATUS_DEAD
+        or model_cooldown_until(credential, target_model) is not None
+        or (reset_at is not None and reset_at > time.time())
+    )
 
 
 def _codex_pool_fallback_needed(data: Optional[dict[str, Any]], target_model: Optional[str]) -> bool:
@@ -951,18 +959,13 @@ def _pool_codex_credential(target_model: Optional[str] = None) -> tuple[str, str
 
     Fallback for ``resolve_codex_runtime_credentials`` when the singleton has no creds; reads
     through ``read_credential_pool`` so a profile inherits the global-root pool (#34143)."""
-    from agent.credential_pool import _parse_absolute_timestamp
     from hermes_cli.auth import _nonempty_str, read_credential_pool
     try:
         for entry in _codex_pool_dicts(read_credential_pool("openai-codex")):
             if _codex_pool_entry_excluded(entry, target_model):
                 continue
             token = entry.get("access_token")
-            # Same normaliser as ``_codex_pool_rate_limit_status``: a millisecond epoch compared
-            # raw reads as far-future here and as elapsed there, hiding a usable entry (#103349).
-            reset_at = _parse_absolute_timestamp(entry.get("last_error_reset_at"))
-            in_cooldown = reset_at is not None and reset_at > time.time()
-            if _nonempty_str(token) and not in_cooldown:
+            if _nonempty_str(token):
                 return token.strip(), _stripped(entry.get("base_url"))
     except Exception:
         logger.debug("Codex pool fallback lookup failed", exc_info=True)

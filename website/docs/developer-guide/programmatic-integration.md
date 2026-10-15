@@ -102,6 +102,17 @@ When the gateway withdraws a question (timeout, interrupt, answered from another
 
 ### Authenticated creation provenance
 
+The creation bindings and conditional methods below belong to the standalone
+legacy TUI gateway (`RpcMethods`), not the native owner's `CanonicalRpcMethods`.
+The authenticated route is the standalone `hermes serve` / `hermes dashboard`
+`/api/ws` endpoint with its existing configured authentication provider: a
+verified user session token or single-use user ticket supplies the server-owned
+principal. Stdio alone supplies no authenticated principal and cannot satisfy
+this contract. No client-supplied owner field can substitute for authentication.
+Native owner-backed connections retain their existing authority, session handles,
+generation-bound controls and durable admission; they do not fall back to these
+conditional methods. Check the actual connection's method catalog before use.
+
 `session.create` and `session.branch_stored` may return `creation_binding`:
 `session_id`, `stored_session_id`, `authenticated_owner`, `runtime_incarnation`
 and `profile_store_scope`. The owner is the gateway-authenticated

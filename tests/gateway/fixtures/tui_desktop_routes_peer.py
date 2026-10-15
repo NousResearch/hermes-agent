@@ -34,7 +34,7 @@ async def probe(mode):
 
     home = Path(os.environ['HERMES_HOME'])
     marker = home / 'quick-exec-ran'
-    (home / 'config.yaml').write_text(_CONFIG.format(marker=marker))
+    (home / 'config.yaml').write_text(_CONFIG.format(marker=marker), encoding='utf-8')
     runner = GatewayRunner()
     authority = await initialize_session_authority(runner, profile_id=str(home), instance_id='routes')
     api = await start_gateway_api(runner)
@@ -55,7 +55,7 @@ async def probe(mode):
             sid = created['result']['session_id']
             receipt = {'mode': mode, 'authenticated_ws': True}
             await MODES[mode](authority, ws, reader, sid, marker, receipt)
-            (home / 'receipt.json').write_text(json.dumps(receipt))
+            (home / 'receipt.json').write_text(json.dumps(receipt), encoding='utf-8')
     finally:
         await reader.close()
         await stop_gateway_api(api)

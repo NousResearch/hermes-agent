@@ -139,7 +139,7 @@ def _bullet(handle: str, *parts: str) -> str:
     return _role_line(f"- `{handle}`", *parts)
 
 
-# Mirrors BOT_ROLE_MAX in apps/desktop/src/plugins/hermes-bots/labels.ts. A hand-edited profile.yaml
+# Mirrors BOT_ROLE_MAX in apps/desktop/src/plugins/hermes-bots/bot-role.ts. A hand-edited profile.yaml
 # can carry more; the cap keeps a long role from crowding the description out of the 160-char line.
 _ROLE_MAX = 40
 
@@ -155,7 +155,9 @@ def _profile_role(profile_dir: Path) -> str:
         data = _read_yaml_dict(profile_dir / "profile.yaml") or {}
         bots = _bots_meta(data) or {}
         title = str(bots.get("title") or "").strip()
-        role = " ".join(str(bots.get("role") or "").split())[:_ROLE_MAX]
+        raw_role = bots.get("role")
+        # Text only, as the Desktop's normalizeBotRole: a hand-edited list/number/bool is dropped.
+        role = " ".join(raw_role.split())[:_ROLE_MAX] if isinstance(raw_role, str) else ""
         display = str(data.get("display_name") or "").strip()
         if display.lower() in (profile_dir.name.lower(), title.lower()):
             display = ""

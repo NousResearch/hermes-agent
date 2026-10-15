@@ -179,10 +179,15 @@ def test_role_is_optional_and_untrusted_input(tmp_path):
     assert line.startswith("Messy — Deep Research xxxx")
     assert len(line) <= 160
 
-    not_text = _write_profile_yaml(
-        home, "listy", "ui_meta:\n  hermes-bots:\n    title: Listy\n    role: [a, b]\n"
-    )
-    assert bot_mode_probe._profile_role(not_text).startswith("Listy — ")
+    # A role that is not text (a hand-edited list, number or bool) is ignored, as the
+    # Desktop ignores it, rather than stringified into teammates' prompts.
+    for raw in ("[a, b]", "42", "true", "{a: 1}"):
+        not_text = _write_profile_yaml(
+            home,
+            "odd",
+            f"description: Finds things\nui_meta:\n  hermes-bots:\n    title: Odd\n    role: {raw}\n",
+        )
+        assert bot_mode_probe._profile_role(not_text) == "Odd — Finds things", raw
 
 
 def test_fingerprint_changes_when_a_role_is_edited(tmp_path):

@@ -35,6 +35,13 @@ describe('the role a row shows', () => {
     expect(botRole(null, undefined)).toBe('')
   })
 
+  it('a role cleared on this desktop stays cleared, not revived from the backend’s older copy', () => {
+    const served = { ...bot, ui_meta: { 'hermes-bots': { role: 'Old role' } } } as RosterRow
+
+    expect(botRole(served, { role: '' })).toBe('')
+    expect(botRole(served, { role: '   ' })).toBe('')
+  })
+
   it('never falls back to the description or the title: those are not roles', () => {
     expect(botRole({ ...bot, description: 'Finds sources', title: 'Scout' }, { title: 'Scout' })).toBe('')
   })

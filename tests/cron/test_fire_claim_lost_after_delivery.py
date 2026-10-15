@@ -3,7 +3,7 @@ terminal status — an ok, or a failure notice carrying its real error.
 
 `_FireOwnership.lost()` samples the claim from the store once. When that sample misses after
 the notice already reached the channel, the run must fall through to the owner-fenced terminal
-write in `_finish_completed_run` (the authoritative claim check) instead of recording an error.
+write in `scheduler_bookkeeping.py::finish_completed_run` (the authoritative claim check) instead of recording an error.
 
 These drive the real store (``jobs.json`` under a temp HERMES_HOME) so the assertion is the
 actual on-disk ``last_status`` the health watchdog reads, not a mock's call list.
@@ -63,7 +63,9 @@ def _claimed_job():
     """A real recurring job record holding a live fire claim (as a firing tick has)."""
     from cron.jobs import claim_job_for_fire, create_job, get_job
 
-    job = create_job(prompt="x", schedule="every 5m", name="105861")
+    # A real (non-local) lane: on this branch agent-job delivery rides the durable queue
+    # (``cron.delivery_queue.enqueue``), which is the seam every probe below observes.
+    job = create_job(prompt="x", schedule="every 5m", name="105861", deliver="telegram")
     assert claim_job_for_fire(job["id"]) is True
     job = get_job(job["id"])
     assert isinstance(job.get("fire_claim"), dict) and job["fire_claim"].get("by")
@@ -92,6 +94,7 @@ def _drive(monkeypatch, *, run_result, samples_before_miss):
 
     monkeypatch.setattr(sched, "heartbeat_fire_claim", hb)
     monkeypatch.setattr(sched, "run_job", fake_run_job)
+    # The run queues its notice durably; the gateway drain sends it through _deliver_result.
     monkeypatch.setattr(sched, "_deliver_result", fake_deliver)
     return sched, job, hb, delivered
 
@@ -119,6 +122,7 @@ def test_delivered_run_keeps_its_terminal_status_when_claim_sample_misses_after_
     cancel = threading.Event()
 
     assert sched.run_one_job(job, cancel_event=cancel) is True
+    assert sched.drain_delivery_queue({}, None) == 1
 
     assert len(delivered) == 1, "the notice must have left the process"
     if success:
@@ -142,16 +146,18 @@ def test_transport_cancel_during_delivery_stays_fail_closed(temp_home, monkeypat
         monkeypatch, run_result=(True, "output text", "the report", None),
         samples_before_miss=99)
     cancel = threading.Event()
-    deliver_result = sched._deliver_result
+    from cron import delivery_queue
+    enqueue = delivery_queue.enqueue
 
-    def deliver_then_cancel(job, content, **kwargs):
-        outcome = deliver_result(job, content, **kwargs)
+    def deliver_then_cancel(execution_id, job, content, **kwargs):
+        outcome = enqueue(execution_id, job, content, **kwargs)
         cancel.set()
         return outcome
 
-    monkeypatch.setattr(sched, "_deliver_result", deliver_then_cancel)
+    monkeypatch.setattr("cron.delivery_queue.enqueue", deliver_then_cancel)
 
     assert sched.run_one_job(job, cancel_event=cancel) is True
+    assert sched.drain_delivery_queue({}, None) == 1
 
     assert delivered == ["the report"], "the notice had already left the process"
     assert hb.missed == 0, "the sampled claim never missed — only the transport event fired"
@@ -237,6 +243,7 @@ def test_heartbeat_miss_mid_run_keeps_completed_run(temp_home, monkeypatch, miss
     sched, job, hb, delivered, run_cancel = _drive_heartbeat_thread(monkeypatch, misses=misses)
 
     assert sched.run_one_job(job) is True
+    assert sched.drain_delivery_queue({}, None) == 1
 
     assert hb.missed == misses
     assert run_cancel == [latched], "only a confirmed miss reaches the run's cancel event"

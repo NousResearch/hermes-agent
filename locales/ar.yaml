@@ -184,8 +184,8 @@ gateway:
     choice_normal: "normal — المعالجة القياسية"
     choice_auto: "auto — سريع في الثواني الأولى من كل دور"
     choice_cold: "cold — سريع في الدور الأول من الجلسة فقط"
-    choice_ultrafast: "ultrafast — ‏OpenAI Ultrafast ‏(GPT-6 Astra، السعر ×6)"
-    ultrafast_not_supported: "⚡ ‏Ultrafast متاح فقط لـ GPT-6 Astra (النموذج الحالي: `{model}`)."
+    choice_ultrafast: "ultrafast — ‏OpenAI Ultrafast، السعر ×6"
+    ultrafast_not_supported: "⚡ ‏Ultrafast غير متاح لـ `{model}` على هذا الحساب أو المسار."
   footer:
     status: "📎 تذييل التشغيل: **{state}**\nالحقول: `{fields}`\nالمنصّة: `{platform}`"
     usage: "الاستخدام: `/footer [on|off|status]`"
@@ -435,7 +435,6 @@ gateway:
     last_activity: "**آخر نشاط:** {timestamp}"
     model: "**النموذج:** `{model}`"
     model_provider: "**النموذج:** `{model}` ({provider})"
-    free_tier: "Nous · الخطة المجانية · nous/welcome · /login لتسجيل الدخول"
     context: "**السياق:** {used} / {total} ({pct}%)"
     context_used: "**السياق:** ~{used} رمزًا"
     tokens: "**رموز API التراكمية (تُعاد كل استدعاء):** {tokens}"
@@ -779,8 +778,6 @@ gateway:
   plan:
     ack_task: "جارٍ التخطيط: {task}"
     ack_conversation: "جارٍ التخطيط من سياق هذه المحادثة…"
-  initiate_setup:
-    ack: "جارٍ بدء الإعداد…"
   init:
     start_failed: "تعذّر بدء /init — يُرجى المحاولة مرة أخرى."
     ack_update: "جارٍ تحديث AGENTS.md من فحص المشروع…"
@@ -843,7 +840,6 @@ gateway:
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ أُعيد تشغيل البوّابة بنجاح. جلستك مستمرة."
-    free_tier_line: "الاستدلال: الطبقة المجانية من Nous (nous/welcome). سجّل الدخول للمزيد: /login"
     online: "♻️ البوّابة متصلة — Hermes عاد وجاهز."
     db_corrupt: "⚠️ رُصد تلف في قاعدة بيانات الجلسات. قد لا تُحفظ الرسائل. خيارات الاستعادة:\n1. شغّل `hermes {profile_arg}doctor --fix`\n2. أوقف البوّابة، ثم استعد بـ:\n   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n   (إذا أفاد بإمكانية الاستعادة) hermes {profile_arg}sessions recover --source {db_path} --output recovered-state.db\n   — تأخذ الاستعادة لقطة من الملف المتضرر أولًا؛ لا تشغّل `sqlite3 ... \".recover\"` على state.db الحي، فقد يزيد sqlite3 CLI المعرّض للثغرات من تلفه\n3. استعد من نسخة احتياطية في {backups_dir}/\nشغّل `hermes {profile_arg}doctor` للحصول على تشخيصات منقّحة."
     db_fts_corrupt: "⚠️ أفادت قاعدة بيانات الجلسات بخطأ تلف محصور في فهرس البحث (FTS5)؛ جداول الرسائل غير متضررة. قد لا تُحفظ الرسائل حتى إصلاحه: شغّل `hermes {profile_arg}doctor --fix` ثم أعد تشغيل البوّابة. لا تشغّل أدوات الاستعادة ولا تستعد نسخة احتياطية إلا إذا أكّد `hermes {profile_arg}doctor` وجود تلف."
@@ -1558,8 +1554,6 @@ slash:
     description: "إعادة تشغيل مطالبة على فترات متكررة في هذه الجلسة"
   plan:
     description: "كتابة خطة تنفيذ بصيغة markdown في .hermes/plans/ دون تنفيذ أي شيء"
-  initiate-setup:
-    description: "شغّل الإعداد الأول: يتعرّف عليك ويجهّز Hermes حولك"
   moa:
     description: "تشغيل مطالبة واحدة عبر الإعداد الافتراضي لـ Mixture of Agents ثم استعادة نموذجك"
   subgoal:
@@ -1972,6 +1966,7 @@ cli:
     desc_switch_anyway: "استخدام هذا النموذج لجلسة Hermes الحالية."
     choice_cancel: "إلغاء"
     desc_keep_current_model: "الاحتفاظ بالنموذج الحالي."
+    confirm_choice_prompt: "الاختيار [1/2]: "
     switch_cancelled: "أُلغي تبديل النموذج."
     selection_failed: "✗ فشل اختيار النموذج: {error}"
     switch_failed: "⚠ فشل التبديل إلى النموذج {model} ({error})؛ البقاء على {old_model}."
@@ -2661,7 +2656,7 @@ cli:
       feature_anthropic: "الوضع السريع من Anthropic"
       feature_openai: "المعالجة ذات الأولوية"
       feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) ‏Ultrafast متاح فقط لـ GPT-6 Astra (النموذج الحالي: {model})."
+      ultrafast_not_supported: "(._.) ‏Ultrafast غير متاح لـ {model} على هذا الحساب أو المسار."
       usage: "الاستخدام: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ تم ضبط {feature} على {value} {scope}"
@@ -2919,8 +2914,6 @@ cli:
     plan:
       planning: "📋 جارٍ التخطيط: {task}"
       from_conversation: "📋 جارٍ التخطيط من سياق هذه المحادثة..."
-    initiate_setup:
-      starting: "🧭 جارٍ بدء الإعداد..."
     init:
       updating: "⚡ جارٍ تحديث AGENTS.md من فحص المشروع..."
       generating: "⚡ جارٍ إنشاء AGENTS.md من فحص المشروع..."

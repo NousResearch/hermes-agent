@@ -145,7 +145,14 @@ def publish_usage(turn, agent, *, record: bool = False) -> None:
         return
     with contextlib.suppress(Exception):
         stats = usage_stats(agent)
-        turn._publish_execution("session.usage", stats)
+        # ``SessionUsagePayload`` declares both shapes: the frozen counters at the top level (the
+        # Ink TUI's ``usageFromTick``, "canonical: the owner's counters at the top level") *and* the
+        # projected ``usage`` object the desktop merges into its status-bar ``UsageStats``. Publishing
+        # only the flat dict left ``payload.usage`` undefined, so the desktop dropped every mid-turn
+        # tick and its cache-hit-rate / tokens-per-second chips sat on the "no figure" placeholder
+        # until a turn ended. The flat part stays exactly ``usage_stats``: ``SessionStats`` (the
+        # ``session.stats`` result model) forbids extra inputs, so derived names ride in ``usage``.
+        turn._publish_execution("session.usage", {**stats, "usage": tui_usage(stats)})
         if record:
             from gateway.session_results import execution_result
             captured = execution_result.get()

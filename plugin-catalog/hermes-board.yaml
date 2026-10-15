@@ -1,0 +1,27 @@
+name: hermes-board
+title: Board
+repo: https://github.com/skk2010/hermes-board-plugin
+sha: 7c8e9f340a76e90060e97a406012960a0a312d9a
+description: "A Miro-like board the agent draws with its own tools and you edit in a desktop pane, both sides working on one JSON document. board_apply builds a whole diagram in one call from ordered ops (nodes, edges, free lines, groups, notes, captions, layered auto-layout, bus trunks); board_render writes a PNG for chat or the interactive HTML editor; board_watch reports your own pane edits back to the agent. The pane docks beside the conversation with the same editor, saves your edits, and takes agent updates live. Disclosure — board_render shells out to a headless Chrome/Chromium found on PATH (nothing is downloaded) for PNG and self-test rendering, and reports a plain error when no browser is present; documents live in ~/.hermes/board/ (HERMES_BOARD_DIR / HERMES_BOARD_RENDER_DIR / HERMES_BOARD_WATCH override); serves /api/plugins/hermes-board/ on the plugin host; no network calls and no stored credentials. board_watch's wake into a messaging chat additionally needs plugins.entries.hermes-board.allow_gateway_injection: true."
+maintainer: skk2010
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+version: "1.9.2"
+docs_url: https://github.com/skk2010/hermes-board-plugin
+image: https://raw.githubusercontent.com/skk2010/hermes-board-plugin/7c8e9f340a76e90060e97a406012960a0a312d9a/assets/card.png
+screenshots:
+  - https://raw.githubusercontent.com/skk2010/hermes-board-plugin/7c8e9f340a76e90060e97a406012960a0a312d9a/assets/pane.png
+platforms: []
+capabilities:
+  provides_tools:
+    - board_list
+    - board_get
+    - board_new
+    - board_delete
+    - board_apply
+    - board_render
+    - board_watch
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

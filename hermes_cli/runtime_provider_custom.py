@@ -102,6 +102,8 @@ def _lift_extra_headers(entry: dict[str, Any], result: dict[str, Any]) -> None:
 def _lift_common_custom_fields(entry: dict[str, Any], result: dict[str, Any], *, provider_key: str, key_env: str,
                                api_mode: Optional[str]) -> None:
     """Copy the optional fields shared by ``providers:`` and legacy ``custom_providers:`` entries."""
+    if key_cmd := _clean(entry.get("key_cmd", "")):
+        result["key_cmd"] = key_cmd
     if key_env:
         result["key_env"] = key_env
     if provider_key:
@@ -157,10 +159,6 @@ def _match_new_style_provider(
         api_key = get_secret_str(key_env, "").strip() if key_env and resolve_credentials else ""
         result: dict[str, Any] = {"name": entry.get("name", ep_name), "base_url": base_url.strip(),
                                   "api_key": api_key or _clean(entry.get("api_key", "")), "model": entry.get("default_model", "")}
-        # Command that PRINTS a short-lived credential; wrapped in a per-request token provider.
-        key_cmd = _clean(entry.get("key_cmd", ""))
-        if key_cmd:
-            result["key_cmd"] = key_cmd
         # v12 migration writes ``transport``; hand-edited configs may still use ``api_mode``.
         # Accept both or migrated configs silently downgrade to chat_completions.
         _lift_common_custom_fields(

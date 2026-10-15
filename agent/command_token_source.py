@@ -5,7 +5,7 @@ copied into ``.env`` goes stale within the hour. ``key_cmd`` names a command tha
 (the ``apiKeyHelper`` / ``gcloud auth print-access-token`` idiom). Both wire clients accept a
 callable API key and invoke it per request; the token is cached until shortly before expiry.
 Output contract: ONLY the token on stdout, bare or as JSON with an ``access_token`` field
-(``expires_in`` / ISO ``expiry`` honoured). Precedence: explicit ``--api-key`` wins (one-off
+(``expires_in`` / ISO ``expiry`` / UTC epoch ``expires_on`` honoured). Precedence: explicit ``--api-key`` wins (one-off
 recovery escape hatch); otherwise ``key_cmd`` beats a static ``api_key`` / ``key_env``.
 """
 
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import subprocess
 import threading
 import time
@@ -41,6 +42,17 @@ def materialize_probe_api_key(api_key: object) -> str:
     except Exception:
         return ""
     return token.strip() if isinstance(token, str) else ""
+
+
+def _epoch_expiry_ttl(deadline: object, label: str) -> float:
+    """Azure CLI expires_on is UTC epoch seconds; expiresOn is local time."""
+    try:
+        remaining = float(deadline) - time.time()
+    except (TypeError, ValueError):
+        remaining = float("nan")
+    if not math.isfinite(remaining) or remaining <= 0:
+        raise CommandTokenError(f"key_cmd for provider {label!r} returned an invalid or expired expires_on")
+    return remaining
 
 
 def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
@@ -90,6 +102,8 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
             ttl = payload.get("expires_in")
             if isinstance(ttl, (int, float)) and ttl > 0:
                 return token, float(ttl)
+            if payload.get("expires_on") is not None:
+                return token, _epoch_expiry_ttl(payload["expires_on"], label)
             # CLI helpers often print an absolute ISO 8601 deadline instead of OAuth's relative
             # lifetime; honour it or the token 401s once past. Lazy import: hermes_cli.auth imports agent.*.
             from hermes_cli.auth import _parse_iso_timestamp

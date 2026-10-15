@@ -28,6 +28,7 @@ _CALLS = {
                        "goal_blocks_tick"}),
     "heartbeat": frozenset({"state", "set", "pause", "resume", "clear", "due_prompt", "abandon_fire"}),
 }
+_READS = frozenset({"state", "is_waiting", "goal_blocks_tick"})
 _FIELDS = frozenset({"session_id", "profile", "kind", "call", "args", "kwargs"})
 _ERRORS = (RuntimeError, ValueError, IndexError)
 
@@ -158,4 +159,9 @@ async def automation(connection, ref, params):
         with _profile_runtime_scope(home), _session_workspace(runner, live.source):
             return invoke(runner, kind, target, call, args, kwargs)
     # The judge and gates block for seconds: off the loop, with the caller's context (profile scope).
-    return await asyncio.to_thread(run)
+    result = await asyncio.to_thread(run)
+    if call not in _READS:
+        # The classic CLI drives this session's automation: other viewers (Ink, Desktop) repaint from the event.
+        from gateway.session_control_actions import publish
+        publish(authority, ref.session_id)
+    return result

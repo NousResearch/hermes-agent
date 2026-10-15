@@ -496,25 +496,32 @@ class TestConciseFormatter:
 
 
 @pytest.mark.asyncio
-async def test_agent_notify_stops_after_bounded_failed_completion_admissions(monkeypatch, tmp_path):
-    """A refused completion injection must not poll an exited process forever (#138940)."""
+async def test_agent_notify_refused_completion_backs_off_then_sends_plain_notice(monkeypatch, tmp_path):
+    """A refused completion injection must not poll an exited process forever, and must not be
+    dropped either: bounded backoff, then the plain completion notice (#138940)."""
     import tools.process_registry as pr_module
+    from gateway import run_notifications as rn
 
     exited = SimpleNamespace(
         output_buffer="done\n", exited=True, exit_code=0, command="echo done", started_at=None,
     )
-    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([exited] * 4, consumed=False))
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([exited] * 20, consumed=False))
+    sleeps = []
 
-    async def _instant_sleep(*_a, **_kw):
-        pass
-    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+    async def _record_sleep(delay, *_a, **_kw):
+        sleeps.append(delay)
+    monkeypatch.setattr(asyncio, "sleep", _record_sleep)
 
     runner = _build_runner(monkeypatch, tmp_path, "concise")
     runner._enqueue_process_completion_notification = AsyncMock(return_value=False)
 
-    await runner._run_process_watcher({**_watcher_dict(), "notify_on_complete": True})
+    await runner._run_process_watcher({**_watcher_dict(), "check_interval": 5, "notify_on_complete": True})
 
-    assert runner._enqueue_process_completion_notification.await_count == 3
+    assert runner._enqueue_process_completion_notification.await_count == rn._MAX_COMPLETION_INJECTION_ATTEMPTS
+    assert sleeps == [5, 10, 20, 40, 60, 60, 60, 60]
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.args[1].startswith("✅ Background task finished")
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,16 @@
+{
+  "description": "Find styles in Krea's public library that run on the active Krea 2 model, for image_generate's `style` parameter. Matches the query against style names; returns at most 10 matches and the total count, so narrow the query when there are more.",
+  "name": "image_style_search",
+  "parameters": {
+    "properties": {
+      "query": {
+        "description": "Word or phrase to look for in style names, e.g. 'watercolor'.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "query"
+    ],
+    "type": "object"
+  }
+}

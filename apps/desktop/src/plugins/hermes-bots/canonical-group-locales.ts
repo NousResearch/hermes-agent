@@ -199,5 +199,26 @@ export const CANONICAL_GROUP_LOCALES = {
     attachFiles: 'Adjuntar archivos',
     removeAttachment: 'Quitar adjunto',
     uploadFailed: 'Error al subir'
+  },
+  it: {
+    refreshGroups: 'Aggiorna i gruppi del gateway',
+    loadingGroup: 'Caricamento del gruppo…',
+    loadingGroups: 'Caricamento dei gruppi del gateway…',
+    emptyGroups: 'Nessun gruppo del gateway trovato.',
+    driverUnavailable:
+      'Driver dei gruppi non disponibile. Aggiorna o riconnetti il gateway proprietario.',
+    invalidLogCursor: 'Cursore del log della stanza non valido',
+    allowOnce: 'Consenti una volta',
+    deny: 'Nega',
+    discardUnknown: 'Scarta il lavoro di esito sconosciuto',
+    discardWarning: 'Effetti collaterali potrebbero essersi già verificati. Scartarli non li annulla.',
+    confirmDiscard: 'Conferma lo scarto',
+    unconfirmedSend:
+      'L’invio precedente non è confermato. Riprova il suo testo originale prima di inviare un altro messaggio.',
+    restoredPendingSend: 'È stato ripristinato un invio non confermato. Riprovalo prima di inviare un altro messaggio.',
+    groupMessage: 'Messaggio di gruppo',
+    attachFiles: 'Allega file',
+    removeAttachment: 'Rimuovi allegato',
+    uploadFailed: 'Caricamento non riuscito'
   }
 } satisfies Record<string, CanonicalGroupMessages>

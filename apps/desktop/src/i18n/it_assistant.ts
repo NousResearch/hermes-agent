@@ -864,16 +864,6 @@ export const itAssistant = {
       text: 'Apre file, terminale, revisione e il browser integrato sulla destra.'
     }
   },
-  butterbar: {
-    goTo: (index, total) => `Mostra avviso ${index} di ${total}`,
-    legal: {
-      before: 'L’uso di Hermes Agent è soggetto ai nostri ',
-      terms: 'Termini di servizio',
-      between: ' e ',
-      privacy: 'Informativa sulla privacy',
-      after: '.'
-    }
-  },
   externalOpenFailed: {
     title: 'Impossibile aprire questo link',
     message: 'Nessun browser è registrato per aprire questo indirizzo. Copia il link e aprilo manualmente.',

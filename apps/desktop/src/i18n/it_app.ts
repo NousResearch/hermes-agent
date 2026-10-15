@@ -680,10 +680,6 @@ export const itApp = {
       creditsTitle: 'Crediti'
     }
   },
-  remoteDisplayBanner: {
-    message: reason =>
-      `Rendering software attivo — rilevato uno schermo remoto (${reason}). L’accelerazione GPU è stata disattivata per evitare lo sfarfallio.`
-  },
   billingBlock: {
     titleNous: 'Senza crediti Nous',
     titleProvider: provider => `Senza crediti — ${provider}`,

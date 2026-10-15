@@ -827,12 +827,6 @@ export const itSettings = {
         }
       }
     },
-    poolLimits: {
-      warmBotBackendsAria: 'Backend di bot a caldo',
-      warmBotBackendsTitle: 'Backend di bot a caldo',
-      backendIdleTimeoutAria: 'Tempo di inattività del backend in millisecondi',
-      backendIdleTimeoutTitle: 'Tempo di inattività del backend'
-    },
     customEndpoints: {
       active: 'Attivo',
       apiKeySet: 'Chiave API configurata',
@@ -899,7 +893,8 @@ export const itSettings = {
         stableConfirmTitle: 'Passare alle release stabili?',
         stableConfirmBody:
           'Hermes passerà all’ultima release pubblicata, che può essere più vecchia del codice che usi ora. I dati scritti da codice più recente potrebbero non essere leggibili correttamente: fai prima un backup.',
-        stableConfirm: 'Passa alla stabile'
+        stableConfirm: 'Passa alla stabile',
+        allChanges: 'Vedi tutte le modifiche'
       }
     },
     config: {

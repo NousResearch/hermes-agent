@@ -388,6 +388,7 @@ export const itWorkspace = {
       autoDiscovered: 'Rilevato automaticamente',
       hiddenFromSidebar: 'Nascosto dalla barra laterale',
       undoHide: 'Annulla',
+      moveBusy: 'Ferma il turno in corso, poi sposta la chat',
       newButton: 'Nuovo progetto',
       createTitle: 'Nuovo progetto',
       createDesc: 'Assegna un nome a un workspace e aggiungi una o più cartelle.',
@@ -713,6 +714,13 @@ export const itWorkspace = {
     queueResumeTip: 'La coda è stata messa in pausa all’arresto; riprendi l’invio dei turni in coda',
     queueStuckTitle: 'Messaggio in coda non inviato',
     queueStuckBody: 'Un turno in coda non è stato inviato. È ancora in coda; riprova.',
+    queueCancelFailed: 'Impossibile rimuovere il turno in coda',
+    queueLostNote: 'Turno perso durante il riavvio',
+    queueLostDiscard: 'Scarta',
+    queueLostDiscardTip:
+      'Il gateway si è riavviato a metà turno e non può completare questo. Scartalo perché possano girare i turni in coda dietro di lui.',
+    redirect: 'Reindirizza l’esecuzione in corso',
+    restoreImageDraft: 'Ripristina bozza immagine',
     queueDroppedTitle: 'Voce in coda scartata',
     queueDroppedBody:
       'Questa voce è stata scartata in background perché la sua sessione non è stata ripristinata dopo diversi tentativi. Il resto della coda non è stato influenzato.',

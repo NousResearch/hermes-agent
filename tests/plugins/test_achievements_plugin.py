@@ -275,6 +275,26 @@ def test_background_scan_publishes_partial_snapshots(plugin_api):
     assert final["scan_meta"].get("sessions_total") == 750
 
 
+def test_rescan_over_a_finished_snapshot_never_serves_a_partial(plugin_api):
+    """A partial covers a prefix of history. Over the empty "pending" payload it is progress; over a finished
+    snapshot it rolls tiers and progress bars back (a 750-session history read as 250) until the rescan ends."""
+    _install_fake_session_db(plugin_api, _FakeSessionDB(session_count=750))
+    plugin_api._run_scan_and_update_cache(publish_partial_snapshots=True)
+    assert plugin_api._SNAPSHOT_CACHE["scan_meta"]["sessions_total"] == 750
+
+    served: List[int] = []
+    original_set_cache = plugin_api._set_cache
+
+    def recording_set_cache(snapshot, at):
+        served.append(snapshot["scan_meta"].get("sessions_total"))
+        original_set_cache(snapshot, at)
+
+    plugin_api._set_cache = recording_set_cache
+    plugin_api._run_scan_and_update_cache(publish_partial_snapshots=True)
+
+    assert served == [750]
+
+
 def test_partial_snapshots_do_not_persist_unlock_timestamps(plugin_api):
     """Intermediate snapshots must not write to state.json — an unlock
     that appears at 30% scan progress could disappear when a later session

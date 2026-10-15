@@ -2999,10 +2999,10 @@ def cached_fetch_api_models(
     live = _live()
     if live or isinstance(live, _NativePickerModelList):
         stored = _entry(live, now)
-        _store_cache_entry(cache_key, stored, cache)
+        with _cache_write_lock:
+            _store_cache_entry(cache_key, stored)
         return _catalog(stored)
-    # Live returned nothing (offline, timeout, auth hiccup): a stale same-fingerprint entry beats it
-    # (non-empty only: an empty native row is not worth resurrecting over the generic fallback).
+    # On refresh failure, preserve a stale matching catalog but not an empty native row.
     if _cache_entry_valid(entry, fp):
         return _catalog(entry)
     return _chat_catalog_rows(live)

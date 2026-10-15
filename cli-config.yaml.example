@@ -393,6 +393,19 @@ model:
 # worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
 # =============================================================================
+# Provider Model Background Refresh
+# =============================================================================
+# Optional gateway polling of configured /v1/models catalogs, even with /model closed.
+# Default off: 0 seconds or an empty list means no background provider probes.
+# To enable: interval_seconds: 60 and providers: [custom:my-proxy].
+# Provider identifiers use the Hermes picker key for providers:/custom_providers:.
+# Model discovery failures keep the previous successful cache entry.
+provider_models:
+  background_refresh:
+    interval_seconds: 0
+    providers: []
+
+# =============================================================================
 # Kanban Review Dispatch
 # =============================================================================
 # First-class review tasks are dispatched automatically by default. The worker

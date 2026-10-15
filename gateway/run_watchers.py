@@ -34,6 +34,34 @@ async def _interruptible_sleep(runner, seconds: int) -> None:
         await asyncio.sleep(1)
 
 
+def _refresh_profile_provider_models(home, *, standalone_launch: bool = False):
+    """Resolve each profile's settings and credentials off the gateway event loop."""
+    from gateway.run import _profile_runtime_scope
+    from gateway.run_turn import GatewayTurnMixin
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_cli.config import load_config_readonly
+    from hermes_cli.provider_model_refresh import (
+        background_refresh_interval, refresh_configured_provider_models,
+    )
+
+    # The default-off path must not hydrate external secrets just to check a timer.
+    token = set_hermes_home_override(str(home))
+    try:
+        enabled = background_refresh_interval(load_config_readonly())
+    finally:
+        reset_hermes_home_override(token)
+    if not enabled:
+        return 0, 0, 0
+
+    # Hosted standalone gateways preserve their frozen launch environment.
+    scope = GatewayTurnMixin._standalone_launch_scope() if standalone_launch else _profile_runtime_scope(home)
+    with scope:
+        config = load_config_readonly()
+        interval = background_refresh_interval(config)
+        attempted, failed = refresh_configured_provider_models(config) if interval else (0, 0)
+        return interval, attempted, failed
+
+
 class GatewaySessionWatchersMixin:
     """Session housekeeping / stall / catalog-refresh watcher loops for GatewayRunner."""
 
@@ -228,6 +256,42 @@ class GatewaySessionWatchersMixin:
             deadline = time.monotonic() + interval
             while self._running and time.monotonic() < deadline:
                 await asyncio.sleep(min(30.0, max(0.0, deadline - time.monotonic())))
+
+    async def _provider_models_refresh_watcher(self) -> None:
+        """Warm opted-in endpoint catalogs without model-picker activity."""
+        from hermes_constants import get_hermes_home
+
+        await asyncio.sleep(30)  # match the existing catalog watcher's startup grace
+        due: dict[str, float] = {}
+        unhealthy: set[str] = set()
+        while self._running:
+            launch = getattr(self, "_primary_profile_name", "default")
+            homes = getattr(self, "_served_profile_homes", None) or {launch: get_hermes_home()}
+            active = {str(home): (name, home) for name, home in homes.items()}
+            for home_key, (name, home) in active.items():
+                if not self._running or time.monotonic() < due.get(home_key, 0):
+                    continue
+                try:
+                    standalone_launch = (
+                        name == launch and not getattr(getattr(self, "config", None), "multiplex_profiles", False)
+                    )
+                    interval, attempted, failed = await asyncio.to_thread(
+                        _refresh_profile_provider_models, home, standalone_launch=standalone_launch)
+                    if failed and home_key not in unhealthy:
+                        logger.warning(
+                            "Provider model refresh: %d/%d endpoints unavailable for profile %s",
+                            failed, attempted, name)
+                        unhealthy.add(home_key)
+                    elif not failed and home_key in unhealthy:
+                        logger.info("Provider model refresh recovered for profile %s", name)
+                        unhealthy.discard(home_key)
+                except Exception:
+                    interval = 0
+                    logger.debug("Provider model refresh watcher failed", exc_info=True)
+                due[home_key] = time.monotonic() + (interval or 60)
+            due = {home: when for home, when in due.items() if home in active}
+            unhealthy.intersection_update(active)
+            await _interruptible_sleep(self, 30)
 
     async def _session_stall_watcher(self, interval: float = 30.0):
         """Pending-inbound + stale-activity stall watchdog. Progress comes only from

@@ -223,6 +223,7 @@ def probe_ollama_local_models(
     base_url: Optional[str] = None,
     timeout: float = 2.0,
     headers: Optional[dict[str, str]] = None,
+    *, force_refresh: bool = False,
 ) -> Optional[list[str]]:
     """Probe local Ollama-compatible models from native ``/api/tags`` (Ollama's authoritative local
     catalog; ``/v1/models`` is not required for local servers). ``None`` when the endpoint cannot be
@@ -234,11 +235,11 @@ def probe_ollama_local_models(
     cache_key = _ollama_probe_cache_key(root, headers)
     failure_key = f"{cache_key}|timeout:{float(timeout):.3f}"
     cached = _OLLAMA_LOCAL_MODELS_CACHE.get(cache_key)
-    if cached is not None and time.monotonic() - cached[1] < _OLLAMA_LOCAL_MODELS_CACHE_TTL:
+    if not force_refresh and cached is not None and time.monotonic() - cached[1] < _OLLAMA_LOCAL_MODELS_CACHE_TTL:
         return list(cached[0])
     failed_at = _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.get(failure_key)
     if failed_at is not None:
-        if time.monotonic() - failed_at < _OLLAMA_LOCAL_PROBE_FAILURE_TTL:
+        if not force_refresh and time.monotonic() - failed_at < _OLLAMA_LOCAL_PROBE_FAILURE_TTL:
             return None
         _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.pop(failure_key, None)
     try:
@@ -263,9 +264,10 @@ def fetch_ollama_local_models(
     base_url: Optional[str] = None,
     timeout: float = 2.0,
     headers: Optional[dict[str, str]] = None,
+    *, force_refresh: bool = False,
 ) -> Optional[list[str]]:
     """Fetch local Ollama-compatible models, preserving probe failure as ``None``."""
-    return probe_ollama_local_models(base_url, timeout, headers=headers)
+    return probe_ollama_local_models(base_url, timeout, headers=headers, force_refresh=force_refresh)
 
 
 def _same_ollama_native_root(left: str, right: str) -> bool:

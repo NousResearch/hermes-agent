@@ -83,6 +83,36 @@ model_catalog:
 
 Set `enabled: false` to disable remote fetch entirely and always use the in-repo snapshot (this also disables the gateway's background refresh). `ttl_minutes` sets both the cache lifetime and the gateway refresh cadence; the legacy `ttl_hours` key is still honoured if you set it explicitly.
 
+### Automatic refresh of configured provider models
+
+The gateway can periodically refresh selected user-configured endpoint model lists
+from `providers:` and `custom_providers:`. This feature is disabled by default.
+
+```yaml
+provider_models:
+  background_refresh:
+    interval_seconds: 60  # 0 disables; enabled range: 60-86400 seconds
+    providers:
+      - custom:local-cpa
+      - custom:local-new-api
+```
+
+Provider identifiers are the `custom:<id>` identities used by the picker:
+the mapping key for `providers:` entries, or the normalized (lowercase,
+spaces-to-hyphens) name of a legacy `custom_providers:` entry. Only listed
+and configured endpoints are probed. Entries with `discover_models: false`,
+disabled `providers:` entries, or a keyless explicitly pinned model list
+are never probed automatically.
+
+The gateway refreshes eligible models even while the picker is closed.
+It resolves each served profile's own secrets, uses the normal fingerprint-
+scoped `provider_models_cache.json`, and retains the last good list on errors.
+Probes have a per-endpoint 5-second timeout and run outside the event loop.
+The gateway must be running for scheduled refreshes to occur.
+
+These settings do not change the curated-manifest `model_catalog.ttl_minutes`
+or the default one-hour provider-cache TTL and stale-while-revalidate behavior.
+
 ### Per-provider override URLs
 
 Third parties can self-host their own curation list using the same schema. Point a provider at a custom URL:

@@ -295,14 +295,21 @@ def _recover_orphan_backup(dest: Path) -> None:
 def _defer_to_external(st: _SyncState, skill_name: str, dest: Path, bundled_hash: str) -> None:
     """An external_dirs source provides this skill; a local copy would be a name collision the
     loader refuses. Defer for ALL manifest states; remove a stale local shadow from an earlier
-    sync only when byte-identical (a user's own skill differs)."""
+    sync only when it is an unmodified install — byte-identical to the current bundle or still
+    matching its recorded origin hash (an older bundle generation counts too: the external dir
+    now owns the name). A user's own or edited copy differs from both and stays, with a warning."""
     st.shadowed_by_external.append(skill_name)
     st.skipped += 1
     st.say(f"  ⇢ {skill_name} (deferred to external_dirs, not written to local tree)")
-    if dest.exists() and _dir_hash(dest) == bundled_hash:
+    if not dest.exists():
+        return
+    local_hash = _dir_hash(dest)
+    if local_hash == bundled_hash or _matches_origin_hash(dest, st.manifest.get(skill_name, ""), local_hash):
         _rmtree_writable(dest)
         st.say(f"  ✓ removed stale shadow of {skill_name}")
         st.manifest.pop(skill_name, None)
+    else:
+        st.say(f"  ⚠ {skill_name}: kept your local copy — it still shadows the external_dirs version")
 
 
 def _install_new_skill(st: _SyncState, skill_name: str, skill_src: Path, dest: Path, bundled_hash: str) -> None:

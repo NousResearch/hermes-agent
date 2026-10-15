@@ -1,0 +1,21 @@
+name: devkit
+repo: https://github.com/Zek-Takai/hermes-devkit
+sha: 7f44b81bec5356e477f7fb799b1f679eaadff6ec
+subdir: plugin
+title: Scratchpad (devkit)
+version: "0.2.0"
+description: "One managed home for agent drafts: a per-session scratchpad of named buffers the agent edits in place instead of writing a new temp file per revision. Buffers live under plugin-data/devkit/, open in the Desktop code viewer, are promoted to real files only through write_file, and are removed when their chat is deleted. A Scratchpad tab beside Files lists every session's buffers with delete and clear actions. Disclosure — adds a short placement rule (about 120 tokens) to each turn's user message; reads state.db read-only once an hour from a background thread to find deleted chats, and also removes folders idle longer than idle_days (default 90) using its own stamps; deletes only its own folders under plugin-data/devkit/; no network calls, credentials or third-party services."
+maintainer: Zek-Takai
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+image: https://raw.githubusercontent.com/Zek-Takai/hermes-devkit/7f44b81bec5356e477f7fb799b1f679eaadff6ec/docs/scratchpad-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Zek-Takai/hermes-devkit/7f44b81bec5356e477f7fb799b1f679eaadff6ec/docs/scratchpad-desktop.png
+known_issues:
+  - "scratchpad action=open needs the Desktop window bridge on the session gateway (NousResearch/hermes-agent#138917); on v0.22.1 open reports 'The preview pane is only available in the Hermes desktop app'. Every other action works."
+capabilities:
+  provides_tools: [scratchpad]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: []

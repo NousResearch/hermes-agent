@@ -4,6 +4,29 @@ import { en } from "./en";
 import { countLabel } from "./count-label";
 import { ru } from "./ru";
 
+function leaves(value: unknown, prefix = ""): Map<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return new Map([[prefix, value]]);
+  return new Map(
+    Object.entries(value).flatMap(([key, child]) =>
+      [...leaves(child, prefix ? `${prefix}.${key}` : key)],
+    ),
+  );
+}
+
+it("keeps the Russian dashboard catalog aligned with English keys and placeholders", () => {
+  const source = leaves(en);
+  const translated = leaves(ru);
+  expect([...translated.keys()].sort()).toEqual([...source.keys()].sort());
+  const slots = (value: string) => [...value.matchAll(/\{[A-Za-z_]\w*\}/g)].map(match => match[0]).sort();
+  for (const [path, value] of source) {
+    if (typeof value === "string") {
+      // {s} is an English suffix, not data: Russian uses an invariable count label.
+      const expected = slots(value).filter(slot => slot !== "{s}");
+      expect(slots(translated.get(path) as string), path).toEqual(path === "config.fields" ? ["{count}"] : expected);
+    }
+  }
+});
+
 it("keeps Russian session deletion confirmations grammatical at plural boundaries", () => {
   const templates = [
     ru.sessions.deleteEmptyConfirmMessage,

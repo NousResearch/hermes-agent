@@ -12,34 +12,65 @@ const GATEWAY_ENSURE_CLIENT_GRACE_MS = 15_000
 
 /** Run one bounded `hermes ... gateway <verb>` client (`ensure` by default; `restart` for a stale owner). */
 export function runGatewayEnsure(
-  backend, cwd: string, home: string, parentEnv: NodeJS.ProcessEnv = process.env,
-  { timeoutMs = GATEWAY_ENSURE_PROTOCOL_DEADLINE_MS + GATEWAY_ENSURE_CLIENT_GRACE_MS, label = 'hermes gateway ensure' }: { timeoutMs?: number; label?: string } = {}
+  backend,
+  cwd: string,
+  home: string,
+  parentEnv: NodeJS.ProcessEnv = process.env,
+  {
+    timeoutMs = GATEWAY_ENSURE_PROTOCOL_DEADLINE_MS + GATEWAY_ENSURE_CLIENT_GRACE_MS,
+    label = 'hermes gateway ensure'
+  }: { timeoutMs?: number; label?: string } = {}
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     // shell: true hands cmd.exe one command line it cuts at the first unquoted space,
     // so an install under `C:\Users\John Doe\...` must arrive quoted (#74064).
-    const child = spawn(windowsShellCommand(backend.command, Boolean(backend.shell)), backend.args, hiddenWindowsChildOptions({ cwd, env: { ...parentEnv, HERMES_HOME: home, ...backend.env }, shell: backend.shell, stdio: ['ignore', 'pipe', 'pipe'] }))
+    const child = spawn(
+      windowsShellCommand(backend.command, Boolean(backend.shell)),
+      backend.args,
+      hiddenWindowsChildOptions({
+        cwd,
+        env: { ...parentEnv, HERMES_HOME: home, ...backend.env },
+        shell: backend.shell,
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+    )
     let stdout = ''
     let stderr = ''
     let expired: Error | undefined
     let forceTimer: ReturnType<typeof setTimeout> | undefined
 
     const expire = (message: string) => {
-      if (expired) { return }
+      if (expired) {
+        return
+      }
       expired = new Error(message)
       child.kill()
-      forceTimer = setTimeout(() => { child.kill('SIGKILL'); reject(expired) }, 1000)
+      forceTimer = setTimeout(() => {
+        child.kill('SIGKILL')
+        reject(expired)
+      }, 1000)
     }
 
     // Only the bounded CLI client is ours. Never retain/kill its detached owner.
     const timer = setTimeout(() => expire(`${label} timed out`), timeoutMs)
-    child.stdout.on('data', data => { stdout += data.toString();
+    child.stdout.on('data', data => {
+      stdout += data.toString()
 
- if (stdout.length > 65536) { stdout = stdout.slice(0, 65536); expire(`${label} output exceeded limit`) } })
+      if (stdout.length > 65536) {
+        stdout = stdout.slice(0, 65536)
+        expire(`${label} output exceeded limit`)
+      }
+    })
     // Diagnostics only (never protocol): an older `hermes` without the subcommand, a missing
     // profile or an import crash explain themselves here while stdout stays empty.
-    child.stderr.on('data', data => { stderr = (stderr + data.toString()).slice(-4096) })
-    child.on('error', () => { clearTimeout(timer); clearTimeout(forceTimer); reject(new Error(`Could not run ${label}`)) })
+    child.stderr.on('data', data => {
+      stderr = (stderr + data.toString()).slice(-4096)
+    })
+    child.on('error', () => {
+      clearTimeout(timer)
+      clearTimeout(forceTimer)
+      reject(new Error(`Could not run ${label}`))
+    })
     // A client that exits on SIGTERM still resolves (callers such as restartLocalGatewayOwner log a
     // non-zero exit and re-ensure); only one that outlives the force-kill deadline rejects. An
     // expired run never reads as success, and its last diagnostic line names the deadline.
@@ -47,8 +78,11 @@ export function runGatewayEnsure(
       clearTimeout(timer)
       clearTimeout(forceTimer)
 
-      if (expired) { resolve({ code: code || 7, stdout, stderr: `${stderr}\n${expired.message}`.trim() }) }
-      else { resolve({ code: code ?? 7, stdout, stderr }) }
+      if (expired) {
+        resolve({ code: code || 7, stdout, stderr: `${stderr}\n${expired.message}`.trim() })
+      } else {
+        resolve({ code: code ?? 7, stdout, stderr })
+      }
     })
   })
 }
@@ -72,7 +106,10 @@ export interface GatewayEndpoint {
 }
 
 /** Restarts a ready owner whose code differs from this client's; true when a restart was requested. */
-export type StaleGatewayRestart = (endpoint: GatewayEndpoint, stale: { gateway: string; client: string }) => Promise<boolean>
+export type StaleGatewayRestart = (
+  endpoint: GatewayEndpoint,
+  stale: { gateway: string; client: string }
+) => Promise<boolean>
 
 /** The profile whose `hermes --profile P gateway restart` replaces the process behind `endpoint`:
  *  the multiplexer root (`default`) for a served secondary, else the endpoint's own profile home. */
@@ -104,7 +141,9 @@ export function createStaleGatewayRestarter(
     }
 
     if (pending) {
-      log(`[gateway] owner still runs ${stale.gateway} (this Hermes is ${stale.client}) after a restart; attaching as-is`)
+      log(
+        `[gateway] owner still runs ${stale.gateway} (this Hermes is ${stale.client}) after a restart; attaching as-is`
+      )
 
       return false
     }
@@ -130,16 +169,30 @@ export function createStaleGatewayRestarter(
  * on PATH that has no `ensure` subcommand, a profile that does not exist, an interpreter
  * crash. A bare JSON.parse there surfaced as "Unexpected end of JSON input" with the real
  * reason discarded on stderr. */
-export function parseGatewayEnsureOutput(result: { code: number; stdout: string; stderr?: string }): Record<string, any> {
+export function parseGatewayEnsureOutput(result: {
+  code: number
+  stdout: string
+  stderr?: string
+}): Record<string, any> {
   try {
     const payload = JSON.parse(result.stdout)
 
-    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {return payload}
-  } catch { /* diagnosed below */ }
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+      return payload
+    }
+  } catch {
+    /* diagnosed below */
+  }
 
-  const reason = String(result.stderr ?? '').trim().split(/\r?\n/).filter(Boolean).pop()
+  const reason = String(result.stderr ?? '')
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .pop()
 
-  throw new Error(`hermes gateway ensure produced no result (exit ${result.code})${reason ? `: ${reason}` : ''}. Update Hermes or check the profile, then retry.`)
+  throw new Error(
+    `hermes gateway ensure produced no result (exit ${result.code})${reason ? `: ${reason}` : ''}. Update Hermes or check the profile, then retry.`
+  )
 }
 
 /** `{ gateway, client }` commits when a ready owner provably runs other code than the ensure
@@ -149,7 +202,9 @@ export function staleGatewayCode(payload: Record<string, any>): { gateway: strin
   const gateway = payload?.endpoint?.code_sha
   const client = payload?.client_code_sha
 
-  if (typeof gateway !== 'string' || !gateway || typeof client !== 'string' || !client) {return null}
+  if (typeof gateway !== 'string' || !gateway || typeof client !== 'string' || !client) {
+    return null
+  }
 
   return gateway.toLowerCase() === client.toLowerCase() ? null : { gateway, client }
 }
@@ -158,10 +213,20 @@ export function staleGatewayCode(payload: Record<string, any>): { gateway: strin
 function assertLocalGatewayEndpoint(endpoint: GatewayEndpoint): void {
   const origin = new URL(endpoint.api_origin)
 
-  if (!['http:', 'https:'].includes(origin.protocol) || !['127.0.0.1', '[::1]'].includes(origin.hostname)
-      || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash
-      || !origin.port || endpoint.runtime_protocol !== 1 || !endpoint.instance_id || !endpoint.profile_id
-      || !endpoint.capabilities.includes('session-authority-v1')) {
+  if (
+    !['http:', 'https:'].includes(origin.protocol) ||
+    !['127.0.0.1', '[::1]'].includes(origin.hostname) ||
+    origin.username ||
+    origin.password ||
+    origin.pathname !== '/' ||
+    origin.search ||
+    origin.hash ||
+    !origin.port ||
+    endpoint.runtime_protocol !== 1 ||
+    !endpoint.instance_id ||
+    !endpoint.profile_id ||
+    !endpoint.capabilities.includes('session-authority-v1')
+  ) {
     throw new Error('Invalid local gateway endpoint')
   }
 }
@@ -178,7 +243,7 @@ export async function ensureLocalGateway(
 
   // Attaching would pin a stale owner (503 "Restart required" forever): replace it once, then
   // take whatever answers the re-ensure.
-  if (stale && await restartStale!(payload.endpoint, stale)) {
+  if (stale && (await restartStale!(payload.endpoint, stale))) {
     result = await run()
     payload = parseGatewayEnsureOutput(result)
   }
@@ -186,15 +251,26 @@ export async function ensureLocalGateway(
   if (result.code !== 0 || payload.state !== 'ready') {
     // A refused replacement (another install's or a newer Hermes's gateway) names its remedy in
     // `detail`; a start that died carries its own output there. Either beats a pointer elsewhere.
-    const detail = typeof payload.detail === 'string' && payload.detail.trim() ? ` ${payload.detail.trim().split(/\r?\n/)[0]}.` : ''
+    const detail =
+      typeof payload.detail === 'string' && payload.detail.trim() ? ` ${payload.detail.trim().split(/\r?\n/)[0]}.` : ''
 
-    throw new Error(`Gateway ${payload.state || 'inaccessible'} (${payload.reason_code || 'ensure_failed'}).${detail} Use hermes gateway status for recovery.`)
+    throw new Error(
+      `Gateway ${payload.state || 'inaccessible'} (${payload.reason_code || 'ensure_failed'}).${detail} Use hermes gateway status for recovery.`
+    )
   }
 
   const endpoint: GatewayEndpoint = payload.endpoint
   assertLocalGatewayEndpoint(endpoint)
 
-  return { baseUrl: endpoint.api_origin, wsUrl: `${endpoint.api_origin.replace(/^http/, 'ws')}/api/ws?native_dial=unminted`, mode: 'local', source: 'local', authMode: 'native', token: '', gatewayEndpoint: endpoint }
+  return {
+    baseUrl: endpoint.api_origin,
+    wsUrl: `${endpoint.api_origin.replace(/^http/, 'ws')}/api/ws?native_dial=unminted`,
+    mode: 'local',
+    source: 'local',
+    authMode: 'native',
+    token: '',
+    gatewayEndpoint: endpoint
+  }
 }
 
 // The cached connection descriptor pins the gateway instance that answered the
@@ -205,7 +281,11 @@ export async function ensureLocalGateway(
 // a second failure is a real error and surfaces to the caller. A pointer mid-rewrite
 // or left by an earlier owner, and a profile home moved since caching, may recover.
 // Unsafe path permissions or types require repair, not another ensure of the same home.
-const STALE_CONTROL_ERRORS = new Set(['Invalid gateway ticket response', 'Invalid gateway control pointer', 'Noncanonical gateway profile'])
+const STALE_CONTROL_ERRORS = new Set([
+  'Invalid gateway ticket response',
+  'Invalid gateway control pointer',
+  'Noncanonical gateway profile'
+])
 
 export function isStaleLocalGatewayError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '')
@@ -223,7 +303,9 @@ export async function redialLocalGateway<TEndpoint, TResult>(deps: {
   try {
     return await deps.use(first)
   } catch (error) {
-    if (!isStaleLocalGatewayError(error)) {throw error}
+    if (!isStaleLocalGatewayError(error)) {
+      throw error
+    }
     await deps.forget()
 
     return deps.use(await deps.ensure())
@@ -247,9 +329,15 @@ export function createLocalGatewayDials() {
 
   return {
     prepare(origin: string, ticket: string, webContentsId: number) {
-      for (const [key, value] of pending) {if (value.expires <= Date.now()) {pending.delete(key)}}
+      for (const [key, value] of pending) {
+        if (value.expires <= Date.now()) {
+          pending.delete(key)
+        }
+      }
 
-      if (pending.size >= 100) {throw new Error('Too many pending gateway dials')}
+      if (pending.size >= 100) {
+        throw new Error('Too many pending gateway dials')
+      }
       // Keyed by the one-use nonce, not the full URL: a loopback proxy the app dials
       // through (tests, tunnels) rewrites host:port but carries the query through.
       const nonce = crypto.randomUUID()
@@ -258,17 +346,30 @@ export function createLocalGatewayDials() {
 
       return `${url}&ticket=${encodeURIComponent(ticket)}`
     },
-    headers(details: { url: string; webContentsId?: number; resourceType: string; requestHeaders?: Record<string, string> }) {
+    headers(details: {
+      url: string
+      webContentsId?: number
+      resourceType: string
+      requestHeaders?: Record<string, string>
+    }) {
       const nonce = dialNonce(details.url)
       const grant = nonce ? pending.get(nonce) : undefined
 
-      if (!nonce || !grant || grant.webContentsId !== details.webContentsId || details.resourceType !== 'webSocket') {return null}
+      if (!nonce || !grant || grant.webContentsId !== details.webContentsId || details.resourceType !== 'webSocket') {
+        return null
+      }
       pending.delete(nonce)
 
-      if (grant.expires <= Date.now()) {return null}
+      if (grant.expires <= Date.now()) {
+        return null
+      }
       const headers = { ...details.requestHeaders }
 
-      for (const key of Object.keys(headers)) {if (key.toLowerCase() === 'origin') {delete headers[key]}}
+      for (const key of Object.keys(headers)) {
+        if (key.toLowerCase() === 'origin') {
+          delete headers[key]
+        }
+      }
 
       return headers
     }
@@ -283,30 +384,51 @@ export function createLocalGatewayDials() {
 // directory stay owner-only.
 async function privateNode(file: string, kind: 'directory' | 'socket' | 'file' | 'home'): Promise<boolean> {
   const node = await fs.lstat(file)
-  const valid = { directory: node.isDirectory(), home: node.isDirectory(), socket: node.isSocket(), file: node.isFile() }[kind]
+  const valid = {
+    directory: node.isDirectory(),
+    home: node.isDirectory(),
+    socket: node.isSocket(),
+    file: node.isFile()
+  }[kind]
   const uid = process.getuid?.()
   const quoted = shellQuote(file)
 
   // Not stale (a re-ensure of the same home would hit the same refusal): name the repair.
   if (!valid) {
-    const found = node.isSymbolicLink() ? 'a symlink' : node.isDirectory() ? 'a directory' : node.isFile() ? 'a regular file' : node.isSocket() ? 'a socket' : 'another file type'
+    const found = node.isSymbolicLink()
+      ? 'a symlink'
+      : node.isDirectory()
+        ? 'a directory'
+        : node.isFile()
+          ? 'a regular file'
+          : node.isSocket()
+            ? 'a socket'
+            : 'another file type'
 
     // The socket, pointer and fallback directory are the gateway's to recreate; a home is not.
-    throw new Error(kind === 'home'
-      ? `Unsafe gateway control path: profile home ${quoted} is ${found}, not a directory: move it aside and recreate the profile`
-      : `Unsafe gateway control path: ${quoted} should be a ${kind} but is ${found}: remove it, then run hermes gateway restart`)
+    throw new Error(
+      kind === 'home'
+        ? `Unsafe gateway control path: profile home ${quoted} is ${found}, not a directory: move it aside and recreate the profile`
+        : `Unsafe gateway control path: ${quoted} should be a ${kind} but is ${found}: remove it, then run hermes gateway restart`
+    )
   }
 
   if (node.uid !== uid) {
-    throw new Error(`Unsafe gateway control path: ${quoted} is owned by uid ${node.uid}, not this user (uid ${uid}): run sudo chown ${uid} ${quoted}`)
+    throw new Error(
+      `Unsafe gateway control path: ${quoted} is owned by uid ${node.uid}, not this user (uid ${uid}): run sudo chown ${uid} ${quoted}`
+    )
   }
 
   if (kind === 'home' && node.mode & 0o002) {
-    throw new Error(`Unsafe gateway control path: profile home ${quoted} is writable by other users (mode ${(node.mode & 0o777).toString(8)}): run chmod o-w ${quoted}`)
+    throw new Error(
+      `Unsafe gateway control path: profile home ${quoted} is writable by other users (mode ${(node.mode & 0o777).toString(8)}): run chmod o-w ${quoted}`
+    )
   }
 
   if (kind !== 'home' && node.mode & 0o077) {
-    throw new Error(`Unsafe gateway control path: ${quoted} is accessible to other users (mode ${(node.mode & 0o777).toString(8)}): run chmod go-rwx ${quoted}`)
+    throw new Error(
+      `Unsafe gateway control path: ${quoted} is accessible to other users (mode ${(node.mode & 0o777).toString(8)}): run chmod go-rwx ${quoted}`
+    )
   }
 
   return kind === 'home' && Boolean(node.mode & 0o020)
@@ -319,25 +441,40 @@ function shellQuote(file: string): string {
 /** The batched sidebar names its owner in `recents_profile` (the gateway checks that selector);
  *  every other profile-scoped route uses `profile`. */
 function scopedProfileOf(url: URL): null | string {
-  return url.searchParams.get(url.pathname.replace(/\/+$/, '') === '/api/profiles/sessions/sidebar' ? 'recents_profile' : 'profile')
+  return url.searchParams.get(
+    url.pathname.replace(/\/+$/, '') === '/api/profiles/sessions/sidebar' ? 'recents_profile' : 'profile'
+  )
 }
 
 /** The endpoint a `?profile=<name>` request is scoped to on a shared host descriptor: the same
  *  daemon, ticket minted for the sibling profile's home (`profiles/<name>` under the launch root).
  *  The gateway refuses a ticket whose profile it does not serve, so a bad name fails closed. */
-export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: string, _launchHome: string): GatewayEndpoint {
+export function routedGatewayEndpoint(
+  endpoint: GatewayEndpoint,
+  urlOrProfile: string,
+  _launchHome: string
+): GatewayEndpoint {
   const profile = (/^[a-z]+:\/\//.test(urlOrProfile) ? scopedProfileOf(new URL(urlOrProfile)) : urlOrProfile)?.trim()
 
-  if (!profile || profile === 'current') {return endpoint}
+  if (!profile || profile === 'current') {
+    return endpoint
+  }
   const own = path.basename(endpoint.profile_id)
   const ownName = path.basename(path.dirname(endpoint.profile_id)) === 'profiles' ? own : 'default'
 
-  if (profile === ownName) {return endpoint}
+  if (profile === ownName) {
+    return endpoint
+  }
 
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(profile)) {throw new Error('Invalid profile route')}
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(profile)) {
+    throw new Error('Invalid profile route')
+  }
   // The root home is the endpoint's own profile_id (Python resolved it); the raw launch HERMES_HOME
   // may be a symlink, and a ticket for an unresolved sibling home fails 'Noncanonical' (B2-17).
-  const root = path.basename(path.dirname(endpoint.profile_id)) === 'profiles' ? path.dirname(path.dirname(endpoint.profile_id)) : endpoint.profile_id
+  const root =
+    path.basename(path.dirname(endpoint.profile_id)) === 'profiles'
+      ? path.dirname(path.dirname(endpoint.profile_id))
+      : endpoint.profile_id
   const home = profile === 'default' ? root : path.join(root, 'profiles', profile)
 
   return { ...endpoint, profile_id: home, control_home: endpoint.control_home || endpoint.profile_id }
@@ -347,38 +484,69 @@ export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: s
  *  JSON body's `profile`. The gateway checks both against the grant, and a session write such as
  *  `PATCH /api/sessions/<id>` names its owner in the body alone. */
 export function nativeGrantRoute(url: string, body?: unknown): string {
-  if (scopedProfileOf(new URL(url))?.trim()) {return url}
-  const profile = body && typeof body === 'object' && !Array.isArray(body) ? (body as { profile?: unknown }).profile : undefined
+  if (scopedProfileOf(new URL(url))?.trim()) {
+    return url
+  }
+  const profile =
+    body && typeof body === 'object' && !Array.isArray(body) ? (body as { profile?: unknown }).profile : undefined
 
   return typeof profile === 'string' && profile.trim() ? profile : url
 }
 
-export async function nativeGatewayHttpHeaders(descriptor: { gatewayEndpoint: GatewayEndpoint; baseUrl: string }, url: string, launchHome = descriptor.gatewayEndpoint.profile_id, method = 'GET', body?: unknown) {
-  if (new URL(url).origin !== descriptor.gatewayEndpoint.api_origin || descriptor.baseUrl !== descriptor.gatewayEndpoint.api_origin) {
+export async function nativeGatewayHttpHeaders(
+  descriptor: { gatewayEndpoint: GatewayEndpoint; baseUrl: string },
+  url: string,
+  launchHome = descriptor.gatewayEndpoint.profile_id,
+  method = 'GET',
+  body?: unknown
+) {
+  if (
+    new URL(url).origin !== descriptor.gatewayEndpoint.api_origin ||
+    descriptor.baseUrl !== descriptor.gatewayEndpoint.api_origin
+  ) {
     throw new Error('Native gateway HTTP origin mismatch')
   }
 
-  const purpose = method.toUpperCase() === 'POST' && new URL(url).pathname.replace(/\/$/, '') === '/api/profiles'
-    ? 'native-profile-create' : 'native-http'
+  const purpose =
+    method.toUpperCase() === 'POST' && new URL(url).pathname.replace(/\/$/, '') === '/api/profiles'
+      ? 'native-profile-create'
+      : 'native-http'
 
-  return { 'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(routedGatewayEndpoint(descriptor.gatewayEndpoint, nativeGrantRoute(url, body), launchHome), purpose) }
+  return {
+    'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(
+      routedGatewayEndpoint(descriptor.gatewayEndpoint, nativeGrantRoute(url, body), launchHome),
+      purpose
+    )
+  }
 }
 
 // The installed runtime's own ticket client: every Windows mint (SID-validated pipe), and a POSIX
 // home whose group-write only Python can prove private.
-let pythonTicketClient: ((endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http' | 'native-profile-create') => Promise<string>) | undefined
+let pythonTicketClient:
+  | ((endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http' | 'native-profile-create') => Promise<string>)
+  | undefined
 
 export function configurePythonGatewayTicketClient(client: NonNullable<typeof pythonTicketClient>) {
   pythonTicketClient = client
 }
 
-async function mintGroupWritableHome(endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http' | 'native-profile-create', homes: string[]) {
-  if (!pythonTicketClient) {throw new Error(`Unsafe gateway control path: profile home is group-writable and this Desktop cannot verify the group is private: run chmod g-w ${homes.map(shellQuote).join(' ')}`)}
+async function mintGroupWritableHome(
+  endpoint: GatewayEndpoint,
+  purpose: 'interactive' | 'native-http' | 'native-profile-create',
+  homes: string[]
+) {
+  if (!pythonTicketClient) {
+    throw new Error(
+      `Unsafe gateway control path: profile home is group-writable and this Desktop cannot verify the group is private: run chmod g-w ${homes.map(shellQuote).join(' ')}`
+    )
+  }
 
   try {
     return await pythonTicketClient(endpoint, purpose)
   } catch (error) {
-    if ((error as { reason?: string })?.reason !== 'unsafe_control_permissions') {throw error}
+    if ((error as { reason?: string })?.reason !== 'unsafe_control_permissions') {
+      throw error
+    }
     const quoted = homes.map(shellQuote).join(' ')
 
     throw new Error(`Profile home is writable by a group other accounts share: run chmod g-w ${quoted}`)
@@ -394,14 +562,24 @@ function isMissingNodeError(error: unknown): boolean {
 async function resolveControlSocket(home: string): Promise<string> {
   const socketPath = path.join(home, 'gateway.sock')
 
-  try { await privateNode(socketPath, 'socket') } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {throw error}
+  try {
+    await privateNode(socketPath, 'socket')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error
+    }
     const pointer = path.join(home, 'gateway.sock.path')
     await privateNode(pointer, 'file')
     const target = (await fs.readFile(pointer, 'utf8')).trim()
     const hash = crypto.createHash('sha256').update(home).digest('hex').slice(0, 16)
 
-    if (!path.isAbsolute(target) || path.basename(path.dirname(target)) !== `hermes-gw-${hash}` || path.basename(target) !== 'control.sock') {throw new Error('Invalid gateway control pointer')}
+    if (
+      !path.isAbsolute(target) ||
+      path.basename(path.dirname(target)) !== `hermes-gw-${hash}` ||
+      path.basename(target) !== 'control.sock'
+    ) {
+      throw new Error('Invalid gateway control pointer')
+    }
     await privateNode(path.dirname(target), 'directory')
     await privateNode(target, 'socket')
 
@@ -418,9 +596,14 @@ export function ticketScope(purpose: 'interactive' | 'native-http' | 'native-pro
   return purpose === 'interactive' ? { scope: 'host' } : {}
 }
 
-export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http' | 'native-profile-create' = 'interactive'): Promise<string> {
+export async function mintLocalGatewayTicket(
+  endpoint: GatewayEndpoint,
+  purpose: 'interactive' | 'native-http' | 'native-profile-create' = 'interactive'
+): Promise<string> {
   if (process.platform === 'win32') {
-    if (!pythonTicketClient) {throw new Error('Gateway ticket client is not configured')}
+    if (!pythonTicketClient) {
+      throw new Error('Gateway ticket client is not configured')
+    }
 
     return pythonTicketClient(endpoint, purpose)
   }
@@ -434,19 +617,29 @@ export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose:
   const groupWritable: string[] = []
 
   for (const dir of new Set([home, controlHome])) {
-    if (await fs.realpath(dir) !== dir) {throw new Error('Noncanonical gateway profile')}
+    if ((await fs.realpath(dir)) !== dir) {
+      throw new Error('Noncanonical gateway profile')
+    }
 
-    if (await privateNode(dir, 'home')) {groupWritable.push(dir)}
+    if (await privateNode(dir, 'home')) {
+      groupWritable.push(dir)
+    }
   }
 
-  if (groupWritable.length) {return mintGroupWritableHome(endpoint, purpose, groupWritable)}
+  if (groupWritable.length) {
+    return mintGroupWritableHome(endpoint, purpose, groupWritable)
+  }
 
   let socketPath: string
 
-  try { socketPath = await resolveControlSocket(controlHome) } catch (error) {
+  try {
+    socketPath = await resolveControlSocket(controlHome)
+  } catch (error) {
     // `gateway stop` unlinks both the socket and its pointer: the owner is gone,
     // which the redial must treat as stale rather than as a raw filesystem error.
-    if (isMissingNodeError(error)) {throw new Error('Gateway ticket control socket missing')}
+    if (isMissingNodeError(error)) {
+      throw new Error('Gateway ticket control socket missing')
+    }
     throw error
   }
 
@@ -455,22 +648,49 @@ export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose:
     let buffer = ''
     const deadline = setTimeout(() => socket.destroy(new Error('Gateway ticket deadline')), 5000)
     socket.on('error', () => reject(new Error('Gateway ticket bootstrap failed')))
-    socket.on('close', () => { clearTimeout(deadline); reject(new Error('Gateway ticket connection closed')) })
-    socket.on('connect', () => socket.write(JSON.stringify({ protocol: 1, id: 1, verb: 'session-ticket', params: { profile_id: home, instance_id: endpoint.instance_id, purpose, ...ticketScope(purpose) } }) + '\n'))
+    socket.on('close', () => {
+      clearTimeout(deadline)
+      reject(new Error('Gateway ticket connection closed'))
+    })
+    socket.on('connect', () =>
+      socket.write(
+        JSON.stringify({
+          protocol: 1,
+          id: 1,
+          verb: 'session-ticket',
+          params: { profile_id: home, instance_id: endpoint.instance_id, purpose, ...ticketScope(purpose) }
+        }) + '\n'
+      )
+    )
     socket.on('data', chunk => {
       buffer += chunk.toString()
 
-      if (buffer.length > 65536) {return socket.destroy(new Error('Oversized gateway ticket response'))}
+      if (buffer.length > 65536) {
+        return socket.destroy(new Error('Oversized gateway ticket response'))
+      }
 
-      if (!buffer.includes('\n')) {return}
+      if (!buffer.includes('\n')) {
+        return
+      }
 
       try {
         const reply = JSON.parse(buffer.split('\n')[0])
         const grant = reply.result
 
-        if (!reply.ok || reply.protocol !== 1 || reply.id !== 1 || grant?.instance_id !== endpoint.instance_id || grant?.profile_id !== home || typeof grant?.ticket !== 'string') {throw new Error('Invalid gateway ticket')}
+        if (
+          !reply.ok ||
+          reply.protocol !== 1 ||
+          reply.id !== 1 ||
+          grant?.instance_id !== endpoint.instance_id ||
+          grant?.profile_id !== home ||
+          typeof grant?.ticket !== 'string'
+        ) {
+          throw new Error('Invalid gateway ticket')
+        }
         resolve(grant.ticket)
-      } catch { reject(new Error('Invalid gateway ticket response')) }
+      } catch {
+        reject(new Error('Invalid gateway ticket response'))
+      }
 
       socket.destroy()
     })

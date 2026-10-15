@@ -18,11 +18,16 @@ export function groupExecutionMode(value: unknown): GroupExecutionMode {
     return 'unavailable'
   }
 
-  if (driver === true) {return 'canonical'}
+  if (driver === true) {
+    return 'canonical'
+  }
 
   // App-managed hosted owners can be nonpersistent, even when their driver stops.
-  const ownsRooms = Object.hasOwn(capability, 'protocol_version') || Object.hasOwn(capability, 'authority_gateway_id')
-    || methods?.includes('groups.create') || features?.includes('canonical_session_owner')
+  const ownsRooms =
+    Object.hasOwn(capability, 'protocol_version') ||
+    Object.hasOwn(capability, 'authority_gateway_id') ||
+    methods?.includes('groups.create') ||
+    features?.includes('canonical_session_owner')
 
   if (driver === false && persistent_process === false && !ownsRooms) {
     return 'legacy'
@@ -35,9 +40,13 @@ export function groupExecutionMode(value: unknown): GroupExecutionMode {
  *  capability was read under (default: now); the predicate turns false once the
  *  connection, profile, socket or activation epoch moves, so a late result is
  *  neither acted on nor published. */
-export function groupCreationSource(route: { connectionId: string; profile: string },
-  activationEpoch = gatewayActivationEpoch()) {
-  return () => gatewayActivationEpoch() === activationEpoch &&
+export function groupCreationSource(
+  route: { connectionId: string; profile: string },
+  activationEpoch = gatewayActivationEpoch()
+) {
+  return () =>
+    gatewayActivationEpoch() === activationEpoch &&
     route.connectionId === host.state.connectionId.get() &&
-    route.profile === host.state.profile.get() && host.state.gateway.get() === 'open'
+    route.profile === host.state.profile.get() &&
+    host.state.gateway.get() === 'open'
 }

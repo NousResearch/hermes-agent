@@ -577,7 +577,9 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
   const bindings = useValue($canonicalGroupBindings)
   const binding = bindings[props.group]
 
-  if (binding) {return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack} visible={props.visible} />}
+  if (binding) {
+    return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack} visible={props.visible} />
+  }
 
   return <GroupExecutionGate {...props} />
 }
@@ -605,7 +607,11 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     }
 
     void canonicalGroupRequest<unknown>({ connectionId: connectionId ?? '', profile }, 'groups.capabilities')
-      .then(result => { if (!cancelled) {setCapability({ source, mode: groupExecutionMode(result) })} })
+      .then(result => {
+        if (!cancelled) {
+          setCapability({ source, mode: groupExecutionMode(result) })
+        }
+      })
       .catch(e => {
         if (!cancelled) {
           setCapability({ source, mode: 'unavailable' })
@@ -613,34 +619,58 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
         }
       })
 
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [connectionId, profile, gateway, source])
 
-  if (mode === 'legacy') {return <LegacyGroupChatWorkspace {...props} />}
+  if (mode === 'legacy') {
+    return <LegacyGroupChatWorkspace {...props} />
+  }
 
-  return <div className="grid gap-3 p-3">
-    <h2>{props.group}</h2>
-    <p>{mode === 'canonical' ? 'This is a legacy Desktop room. Start a gateway-owned group with these members; the old history stays here and is not replayed.' : mode === 'unavailable' ? b.canonical.driverUnavailable : 'Checking group driver…'}</p>
-    {error && <p role="alert">{error}</p>}
-    <Button disabled={mode !== 'canonical' || busy} onClick={() => {
-      const route = { connectionId: connectionId ?? '', profile }
+  return (
+    <div className="grid gap-3 p-3">
+      <h2>{props.group}</h2>
+      <p>
+        {mode === 'canonical'
+          ? 'This is a legacy Desktop room. Start a gateway-owned group with these members; the old history stays here and is not replayed.'
+          : mode === 'unavailable'
+            ? b.canonical.driverUnavailable
+            : 'Checking group driver…'}
+      </p>
+      {error && <p role="alert">{error}</p>}
+      <Button
+        disabled={mode !== 'canonical' || busy}
+        onClick={() => {
+          const route = { connectionId: connectionId ?? '', profile }
 
-      const sourceCurrent = groupCreationSource(route, activationEpoch)
+          const sourceCurrent = groupCreationSource(route, activationEpoch)
 
-      if (mode !== 'canonical' || !sourceCurrent()) {
-        setError(b.canonical.driverUnavailable)
+          if (mode !== 'canonical' || !sourceCurrent()) {
+            setError(b.canonical.driverUnavailable)
 
-        return
-      }
+            return
+          }
 
-      setBusy(true)
-      void createCanonicalGroup(route, props.group, props.members)
-        .then(({ room }) => {
-          if (sourceCurrent()) {openGroupChat(registerCanonicalGroup(route, room))}
-        })
-        .catch(e => { if (sourceCurrent()) {setError(String(e))} }).finally(() => setBusy(false))
-    }}>Start gateway group</Button>
-  </div>
+          setBusy(true)
+          void createCanonicalGroup(route, props.group, props.members)
+            .then(({ room }) => {
+              if (sourceCurrent()) {
+                openGroupChat(registerCanonicalGroup(route, room))
+              }
+            })
+            .catch(e => {
+              if (sourceCurrent()) {
+                setError(String(e))
+              }
+            })
+            .finally(() => setBusy(false))
+        }}
+      >
+        Start gateway group
+      </Button>
+    </div>
+  )
 }
 
 function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {

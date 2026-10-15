@@ -501,6 +501,59 @@ def test_plugin_host_wire_bounds_raw_dict_prefetch_before_generic_encoding():
     )
 
 
+def test_plugin_host_wire_truncation_reaches_memory_manager_warning(
+    monkeypatch, caplog
+):
+    from agent.memory_manager import MemoryManager
+    from agent.memory_manager_prefetch import normalize_prefetch_result
+    from agent.memory_provider import (
+        MAX_MEMORY_OBSERVATION_BATCH_BYTES,
+        MAX_MEMORY_OBSERVATIONS,
+        MemoryObservation,
+        MemoryPrefetchResult,
+    )
+    from hermes_cli.plugin_host_wire import decode, encode
+    from tests.agent.test_memory_provider import FakeMemoryProvider
+
+    provider = FakeMemoryProvider(name="wireprobe")
+    raw = MemoryPrefetchResult(
+        context="usable context",
+        observations=tuple(
+            MemoryObservation(
+                source_kind="recall",
+                schema="wireprobe.recall",
+                version=1,
+                payload={"text": "x" * 3910},
+            )
+            for _ in range(MAX_MEMORY_OBSERVATIONS)
+        ),
+    )
+    direct = normalize_prefetch_result(
+        provider, raw, remaining_bytes=MAX_MEMORY_OBSERVATION_BATCH_BYTES
+    )
+    assert len(direct.result.observations) == MAX_MEMORY_OBSERVATIONS
+
+    decoded = decode(encode(raw))
+    assert len(decoded.observations) == MAX_MEMORY_OBSERVATIONS - 1
+    provider._prefetch_result = decoded
+    manager = MemoryManager()
+    manager.add_provider(provider)
+    monkeypatch.setattr(
+        manager,
+        "_prefetch_provider",
+        lambda item, query, *, session_id="": item.prefetch(
+            query, session_id=session_id
+        ),
+    )
+    monkeypatch.setattr(manager, "_emit_prefetch_observation", lambda *_a, **_kw: None)
+
+    with caplog.at_level("WARNING", logger="agent.memory_manager"):
+        result = manager.prefetch_all_result("question")
+
+    assert len(result.observations) == MAX_MEMORY_OBSERVATIONS - 1
+    assert "truncat" in caplog.text.lower()
+
+
 def test_plugin_host_wire_enforces_aggregate_observation_bytes():
     from agent.memory_provider import (
         MAX_MEMORY_OBSERVATION_BATCH_BYTES,

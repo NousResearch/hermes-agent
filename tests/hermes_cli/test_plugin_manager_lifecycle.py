@@ -46,6 +46,19 @@ def test_delete_evicts_cached_plugin_manager(profile_env):
     assert not profile_dir.exists()
     assert profile_dir.resolve() not in plugins._plugin_managers_by_home
     assert plugins._plugin_manager is not manager
+    token = set_hermes_home_override(profile_dir)
+    try:
+        with pytest.raises(FileNotFoundError):
+            plugins.get_plugin_manager()
+    finally:
+        reset_hermes_home_override(token)
+
+    create_profile("gone", no_alias=True, no_skills=True)
+    token = set_hermes_home_override(profile_dir)
+    try:
+        assert plugins.get_plugin_manager() is not manager
+    finally:
+        reset_hermes_home_override(token)
 
 
 def test_delete_logs_plugin_teardown_failure_and_releases_lookups(profile_env, monkeypatch, caplog):
@@ -79,6 +92,14 @@ def test_delete_logs_plugin_teardown_failure_and_releases_lookups(profile_env, m
     assert not profile_dir.exists()
     assert "plugin host shutdown failed" in caplog.text
     assert home_key not in plugins._plugin_manager_teardown_owners
+    token = set_hermes_home_override(profile_dir)
+    try:
+        with pytest.raises(FileNotFoundError):
+            plugins.get_plugin_manager()
+    finally:
+        reset_hermes_home_override(token)
+
+    create_profile("broken", no_alias=True, no_skills=True)
     token = set_hermes_home_override(profile_dir)
     try:
         assert plugins.get_plugin_manager() is not manager
@@ -193,6 +214,59 @@ def test_unload_profile_manager_waits_for_same_home_lookup(tmp_path, monkeypatch
     assert result and result[0] is not manager
 
 
+@pytest.mark.parametrize("operation", ["delete", "rename"])
+def test_tombstoned_profile_rejects_fresh_discovery_before_reservation(
+    profile_env, monkeypatch, operation
+):
+    from hermes_cli.plugins_discovery import _delivery_manager
+
+    name = f"tombstoned-{operation}"
+    create_profile(name, no_alias=True, no_skills=True)
+    profile_dir = get_profile_dir(name)
+    monkeypatch.setattr(plugins, "_plugin_manager", None)
+    monkeypatch.setattr(plugins, "_plugin_managers_by_home", {})
+    monkeypatch.setattr(plugins, "_plugin_manager_teardown_owners", {})
+
+    discovered = []
+    monkeypatch.setattr(
+        plugins.PluginManager,
+        "discover_and_load",
+        lambda manager: discovered.append(manager),
+    )
+    lookup_errors = []
+
+    def lookup_during_tombstone(*_args):
+        token = set_hermes_home_override(profile_dir)
+        try:
+            try:
+                _delivery_manager()
+            except FileNotFoundError as exc:
+                lookup_errors.append(exc)
+        finally:
+            reset_hermes_home_override(token)
+
+    monkeypatch.setattr("hermes_cli.profiles._notify_multiplexer", lookup_during_tombstone)
+    monkeypatch.setattr("hermes_cli.profiles._check_gateway_running", lambda _home: False)
+    monkeypatch.setattr("hermes_cli.profiles._live_default_multiplexer", lambda: True)
+    monkeypatch.setattr("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda **_kwargs: None)
+
+    if operation == "delete":
+        monkeypatch.setattr("hermes_cli.profiles._cleanup_gateway_service", lambda *_args: None)
+        monkeypatch.setattr("hermes_cli.profiles._maybe_unregister_gateway_service", lambda *_args: None)
+        monkeypatch.setattr("hermes_cli.profiles._stop_profile_backends", lambda *_args: None)
+        monkeypatch.setattr("hermes_cli.profiles._stop_bot_desktop", lambda *_args: None)
+        monkeypatch.setattr("hermes_cli.profiles._purge_identity", lambda *_args: True)
+        delete_profile(name, yes=True)
+    else:
+        monkeypatch.setattr("hermes_cli.profiles.check_alias_collision", lambda _name: "skip")
+        monkeypatch.setattr("hermes_cli.profiles._maybe_register_gateway_service", lambda *_args: None)
+        rename_profile(name, f"renamed-{operation}")
+
+    assert lookup_errors
+    assert discovered == []
+    assert not plugins._plugin_managers_by_home
+
+
 @pytest.mark.parametrize("operation", ["rename", "delete"])
 @pytest.mark.parametrize("manager_cached", [False, True], ids=["no-manager", "cached-manager"])
 def test_profile_mutation_keeps_same_home_lookup_blocked_until_commit(
@@ -205,6 +279,7 @@ def test_profile_mutation_keeps_same_home_lookup_blocked_until_commit(
 
     plugins._reset_plugin_managers_for_tests()
     create_profile("race", no_alias=True, no_skills=True)
+    create_profile("other", no_alias=True, no_skills=True)
     profile_dir = get_profile_dir("race")
     if manager_cached:
         token = set_hermes_home_override(profile_dir)
@@ -405,8 +480,8 @@ def test_delayed_background_discovery_cannot_load_a_reserved_manager(
     from hermes_cli.plugins_lifecycle import reserve_plugin_manager_for_home
 
     plugins._reset_plugin_managers_for_tests()
-    home = (profile_env / "profiles" / "delayed-discovery").resolve()
-    home.mkdir(parents=True)
+    create_profile("delayed-discovery", no_alias=True, no_skills=True)
+    home = get_profile_dir("delayed-discovery").resolve()
     token = set_hermes_home_override(home)
     try:
         manager = plugins.get_plugin_manager()
@@ -468,8 +543,8 @@ def test_background_persistence_finishes_before_same_home_reservation_yields(
     from hermes_cli.plugins_lifecycle import reserve_plugin_manager_for_home
 
     plugins._reset_plugin_managers_for_tests()
-    home = (profile_env / "profiles" / "persist-race").resolve()
-    home.mkdir(parents=True)
+    create_profile("persist-race", no_alias=True, no_skills=True)
+    home = get_profile_dir("persist-race").resolve()
     token = set_hermes_home_override(home)
     try:
         manager = plugins.get_plugin_manager()

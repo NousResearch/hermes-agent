@@ -357,8 +357,11 @@ bounded drain timeout (one second by default); a stuck callback is left on its
 daemon worker rather than delaying process teardown. Consumers must therefore
 treat this observer as best-effort and tolerate delay or drop. The shared
 dispatcher also drops any event whose estimated retained payload graph exceeds
-16 KiB or contains unsupported values; it drops the whole event and never
-truncates query text, identifiers, digests, or validated observations.
+128 KiB or contains unsupported values; it drops the whole event and never
+truncates query text, identifiers, digests, or validated observations. An
+oversized `on_stream_end.final_text` is privately spilled and restored in full
+for callback delivery; pending spills share a 16 MiB budget, and budget
+exhaustion drops that best-effort event.
 
 The operation-bound observation tuple and explicit `task_id`/`turn_id` avoid
 query, hash, call-order, mutable provider `last_*`, or session-cache inference

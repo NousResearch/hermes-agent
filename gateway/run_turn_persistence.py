@@ -480,6 +480,17 @@ class GatewayTurnPersistenceMixin:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
             response = ""
 
+        # Streaming owns the acknowledged prefix. Its bounded suffix recovery
+        # may hand the ordinary final lane only an authoritatively rejected tail.
+        correction = agent_result.get("delivery_fallback_text")
+        if correction and not _intentional_silence:
+            # The correction is display-only: it has no MEDIA tags. The original
+            # final response still owns the explicit post-stream attachments.
+            adapter = self._delivery_adapter_for(source)
+            if response and "MEDIA:" in response and adapter and not agent_result.get("media_already_delivered"):
+                await self._deliver_media_from_response(response, event, adapter)
+            return correction
+
         adapter = self._delivery_adapter_for(source)
         # Auto voice reply (TTS audio before the text) unless streaming TTS already delivered audio.
         _streaming_tts_done = adapter is not None and bool(

@@ -309,13 +309,155 @@ class StreamTransportMixin:
             self._message_id = "__no_edit__"
             self._message_created_ts = None
 
+    def _remember_source_receipt(self, result, snapshot) -> None:
+        """Only source-aware receipts opt into span reconciliation (currently Mattermost)."""
+        raw = getattr(result, "raw_response", None)
+        if not isinstance(raw, dict):
+            return
+        confirmed, attempted = raw.get("source_confirmed_prefix"), raw.get("source_attempted_prefix")
+        if not isinstance(confirmed, str) or not isinstance(attempted, str):
+            return
+        source, offset = snapshot
+        # The adapter saw a cursor/fence-decorated request. Clip those synthetic
+        # suffixes to the frozen, cleaned source; image formatting is adapter-local.
+        self._source_receipt = {
+            "source": source,
+            "confirmed_end": offset + min(len(confirmed), len(source) - offset),
+            "attempted_end": offset + min(len(attempted), len(source) - offset),
+            "uncertain": bool(raw.get("_delivery_uncertain")),
+        }
+
+    async def _send_source_suffix(self, source: str, *, final: bool) -> None:
+        """Advance past confirmed/uncertain requests, never retry an ambiguous slice."""
+        receipt = self._source_receipt
+        protected = receipt["source"][:receipt["attempted_end"]]
+        if not source.startswith(protected):
+            return
+        end = receipt["attempted_end"]
+        # Final suffix reconciliation owns one definite-rejection retry. A labelled
+        # correction is a single logical attempt, even after a definite rejection.
+        # Otherwise each iteration consumes a source span or stops; a lost ack
+        # can leave further, provably unattempted slices that are still safe.
+        retry_rejected = final and not self._correction_attempted
+        while end < len(source) and self._run_still_current() and not self._egress_declined:
+            remainder = source[end:]
+            # Bind the request before awaiting, including cancellation mid-ack.
+            self._source_receipt = {**receipt, "source": source, "attempted_end": len(source)}
+            try:
+                result = await self.adapter.send(
+                    chat_id=self.chat_id, content=remainder, reply_to=self._initial_reply_to_id,
+                    metadata=self._metadata_for_send(final=final))
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # health: allow BLE001 -- plugin adapter errors are open-ended; preserve traceback and frozen attempted span
+                logger.exception("Source suffix send failed; delivery remains uncertain")
+                return  # no receipt can establish a safe smaller boundary
+            self._track_preview_ids_from_result(result)
+            if result.message_id:
+                self._adopt_message_id(result.message_id)
+                self._already_sent = True
+            raw = getattr(result, "raw_response", None) or {}
+            attempted = raw.get("source_attempted_prefix")
+            if not isinstance(attempted, str) or not remainder.startswith(attempted):
+                return
+            next_end = end + len(attempted)
+            confirmed = raw.get("source_confirmed_prefix")
+            confirmed_end = end + len(confirmed) if isinstance(confirmed, str) and remainder.startswith(confirmed) else end
+            # Earlier uncertainty remains uncertainty even if the suffix succeeds.
+            receipt = {**receipt, "source": source,
+                       "confirmed_end": max(receipt["confirmed_end"], confirmed_end),
+                       "attempted_end": next_end,
+                       "uncertain": receipt["uncertain"] or bool(raw.get("_delivery_uncertain"))}
+            self._source_receipt = receipt
+            if result.success:
+                self.source_delivery_error = None
+                return
+            if next_end >= len(source) and raw.get("_delivery_uncertain"):
+                return
+            if not raw.get("_delivery_uncertain"):
+                if not retry_rejected:
+                    if final:
+                        self.source_delivery_error = "Source suffix undelivered after bounded recovery"
+                        logger.error("%s (chat=%s, remaining_chars=%d): %s",
+                                     self.source_delivery_error, self.chat_id, len(source) - next_end, result.error)
+                    return
+                retry_rejected = False
+            elif next_end <= end:
+                return
+            end = next_end
+
+    @property
+    def source_delivery_pending(self) -> bool:
+        """An uncertain/partial active receipt, or the last segment without new text."""
+        if self._source_receipt:
+            receipt = self._source_receipt
+            return (receipt["uncertain"]
+                    or (not self._final_content_delivered
+                        and 0 < receipt["confirmed_end"] < len(receipt["source"])))
+        return bool(self._source_receipt_segments and not (self._stream_ledger or self._message_id))
+
+    async def reconcile_source_final(self, final_text: str) -> bool:
+        """Own this exact final after a source-aware partial/lost ack; True suppresses replay.
+
+        Called by the gateway after the consumer joins. This is responsibility for
+        delivery, not a claim that unacknowledged content reached the server.
+        """
+        if not self.source_delivery_pending:
+            return False
+        if self._source_receipt is None:
+            self._source_receipt = self._source_receipt_segments[-1]
+        receipt = self._source_receipt
+        if self._handled_final_source == final_text:
+            return True
+        if not self._run_still_current() or self._egress_declined:
+            return False
+        source = self._clean_for_display(final_text)
+        protected = receipt["source"][:receipt["attempted_end"]]
+        if source.startswith(protected):
+            self._handled_final_source = final_text
+            await self._send_source_suffix(source, final=True)
+            if self.source_delivery_error and not self._correction_attempted:
+                # The regular final-send lane owns one labelled correction of the
+                # authoritatively rejected tail. Never include confirmed or
+                # uncertain earlier slices in that last attempt.
+                missing = source[self._source_receipt["attempted_end"]:]
+                if missing:
+                    self._correction_attempted = True
+                    self._source_rejected_correction = (
+                        "Correction: The remaining reply was not delivered earlier.\n\n" + missing)
+            return True
+        if self._correction_attempted:
+            return False
+        # Policy A: exactly one logical, explicitly labelled full correction.
+        # Set both guards before awaiting; a lost correction ack is never replayed.
+        self._handled_final_source = final_text
+        self._correction_attempted = True
+        correction = ("Correction: Earlier text may appear again because delivery was not confirmed.\n\n"
+                      + source)
+        self._source_receipt = {"source": correction, "confirmed_end": 0,
+                                "attempted_end": 0, "uncertain": True}
+        await self._send_source_suffix(correction, final=True)
+        return True
+
     @stops_reply_clock
     async def _send_or_edit(
         self, text: str, *, finalize: bool = False, is_turn_final: bool = True) -> bool:
         """Send or edit the streaming message; True if delivered.  ``finalize`` marks the
         last edit.  Transport order: native frame → draft frame → edit existing → first
         send; a transport returns None to fall through to the next."""
+        if self._delivery_ambiguous:
+            return False
         text = self._clean_for_display(text)
+        source = text
+        if not finalize and self.cfg.cursor and source.endswith(self.cfg.cursor):
+            source = source[:-len(self.cfg.cursor)]
+        source_prefix = self._stream_ledger[:self._source_offset]
+        full_source = self._clean_for_display(source_prefix + source)
+        # Measure only the sealed prefix: normalization in the unattempted suffix
+        # must not move its boundary. The guard prevents trailing whitespace loss
+        # and is never part of the snapshot or wire text.
+        position_prefix = self._clean_for_display(source_prefix + "\0")
+        snapshot = (full_source, len(position_prefix) - 1)
         # Stream-is-the-message draft frames must stay prefix-stable: a closing ```
         # on a mid-code-block frame makes frame N not a prefix of N+1 and the
         # connector re-appends the whole snapshot.  The final is still fence-closed.
@@ -362,10 +504,12 @@ class StreamTransportMixin:
                     # A failed send disabled edits: a preview sent now could never be updated and
                     # would stay on screen truncated next to the final reply. Send only the final.
                     return False
-                return await self._first_send(text, finalize=finalize)
+                return await self._first_send(text, finalize=finalize, is_turn_final=is_turn_final,
+                                              snapshot=snapshot)
             if not self._edit_supported:
                 return False  # edits unsupported; fallback path sends the final
-            return await self._edit_existing(text, finalize=finalize, is_turn_final=is_turn_final)
+            return await self._edit_existing(text, finalize=finalize, is_turn_final=is_turn_final,
+                                             snapshot=snapshot)
         except Exception as e:
             logger.error("Stream send/edit error: %s", e)
             return False
@@ -446,7 +590,7 @@ class StreamTransportMixin:
         # send must still fire so the user gets a real message.
         return True if await self._send_draft_frame(frame_text) else None
 
-    async def _first_send(self, text: str, *, finalize: bool) -> bool:
+    async def _first_send(self, text: str, *, finalize: bool, is_turn_final: bool, snapshot) -> bool:
         """First send, threaded to the user's message (correct topic/thread)."""
         if getattr(self, "_egress_declined", False):
             # The connector refused this destination earlier in the run (see
@@ -460,7 +604,15 @@ class StreamTransportMixin:
         result = await self.adapter.send(
             chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
             metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
+        self._remember_source_receipt(result, snapshot)
         if not result.success:
+            self._track_preview_ids_from_result(result)
+            if result.message_id:
+                self._adopt_message_id(result.message_id)
+                self._already_sent = True
+            raw_response = getattr(result, "raw_response", None)
+            if isinstance(raw_response, dict) and raw_response.get("_delivery_uncertain"):
+                return await self._on_edit_failure(result, text, finalize=finalize, is_turn_final=is_turn_final)
             self._edit_supported = False
             return False
         self._already_sent = True
@@ -475,7 +627,7 @@ class StreamTransportMixin:
         self._notify_new_message()
         return True
 
-    async def _edit_existing(self, text: str, *, finalize: bool, is_turn_final: bool) -> bool:
+    async def _edit_existing(self, text: str, *, finalize: bool, is_turn_final: bool, snapshot) -> bool:
         """Edit the live preview (or replace it via fresh-final when finalizing)."""
         # REQUIRES_EDIT_FINALIZE adapters need the finalize=True edit even when
         # unchanged; everyone else short-circuits.
@@ -496,6 +648,7 @@ class StreamTransportMixin:
             return True
         result = await self._edit_message(message_id=self._message_id, content=text,
                                           finalize=finalize)
+        self._remember_source_receipt(result, snapshot)
         if not result.success:
             return await self._on_edit_failure(result, text, finalize=finalize,
                                                is_turn_final=is_turn_final)
@@ -561,7 +714,22 @@ class StreamTransportMixin:
         # content IS this finalize payload (#71643). Record it on split turns too: post-#78541 an unrecorded
         # split reads as a mismatch and would re-send this already-visible answer, reintroducing the
         # duplicate #45517 fixed (#36965 / #25349).
+        self._track_preview_ids_from_result(result)
         raw_response = getattr(result, "raw_response", None)
+        if isinstance(raw_response, dict) and raw_response.get("_delivery_uncertain"):
+            # A continuation may already be visible. Neither a further edit nor
+            # the tail fallback can safely replay it; retain every known receipt.
+            self._delivery_ambiguous = True
+            # Source-aware uncertainty must keep consuming; it owns only this
+            # request's span, never a future final answer.
+            self._final_content_delivered = self._source_receipt is None
+            if self._source_receipt is not None:
+                self._final_response_sent = False
+            self._fallback_final_send = False
+            self._edit_supported = False
+            self._already_sent = True
+            self._adopt_message_id(result.message_id or self._message_id)
+            return False
         if isinstance(raw_response, dict) and raw_response.get("partial_overflow"):
             # Some overflow chunks landed but not the whole response: preserve the
             # visible prefix so got_done sends the missing tail.

@@ -97,13 +97,24 @@ def _job_route_pinned(job: dict) -> bool:
 def _job_fallback_chain(job: dict, cfg: Any) -> Optional[list]:
     """The fallback chain this job may walk, at credential resolution AND mid-run (#100437).
 
-    A pinned job never borrows the global ``fallback_providers`` chain, the same rule a pinned
-    ``delegate_task`` child follows (``scoped_fallback_chain``): a chain entry is a different
-    provider and usually a different model, which is exactly what the pin ruled out. Same-provider
-    credential-pool rotation is not the chain and still applies. Unpinned jobs inherit the chain.
+    Three layers, most specific first:
+    1. The job's own ``fallback_providers`` (``hermes cron edit <id> --fallback``), so a job pinned
+       to its own model can still name the providers that may rescue it.
+    2. ``cron.fallback_providers`` — a fleet-wide chain for jobs that pin a route.
+    3. The global ``fallback_providers``, which only an *unpinned* job inherits (a chain entry is a
+       different provider and usually a different model, which is what an operator's pin ruled out).
+    An explicit ``[]`` at any layer disables fallback. Same-provider credential-pool rotation is not
+    the chain and still applies. See also ``scoped_fallback_chain``.
     """
-    return scoped_fallback_chain(
-        get_fallback_chain(cfg), None, pinned=_job_route_pinned(job), owner="cron job")
+    inherited = get_fallback_chain(cfg)
+    pinned = _job_route_pinned(job)
+    declared = job.get("fallback_providers")
+    if declared is None and pinned:
+        # A pinned route has no inherited chain; cron's fleet chain may still apply.
+        cron_cfg = (cfg or {}).get("cron") if isinstance(cfg, dict) else None
+        if isinstance(cron_cfg, dict) and "fallback_providers" in cron_cfg:
+            declared = cron_cfg.get("fallback_providers")
+    return scoped_fallback_chain(inherited, declared, pinned=pinned, owner="cron job")
 
 
 def _fallback_chain_phrase(job: Optional[dict] = None) -> str:

@@ -12,6 +12,10 @@ over `platforms/base.py`. `builtin_hooks/` is the extension point for always-reg
 hooks (none shipped). The gateway reads user YAML **raw** (`run.py` + `config.py`), not through
 `DEFAULT_CONFIG` — a key the CLI sees but the gateway doesn't means you're on the wrong loader
 (`hermes_cli/AGENTS.md`). Each adapter picks a base toolset (Telegram → `"messaging"`).
+A gateway turn's background-review ownership (`agent/review_admission.py`) spans three siblings:
+`run_turn_review.py` (the admission token `run_turn.py` begins and parks on the delivery owner),
+`platforms/base_followup_admission.py` (the adapter's follow-up fence, busy-text debounce and
+delivery-gated completion) and `session_ingress_review.py` (the drain's handover).
 
 Slash commands: handlers are looked up by name through `_command_handler_table`; a command is
 listed in `_IDLE_COMMANDS` or `_PLAIN_COMMANDS` (works mid-run) in `run_busy.py`. No

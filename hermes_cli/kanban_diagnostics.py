@@ -595,12 +595,68 @@ def _current_blocker_evidence(
     task_id: str, events: list[Any], runs: list[Any],
 ) -> Optional[tuple[str, str, Optional[int], int]]:
     """Return the selected reason and event provenance, without changing history."""
-    candidate = None
+    if not isinstance(task_id, str) or not task_id or task_id.strip() != task_id:
+        return None
+    owned = []
     for ev in events:
-        if _event_kind(ev) == "blocked":
-            reason = _parse_payload(ev).get("reason")
+        owner = _task_field(ev, "task_id")
+        if not isinstance(owner, str) or not owner or owner.strip() != owner:
+            return None
+        if owner == task_id:
+            owned.append(ev)
+    ids = [_task_field(ev, "id") for ev in owned]
+    if all(value is None for value in ids):
+        ordered = owned
+    elif all(type(value) is int and value > 0 for value in ids):
+        ordered = sorted(owned, key=lambda ev: _task_field(ev, "id"))
+    else:
+        return None
+    candidate = None
+    for ev in ordered:
+        reference = _task_field(ev, "run_id")
+        if reference is not None:
+            well_formed_runs = all(
+                type(_task_field(run, "id")) is int and _task_field(run, "id") > 0
+                for run in runs
+            )
+            matches = [run for run in runs if _task_field(run, "id") == reference]
+            if (type(reference) is not int or reference <= 0 or not well_formed_runs
+                    or len(matches) != 1 or _task_field(matches[0], "task_id") != task_id):
+                candidate = None
+                continue
+        kind = _task_field(ev, "kind")
+        if not isinstance(kind, str) or not kind.strip():
+            candidate = None
+            continue
+        if kind in {
+            "created", "claimed", "promoted", "promoted_manual", "unblocked", "reclaimed",
+            "completed", "archived", "scheduled", "review_requested", "changes_requested",
+            "review_reopened", "specified", "decomposed", "dependency_wait", "block_loop_detected",
+            "stale", "reconciled", "timed_out", "crashed", "spawn_failed", "rate_limited",
+            "protocol_violation", "status",
+        }:
+            candidate = None
+        elif kind in {"blocked", "gave_up"}:
+            payload = _task_field(ev, "payload")
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except (ValueError, TypeError):
+                    payload = None
+            if not isinstance(payload, dict):
+                candidate = None
+                continue
+            reason = payload.get("error" if kind == "gave_up" else "reason")
+            if (kind == "blocked" and payload.get("classified_in_place") is True
+                    and (reason is None or isinstance(reason, str) and not reason.strip())):
+                if candidate is None or candidate[1] != "gave_up":
+                    candidate = None
+                continue
+            timestamp = _task_field(ev, "created_at")
+            if type(timestamp) is not int or timestamp < 0:
+                timestamp = 0
             candidate = (
-                (reason, "blocked", _task_field(ev, "id"), _event_ts(ev))
+                (reason, kind, _task_field(ev, "id"), timestamp)
                 if isinstance(reason, str) and reason.strip() else None
             )
     return candidate

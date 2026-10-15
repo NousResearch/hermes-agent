@@ -51,6 +51,233 @@ def test_current_blocker_never_uses_failure_fields_or_runs(events):
                                  "last_spawn_error": "legacy error"}) == []
 
 
+@pytest.mark.parametrize("foreign_only", [False, True])
+def test_current_blocker_ignores_foreign_task_reason(foreign_only):
+    foreign = event(id=2, task_id="other", reason="foreign secret")
+    diags = current([foreign] if foreign_only else [event(), foreign])
+    assert [d.detail for d in diags] == ([] if foreign_only else ["needs approval"])
+
+
+@pytest.mark.parametrize("identity", [None, 7, "", " ", " t_demo00", "t_demo00 "])
+@pytest.mark.parametrize("location", ["target", "event", "missing_target", "missing_event"])
+def test_current_blocker_rejects_missing_or_malformed_task_identity(identity, location):
+    target = task()
+    newest = event(id=2)
+    if location == "target":
+        target["id"] = identity
+    elif location == "event":
+        newest["task_id"] = identity
+    elif location == "missing_target":
+        del target["id"]
+    else:
+        del newest["task_id"]
+    assert not [d for d in kd.compute_task_diagnostics(target, [event(), newest], [], now=101)
+                if d.kind == "current_blocker"]
+
+
+@pytest.mark.parametrize("reference,runs", [
+    (True, [{"id": 1, "task_id": TASK_ID}]),
+    ("7", [{"id": 7, "task_id": TASK_ID}]),
+    (7.0, [{"id": 7, "task_id": TASK_ID}]),
+    (0, [{"id": 0, "task_id": TASK_ID}]),
+    (-1, [{"id": -1, "task_id": TASK_ID}]),
+    (7, [{"task_id": TASK_ID}]),
+    (7, [{"id": True, "task_id": TASK_ID}]),
+    (7, [{"id": "7", "task_id": TASK_ID}]),
+    (7, [{"id": 7.0, "task_id": TASK_ID}]),
+    (7, [{"id": 0, "task_id": TASK_ID}]),
+    (7, [{"id": -1, "task_id": TASK_ID}]),
+    (7, [{"id": 7}]),
+    (7, [{"id": 7, "task_id": None}]),
+    (7, [{"id": 7, "task_id": 7}]),
+    (7, [{"id": 7, "task_id": ""}]),
+    (7, [{"id": 7, "task_id": " t_demo00"}]),
+    (7, [{"id": 7, "task_id": TASK_ID}, {"task_id": "other"}]),
+])
+def test_current_blocker_malformed_run_identity_fails_closed(reference, runs):
+    assert current([event(), event(id=2, kind="heartbeat", run_id=reference)], runs) == []
+    # Malformed supplied run IDs distrust non-null references, not task scope.
+    assert current([event()], runs)[0].detail == "needs approval"
+
+
+@pytest.mark.parametrize("kind", ["unblocked", "claimed", "status"])
+def test_current_blocker_ignores_foreign_task_boundary(kind):
+    foreign = event(kind, id=False, task_id="other", run_id="bad")
+    assert current([event(), foreign])[0].detail == "needs approval"
+
+
+def test_current_blocker_requires_same_task_run_binding():
+    diags = current([event(run_id=7)], [{"id": 7, "task_id": TASK_ID,
+                                       "summary": "not reason", "error": "not reason"}])
+    assert diags[0].detail == "needs approval"
+
+
+def test_current_blocker_orphan_run_clears_evidence():
+    assert current([event(), event("heartbeat", id=2, run_id=7)]) == []
+
+
+def test_current_blocker_cross_task_run_clears_evidence():
+    assert current([event(), event("heartbeat", id=2, run_id=7)],
+                   [{"id": 7, "task_id": "other"}]) == []
+
+
+@pytest.mark.parametrize("owner", [TASK_ID, "other"])
+def test_current_blocker_duplicate_run_ids_are_ambiguous(owner):
+    assert current([event(), event(id=2, run_id=7)],
+                   [{"id": 7, "task_id": TASK_ID}, {"id": 7, "task_id": owner}]) == []
+
+
+def test_current_blocker_orders_events_by_id_without_mutation():
+    from copy import deepcopy
+    target = task()
+    events = [event(id=9, reason="new", created_at=2), event(id=1, created_at=100)]
+    runs = [{"id": 7, "task_id": TASK_ID}]
+    before = deepcopy((target, events, runs))
+    diags = kd.compute_task_diagnostics(target, events, runs, now=101)
+    assert [d.detail for d in diags if d.kind == "current_blocker"] == ["new"]
+    assert (target, events, runs) == before
+
+
+@pytest.mark.parametrize("ids,expected", [
+    ([None, None], "new"), ([2, 2], "new"), ([1, None], None),
+    ([None, 1], None), ([True, 2], None), (["1", 2], None),
+    ([1.0, 2], None), ([0, 2], None), ([-1, 2], None),
+])
+def test_current_blocker_handles_synthetic_event_ids(ids, expected):
+    events = [event(id=ids[0]), event(id=ids[1], reason="new")]
+    if ids == [None, None]:
+        del events[0]["id"]
+    assert [d.detail for d in current(events)] == ([] if expected is None else [expected])
+
+
+@pytest.mark.parametrize("run_id", [None, 7])
+def test_current_blocker_exposes_breaker_error(run_id):
+    diags = current([event("gave_up", run_id=run_id, payload={"error": "worker unavailable"})],
+                    [{"id": 7, "task_id": TASK_ID}])
+    assert len(diags) == 1
+    assert diags[0].detail == "worker unavailable"
+    assert diags[0].data == {"source_event_kind": "gave_up", "source_event_id": 1}
+
+
+@pytest.mark.parametrize("payload", [{"classified_in_place": True},
+    {"classified_in_place": True, "reason": None},
+    {"classified_in_place": True, "reason": " \t"}])
+def test_current_blocker_blank_classification_retains_same_episode_breaker(payload):
+    breaker = event("gave_up", payload={"error": "breaker"}, created_at=10)
+    diags = current([breaker, event("commented", id=2), event(id=3, payload=payload)])
+    assert len(diags) == 1
+    assert diags[0].detail == "breaker"
+    assert diags[0].data == {"source_event_kind": "gave_up", "source_event_id": 1}
+    assert diags[0].first_seen_at == diags[0].last_seen_at == 10
+
+
+@pytest.mark.parametrize("kind", ["blocked", "gave_up", "classification"])
+@pytest.mark.parametrize("payload", [None, [], 7, "{bad", "[]", "null", '"text"',
+                                    {}, {"reason": "", "error": ""},
+                                    {"reason": 7, "error": 7},
+                                    {"reason": " \t", "error": " \t"}])
+def test_current_blocker_invalid_newest_evidence_clears_reason(kind, payload):
+    if kind == "classification" and isinstance(payload, dict):
+        payload = {**payload, "classified_in_place": True}
+        # Blank classifications retain a breaker; use ordinary prior evidence here.
+    newest = event("blocked" if kind == "classification" else kind, id=2, payload=payload)
+    assert current([event(), newest]) == []
+    assert current([event(), newest, event(id=3, reason="fresh")])[0].detail == "fresh"
+
+
+BOUNDARIES = """created claimed promoted promoted_manual unblocked reclaimed completed
+archived scheduled review_requested changes_requested review_reopened specified decomposed
+dependency_wait block_loop_detected stale reconciled timed_out crashed spawn_failed
+rate_limited protocol_violation status""".split()
+
+
+@pytest.mark.parametrize("kind", BOUNDARIES)
+def test_current_blocker_lifecycle_boundaries_clear_evidence(kind):
+    history = [event("gave_up", payload={"error": "old"}), event(kind, id=2)]
+    assert current(history) == []
+    assert current(history + [event(id=3, reason="fresh")])[0].detail == "fresh"
+
+
+@pytest.mark.parametrize("kind", [None, "", " \t", 7, [], {}])
+def test_current_blocker_malformed_kind_clears_evidence(kind):
+    history = [event(), event(kind, id=2)]
+    assert current(history) == []
+    assert current(history + [event(id=3, reason="fresh")])[0].detail == "fresh"
+    missing = event(id=2)
+    del missing["kind"]
+    assert current([event(), missing]) == []
+
+
+@pytest.mark.parametrize("timestamp", [None, True, "100", 1.5, -1, "bad"])
+def test_current_blocker_invalid_timestamp_uses_zero(timestamp):
+    diags = current([event(created_at=timestamp)])
+    assert len(diags) == 1
+    assert diags[0].first_seen_at == diags[0].last_seen_at == 0
+
+
+@pytest.mark.parametrize("kind,payload", [("blocked", {"reason": "scoped"}),
+                                         ("gave_up", {"error": "scoped"})])
+@pytest.mark.parametrize("omitted", [False, True])
+def test_current_blocker_accepts_null_task_scoped_evidence(kind, payload, omitted):
+    ev = event(kind, payload=payload)
+    if omitted:
+        del ev["run_id"]
+    assert current([ev])[0].detail == "scoped"
+
+
+@pytest.mark.parametrize("kind", "commented assigned edited reprioritized linked unlinked attached attachment_removed model_override_set reasoning_effort_set heartbeat claim_extended future_info".split())
+def test_current_blocker_informational_events_preserve_reason(kind):
+    assert current([event(), event(kind, id=2, run_id=7)],
+                   [{"id": 7, "task_id": TASK_ID}])[0].detail == "needs approval"
+
+
+def test_current_blocker_classification_reason_replaces_breaker():
+    history = [event("gave_up", payload={"error": "old"}),
+               event(id=2, created_at=99, payload={"classified_in_place": True, "reason": "new"})]
+    diag = current(history)[0]
+    assert diag.detail == "new"
+    assert diag.first_seen_at == diag.last_seen_at == 99
+    assert diag.data == {"source_event_kind": "blocked", "source_event_id": 2}
+
+
+@pytest.mark.parametrize("middle", [event("unblocked", id=2), event(id=2, reason=""),
+                                    event(id=2, reason="ordinary")])
+def test_current_blocker_blank_classification_does_not_revive_history(middle):
+    assert current([event("gave_up", payload={"error": "old"}), middle,
+                    event(id=3, payload={"classified_in_place": True, "reason": None})]) == []
+
+
+@pytest.mark.parametrize("kind", ["blocked", "unblocked", "heartbeat"])
+def test_current_blocker_invalid_binding_cannot_resurrect_breaker(kind):
+    history = [event("gave_up", payload={"error": "old"}), event(kind, id=2, run_id=7),
+               event(id=3, payload={"classified_in_place": True})]
+    assert current(history) == []
+    assert current(history + [event(id=4, reason="fresh")])[0].detail == "fresh"
+
+
+def test_current_blocker_supports_rows_and_dataclasses():
+    import json
+    import sqlite3
+    from dataclasses import asdict
+    from hermes_cli import kanban_db as kb
+    ev = event(run_id=7)
+    run = dict(id=7, task_id=TASK_ID, profile=None, step_key=None, status="closed",
+               claim_lock=None, claim_expires=None, worker_pid=None, max_runtime_seconds=None,
+               last_heartbeat_at=None, started_at=90, ended_at=100, outcome="blocked",
+               summary=None, metadata=None, error=None)
+    expected = current([ev], [run])[0].to_dict()
+    assert current([kb.Event(**ev)], [kb.Run(**run)])[0].to_dict() == expected
+    with sqlite3.connect(":memory:") as conn:
+        conn.row_factory = sqlite3.Row
+        row_event = conn.execute(
+            "SELECT 1 AS id, ? AS task_id, 7 AS run_id, 'blocked' AS kind, ? AS payload, 100 AS created_at",
+            (TASK_ID, json.dumps(ev["payload"])),
+        ).fetchone()
+        row_run = conn.execute("SELECT 7 AS id, ? AS task_id", (TASK_ID,)).fetchone()
+        assert current([row_event], [row_run])[0].to_dict() == expected
+    assert asdict(kb.Event(**ev)) == ev
+
+
 def test_current_blocker_exposes_ordinary_reason():
     diags = current([event()])
     assert len(diags) == 1

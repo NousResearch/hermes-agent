@@ -1,6 +1,8 @@
+from pathlib import Path
+
 import pytest
 
-from hermes_cli import config
+from hermes_cli import config, config_includes
 from hermes_cli.config_effective import load_user_config_effective
 
 
@@ -47,3 +49,35 @@ def test_new_broken_dependency_repair_invalidates_fallback(tmp_path, monkeypatch
     assert loader()["approvals"]["deny"] == ["original-guard"]
     inc.write_text("approvals:\n  deny: [new-guard]\n")
     assert loader()["approvals"]["deny"] == ["new-guard"]
+
+
+def _deny_stat(monkeypatch, target):
+    real_stat = Path.stat
+
+    def stat(path, *args, **kwargs):
+        if path == target:
+            raise PermissionError("include stat denied")
+        return real_stat(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "stat", stat)
+
+
+@pytest.mark.parametrize("loader", [config.load_config, load_user_config_effective])
+def test_include_that_cannot_be_stated_is_not_a_missing_include(tmp_path, monkeypatch, loader):
+    """Only absence is skipped: a denied stat may hide policy, cold or warm."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    root = tmp_path / "config.yaml"
+    root.write_text("include: policy.yaml\n")
+    inc = tmp_path / "policy.yaml"
+    inc.write_text("approvals:\n  deny: [included-guard]\n")
+    original = root.read_bytes()
+    with monkeypatch.context() as fault:
+        _deny_stat(fault, inc)
+        with pytest.raises(config_includes.ConfigIncludeError, match="Unreadable config include"):
+            loader()
+    assert loader()["approvals"]["deny"] == ["included-guard"]
+    inc.write_text("approvals:\n  deny: [edited-guard]\n")
+    with monkeypatch.context() as fault:
+        _deny_stat(fault, inc)
+        assert loader()["approvals"]["deny"] == ["included-guard"]
+    assert loader()["approvals"]["deny"] == ["edited-guard"]
+    assert root.read_bytes() == original

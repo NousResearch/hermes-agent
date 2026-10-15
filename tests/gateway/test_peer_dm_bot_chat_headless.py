@@ -87,6 +87,29 @@ async def test_headless_peer_dm_creates_the_bot_chat_through_its_owner(headless)
     assert again.status == 400 and (await again.json())['error']['code'] == 'invalid_title'
 
 
+def _sessions(authority):
+    return authority.db._read_all("SELECT id FROM sessions")
+
+
+@pytest.mark.parametrize('extra, fields', [
+    ({'require_model_lock': True}, 'require_model_lock'),
+    ({'model': 'gpt-x', 'provider': 'openai'}, 'model, provider'),
+    ({'model_options': {'reasoning_effort': 'high'}}, 'model_options'),
+    ({'system_prompt': 'be terse'}, 'system_prompt'),
+    ({'system_prompt': 7}, 'system_prompt'),
+])
+@pytest.mark.asyncio
+async def test_bot_chat_create_refuses_parameters_its_owner_cannot_honour(headless, extra, fields):
+    # The owner mints the Bot Chat on the profile's own policy; a lock, route or prompt the caller
+    # asked for would be dropped, so the create is refused by name before anything is written.
+    resp = await headless.cli.post("/api/sessions", json={"title": "Bot Chat", "source": "bot_peer_dm", **extra})
+    body = await resp.json()
+    assert resp.status == 400, body
+    assert body['error']['code'] == 'bot_chat_parameters_unsupported', body
+    assert fields in body['error']['message'], body
+    assert _sessions(headless.authority) == []
+
+
 @pytest.mark.asyncio
 async def test_peer_created_api_bot_chat_is_refused_by_name(headless):
     # A row an older gateway minted through the plain API create: no FIFO can own it.

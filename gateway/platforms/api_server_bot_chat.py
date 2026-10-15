@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 _PENDING = ('queued', 'claimed')
 # Owner of a Bot Chat the gateway mints for a peer's create-if-missing (no native client asked).
 _PEER_SUBJECT = 'api-peer'
+# The whole body ``hermes peer dm`` sends (``hermes_cli/subcommands/peer.py::_ensure_bot_chat``).
+_PEER_CREATE_FIELDS = frozenset({'title', 'source'})
 
 
 def _authority(runner):
@@ -34,7 +36,9 @@ async def create_peer_bot_chat(adapter, body):
     authority: the owner mints the chat through the step a first ``bot_relay.deliver`` takes
     (``session_bot._create_bot_chat``), so a headless gateway's Bot Chat is a LOCAL session its FIFO
     owns, not an API row no remote sender can ever bind (#139370). None when the ordinary handler
-    answers: no authority, another title, an explicit id, or the chat exists (its title conflict)."""
+    answers: no authority, another title, an explicit id, or the chat exists (its title conflict).
+    The owner mints on the profile's own policy, so a create carrying anything else (a model
+    lock, route, options, system prompt) is refused by name before anything is written."""
     from tools.bot_mode_probe import BOT_CHAT_TITLE
     authority = _authority(adapter.gateway_runner)
     if (authority is None or str(body.get('title') or '').strip() != BOT_CHAT_TITLE
@@ -42,6 +46,11 @@ async def create_peer_bot_chat(adapter, body):
         return None
     from aiohttp import web
     from gateway.platforms.api_server import _error_response
+    if unsupported := sorted(set(body) - _PEER_CREATE_FIELDS):
+        return _error_response(
+            f"Bot Chat creation refused: bot_chat_parameters_unsupported ({', '.join(unsupported)}); "
+            "the Bot Chat is created with the profile's own model and prompt", 400,
+            code='bot_chat_parameters_unsupported')
     from gateway.session_bot import _create_bot_chat
     from gateway.session_runtime_workers import track_mutation
     actor = Principal(_PEER_SUBJECT, authority.profile_id,

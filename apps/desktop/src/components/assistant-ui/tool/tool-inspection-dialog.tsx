@@ -19,29 +19,60 @@ import {
   inspectionWindow
 } from './tool-inspection-model'
 
+const MAX_SEARCH_MATCHES = 1_000
+
+function searchMatches(text: string | undefined, query: string): { offsets: number[]; truncated: boolean } {
+  if (text === undefined || !query) {
+    return { offsets: [], truncated: false }
+  }
+
+  const offsets: number[] = []
+  let from = 0
+
+  while (offsets.length < MAX_SEARCH_MATCHES) {
+    const index = text.indexOf(query, from)
+
+    if (index < 0) {
+      return { offsets, truncated: false }
+    }
+
+    offsets.push(index)
+    from = index + Math.max(query.length, 1)
+  }
+
+  return { offsets, truncated: text.indexOf(query, from) >= 0 }
+}
+
 function InspectionText({ section }: { section: InspectionSection }) {
   const { t } = useI18n()
   const copy = t.assistant.tool.inspector
   const text = useMemo(() => inspectionText(section.value), [section.value])
   const [offset, setOffset] = useState(0)
   const [query, setQuery] = useState('')
-  const [match, setMatch] = useState(-1)
+  const [activeMatch, setActiveMatch] = useState(0)
   const [wrap, setWrap] = useState(true)
+  const matches = useMemo(() => searchMatches(text, query), [query, text])
+  const normalizedMatch = matches.offsets.length ? Math.min(activeMatch, matches.offsets.length - 1) : 0
+  const match = matches.offsets[normalizedMatch] ?? -1
   const shown = inspectionWindow(text ?? '', offset)
 
-  // Search is literal and case-sensitive, over the entire selected payload,
-  // not merely the displayed page. No regex execution on untrusted strings.
-  function find(value: string, from = 0, backwards = false) {
-    setQuery(value)
+  function moveToMatch(index: number) {
+    const next = matches.offsets[index]
 
-    const index =
-      !value || text === undefined ? -1 : backwards ? text.lastIndexOf(value, from) : text.indexOf(value, from)
-
-    setMatch(index)
-
-    if (index >= 0) {
-      setOffset(Math.max(0, index - 200))
+    if (next === undefined) {
+      return
     }
+
+    setActiveMatch(index)
+    setOffset(Math.max(0, next - 200))
+  }
+
+  function changeQuery(value: string) {
+    setQuery(value)
+    setActiveMatch(0)
+
+    const first = !value || text === undefined ? -1 : text.indexOf(value)
+    setOffset(first >= 0 ? Math.max(0, first - 200) : 0)
   }
 
   const unavailable = text === undefined
@@ -49,22 +80,32 @@ function InspectionText({ section }: { section: InspectionSection }) {
   const highlightStart = Math.max(0, match - shown.start)
   const highlightEnd = Math.min(shown.text.length, match + query.length - shown.start)
   const highlighted = query && match >= shown.start && match < shown.end
+  const matchCount = query
+    ? matches.offsets.length
+      ? `${normalizedMatch + 1}/${matches.offsets.length}${matches.truncated ? '+' : ''}`
+      : '0/0'
+    : ''
 
   return (
     <div className="grid min-h-0 min-w-0 gap-2">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <SearchField aria-label={copy.search} onChange={value => find(value)} placeholder={copy.search} value={query} />
+        <SearchField aria-label={copy.search} onChange={changeQuery} placeholder={copy.search} value={query} />
+        {query && (
+          <span className="shrink-0 text-xs tabular-nums text-muted-foreground" role="status">
+            {matchCount}
+          </span>
+        )}
         <Button
-          disabled={!query || match <= 0 || text === undefined || text.lastIndexOf(query, match - 1) < 0}
-          onClick={() => find(query, match - 1, true)}
+          disabled={!matches.offsets.length}
+          onClick={() => moveToMatch((normalizedMatch - 1 + matches.offsets.length) % matches.offsets.length)}
           size="sm"
           variant="ghost"
         >
           {copy.previousMatch}
         </Button>
         <Button
-          disabled={!query || text === undefined || text.indexOf(query, Math.max(0, match + 1)) < 0}
-          onClick={() => find(query, Math.max(0, match + 1))}
+          disabled={!matches.offsets.length}
+          onClick={() => moveToMatch((normalizedMatch + 1) % matches.offsets.length)}
           size="sm"
           variant="ghost"
         >

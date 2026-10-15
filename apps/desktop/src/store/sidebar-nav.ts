@@ -1,4 +1,6 @@
 import type { Contribution } from '@/contrib/types'
+import { Codecs, persistentAtom } from '@/lib/persisted'
+import { arraysEqual } from '@/lib/storage'
 
 // Sidebar-nav preferences — the `sidebarNav.prefs` registry area. A plugin
 // (the sidebar manager) hides nav rows or re-orders them by CONTRIBUTING a
@@ -14,6 +16,19 @@ import type { Contribution } from '@/contrib/types'
 // loader's per-plugin disposer on disable/reload — the rows come back on their
 // own. The USER's choices persist in the plugin's own `ctx.storage`; the plugin
 // re-contributes them on register.
+//
+// That is the PLUGIN half. The user's own per-row hide (#119965) is not a
+// plugin's to hold: it is renderer-owned state like every other sidebar
+// preference, so it lives in the core-side `$sidebarNavHidden` atom below. At
+// render the user's hidden set filters first and the contribution arbitration
+// applies to what remains — a row the user hid is simply not there for a
+// contribution to revive.
+
+/** The core rows' ids — the one canonical list the docs above already
+ *  enumerate. The Settings row list consumes this, and the rendered sidebar is
+ *  pinned to it by test, so adding a core row without listing it here breaks a
+ *  test instead of silently desyncing Settings from the sidebar. */
+export const SIDEBAR_NAV_IDS = ['new-session', 'capabilities', 'messaging', 'artifacts', 'cron'] as const
 
 export const SIDEBAR_NAV_PREFS_AREA = 'sidebarNav.prefs'
 
@@ -83,4 +98,55 @@ export function applySidebarNavPrefs<T extends { id: string }>(
   }
 
   return ordered
+}
+
+// ---------------------------------------------------------------------------
+// The user's own per-row hide (#119965) — a core-side preference, deliberately
+// independent of Interface mode (which rows a MODE rests is policy; which rows
+// THIS user never wants is a choice) and of the contribution arbitration above.
+// Global window-presentation state like `hermes.desktop.interfaceMode.v1`, not
+// connection/profile-scoped.
+// ---------------------------------------------------------------------------
+
+const NAV_HIDDEN_STORAGE_KEY = 'hermes.desktop.sidebarNavHidden.v1'
+
+/** Stored lists are hand-editable: same defense as `cleanIds`, plus trim and
+ *  dedupe so a polluted record reads as the clean set the setter would write. */
+const cleanIdList = (ids: unknown): string[] => [
+  ...new Set(
+    Array.isArray(ids)
+      ? ids.filter((id): id is string => typeof id === 'string').map(id => id.trim()).filter(id => id !== '')
+      : []
+  )
+]
+
+export const $sidebarNavHidden = persistentAtom<string[]>(
+  NAV_HIDDEN_STORAGE_KEY,
+  [],
+  Codecs.json<string[]>(cleanIdList)
+)
+
+/** Replace the hidden set. Deduped/trimmed; idempotent — re-setting the same
+ *  content never re-writes storage, matching every other sidebar setter. */
+export function setSidebarNavHidden(ids: readonly string[]): void {
+  const next = cleanIdList(ids)
+
+  if (!arraysEqual($sidebarNavHidden.get(), next)) {
+    $sidebarNavHidden.set(next)
+  }
+}
+
+/** Drop the user's hidden rows from a nav list. Pure like `applySidebarNavPrefs`
+ *  so the composition is testable without a DOM: survivors keep order and object
+ *  identity; unknown or non-string ids in `hidden` are inert. The user's hide
+ *  does NOT respect `NEVER_HIDDEN` — that rule guards PLUGIN contributions (a
+ *  plugin must not remove the row hosting the Plugins tab, the user's path to
+ *  that plugin's off-switch). The user hiding `capabilities` themselves is a
+ *  legitimate choice (#119965 lists it) and is recoverable through the same
+ *  Settings toggle, the ⌘K palette, and the `nav.capabilities` keybind, all of
+ *  which work independently of the row. */
+export function applyUserNavHidden<T extends { id: string }>(items: readonly T[], hidden: readonly string[]): T[] {
+  const hiddenIds = new Set(cleanIdList(hidden))
+
+  return items.filter(item => !hiddenIds.has(item.id))
 }

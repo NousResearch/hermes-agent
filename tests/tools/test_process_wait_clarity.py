@@ -40,6 +40,14 @@ class TestWaitTimeoutClarity:
         assert r["status"] == "exited"
         assert "process_running" not in r
 
+    def test_repeated_wait_on_exited_process_is_explicitly_terminal(self, registry):
+        session = registry.spawn_local("true", cwd="/tmp", task_id="t-waitclar")
+        first = registry.wait(session.id, timeout=10)
+        second = registry.wait(session.id, timeout=10)
+        assert first["status"] == "exited"
+        assert second["status"] == "already_exited"
+        assert "do not wait again" in second["note"]
+
 class TestWaitYieldRelease:
     """A mid-turn steer/redirect (request_yield on the tool-worker tid) releases a
     process wait instead of parking the user's message behind it (kimi-code#3697 class)."""

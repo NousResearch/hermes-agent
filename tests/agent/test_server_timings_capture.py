@@ -97,7 +97,7 @@ class TestChunkServerTimings:
     def test_real_sdk_chunk_with_timings_extra(self):
         from openai.types.chat import ChatCompletionChunk
 
-        from agent.chat_completion_helpers import _chunk_server_timings
+        from agent.server_observability import chunk_server_timings
 
         chunk = ChatCompletionChunk(
             id="chatcmpl-1",
@@ -107,12 +107,12 @@ class TestChunkServerTimings:
             choices=[],
             timings={"predicted_per_second": 42.5},
         )
-        assert _chunk_server_timings(chunk) == {"predicted_per_second": 42.5}
+        assert chunk_server_timings(chunk) == {"predicted_per_second": 42.5}
 
     def test_chunk_without_timings_returns_none(self):
         from openai.types.chat import ChatCompletionChunk
 
-        from agent.chat_completion_helpers import _chunk_server_timings
+        from agent.server_observability import chunk_server_timings
 
         chunk = ChatCompletionChunk(
             id="chatcmpl-1",
@@ -121,13 +121,13 @@ class TestChunkServerTimings:
             object="chat.completion.chunk",
             choices=[],
         )
-        assert _chunk_server_timings(chunk) is None
+        assert chunk_server_timings(chunk) is None
 
     def test_foreign_shapes_never_raise(self):
-        from agent.chat_completion_helpers import _chunk_server_timings
+        from agent.server_observability import chunk_server_timings
 
-        assert _chunk_server_timings(object()) is None
-        assert _chunk_server_timings(None) is None
-        assert _chunk_server_timings(
+        assert chunk_server_timings(object()) is None
+        assert chunk_server_timings(None) is None
+        assert chunk_server_timings(
             SimpleNamespace(model_extra={"timings": "not-a-dict"})
         ) is None

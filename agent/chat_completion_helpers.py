@@ -32,6 +32,7 @@ from agent.error_classifier import (
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_local import _streams_llamacpp, stale_giveup
+from agent.chat_completion_helpers_relay import _relay_stream_identity, _relay_stream_metadata
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
@@ -53,6 +54,7 @@ from agent.reasoning_summaries import (
 )
 from agent.local_prompt_progress import prompt_progress, with_prompt_progress
 from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
+from agent.server_observability import chunk_server_timings
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -2358,18 +2360,6 @@ def cleanup_task_resources(agent, task_id: str) -> None:
                 logger.warning("Failed to cleanup %s for task %s: %s", label, task_id, e)
 
 
-def _chunk_server_timings(chunk):
-    """The server ``timings`` block off a stream chunk, or None. llama-server attaches ``timings`` to the final
-    SSE chunk (alongside usage); the OpenAI SDK parses unknown top-level fields into ``model_extra``. Never
-    raises on foreign chunk shapes."""
-    extra = getattr(chunk, "model_extra", None)
-    if isinstance(extra, dict):
-        timings = extra.get("timings")
-        if isinstance(timings, dict):
-            return timings
-    return None
-
-
 def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, *,
     dropped_tool_names=None, overflow_terminal=False, api_mode=None, clean_eof=False):
     """Stub for an SSE stream that ended without ``finish_reason`` after
@@ -2470,20 +2460,6 @@ def _is_sse_connection_error(exc: BaseException) -> bool:
         return False
     err_lower = str(exc).lower()
     return any(phrase in err_lower for phrase in _SSE_CONN_PHRASES)
-
-
-def _relay_stream_identity(agent, name_default: str) -> dict:
-    """``session_id``/``name``/``model_name`` kwargs for ``relay_llm.stream``."""
-    return {"session_id": str(getattr(agent, "session_id", "") or ""),
-        "name": str(getattr(agent, "provider", "") or name_default),
-        "model_name": str(getattr(agent, "model", "") or "")}
-
-
-def _relay_stream_metadata(agent, api_mode: str) -> dict:
-    call_role = ("delegated" if getattr(agent, "is_subagent", False)
-                 else "fallback" if int(getattr(agent, "_fallback_index", 0) or 0) > 0 else "primary")
-    return {"api_mode": api_mode, "api_request_id": getattr(agent, "_current_api_request_id", None),
-        "call_role": call_role}
 
 
 def _stream_final_text(response) -> str:
@@ -3120,7 +3096,7 @@ class _StreamingCall(StreamingWaitMonitor):
                 usage, finish_reason = self._choiceless_chunk(chunk, finish_reason)
                 usage_obj = usage or usage_obj
                 self._mark_finish_seen(_diag, finish_reason)
-                timings_obj = _chunk_server_timings(chunk) or timings_obj
+                timings_obj = chunk_server_timings(chunk) or timings_obj
                 continue
 
             choice = chunk.choices[0]
@@ -3131,7 +3107,7 @@ class _StreamingCall(StreamingWaitMonitor):
             self._mark_finish_seen(_diag, finish_reason)
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
-            timings_obj = _chunk_server_timings(chunk) or timings_obj
+            timings_obj = chunk_server_timings(chunk) or timings_obj
 
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
             # Same ``model_extra`` fallback as the non-streaming path: a reasoning-only stream

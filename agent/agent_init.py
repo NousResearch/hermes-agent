@@ -34,6 +34,7 @@ from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH, fetch_model_metadata, is_local_endpoint
 )
 from agent.agent_init_ollama import _clamp_compressor_to_ollama_num_ctx, _configure_ollama_num_ctx
+from agent.agent_init_skills import _apply_skill_review_config
 from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
@@ -1383,10 +1384,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
 
 
 def _apply_agent_section(agent, _agent_cfg):
-    # Skills config: nudge interval for skill creation reminders
-    agent._skill_nudge_interval = 10
-    with suppress(Exception):
-        agent._skill_nudge_interval = int(_agent_cfg.get("skills", {}).get("creation_nudge_interval", 10))
+    _apply_skill_review_config(agent, _agent_cfg)
 
     _agent_section = _cfg_dict(_agent_cfg, "agent")
     agent.budget_warning_ratio = normalize_budget_warning_ratio(

@@ -394,6 +394,22 @@ describe('AppContextMenu', () => {
     expect(await screen.findByText('Copy URL')).toBeTruthy()
   })
 
+  it('lets editable targets inside a radix surface use the edit menu', async () => {
+    installBridge()
+    mountMenu()
+
+    const host = attach(
+      `<div data-zone-body="test" data-slot="context-menu-trigger"><textarea>draft text</textarea></div>`
+    )
+
+    const textarea = host.querySelector('textarea')!
+
+    fireEvent.contextMenu(textarea)
+
+    expect(await screen.findByText('Select all')).toBeTruthy()
+    expect(screen.getByText('Paste')).toBeTruthy()
+  })
+
   it('leaves surfaces with their own radix menu alone', () => {
     installBridge()
     mountMenu()
@@ -413,7 +429,9 @@ describe('AppContextMenu', () => {
     const unregister = registerTerminalContextMenu(host.querySelector('[data-terminal]')!, {
       getSelection: () => 'picked text',
       paste,
-      selectAll: vi.fn()
+      reload: vi.fn(),
+      selectAll: vi.fn(),
+      wordErase: null
     })
 
     fireEvent.contextMenu(host.querySelector('canvas')!)
@@ -432,7 +450,9 @@ describe('AppContextMenu', () => {
     const unregister = registerTerminalContextMenu(host.querySelector('[data-terminal]')!, {
       getSelection: () => '',
       paste: null,
-      selectAll: vi.fn()
+      reload: vi.fn(),
+      selectAll: vi.fn(),
+      wordErase: null
     })
 
     fireEvent.contextMenu(host.querySelector('canvas')!)

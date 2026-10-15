@@ -1,4 +1,4 @@
-import type { HermesGitWorktree } from '@/global'
+import type { HermesGitBranch, HermesGitWorktree } from '@/global'
 import type { ProjectInfo, SessionInfo } from '@/hermes'
 import { normalize } from '@/lib/text'
 
@@ -28,6 +28,12 @@ export interface SidebarSessionGroup {
   // worktrees (`<repo>/.worktrees/t_*`) into one row, so a heavy board doesn't
   // spray hundreds of throwaway branch lanes across the sidebar.
   isKanban?: boolean
+  // False ONLY for the non-git heuristic lane of a plain folder (backend
+  // `_place_by_heuristic`): it renders like a main lane but `git switch` on it
+  // dies with "fatal: not a git repository", so branch-targeted actions must
+  // skip it (#61362). Absent (undefined) on lanes from older backends — treat
+  // missing as git, matching the historical behavior.
+  isGit?: boolean
   mode?: 'profile' | 'source' | 'workspace'
   sourceId?: string
   // Exact owner for gateway/profile sidebar sections; absent for workspace lanes.
@@ -95,9 +101,15 @@ const isWindowsPath = (path: string): boolean =>
  * Segments for identity comparison: Windows paths fold case (and separators, via
  * {@link segments}) so `C:\Work` and `c:/work` are one lane; POSIX stays
  * case-sensitive. Comparison-only — emitted ids/labels keep their spelling.
+ *
+ * Segments are NFC-normalized before comparing: the same on-disk folder can
+ * reach us as NFC (typed paths, backend cwd) or NFD (macOS file pickers,
+ * HFS+/APFS round-trips), and case folding does not unify the two forms — an
+ * accented project folder would otherwise render empty (#65014). Mirrors
+ * `_comparison_segments` in `tui_gateway/project_tree.py`.
  */
 const comparisonSegments = (path: string): string[] => {
-  const segs = segments(path)
+  const segs = segments(path).map(seg => seg.normalize('NFC'))
 
   return isWindowsPath(path) ? segs.map(seg => seg.toLowerCase()) : segs
 }
@@ -120,6 +132,32 @@ export function kanbanWorktreeDir(path: string): null | string {
 
 /** Label for a main-checkout lane whose session recorded no branch. */
 export const DEFAULT_BRANCH_LABEL = 'main'
+
+/**
+ * The branch "+" on a lane should `git switch` to before opening a session, or
+ * null to open on whatever the checkout is on now. A main-checkout lane label
+ * is a display value: a row with no recorded `git_branch` falls back to
+ * DEFAULT_BRANCH_LABEL (backend and live overlay alike). `git switch main` then
+ * dies with "invalid reference: main" on a `master` repo (#108694). Only a
+ * label that git lists as a branch (local, or a remote-tracking ref
+ * `git switch` can DWIM) counts as a switch target.
+ */
+export function laneSwitchTarget(
+  group: Pick<SidebarSessionGroup, 'isGit' | 'isMain' | 'label' | 'path'>,
+  branches: readonly Pick<HermesGitBranch, 'isRemote' | 'name'>[]
+): null | string {
+  const label = group.label.trim()
+
+  if (!group.isMain || group.isGit === false || !group.path || !label) {
+    return null
+  }
+
+  const known = branches.some(branch =>
+    branch.isRemote ? branch.name.slice(branch.name.indexOf('/') + 1) === label : branch.name === label
+  )
+
+  return known ? label : null
+}
 
 /** Id of the Home bucket (must match the backend tree's `NO_PROJECT_ID`). */
 export const NO_PROJECT_ID = '__no_project__'
@@ -529,8 +567,59 @@ export function projectOwnerBySessionId(projects: SidebarProjectTree[]): Readonl
   return owners
 }
 
-const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] =>
-  [session, ...rows.filter(row => row.id !== session.id)].sort((a, b) => sessionRecency(b) - sessionRecency(a))
+/**
+ * Every id a row has answered to. Compression rotates a chat's live id (root ->
+ * tip), so the snapshot and the live cache can each hold a different segment
+ * of one conversation; the projected row carries its lineage root and chain.
+ */
+const conversationIds = (session: SessionInfo): string[] => [
+  session.id,
+  ...(session._lineage_root_id ? [session._lineage_root_id] : []),
+  ...(session._lineage_ids ?? [])
+]
+
+/** A predicate matching any row that is the same conversation as `session`. */
+function sameConversationAs(session: SessionInfo): (row: SessionInfo) => boolean {
+  const ids = new Set(conversationIds(session))
+
+  return row => conversationIds(row).some(id => ids.has(id))
+}
+
+/** The snapshot's owner for a live row, found by any id its conversation has had. */
+function ownerOf(owners: ReadonlyMap<string, string>, session: SessionInfo): string | undefined {
+  for (const id of conversationIds(session)) {
+    const owner = owners.get(id)
+
+    if (owner) {
+      return owner
+    }
+  }
+
+  return undefined
+}
+
+/** Rows minus any that repeat an earlier row's conversation (first wins). */
+function uniqueConversations(rows: SessionInfo[]): SessionInfo[] {
+  const seen = new Set<string>()
+
+  return rows.filter(row => {
+    const ids = conversationIds(row)
+
+    if (ids.some(id => seen.has(id))) {
+      return false
+    }
+
+    ids.forEach(id => seen.add(id))
+
+    return true
+  })
+}
+
+const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] => {
+  const isSame = sameConversationAs(session)
+
+  return [session, ...rows.filter(row => !isSame(row))].sort((a, b) => sessionRecency(b) - sessionRecency(a))
+}
 
 /** A live row's placement path, with an exact repo-root fallback when cwd is absent. */
 function livePathForRepo(repoRoot: string, session: SessionInfo): string {
@@ -682,9 +771,11 @@ export function overlayRepoLanes(
     // new worktree — the overlay places it into the worktree lane, but without
     // this eviction the stale main-lane entry persists and the session appears
     // under both groups until the next backend tree refresh).
+    const isSame = sameConversationAs(session)
+
     for (const g of lanes) {
       if (g !== lane) {
-        const idx = g.sessions.findIndex(s => s.id === session.id)
+        const idx = g.sessions.findIndex(isSame)
 
         if (idx >= 0) {
           g.sessions = [...g.sessions.slice(0, idx), ...g.sessions.slice(idx + 1)]
@@ -722,8 +813,7 @@ function overlayHomeLane(
   owners: ReadonlyMap<string, string>
 ): SidebarProjectTree {
   const ownedElsewhere = (session: SessionInfo): boolean => {
-    const owner =
-      owners.get(session.id) ?? (session._lineage_root_id ? owners.get(session._lineage_root_id) : undefined)
+    const owner = ownerOf(owners, session)
 
     return Boolean(owner) && owner !== NO_PROJECT_ID
   }
@@ -820,7 +910,7 @@ export function overlayLiveLanes(
   let changed = false
 
   const projectLive = live.filter(session => {
-    const owner = authoritativeOwners.get(session.id)
+    const owner = ownerOf(authoritativeOwners, session)
 
     return !owner || owner === project.id
   })
@@ -854,8 +944,8 @@ export function reconcileEnteredProjectSessions(
     return live
   }
 
-  const liveIds = new Set(live.map(session => session.id))
-  const missingPreviews = previewSessions.filter(session => !liveIds.has(session.id))
+  const liveIds = new Set(live.flatMap(conversationIds))
+  const missingPreviews = previewSessions.filter(session => !conversationIds(session).some(id => liveIds.has(id)))
 
   return missingPreviews.length ? [...live, ...missingPreviews] : live
 }
@@ -882,7 +972,7 @@ export function overlayLivePreviews(
       continue
     }
 
-    const projectId = authoritativeOwners.get(session.id) ?? sessionBucketId(session, explicitProjects)
+    const projectId = ownerOf(authoritativeOwners, session) ?? sessionBucketId(session, explicitProjects)
 
     if (!projectId) {
       continue
@@ -903,16 +993,9 @@ export function overlayLivePreviews(
       continue
     }
 
-    // Live rows take precedence (fresher title/activity/working state).
-    const map = new Map<string, SessionInfo>()
-
-    for (const session of [...liveRows, ...base]) {
-      if (!map.has(session.id)) {
-        map.set(session.id, session)
-      }
-    }
-
-    const pool = [...map.values()].sort((a, b) => sessionRecency(b) - sessionRecency(a))
+    // Live rows take precedence (fresher title/activity/working state), and a
+    // compressed chat's live tip stands in for the snapshot's older segment.
+    const pool = uniqueConversations([...liveRows, ...base]).sort((a, b) => sessionRecency(b) - sessionRecency(a))
 
     out[node.id] = rankSessions(pool, rankIds).slice(0, limit)
   }

@@ -24,6 +24,7 @@
     "@docusaurus/preset-classic": "3.10.2",
     "@docusaurus/theme-mermaid": "3.10.2",
     "@mdx-js/react": "3.1.1",
+    "@mermaid-js/layout-elk": "0.1.9",
     "clsx": "2.1.1",
     "prism-react-renderer": "2.3.0",
     "react": "19.2.7",

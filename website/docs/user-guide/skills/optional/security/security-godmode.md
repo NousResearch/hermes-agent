@@ -73,6 +73,9 @@ See `scripts/godmode_race.py` for the implementation.
 
 ## Step 0: Auto-Jailbreak (Recommended)
 
+The helper requires `ruamel.yaml` (included with Hermes). In a standalone
+Python environment, install `ruamel.yaml==0.18.17` before loading it.
+
 The fastest path — auto-detect the model, test strategies, and lock in the winner:
 
 ```python

@@ -266,8 +266,7 @@ def test_served_profiles_ignores_the_retired_opt_out_but_honours_an_explicit_arg
     assert asked == [True, False]
 
 
-@pytest.mark.skipif(sys.platform == "win32",
-                    reason="POSIX ownership check; Windows has no st_uid to compare")
+@pytest.mark.platforms("posix")  # POSIX ownership check; Windows has no st_uid to compare
 def test_a_foreign_record_is_not_a_record(tmp_path, monkeypatch, owner_pid):
     """A record this OS user did not write must never decide our lifecycle (forgery/DoS)."""
     _publish(owner_pid, tmp_path / "root", ("default", "other"))
@@ -294,3 +293,23 @@ def test_the_default_profile_arriving_second_starts_beside_a_standalone_named_ow
     assert host_attach.profile_name_for_home(root) == "default"
     assert decision.outcome == host_attach.START
     assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is None
+
+
+def test_another_tenants_host_gateway_never_yields_attach_or_the_lock_refusal(tmp_path, monkeypatch, owner_pid):
+    """#121352: two Hermes roots on one host (one OS user) each expose a profile named ``default``.
+    Tenant A's live multiplexer serves A's ``default`` + ``coder``; tenant B's ``default`` must START,
+    not ATTACH (exit 0 with nothing running), and losing the per-OS-user host lock to A must not
+    refuse 75 (a race B can never win, so its gateway would never start)."""
+    root_a, root_b = tmp_path / "hermes-a", tmp_path / "hermes-b"
+    _publish(owner_pid, root_a, ("default", "coder"))
+    _answer_identify(monkeypatch, owner_pid, root_a, ["default", "coder"])
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: root_b)
+
+    assert host_attach.host_gateway_serving("default") is not None  # A's record is live and names default
+    assert host_attach.decide(root_b).outcome == host_attach.START
+    assert host_attach.decide(root_a / "profiles" / "coder").outcome == host_attach.ATTACH  # control: A's own
+
+    monkeypatch.setattr(hr, "claim_host_lock", lambda role: (hr.HostLockOutcome.HELD_BY_OTHER, None))
+    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
+                        lambda *a, **k: pytest.fail("B must not ask A's gateway to rescan"))
+    gateway_run._claim_host_gateway_role()  # no SystemExit(75)

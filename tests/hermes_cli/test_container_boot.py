@@ -10,6 +10,7 @@ tests/docker/test_container_restart.py.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,8 @@ from hermes_cli.container_boot import (
     ReconcileAction,
     reconcile_profile_gateways,
 )
+
+pytestmark = pytest.mark.platforms("linux")
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +49,9 @@ def _hermetic_container_argv(monkeypatch: pytest.MonkeyPatch) -> None:
         "hermes_cli.container_boot._read_container_argv",
         lambda: (),
     )
+    # This fixture owns real files, but does not run as the image's service user.
+    monkeypatch.setattr("hermes_cli.service_manager._HERMES_UID", os.getuid())
+    monkeypatch.setattr("hermes_cli.service_manager._HERMES_GID", os.getgid())
 
 
 def _make_profile(
@@ -315,6 +321,26 @@ def test_a_named_slots_autostart_intent_boots_the_root_slot(tmp_path: Path) -> N
     assert by_profile["default"].action == "started", "something must serve this container"
     assert by_profile["default"].folded_into_root is True
     assert by_profile["coder"].action == "registered" and by_profile["coder"].folded_into_root is True
+
+
+def test_a_standalone_profile_boots_its_own_slot_instead_of_folding_into_root(tmp_path: Path) -> None:
+    """The root multiplexer never serves a `gateway.standalone` profile, so folding its intent into
+    the root leaves it dark after every container restart. It boots its own slot; a non-standalone
+    profile's intent still folds into the root."""
+    hermes_home = tmp_path / "data"
+    hermes_home.mkdir()
+    _seed_default_root(hermes_home, state="stopped")
+    solo = _make_profile(hermes_home, "solo", state=None, desired_state="running")
+    (solo / "config.yaml").write_text("gateway:\n  standalone: true\n")
+    _make_profile(hermes_home, "coder", state=None, desired_state="running")
+
+    actions = reconcile_profile_gateways(
+        hermes_home=hermes_home, scandir=tmp_path / "svc", dry_run=True, container_argv=())
+
+    by_profile = {a.profile: a for a in actions}
+    assert by_profile["solo"].action == "started" and by_profile["solo"].folded_into_root is False
+    assert by_profile["coder"].action == "registered" and by_profile["coder"].folded_into_root is True
+    assert by_profile["default"].action == "started"
 
 
 def test_a_stopped_fleet_still_boots_nothing(tmp_path: Path) -> None:

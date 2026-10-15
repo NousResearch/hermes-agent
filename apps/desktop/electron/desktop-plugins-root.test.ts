@@ -102,6 +102,54 @@ describe('reconcileUnifiedDesktopHalves', () => {
     expect(fs.existsSync(path.join(appRoot, 'media'))).toBe(false)
   })
 
+  it.skipIf(process.platform === 'win32')(
+    'materializes a SYMLINKED dev package and re-syncs on any byte change, even with an older mtime',
+    async () => {
+      // `ln -s ~/src/my-plugin ~/.hermes/plugins/` is how a plugin is developed in
+      // place; the Python loader follows it, but the reconcile skipped the link
+      // (Dirent.isDirectory() is false for a symlink) — the desktop half never loaded.
+      const home = makeHome()
+      const appRoot = path.join(home, 'desktop-plugins')
+      const checkout = path.join(home, 'src', 'media')
+      const source = path.join(checkout, 'desktop', 'plugin.js')
+      write(source, 'v1')
+      fs.mkdirSync(path.join(home, 'plugins'), { recursive: true })
+      fs.symlinkSync(checkout, path.join(home, 'plugins', 'media'))
+
+      expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'media')])
+      expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('v1')
+      const marker = JSON.parse(fs.readFileSync(path.join(appRoot, 'media', PACKAGE_MARKER), 'utf8'))
+      expect(marker).toMatchObject({
+        linked: true,
+        package: 'media',
+        source: path.join(home, 'plugins', 'media', 'desktop')
+      })
+      expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
+
+      // An edit that lands an OLDER mtime (git stash pop, cp -p) still re-syncs.
+      write(source, 'v2')
+      const past = new Date(Date.now() - 3_600_000)
+      fs.utimesSync(source, past, past)
+      expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'media')])
+      expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('v2')
+    }
+  )
+
+  it('keeps the mtime gate for an installed (non-linked) package', async () => {
+    const home = makeHome()
+    const appRoot = path.join(home, 'desktop-plugins')
+    const source = path.join(home, 'plugins', 'media', 'desktop', 'plugin.js')
+    write(source, 'v1')
+    await reconcileUnifiedDesktopHalves(home, appRoot)
+    const marker = JSON.parse(fs.readFileSync(path.join(appRoot, 'media', PACKAGE_MARKER), 'utf8'))
+    expect(marker.linked).toBeUndefined()
+
+    write(source, 'v2')
+    const past = new Date(Date.now() - 3_600_000)
+    fs.utimesSync(source, past, past)
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
+  })
+
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
     'skips a package the app cannot read and still materializes its siblings',
     async () => {
@@ -180,6 +228,25 @@ describe('reconcileUnifiedDesktopHalves', () => {
 
     expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
     expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('user standalone')
+  })
+
+  it('adopts an unmarked copy of its own half that a pre-marker install left behind', async () => {
+    const home = makeHome()
+    const appRoot = path.join(home, 'desktop-plugins')
+    // What `installDesktopPluginFromGit` used to publish: the package's half,
+    // byte for byte, with no marker. The page showed it as a second, enabled
+    // row while the agent row waited on "copying…".
+    write(path.join(home, 'plugins', 'media', 'desktop', 'plugin.js'), 'package half')
+    write(path.join(appRoot, 'media', 'plugin.js'), 'package half')
+
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([path.join(appRoot, 'media')])
+
+    const marker = JSON.parse(fs.readFileSync(path.join(appRoot, 'media', PACKAGE_MARKER), 'utf8'))
+    expect(marker.package).toBe('media')
+    // Adoption is a stamp, not a copy: the folder's own files are untouched and
+    // the next pass has nothing left to do.
+    expect(fs.readFileSync(path.join(appRoot, 'media', 'plugin.js'), 'utf8')).toBe('package half')
+    expect(await reconcileUnifiedDesktopHalves(home, appRoot)).toEqual([])
   })
 
   it('replaces an interrupted marker-less copy, stamps it, and converges on retry', async () => {

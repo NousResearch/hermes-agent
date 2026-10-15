@@ -27,7 +27,7 @@ from hermes_state_wal import WalUnsupportedError, apply_wal_with_fallback
 # ``sqlite3.Connection.execute`` is a C-level slot and can't be monkeypatched
 # directly (``'sqlite3.Connection' object attribute 'execute' is read-only``).
 # A factory-built subclass lets us intercept journal_mode=WAL per-test with
-# its own mutable counter, avoiding the xdist-parallel class-state race.
+# its own mutable counter, avoiding a parallel-run class-state race.
 def _make_blocking_factory(reason: str, attempt_counter: list):
     """Return a sqlite3.Connection subclass that raises on PRAGMA journal_mode=WAL."""
 
@@ -129,7 +129,7 @@ class TestApplyWalWithFallback:
         # Post-fallback the DB is still usable for real writes
         conn.execute("CREATE TABLE t (x INTEGER)")
         conn.execute("INSERT INTO t VALUES (1)")
-        assert list(conn.execute("SELECT x FROM t"))[0][0] == 1
+        assert next(iter(conn.execute("SELECT x FROM t")))[0] == 1
         conn.close()
 
     def test_falls_back_on_not_authorized(self, tmp_path):
@@ -221,7 +221,7 @@ class TestApplyWalWithFallback:
         # Post-fallback the DB is still usable for real writes
         conn.execute("CREATE TABLE t (x INTEGER)")
         conn.execute("INSERT INTO t VALUES (1)")
-        assert list(conn.execute("SELECT x FROM t"))[0][0] == 1
+        assert next(iter(conn.execute("SELECT x FROM t")))[0] == 1
         conn.close()
 
     def test_persistent_disk_io_error_never_downgrades_wal_disk(self, tmp_path):
@@ -400,7 +400,7 @@ class TestApplyWalWithFallback:
         # Connection is still usable for non-journal_mode SQL
         conn.execute("CREATE TABLE t (x INTEGER)")
         conn.execute("INSERT INTO t VALUES (1)")
-        assert list(conn.execute("SELECT x FROM t"))[0][0] == 1
+        assert next(iter(conn.execute("SELECT x FROM t")))[0] == 1
         conn.close()
 
     def test_both_pragmas_fail_but_readback_reports_actual_mode(self, tmp_path, caplog):

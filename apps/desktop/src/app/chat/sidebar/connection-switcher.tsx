@@ -30,6 +30,7 @@ import { closeFindBar } from '@/store/find-in-page'
 import { notifyError } from '@/store/notifications'
 
 import { ConnectionGlyph } from './connection-glyph'
+import { useLocalDeviceSwitch } from './local-device-switch'
 
 export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: boolean; onConnect: () => void }) {
   const { t } = useI18n()
@@ -40,6 +41,7 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
   const [menuOpen, setMenuOpen] = useState(false)
   const connectionListRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const { dialog: localDeviceDialog, request: requestLocalDevice } = useLocalDeviceSwitch()
 
   const connections = useMemo(() => sortConnectionsForDisplay(registry?.connections ?? []), [registry?.connections])
 
@@ -94,9 +96,23 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
     triggerHaptic('selection')
     const connection = connections.find(candidate => candidate.id === connectionId)
 
-    void selectConnection(connectionId).catch(error =>
-      notifyError(error, t.profiles.switchConnectionFailed(connection?.label ?? connectionId))
-    )
+    void (async () => {
+      if (connection?.kind === 'local' && connectionId !== activeConnectionId) {
+        const accepted = await requestLocalDevice({
+          connectionId,
+          label: connection.label,
+          replaceCenter: true
+        })
+
+        if (!accepted) {
+          return
+        }
+      }
+
+      await selectConnection(connectionId).catch(error =>
+        notifyError(error, t.profiles.switchConnectionFailed(connection?.label ?? connectionId))
+      )
+    })()
   }
 
   return (
@@ -208,6 +224,7 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      {localDeviceDialog}
     </div>
   )
 }

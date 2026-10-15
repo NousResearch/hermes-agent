@@ -12,7 +12,6 @@ from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
 
-
 @patch("agent.process_bootstrap.OpenAI")
 def test_create_openai_client_disables_sdk_retries(mock_openai):
     mock_openai.return_value = MagicMock()
@@ -44,5 +43,3 @@ def test_create_openai_client_disables_sdk_retries(mock_openai):
             "double-retry inside the outer rate-limit loop (#26293); got "
             f"{call.kwargs.get('max_retries')!r}"
         )
-
-

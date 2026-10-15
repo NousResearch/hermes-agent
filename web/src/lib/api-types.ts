@@ -531,13 +531,7 @@ export interface CheckpointsResponse {
 }
 
 /** Per-call overrides for {@link fetchJSON}. */
-interface FetchJSONOptions {
-  /** When true, a 401 response is surfaced as a normal thrown error rather
-   *  than triggering the loopback stale-token page reload. Use for probes
-   *  whose 401 is an expected signal (e.g. /api/auth/me in non-gated mode)
-   *  rather than evidence of a rotated session token. */
-  allowUnauthorized?: boolean;
-}
+
 
 export interface ActionStatusResponse {
   exit_code: number | null;

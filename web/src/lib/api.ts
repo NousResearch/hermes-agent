@@ -92,6 +92,14 @@ import type {
   PluginProvidersPutRequest,
 } from "./api-types";
 
+interface FetchJSONOptions {
+  /** When true, a 401 response is surfaced as a normal thrown error rather
+   *  than triggering the loopback stale-token page reload. Use for probes
+   *  whose 401 is an expected signal (e.g. /api/auth/me in non-gated mode)
+   *  rather than evidence of a rotated session token. */
+  allowUnauthorized?: boolean;
+}
+
 const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
 
 import type { AuxiliaryModelsResponse } from "./api-aux";
@@ -1519,4 +1527,3 @@ export const api = {
       `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     ),
 };
-

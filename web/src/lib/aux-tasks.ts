@@ -1,4 +1,4 @@
-import type { AuxiliaryTaskAssignment } from "./api";
+import type { AuxiliaryTaskAssignment } from "./api-types";
 
 export interface AuxTaskMeta {
   key: string;

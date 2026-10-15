@@ -97,6 +97,29 @@ async def test_aborted_start_reports_exit_status_and_stderr_tail(tmp_path: Path)
     await client.shutdown()
 
 
+@pytest.mark.platforms("posix")
+@pytest.mark.asyncio
+async def test_oom_abort_zeroes_core_limit_before_aborting(tmp_path: Path):
+    """The mock's deliberate SIGABRT must not file a core with the host's crash collector.
+
+    systemd-coredump treats each abort like a real runtime crash (~1 MB per dump,
+    several per full-suite run), polluting crash triage on dev hosts.
+    """
+    log = tmp_path / "core_limit.log"
+    client = _client(tmp_path, "oom_abort", MOCK_LSP_CORE_LIMIT_LOG=str(log))
+
+    with pytest.raises(LSPProtocolError):
+        await client.start()
+
+    # SIGABRT semantics survive: still a signalled death landing in state "error"...
+    assert client.state == "error"
+    await client.shutdown()
+
+    # ...but the soft RLIMIT_CORE was zeroed before the abort.
+    assert log.exists()
+    assert log.read_text(encoding="utf-8") == "0"
+
+
 @pytest.mark.asyncio
 async def test_initialize_error_response_keeps_its_exception_type(tmp_path: Path):
     """A JSON-RPC error to ``initialize`` must surface as the LSPRequestError the server sent,

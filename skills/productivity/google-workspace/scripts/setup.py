@@ -29,11 +29,45 @@ import os
 import sys
 from pathlib import Path
 
+
+
+def _import_pm_from_checkout():
+    """Import ``pm`` from the checkout this interpreter's Hermes was installed from.
+
+    ``sys.path[0]`` is this script's directory and the editable install does not
+    export ``pm`` as a top-level module, so a plain ``import pm`` fails even in a
+    correct install. The venv still records its source tree in ``direct_url.json``
+    -- the same record ``hermes_constants`` trusts -- so that tree is the only
+    place looked at. A copied skill run by an unrelated interpreter has no such
+    record and keeps ``pm = None``: it must not install into that environment.
+    """
+    from importlib.metadata import PackageNotFoundError, distribution
+    from urllib.parse import urlparse
+    from urllib.request import url2pathname
+
+    try:
+        raw = distribution("hermes-agent").read_text("direct_url.json")
+        url = json.loads(raw or "{}").get("url", "")
+    except (PackageNotFoundError, ValueError):
+        return None
+    if not url.startswith("file:"):
+        return None
+    root = Path(url2pathname(urlparse(url).path))
+    if not (root / "pm" / "__init__.py").is_file():
+        return None
+    if str(root) not in sys.path:
+        sys.path.append(str(root))
+    try:
+        import pm as module
+    except ImportError:
+        return None
+    return module
+
+
 try:
     import pm
 except ImportError:
-    # A copied skill must not install into an unrelated Python environment.
-    pm = None
+    pm = _import_pm_from_checkout()
 
 # Ensure sibling modules (_hermes_home) are importable when run standalone.
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
@@ -98,6 +132,11 @@ def _format_missing_scopes(missing_scopes: list[str]) -> str:
 def install_deps():
     """Sync Hermes' declared Google extra, ready for the next process."""
     if pm is None:
+        # Same rule as _ensure_deps(): without PM, the Google libraries already
+        # being importable means there is nothing to install, not a broken setup.
+        if _google_deps_importable():
+            print("Google dependencies are already installed.")
+            return True
         print("ERROR: Run this script in the Hermes environment; use hermes setup first.")
         return False
     try:
@@ -109,9 +148,38 @@ def install_deps():
     return True
 
 
+# Anchor modules for the "google" extra, mirroring pm/extras.py. Duplicated on
+# purpose: this list is consulted precisely when ``pm`` itself cannot be imported.
+_GOOGLE_ANCHORS = (
+    "googleapiclient",
+    "google.auth",
+    "google_auth_oauthlib.flow",
+    "google_auth_httplib2",
+)
+
+
+def _google_deps_importable() -> bool:
+    """Whether the "google" extra is already satisfied, without going through PM."""
+    import importlib
+
+    for anchor in _GOOGLE_ANCHORS:
+        try:
+            importlib.import_module(anchor)
+        except Exception:
+            return False
+    return True
+
+
 def _ensure_deps():
     """Let PM check imports and stop if activation needs a new process."""
     if pm is None:
+        # A skill script cannot count on importing ``pm``: ``sys.path[0]`` is this
+        # file's own directory, and the editable install does not export ``pm`` as
+        # a top-level module, so a correctly installed Hermes still misses it. That
+        # says nothing about the Google libraries, so check those directly and only
+        # refuse when they really are absent.
+        if _google_deps_importable():
+            return
         print("ERROR: Run this script in the Hermes environment; use hermes setup first.")
         sys.exit(1)
     try:

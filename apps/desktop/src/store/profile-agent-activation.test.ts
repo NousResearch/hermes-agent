@@ -17,7 +17,7 @@ import { deferred } from '../test/deferred'
 //     EARLIER setActive() landed last.
 
 const ensureGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => true)
-const ensureGatewayForProfile = vi.fn(async (_profile: string) => undefined)
+const ensureGatewayForProfile = vi.fn(async (_profile: string, _signal?: AbortSignal) => undefined)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const $gateway = atom<unknown>({ id: 'live-socket' })
 const resetStarmapGraph = vi.fn()
@@ -88,6 +88,22 @@ afterEach(() => {
 })
 
 describe('ensureGatewayAgent → $connection / $activeGatewayProfile sync', () => {
+  it('cancels a profile open without later publishing its descriptor or blocking a newer activation', async () => {
+    const held = deferred<HermesConnection>()
+    const controller = new AbortController()
+    getConnection.mockImplementationOnce(() => held.promise)
+    const first = ensureGatewayProfile('worker', { signal: controller.signal })
+    controller.abort()
+    await first
+    getConnectionFor.mockResolvedValue(agentConn({ profile: 'research' }))
+    await ensureGatewayAgent('homelab', 'research')
+    held.resolve(localConn({ profile: 'worker' }))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('worker', controller.signal)
+    expect($activeGatewayProfile.get()).toBe('research')
+    expect($connection.get()?.profile).toBe('research')
+  })
+
   it('resyncs $connection and $activeGatewayProfile even when the agent socket is already open', async () => {
     // The store-level activation resolves instantly (socket already open) —
     // exactly the case that used to skip the sync entirely.

@@ -1108,8 +1108,9 @@ ctx.pet.visible                            // ReadableAtom<boolean> — is a pet
 ctx.runAction('view.showBrowser')          // run a built-in app action → { ok: true } | { ok: false, reason, error }
 ctx.listActions()                          // [{ id, label, category }] — the ids runAction accepts
 host.navigate('/route')                    // hash-route navigation
-host.openSession(id, { profile?, intent? }) // open a stored session core-style;
-                                           //   profile: soft-swap to that profile's backend first
+host.supportsOpenSessionAbortSignal        // true only on frontends supporting options.signal
+host.openSession(id, { profile?, route?, intent?, signal? }) // open a stored session core-style;
+                                           //   profile: warm its backend; keepAllProfilesScope:false also switches chrome
                                            //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'
 host.newChat(profile?)                     // fresh chat draft, optionally in another profile
 host.openWorkspace(id, { render, title?, minWidth?, onClose? })
@@ -1141,6 +1142,56 @@ host.pluginDecisions                       // READ-ONLY atom: this window's plug
 host.i18n.registerAppLocale(id, { endonym?, rtl?, translations? })  // add a whole UI language (language pack); returns disposer
 host.i18n.languageOptions()                // [{ id, endonym, rtl, source }] — what the language switcher lists
 ```
+
+### Cancelling a pending session open
+
+`PluginOpenSessionOptions.signal?: AbortSignal` revokes that caller's pending
+session-open authority. Check `host.supportsOpenSessionAbortSignal === true`
+before relying on it: older **Desktop frontends** ignore unknown options, and
+updating a remote backend alone does not add frontend SDK support. No minimum
+prebuilt Desktop version is implied by this source contract.
+
+A pre-aborted call rejects before claiming an open generation or changing view
+state. Abort settles stalled activation, transcript hydration and route-registry
+retry waits promptly; an abandoned shared IPC/socket warmup may finish, but cannot
+commit a later open, retry, timeout overlay or profile publication for that caller.
+Cancellation does **not** roll back an already committed tab/profile activation or
+delete a session created before opening it. Existing calls without a signal retain
+their normal navigation and deliberate profile-switch semantics.
+
+For an owner-bound action, capture the connection **and** profile before async
+work and listen to both public atoms. Latch cancellation on any mismatch, even
+if the user switches away and back before activation finishes:
+
+```javascript
+if (host.supportsOpenSessionAbortSignal !== true) {
+  throw new Error('Update Hermes Desktop for cancellable session opens.')
+}
+const owner = { connectionId: host.state.connectionId.get(), profile: host.state.profile.get() }
+const controller = new AbortController()
+const checkOwner = () => {
+  if (host.state.connectionId.get() !== owner.connectionId || host.state.profile.get() !== owner.profile) {
+    controller.abort()
+  }
+}
+const dispose = [host.state.connectionId.listen(checkOwner), host.state.profile.listen(checkOwner)]
+try {
+  checkOwner()
+  const routes = await host.profileRoutes()
+  controller.signal.throwIfAborted()
+  const route = routes.find(row => row.connectionId === owner.connectionId && row.profile === owner.profile)
+  if (!route) throw new Error('The owning source is unavailable.')
+  await host.openSession(storedSessionId, { route, intent: 'tab', signal: controller.signal })
+} finally {
+  dispose.forEach(unlisten => unlisten())
+}
+```
+
+Use the same controller across a create→open action and retain its exact route,
+explicit cwd and idempotency key. Abort rejects with `signal.reason` (normally an
+`AbortError`); handle it as a cancelled action, not a timeout/retry request.
+Already-started transcript refresh may update its own session cache, not refocus
+the cancelled chat. Dispose owner listeners on success and failure.
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
 cron, kanban, …). `host.requestProfile` accepts a descriptor from

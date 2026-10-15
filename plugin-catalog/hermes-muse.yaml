@@ -1,11 +1,12 @@
 name: hermes-muse
 repo: https://github.com/xiaohei-info/hermes-muse
-sha: f98e8ff7670a2c021e5520886f05d992860790dd
-version: "0.1.27"
+sha: e3ae9291dd13801f00e1560bd922c1c51b20bdf3
+version: "0.2.3"
 description: >-
   A proactive companion for Hermes: follows accepted goals, recovers unregistered
   commitments for semantic review, prepares sourced research and Feed articles,
   maintains memory, and assembles rolling 30-day or natural-month calendar views.
+  Read-only local Dashboard/Desktop pages show Feed, Ideas and Goals.
   One Skill, one state tool and six fixed recurring jobs; selected notices and
   weekly/monthly reports go to the active profile's Bot Chat and run an assistant
   turn there. Sources, authorization, quiet hours and actual result/delivery
@@ -16,14 +17,17 @@ description: >-
   The newest 500 remain; older rows are cleaned on later input only after both
   hourly/nightly cursors cover them. Unprocessed backlog can exceed 500 and has no
   fixed retention time. Native conversations/tool results are read separately;
-  research records can retain returned payloads. Bounded conversation previews
-  support full revision-checked paging. Delegates are instructed to remain
-  read-only under inherited permissions, not sandboxed. Compatible unpinned Cron
-  routes use public delegation; configured/unknown conflicts retain an explicit
-  private parent-routing exception pending a public scoped API. New Cron watches
+  research records can retain returned payloads. Idempotency journals and
+  oversized tool results stay in the profile state database without automatic
+  expiry and may contain written content or tool output. Bounded conversation
+  previews support full revision-checked paging. Delegates are instructed to
+  remain read-only under inherited permissions, not sandboxed. Workers always use
+  public delegate_task dispatch and follow the user's delegation settings; leave
+  delegation.provider/model empty to keep the parent model. New Cron watches
   require cron.allow_agent_scheduling; local goal registration creates no job.
-  Watch prompt/stop fields each allow 4000 characters; omitted cadence defaults
-  to 30 minutes, while explicit shorter/one-off schedules remain supported.
+  Watch prompt/stop fields each allow 4000 characters; new repeating watches
+  (interval or cron) must be at least 30 minutes apart, one-off schedules are
+  exempt. Windows is not supported (POSIX file locks) and CI does not cover it.
   Background work incurs normal model/tool costs. No telemetry, self-updater,
   mandatory service, core/SOUL replacement or phone/read-receipt guarantee.
   Native remove retains data/tasks for the documented owned-only cleanup.
@@ -31,10 +35,10 @@ maintainer: xiaohei-info
 tier: community
 category: automation
 requires_hermes: ">=0.21.5"
-docs_url: https://github.com/xiaohei-info/hermes-muse/blob/f98e8ff7670a2c021e5520886f05d992860790dd/README.md
-platforms: [linux, macos, windows]
+docs_url: https://github.com/xiaohei-info/hermes-muse/blob/e3ae9291dd13801f00e1560bd922c1c51b20bdf3/README.md
+platforms: [linux, macos]
 capabilities:
   provides_tools: [muse_manage]
-  provides_hooks: [pre_llm_call, post_llm_call, transform_llm_output, on_session_end, pre_tool_call, post_tool_call]
+  provides_hooks: [pre_llm_call, post_llm_call, transform_llm_output, on_session_end, pre_tool_call, post_tool_call, on_skill_lifecycle]
   provides_middleware: []
   requires_env: []

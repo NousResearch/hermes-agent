@@ -489,6 +489,22 @@ def _windows_igpu_bytes(device: dict | None) -> int | None:
     return candidates[0].memory_bytes
 
 
+# The pool reading last logged. The statusbar polls the budget every 5 s, so the reading is logged
+# when it changes, not on every poll.
+_logged_pool_reading: tuple[int, int | None] | None = None
+
+
+def _log_pool_reading(pool: int, carve_out: int | None) -> None:
+    global _logged_pool_reading
+    if (pool, carve_out) == _logged_pool_reading:
+        return
+    _logged_pool_reading = (pool, carve_out)
+    logger.info(
+        "unified-memory NVIDIA device: allocator pool %.1f GiB "
+        "(nvidia-smi carve-out: %s); budgeting from the pool",
+        pool / _GIB, f"{carve_out / _GIB:.1f} GiB" if carve_out else "unavailable")
+
+
 def probe_budget(*, planning: bool = False) -> HardwareBudget:
     """Construct the budget per the source rules above.
 
@@ -507,11 +523,7 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     # capacity. On Windows, commit narrows the launch window instead (``launch_budget``).
     unified = _unified_pool_bytes(vram[0] if vram else 0, ram_total)
     if unified is not None:
-        logger.info(
-            "unified-memory NVIDIA device: allocator pool %.1f GiB "
-            "(nvidia-smi carve-out: %s); budgeting from the pool",
-            unified / _GIB,
-            f"{vram[0] / _GIB:.1f} GiB" if vram else "unavailable")
+        _log_pool_reading(unified, vram[0] if vram else None)
         if planning:
             base = unified
         else:

@@ -517,3 +517,37 @@ def _dashboard_forwarded_allow_ips(dashboard_config: dict[str, Any]) -> list[str
         _log.info("Dashboard trusted proxies: %s", ", ".join(trusted))
 
     return trusted
+
+
+_LOOP_HEARTBEAT_INTERVAL_S = 2.0
+_LOOP_STALL_THRESHOLD_S = 5.0
+
+
+def loop_stall_message(drift: float, cpu_used: float) -> tuple[int, str] | None:
+    """Log level and line for a heartbeat tick that ran *drift* seconds late while the process used
+    *cpu_used* seconds of CPU, or None for a punctual tick.
+
+    A GIL stall keeps some thread busy, so the process burns CPU through it. A computer that slept
+    drifts the tick too (Windows' monotonic clock counts sleep), but the process gets no CPU while
+    asleep or frozen by Modern Standby.
+    """
+    if drift <= _LOOP_STALL_THRESHOLD_S:
+        return None
+    if cpu_used < drift / 4:
+        return logging.INFO, f"event loop paused {drift:.0f}s with the process idle (the computer was probably asleep)"
+    return logging.WARNING, f"event loop stalled {drift:.1f}s (GIL pressure suspected)"
+
+
+def arm_loop_heartbeat(loop: asyncio.AbstractEventLoop, log: logging.Logger) -> None:
+    """Loop heartbeat watchdog (CF-1): a 2s call_later tick whose drift equals any GIL stall, so a
+    stalled-loop WS drop is diagnosable from the log. call_later (not a task) dies with the loop;
+    there is nothing to cancel."""
+
+    def tick(expected: float, cpu: float) -> None:
+        now, cpu_now = loop.time(), time.process_time()
+        message = loop_stall_message(now - expected, cpu_now - cpu)
+        if message is not None:
+            log.log(*message)
+        loop.call_later(_LOOP_HEARTBEAT_INTERVAL_S, tick, now + _LOOP_HEARTBEAT_INTERVAL_S, cpu_now)
+
+    loop.call_later(_LOOP_HEARTBEAT_INTERVAL_S, tick, loop.time() + _LOOP_HEARTBEAT_INTERVAL_S, time.process_time())

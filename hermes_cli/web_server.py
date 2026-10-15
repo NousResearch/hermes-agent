@@ -1531,21 +1531,9 @@ def _on_server_started(
 
     _best_effort("loop noise filter install", _install_noise_filter)
 
-    # Loop heartbeat watchdog (CF-1): a 2s call_later tick whose drift equals
-    # any GIL stall, so a stalled-loop WS drop is diagnosable from the log.
-    # call_later (not a task) dies with the loop — nothing to cancel.
-    _hb_interval = 2.0
-    _hb_stall_threshold = 5.0
-    _hb_loop = asyncio.get_running_loop()
+    from hermes_cli.web_server_lifecycle import arm_loop_heartbeat
 
-    def _loop_heartbeat(expected: float) -> None:
-        now = _hb_loop.time()
-        drift = now - expected
-        if drift > _hb_stall_threshold:
-            _log.warning("event loop stalled %.1fs (GIL pressure suspected)", drift)
-        _hb_loop.call_later(_hb_interval, _loop_heartbeat, now + _hb_interval)
-
-    _hb_loop.call_later(_hb_interval, _loop_heartbeat, _hb_loop.time() + _hb_interval)
+    arm_loop_heartbeat(asyncio.get_running_loop(), _log)
 
 
 def _windows_serve_loop_factory(config):

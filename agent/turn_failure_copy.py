@@ -360,19 +360,45 @@ def site_copy(code: str, **fields: Any) -> str:
     return _SITE_COPY[code].format_map(_Defaults(fields))
 
 
-def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None) -> str:
+def has_viable_fallback_hop(agent: Any, provider: Any, model: Any) -> bool:
+    """True when the fallback chain still holds an unconsumed hop serving a DIFFERENT
+    (provider, model) than the route that just failed — i.e. ``/model`` could hand the turn
+    to an actual alternative rather than relist the same exhausted quota. Consumption is
+    read from ``_fallback_index`` (entries at/before it were already activated)."""
+    chain = getattr(agent, "_fallback_chain", None) or []
+    try:
+        consumed = int(getattr(agent, "_fallback_index", 0) or 0)
+    except (TypeError, ValueError):
+        consumed = 0
+    for entry in list(chain)[max(consumed, 0):]:
+        if not isinstance(entry, dict):
+            continue
+        hop = (str(entry.get("provider") or "").lower(), str(entry.get("model") or "").lower())
+        if hop != (str(provider or "").lower(), str(model or "").lower()):
+            return True
+    return False
+
+
+def exhausted_copy(
+    reason: str, *, label: str, attempts: int, summary: str, reset_seconds: Optional[float] = None,
+    viable_switch: bool = True,
+) -> str:
     """Chat copy once retries + fallback are exhausted (``max_retries_exhausted_result``). A rate
-    limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401)."""
+    limit whose reset window is known names it: an 8.6h plan quota is not "wait a minute" (#89401).
+    ``viable_switch`` gates the "switch models with /model" clause: advertising it when every
+    configured route serves the same failing quota sends the user to a door that cannot change
+    the outcome — the caller computes it via :func:`has_viable_fallback_hop`."""
     first_attempt = attempts == 1 and reason in _EXHAUSTED_FIRST_ATTEMPT_LEADS
     lead = (_EXHAUSTED_FIRST_ATTEMPT_LEADS if first_attempt else _EXHAUSTED_LEADS).get(
         reason, _EXHAUSTED_DEFAULT_LEAD).format(label=label, attempts=attempts)
     # The free-tier cutoff (one attempt) fires on any cooldown over a minute, so it always names the reset.
+    _switch = ", or switch models with /model" if viable_switch else ""
     if reset_seconds is not None and (reset_seconds >= 120 or first_attempt and reset_seconds > 0):
         from agent.retry_utils import format_reset_window
         situation = (f"its usage limit resets in {format_reset_window(reset_seconds)}. "
-                     "Send /retry after that, or switch models with /model.")
+                     f"Send /retry after that{_switch}.")
     else:
-        situation = f"it looks temporarily unavailable. {_NEXT_STEPS_RETRY}"
+        situation = f"it looks temporarily unavailable. Wait a minute and send /retry{_switch}."
     return (
         f"{lead} — {situation} To avoid this in future, "
         f"add a backup provider with `hermes fallback add`.\n\nProvider said: {summary}"

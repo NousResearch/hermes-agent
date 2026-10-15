@@ -30,7 +30,8 @@ from agent.message_sanitization import (
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
 from agent.vision_message_prep import _provider_model_key
 from agent.turn_failure_copy import (
-    CONTENT_POLICY_NEXT_STEPS, content_policy_copy, exhausted_copy, limit_reset_copy, nonretryable_copy,
+    CONTENT_POLICY_NEXT_STEPS, content_policy_copy, exhausted_copy, has_viable_fallback_hop,
+    limit_reset_copy, nonretryable_copy,
     provider_label_for, site_copy, stamp_failure,
 )
 from agent.turn_retry_state import TurnRetryState
@@ -1215,6 +1216,7 @@ def max_retries_exhausted_result(
         _final_response = exhausted_copy(
             classified.reason.value, label=provider_label_for(provider), attempts=attempts,
             summary=_final_summary, reset_seconds=_reset_at - time.time() if _reset_at else None,
+            viable_switch=has_viable_fallback_hop(agent, provider, model),
         )
         if _welcome_hint:
             _final_response = _welcome_tier_guidance(classified, model=model, in_chat=True)

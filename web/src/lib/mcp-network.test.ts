@@ -21,7 +21,7 @@ describe("MCP target shared by Add Server and Profile Builder", () => {
     },
   );
 
-  it("keeps the compatible auto default and never leaks HTTP settings into stdio", () => {
+  it("persists the new-entry auto choice and never leaks HTTP settings into stdio", () => {
     const draft = {
       ...emptyMcpServerDraft(),
       name: "unity",
@@ -30,6 +30,7 @@ describe("MCP target shared by Add Server and Profile Builder", () => {
     expect(buildMcpServerCreate(draft)).toEqual({
       name: "unity",
       url: draft.url,
+      network: "auto",
     });
     const body = buildMcpServerCreate({
       ...draft,

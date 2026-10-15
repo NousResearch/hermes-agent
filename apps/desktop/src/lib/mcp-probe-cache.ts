@@ -29,7 +29,7 @@ export const serverFingerprint = (server: Record<string, unknown>): string =>
     server.headers,
     server.transport,
     server.auth,
-    server.network
+    server.url ? (server.network ?? 'local') : undefined
   ])
 
 export const probeKey = (name: string, server: Record<string, unknown> | undefined, profileKey: string): string =>

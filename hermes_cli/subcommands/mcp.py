@@ -34,7 +34,7 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         "--args", nargs=argparse.REMAINDER, default=[],
         help="Arguments for stdio command; must be the last option")
     mcp_add_p.add_argument("--network", choices=["auto", "local", "windows"],
-                           help="HTTP/SSE network target relative to the backend (default: auto)")
+                           help="HTTP/SSE network target (new URL entries persist auto; omitted legacy configs stay local)")
     mcp_add_p.add_argument("--transport", choices=["http", "sse"],
                            help="HTTP transport: Streamable HTTP or legacy SSE")
     mcp_add_p.add_argument("--auth", choices=["oauth", "header"], help="Auth method")

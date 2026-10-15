@@ -62,9 +62,9 @@ export function buildMcpServerCreate(draft: McpServerDraft): McpServerCreate {
       throw new Error("Bearer token required");
     }
 
-    const server: McpServerCreate = { name, url };
-    // Omitted defaults remain compatible with older backends/configs.
-    if (draft.network !== "auto") server.network = draft.network;
+    // Persist the namespace choice. Omission is reserved for legacy entries and
+    // remains backend-local; a newly created entry explicitly opts into auto.
+    const server: McpServerCreate = { name, url, network: draft.network };
     if (draft.httpTransport === "sse") server.transport = "sse";
     if (draft.httpAuth !== "none") server.auth = draft.httpAuth;
     if (draft.httpAuth === "header") {

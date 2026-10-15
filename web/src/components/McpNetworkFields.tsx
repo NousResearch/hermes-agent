@@ -33,8 +33,9 @@ export function McpNetworkFields({
           <SelectOption value="windows">Windows loopback</SelectOption>
         </Select>
         <p className="text-xs text-muted-foreground">
-          Relative to the selected backend, not this browser. Windows loopback
-          requires a WSL or Windows backend and a localhost URL.
+          Relative to the selected backend, not this browser. New entries save
+          this choice explicitly; legacy entries without it stay backend-only.
+          Windows loopback requires a WSL or Windows backend and a localhost URL.
         </p>
       </div>
       <div className="grid gap-2">

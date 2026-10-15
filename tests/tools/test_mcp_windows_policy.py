@@ -26,7 +26,7 @@ async def test_explicit_windows_target_never_bridges_other_origins(url):
 
 @pytest.mark.linux_only
 @pytest.mark.asyncio
-async def test_wsl_auto_prefers_local_listener_but_explicit_windows_overrides_it(monkeypatch):
+async def test_wsl_legacy_omission_stays_local_and_explicit_auto_or_windows_can_bridge(monkeypatch):
     # Substitute only WSL's environment-detection boundary; all socket/process
     # primitives still run on the real Linux kernel (WSL is Linux too).
     monkeypatch.setattr(mcp_windows, 'is_wsl', lambda: True)
@@ -51,7 +51,12 @@ async def test_wsl_auto_prefers_local_listener_but_explicit_windows_overrides_it
     finally:
         server.close()
         await server.wait_closed()
+    # The listener is now absent. Omission is the pre-feature legacy state and
+    # must fail closed in the backend namespace instead of retargeting Windows.
     async with mcp_windows.mcp_http_route(url) as route:
+        assert route is None
+    assert calls == [url]
+    async with mcp_windows.mcp_http_route(url, network='auto') as route:
         assert route is marker
     assert calls == [url, url]
     async with mcp_windows.mcp_http_route(url, network='local') as route:

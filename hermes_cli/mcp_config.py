@@ -685,7 +685,11 @@ def cmd_mcp_add(args):
             server_config["env"] = explicit_env
     network = getattr(args, "network", None)
     transport = getattr(args, "transport", None)
-    if network is not None:
+    if url:
+        # New entries opt into automatic WSL→Windows fallback explicitly.
+        # Legacy/raw configs with no field remain backend-local.
+        server_config["network"] = network if network is not None else "auto"
+    elif network is not None:
         server_config["network"] = network
     if transport is not None:
         if not url:
@@ -804,8 +808,11 @@ def cmd_mcp_list(args=None):
         enabled = mcp_server_enabled(cfg)
         status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
-        if cfg.get("url") and "network" in cfg:
-            _info(f"Network: {cfg['network']}")
+        if cfg.get("url"):
+            from tools.mcp_windows import effective_mcp_network
+            network = effective_mcp_network(cfg)
+            suffix = " (legacy default)" if "network" not in cfg else ""
+            _info(f"Network: {network}{suffix}")
     print()
 
 

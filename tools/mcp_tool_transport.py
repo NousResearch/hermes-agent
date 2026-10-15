@@ -16,7 +16,7 @@ from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _
 from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
 from tools.mcp_tool_common import _core
 from tools.mcp_tool_node_abi import node_abi_error
-from tools.mcp_windows import mcp_http_route
+from tools.mcp_windows import effective_mcp_network, mcp_http_route
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_lifecycle as _lifecycle
 from tools import mcp_tool_registration as _registration
@@ -438,7 +438,7 @@ class MCPServerTransportMixin:
 
     async def _preflight_content_type(self, url: str, *, headers: Optional[dict] = None,
                                       ssl_verify: bool = True, client_cert=None, timeout: float = 5.0,
-                                      strict_redirect_headers: bool = False, network: str = "auto") -> None:
+                                      strict_redirect_headers: bool = False, network: str = "local") -> None:
         """Probe *url* before the SDK connects: a plain web page would make the SDK sit out the full
         ``connect_timeout`` before an opaque ``CancelledError``; this raises NonMcpEndpointError within
         ``timeout``. Allow-list based: only a 2xx with a definite non-MCP content type is rejected, and
@@ -598,12 +598,13 @@ class MCPServerTransportMixin:
 
     async def _run_http(self, config: dict):
         connect_timeout = config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT)
-        url, _headers = _connect_inputs(self.name, config)[0]
-        async with mcp_http_route(url, network=config.get("network", "auto"),
+        connect_data = _connect_inputs(self.name, config)
+        url, _headers = connect_data[0]
+        async with mcp_http_route(url, network=effective_mcp_network(config),
                                   connect_timeout=float(connect_timeout)) as route:
-            return await self._run_http_routed(config, route)
+            return await self._run_http_routed(config, route, connect_data)
 
-    async def _run_http_routed(self, config: dict, route):
+    async def _run_http_routed(self, config: dict, route, connect_data):
         """Run the server using HTTP/StreamableHTTP (or SSE) transport."""
         _core._ensure_mcp_sdk()
         if not _core._MCP_HTTP_AVAILABLE:
@@ -612,7 +613,7 @@ class MCPServerTransportMixin:
                               "Upgrade the mcp package to get HTTP support.")
         # Agent Plugins v1 strict_redirect_headers: configured headers MUST NOT follow a cross-origin
         # redirect — their names are captured BEFORE client-generated headers are merged in.
-        inputs, configured_header_names = _connect_inputs(self.name, config)
+        inputs, configured_header_names = connect_data
         # Hash the endpoint this attempt connects to: a second read of the runtime file could
         # publish another endpoint's identity alongside this session.
         self._resolved_identity = _registration._identity_digest(inputs)

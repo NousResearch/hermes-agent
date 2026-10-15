@@ -89,11 +89,13 @@ export function addMcpServer(
   },
   profile?: ProfileScope
 ): Promise<McpServerSummary> {
+  const requestBody = body.url && body.network === undefined ? { ...body, network: 'auto' as const } : body
+
   return window.hermesDesktop.api<McpServerSummary>({
     ...capabilityScoped(profile),
     path: '/api/mcp/servers',
     method: 'POST',
-    body
+    body: requestBody
   })
 }
 

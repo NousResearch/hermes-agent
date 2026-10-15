@@ -39,8 +39,12 @@ describe('probeKey', () => {
     )
   })
 
-  it('invalidates results when the same URL targets a different network namespace', () => {
+  it('canonicalizes legacy omission to local and invalidates other network namespaces', () => {
     const server = { url: 'http://localhost:8080/mcp', network: 'local' }
+    expect(probeKey('unity', { url: server.url }, 'default')).toBe(probeKey('unity', server, 'default'))
+    expect(probeKey('unity', { url: server.url }, 'default')).not.toBe(
+      probeKey('unity', { ...server, network: 'auto' }, 'default')
+    )
     expect(probeKey('unity', server, 'default')).not.toBe(
       probeKey('unity', { ...server, network: 'windows' }, 'default')
     )

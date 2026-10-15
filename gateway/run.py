@@ -4373,6 +4373,12 @@ def _housekeeping_channel_directory(adapters, loop) -> None:
             fut.result(timeout=30)
 
 
+def _housekeeping_browser_lanes() -> None:
+    """Start the browser cleanup thread if it is not running (idempotent; also restarts it if it died)."""
+    from tools import browser_tool_lifecycle
+    browser_tool_lifecycle.ensure_idle_lane_cleanup()
+
+
 def _housekeeping_media_caches() -> None:
     """Every platform media cache prunes on the same hourly cadence (24h max age)."""
     from gateway.platforms.base import (
@@ -4564,6 +4570,10 @@ def _start_gateway_housekeeping(
         chores.append((1, DRAIN_LABEL, lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner)))
     chores += [
         (5, "Channel directory refresh", lambda: adapters and _housekeeping_channel_directory(adapters, loop)),
+        # Long-lived gateways own the browsers their lanes launched: start the lane cleanup thread
+        # here so an idle lane (or a browser left by a process that has since exited) is closed on
+        # its own window even when nothing browses in this process.
+        (5, "Browser lane cleanup", _housekeeping_browser_lanes),
         (60, "Media cache cleanup", _housekeeping_media_caches),
         (60, "Paste sweep", _housekeeping_paste_sweep)]
     if cron_provider is not None:

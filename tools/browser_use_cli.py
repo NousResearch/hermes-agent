@@ -18,6 +18,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
+from urllib.parse import urlsplit
 
 from hermes_constants import get_hermes_home
 from utils import is_truthy_value
@@ -666,28 +667,89 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
-# BU_NAMEs whose harness daemon this process has driven. The daemon reads BU_CDP_* once, at start, and
-# outlives every call, so a backend swap (/browser connect|disconnect) that only changes the resolved
-# endpoint leaves later browser_exec calls in the old browser until these are stopped.
-_driven_daemons: set = set()
+# BU_NAMEs whose harness daemon this process has driven, and the CDP lane each was started on. The
+# daemon reads BU_CDP_* once, at start, and outlives every call, so a backend swap
+# (/browser connect|disconnect) that only changes the resolved endpoint leaves later browser_exec
+# calls in the old browser until these are stopped — and the endpoint is what tells which lane a
+# daemon serves when one lane goes idle while another is still in use.
+_driven_daemons: Dict[str, str] = {}
 _driven_daemons_lock = threading.Lock()
 # Route cache key -> whether its last browser_exec ran on the hybrid local sidecar.
 _exec_route_is_sidecar: dict[str, bool] = {}
 
 
-def stop_harness_daemons() -> None:
-    """Stop every harness daemon this process drove, through the harness's own identity-checked
-    ``--reload``; the next browser_exec respawns one on the endpoint it resolves then."""
+def _cdp_lane_key(cdp: str) -> str:
+    """The ``host:port`` a CDP endpoint belongs to — the form the session cache and BU_CDP_* share,
+    with any credentials in the URL dropped."""
+    try:
+        parts = urlsplit(cdp or "")
+    except ValueError:
+        return ""
+    return f"{parts.hostname}:{parts.port}" if parts.hostname and parts.port else ""
+
+
+def stop_harness_daemons(cdp: Optional[str] = None) -> None:
+    """Stop the harness daemons this process drove, through the harness's own identity-checked
+    ``--reload``; the next browser_exec respawns one on the endpoint it resolves then.
+
+    ``cdp`` limits it to the daemons serving that endpoint, so tearing one lane down cannot reload a
+    daemon another lane is still using.
+    """
+    lane_key = _cdp_lane_key(cdp) if cdp is not None else None
     with _driven_daemons_lock:
-        names = sorted(_driven_daemons)
-        _driven_daemons.clear()
+        names = sorted(name for name, endpoint in _driven_daemons.items()
+                       if lane_key is None or endpoint == lane_key)
+        for name in names:
+            _driven_daemons.pop(name, None)
     cmd = _find_cli() if names else None
     if not cmd:
         return
     env = _base_subprocess_env()
     for name in names:
+        # Logged so the teardown is observable: without it a successful close leaves no trace.
+        logger.info("Reloading Browser Use harness daemon %s (lane %s)", name, lane_key or "any")
         with contextlib.suppress(OSError, subprocess.SubprocessError):
             _run_cli_killing_process_group([*cmd, "--reload"], "", {**env, "BU_NAME": name}, 15)
+
+
+# The harness lane's closer and the calls that re-arm it hold this lock together, so a call starting
+# while a reload is in flight waits for it instead of having its daemon reloaded mid-call.
+_HARNESS_LANE = "browser-use-harness"
+_harness_close_lock = threading.Lock()
+
+
+def lane_idle_timeout_s() -> float:
+    """Idle window before a lane's browser is torn down.
+
+    Long enough to outlast a single call (``_MAX_TIMEOUT_S``), so a closer can never fire mid-use, and
+    it honours ``browser.inactivity_timeout`` once an operator sets that above the cap.
+    """
+    from tools.browser_tool_origin import origin as _bt
+    try:
+        base = float(getattr(_bt, "BROWSER_SESSION_INACTIVITY_TIMEOUT", 120))
+    except (TypeError, ValueError):
+        base = 120.0
+    return max(base, 2 * _MAX_TIMEOUT_S)
+
+
+def _mark_harness_in_use() -> None:
+    """Arm the harness lane's idle closer, so the daemon(s) this process drove are stopped once the
+    lane goes idle instead of outliving every run of a long-lived gateway."""
+    from tools import browser_tool_lifecycle as _lifecycle
+    _lifecycle.register_idle_lane_closer(
+        _HARNESS_LANE, _close_harness_lane, lane_idle_timeout_s(),
+        label="Browser Use harness daemon(s)",
+    )
+
+
+def _close_harness_lane() -> None:
+    """Closer for the harness lane: reload nothing when a call re-armed the lane while this sweep was
+    due. Reloading a daemon takes the browser out from under the call that owns it."""
+    from tools import browser_tool_lifecycle as _lifecycle
+    with _harness_close_lock:
+        if _lifecycle.idle_lane_registered(_HARNESS_LANE):
+            return
+        stop_harness_daemons()
 
 
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
@@ -747,8 +809,13 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
 
     def dispatch() -> dict[str, Any]:
         _attach_vault_supervisor(env, task_id)
-        with _driven_daemons_lock:
-            _driven_daemons.add(env.get("BU_NAME", "default"))
+        # Held against the harness lane's closer: a reload in flight must finish before this call's
+        # daemon is registered, or the reload would take the browser out from under this call.
+        with _harness_close_lock:
+            _mark_harness_in_use()
+            with _driven_daemons_lock:
+                lane = _cdp_lane_key(env.get("BU_CDP_WS") or env.get("BU_CDP_URL") or "")
+                _driven_daemons[env.get("BU_NAME", "default")] = lane
         try:
             return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
         except subprocess.TimeoutExpired:

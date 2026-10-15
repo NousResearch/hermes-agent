@@ -106,15 +106,14 @@ def _emergency_cleanup_all_sessions():
 
 
 @contextlib.contextmanager
-def _session_owner_scope(task_id: str):
-    """Run under the Hermes home + secret scope owning ``task_id``'s session (no-op if unrecorded).
+def _owner_home_scope(owner_home: Optional[str]):
+    """Run under ``owner_home``'s Hermes home + secret scope (no-op when the home is unknown).
 
-    The janitor thread is process-global, so each teardown must re-enter its OWN
-    profile's scope rather than inherit the spawning profile's; never falls
-    through to ``os.environ``.
+    Threads and deferred callbacks are process-global while a profile's home, secrets and config are
+    not: anything running outside a turn must re-enter the owning profile's scope rather than inherit
+    the spawning profile's, and never fall through to ``os.environ``.
     """
-    owner_home = _bt._session_owner_homes.get(task_id)
-    if owner_home is None:
+    if not owner_home:
         yield
         return
 
@@ -133,6 +132,13 @@ def _session_owner_scope(task_id: str):
         reset_hermes_home_override(home_token)
 
 
+@contextlib.contextmanager
+def _session_owner_scope(task_id: str):
+    """Run under the Hermes home + secret scope owning ``task_id``'s session (no-op if unrecorded)."""
+    with _owner_home_scope(_bt._session_owner_homes.get(task_id)):
+        yield
+
+
 def _forget_session_tracking(task_id: str, *, activity: bool = True, session: bool = False) -> None:
     """Drop the janitor's bookkeeping (and optionally the session entry) for ``task_id``."""
     with _bt._cleanup_lock:
@@ -142,6 +148,142 @@ def _forget_session_tracking(task_id: str, *, activity: bool = True, session: bo
             _bt._session_last_activity.pop(task_id, None)
         _bt._session_owner_homes.pop(task_id, None)
         _bt._cleanup_failures.pop(task_id, None)
+
+
+# Lanes that launch and own their browser process (the real-profile Chrome, the Browser Use
+# harness daemon) never get an ``_active_sessions`` entry, so the janitor cannot reach them:
+# their teardown hangs off process exit, which a long-lived gateway never reaches — the browsers
+# then outlive every run by days. Such a lane registers a closer here and re-registers it on
+# every use; the cleanup thread runs the closer once the lane has been idle past its own window.
+# The registry is process-local on purpose: a closer acts only through handles this process holds,
+# and defers to a live foreign claim on anything shared.
+_idle_lane_lock = threading.Lock()
+_idle_lane_closers: Dict[str, Dict[str, Any]] = {}
+
+# Lanes that exist on disk independently of this process (a browser left behind by a gateway that
+# has since restarted). They declare their closer here at import; the sweep reads the lane's own
+# on-disk last-use time, so a restart resumes the countdown instead of starting a new hour.
+_declared_lanes: Dict[str, Dict[str, Any]] = {}
+
+_declared_lane_factories: list = []
+
+
+def add_idle_lane_declaration(factory) -> None:
+    """Queue a callable that declares one or more lanes; it runs when the cleanup thread starts.
+
+    Declared by the browser modules at import so a lane's closer is known without a call into the
+    lane -- the case where the browser outlived the process that started it.
+    """
+    _declared_lane_factories.append(factory)
+
+
+_declarations_lock = threading.Lock()
+_declarations_done = False
+
+
+def _run_lane_declarations() -> None:
+    """Run every queued declaration once per process (a declaration may itself start the thread)."""
+    global _declarations_done
+    with _declarations_lock:
+        if _declarations_done:
+            return  # re-entered by a declaration that started the cleanup thread
+        _declarations_done = True
+        factories = list(_declared_lane_factories)
+    for factory in factories:
+        try:
+            factory()
+        except Exception as e:  # a lane that cannot declare itself must not stop the thread
+            _bt.logger.warning("Idle-lane declaration failed: %s", e)
+
+
+
+def register_idle_lane_closer(key: str, closer, timeout_s: float, label: str = "") -> None:
+    """Register (or re-touch) ``key``'s idle closer, starting the cleanup thread that runs it.
+
+    Registering again is what marks the lane in use, so every call into the lane must call this —
+    the closer fires only after a full ``timeout_s`` with no registration.
+    """
+    _start_browser_cleanup_thread()
+    with _idle_lane_lock:
+        _idle_lane_closers[key] = {
+            "closer": closer,
+            "timeout": float(timeout_s),
+            "label": label or key,
+            "last": time.time(),
+            "home": str(get_hermes_home()),
+        }
+
+
+def idle_lane_registered(key: str) -> bool:
+    """True while ``key`` has a closer armed — a lane that was used again since the last sweep."""
+    with _idle_lane_lock:
+        return key in _idle_lane_closers
+
+
+def declare_idle_lane(key: str, closer, timeout_s: float, *, label: str = "",
+                      last_used_reader=None) -> None:
+    """Declare ``key``'s closer WITHOUT marking the lane in use.
+
+    For a lane whose browser can outlive its owner process: ``last_used_reader`` returns the epoch
+    the lane was last used (read from the lane's own on-disk record), so the countdown continues
+    across a gateway restart instead of restarting, and a browser left by a dead process is closed
+    without waiting for a new call into the lane.
+    """
+    _start_browser_cleanup_thread()
+    with _idle_lane_lock:
+        _declared_lanes[key] = {
+            "closer": closer,
+            "timeout": float(timeout_s),
+            "label": label or key,
+            "last_used_reader": last_used_reader,
+        }
+
+
+def _due_declared_lanes(now: float) -> list:
+    """Declared lanes that are not armed in this process and whose on-disk window has passed."""
+    with _idle_lane_lock:
+        armed = set(_idle_lane_closers)
+        candidates = [(key, dict(entry)) for key, entry in _declared_lanes.items() if key not in armed]
+    due = []
+    for key, entry in candidates:
+        reader = entry.get("last_used_reader")
+        if reader is None:
+            continue
+        try:
+            last_used = reader()
+        except Exception as e:  # a broken record must not stop the sweep
+            _bt.logger.warning("Could not read the idle state of %s: %s", entry.get("label", key), e)
+            continue
+        if last_used is not None and now - float(last_used) >= float(entry["timeout"]):
+            due.append((key, entry))
+    return due
+
+
+def _run_due_idle_lane_closers() -> None:
+    """Run every idle lane closer whose window has passed, then disarm it (cleanup thread).
+
+    Disarming matters: a closer that re-arms itself would otherwise spawn a subprocess every
+    window for the life of the process. A lane that is used again simply registers again, and a
+    lane left behind by a dead process is covered by its declaration.
+    """
+    now = time.time()
+    with _idle_lane_lock:
+        due = [(key, entry) for key, entry in _idle_lane_closers.items()
+               if now - float(entry.get("last", now)) >= float(entry.get("timeout", 0.0))]
+        for key, _ in due:
+            _idle_lane_closers.pop(key, None)
+    due = due + [(key, {**entry, "home": entry.get("home") or str(get_hermes_home())})
+                 for key, entry in _due_declared_lanes(now)]
+    for key, entry in due:
+        label = entry.get("label", key)
+        try:
+            with _owner_home_scope(entry.get("home")):
+                entry["closer"]()
+        except Exception as e:
+            _bt.logger.warning("Idle close of %s failed: %s", label, e)
+            entry["last"] = time.time()  # a retry waits another full window, not the next cycle
+            with _idle_lane_lock:
+                _idle_lane_closers.setdefault(key, entry)
 
 
 def _cleanup_inactive_browser_sessions():
@@ -431,6 +573,8 @@ def _browser_cleanup_thread_worker():
         except Exception as e:
             _bt.logger.warning("Cleanup thread error: %s", e)
 
+        _run_due_idle_lane_closers()
+
         for _ in range(30):  # 1s granularity so stop is quick
             if not _bt._cleanup_running:
                 break
@@ -439,6 +583,7 @@ def _browser_cleanup_thread_worker():
 
 def _start_browser_cleanup_thread():
     """Start the background cleanup thread if not already running."""
+    _run_lane_declarations()
     with _bt._cleanup_lock:
         if _bt._cleanup_thread is None or not _bt._cleanup_thread.is_alive():
             _bt._cleanup_running = True
@@ -446,6 +591,16 @@ def _start_browser_cleanup_thread():
                                                    name="browser-cleanup")
             _bt._cleanup_thread.start()
             _bt.logger.info("Started inactivity cleanup thread (timeout: %ss)", _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT)
+
+
+def ensure_idle_lane_cleanup() -> None:
+    """Start the cleanup thread (and run the lane declarations); idempotent and cheap.
+
+    The gateway calls this on its housekeeping timer. Without it the thread — and therefore the lane
+    sweep — only exists after something browses, so a browser left behind by a previous process would
+    sit until the next browser call instead of being closed on its own idle window.
+    """
+    _start_browser_cleanup_thread()
 
 
 def _stop_browser_cleanup_thread():
@@ -771,3 +926,9 @@ def cleanup_all_browsers() -> None:
     ):
         setattr(_bt, flag, False)
         setattr(_bt, cache, None)
+
+
+# The real-profile lane's browser can outlive this process (it is launched by Hermes, not by the
+# attach daemon), so its closer is declared rather than only registered on use.
+# Resolved lazily: this module can be imported while the real-profile module is still initializing.
+add_idle_lane_declaration(lambda: _real_profile._declare_real_profile_lane())

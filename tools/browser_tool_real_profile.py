@@ -11,6 +11,9 @@ import re
 import subprocess
 import sys
 import time
+import json
+import signal
+from contextlib import suppress
 from typing import Optional, Tuple
 from agent.proxy_bypass import loopback_request_kwargs
 from tools.browser_tool_origin import origin_module as _origin
@@ -29,6 +32,210 @@ def _terminate_real_profile_chrome() -> None:
     _bt = _origin()
     while _bt._real_profile_chrome_procs:
         _terminate(_bt._real_profile_chrome_procs.pop(), what="real-profile chrome")
+
+
+def _real_profile_session_live() -> bool:
+    """True while a real-profile browser session is still open.
+
+    The built-in browser tools attach once (``_create_local_session``) and then reuse the cached
+    ``rp_*`` session without re-entering this lane, so our own idle clock cannot see them working:
+    their session record — removed by the janitor after ``browser.inactivity_timeout`` — is the
+    only honest "in use" signal for that path.
+    """
+    _bt = _origin()
+    with _bt._cleanup_lock:
+        sessions = list(_bt._active_sessions.values())
+    return any((info.get("features") or {}).get("real_profile") for info in sessions)
+
+
+def _lane_claimed_by_another_process() -> bool:
+    """True while another live Hermes process claims the shared real-profile daemon.
+
+    The attach daemon is one session name shared by every Hermes process on the host (a CLI session
+    beside the gateway), so closing it is only safe when the socket dir's ``owner_pid`` claim is this
+    process or nobody — the claim is the only cross-process signal, and the orphan reaper runs on the
+    same rule.
+    """
+    _bt = _origin()
+    from tools import browser_tool_lifecycle as _lifecycle
+    socket_dir = os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{_bt._REAL_PROFILE_SESSION}")
+    owner_pid, owner_alive = _lifecycle._owner_pid_alive(socket_dir, _bt._REAL_PROFILE_SESSION)
+    return bool(owner_alive) and owner_pid != os.getpid()
+
+
+def _close_real_profile_browser() -> None:
+    """Close the idle shared real-profile browser, or re-arm when it is still in use.
+
+    Order matters: the harness daemon reads its CDP endpoint once at start, so it is stopped before
+    the Chrome it points at. Chrome is launched by Hermes (agent-browser only attaches), so closing
+    the agent-browser session alone would leave it running — both halves are needed.
+    """
+    _bt = _origin()
+    from tools import browser_tool_lifecycle as _lifecycle
+    from tools.browser_use_cli import stop_harness_daemons
+    key = f"real-profile:{_bt._REAL_PROFILE_SESSION}"
+
+    # Every route that re-arms this lane holds the resolve lock, so both checks must run under it:
+    # between an unlocked check and the acquire, a fresh call could take a cache hit and be killed.
+    if not _bt._real_profile_cdp_lock.acquire(blocking=False):
+        _bt.logger.info("Idle close deferred for %s: a resolve is in flight", key)
+        _mark_real_profile_in_use()  # a resolve is in flight; retry after another window
+        return
+    try:
+        if _lifecycle.idle_lane_registered(key):
+            return  # the lane was used again while this closer was due
+        if _real_profile_session_live():
+            _bt.logger.info("Idle close deferred for %s: a real-profile session is still live", key)
+            _mark_real_profile_in_use()
+            return
+        if _lane_claimed_by_another_process():
+            _bt.logger.info("Idle close deferred for %s: another live process claims the lane", key)
+            _mark_real_profile_in_use()
+            return
+        # Only the daemons on THIS lane's endpoint: a daemon the harness started on a cloud/CDP-
+        # override session in the same idle hour must keep its browser, and an unknown endpoint
+        # identifies no lane at all.
+        cached = _bt._real_profile_cdp_cache.pop("cdp", None)
+        _bt.logger.info("Idle lane %s: closing the lane's browser (endpoint %s)", key, cached or "unknown")
+        if cached:
+            stop_harness_daemons(cached)
+        _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
+        _terminate_real_profile_chrome()
+        # A Chrome started by a Hermes process that has since exited is reparented to launchd and
+        # holds our copy dir open; nothing else can close it (we hold no handle to it).
+        _reclaim_orphaned_real_profile_chrome(_read_lane_state().get("copy_dir") or "")
+        _clear_lane_state()
+    finally:
+        _bt._real_profile_cdp_lock.release()
+
+
+def _lane_state_path() -> str:
+    """Where this lane records its last use and copy dir, so the idle clock survives a restart."""
+    _bt = _origin()
+    return os.path.join(_bt._socket_safe_tmpdir(), f"hermes-real-profile-{_bt._REAL_PROFILE_SESSION}.lane")
+
+
+def _read_lane_state() -> dict:
+    """The lane's on-disk record: ``{"last_used": epoch, "copy_dir": path}`` (empty when unreadable)."""
+    try:
+        with open(_lane_state_path(), encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _lane_last_used() -> Optional[float]:
+    """When this lane was last used, from its on-disk record; None when there is no usable record.
+
+    This is what lets a freshly started process resume the countdown instead of starting a new hour
+    — and close a browser left behind by the process that died.
+    """
+    value = _read_lane_state().get("last_used")
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _write_lane_state(last_used: float, copy_dir: str = "") -> None:
+    """Record the last use (and the copy dir) for the next process; best-effort, never raises."""
+    _bt = _origin()
+    path = _lane_state_path()
+    payload: dict = {"last_used": float(last_used)}
+    remembered = copy_dir or _read_lane_state().get("copy_dir")
+    if remembered:
+        payload["copy_dir"] = str(remembered)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        os.replace(tmp, path)
+    except OSError as e:
+        _bt.logger.warning("Could not record the idle state of the real-profile lane: %s", e)
+
+
+def _clear_lane_state() -> None:
+    """Drop the record once the lane is closed, so nothing claims an idle browser still exists."""
+    with suppress(OSError):
+        os.unlink(_lane_state_path())
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _orphaned_real_profile_chromes(copy_dir: str) -> list:
+    """PIDs of Chrome processes running on OUR copy dir that no live process supervises (ppid 1).
+
+    Only orphaned ones: a Chrome whose parent is still alive belongs to a live process and is left
+    alone. The flag is matched exactly, so the user's own Chrome (a different data dir) never matches.
+    """
+    if not copy_dir:
+        return []
+    try:
+        listing = subprocess.run(["ps", "-axo", "pid=,ppid=,command="], capture_output=True,
+                                 text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    flag = f"--user-data-dir={copy_dir}"
+    found = []
+    for line in listing.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid, ppid, command = parts
+        if flag not in command or "Chrome" not in command:
+            continue
+        if not (pid.isdigit() and ppid.isdigit()) or int(ppid) != 1:
+            continue
+        found.append(int(pid))
+    return found
+
+
+def _reclaim_orphaned_real_profile_chrome(copy_dir: str) -> int:
+    """Terminate Chrome processes left on our copy dir by a dead Hermes process; returns how many."""
+    _bt = _origin()
+    pids = _orphaned_real_profile_chromes(copy_dir)
+    if not pids:
+        return 0
+    for pid in pids:
+        with suppress(OSError):
+            os.kill(pid, signal.SIGTERM)
+    deadline = time.time() + 5
+    while time.time() < deadline and any(_pid_alive(pid) for pid in pids):
+        time.sleep(0.2)
+    for pid in pids:
+        if _pid_alive(pid):
+            with suppress(OSError):
+                os.kill(pid, signal.SIGKILL)
+    _bt.logger.info("Reclaimed %d orphaned real-profile Chrome process(es) on %s", len(pids), copy_dir)
+    return len(pids)
+
+
+def _mark_real_profile_in_use(copy_dir: str = "") -> None:
+    """Mark the shared real-profile browser in use, arming its idle closer.
+
+    Without this the lane has no teardown until process exit: no cleanup thread ever starts for it
+    (so neither the janitor nor the orphan reaper runs at all), and a long-lived gateway never exits
+    — which leaves Chrome and its attach daemon alive for days after the run.
+    """
+    _bt = _origin()
+    from tools import browser_tool_lifecycle as _lifecycle
+    from tools.browser_use_cli import lane_idle_timeout_s
+    _lifecycle.register_idle_lane_closer(
+        f"real-profile:{_bt._REAL_PROFILE_SESSION}",
+        _close_real_profile_browser,
+        lane_idle_timeout_s(),
+        label="real-profile browser",
+    )
+    # The record is what carries the countdown across a gateway restart: without it a restart makes
+    # the lane look idle-from-now and pushes the close out by another full window.
+    _write_lane_state(time.time(), copy_dir)
 
 
 def _cdp_http_ready(http_cdp: str) -> bool:
@@ -294,6 +501,7 @@ def _real_profile_cdp() -> tuple:
             # Re-claim the shared daemon's socket dir so the orphan reaper's idle clock sees
             # this process still using it (a cache hit never runs a daemon command).
             _session._prepare_session_socket_dir(_bt._REAL_PROFILE_SESSION)
+            _mark_real_profile_in_use()
             return cached, None
         _bt._real_profile_cdp_cache.pop("cdp", None)
 
@@ -309,13 +517,15 @@ def _real_profile_cdp() -> tuple:
         existing = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
         if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
             _bt._real_profile_cdp_cache["cdp"] = existing
+            _mark_real_profile_in_use(copy_dir)
             return existing, None
         if existing:  # stale/wrong-dir session: close it so nothing holds the dir open
             _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
         # A Chrome from an earlier hermes process can still hold the copy dir after its attach
         # daemon was reaped (that owner died). Re-attach to it rather than overlay a live profile;
-        # if the daemon cannot attach, fail closed — never snapshot over an open profile. Not ours
-        # to terminate (no Popen handle): it lives until the user closes it, by design.
+        # if the daemon cannot attach, fail closed — never snapshot over an open profile. It is not
+        # ours to kill while it serves a caller; once the lane goes idle, the closer's orphan-reclaim
+        # step terminates it (it only ever touches a Chrome whose parent process is gone).
         surviving = _surviving_chrome_cdp(copy_dir)
         if surviving:
             cdp, err = _attach_agent_browser_to_real_profile(int(surviving.rsplit(":", 1)[1]), copy_dir)
@@ -323,6 +533,7 @@ def _real_profile_cdp() -> tuple:
                 return None, err
             _bt._real_profile_cdp_cache["cdp"] = cdp
             _bt.logger.info("real-profile: re-attached to surviving Chrome at %s (%s)", cdp, copy_dir)
+            _mark_real_profile_in_use(copy_dir)
             return cdp, None
 
         copy_dir, err = snapshot_real_profile(browser)
@@ -339,6 +550,24 @@ def _real_profile_cdp() -> tuple:
             return None, err
         _bt._real_profile_cdp_cache["cdp"] = cdp
         _bt.logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
+        _mark_real_profile_in_use(copy_dir)
         return cdp, None
     finally:
         _bt._real_profile_cdp_lock.release()
+
+
+def _declare_real_profile_lane() -> None:
+    """Declare this lane's closer, so a browser left behind by a dead process is still closed.
+
+    Registered by ``tools.browser_tool_lifecycle`` at import (this module cannot import it at import
+    time without a cycle) and run when the cleanup thread starts.
+    """
+    from tools import browser_tool_lifecycle as _lifecycle
+    from tools.browser_use_cli import lane_idle_timeout_s
+    _lifecycle.declare_idle_lane(
+        f"real-profile:{_origin()._REAL_PROFILE_SESSION}",
+        _close_real_profile_browser,
+        lane_idle_timeout_s(),
+        label="real-profile browser",
+        last_used_reader=_lane_last_used,
+    )

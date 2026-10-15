@@ -419,17 +419,33 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         # Passing ``False`` here is the config-editing variant — used when we need to persist a toolset list
         # without baking in implicit MCP defaults. Using the wrong variant at agent creation time makes MCP
         # tools silently missing from the TUI. See PR #3252 for the original design split.
-        enabled = _get_platform_tools(cfg, "cli", include_default_mcp_servers=True)
+        #
+        # Resolve for the SESSION's platform, not a hardcoded "cli": a toolset granted under
+        # platform_toolsets.<platform> (e.g. desktop, api_server, a custom platform) but not under
+        # cli was silently filtered from that session's tool definitions on every turn (#89547).
+        # The explicit-saved check decides the key so both resolution sites agree: a platform with
+        # a saved row (even []) resolves against itself, while platforms without one — tui/desktop
+        # client surfaces and unconfigured customs — fall back to the cli row (the documented
+        # default surface), keeping ``hermes --tui``/desktop on the cli defaults instead of the
+        # empty unknown-platform composite.
+        resolve_key = (
+            session_platform
+            if _platform_toolsets_explicitly_saved(cfg, session_platform)
+            else "cli"
+        )
+        enabled = _get_platform_tools(cfg, resolve_key, include_default_mcp_servers=True)
         if fallback_notice is not None:
             _tui_notice(fallback_notice)
         if enabled:
             return sorted(_with_session_toolsets(enabled, session_platform))
-        # An explicitly saved list that resolves to nothing (``platform_toolsets.cli: []`` with no
-        # enabled MCP servers) is an explicit zero-tool state, not "no filter": fail closed with []
-        # instead of None (#82010). The client-surface fold-in must not resurrect tools the user
-        # explicitly switched off, so [] is returned bare. Only an ABSENT/unset key keeps the
-        # None = "no restriction" default below.
-        if _platform_toolsets_explicitly_saved(cfg, "cli"):
+        # An explicitly saved list that resolves to nothing (``platform_toolsets.<resolve_key>: []``
+        # with no enabled MCP servers) is an explicit zero-tool state, not "no filter": fail closed
+        # with [] instead of None (#82010). The fail-closed check uses the SAME resolved key as the
+        # resolution above — keying it to "cli" would let ``platform_toolsets.<custom>: []`` fall
+        # open to the cli row (or unrestricted when cli has no row either). The client-surface
+        # fold-in must not resurrect tools the user explicitly switched off, so [] is returned
+        # bare. Only an ABSENT/unset key keeps the None = "no restriction" default below.
+        if _platform_toolsets_explicitly_saved(cfg, resolve_key):
             return []
         return None
     except Exception:

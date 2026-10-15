@@ -75,3 +75,14 @@ def test_the_daemons_own_directory_is_not_a_workspace(project, monkeypatch, sour
     monkeypatch.chdir(project)
     monkeypatch.setattr('agent.runtime_cwd.resolve_agent_cwd', lambda: project)
     assert 'coding' not in build_policy({'source': source}, FOCUS, profile_terminal=False).toolsets
+
+
+def test_a_profile_default_listing_coding_is_not_replayed_as_a_workspace(tmp_path):
+    from gateway.session_policy import build_policy
+    plain = tmp_path / 'notes'
+    plain.mkdir()
+    config = {**FOCUS, 'platform_toolsets': {'cli': ['coding', 'web']}}
+    policy = build_policy({'source': 'cli', 'cwd': str(plain), 'follow_profile_config': True}, config)
+    assert not policy.coding_posture and 'web' in policy.toolsets
+    assert policy.current_toolsets(config) == policy.toolsets
+

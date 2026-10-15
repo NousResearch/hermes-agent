@@ -1,11 +1,14 @@
 """Frozen, explicit local-client launch policy for the existing TurnRunner."""
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 import json
+import logging
 from pathlib import Path
 
 from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger(__name__)
 
 CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
@@ -50,6 +53,9 @@ class LocalSessionPolicy:
     # `-s/--skills` blocks rendered once at creation (render_launch_skills): the session's
     # ephemeral prompt never re-reads the skill files, like the CLI's startup preload.
     skills_prompt: str | None = None
+    # Whether creation chose the coding posture (``agent.coding_context: focus`` in a client-named code
+    # workspace). A following session replays this decision rather than re-probing its folder each turn.
+    coding_posture: bool = False
 
     def config(self, authority=None, *, secrets=True):
         return self.effective(authority, secrets=secrets)[0]
@@ -129,11 +135,14 @@ class LocalSessionPolicy:
         if (not self.follows_profile or self.source not in SURFACES or self.editor_mcp_json is not None
                 or 'toolsets' in json.loads(self.request_json)):
             return self.toolsets
-        # The workspace decision is the creation-time one (the frozen set carries it): a project file the
-        # agent writes mid-session must not switch this conversation's toolsets (prompt cache).
-        from agent.coding_context import CODING_TOOLSET
-        return tuple(sorted(_resolve_toolsets({}, config, self.source, self.safe_mode, self.cwd,
-                                              coding_workspace=CODING_TOOLSET in self.toolsets)))
+        # The workspace decision is the creation-time one: a project file the agent writes mid-session must
+        # not switch this conversation's toolsets (prompt cache). Only a profile change (``focus`` off) does.
+        posture = None
+        if self.coding_posture:
+            from agent.coding_context import focus_toolsets
+            posture = focus_toolsets(config)
+        return tuple(sorted(_resolve_toolsets({}, config, self.source, self.safe_mode,
+                                              None if posture is None else set(posture))))
 
     def current_reasoning_config(self, runner, session_key=None):
         """The next turn's reasoning: a typed session /reasoning (the messaging handler's override), else
@@ -287,8 +296,10 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
         config.setdefault('model', {})['selection_profile'] = list(profile_target(config))
     _apply_launch_overrides(params, config)
     # Only a folder the client named is a workspace: the daemon's own directory (the fallback above, used by
-    # hosted rooms, Kanban and migrations) must not switch a session into the coding posture.
-    enabled = _resolve_toolsets(params, config, source, safe_mode, cwd if 'cwd' in params else None)
+    # hosted rooms) must not switch a session into the coding posture.
+    named = 'cwd' in params and 'toolsets' not in params
+    posture = _coding_posture(config, source, cwd) if named else None
+    enabled = _resolve_toolsets(params, config, source, safe_mode, posture)
     terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
     # The client's launch folder is a path on THIS host: a remote or container backend keeps its own
     # configured cwd unless the user picked this folder for the session.
@@ -302,7 +313,8 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
     _extract_config_secrets(terminal, private_secrets, (None,))
     return LocalSessionPolicy(source, SURFACES[source], cwd, model, tuple(sorted(enabled)),
                               json.dumps(config), json.dumps(request, sort_keys=True), json.dumps(terminal),
-                              safe_mode=safe_mode, ignore_user_config=ignore_user_config)
+                              safe_mode=safe_mode, ignore_user_config=ignore_user_config,
+                              coding_posture=posture is not None)
 
 
 def terminal_uses_host_cwd(terminal):
@@ -385,10 +397,10 @@ def _apply_launch_overrides(params, config):
         config['agent'].pop('reasoning_overrides', None)
 
 
-def _resolve_toolsets(params, config, source, safe_mode, cwd=None, coding_workspace=None):
+def _resolve_toolsets(params, config, source, safe_mode, posture=None):
     """Validate explicit toolsets and return the session's enabled toolset set. Without a pick, the
-    coding posture for *cwd* (``agent.coding_context: focus`` in a code workspace) replaces the
-    profile default on every interactive surface; the gateway decides it, never the client."""
+    coding *posture* (``_coding_posture``) replaces the profile default on every interactive surface;
+    the gateway decides it, never the client."""
     from hermes_cli.tools_config import _get_platform_tools
     from toolsets import validate_toolset
     explicit = params.get('toolsets')
@@ -404,10 +416,8 @@ def _resolve_toolsets(params, config, source, safe_mode, cwd=None, coding_worksp
         effective = {t for name in enabled for t in resolve_toolset(name)}
         if not requested <= effective:
             raise RuntimeStoreError('invalid_params')
-    else:
-        selection = _coding_posture(config, source, cwd, coding_workspace) if cwd is not None else None
-        if selection is not None:
-            enabled = selection
+    elif posture is not None:
+        enabled = posture
     if explicit is None and source in {'tui', 'gui'}:
         # Same surface toolsets as the native TUI factory, without its env inference.
         # The fold-in lands after _get_platform_tools subtracted agent.disabled_toolsets, so
@@ -425,18 +435,16 @@ def _resolve_toolsets(params, config, source, safe_mode, cwd=None, coding_worksp
     return enabled
 
 
-def _coding_posture(config, source, cwd, coding_workspace=None):
-    """The coding posture's toolsets (``agent.coding_context: focus`` in a code workspace), else None.
-    *coding_workspace* replays a decision already made for this session instead of probing *cwd*. MCP
-    servers come from the same resolver as the profile default, so plugin-provided servers stay."""
-    # A detection failure keeps the profile default rather than refusing the session.
-    with suppress(Exception):
-        from agent.coding_context import CODING_TOOLSET, resolve_runtime_mode
-        from hermes_cli.tools_config import enabled_mcp_server_names
-        mode = resolve_runtime_mode(platform=SURFACES[source], cwd=cwd, config=config)
-        if mode.config_mode == 'focus' and (mode.is_coding if coding_workspace is None else coding_workspace):
-            return {CODING_TOOLSET, *enabled_mcp_server_names(config)}
-    return None
+def _coding_posture(config, source, cwd):
+    """The coding posture's toolsets for *cwd* (``agent.coding_context: focus`` in a code workspace),
+    else None. A detection failure keeps the profile default rather than refusing the session."""
+    from agent.coding_context import coding_selection
+    try:
+        selection = coding_selection(platform=SURFACES[source], cwd=cwd, config=config)
+    except Exception:
+        logger.debug('coding posture detection failed for %s; keeping the profile default', cwd, exc_info=True)
+        return None
+    return None if selection is None else set(selection)
 
 
 def _extract_config_secrets(value, private, path=()):
@@ -651,6 +659,7 @@ def restore_policy(data):
                 or any(not isinstance(name, str) for name in policy.toolsets)
                 or type(policy.safe_mode) is not bool or type(policy.ignore_user_config) is not bool
                 or not isinstance(policy.skills_prompt, (str, type(None)))
+                or type(policy.coding_posture) is not bool
                 or (policy.safe_mode and not policy.ignore_user_config)):
             raise ValueError('invalid policy')
         from dataclasses import replace

@@ -278,17 +278,23 @@ def _detect_profile(mode: str, platform: str, cwd: Path) -> ContextProfile:
 
 
 def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
-    """Names of MCP servers the user has enabled — kept in the coding posture."""
+    """Names of MCP servers the user has enabled — kept in the coding posture. The profile default's
+    resolver, so plugin-provided servers stay too; *config* None reads the user's config."""
     try:
         from hermes_cli.config import read_raw_config
-        from tools.mcp_tool_common import mcp_server_enabled
-        servers = read_raw_config().get("mcp_servers") or {}
-        return [
-            str(name) for name, cfg in servers.items()
-            if isinstance(cfg, dict) and mcp_server_enabled(cfg)
-        ]
+        from hermes_cli.tools_config import enabled_mcp_server_names
+        return sorted(enabled_mcp_server_names(read_raw_config() if config is None else config))
     except Exception:
+        logger.debug("Could not list enabled MCP servers for the coding posture", exc_info=True)
         return []
+
+
+def focus_toolsets(config: Optional[dict[str, Any]]) -> Optional[list[str]]:
+    """The coding posture's toolsets when ``agent.coding_context`` is ``focus``, else None, for a
+    session whose workspace decision is already made (no cwd probe)."""
+    if _coding_mode(config) != "focus":
+        return None
+    return [CODING_TOOLSET, *_enabled_mcp_servers(config)]
 
 
 # ── RuntimeMode (the seam) ──────────────────────────────────────────────────

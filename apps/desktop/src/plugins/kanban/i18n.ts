@@ -50,6 +50,12 @@ type KanbanMessages = {
   allTenants: string
   showArchived: string
   groupRunning: string
+  swimlanes: string
+  swimlaneBy: Record<'assignee' | 'none' | 'priority' | 'project' | 'tenant', string>
+  noProjectLane: string
+  noTenant: string
+  priorityLane: (priority: number) => string
+  createdInOtherLane: (lane: string) => string
   nSelected: (n: number) => string
   moveToShort: string
   assign: string
@@ -276,6 +282,18 @@ export const en: KanbanMessages = {
   allTenants: 'All tenants',
   showArchived: 'Show archived',
   groupRunning: 'Group Running by profile',
+  swimlanes: 'Swimlanes',
+  swimlaneBy: {
+    none: 'No swimlanes',
+    project: 'Lanes by project',
+    assignee: 'Lanes by profile',
+    tenant: 'Lanes by tenant',
+    priority: 'Lanes by priority'
+  },
+  noProjectLane: 'No project',
+  noTenant: 'No tenant',
+  priorityLane: priority => (priority ? `Priority ${priority}` : 'No priority'),
+  createdInOtherLane: lane => `Created in the “${lane}” lane — the form or its parent task set that.`,
   nSelected: n => `${n} selected`,
   moveToShort: 'Move to',
   assign: 'Assign',
@@ -504,6 +522,18 @@ const ja: KanbanMessages = {
   allTenants: 'すべてのテナント',
   showArchived: 'アーカイブを表示',
   groupRunning: '実行中をプロフィールでグループ化',
+  swimlanes: 'スイムレーン',
+  swimlaneBy: {
+    none: 'スイムレーンなし',
+    project: 'プロジェクト別',
+    assignee: 'プロフィール別',
+    tenant: 'テナント別',
+    priority: '優先度別'
+  },
+  noProjectLane: 'プロジェクトなし',
+  noTenant: 'テナントなし',
+  priorityLane: priority => (priority ? `優先度 ${priority}` : '優先度なし'),
+  createdInOtherLane: lane => `「${lane}」レーンに作成しました（フォームまたは親タスクの設定による）。`,
   nSelected: n => `${n} 件選択中`,
   moveToShort: '移動',
   assign: '割り当て',
@@ -730,6 +760,18 @@ const zh: KanbanMessages = {
   allTenants: '所有租户',
   showArchived: '显示已归档',
   groupRunning: '按配置档分组运行中',
+  swimlanes: '泳道',
+  swimlaneBy: {
+    none: '不分泳道',
+    project: '按项目分泳道',
+    assignee: '按配置档分泳道',
+    tenant: '按租户分泳道',
+    priority: '按优先级分泳道'
+  },
+  noProjectLane: '无项目',
+  noTenant: '无租户',
+  priorityLane: priority => (priority ? `优先级 ${priority}` : '无优先级'),
+  createdInOtherLane: lane => `已创建在“${lane}”泳道（由表单或父任务决定）。`,
   nSelected: n => `已选择 ${n} 个`,
   moveToShort: '移动到',
   assign: '分配',
@@ -954,6 +996,18 @@ const zhHant: KanbanMessages = {
   allTenants: '所有租戶',
   showArchived: '顯示已封存',
   groupRunning: '依設定檔分組執行中',
+  swimlanes: '泳道',
+  swimlaneBy: {
+    none: '不分泳道',
+    project: '依專案分泳道',
+    assignee: '依設定檔分泳道',
+    tenant: '依租戶分泳道',
+    priority: '依優先順序分泳道'
+  },
+  noProjectLane: '無專案',
+  noTenant: '無租戶',
+  priorityLane: priority => (priority ? `優先順序 ${priority}` : '無優先順序'),
+  createdInOtherLane: lane => `已建立在「${lane}」泳道（由表單或父任務決定）。`,
   nSelected: n => `已選取 ${n} 個`,
   moveToShort: '移至',
   assign: '指派',

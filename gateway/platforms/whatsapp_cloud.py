@@ -462,18 +462,25 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         question = (question or "").strip()
         if not choices:
             return await self.send(chat_id, f"❓ {question}", reply_to=_reply_to_from(metadata))
-        # Full choice text goes in the body so long options aren't lost to the
-        # 20-char label cap; labels are just the option number.
         choices_list = [str(c).strip() for c in choices[:10] if str(c).strip()]
-        body_text = self._truncate_body(f"❓ {question}\n\n" + "\n".join(f"{i + 1}. {c}" for i, c in enumerate(choices_list)))
+        title_limit = 20 if len(choices_list) <= 3 else 24
+        use_text_labels = all(len(choice) <= title_limit for choice in choices_list)
+        # Keep labels consistent; long choices retain the numbered body and titles.
+        body_text = f"❓ {question}"
+        if not use_text_labels:
+            body_text += "\n\n" + "\n".join(f"{i + 1}. {c}" for i, c in enumerate(choices_list))
+        body_text = self._truncate_body(body_text)
         if len(choices_list) <= 3:
             interactive = self._button_interactive(
-                body_text, *((f"cl:{clarify_id}:{idx}", self._truncate_button_label(str(idx + 1))) for idx in range(len(choices_list)))
+                body_text, *((f"cl:{clarify_id}:{idx}", choice if use_text_labels else str(idx + 1))
+                             for idx, choice in enumerate(choices_list))
             )
         else:
-            # List rows: id + title (≤24) + description (≤72) with the choice text.
+            # Short labels need no repeated description; long choices keep the fallback.
+            # Text labels omit the optional description instead of sending an empty string.
             rows = [
-                {"id": f"cl:{clarify_id}:{idx}", "title": self._truncate_button_label(f"{idx + 1}", limit=24),
+                {"id": f"cl:{clarify_id}:{idx}", "title": choice_text} if use_text_labels else
+                {"id": f"cl:{clarify_id}:{idx}", "title": str(idx + 1),
                  "description": self._truncate_button_label(choice_text, limit=72)}
                 for idx, choice_text in enumerate(choices_list)
             ]
@@ -903,8 +910,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.warning("[whatsapp_cloud] clarify tap had non-int choice: %r", choice)
             self._clarify_state[clarify_id] = session_key  # a follow-up text can still resolve
             return False
-        # Title is the numeric label; the agent has the prompt in context to interpret it.
-        if not clarify_gateway.resolve_gateway_clarify(clarify_id, str(inner.get("title") or str(idx + 1))):
+        # Resolve the canonical choice by ID, independently of the displayed title.
+        entry = clarify_gateway._entries.get(clarify_id)
+        response = entry.choices[idx] if entry and entry.choices and 0 <= idx < len(entry.choices) else str(idx + 1)
+        if not clarify_gateway.resolve_gateway_clarify(clarify_id, response):
             logger.info("[whatsapp_cloud] clarify resolver reported no waiter (clarify_id=%s) — falling back to text", clarify_id)
             return False
         return True

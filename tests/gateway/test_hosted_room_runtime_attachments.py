@@ -11,15 +11,7 @@ from gateway.hosted_room_attachments import HostedRoomAttachmentStore
 from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
 from hermes_state_runtime import list_session_admissions
 from tui_gateway.hosted_room_driver import HostedRoomBinding, HostedRoomRuntime
-
-
-def _wait_for(predicate, *, timeout: float = 10.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    raise AssertionError("condition was not reached before timeout")
+from tests.waiting import wait_until
 
 
 def test_authority_route_admits_a_member_turn_with_its_file(hosted_owner, tmp_path):
@@ -50,7 +42,8 @@ def test_authority_route_admits_a_member_turn_with_its_file(hosted_owner, tmp_pa
 
     runtime.start()
     try:
-        _wait_for(lambda: rpc.callbacks or runtime.status()["last_error"] is not None)
+        wait_until(lambda: rpc.callbacks or runtime.status()["last_error"] is not None,
+                   what="the canonical submit or a runtime error")
         last_error = runtime.status()["last_error"]
         status = state.get_task(room_db, identity)["status"]
     finally:

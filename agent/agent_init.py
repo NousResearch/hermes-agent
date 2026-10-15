@@ -274,7 +274,7 @@ def _custom_provider_extra_body_for_agent(
     *, provider: str, model: str, base_url: str, custom_providers: list[dict[str, Any]]
 ) -> Optional[dict[str, Any]]:
     provider_norm = (provider or "").strip().lower()
-    if provider_norm != "custom" and not provider_norm.startswith("custom:"):
+    if provider_norm not in {"custom", "lmstudio"} and not provider_norm.startswith("custom:"):
         return None
     provider_key_filter = provider_norm.partition(":")[2].strip()
     target_url = _normalized_custom_base_url(base_url)
@@ -285,10 +285,7 @@ def _custom_provider_extra_body_for_agent(
     for entry in custom_providers or []:
         if not isinstance(entry, dict):
             continue
-        entry_keys = {
-            str(entry.get("provider_key", "") or "").strip().lower(),
-            str(entry.get("name", "") or "").strip().lower(),
-        }
+        entry_keys = {str(entry.get(key, "") or "").strip().lower() for key in ("provider_key", "name")}
         if provider_key_filter and provider_key_filter not in entry_keys:
             continue
         if _normalized_custom_base_url(entry.get("base_url")) != target_url:
@@ -296,6 +293,10 @@ def _custom_provider_extra_body_for_agent(
         extra_body = entry.get("extra_body")
         if not isinstance(extra_body, dict) or not extra_body:
             continue
+        if provider_norm == "lmstudio":
+            # Local sampling settings must never leak to other models on this server.
+            if str(entry.get("provider", "") or "").strip().lower() != "lmstudio" or not model or entry.get("model") != model:
+                continue
         if str(entry.get("model", "") or "").strip():
             if _custom_provider_model_matches(model, entry):
                 return dict(extra_body)
@@ -329,7 +330,6 @@ def _normalize_run_budget_seconds(value) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return seconds if seconds > 0 else None  # NaN compares False → None
-
 
 
 def _refuse_checkpoint_required_on_codex_app_server(

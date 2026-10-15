@@ -1509,7 +1509,7 @@ slash:
   undo:
     description: "Откатиться на N промптов"
   title:
-    description: "Задать заголовок беседы"
+    description: "Задать заголовок"
   handoff:
     description: "Передать этот сеанс в мессенджер (Telegram, Discord и т. д.)"
   branch:
@@ -1527,7 +1527,7 @@ slash:
   import:
     description: "Импортировать общий архив профиля как новый профиль"
   stop:
-    description: "Останов"
+    description: "Остановить выполнение и ждать."
   pause:
     description: "Приостановить всю новую работу (аварийная остановка); '/pause off' возобновляет"
   deny:

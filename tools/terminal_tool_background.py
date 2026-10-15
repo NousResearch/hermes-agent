@@ -36,7 +36,7 @@ _HOMEBREW_CI_POLLER_HINT = (
     '(PRs #31329, #31448, #31695, #31709, #31745, #32264, #33131) — stdout buffering kills '
     'output capture, jq null-key edge cases silently exit the loop, conclusion-vs-status field '
     'confusion exits early with bogus all-green verdicts, TTY-only summary banners never '
-    'appear when piped. Use the canonical snippets in the green-ci-policy skill instead: the '
+    'appear when piped. Use the '
     'exit-code-driven `gh pr checks $PR >/dev/null` (rc 0 = green, 8 = pending, else fail) for '
     'exit-on-first-fail behavior, or the column-2 awk-on-tabs poller (`awk -F"\\t" '
     '"$2==\\"pending\\""`) for sharded matrices. Load '

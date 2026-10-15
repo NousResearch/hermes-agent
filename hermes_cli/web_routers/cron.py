@@ -25,6 +25,7 @@ from hermes_cli.web_server_cron import (
 from hermes_cli.web_models import AutomationBlueprintInstantiate, CronJobCreate, CronJobUpdate
 from hermes_cli.web_routers._common import log as _log
 from hermes_time import get_timezone as _get_timezone
+from hermes_state_keys import legacy_cron_run_job
 from hermes_constants import (
     get_hermes_home as _get_hermes_home,
     reset_hermes_home_override as _reset_hermes_home_override,
@@ -82,7 +83,7 @@ def _job_owner_profile(job_id: str, profile: Optional[str]) -> Optional[str]:
     ``profile`` is a caller *hint*, not proof of ownership: the Desktop lists
     jobs cross-profile (``?profile=all``) while its per-item calls carry the
     ambient active profile. Trusting that hint opened a profile that does not
-    hold the job, so the ``cron_{job_id}_*`` id-range scan matched nothing and
+    hold the job, so the job's run-session lookup matched nothing and
     answered ``200 {"runs": []}`` — the UI rendered "No runs yet" for a job
     that had run many times (#115345). A hint that does hold the job still
     wins, so deliberately scoped lookups (the same job id in two profiles,
@@ -306,6 +307,7 @@ def _owner_profile_executions(canonical_job_id: str) -> list[dict[str, Any]]:
         if str(row.get("status") or "") not in ("completed", "failed", "unknown"):
             continue
         terminal.append({
+            "id": str(row.get("id") or ""),
             "claimed_at": _iso_to_epoch(row.get("claimed_at")) or 0.0,
             "finished_at": _iso_to_epoch(row.get("finished_at")),
             "status": str(row.get("status") or ""),
@@ -356,7 +358,7 @@ def _list_cron_output_runs(
     output docs — one .md per fire under cron/output/<job_id>/ — are the only
     per-run record. Rows mirror /api/sessions shape with source='cron_output'
     so the frontend reuses SessionInfo; ids use a cron_output: prefix that can
-    never collide with SessionDB cron_{job_id}_* session ids.
+    never collide with a SessionDB session id.
 
     Status comes from the execution ledger (one row per fire), matched to a doc
     by claim window — never from ``last_run_at`` proximity, which mislabels an
@@ -386,16 +388,21 @@ def _list_cron_output_runs(
                 started_at = 0.0
         preview = _cron_output_run_preview(path)
         title = preview or "Script-only run"
+        execution_id = None
         for index, attempt in enumerate(executions):
             if attempt["status"] not in ("completed", "failed"):
                 continue
             if _execution_contains(attempt, started_at):
                 represented.add(index)
                 title = _execution_status_title(attempt["status"], attempt["error"], title)
+                execution_id = attempt["id"]
                 break
         runs.append({
             "id": f"cron_output:{canonical_job_id}:{path.stem}",
             **_cron_output_run_row(started_at, title, preview),
+            # Internal: the attempt that wrote this doc, so the caller drops it when that
+            # execution's session is already a row.
+            "_execution_id": execution_id,
         })
 
     # Terminal attempts whose output doc is gone (pruned, or the run never
@@ -416,9 +423,9 @@ def _list_cron_output_runs(
                 _execution_status_title(attempt["status"], error, "Script-only run"),
                 error or None,
             ),
-            # Internal: the attempt's claim window, so the caller can drop this
-            # row when a session already represents the same execution.
-            "_claim_window": (attempt["claimed_at"], attempt["finished_at"]),
+            # Internal: the attempt itself, so the caller can drop this row when a
+            # session already represents the same execution.
+            "_execution_id": attempt["id"],
         })
     runs.sort(key=lambda r: float(r.get("started_at") or 0), reverse=True)
 
@@ -444,8 +451,7 @@ def _list_cron_output_runs(
     }]
 
 
-_CRON_RUN_SESSION_ID = re.compile(r"^cron_(.+)_\d{8}_\d{6}$")
-# The run's session row is written just AFTER its execution claim; the grace only
+# A legacy run's session row is written just AFTER its execution claim; the grace only
 # absorbs float/ISO rounding between the two clocks on one host.
 _OWNERSHIP_CLAIM_GRACE_SECONDS = 5.0
 
@@ -469,11 +475,14 @@ def _run_owned_by(session: dict[str, Any], inflight: Optional[dict[str, Any]]) -
     ``is_active`` is a 300s activity window, so a live run inside a long tool call
     (no heartbeat, no message) reads inactive exactly like a zombie whose process
     died. Ownership is the durable answer: the job's in-flight attempt is held by a
-    live process and this session started under that claim. An older never-closed
-    run of the same job predates the claim, so it stays a zombie.
+    live process and this session is that attempt's run. A unified-runtime run names
+    its execution, so that is exact; a legacy run must have started under the claim,
+    so an older never-closed run of the same job predates it and stays a zombie.
     """
     if not inflight or session.get("ended_at") is not None:
         return False
+    if session.get("cron_execution_id"):
+        return session["cron_execution_id"] == inflight.get("id")
     claimed_at = _iso_to_epoch(inflight.get("claimed_at"))
     try:
         started_at = float(session.get("started_at") or 0)
@@ -487,36 +496,41 @@ def cron_run_scheduler_owned(session: dict[str, Any], profile: Optional[str] = N
 
     The session-detail endpoint stamps this so a client re-checking a run it
     already has open (a restored tab, a send) gets the same answer as the runs list.
+    A unified-runtime run's ``local-*`` id says nothing, so the caller stamps the
+    row's ``cron_job_id`` / ``cron_execution_id`` (``SessionDB.cron_run_identity``)
+    first; a legacy ``cron_{job_id}_{timestamp}`` id still names its job.
     """
     if session.get("source") != "cron":
         return None
-    match = _CRON_RUN_SESSION_ID.match(str(session.get("id") or ""))
-    if not match:
+    job_id = session.get("cron_job_id") or legacy_cron_run_job(session.get("id"))
+    if not job_id:
         return None
     if session.get("ended_at") is not None:
         return False
     with _owner_home_scope(profile):
-        return _run_owned_by(session, _live_inflight_execution(match.group(1)))
+        return _run_owned_by(session, _live_inflight_execution(job_id))
 
 
 def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: int = 20):
     """Run history for a cron job, newest first: agent sessions PLUS script-only fires.
 
-    Agent runs are ordinary sessions with id ``cron_{job_id}_{timestamp}`` (see
-    cron/scheduler.run_job); ``source='cron'`` plus the id prefix binds them to
-    this job. Backed by ``SessionDB.list_cron_job_runs`` — a bounded id-range
-    scan, so cost scales with the requested window, not total cron history.
-    Script-only (no_agent) jobs never write sessions; their per-fire output docs
-    (``_list_cron_output_runs``) fill the gaps. The two representations are
-    reconciled PER EXECUTION, not by branch: a job can switch modes without
-    changing its id (update_job supports no_agent on an existing record), so a
-    surviving historical agent session must not hide newer script-only fires
-    and a recent session must not hide older script output. Rows carrying the
-    same wall-clock execution (an agent fire writes BOTH a session and an
-    output doc) are de-duplicated by timestamp window; script-only rows that
-    match no session are added in. All owner-scoped reads (SessionDB, output
-    docs, execution ledger, filename timezone) run inside the owner's profile
-    scope so the dashboard's own zone/store is never borrowed cross-profile.
+    Agent runs are ordinary ``source='cron'`` sessions: a legacy
+    ``cron_{job_id}_{timestamp}`` id, or a unified-runtime ``local-*`` id bound to
+    this job by its scheduler admission. Backed by ``SessionDB.list_cron_job_runs``
+    — bounded index range scans, so cost scales with this job's runs, not total
+    cron history. Script-only (no_agent) jobs never write sessions; their
+    per-fire output docs (``_list_cron_output_runs``) fill the gaps. The two
+    representations are reconciled PER EXECUTION, not by branch: a job can
+    switch modes without changing its id (update_job supports no_agent on an
+    existing record), so a surviving historical agent session must not hide
+    newer script-only fires and a recent session must not hide older script
+    output. Rows carrying the same execution (an agent fire writes BOTH a
+    session and an output doc) are de-duplicated by execution id, or by
+    timestamp window for a legacy session that names none; script-only rows
+    that match no session are added in. All owner-scoped reads (SessionDB,
+    output docs, execution ledger, filename timezone) run inside the owner's
+    profile scope so the dashboard's own zone/store is never borrowed
+    cross-profile.
     """
     selected = _job_owner_profile(job_id, profile)
     # job_id may be a human name; resolve to the canonical id used in run-session ids.
@@ -562,19 +576,30 @@ def _reconcile_cron_runs(
 
     An agent fire writes BOTH a session and an output doc for the same
     execution; keeping both would double-render the run. Sessions carry the
-    richer record (tokens, message counts, chat navigation), so a doc row
-    within ``_SESSION_DOC_MATCH_SECONDS`` of a session row is the same
-    execution and the session wins. Doc rows matching no session are distinct
-    executions — script-only fires — and are kept. A session row must never be
-    dropped in favor of a doc: the doc is the fallback representation.
+    richer record (tokens, message counts, chat navigation), so the session
+    wins. A unified-runtime session names its execution and a doc or ledger row
+    matched to an attempt carries that attempt's id, so those pair exactly: a
+    neighbouring fire inside the time window (one that failed before it created
+    a session) keeps its own row. Only what has no execution id on one side — a
+    legacy session, a doc no ledger attempt claims — falls back to the window:
+    a doc row within ``_SESSION_DOC_MATCH_SECONDS`` of such a session is the same
+    execution. Doc rows matching no session are distinct executions — script-only
+    fires — and are kept. A session row must never be dropped in favor of a doc:
+    the doc is the fallback representation.
     """
     _SESSION_DOC_MATCH_SECONDS = 300.0
 
+    executions = {s["cron_execution_id"] for s in session_runs if s.get("cron_execution_id")}
+    legacy = [s for s in session_runs if not s.get("cron_execution_id")]
     merged = list(session_runs)
     for doc in doc_runs:
+        execution_id = doc.get("_execution_id")
+        if execution_id in executions:
+            continue
         doc = {k: v for k, v in doc.items() if not k.startswith("_")}
         doc_ts = float(doc.get("started_at") or 0)
-        if any(_doc_matches_session(doc_ts, s, _SESSION_DOC_MATCH_SECONDS) for s in session_runs):
+        window = legacy if execution_id else session_runs
+        if any(_doc_matches_session(doc_ts, s, _SESSION_DOC_MATCH_SECONDS) for s in window):
             continue
         merged.append(doc)
     merged.sort(key=lambda r: float(r.get("started_at") or 0), reverse=True)

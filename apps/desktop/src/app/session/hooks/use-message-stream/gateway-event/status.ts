@@ -124,13 +124,16 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       void refreshBackgroundProcesses(sessionId)
     } else if (sessionId && payload?.kind === 'goal') {
       applyGoalStatusText(sessionId, coerceGatewayText(payload?.text))
-    } else if (sessionId) {
+    } else if (
+      sessionId &&
+      (payload?.kind === 'memory_recall' ||
+        (payload?.kind === 'lifecycle' &&
+          typeof payload?.text === 'string' &&
+          LEGACY_MEMORY_RECALL_RE.test(payload.text.trim())))
+    ) {
       const text = typeof payload?.text === 'string' ? payload.text.trim() : ''
 
-      const isRecall =
-        payload?.kind === 'memory_recall' || (payload?.kind === 'lifecycle' && LEGACY_MEMORY_RECALL_RE.test(text))
-
-      if (text && isRecall) {
+      if (text) {
         // Recall is not model prose or a transient spinner. Keep the provider's
         // summary in this session's live transcript, including background chats.
         flushQueuedDeltas(sessionId)

@@ -35,6 +35,31 @@ afterEach(cleanup)
 
 describe('memory recall in the Desktop transcript', () => {
   it.each([
+    ['fallback', 'Using the backup model after a provider error.'],
+    ['lifecycle', 'Provider fallback: switched to fallback model.']
+  ])('preserves %s fallback notices alongside recall in the originating chat', (kind, text) => {
+    const stream = renderMessageStream('other-session')
+    const recall = '🧠 Hindsight — recalled 1 memory'
+
+    act(() => {
+      stream.handleEvent({ type: 'message.start', session_id: SID })
+      stream.handleEvent({ type: 'status.update', session_id: SID, payload: { kind: 'memory_recall', text: recall } })
+      stream.handleEvent({ type: 'status.update', session_id: SID, payload: { kind, text, timestamp: 123.5 } })
+      stream.handleEvent({ type: 'message.delta', session_id: SID, payload: { text: 'An answer.' } })
+      stream.handleEvent({ type: 'message.complete', session_id: SID, payload: { text: 'An answer.' } })
+    })
+
+    const messages = stream.state(SID).messages
+    expect(messages.map(chatMessageText)).toEqual([recall, text, 'An answer.'])
+    expect(messages[1]).toMatchObject({ role: 'system', timestamp: 123.5 })
+    expect(messages[1].parts[0].timestamp).toBe(123.5)
+    expect(stream.state('other-session').messages).toEqual([])
+    render(<RecallTranscript messages={messages.filter(message => message.role === 'system')} />)
+    expect(screen.getByText(text).closest('[data-role="system"]')).not.toBeNull()
+    expect(screen.getByText(recall).closest('[data-role="system"]')).not.toBeNull()
+  })
+
+  it.each([
     ['memory_recall', 'Provider without a fixed label: context loaded'],
     ['lifecycle', '🧠 Hindsight — recalled 1 memory'],
     ['lifecycle', '👁️ Hindsight — recalled 3 memories'],

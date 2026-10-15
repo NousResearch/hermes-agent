@@ -2936,7 +2936,7 @@ OPTIONAL_ENV_VARS = {
         tools=["browser_navigate", "browser_click"], password=False),
     "BROWSER_USE_API_KEY": _tool(
         "Browser Use API key for cloud browser (optional — local browser works without this)",
-        "Browser Use API key", "https://cloud.browser-use.com/settings?tab=api-keys&new=1&utm_source=hermes&utm_medium=integration",
+        "Browser Use API key", "https://cloud.browser-use.com/signup?utm_source=hermes&utm_medium=integration&after_auth_return_to=%2Fsettings%3Ftab%3Dapi-keys%26new%3D1",
         tools=["browser_navigate", "browser_click"]),
     "FIRECRAWL_BROWSER_TTL": _tool(
         "Firecrawl browser session TTL in seconds (optional, default 300)",

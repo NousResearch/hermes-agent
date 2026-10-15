@@ -1,3 +1,4 @@
+import { enSessionCommands } from './en_session_commands'
 import type { Translations } from './types'
 
 // Shell notices (remote-display toast, butterbar), spread into en.ts.
@@ -15,5 +16,10 @@ export const enNotices = {
       privacy: 'Privacy Policy',
       after: '.'
     }
+  },
+  promptNotices: {
+    legacySendUnconfirmed:
+      'This server could not confirm the earlier send of this message, so it may already have run. Check the conversation before sending it again.',
+    sessionCommands: enSessionCommands
   }
-} satisfies Pick<Translations, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<Translations, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices'>

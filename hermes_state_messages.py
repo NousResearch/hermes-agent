@@ -471,25 +471,30 @@ class SessionMessagesMixin:
                     compression_lock_holder=compression_lock_holder, turn_lease_holder=turn_lease_holder,
                     turn_lease_ttl_seconds=turn_lease_ttl_seconds)
                 for start in range(0, len(messages), chunk_rows))
-        def _do(conn):
-            self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
-                turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
-            from agent.transcript_repair import resolve_and_repair_transcript_batch
-            inserted_rows = resolve_and_repair_transcript_batch(
-                conn,
-                session_id,
-                messages,
-                encode_content_fn=self._encode_content,
-                decode_content_fn=self._decode_content,
-                serialize_message_fn=lambda msg, timestamp: self._serialized_message_row(
-                    session_id, msg, timestamp
-                ),
-                decode_row_fn=self._decoded_repair_row,
-            )
-            inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
-            self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
-            return inserted
-        return self._execute_transcript_write(_do, messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        return self._execute_transcript_write(lambda conn: self._append_messages_in_transaction(
+            conn, session_id, messages, compression_lock_holder=compression_lock_holder,
+            turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds),
+            messages, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    def _append_messages_in_transaction(self, conn, session_id, messages, *,
+            compression_lock_holder=None, turn_lease_holder=None, turn_lease_ttl_seconds=300.0):
+        self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
+            turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
+        from agent.transcript_repair import resolve_and_repair_transcript_batch
+        inserted_rows = resolve_and_repair_transcript_batch(
+            conn,
+            session_id,
+            messages,
+            encode_content_fn=self._encode_content,
+            decode_content_fn=self._decode_content,
+            serialize_message_fn=lambda msg, timestamp: self._serialized_message_row(
+                session_id, msg, timestamp
+            ),
+            decode_row_fn=self._decoded_repair_row,
+        )
+        inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
+        self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
+        return inserted
 
     _ROW_STATE_KEYS = ("_row_id", DB_ROW_SNAPSHOT, "timestamp")
 
@@ -1018,6 +1023,21 @@ class SessionMessagesMixin:
         index the clones naturally), and the originals are archived. NOTE: re-sequencing assigns the tail
         rows fresh ids; consumers that reference durable row ids re-resolve by content (see 3e8ab0610).
         """
+        return self._execute_transcript_write(lambda conn: self._archive_and_compact_on_conn(
+            conn, session_id, compacted_messages, model_config_patch=model_config_patch,
+            watermark=watermark, lock_holder=lock_holder, tail_count=tail_count,
+            carried_messages=carried_messages, covered_ids=covered_ids,
+            unresolved_held=unresolved_held, held_for_cas=held_for_cas), compacted_messages)
+
+    def _archive_and_compact_on_conn(
+            self, conn, session_id: str, compacted_messages: list[dict[str, Any]], *,
+            model_config_patch: Optional[dict[str, Any]] = None, watermark: Optional[int] = None,
+            lock_holder: Optional[str] = None, tail_count: int = 0,
+            carried_messages: Optional[list[dict[str, Any]]] = None,
+            covered_ids: Optional[list[int]] = None,
+            unresolved_held: Optional[list[dict[str, Any]]] = None) -> int:
+        """:meth:`archive_and_compact` on the caller's write transaction (never commits). The owner
+        and the worker/canonical-mutation verbs share this one body so they cannot drift."""
         from hermes_state import SessionCompressionInProgressError
         def _do(conn):
             if lock_holder is not None:
@@ -1634,9 +1654,13 @@ class SessionMessagesMixin:
         """
         rows = self._fetch_conversation_rows(
             self._resume_lineage_ids(session_id), _DISPLAY_ACTIVE_CLAUSE, with_session_id=True)
-        # The model projection stays active-only: it is the compressed working context.
+        # The model projection stays active-only: it is the compressed working context. The gateway's
+        # first-turn ``session_meta`` marker (tools/model/platform bookkeeping) is transcript logging,
+        # never LLM input: a resuming surface that fed it to the agent would count it in the history
+        # and send a prefix the previous process never sent.
         model_history = self._rows_to_conversation(
-            [r for r in rows if r["session_id"] == session_id and r["active"]], session_id=session_id,
+            [r for r in rows if r["session_id"] == session_id and r["active"] and r["role"] != "session_meta"],
+            session_id=session_id,
             include_ancestors=False, repair_alternation=True, include_row_ids=True, include_summary_markers=True)
         display_history = self._rows_to_conversation(
             self._dedupe_display_generations(rows), session_id=session_id,
@@ -1810,43 +1834,23 @@ class SessionMessagesMixin:
         ``expected_active_ids`` / ``expected_target_content`` pin the active set and canonical live payload
         in-txn before any mutation (presentation-only metadata changes don't invalidate a rewind). A live turn
         lease refuses; expired/dead holders are reclaimed. ``rewind_count`` always increments."""
+        from hermes_state_mutation_transcript import rewind_in_transaction
         def _do(conn):
-            self._check_transcript_write_guards(
-                conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
-            if expected_active_ids is not None:
-                active_rows = conn.execute(_ACTIVE_IDS_SQL, (session_id,)).fetchall()
-                if [int(r[0]) for r in active_rows] != expected_active_ids:
-                    raise RuntimeError("active transcript changed before the rewind could be persisted")
-            row = conn.execute(
-                "SELECT * FROM messages WHERE id = ? AND session_id = ?", (target_message_id, session_id)).fetchone()
-            if row is None:
-                raise ValueError(f"message {target_message_id} not found in session {session_id}")
-            target_row = dict(row)
-            if target_row.get("role") != "user":
-                raise ValueError(
-                    f"rewind target must be a 'user' message (got role={target_row.get('role')!r}, id={target_message_id})")
-            replacement = None
-            if preserve_compaction_handoff or expected_target_content is not None:
-                replacement = self._split_rewind_target(target_row, expected_target_content, preserve_compaction_handoff)
-            ids = [r[0] for r in conn.execute("SELECT id FROM messages WHERE session_id = ? AND id >= ? AND active = 1",
-                                             (session_id, target_message_id)).fetchall()]
-            if ids:
-                conn.execute(f"UPDATE messages SET active = 0 WHERE id IN ({_placeholders(ids)})", ids)
-            if replacement is not None:
-                self._insert_message_rows(conn, session_id, [replacement])  # stamps _row_id and message_uid
-            conn.execute(
-                "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 WHERE id = ?", (session_id,))
-            message_count, tool_call_count = self._active_transcript_counts(conn, session_id)
-            conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (message_count, tool_call_count, session_id))
-            head_id = conn.execute(
-                "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1", (session_id,)).fetchone()[0]
-            return target_row, ids, head_id, replacement
-        target_row, rewound, new_head_id, replacement = self._execute_write(_do)
+            target_row, ids, head_id, replacement_id = rewind_in_transaction(
+                self, conn, session_id, target_message_id,
+                preserve_compaction_handoff=preserve_compaction_handoff,
+                expected_active_ids=expected_active_ids, expected_target_content=expected_target_content)
+            # The scaffold insert stamped a ``message_uid``; read it back in the same txn so the
+            # caller can address the new head by its durable identity.
+            replacement_uid = replacement_id and conn.execute(
+                "SELECT message_uid FROM messages WHERE id = ?", (replacement_id,)).fetchone()[0]
+            return target_row, ids, head_id, replacement_id, replacement_uid
+        target_row, rewound, new_head_id, replacement_message_id, replacement_message_uid = self._execute_write(_do)
         # Decode for the prompt-buffer prefill without a second fallible DB operation.
         target_row["content"] = self._decode_content(target_row.get("content"))
         return {"rewound_count": len(rewound), "target_message": target_row, "new_head_id": new_head_id,
-                **({"replacement_message_id": replacement and replacement["_row_id"],
-                    "replacement_message_uid": replacement and message_uid_or_none(replacement)}
+                **({"replacement_message_id": replacement_message_id,
+                    "replacement_message_uid": replacement_message_uid}
                    if preserve_compaction_handoff else {})}
 
     def message_count(self, session_id: str | None = None) -> int:

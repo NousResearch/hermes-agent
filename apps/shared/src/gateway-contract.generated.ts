@@ -957,10 +957,19 @@ export interface SessionControlParams {
   action: string
   args?: SessionControlArgs | null
 }
-/** ``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``. */
+/** Action-specific fields for structured goal, loop, subgoal, and heartbeat mutations. */
 export interface SessionControlArgs {
   text?: string | null
   index?: number | null
+  title?: string | null
+  max_turns?: number | null
+  contract?: GoalContractSnapshot | null
+  seconds?: number | null
+  reason?: string | null
+  prompt?: string | null
+  interval_seconds?: number | null
+  times?: number | null
+  until?: string | null
 }
 export interface SessionControlResult {
   control: SessionControlSnapshot

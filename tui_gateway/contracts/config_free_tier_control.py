@@ -696,10 +696,13 @@ method("session.control.read", params=SessionControlReadParams, result=SessionCo
 
 
 class SessionControlAction(WireEnum):
+    goal_set = "goal.set"
     goal_pause = "goal.pause"
     goal_resume = "goal.resume"
     goal_clear = "goal.clear"
     goal_unwait = "goal.unwait"
+    goal_wait_time = "goal.wait_time"
+    loop_set = "loop.set"
     loop_pause = "loop.pause"
     loop_resume = "loop.resume"
     loop_stop = "loop.stop"
@@ -707,15 +710,25 @@ class SessionControlAction(WireEnum):
     subgoal_remove = "subgoal.remove"
     subgoal_clear = "subgoal.clear"
     heartbeat_pause = "heartbeat.pause"
+    heartbeat_set = "heartbeat.set"
     heartbeat_resume = "heartbeat.resume"
     heartbeat_clear = "heartbeat.clear"
 
 
 class SessionControlArgs(Params):
-    """``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``."""
+    """Action-specific fields for structured goal, loop, subgoal, and heartbeat mutations."""
 
     text: str | None = None
     index: int | None = None
+    title: str | None = None
+    max_turns: int | None = None
+    contract: GoalContractSnapshot | None = None
+    seconds: int | None = None
+    reason: str | None = None
+    prompt: str | None = None
+    interval_seconds: int | None = None
+    times: int | None = None
+    until: str | None = None
 
 
 class SessionControlParams(ProfileParams):

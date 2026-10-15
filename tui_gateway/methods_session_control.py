@@ -34,9 +34,13 @@ _ACTION_COMMAND_MAP: dict[str, tuple[str, str]] = {
 }
 
 _MANAGER_ACTIONS = frozenset({
+    "goal.set",
+    "goal.wait_time",
+    "loop.set",
     "subgoal.add",
     "subgoal.remove",
     "subgoal.clear",
+    "heartbeat.set",
     "heartbeat.pause",
     "heartbeat.resume",
     "heartbeat.clear",
@@ -306,6 +310,52 @@ def _(rid, params: dict) -> dict:
 
 def _validate_action_args(rid, action: str, args: dict):
     """Validate the only actions with input before any manager is constructed."""
+    if action == "goal.set":
+        title = args.get("title")
+        max_turns = args.get("max_turns")
+        contract = args.get("contract")
+        if set(args) - {"title", "max_turns", "contract"} or not isinstance(title, str) or not (title := title.strip()):
+            return None, _err(rid, 4004, "goal title is required")
+        if max_turns is not None and (type(max_turns) is not int or max_turns < 1):
+            return None, _err(rid, 4004, "goal max_turns must be a positive integer")
+        if contract is not None and (
+            not isinstance(contract, dict)
+            or set(contract) - {"outcome", "verification", "constraints", "boundaries", "stop_when"}
+            or not all(isinstance(value, str) for value in contract.values())
+        ):
+            return None, _err(rid, 4004, "goal contract must contain only string fields")
+        return {"title": title, "max_turns": max_turns, "contract": contract}, None
+    if action == "goal.wait_time":
+        seconds = args.get("seconds")
+        reason = args.get("reason", "")
+        if set(args) - {"seconds", "reason"} or type(seconds) is not int or seconds < 1:
+            return None, _err(rid, 4004, "wait seconds must be a positive integer")
+        if not isinstance(reason, str):
+            return None, _err(rid, 4004, "wait reason must be a string")
+        return {"seconds": seconds, "reason": reason.strip()}, None
+    if action == "loop.set":
+        prompt = args.get("prompt")
+        interval = args.get("interval_seconds")
+        times = args.get("times", 0)
+        until = args.get("until", "")
+        if (
+            set(args) - {"prompt", "interval_seconds", "times", "until"}
+            or not isinstance(prompt, str) or not (prompt := prompt.strip())
+            or (interval is not None and type(interval) is not int)
+            or type(times) is not int or times < 0 or not isinstance(until, str)
+        ):
+            return None, _err(rid, 4004, "loop arguments are invalid")
+        return {"prompt": prompt, "interval_seconds": interval, "times": times, "until": until.strip()}, None
+    if action == "heartbeat.set":
+        prompt = args.get("prompt")
+        interval = args.get("interval_seconds")
+        if (
+            set(args) - {"prompt", "interval_seconds"}
+            or not isinstance(prompt, str) or not (prompt := prompt.strip())
+            or type(interval) is not int or interval < 60
+        ):
+            return None, _err(rid, 4004, "heartbeat prompt and an interval of at least 60 seconds are required")
+        return {"prompt": prompt, "interval_seconds": interval}, None
     if action == "subgoal.add":
         text = args.get("text")
         if not isinstance(text, str) or not (text := text.strip()):
@@ -335,9 +385,32 @@ def _dispatch_command(rid, *, session_id: str, name: str, arg: str) -> dict:
 
 def _execute_manager_action(session_key: str, action: str, args: dict) -> dict:
     """Use manager APIs for controls that have no TUI command handler."""
+    if action.startswith("goal."):
+        return _execute_goal_action(session_key, action, args)
+    if action == "loop.set":
+        from hermes_cli.loops import LoopManager
+
+        LoopManager(session_id=session_key).set(**args)
+        return {"result": {"type": "exec", "output": "✓ Loop set."}}
     if action.startswith("subgoal."):
         return _execute_subgoal_action(session_key, action, args)
-    return _execute_heartbeat_action(session_key, action)
+    return _execute_heartbeat_action(session_key, action, args)
+
+
+def _execute_goal_action(session_key: str, action: str, args: dict) -> dict:
+    from hermes_cli.goals import GoalContract, GoalManager
+
+    try:
+        default_max_turns = int((_load_cfg().get("goals") or {}).get("max_turns", 20) or 20)
+    except (AttributeError, TypeError, ValueError):
+        default_max_turns = 20
+    manager = GoalManager(session_id=session_key, default_max_turns=default_max_turns)
+    if action == "goal.set":
+        contract = GoalContract.from_dict(args["contract"]) if args["contract"] is not None else None
+        manager.set(args["title"], max_turns=args["max_turns"], contract=contract)
+        return {"result": {"type": "exec", "output": "✓ Goal set."}}
+    manager.wait_for_seconds(args["seconds"], reason=args["reason"])
+    return {"result": {"type": "exec", "output": "✓ Goal wait set."}}
 
 
 def _execute_subgoal_action(session_key: str, action: str, args: dict) -> dict:
@@ -356,11 +429,14 @@ def _execute_subgoal_action(session_key: str, action: str, args: dict) -> dict:
     return {"result": {"type": "exec", "output": output}}
 
 
-def _execute_heartbeat_action(session_key: str, action: str) -> dict:
+def _execute_heartbeat_action(session_key: str, action: str, args: dict) -> dict:
     from hermes_cli.heartbeat import HeartbeatManager, format_interval
 
     manager = HeartbeatManager(session_id=session_key)
-    if action == "heartbeat.pause":
+    if action == "heartbeat.set":
+        state = manager.set(args["prompt"], args["interval_seconds"])
+        output = f"✓ Heartbeat set: {state.prompt}"
+    elif action == "heartbeat.pause":
         state = manager.pause()
         output = f"⏸ Heartbeat paused: {state.prompt}" if state else "No heartbeat set."
     elif action == "heartbeat.resume":

@@ -111,6 +111,15 @@ async def _control(authority, ws, reader, sid, marker, receipt):
     updates = []
     authority.sessions[sid].event_stream.observers.add(
         lambda frame: frame['params']['type'] == 'session.control.update' and updates.append(frame['params']))
+    created = await control('goal.set', title='Ship the structured controls', max_turns=7,
+                            contract={'outcome': 'Setters work', 'verification': 'Run focused tests'})
+    assert created['result']['control']['goal']['title'] == 'Ship the structured controls', created
+    timed = await control('goal.wait_time', seconds=30, reason='Await CI')
+    assert timed['result']['control']['goal']['wait_barrier']['type'] == 'until', timed
+    loop_set = await control('loop.set', prompt='CHECK_LOOP', interval_seconds=None, times=3)
+    assert loop_set['result']['control']['loop']['mode'] == 'self_paced', loop_set
+    heartbeat_set = await control('heartbeat.set', prompt='PING_HEARTBEAT', interval_seconds=60)
+    assert heartbeat_set['result']['control']['heartbeat']['interval_seconds'] == 60, heartbeat_set
     for action, check in [
             ('goal.pause', lambda c: c['goal']['status'] == 'paused'),
             ('goal.resume', lambda c: c['goal']['status'] == 'active'),

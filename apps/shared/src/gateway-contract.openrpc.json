@@ -34978,7 +34978,7 @@
       },
       "SessionControlArgs": {
         "additionalProperties": false,
-        "description": "``subgoal.add`` reads ``text``; ``subgoal.remove`` reads the 1-based ``index``.",
+        "description": "Action-specific fields for structured goal, loop, subgoal, and heartbeat mutations.",
         "properties": {
           "text": {
             "anyOf": [
@@ -35003,6 +35003,113 @@
             ],
             "default": null,
             "title": "Index"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
+          },
+          "max_turns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Max Turns"
+          },
+          "contract": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GoalContractSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Seconds"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reason"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Prompt"
+          },
+          "interval_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Interval Seconds"
+          },
+          "times": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Times"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Until"
           }
         },
         "title": "SessionControlArgs",

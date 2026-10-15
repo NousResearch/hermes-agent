@@ -4404,6 +4404,24 @@ def _housekeeping_paste_sweep() -> None:
         logger.info("Paste sweep: deleted %d expired paste(s), %d pending", deleted, remaining)
 
 
+def _housekeeping_scratch_prune() -> None:
+    """Re-sweep ``cache/scratch`` for entries idle past their retention window.
+
+    Retention lives in ``get_scratch_dir(prune=True)``: at most once per process, and across
+    processes at most hourly via a stamp file. Both triggers need process churn — on a host
+    whose only long-lived Hermes process is the gateway, nothing re-sweeps after boot, so
+    entries that go idle later outlive ``SCRATCH_MAX_IDLE_HOURS`` until the host's own cleanup
+    catches them. Sweeping on the tick ties the window to the clock instead of to who booted
+    last. Bounded cost: only a tree already idle for the whole window pays for a full walk — a
+    live one stops at its first recent write.
+    """
+    from hermes_constants import prune_scratch_dir
+
+    removed = prune_scratch_dir()
+    if removed:
+        logger.info("Scratch prune: removed %d idle entry(s)", removed)
+
+
 def _housekeeping_misfire_catch_up(cron_provider, adapters, loop) -> None:
     """External cron providers only: fire jobs whose time passed with no external fire delivered (dead
     loopback hop). No-op for the built-in ticker; enforces misfire_grace_minutes; CAS claim de-dupes."""
@@ -4589,7 +4607,10 @@ def _start_gateway_housekeeping(
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner)),
         # Last: a real prune can hold this thread for a while; every other chore of the tick runs first.
-        (1, "Checkpoint prune tick", _housekeeping_checkpoint_prune)]
+        (1, "Checkpoint prune tick", _housekeeping_checkpoint_prune),
+        # Hourly, like the media caches (same 24h max-idle rule); ordered after the per-tick
+        # chores for the same reason: a sweep that actually deletes can hold this thread.
+        (60, "Scratch prune", _housekeeping_scratch_prune)]
 
     # Between ticks the queue file is watched so a worker's send goes out when it is queued,
     # not up to ``interval`` later (#117307); the tick's drain above remains the fallback.

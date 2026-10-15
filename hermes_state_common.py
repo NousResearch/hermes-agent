@@ -527,6 +527,13 @@ CREATE TABLE IF NOT EXISTS session_admissions (
 );
 CREATE INDEX IF NOT EXISTS session_admissions_pending
     ON session_admissions(target_session_id, status, seq);
+-- Cron run history finds a job's unified-runtime runs by the scheduler principal's request ids
+-- (``cron:<job>:<execution>``, hermes_state_keys.CRON_PRINCIPAL_ID); without this a lookup walked
+-- every cron admission of every job. Partial: interactive turns, the bulk of admissions, pay
+-- nothing for it. The constant leading column gives the planner equality + range over a covering
+-- index, so it beats the UNIQUE autoindex's bare principal_id prefix even without ANALYZE stats.
+CREATE INDEX IF NOT EXISTS idx_session_admissions_cron_request
+    ON session_admissions(principal_id, request_id, target_session_id) WHERE principal_id = 'cron-owner';
 CREATE TABLE IF NOT EXISTS worker_executions (
     execution_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,

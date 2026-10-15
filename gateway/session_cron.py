@@ -12,6 +12,7 @@ from pathlib import Path
 import threading
 
 from gateway.session_contract import Principal, SessionRef
+from hermes_state_keys import CRON_PRINCIPAL_ID, cron_request_id
 from hermes_state_runtime import RuntimeStoreError, admit_session_input, get_session_admission
 
 _execution: ContextVar[tuple | None] = ContextVar('cron_owner_execution', default=None)
@@ -43,7 +44,7 @@ def current_execution():
 
 def _actor(authority, actor):
     if actor is None:
-        return Principal('cron-owner', authority.profile_id,
+        return Principal(CRON_PRINCIPAL_ID, authority.profile_id,
                          frozenset({'session:create', 'session:submit', 'session:read', 'session:control'}), 'cron-ticker')
     if actor.profile_id != authority.profile_id:
         raise RuntimeStoreError('profile_mismatch')
@@ -51,7 +52,7 @@ def _actor(authority, actor):
         raise RuntimeStoreError('permission_denied')
     # Cron fires belong to the profile scheduler, not the transport that observes
     # them. The same execution ID from ticker and CLI must dedupe together.
-    return Principal('cron-owner', authority.profile_id, actor.capabilities, actor.transport_id)
+    return Principal(CRON_PRINCIPAL_ID, authority.profile_id, actor.capabilities, actor.transport_id)
 
 
 def _create(authority, actor, params):
@@ -70,7 +71,11 @@ def _create(authority, actor, params):
     if (not isinstance(jid, str) or not jid or not isinstance(request_id, str)
             or not request_id or len(request_id) > 256 or (extra is not None and not isinstance(extra, str))):
         raise RuntimeStoreError('invalid_params')
-    request_id = 'cron:' + jid + ':' + request_id
+    if ':' in request_id:
+        # Run history splits ``cron:<job>:<execution>`` at its last ``:``; an execution id holding
+        # one would file the run under another job. Ledger ids are hex, so only a hand-made one can.
+        raise RuntimeStoreError('invalid_params')
+    request_id = cron_request_id(jid, request_id)
     sid = local_identity(authority.profile_id, actor.subject, request_id)
     if authority.db.get_session(sid) is not None:
         return restore_local_session(authority, sid), request_id
@@ -113,9 +118,10 @@ async def operation(authority, name, params, actor=None):
         from gateway.session_local_recovery import local_identity
         if (set(params) != {'job_id', 'request_id', 'extra_prompt'}
                 or any(not isinstance(params[k], str) or not params[k] for k in ('job_id', 'request_id'))
+                or ':' in params['request_id']  # never admitted: see ``_create``
                 or (params['extra_prompt'] is not None and not isinstance(params['extra_prompt'], str))):
             raise RuntimeStoreError('invalid_params')
-        request_id = 'cron:' + params['job_id'] + ':' + params['request_id']
+        request_id = cron_request_id(params['job_id'], params['request_id'])
         sid = local_identity(authority.profile_id, actor.subject, request_id)
         from hermes_state_runtime import list_session_admissions
         rows = list_session_admissions(authority.db, session_id=sid, pending_only=False)
@@ -197,8 +203,7 @@ async def rpc(connection, name, params):
 def scheduler_execution_id(job_id, request_id):
     """The scheduler's execution id this admission carries: ``_create`` admits under
     ``cron:<job>:<request_id>`` and the ticker's ``request_id`` IS its ``cron/executions`` row id."""
-    prefix = 'cron:' + job_id + ':'
-    return request_id.removeprefix(prefix)
+    return request_id.removeprefix(cron_request_id(job_id, ''))
 
 
 def _run_identified(run_job, job, execution_id, **kwargs):

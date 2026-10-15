@@ -1,0 +1,46 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: myworld-notion
+description: Safe Notion practice world for page, database and comment workflows.
+source: https://github.com/shashank-yadav/myworld
+
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - myworld==0.2.1
+    - stdio
+    - notion
+
+auth:
+  type: none
+
+tools:
+  default_enabled:
+    - notion-search
+    - notion-fetch
+    - notion-update-page
+    - notion-query-data-sources
+    - notion-create-comment
+    - notion-get-comments
+    - notion-get-users
+
+suggest:
+  keywords:
+    - myworld
+    - notion
+    - pages
+    - practice world
+
+post_install: |
+  myworld-notion runs a local, simulated Notion MCP server over stdio:
+    uvx myworld stdio notion
+
+  No real Notion workspace is changed. Use it to practice page updates,
+  comments, access levels, database filters and lagging search safely.
+
+  More Notion-shaped tools can be enabled with:
+    hermes mcp configure myworld-notion
+

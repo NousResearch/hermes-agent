@@ -374,6 +374,78 @@ async def test_run_agent_registers_active_run_id_for_steering(adapter, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_session_api_preserves_first_party_sources_and_rejects_invalid_sources(adapter, session_db):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        web_created = await cli.post(
+            "/api/sessions",
+            json={"id": "hermes-web-source-session", "source": "hermes_web", "title": "Hermes Web source"},
+        )
+        assert web_created.status == 201, await web_created.text()
+        web_payload = await web_created.json()
+        assert web_payload["session"]["source"] == "hermes_web"
+
+        browser_created = await cli.post(
+            "/api/sessions",
+            json={"id": "hermes-browser-source-session", "source": "hermes_browser"},
+        )
+        assert browser_created.status == 201, await browser_created.text()
+        browser_payload = await browser_created.json()
+        assert browser_payload["session"]["source"] == "hermes_browser"
+
+        stale_client = await cli.post(
+            "/api/sessions",
+            json={"id": "hermes-web-stale-client", "title": "Hermes Web stale client"},
+        )
+        assert stale_client.status == 201, await stale_client.text()
+        stale_payload = await stale_client.json()
+        assert stale_payload["session"]["source"] == "hermes_web"
+
+        mobile_created = await cli.post(
+            "/api/sessions",
+            json={"id": "hermes-mobile-source-session", "source": "hermes_mobile"},
+        )
+        assert mobile_created.status == 201, await mobile_created.text()
+        mobile_payload = await mobile_created.json()
+        assert mobile_payload["session"]["source"] == "hermes_mobile"
+
+        # Unknown create-time sources keep the existing api_server contract instead of breaking clients.
+        unknown_create = await cli.post(
+            "/api/sessions",
+            json={"id": "unknown-source-session", "source": "bogus_source"},
+        )
+        assert unknown_create.status == 201, await unknown_create.text()
+        assert (await unknown_create.json())["session"]["source"] == "api_server"
+
+        for extension_tag in ("hermes_bot_mode", "hermes_browser_bg"):
+            tagged = await cli.post(
+                "/api/sessions",
+                json={"id": f"extension-{extension_tag}", "source": extension_tag},
+            )
+            assert tagged.status == 201, await tagged.text()
+            assert (await tagged.json())["session"]["source"] == "hermes_browser"
+
+        legacy_id = session_db.create_session("hermes-web-legacy-source", "api_server")
+        corrected = await cli.patch(
+            f"/api/sessions/{legacy_id}",
+            json={"source": "hermes_web"},
+        )
+        assert corrected.status == 200, await corrected.text()
+        corrected_payload = await corrected.json()
+
+        invalid_patch = await cli.patch(
+            f"/api/sessions/{legacy_id}",
+            json={"source": "bogus_source"},
+        )
+        assert invalid_patch.status == 400
+        invalid_patch_payload = await invalid_patch.json()
+        assert invalid_patch_payload["error"]["code"] == "invalid_session_source"
+
+    assert corrected_payload["session"]["source"] == "hermes_web"
+    assert session_db.get_session("hermes-web-legacy-source")["source"] == "hermes_web"
+
+
+@pytest.mark.asyncio
 async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_finishes(
     adapter, session_db
 ):

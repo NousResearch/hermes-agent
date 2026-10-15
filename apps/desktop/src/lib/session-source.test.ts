@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { isMessagingSource, sessionSourceSearchTerms } from './session-source'
+import {
+  isMessagingSource,
+  MESSAGING_SESSION_SOURCE_IDS,
+  sessionSourceLabel,
+  sessionSourceSearchTerms
+} from './session-source'
 
 // Regression guard for #46761 / PR #47395: Photon (iMessage) must keep its own
 // sidebar section. refreshMessagingSessions() filters rows through
@@ -27,5 +32,18 @@ describe('photon messaging source registration', () => {
     expect(isMessagingSource('cli')).toBe(false)
     expect(isMessagingSource(null)).toBe(false)
     expect(isMessagingSource(undefined)).toBe(false)
+  })
+})
+
+describe('first-party session source registry', () => {
+  it.each([
+    ['hermes_browser', 'Browser Extension'],
+    ['hermes_mobile', 'Mobile'],
+    ['hermes_web', 'Web']
+  ])('labels %s as its own sidebar source "%s"', (id, label) => {
+    expect(sessionSourceLabel(id)).toBe(label)
+    expect(MESSAGING_SESSION_SOURCE_IDS).toContain(id)
+    expect(isMessagingSource(id)).toBe(true)
+    expect(sessionSourceSearchTerms(id)).toContain(label)
   })
 })

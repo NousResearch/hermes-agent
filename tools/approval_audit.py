@@ -28,7 +28,7 @@ def log_approval_event(pattern_key, description, command, result, surface=""):
         try:
             text = {key: redact_sensitive_text(str(value or ""), force=True)
                     for key, value in text.items()}
-        except Exception:
+        except Exception:  # health: allow BLE001 -- a redaction failure must never leak raw text, and its traceback may carry it
             text = {key: "[redaction unavailable]" for key in text}
         result = result if isinstance(result, dict) else {}
         approved = bool(result.get("approved", False))
@@ -66,7 +66,8 @@ def log_approval_event(pattern_key, description, command, result, surface=""):
             finally:
                 os.close(fd)
     except Exception:
-        logger.debug("approval audit unavailable")
+        # Best-effort evidence: an audit failure must never change the verdict.
+        logger.debug("approval audit unavailable", exc_info=True)
 
 
 def audited(surface, *, always=False):

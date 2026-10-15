@@ -425,6 +425,43 @@ class TestBridgeDispatch:
         assert err
 
 
+    def test_resolve_underlying_call_over_cap_local_batch_names_the_cap(self):
+        """A local batch above MAX_CALLS_PER_DISPATCH is not split (that path caps at the
+        dispatch limit) and its rejection must name the cap and the recovery — batches of
+        at most N — instead of the stale "exactly one entry" contract local batches within
+        the cap no longer follow (#139282)."""
+        from tools.tool_search import resolve_underlying_call
+        entries = [{"name": f"mcp__mail__mark_read_{i}", "arguments": {"id": i}} for i in range(11)]
+        _name, _args, err = resolve_underlying_call({"calls": entries})
+        assert err is not None
+        assert "at most 10 entries per batch" in err
+        assert "batches of at most 10 entries" in err
+        assert "exactly one entry" not in err
+
+
+    def test_local_batch_error_within_cap_reports_membership_not_size(self):
+        """The defensive dispatch branch (a malformed connectors__ name partitioned as local)
+        sees a batch within the cap: its rejection must blame the membership, never claim
+        a size violation for a batch the cap allows (#139282)."""
+        from tools.tool_search_validation import local_batch_error
+        calls = [{"name": "connectors__", "arguments": {}}] + [
+            {"name": "connectors__svc__act", "arguments": {}}] * 2
+        err = local_batch_error(calls)
+        assert "cannot batch these entries together" in err
+        assert "at most 10 entries per batch" not in err
+
+
+    def test_tool_call_schema_advertises_the_batch_cap(self):
+        """The tool_call schema says "batch independent calls" — without the cap in the same
+        breath a compliant model batches a bulk task into one oversized call and pays a
+        guaranteed rejection round trip (#139282)."""
+        from tools.tool_search import TOOL_CALL_NAME, bridge_tool_schemas
+        schema = next(s for s in bridge_tool_schemas(5) if s["function"]["name"] == TOOL_CALL_NAME)
+        assert "at most 10 entries per call" in schema["function"]["description"]
+        calls_param = schema["function"]["parameters"]["properties"]["calls"]
+        assert "at most 10" in calls_param["description"]
+
+
 # ---------------------------------------------------------------------------
 # End-to-end via the real handle_function_call (smoke test).
 # ---------------------------------------------------------------------------

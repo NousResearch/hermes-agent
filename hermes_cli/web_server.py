@@ -941,6 +941,23 @@ def _configure_auth_gate(
         )
     else:
         app.state.auth_required = should_require_dashboard_auth(host, app.state.trusted_public_hosts)
+        if not app.state.auth_required:
+            # Loopback bind, gate disengaged, yet a provider IS configured: password login
+            # mints session cookies that only the gated middleware ever attaches, so app
+            # clients (Hermes Go, Hermes-Relay) authenticate and then 401 on every
+            # session-backed route. The SPA keeps working via the injected token, which
+            # hides it (#139415 item 4) — say it once, loudly.
+            from hermes_cli.dashboard_auth import list_providers
+            configured = [p.name for p in list_providers()]
+            if configured:
+                _log.warning(
+                    "Dashboard auth gate is NOT engaged for the loopback bind %s although auth "
+                    "providers are configured (%s). Password login will succeed, but app clients "
+                    "(Hermes Go, Hermes-Relay) then get 401s on session-backed routes: sessions "
+                    "attach only under the gate. Bind a non-loopback host (--host 0.0.0.0) or "
+                    "set a non-loopback dashboard.public_url to engage it.",
+                    host, ", ".join(configured),
+                )
 
     # ``--insecure`` no longer disables the gate (June 2026 hermes-0day
     # hardening); warn that it is a no-op rather than silently ignore it.

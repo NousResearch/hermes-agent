@@ -727,6 +727,31 @@ export function createVersionResolver(fetchVersionFn, {
   };
 }
 
+/**
+ * Optional pre-send throttle for the serialised send queue (anti-ban):
+ * WHATSAPP_SEND_DELAY_MS makes every outgoing send wait that many ms
+ * before it hits the WhatsApp socket, so automated replies don't land at
+ * machine speed. 0, absent, or unparsable falls back to the unthrottled
+ * queue.
+ *
+ * The wait is applied INSIDE the queue, so concurrent HTTP handlers can
+ * never skip it, and a send's own timeout clock starts only after the
+ * delay — the delay is intentional, not lost time.
+ */
+export function createSendThrottle(delayMs, {
+  enqueueSend,
+  sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms)),
+} = {}) {
+  const delay = Math.max(0, parseInt(delayMs, 10) || 0);
+  return function throttledSend(fn) {
+    if (!delay) return enqueueSend(fn);
+    return enqueueSend(async () => {
+      await sleep(delay);
+      return fn();
+    });
+  };
+}
+
 const pad = (value, width = 2) => String(value).padStart(width, '0');
 
 /** `2026-09-28 13:18:46,062` in local time: the asctime shape every file in logs/ uses. */

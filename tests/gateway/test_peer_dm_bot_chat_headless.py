@@ -207,6 +207,82 @@ async def test_local_bot_relay_delivery_lands_in_the_peer_minted_bot_chat(headle
 
 
 @pytest.mark.asyncio
+async def test_local_delivery_into_the_peer_minted_bot_chat_keeps_its_transient_retry(headless, monkeypatch):
+    # The local operator's delivery was admitted on ``session:operator`` (the chat is api-peer's);
+    # its one transient-failure retry must be admitted on that same access, not refused.
+    from pathlib import Path
+    from gateway.session_authorities import served_profile_name
+    from gateway.session_bot import deliver
+    from tests.waiting import async_wait_until
+    from tools.bot_live_delivery import read_delivery_result
+    session_id = await _peer_minted(headless)
+    texts = []
+
+    async def execute(authority, ref, row):
+        texts.append(row['payload']['text'])
+        if len(texts) == 1:
+            authority.pending_results[row['admission_id']] = {'result': {
+                'final_response': '', 'messages': [], 'failed': True,
+                'error': 'Error code: 429 - rate limit exceeded'}, 'usage': {}}
+            return ''
+        return 'pong'
+
+    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    home = Path(headless.authority.db.db_path).parent.resolve()
+    key = 'b' * 32
+    await deliver(_local_owner(headless.authority),
+                  dict(id=key, profile=served_profile_name(home), message='relayed', author=AUTHOR))
+
+    def receipt():
+        return read_delivery_result(home, key) or {}
+
+    await async_wait_until(lambda: receipt().get('retry', {}).get('refused') or receipt().get('status') == 'settled',
+                           timeout=10, interval=.05)
+    assert 'refused' not in receipt()['retry'], receipt()
+    assert (receipt()['status'], receipt()['reply']) == ('settled', 'pong'), receipt()
+    assert texts == ['relayed', 'relayed'] and receipt()['session_id'] == session_id
+    assert receipt()['operator'] is True
+
+
+@pytest.mark.asyncio
+async def test_a_receipt_without_recorded_operator_access_retries_as_before(headless, monkeypatch):
+    # A receipt written before ``operator`` was recorded (or by a non-operator actor) never gains
+    # that access on retry: the retry into api-peer's chat is still refused, nothing is widened.
+    from pathlib import Path
+    from gateway import session_bot_mailbox
+    from gateway.session_authorities import served_profile_name
+    from gateway.session_bot import deliver
+    from tests.waiting import async_wait_until
+    from tools.bot_live_delivery import read_delivery_result
+    await _peer_minted(headless)
+    texts = []
+
+    async def execute(authority, ref, row):
+        texts.append(row['payload']['text'])
+        authority.pending_results[row['admission_id']] = {'result': {
+            'final_response': '', 'messages': [], 'failed': True,
+            'error': 'Error code: 429 - rate limit exceeded'}, 'usage': {}}
+        return ''
+
+    real = session_bot_mailbox._write_receipt
+
+    def old_shape(home, record, expect=session_bot_mailbox._UNCHECKED):
+        return real(home, {k: v for k, v in record.items() if k != 'operator'}, expect)
+
+    monkeypatch.setattr(session_bot_mailbox, '_write_receipt', old_shape)
+    monkeypatch.setattr('gateway.session_finite.execute_finite_admission', execute)
+    home = Path(headless.authority.db.db_path).parent.resolve()
+    key = 'd' * 32
+    await deliver(_local_owner(headless.authority),
+                  dict(id=key, profile=served_profile_name(home), message='relayed', author=AUTHOR))
+    await async_wait_until(lambda: (read_delivery_result(home, key) or {}).get('retry', {}).get('refused'),
+                           timeout=10, interval=.05)
+    receipt = read_delivery_result(home, key)
+    assert 'operator' not in receipt and receipt['retry']['refused'] == 'permission_denied', receipt
+    assert texts == ['relayed']
+
+
+@pytest.mark.asyncio
 async def test_peer_minted_bot_chat_is_the_local_rosters_canonical_session(headless):
     from pathlib import Path
     from gateway.session_group_controls import _profiles

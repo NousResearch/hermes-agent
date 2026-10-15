@@ -294,8 +294,12 @@ async def _maybe_retry(authority, home, path, record):
     if not _retry_eligible(authority, record):
         return
     identity = _retry_identity(record['delivery_id'])
-    actor = Principal(record['principal_id'], authority.profile_id, frozenset({'session:submit', 'session:read'}),
-                      'bot-delivery-retry')
+    # The retry keeps the access its delivery was admitted on: ``operator`` is recorded only when the
+    # transport granted ``session:operator`` (a local delivery into api-peer's Bot Chat), and the
+    # session check below still pins the retry to the admitted target.
+    operator = {'session:operator'} if record.get('operator') is True else set()
+    actor = Principal(record['principal_id'], authority.profile_id,
+                      frozenset({'session:submit', 'session:read'} | operator), 'bot-delivery-retry')
     try:
         authority._require_admission_open()
         ref, live, entry = await _target(authority, actor)
@@ -555,6 +559,8 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
     record = dict(legacy or {}, delivery_id=key, profile_home=str(home), session_id=ref.session_id,
         principal_id=actor.subject, message=message, status='ambiguous')
     record.update(notification)
+    if 'session:operator' in actor.capabilities:
+        record['operator'] = True  # admitted on operator access: its one retry keeps it (``_maybe_retry``)
     if author is not None:
         record['author'] = dict(author)
     # Preserve a foreign cancellation or claim that won after our legacy scan.

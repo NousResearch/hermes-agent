@@ -1,8 +1,9 @@
-import type { LoopSnapshot } from '@hermes/shared/gateway-events'
+import type { LoopSnapshot, SessionControlSnapshot } from '@hermes/shared/gateway-events'
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useEffect, useState } from 'react'
 
+import { applyGoalSnapshot } from './goalStatus.js'
 import { $uiState } from './uiStore.js'
 
 // The session's standing /loop, as `session.control.read` / `session.control.update` report it.
@@ -17,6 +18,12 @@ export function applyLoopSnapshot(sid: string | null, loop: LoopSnapshot | null 
   if (previous.sid !== sid || JSON.stringify(previous.loop) !== JSON.stringify(loop)) {
     $loopSnapshot.set({ loop, sid })
   }
+}
+
+/** Both bars' state from one `session.control.read` / `session.control.update` payload. */
+export function applyControlSnapshot(sid: string | null, control?: null | SessionControlSnapshot) {
+  applyGoalSnapshot(sid, control?.goal ?? null)
+  applyLoopSnapshot(sid, control?.loop ?? null)
 }
 
 export interface LoopLine {

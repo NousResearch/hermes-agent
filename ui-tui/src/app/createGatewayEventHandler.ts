@@ -40,9 +40,8 @@ import {
   openCanonicalClarify,
   settleSharedPrompt
 } from './gatewayCanonicalEvents.js'
-import { applyGoalSnapshot } from './goalStatus.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
-import { applyLoopSnapshot } from './loopStatus.js'
+import { applyControlSnapshot } from './loopStatus.js'
 import { getOverlayState, patchOverlayState, SENSITIVE_PROMPTS } from './overlayStore.js'
 import { markBubbleShown, newlyStartedRows } from './pendingBubbles.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
@@ -1119,8 +1118,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'session.control.update':
-        applyGoalSnapshot(sid, ev.payload?.control.goal ?? null)
-        applyLoopSnapshot(sid, ev.payload?.control.loop ?? null)
+        applyControlSnapshot(sid, ev.payload?.control)
 
         return
 

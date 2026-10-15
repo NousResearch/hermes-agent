@@ -28,9 +28,10 @@ from gateway.config import GatewayConfig, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session_authority import initialize_session_authority
-from gateway.session_contract import Principal, Submission
+from gateway.session_contract import Principal, SessionRef, Submission
 from gateway.session_local import create_local_session
 from hermes_state import SessionDB
+from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 from tests.gateway.test_shared_busy_receive_loop import Adapter, _statuses
 from tests.waiting import async_wait_until
 
@@ -39,6 +40,13 @@ _VIEWER = Principal(
     "default",
     frozenset({"session:create", "session:submit", "session:read"}),
     "fixture",
+)
+# What messaging ``/stop`` cancels a queued follow-up as (``_hm_stop_owner_turn``).
+_CONTROL = Principal(
+    "messaging-control",
+    "default",
+    frozenset({"session:submit", "session:control"}),
+    "busy-command",
 )
 
 
@@ -401,6 +409,208 @@ async def test_late_waiter_cancelled_while_the_drain_runs_releases_the_token_unc
         f"{getattr(authority, 'review_completions', {})}"
     )
     assert ("spawn", sid) not in timeline
+    assert getattr(authority, "review_completions", {}) == {}
+
+
+async def _settle_window_waiter(tmp_path, monkeypatch, timeline, turns):
+    """A native waiter that registers in the drain's settlement window: the turn ran and was
+    handed over with ``native=False`` (the drain owes the reply and holds the completion as its
+    own) and ``settle_with_retry``'s off-loop write is still pending when the admitting adapter
+    task resumes and parks on the started row."""
+    import gateway.session_settlement_recovery as recovery
+
+    adapter = _TimelineAdapter(timeline)
+    runner, authority = await _owner(tmp_path, monkeypatch, adapter)
+    source = adapter.build_source(
+        chat_id="busy-chat", chat_type="dm", user_id="fixture-user"
+    )
+    _install_turn(runner, monkeypatch, timeline, turns)
+    settling, commit = asyncio.Event(), asyncio.Event()
+    real_settle = recovery.settle_with_retry
+
+    async def settle_once_released(*args, **kwargs):
+        settling.set()
+        await commit.wait()
+        return await real_settle(*args, **kwargs)
+
+    monkeypatch.setattr(recovery, "settle_with_retry", settle_once_released)
+    real_admit_native = authority.admit_native
+
+    async def late_admit_native(event):
+        receipt = await real_admit_native(event)
+        await settling.wait()
+        return receipt
+
+    monkeypatch.setattr(authority, "admit_native", late_admit_native)
+    await adapter.handle_message(
+        MessageEvent(text="one", source=source, message_id="m1")
+    )
+    await asyncio.wait_for(settling.wait(), 10)
+    await async_wait_until(lambda: bool(authority.native_waiters), timeout=10)
+    assert _statuses(authority) == {"one": "started"}
+    return authority, adapter, commit
+
+
+@pytest.mark.asyncio
+async def test_late_waiter_cancelled_in_the_settle_window_releases_the_token_unconfirmed(
+    tmp_path, monkeypatch, caplog
+):
+    """The drain already holds the completion as its own when ``/stop`` cancels the adapter
+    task that registered on the started row during the settlement write. ``deliver_settled``
+    still finds that waiter registered and hands it the reply, which no lifecycle sends: the
+    token is released unconfirmed, under the drain's owner-tagged slug — never left for the
+    dead waiter, which would refuse every later automatic review on the session for the
+    process lifetime."""
+    timeline, turns = [], {}
+    with caplog.at_level("INFO"):
+        authority, adapter, commit = await _settle_window_waiter(
+            tmp_path, monkeypatch, timeline, turns
+        )
+        sid, profile_key = turns["one"]
+        (session_key,) = list(adapter._session_tasks)
+        await adapter.cancel_session_processing(
+            session_key, release_guard=False, discard_pending=False
+        )
+        commit.set()
+        await async_wait_until(
+            lambda: (
+                _statuses(authority) == {"one": "terminal"} and not authority.waiters
+            ),
+            timeout=20,
+        )
+    await asyncio.sleep(0)
+    assert review_admission.live_turn_block_reason(sid, None, profile_key) is None, (
+        f"token outlived its turn: review_completions="
+        f"{getattr(authority, 'review_completions', {})}"
+    )
+    assert ("spawn", sid) not in timeline
+    # The reply went to the waiter the cancel killed (as on main): nothing confirmed a send.
+    assert ("sent", "reply to one") not in timeline
+    assert getattr(authority, "review_completions", {}) == {}
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if review_admission.REASON_DELIVERY_UNCONFIRMED in record.getMessage()
+    ]
+    assert sum("released without delivery" in line for line in lines) == 1, caplog.text
+    assert lines and all("owner=" in line and sid not in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_late_waiter_kept_alive_in_the_settle_window_completes_once_after_its_send(
+    tmp_path, monkeypatch
+):
+    """The same window with the waiter alive: ``deliver_settled`` hands it the reply, its
+    adapter task sends it and completes the token once, after that send."""
+    timeline, turns = [], {}
+    authority, adapter, commit = await _settle_window_waiter(
+        tmp_path, monkeypatch, timeline, turns
+    )
+    sid, profile_key = turns["one"]
+    commit.set()
+    await async_wait_until(
+        lambda: (
+            _statuses(authority) == {"one": "terminal"} and not adapter._session_tasks
+        ),
+        timeout=20,
+    )
+    await async_wait_until(lambda: ("spawn", sid) in timeline, timeout=10)
+
+    assert timeline.count(("sent", "reply to one")) == 1
+    assert timeline.count(("spawn", sid)) == 1
+    assert timeline.index(("sent", "reply to one")) < timeline.index(("spawn", sid))
+    assert review_admission.live_turn_block_reason(sid, None, profile_key) is None
+    assert getattr(authority, "review_completions", {}) == {}
+
+
+async def _cancelled_queued_waiter(tmp_path, monkeypatch, timeline, turns):
+    """An adapter task cancelled while parked on a row the drain has not claimed (its cancel
+    leaves the 'waiter gone' mark). The claim waits on ``claim`` and, when ``refuse`` names a
+    reason, raises it instead: how the FIFO pauses before its head."""
+    adapter = _TimelineAdapter(timeline)
+    runner, authority = await _owner(tmp_path, monkeypatch, adapter)
+    source = adapter.build_source(
+        chat_id="busy-chat", chat_type="dm", user_id="fixture-user"
+    )
+    _install_turn(runner, monkeypatch, timeline, turns)
+    claim, refuse = asyncio.Event(), []
+    real_claim_next = authority._claim_next
+
+    async def gated_claim_next(ref, live):
+        await claim.wait()
+        if refuse:
+            raise RuntimeStoreError(refuse.pop())
+        return await real_claim_next(ref, live)
+
+    monkeypatch.setattr(authority, "_claim_next", gated_claim_next)
+    await adapter.handle_message(
+        MessageEvent(text="one", source=source, message_id="m1")
+    )
+    await async_wait_until(lambda: bool(authority.waiters), timeout=10)
+    assert _statuses(authority) == {"one": "queued"}
+    (session_key,) = list(adapter._session_tasks)
+    await adapter.cancel_session_processing(
+        session_key, release_guard=False, discard_pending=False
+    )
+    (sid,) = list(authority.sessions)
+    return authority, SessionRef(authority.profile_id, sid), claim, refuse
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_queued_row_of_a_cancelled_waiter_drops_its_mark(
+    tmp_path, monkeypatch
+):
+    """``/stop`` cancels the adapter task parked on a queued follow-up, then the row itself
+    (``cancel_queued`` -> ``_settle_cancelled``): the row never executes, so the mark that
+    waiter's cancel left describes no handover and must not outlive the row."""
+    timeline, turns = [], {}
+    authority, ref, claim, _refuse = await _cancelled_queued_waiter(
+        tmp_path, monkeypatch, timeline, turns
+    )
+    (row,) = list_session_admissions(authority.db, session_id=ref.session_id)
+    await authority.cancel_queued(_CONTROL, ref, row["admission_id"])
+    claim.set()
+    await async_wait_until(
+        lambda: authority.sessions[ref.session_id].task.done(), timeout=10
+    )
+
+    assert _statuses(authority) == {"one": "terminal"}
+    assert not authority.waiters and not authority.native_waiters
+    assert turns == {}
+    assert getattr(authority, "review_completions", {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_pause_before_the_claim_drops_the_mark_so_the_rerun_is_reviewed(
+    tmp_path, monkeypatch
+):
+    """The FIFO pauses before claiming the row (``_pause`` releases the waiter it would have
+    answered) and a later drain runs it with no waiter: the drain delivers the reply itself and
+    completes the turn with that send, so its candidate spawns once. The mark the cancelled
+    waiter left would have released the turn unconfirmed under the drain's own delivery."""
+    timeline, turns = [], {}
+    authority, ref, claim, refuse = await _cancelled_queued_waiter(
+        tmp_path, monkeypatch, timeline, turns
+    )
+    live = authority.sessions[ref.session_id]
+    refuse.append("runtime_draining")
+    claim.set()
+    await async_wait_until(lambda: live.task.done(), timeout=10)
+    assert _statuses(authority) == {"one": "queued"}
+    assert not authority.waiters and not authority.native_waiters
+    assert getattr(authority, "review_completions", {}) == {}
+
+    authority._schedule(ref)
+    await async_wait_until(
+        lambda: _statuses(authority) == {"one": "terminal"}, timeout=20
+    )
+    sid, profile_key = turns["one"]
+    await async_wait_until(lambda: ("spawn", sid) in timeline, timeout=10)
+
+    assert timeline.count(("sent", "reply to one")) == 1
+    assert timeline.count(("spawn", sid)) == 1
+    assert timeline.index(("sent", "reply to one")) < timeline.index(("spawn", sid))
+    assert review_admission.live_turn_block_reason(sid, None, profile_key) is None
     assert getattr(authority, "review_completions", {}) == {}
 
 

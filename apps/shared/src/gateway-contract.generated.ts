@@ -5503,6 +5503,7 @@ export interface MessageDeltaPayload {
   text: string | null
   rendered?: string | null
   verbose?: boolean | null
+  reasoning_id?: string | null
 }
 /** ``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``), ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning`` (reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on. */
 export interface StreamDeltaPayload {

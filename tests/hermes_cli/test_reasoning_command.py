@@ -448,8 +448,8 @@ class TestReasoningDeltasFiredFlag(unittest.TestCase):
         agent._build_assistant_message(msg, "stop")
         self.assertEqual(structured, [
             ("start", "rs_live:summary:0", ""), ("delta", "rs_live:summary:0", "Inspecting"), ("end", "rs_live:summary:0", ""),
-            ("start", "rs_live:summary:1", ""), ("delta", "rs_live:summary:1", "Checking"), ("end", "rs_live:summary:1", ""),
-            ("start", "rs_verify:summary:0", ""), ("delta", "rs_verify:summary:0", "Verifying"), ("end", "rs_verify:summary:0", ""),
+            ("start", "rs_live:summary:1", ""), ("delta", "rs_live:summary:1", "\nChecking"), ("end", "rs_live:summary:1", ""),
+            ("start", "rs_verify:summary:0", ""), ("delta", "rs_verify:summary:0", "\n\nVerifying"), ("end", "rs_verify:summary:0", ""),
         ])
 
 

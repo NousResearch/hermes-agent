@@ -124,7 +124,7 @@ def test_init_agent_installs_interim_consumer_even_without_reasoning(
     cli_shell, monkeypatch, streaming_enabled
 ):
     shell, _, cli_mod = cli_shell
-    import run_agent
+    import hermes_cli.gateway_agent as gateway_agent
     import hermes_cli.mcp_startup as mcp_startup
     import agent.credits_tracker as credits_tracker
 
@@ -162,6 +162,7 @@ def test_init_agent_installs_interim_consumer_even_without_reasoning(
     ):
         setattr(shell, name, None)
     for name in (
+        "_ensure_gateway_session",
         "finalize_preloaded_skills",
         "_install_tool_callbacks",
         "_ensure_tirith_security",
@@ -181,7 +182,7 @@ def test_init_agent_installs_interim_consumer_even_without_reasoning(
         captured.update(kwargs)
         return SimpleNamespace()
 
-    monkeypatch.setattr(run_agent, "AIAgent", fake_agent)
+    monkeypatch.setattr(gateway_agent, "GatewayAgent", fake_agent)
     assert (
         shell._init_agent(
             runtime_override={

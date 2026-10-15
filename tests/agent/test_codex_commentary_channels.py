@@ -112,6 +112,7 @@ def test_normalized_commentary_and_encrypted_state_replay_without_reclassificati
 
     assert replay == [
         {
+            "type": "message",
             "role": "user",
             "content": [{"type": "input_text", "text": "Check the file."}],
         },

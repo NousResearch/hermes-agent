@@ -23197,6 +23197,18 @@
             ],
             "default": null,
             "title": "Verbose"
+          },
+          "reasoning_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reasoning Id"
           }
         },
         "required": [

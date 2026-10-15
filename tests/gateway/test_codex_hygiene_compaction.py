@@ -306,6 +306,9 @@ def _slash_host(agent, session_key="tg:123"):
     host = SimpleNamespace(
         _agent_cache={session_key: (agent, 0.0)} if agent is not None else {},
         _agent_cache_lock=None,
+        session_store=SimpleNamespace(lookup_by_session_key=lambda key: SimpleNamespace(
+            session_id=agent.session_id, compression_paused=False,
+        )) if agent is not None else None,
     )
 
     async def _run_in_executor_with_context(fn):

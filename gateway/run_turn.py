@@ -32,7 +32,7 @@ from gateway.response_filters import (
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
-    build_session_context,
+    build_session_context, COMPRESSION_EXHAUSTED_METADATA_KEY,
 )
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
@@ -169,9 +169,10 @@ def hygiene_no_commit_reason(agent) -> str:
 from gateway.run_turn_prepare import GatewayTurnPrepareMixin
 from gateway.run_turn_hygiene import GatewayTurnHygieneMixin
 from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
+from gateway.run_turn_recovery import GatewayTurnRecoveryMixin
 
 
-class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
+class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin, GatewayTurnRecoveryMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
 
@@ -199,6 +200,15 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
 
 
+
+
+
+
+
+
+
+
+
     async def _hmwa_stop_typing_for_turn(self, event, source):
         """Stop the typing indicator (never raises). Slack AI status is scoped to a thread/
         workspace, so preserve the routing metadata used by the response delivery path."""
@@ -209,6 +219,29 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 await _typing_adapter._stop_typing_with_metadata(source.chat_id, self._event_thread_metadata(event, source))
             elif _typing_adapter and callable(getattr(_kind, "stop_typing", None)):
                 await _typing_adapter.stop_typing(source.chat_id)
+
+
+
+
+
+
+
+
+
+
+
+
+
+    # Chat-side next steps keyed by HTTP status; Hermes commands only (/login is the gateway's own
+    # sign-in, `{relogin}` the profile-aware host equivalent, filled from the turn's agent provider).
+    _STATUS_HINTS = {
+        401: (" Your sign-in to the AI model service has expired or the API key is wrong. "
+              "Use /login here, or run `{relogin}` on the host."),
+        402: " Your AI model service balance or quota is used up. Top it up on the service's website, or use /model to switch models.",
+        529: " The AI model service is temporarily overloaded. Wait a moment, then use /retry.",
+    }
+
+
 
 
 
@@ -228,6 +261,21 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         if resolved is None:
             return
         source, session_entry, session_key = resolved
+        if getattr(session_entry, "compression_paused", False) is True:
+            event._gateway_skip_goal_continuation = True
+            event._gateway_preserve_pending = True
+            event._gateway_compression_session_id = session_entry.session_id
+            action = await self._compression_exhaustion_action(source)
+            if action == "reset" and self._is_session_run_current(_quick_key, run_generation):
+                try:
+                    await self._reset_session_after_compression_exhaustion(
+                        session_key, session_entry, source, event=event,
+                    )
+                except Exception:
+                    logger.warning("Paused session recovery could not be persisted", exc_info=True)
+                    return self._compression_pause_notice(persistence_failed=True)
+                return "Session reset after compression pause. Your next message will start a fresh session."
+            return self._compression_pause_notice()
         prepared, _session_env_tokens = await self._hmwa_prepare_turn(
             event, source, session_entry, session_key, _quick_key, run_generation,
         )
@@ -323,6 +371,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
             response, session_entry = await self._hmwa_compression_exhaustion_reset(
                 agent_result, response, session_entry, session_key, source,
+                event=event, run_generation=run_generation,
             )
             await self._hmwa_persist_turn_transcript(
                 event=event, source=source, session_entry=session_entry, session_key=session_key,
@@ -1203,72 +1252,6 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             metadata = {"reply_to_message_id": event_message_id}
         return metadata
 
-    def _run_agent_progress_threading(
-        self, source: SessionSource, event_message_id: Optional[str], _native_slack_task_cards: bool
-    ) -> tuple[Optional[dict], Optional[str], Optional[dict]]:
-        """Resolve where progress bubbles are threaded (platform-specific).
-
-        Returns ``(progress_metadata, progress_reply_to, status_thread_metadata)``; the latter is
-        for status / approval / stream sends (Feishu topics need the triggering message id via the
-        reply API, so carry it as a fallback). Slack and Buzz honour the user's reply_in_thread
-        opt-out: never synthesise a thread for progress, or every later reply inherits it."""
-        from gateway.run import _non_conversational_metadata, _resolve_progress_thread_id
-        is_buzz = str(getattr(source.platform, "value", source.platform) or "").lower() == "buzz"
-        _progress_reply_in_thread = True
-        _adapter = self._delivery_adapter_for(source) if source.platform == Platform.SLACK or is_buzz else None
-        if _adapter is not None:
-            try:
-                if is_buzz:
-                    _progress_reply_in_thread = getattr(_adapter, "_reply_to_mode", "first") != "off"
-                else:
-                    # Relay lane: the adapter owns mode resolution; native lane: flat extra key.
-                    _mode_fn = getattr(_adapter, "_effective_reply_in_thread", None)
-                    _progress_reply_in_thread = bool(
-                        _mode_fn() if callable(_mode_fn) else _adapter.config.extra.get("reply_in_thread", True)
-                    )
-            except Exception:
-                _progress_reply_in_thread = True
-        _progress_thread_id = _resolve_progress_thread_id(
-            source.platform, source.thread_id, event_message_id, reply_in_thread=_progress_reply_in_thread,
-        )
-        # Relay Discord auto-thread lane: the connector stamps prospective_thread_id at ingest.
-        _relay_prospective_thread_id = (
-            str(getattr(source, "prospective_thread_id", None))
-            if source.platform == Platform.DISCORD
-            and getattr(source, "delivered_via_upstream_relay", False)
-            and getattr(source, "prospective_thread_id", None)
-            and not source.thread_id
-            else None
-        )
-        _progress_metadata = _non_conversational_metadata(
-            self._thread_metadata_for_progress(
-                source, event_message_id, _progress_thread_id, _relay_prospective_thread_id,
-            ),
-            platform=source.platform,
-        )
-        if _native_slack_task_cards:
-            # chat.startStream in channels requires the recipient team/user pair; harmless elsewhere.
-            _progress_metadata = dict(_progress_metadata or {})
-            if source.scope_id:
-                _progress_metadata.setdefault("recipient_team_id", source.scope_id)
-                _progress_metadata.setdefault("slack_team_id", source.scope_id)
-            if source.user_id:
-                _progress_metadata.setdefault("recipient_user_id", source.user_id)
-        # Buzz has no native thread_id: thread via reply-to unless the user opted out.
-        _progress_reply_to = (
-            event_message_id
-            if (source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id)
-            or (is_buzz and event_message_id and _progress_reply_in_thread)
-            or _relay_prospective_thread_id
-            else None
-        )
-        if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
-            _status_thread_metadata = {"thread_id": _progress_thread_id, "reply_to_message_id": event_message_id}
-        else:
-            _status_thread_metadata = self._thread_metadata_for_progress(
-                source, event_message_id, _progress_thread_id, _relay_prospective_thread_id,
-            )
-        return _progress_metadata, _progress_reply_to, _status_thread_metadata
 
     async def _run_agent_write_tool_log(self, log_queue: Any) -> None:
         """Drain log_queue and append tool-call lines to tool_calls.log (tool_progress=log).
@@ -1789,7 +1772,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 )
 
         # Safety net: a pending slash command is never passed to the agent as user input.
-        if pending and pending.strip().startswith("/"):
+        if (pending and pending.strip().startswith("/")
+                and (pending_event is None or pending_event.allow_gateway_control)):
             _pending_cmd_word = pending.strip().split(None, 1)[0][1:].lower()
             if _pending_cmd_word:
                 with suppress(Exception):
@@ -2438,7 +2422,18 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             result = turn_ctx.result_holder[0]
             adapter = self._delivery_adapter_for(source)
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
-            pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
+            terminal_exhaustion = (result and result.get("compression_exhausted")
+                                   and not result.get("compression_deferred"))
+            if (terminal_exhaustion and result.get("pending_steer") and adapter and session_key
+                    and turn_ctx._run_still_current()):
+                # The model owns late steering until finalization. Hand it back to the
+                # existing FIFO before reset/pause, without granting slash-command authority.
+                self._enqueue_fifo(session_key, MessageEvent(
+                    text=result["pending_steer"], source=source, allow_gateway_control=False,
+                ), adapter)
+            pending_event, pending = (None, None) if terminal_exhaustion else await self._run_agent_drain_pending(
+                result, adapter, source, session_key,
+            )
             if pending_event or pending:
                 return await self._run_agent_queued_followup(
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,

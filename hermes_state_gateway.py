@@ -74,6 +74,19 @@ _PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.session_key = 
                          COALESCE(s.last_activity_at, s.started_at) DESC
                 LIMIT 1
                 """
+_PEER_BY_HINT_SQL = f"""{_PEER_SELECT_HEAD}
+                WHERE s.id = ?
+                  AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL})
+                       OR {_HANDOFF_OWNED_ROW_SQL})
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sessions b
+                      WHERE ((b.session_key = s.session_key AND b.source = s.source)
+                             OR (b.session_key = ? AND b.source = ?))
+                        AND b.ended_at IS NOT NULL
+                        AND b.end_reason IN ({_RESET_END_REASONS_SQL})
+                        AND b.ended_at > COALESCE(s.last_activity_at, s.started_at)
+                  )
+                """
 _PEER_BY_TUPLE_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.source = ?
                   AND COALESCE(s.user_id, '') = COALESCE(?, '')
                   AND COALESCE(s.chat_id, '') = COALESCE(?, '')
@@ -311,16 +324,18 @@ class SessionGatewayMixin:
     def replace_gateway_routing_entries(self, entries: dict[str, str], *, scope: str = "") -> None:
         """Atomically replace the routing index for *scope* (keys absent from *entries*
         are removed); other scopes untouched."""
+        self._execute_write(lambda conn: self._replace_gateway_routing_entries_conn(conn, entries, scope=scope))
+
+    def _replace_gateway_routing_entries_conn(self, conn, entries: Dict[str, str], *, scope: str) -> None:
+        """SQL-only replacement, also used by the atomic topic restore writer."""
         now = time.time()
-        def _do(conn):
-            conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
-            if entries:
-                conn.executemany(
-                    "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
-                    "SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM state_meta "
-                    "WHERE key='gateway.retired_session.v1.' || json_extract(?, '$.session_id'))",
-                    [(scope, k, v, now, v) for k, v in entries.items() if k and v])
-        self._execute_write(_do)
+        conn.execute("DELETE FROM gateway_routing WHERE scope = ?", (scope,))
+        if entries:
+            conn.executemany(
+                "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
+                "SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM state_meta "
+                "WHERE key='gateway.retired_session.v1.' || json_extract(?, '$.session_id'))",
+                [(scope, k, v, now, v) for k, v in entries.items() if k and v])
 
     def load_gateway_routing_entries(self, *, scope: str = "") -> dict[str, str]:
         """Load routing entries for *scope* as {session_key: entry_json}."""
@@ -464,6 +479,17 @@ class SessionGatewayMixin:
         query += (" AND LOWER(source) = LOWER(?)" if platform else "") + (
             " AND ended_at IS NULL" if active_only else "") + " ORDER BY last_active DESC"
         return [self._session_row_dict(r) for r in self._read_all(query, params)]
+
+    def get_recoverable_gateway_session(
+        self, session_id: str, *, session_key: str, source: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Validate a binding hint with the native recovery and reset fences.
+
+        The requested key also fences legacy hints whose row has no peer key yet.
+        """
+        with self._read_ctx() as conn:
+            row = conn.execute(_PEER_BY_HINT_SQL, (session_id, session_key, source)).fetchone()
+        return self._session_row_dict(row) if row else None
 
     def find_latest_gateway_session_for_peer(
         self, *, source: str, user_id: Optional[str] = None, session_key: Optional[str] = None,

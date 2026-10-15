@@ -303,47 +303,48 @@ class GatewayTurnPersistenceMixin:
         return agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure
 
     async def _hmwa_compression_exhaustion_reset(
-        self, agent_result, response, session_entry, session_key, source,
+        self, agent_result, response, session_entry, session_key, source, *, event=None, run_generation=None,
     ):
-        """Auto-reset a permanently oversized session so the next message starts fresh instead of
-        replaying the oversized context forever. Never on a lock-contended defer — that is the
-        OPPOSITE case (a concurrent path holds the lock and is shrinking it). Returns
-        ``(response, session_entry)``."""
-        # When compression is exhausted, the session is permanently too large to process. (#9893) Never wipe
-        # the session for that — retry-next-message semantics apply (#69870 lock-skip consumer; salvaged
-        # from #49874).
+        """Native reset by default; explicit pause preserves an exhausted conversation."""
+        from gateway.session import COMPRESSION_EXHAUSTED_METADATA_KEY
         if agent_result.get("compression_deferred"):
-            logger.info(
-                "Compression deferred for session %s — the compression "
-                "lock is held by a concurrent compressor. Keeping the "
-                "session intact; the next message retries normally.",
-                session_entry.session_id if session_entry else "?",
-            )
-        elif agent_result.get("compression_exhausted") and session_entry and session_key:
-            logger.info("Auto-resetting session %s after compression exhaustion.", session_entry.session_id)
-            new_entry = await self.async_session_store.reset_session(session_key)
-            from gateway.session_automation import move_route_wakes
-            await move_route_wakes(self, session_key, session_entry.session_id)
-            self._evict_cached_agent(session_key)
-            # Conversation boundary: the funnel clears every conversation-scoped per-session dict.
-            self._clear_conversation_scope(session_key, reason="compression_exhausted_reset")
-            if new_entry is not None:
-                # Re-point the Telegram topic binding at the fresh session, or the binding-heal walk
-                # switches the next message back onto the bloated child and re-triggers exhaustion
-                # forever. No-op on non-topic lanes.
-                # Compression rotated session_entry.session_id to the oversized compressed child earlier
-                # this turn (the agent-result sync above), and that _sync also rewrote the (chat_id,
-                # thread_id) -> bloated-child binding. reset_session swaps in a clean, parentless session,
-                # but without re-syncing the binding the next inbound message in this topic gets
-                # switch_session'd back onto the bloated child by the binding-heal walk, reloads the
-                # oversized transcript, and re-triggers compression exhaustion forever (#35809 — regression
-                # of the #9893/#10063 auto-reset).
-                session_entry = new_entry
-                await asyncio.to_thread(
-                    self._sync_telegram_topic_binding, source, session_entry, reason="compression-exhausted-reset",
+            return response, session_entry
+        if not (agent_result.get("compression_exhausted") and session_entry and session_key):
+            return response, session_entry
+        if event is not None:
+            event._gateway_skip_goal_continuation = True
+            event._gateway_preserve_pending = True
+            event._gateway_compression_session_id = session_entry.session_id
+        expected_id = session_entry.session_id
+        action = await self._compression_exhaustion_action(source)
+        if run_generation is not None and not self._is_session_run_current(session_key, run_generation):
+            return response, session_entry
+        try:
+            if action == "pause":
+                async def commit_pause():
+                    try:
+                        committed = await self.async_session_store.set_session_metadata(
+                            session_key, COMPRESSION_EXHAUSTED_METADATA_KEY, True,
+                            require_primary=True, expected_session_id=expected_id,
+                        )
+                        if not committed:
+                            raise RuntimeError("Session route changed before compression pause")
+                    finally:
+                        self._evict_cached_agent(session_key)
+                await self._await_session_policy_commit(commit_pause())
+                notice = self._compression_pause_notice()
+            else:
+                # New exhaustion keeps the native JSON fallback. Existing paused routes force a
+                # strict primary commit inside SessionStore even when require_primary is False.
+                session_entry = await self._reset_session_after_compression_exhaustion(
+                    session_key, session_entry, source, require_primary=False, event=event,
                 )
-            response = (response or "") + t("gateway.session.auto_reset_context_exhausted")
-        return response, session_entry
+                notice = ("🔄 Session auto-reset - the conversation exceeded the maximum context size and "
+                          "could not be compressed further. Your next message will start a fresh session.")
+        except Exception:
+            logger.warning("Compression exhaustion policy could not be persisted", exc_info=True)
+            notice = self._compression_pause_notice(persistence_failed=True)
+        return (response or "") + "\n\n" + notice, session_entry
 
     @staticmethod
     def _hmwa_user_transcript_entry(event, prepared, ts):

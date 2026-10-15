@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import sqlite3
 import time
@@ -309,34 +310,116 @@ class SessionTelegramTopicsMixin:
         only one topic: rebinding the same pair is idempotent; linking the session to a
         different topic raises ValueError."""
         self.apply_telegram_topic_migration()
+        self._execute_write(lambda conn: self._bind_telegram_topic_conn(
+            conn, chat_id=chat_id, thread_id=thread_id, user_id=user_id,
+            session_key=session_key, session_id=session_id, managed_mode=managed_mode,
+            profile_name=profile_name,
+        ))
+
+    def _bind_telegram_topic_conn(
+        self, conn, *, chat_id: str, thread_id: str, user_id: str, session_key: str,
+        session_id: str, managed_mode: str, profile_name: str,
+    ) -> None:
+        """Check ownership and bind using the caller's transaction only."""
         now = time.time()
         chat_id, thread_id, user_id = str(chat_id), str(thread_id), str(user_id)
         session_key, session_id = str(session_key), str(session_id)
         profile_name = _normalize_telegram_topic_profile_name(profile_name)
 
+        existing_session = conn.execute("""
+            SELECT profile_name, chat_id, thread_id
+            FROM telegram_dm_topic_bindings
+            WHERE session_id = ?
+            """, (session_id,)).fetchone()
+        if existing_session is not None:
+            linked_profile, linked_chat, linked_thread = existing_session
+            if (str(linked_profile), str(linked_chat), str(linked_thread)) != (profile_name, chat_id, thread_id):
+                raise ValueError("session is already linked to another Telegram topic")
+        conn.execute("""
+            INSERT INTO telegram_dm_topic_bindings (
+                profile_name, chat_id, thread_id, user_id, session_key, session_id,
+                managed_mode, linked_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(profile_name, chat_id, thread_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                session_key = excluded.session_key,
+                session_id = excluded.session_id,
+                managed_mode = excluded.managed_mode,
+                updated_at = excluded.updated_at
+            """, (profile_name, chat_id, thread_id, user_id, session_key, session_id, managed_mode, now, now))
+
+    def commit_telegram_topic_restore(
+        self, *, routing_entries: Dict[str, str], scope: str, session_key: str,
+        expected_route_session_id: Optional[str], session_id: str,
+        chat_id: str, thread_id: str, user_id: str, profile_name: str = "default",
+        routing_db=None,
+    ) -> bool:
+        """Commit a binding and its authoritative route; None requires an absent route.
+
+        A secondary profile has a separate topic DB. Hold its write transaction while
+        committing the launch-home route, which remains authoritative on interruption.
+        If the second commit fails, inbound recovery repairs its binding from the route.
+        """
+        candidate = json.loads(routing_entries[session_key])
+        if (not isinstance(candidate, dict) or candidate.get("session_key") != session_key
+                or candidate.get("session_id") != session_id):
+            raise ValueError("Topic restoration routing snapshot does not match its target")
+        # Migration owns executescript, which must never run inside this transaction.
+        self.apply_telegram_topic_migration()
+
+        owner = routing_db or self
+        def _route(conn):
+            row = conn.execute(
+                "SELECT entry_json FROM gateway_routing WHERE scope = ? AND session_key = ?",
+                (scope, session_key),
+            ).fetchone()
+            current_id = None
+            if row is not None:
+                try:
+                    current_id = json.loads(row[0])["session_id"]
+                    if not isinstance(current_id, str) or not current_id:
+                        raise ValueError("Missing session ID")
+                except (ValueError, KeyError, TypeError) as exc:
+                    raise RuntimeError("Invalid primary session route") from exc
+            if current_id != expected_route_session_id:
+                return False
+            owner._replace_gateway_routing_entries_conn(conn, routing_entries, scope=scope)
+            return True
+
+        class RouteChanged(Exception):
+            pass
+
+        primary_committed = False
         def _do(conn):
-            existing_session = conn.execute("""
-                SELECT profile_name, chat_id, thread_id
-                FROM telegram_dm_topic_bindings
-                WHERE session_id = ?
-                """, (session_id,)).fetchone()
-            if existing_session is not None:
-                linked_profile, linked_chat, linked_thread = existing_session
-                if (str(linked_profile), str(linked_chat), str(linked_thread)) != (profile_name, chat_id, thread_id):
-                    raise ValueError("session is already linked to another Telegram topic")
-            conn.execute("""
-                INSERT INTO telegram_dm_topic_bindings (
-                    profile_name, chat_id, thread_id, user_id, session_key, session_id,
-                    managed_mode, linked_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(profile_name, chat_id, thread_id) DO UPDATE SET
-                    user_id = excluded.user_id,
-                    session_key = excluded.session_key,
-                    session_id = excluded.session_id,
-                    managed_mode = excluded.managed_mode,
-                    updated_at = excluded.updated_at
-                """, (profile_name, chat_id, thread_id, user_id, session_key, session_id, managed_mode, now, now))
-        self._execute_write(_do)
+            nonlocal primary_committed
+            self._bind_telegram_topic_conn(
+                conn, chat_id=chat_id, thread_id=thread_id, user_id=user_id,
+                session_key=session_key, session_id=session_id, managed_mode="restored",
+                profile_name=profile_name,
+            )
+            if routing_db is None:
+                if not _route(conn):
+                    raise RouteChanged()
+                return True
+            if primary_committed:
+                # A retry of the secondary commit must not CAS the already-committed route again.
+                return True
+            result = routing_db._execute_write(_route)
+            if not result:
+                raise RouteChanged()
+            primary_committed = True
+            return True
+
+        try:
+            return self._execute_write(_do)
+        except RouteChanged:
+            return False
+        except Exception:
+            if not primary_committed:
+                raise
+            logger.warning("Topic binding failed after primary route commit; inbound recovery will reconcile",
+                           exc_info=True)
+            return True
 
     def is_telegram_session_linked_to_topic(self, *, session_id: str) -> bool:
         """True if the session is bound to any Telegram DM topic (absent tables → False)."""

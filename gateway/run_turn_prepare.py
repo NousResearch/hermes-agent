@@ -339,6 +339,7 @@ class GatewayTurnPrepareMixin:
                 )
                 return
 
+        topic_lane = await asyncio.to_thread(self._is_telegram_topic_lane, source)
         strict_session = bool(event_metadata.get("gateway_session_strict"))
         pinned_session_id = str(event_metadata.get("gateway_session_id") or "").strip()
         if strict_session:
@@ -350,10 +351,22 @@ class GatewayTurnPrepareMixin:
                 )
                 return
         else:
-            # Internal wakes observe reset policy without counting as user activity, or periodic
-            # notifications keep the routing key alive across every daily/idle boundary.
+            recovery = {}
+            if topic_lane and self._session_db is not None:
+                try:
+                    binding = await self._session_db.get_telegram_topic_binding(
+                        chat_id=str(source.chat_id), thread_id=str(source.thread_id),
+                        profile_name=self._telegram_topic_profile_name(source),
+                    )
+                    if binding:
+                        recovery["recovery_session_id"] = str(binding.get("session_id") or "")
+                except Exception:
+                    logger.debug("Failed to read Telegram topic binding", exc_info=True)
+            # Bindings are recovery hints only. The store decides under its lock whether the
+            # route is absent; a route committed during this lookup must also win.
+            # Internal wakes preserve the user-activity clock.
             session_entry = await self.async_session_store.get_or_create_session(
-                source, touch_activity=not bool(getattr(event, "internal", False)),
+                source, touch_activity=not bool(getattr(event, "internal", False)), **recovery,
             )
         session_key = session_entry.session_key
         if not strict_session and pinned_session_id:
@@ -362,7 +375,7 @@ class GatewayTurnPrepareMixin:
                 return
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
-        if await asyncio.to_thread(self._is_telegram_topic_lane, source):
+        if topic_lane:
             session_entry = await self._hmwa_heal_telegram_topic_binding(source, session_entry, session_key)
         from gateway.run_heartbeat_acceptance import resolve_heartbeat_owner
         if not await resolve_heartbeat_owner(self, event, session_entry):
@@ -370,52 +383,13 @@ class GatewayTurnPrepareMixin:
         return source, session_entry, session_key
 
     async def _hmwa_heal_telegram_topic_binding(self, source, session_entry, session_key):
-        """Follow the (chat_id, thread_id) topic binding — healed to its compression tip — or record
-        a fresh one. Returns the (possibly switched) session entry."""
-        binding = None
-        try:
-            if self._session_db:
-                binding = await self._session_db.get_telegram_topic_binding(
-                    chat_id=str(source.chat_id), thread_id=str(source.thread_id),
-                    profile_name=self._telegram_topic_profile_name(source),
-                )
-        except Exception:
-            logger.debug("Failed to read Telegram topic binding", exc_info=True)
-        if not binding:
-            try:
-                await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)
-            except Exception:
-                logger.debug("Failed to record Telegram topic binding", exc_info=True)
+        """Repair the secondary topic binding from the committed route, never the reverse."""
+        if getattr(session_entry, "compression_paused", False) is True:
             return session_entry
-        stored_session_id = str(binding.get("session_id") or "")
-        bound_session_id = stored_session_id
-        # A binding pointing at a pre-compression parent is walked forward to the tip so the next
-        # message resumes the compressed child instead of reloading the oversized parent.
-        # Returns the input unchanged when the session isn't a compression parent, so this is cheap and
-        # safe. See #20470, #29712, #33414.
-        if bound_session_id and self._session_db is not None:
-            try:
-                canonical_session_id = await self._session_db.get_compression_tip(bound_session_id)
-            except Exception:
-                logger.debug("compression-tip lookup failed for %s", bound_session_id, exc_info=True)
-                canonical_session_id = bound_session_id
-            if canonical_session_id and canonical_session_id != bound_session_id:
-                bound_session_id = canonical_session_id
-        if bound_session_id and bound_session_id != session_entry.session_id:
-            # Route through SessionStore so the key → id mapping persists and the previous lane
-            # session ends cleanly (in-place mutation split-brained the JSON index). The two DB
-            # awaits above are a window for /new or /resume to move the route; the CAS on the
-            # snapshot id lets that win instead of being clobbered by a stale binding.
-            switched = await self.async_session_store.switch_session(
-                session_key, bound_session_id, expected_session_id=session_entry.session_id,
-            )
-            if switched is not None:
-                session_entry = switched
-        if bound_session_id and bound_session_id != stored_session_id:
-            # The stored binding pointed at a parent: rewrite it to the canonical descendant.
-            await asyncio.to_thread(
-                self._sync_telegram_topic_binding, source, session_entry, reason="compression-tip-walk",
-            )
+        await asyncio.to_thread(
+            self._sync_compression_recovery_binding, source, session_entry, session_entry.session_id,
+            reason="committed-route",
+        )
         return session_entry
 
     async def _hmwa_open_session(self, session_entry, session_key, source):

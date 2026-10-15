@@ -583,6 +583,8 @@ DEFAULT_CONFIG = {
         # preflight/pre-API/idle/retry) reach chat gateways instead of being filtered as noise.
         # Failure notices and manual /compress feedback are always visible.
         "progress_notices": False,
+        # Gateway terminal exhaustion: preserve native reset unless explicitly set to pause.
+        "exhaustion_action": "reset",
         # threshold: compress when context usage exceeds this ratio. Models with windows below 512K
         # are floored at 0.75 (raise-only) so compaction doesn't fire with half the window free; set
         # above 0.75 to override the floor.
@@ -2722,31 +2724,8 @@ DEFAULT_CONFIG = {
 }
 
 
-def _env(description, prompt, **keys):
-    """One OPTIONAL_ENV_VARS entry; keyword order is preserved as dict key order."""
-    return {"description": description, "prompt": prompt, **keys}
+from hermes_cli.config_env_defaults import _env, _category
 
-
-_OMIT = object()
-
-
-def _category(category, password, advanced):
-    """Entry factory for one category with its usual password/advanced defaults.
-
-    ``url``/``help``/``tools`` are only written when passed; ``password=None`` omits the key;
-    ``advanced`` is only written when true. Key order matches the plain ``_env`` entries.
-    """
-    def make(description, prompt, url=_OMIT, *, help=_OMIT, tools=_OMIT, password=password,
-             advanced=advanced):
-        d = {"description": description, "prompt": prompt}
-        d.update((k, v) for k, v in (("help", help), ("url", url), ("tools", tools)) if v is not _OMIT)
-        if password is not None:
-            d["password"] = password
-        d["category"] = category
-        if advanced:
-            d["advanced"] = True
-        return d
-    return make
 
 
 _prov = _category("provider", password=True, advanced=True)

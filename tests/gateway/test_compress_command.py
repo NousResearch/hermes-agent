@@ -54,11 +54,37 @@ def _make_runner(history: list[dict[str, str]]):
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = session_entry
     runner.session_store.load_transcript.return_value = history
-    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.rewrite_transcript = MagicMock(return_value=True)
     runner.session_store.update_session = MagicMock()
     runner.session_store._save = MagicMock()
+    runner.session_store.commit_manual_compression = MagicMock(return_value=True)
     runner._session_db = None
     return runner
+
+
+@pytest.mark.asyncio
+async def test_compressed_status_without_history_commit_never_reports_success():
+    from agent.conversation_compression_manual import CompressResult, CompressRequest
+    runner = _make_runner(_make_history())
+    agent = MagicMock()
+    agent.session_id = "sess-1"
+    agent._last_compaction_in_place = False
+    request = CompressRequest()
+    result = CompressResult("compressed", _make_history(), _make_history(), 100, 100, request,
+                            summary={"headline": "Compressed: unchanged", "token_line": "100", "note": ""})
+    runner._build_manual_compression_agent = AsyncMock(return_value=agent)
+    runner._cleanup_agent_resources_off_loop = AsyncMock()
+    runner._resolve_session_agent_runtime = MagicMock(return_value=("test", {"api_key": "test"}))
+    with patch("agent.conversation_compression_manual.compress_now", return_value=result), patch(
+        "agent.conversation_compression.finalize_context_engine_compression_notification"
+    ) as notify:
+        reply = await runner._handle_compress_command(_make_event())
+    assert "Compressed:" not in reply
+    assert "failed" not in reply.lower(), "a no-op should use local recovery feedback"
+    assert not any(call.kwargs.get("committed") is True for call in notify.call_args_list)
+    runner.session_store.update_session.assert_not_called()
+    runner.session_store.commit_manual_compression.assert_not_called()
+    runner._shutdown_executor()
 
 
 @pytest.mark.asyncio
@@ -83,6 +109,7 @@ async def test_compress_command_works_when_auto_compaction_disabled():
     agent_instance.tools = None
     agent_instance.compression_enabled = False
     agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance._last_compaction_in_place = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
     # Explicit non-lock-skip: MagicMock getattr would return a truthy mock.
@@ -141,6 +168,7 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered(t
     agent_instance.context_compressor._last_aux_model_failure_error = (
         "404 model not found: gemini-3-flash-preview"
     )
+    agent_instance._last_compaction_in_place = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
     agent_instance._compression_skipped_due_to_lock = False
@@ -187,7 +215,7 @@ async def test_compress_command_in_place_skips_destructive_rewrite():
     runner = _make_runner(history)
     runner._session_db = object()
     session_entry = runner.session_store.get_or_create_session.return_value
-    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.rewrite_transcript = MagicMock(return_value=True)
 
     agent_instance = MagicMock()
     agent_instance.shutdown_memory_provider = MagicMock()
@@ -240,6 +268,7 @@ async def test_compress_command_preserves_platform_and_gateway_session_key():
     agent_instance._cached_system_prompt = ""
     agent_instance.tools = None
     agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance._last_compaction_in_place = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (list(history), "")
     agent_instance._compression_skipped_due_to_lock = False
@@ -321,6 +350,7 @@ async def test_compress_command_passes_tool_messages_to_compressor():
     agent_instance._cached_system_prompt = ""
     agent_instance.tools = None
     agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance._last_compaction_in_place = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (list(history), "")
 
@@ -389,6 +419,7 @@ async def test_compress_command_multiplexed_runs_under_profile_secret_scope(tmp_
     agent_instance.context_compressor._last_summary_error = None
     agent_instance.context_compressor._last_aux_model_failure_model = None
     agent_instance.context_compressor._last_aux_model_failure_error = None
+    agent_instance._last_compaction_in_place = True
     agent_instance.session_id = "sess-1"
     agent_instance._compression_skipped_due_to_lock = False
 
@@ -460,6 +491,7 @@ async def test_compress_command_cleanup_does_not_block_event_loop():
     agent_instance.context_compressor._last_summary_error = None
     agent_instance.context_compressor._last_aux_model_failure_model = None
     agent_instance.context_compressor._last_aux_model_failure_error = None
+    agent_instance._last_compaction_in_place = True
     agent_instance.session_id = "sess-1"
     agent_instance._compress_context.return_value = (compressed, "")
     agent_instance._compression_skipped_due_to_lock = False
@@ -547,6 +579,7 @@ def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, monk
         created_at=datetime.now(), updated_at=datetime.now(),
         platform=Platform.DISCORD, chat_type="thread",
     )
+    store._ensure_loaded_locked()
     store._entries[entry.session_key] = entry
     db = store._db_for_key(entry.session_key)
     db.create_session(parent, "discord")
@@ -565,15 +598,20 @@ def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, monk
         raise AssertionError("published child must not be rewritten")
     store.rewrite_transcript = _destructive_rewrite
 
+    async def _settle(awaitable):
+        return await awaitable
+
     runner = SimpleNamespace(
+        session_store=store,
         async_session_store=AsyncSessionStore(store),
-        _sync_telegram_topic_binding=MagicMock(),
+        _await_session_policy_commit=_settle,
+        _sync_compression_recovery_binding=MagicMock(),
     )
     agent = SimpleNamespace(session_id=child)
     try:
-        asyncio.run(GatewaySessionCommandsMixin._persist_manual_compression(
-            runner, agent, entry, _make_source(), handoff))
-        assert entry.session_id == child
+        assert asyncio.run(GatewaySessionCommandsMixin._persist_manual_compression(
+            runner, agent, entry, _make_source(), handoff)) is True
+        assert store.peek_session_id(entry.session_key) == child
         assert [m["content"] for m in db.get_messages(child)] == [
             "compressed summary", "concurrent foreign turn",
         ]

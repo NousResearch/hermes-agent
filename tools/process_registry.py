@@ -1286,16 +1286,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                                     persist_on_release=persist_on_release)
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
-        q = shlex.quote
-        # ``set -m`` gives the wrapper its own process group (PGID == recorded PID) so
-        # _signal_kill can signal the whole tree. The wrapper traps TERM so it outlives
-        # its child and still writes the exit file. Its own stdio goes to /dev/null so
-        # a "Terminated" notice cannot hit the closed exec pipe.
-        bg_command = (
-            f"mkdir -p {q(temp_dir)} && "
-            f"( set -m; ( trap : TERM; nohup bash -lc {q(command)} > {q(log_path)} 2>&1; "
-            f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)} ) > /dev/null 2>&1 & "
-            f"echo $! > {q(pid_path)} ) && cat {q(pid_path)}")
+        from tools.process_registry_env_process import background_command
+        bg_command = background_command(temp_dir, session.id, command)
         try:
             result = env.execute(bg_command, timeout=timeout, rewrite_compound_background=False)
             output = result.get("output", "").strip()
@@ -2262,9 +2254,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # leaves Git Bash descendants behind.
             self._terminate_host_pid(session.process.pid, session.host_start_time)
         elif session.env_ref and session.pid:
-            # Signal the process group spawn_via_env created. Killing only the
-            # wrapper PID orphans the command, which keeps running.
-            session.env_ref.execute(f"kill -TERM -- -{session.pid} 2>/dev/null", timeout=5)
+            from tools.process_registry_env_process import kill_process_group
+            kill_process_group(session.env_ref, session.pid)
         elif session.detached and session.pid_scope == "host" and session.pid:
             # Same fate as poll/list: a gone or reused PID means our process is
             # gone — never tree-kill the stranger — but a live PID with an

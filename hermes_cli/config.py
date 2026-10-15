@@ -1470,20 +1470,6 @@ def _offer_skill_config_vars(missing_skill_config: list[dict[str, Any]], results
     _persist_migration(config)
 
 
-def _merge_partial_save(raw: dict, override: dict) -> dict:
-    """Merge *override* over *raw* for partial ``save_config`` writes.
-    Omitted top-level sections are preserved; shared dict sections deep-merge so one nested key
-    can change without dropping siblings on disk. Key REMOVALS are not supported here —
-    migrations go through ``_persist_migration`` with a full ``read_raw_config()`` dict."""
-    result = copy.deepcopy(override)
-    for key, value in raw.items():
-        if key not in result:
-            result[key] = copy.deepcopy(value)
-        elif isinstance(result.get(key), dict) and isinstance(value, dict):
-            result[key] = _deep_merge(value, result[key])
-    return result
-
-
 def _deep_merge(base: dict, override: dict) -> dict:
     """Recursively merge *override* into *base*: dict-over-dict recurses (so overriding one leaf
     keeps sibling defaults), and ``None`` over a dict section is ignored.

@@ -19,8 +19,24 @@ def rebase_for_save(config: dict[str, Any], live_raw: dict[str, Any], merge_exis
     if _config._worker_config_snapshot() is not None:
         return _three_way(live_raw or {}, config, _config.load_config())
     if merge_existing and live_raw:
-        return _config._merge_partial_save(live_raw, config)
+        return merge_partial_save(live_raw, config)
     return config
+
+
+def merge_partial_save(raw: dict, override: dict) -> dict:
+    """Merge *override* over *raw* for partial ``save_config`` writes.
+    Omitted top-level sections are preserved; shared dict sections deep-merge so one nested key
+    can change without dropping siblings on disk. Key REMOVALS are not supported here —
+    migrations go through ``_persist_migration`` with a full ``read_raw_config()`` dict."""
+    from hermes_cli.config import _deep_merge
+
+    result = copy.deepcopy(override)
+    for key, value in raw.items():
+        if key not in result:
+            result[key] = copy.deepcopy(value)
+        elif isinstance(result.get(key), dict) and isinstance(value, dict):
+            result[key] = _deep_merge(value, result[key])
+    return result
 
 
 def _three_way(live: Any, desired: Any, base: Any) -> Any:

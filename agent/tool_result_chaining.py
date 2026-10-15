@@ -16,16 +16,39 @@ siblings are not yet committed, so a reference to one passes through untouched.
 A bare ``{{tool_result:<call_id>}}`` (no dot) resolves to the whole stored payload;
 list indices follow Python semantics (negative indices included). Unresolvable
 references always pass through untouched - never a crash.
+
+Whole-value references (the argument is exactly one reference) resolve to the stored
+value with its native JSON type - a tool schema expecting an array or object receives
+one - while embedded references (part of a larger string) substitute as text.
+Command-like arguments (``terminal`` command, ``execute_code`` code) only resolve
+whole-value references, stringified: their value is executed verbatim, so an embedded
+reference could let untrusted result content alter a command the model authored - it
+passes through untouched instead. Every successful resolution logs at debug level
+(call id, path, resolved size - never the value).
 """
 
 import json
+import logging
 import re
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _TOOL_RESULT_REF_RE = re.compile(r"\{\{tool_result:([^{}]+)\}\}")
 _MAX_TOOL_RESULT_REF_BYTES = 20 * 1024 * 1024  # per-result cap
 _MAX_TOOL_RESULT_REFS = 32  # entry cap
 _MAX_TOOL_RESULT_REF_TOTAL_BYTES = 64 * 1024 * 1024  # total budget; oldest evicted first
+
+# Command-like arguments: their value is executed verbatim (shell command / script
+# source). Embedded references are never substituted there, so untrusted result
+# content cannot alter a larger command string the model authored; whole-value
+# references stay allowed (the model explicitly consumed the stored value as the
+# command). Plugin/MCP execution surfaces are not listed - the harness cannot know
+# their argument semantics.
+_COMMAND_LIKE_ARGS: dict[str, frozenset[str]] = {
+    "terminal": frozenset({"command"}),
+    "execute_code": frozenset({"code"}),
+}
 
 
 def remember_tool_result(agent, tool_call_id: str, result: Any) -> None:
@@ -119,7 +142,16 @@ def fold_tool_result_hint(content: Any, hint: Any, *, part_type: str = "text") -
     return content
 
 
-def _resolve_tool_result_ref(agent, value: Any) -> Any:
+def _serialize_resolved(value: Any) -> str:
+    """Serialize a resolved value for embedding in a larger argument string."""
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
+def _resolved_size_bytes(value: Any) -> int:
+    return len(_serialize_resolved(value).encode("utf-8"))
+
+
+def _resolve_tool_result_ref(agent, value: Any, *, _command_like: bool = False) -> Any:
     if not isinstance(value, str) or "{{tool_result:" not in value:
         return value
     refs = getattr(agent, "_tool_result_refs", {})
@@ -145,18 +177,51 @@ def _resolve_tool_result_ref(agent, value: Any) -> Any:
                 current = current[int(part)] if isinstance(current, list) else current[part]
             except (KeyError, IndexError, TypeError, ValueError):
                 return match.group(0)
-        return current if isinstance(current, str) else json.dumps(current, ensure_ascii=False)
+        logger.debug(
+            "resolved tool-result reference %s at %s (%d bytes)",
+            call_id, path or "<whole>", _resolved_size_bytes(current),
+        )
+        return current
 
-    if value.startswith("{{tool_result:") and value.endswith("}}"):
-        match = _TOOL_RESULT_REF_RE.fullmatch(value)
-        return resolve(match) if match else value
-    return _TOOL_RESULT_REF_RE.sub(resolve, value)
+    match = _TOOL_RESULT_REF_RE.fullmatch(value)
+    if match is not None:
+        # A whole-value reference (the argument is exactly one reference) keeps
+        # native JSON types for regular arguments (a tool schema expecting an
+        # array/object receives one); command-like arguments stay strings -
+        # they are executed verbatim.
+        resolved = resolve(match)
+        return _serialize_resolved(resolved) if _command_like else resolved
+    if _command_like:
+        # Embedded reference inside a command-like argument: leave it literal.
+        first = _TOOL_RESULT_REF_RE.search(value)
+        logger.debug(
+            "kept %d embedded tool-result reference(s) literal in a command-like argument (first: %s)",
+            len(_TOOL_RESULT_REF_RE.findall(value)), first.group(1) if first else "<none>",
+        )
+        return value
+    return _TOOL_RESULT_REF_RE.sub(lambda match: _serialize_resolved(resolve(match)), value)
 
 
-def resolve_tool_result_refs(agent, value: Any) -> Any:
-    """Resolve ``{{tool_result:call_id.field}}`` recursively in tool args."""
+def resolve_tool_result_refs(agent, value: Any, *, tool_name: str | None = None, _command_like: bool = False) -> Any:
+    """Resolve ``{{tool_result:call_id.field}}`` recursively in tool args.
+
+    ``tool_name`` scopes the command-like guard: arguments listed in
+    ``_COMMAND_LIKE_ARGS`` only resolve whole-value references, so embedded
+    references there pass through untouched. ``_command_like`` is internal
+    recursion state - callers pass ``tool_name`` only.
+    """
     if isinstance(value, dict):
-        return {key: resolve_tool_result_refs(agent, item) for key, item in value.items()}
+        command_keys = _COMMAND_LIKE_ARGS.get(tool_name or "", frozenset())
+        return {
+            key: resolve_tool_result_refs(
+                agent, item, tool_name=tool_name,
+                _command_like=_command_like or key in command_keys,
+            )
+            for key, item in value.items()
+        }
     if isinstance(value, list):
-        return [resolve_tool_result_refs(agent, item) for item in value]
-    return _resolve_tool_result_ref(agent, value)
+        return [
+            resolve_tool_result_refs(agent, item, tool_name=tool_name, _command_like=_command_like)
+            for item in value
+        ]
+    return _resolve_tool_result_ref(agent, value, _command_like=_command_like)

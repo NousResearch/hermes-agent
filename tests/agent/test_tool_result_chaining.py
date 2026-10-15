@@ -23,10 +23,20 @@ def test_resolves_references_into_tool_args():
     agent = SimpleNamespace()
     remember_tool_result(agent, "call_1", '{"data":"abc","nested":{"x":7},"items":["a","b"]}')
     assert resolve_tool_result_refs(agent, {"image_url": "{{tool_result:call_1.data}}"}) == {"image_url": "abc"}
-    assert resolve_tool_result_refs(agent, {"path": "{{tool_result:call_1.nested.x}}"}) == {"path": "7"}
+    assert resolve_tool_result_refs(agent, {"path": "{{tool_result:call_1.nested.x}}"}) == {"path": 7}
     assert resolve_tool_result_refs(agent, {"index": "{{tool_result:call_1.items.1}}"}) == {"index": "b"}
-    # Nested containers resolve to compact JSON strings (args stay strings).
-    assert resolve_tool_result_refs(agent, {"cfg": "{{tool_result:call_1.nested}}"}) == {"cfg": '{"x": 7}'}
+    # Whole-value references keep the stored value's native JSON type, so a
+    # tool schema expecting an array or object receives one.
+    assert resolve_tool_result_refs(agent, {"cfg": "{{tool_result:call_1.nested}}"}) == {"cfg": {"x": 7}}
+    assert resolve_tool_result_refs(agent, {"tags": "{{tool_result:call_1.items}}"}) == {"tags": ["a", "b"]}
+    # Embedded references (part of a larger string) still substitute as text,
+    # including several references in one string.
+    assert resolve_tool_result_refs(
+        agent, {"label": "tags: {{tool_result:call_1.items}}"}
+    ) == {"label": 'tags: ["a", "b"]'}
+    assert resolve_tool_result_refs(
+        agent, {"pair": "{{tool_result:call_1.items.0}}/{{tool_result:call_1.items.1}}"}
+    ) == {"pair": "a/b"}
 
 
 def test_hint_advertises_usable_reference_path():
@@ -49,6 +59,66 @@ def test_unresolvable_and_plain_values_pass_through():
     assert resolve_tool_result_refs(agent, {"x": "{{tool_result:missing.a}}"}) == {"x": "{{tool_result:missing.a}}"}
     # Plain strings pass through.
     assert resolve_tool_result_refs(agent, {"x": "hello"}) == {"x": "hello"}
+
+
+def test_command_like_args_only_resolve_whole_value_refs():
+    """``terminal`` command / ``execute_code`` code: their value is executed
+    verbatim, so embedded references pass through untouched (untrusted result
+    content cannot alter a command the model authored). Whole-value references
+    still resolve and stay strings."""
+    agent = SimpleNamespace()
+    remember_tool_result(agent, "call_c", json.dumps({
+        "subject": "Facture $(id) ; echo pwned",
+        "cmd": "ls -la",
+        "items": ["a", "b"],
+    }))
+
+    # Embedded reference inside a command-like argument stays literal.
+    assert resolve_tool_result_refs(
+        agent, {"command": "echo {{tool_result:call_c.subject}}"}, tool_name="terminal"
+    ) == {"command": "echo {{tool_result:call_c.subject}}"}
+    assert resolve_tool_result_refs(
+        agent, {"code": "print('{{tool_result:call_c.subject}}')"}, tool_name="execute_code"
+    ) == {"code": "print('{{tool_result:call_c.subject}}')"}
+    # Whole-value references resolve; the argument stays a string.
+    assert resolve_tool_result_refs(
+        agent, {"command": "{{tool_result:call_c.cmd}}"}, tool_name="terminal"
+    ) == {"command": "ls -la"}
+    assert resolve_tool_result_refs(
+        agent, {"command": "{{tool_result:call_c.items}}"}, tool_name="terminal"
+    ) == {"command": '["a", "b"]'}
+    # The same embedded reference in a regular argument still substitutes,
+    # including a string holding several references; in a command-like
+    # argument a multi-reference string stays literal too.
+    assert resolve_tool_result_refs(
+        agent, {"text": "echo {{tool_result:call_c.subject}}"}, tool_name="echo_tool"
+    ) == {"text": "echo Facture $(id) ; echo pwned"}
+    assert resolve_tool_result_refs(
+        agent, {"text": "{{tool_result:call_c.cmd}} {{tool_result:call_c.cmd}}"}, tool_name="echo_tool"
+    ) == {"text": "ls -la ls -la"}
+    assert resolve_tool_result_refs(
+        agent, {"command": "{{tool_result:call_c.cmd}} {{tool_result:call_c.cmd}}"}, tool_name="terminal"
+    ) == {"command": "{{tool_result:call_c.cmd}} {{tool_result:call_c.cmd}}"}
+    # Without a tool name there is no command-like context (backward compatible).
+    assert resolve_tool_result_refs(
+        agent, {"command": "echo {{tool_result:call_c.cmd}}"}
+    ) == {"command": "echo ls -la"}
+
+
+def test_resolution_logs_debug_trace(caplog):
+    """Every successful resolution logs call id, path and size at debug level;
+    the value itself (which may be sensitive) is never logged."""
+    import logging
+    agent = SimpleNamespace()
+    remember_tool_result(agent, "call_1", '{"data": "abc"}')
+    with caplog.at_level(logging.DEBUG, logger="agent.tool_result_chaining"):
+        assert resolve_tool_result_refs(
+            agent, {"image_url": "{{tool_result:call_1.data}}"}
+        ) == {"image_url": "abc"}
+    messages = [r.getMessage() for r in caplog.records if r.name == "agent.tool_result_chaining"]
+    assert messages, "expected debug records from the resolution"
+    assert any("call_1" in m and "data" in m and "bytes" in m for m in messages), messages
+    assert all("abc" not in m for m in messages), messages
 
 
 def test_ref_map_bounds_by_entries_and_total_bytes(monkeypatch):
@@ -90,17 +160,18 @@ def test_mcp_double_encoded_result_resolves():
         "structuredContent": {"result": '{"folders": ["a", "b"], "count": 2}'},
     }))
 
-    # .result.folders walks into the string leaf, re-parses, and resolves.
+    # .result.folders walks into the string leaf, re-parses, and resolves to the
+    # native container; scalars keep their JSON type too (whole-value refs).
     assert resolve_tool_result_refs(
         agent, {"image_url": "{{tool_result:call_mcp.result.folders}}"}
-    ) == {"image_url": '["a", "b"]'}
+    ) == {"image_url": ["a", "b"]}
     assert resolve_tool_result_refs(
         agent, {"image_url": "{{tool_result:call_mcp.result.count}}"}
-    ) == {"image_url": "2"}
+    ) == {"image_url": 2}
     # structuredContent branch resolves the same way.
     assert resolve_tool_result_refs(
         agent, {"image_url": "{{tool_result:call_mcp.structuredContent.result.folders}}"}
-    ) == {"image_url": '["a", "b"]'}
+    ) == {"image_url": ["a", "b"]}
     # Unresolvable refs pass through untouched (contract preserved).
     assert resolve_tool_result_refs(
         agent, {"x": "{{tool_result:call_mcp.result.missing}}"}
@@ -224,6 +295,37 @@ def test_sequential_path_resolves_refs_before_dispatch(agent):
     wire = ChatCompletionsTransport().convert_messages([tool_msg], model="test-model")
     assert "{{tool_result:" in wire[0]["content"]
     assert tool_msg["tool_call_id"] in wire[0]["content"]
+
+
+def test_sequential_path_keeps_embedded_refs_literal_in_terminal_command(agent):
+    """The command-like guard fires through the real dispatch funnel: a terminal
+    command embedding a reference dispatches with the placeholder untouched,
+    while a whole-value reference resolves. Both runs are single-call, so both
+    route to execute_tool_calls_sequential."""
+    seen = []
+
+    def fake_handle(name, args, task_id, **kwargs):
+        seen.append((name, args))
+        return json.dumps({"ok": True})
+
+    remember_tool_result(agent, "call_sub", json.dumps({"result": {"subject": "Facture $(id) ; echo pwned"}}))
+    remember_tool_result(agent, "call_cmd", json.dumps({"result": {"cmd": "ls -la"}}))
+
+    def run_one(arguments):
+        msg = SimpleNamespace(content="", tool_calls=[_tc(name="terminal", arguments=arguments)])
+        messages = []
+        with patch("model_tools.handle_function_call", side_effect=fake_handle):
+            agent._execute_tool_calls(msg, messages, "task-1")
+        name, args = seen.pop(0)
+        assert name == "terminal"
+        return args
+
+    # Embedded reference: stays literal, so untrusted content cannot alter the command.
+    assert run_one('{"command": "echo {{tool_result:call_sub.result.subject}}"}') == {
+        "command": "echo {{tool_result:call_sub.result.subject}}"
+    }
+    # Whole-value reference: resolves and stays a string.
+    assert run_one('{"command": "{{tool_result:call_cmd.result.cmd}}"}') == {"command": "ls -la"}
 
 
 def test_commit_gating_blocked_and_multimodal_get_no_hint(agent):

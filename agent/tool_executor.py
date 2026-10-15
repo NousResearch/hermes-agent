@@ -707,7 +707,9 @@ def _dispatch_authorized_once(
     # Resolve {{tool_result:<call_id>.<field>}} refs before policy checks and dispatch so
     # plugin hooks, the pruned-argument guard and the tool all see the final values.
     # (Relay/request middleware upstream of this funnel still sees the raw placeholder.)
-    ref.args = resolve_tool_result_refs(agent, ref.args)
+    # Command-like arguments (terminal command / execute_code code) only resolve
+    # whole-value refs; embedded refs stay literal there (see tool_result_chaining).
+    ref.args = resolve_tool_result_refs(agent, ref.args, tool_name=ref.name)
 
     def _advance_start_order(callback=None) -> None:
         if begin_execution is not None:

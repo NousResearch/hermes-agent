@@ -30,7 +30,7 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "discord": {
         "name": "Discord", "description": "Connect Hermes to Discord DMs, channels, and threads.",
-        "docs_url": "https://discord.com/developers/applications",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/discord",
         "env_vars": ("DISCORD_BOT_TOKEN", "DISCORD_ALLOWED_USERS"),
         "required_env": ("DISCORD_BOT_TOKEN",),
     },

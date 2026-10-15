@@ -284,7 +284,10 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
     _apply_launch_overrides(params, config)
     enabled = _resolve_toolsets(params, config, source, safe_mode)
     terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
-    terminal['TERMINAL_CWD'] = cwd
+    # The client's launch folder is a path on THIS host: a remote or container backend keeps its own
+    # configured cwd unless the user picked this folder for the session.
+    if params.get('cwd_explicit') is True or terminal_uses_host_cwd(terminal):
+        terminal['TERMINAL_CWD'] = cwd
     request = {k: v for k, v in params.items() if k not in {'request_id', 'api_key'}}
     request.setdefault('source', 'cli')
     from gateway.session_local_mcp import private_editor_request
@@ -294,6 +297,14 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
     return LocalSessionPolicy(source, SURFACES[source], cwd, model, tuple(sorted(enabled)),
                               json.dumps(config), json.dumps(request, sort_keys=True), json.dumps(terminal),
                               safe_mode=safe_mode, ignore_user_config=ignore_user_config)
+
+
+def terminal_uses_host_cwd(terminal):
+    """Whether the terminal works in the session's host cwd: the local backend, or docker mounting it at
+    ``/workspace``. ssh, modal and the other sandboxes resolve their own cwd."""
+    backend = str(terminal.get('TERMINAL_ENV') or 'local').strip().lower()
+    mounts = str(terminal.get('TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    return backend == 'local' or (backend == 'docker' and mounts)
 
 
 def _profile_workspace_cwd(home):
@@ -620,7 +631,8 @@ def restore_policy(data):
         for value in (policy.config_json, policy.request_json, policy.terminal_json):
             if not isinstance(json.loads(value), dict):
                 raise ValueError('invalid policy object')
-        if json.loads(policy.terminal_json).get('TERMINAL_CWD') != policy.cwd:
+        terminal = json.loads(policy.terminal_json)
+        if terminal_uses_host_cwd(terminal) and terminal.get('TERMINAL_CWD') != policy.cwd:
             raise ValueError('terminal policy mismatch')
         return replace(policy, toolsets=tuple(policy.toolsets))
     except (KeyError, TypeError, ValueError) as exc:

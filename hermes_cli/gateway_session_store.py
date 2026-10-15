@@ -57,7 +57,8 @@ def _zero(*_a, **_k):
 
 
 class GatewaySessionStore:
-    """Truthy while the gateway connection is usable (main's ``if self._session_db:`` guards)."""
+    """Truthy until the viewer's gateway connection is final (main's ``if self._session_db:`` guards);
+    a gateway hang-up stays truthy, and the next call redials."""
 
     def __init__(self, connection=None):
         self.connection = connection or GatewayConnection.shared()
@@ -66,7 +67,7 @@ class GatewaySessionStore:
         self._reader = None
 
     def __bool__(self):
-        return not self.connection.closed
+        return not self.connection.final
 
     # -- reads -----------------------------------------------------------------------------
     def _db(self):
@@ -242,17 +243,36 @@ class GatewaySessionStore:
             row = conn.execute("SELECT id FROM sessions WHERE title = ? AND id != ?", (title, session_id)).fetchone()
         return row[0] if row else None
 
+    def _leave(self, session_id):
+        """Drop this viewer's subscription record and return its id. The connection's SessionState holds
+        the live id (a reconnect resubscribes under a new one); cleared, no later reconnect resumes it."""
+        state = self.connection.states.get(session_id)
+        subscription = state.subscription_id if state is not None else None
+        if state is not None:
+            state.subscription_id = None
+        return subscription
+
     def delete_session(self, session_id, sessions_dir=None):
         self.snapshots.pop(session_id, None)
         self._mutate(session_id, "delete", {})
+        self._leave(session_id)
         return True
 
     def end_session(self, session_id, reason=None):
         """Main's ``end_session(sid, reason)``: detach this viewer with ``end_reason``; the owner ends
         the idle local row with that reason once no viewer is left (``ended_at`` / ``end_reason``)."""
         snapshot = self.snapshots.pop(session_id, None)
-        subscription = (snapshot or {}).get("subscription_id")
-        if subscription and not self.connection.closed:
+        state = self.connection.states.get(session_id)
+        reachable = state is not None and state.subscription_id is not None and not self.connection.final
+        if reachable:
+            try:
+                # Hung up: redial first, so the detach names the subscription the reconnect resumed.
+                self.connection.start()
+            except GatewayClientError as exc:
+                logger.debug("redial for session.detach failed: %s", exc)
+                reachable = False
+        subscription = self._leave(session_id)
+        if subscription and reachable:
             params = {"end_reason": reason} if reason else {}
             try:
                 self.call("session.detach", session_id=session_id, subscription_id=subscription, **params)

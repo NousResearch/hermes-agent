@@ -17,8 +17,8 @@ import threading
 import time
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_connection import DISCONNECTED
+from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
+from hermes_cli.gateway_connection import DISCONNECTED, lost_before
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +146,7 @@ class GatewayAgent:
         self._todo_store = _TodoView()
         self._generation = None
         self._admission = None
+        self._epoch = None  # the connection epoch this turn was submitted on
         self._interrupt_sent_at = None
         self._rate_limit_state = None
         self._config_context_length = None
@@ -528,8 +529,15 @@ class GatewayAgent:
             try:
                 receipt = self.connection.call("prompt.submit", **self._submit_params(
                     user_message, persist_user_message, turn_author))
+            except GatewayRPCError as exc:
+                # The owner answered and refused: not a lost connection. Only its own site code
+                # (session_busy: send again) is a verdict; any other refusal stays unclassified.
+                busy = str(exc) == "session_busy"
+                return self._failed(history, user_message, str(exc),
+                                    failure_reason="session_busy" if busy else None, retryable=busy)
             except GatewayClientError as exc:
-                return self._failed(history, user_message, str(exc))
+                return self._failed(history, user_message, str(exc), failure_reason="gateway_connection")
+        self._epoch = getattr(self.connection, "epoch", None)
         self._admission = (receipt or {}).get("admission_id")
         if receipt and receipt.get("execution_generation") is not None:
             self._generation = receipt["execution_generation"]
@@ -539,7 +547,8 @@ class GatewayAgent:
         finally:
             self._generation_done()
         if isinstance(outcome, Exception):
-            return self._failed(history, user_message, str(outcome) or DISCONNECTED)
+            return self._failed(history, user_message, str(outcome) or DISCONNECTED,
+                                failure_reason="gateway_connection")
         return self._result(history, user_message, outcome)
 
     def _drain_stale(self):
@@ -550,6 +559,8 @@ class GatewayAgent:
             except queue.Empty:
                 return
             if isinstance(frame, Exception):
+                if lost_before(frame, getattr(self.connection, "epoch", None)):
+                    continue  # a connection a reconnect already replaced
                 self.connection.events.put(frame)
                 return
 
@@ -569,6 +580,8 @@ class GatewayAgent:
             except queue.Empty:
                 continue
             if isinstance(frame, Exception):
+                if lost_before(frame, self._epoch):
+                    continue  # the previous connection's loss, already reported; this turn is live
                 return frame
             params = frame.get("params") if isinstance(frame, dict) else None
             if not isinstance(params, dict) or params.get("session_id") != self.session_id:
@@ -808,9 +821,14 @@ class GatewayAgent:
             return staged
         return {"role": "user", "content": user_message}
 
-    def _failed(self, history, user_message, error):
-        return {**_RESULT_DEFAULTS, "final_response": "", "messages": history + [self._user_row(user_message)],
-                "failed": True, "completed": False, "error": error, "session_id": self.session_id}
+    def _failed(self, history, user_message, error, *, failure_reason=None, retryable=False):
+        """``failure_reason="gateway_connection"``: the CLI shows ``error`` as written instead of
+        classifying a lost gateway as a model failure ("Run /model to switch...")."""
+        out = {**_RESULT_DEFAULTS, "final_response": "", "messages": history + [self._user_row(user_message)],
+               "failed": True, "completed": False, "error": error, "session_id": self.session_id}
+        if failure_reason:
+            out.update(failure_reason=failure_reason, failure_retryable=retryable)
+        return out
 
     def _result(self, history, user_message, complete):
         receipt = {}

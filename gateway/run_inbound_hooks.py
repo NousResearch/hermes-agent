@@ -8,8 +8,12 @@ plugin-registered slash commands. Bound onto ``GatewayRunner`` through ``Gateway
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import logging
+import os
+import signal
+import sys
 from typing import Optional, Tuple
 
 from agent.i18n import t
@@ -18,6 +22,25 @@ from gateway.session import SessionSource, build_session_context
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+# Seconds a ``type: exec`` quick command may run before its whole process tree is killed.
+_EXEC_QUICK_COMMAND_TIMEOUT = 30
+
+
+async def _stop_exec_tree(proc) -> None:
+    """Kill an exec quick command's shell and everything it started, then reap the shell (bounded).
+
+    Killing only the shell leaves ``sleep 120 & wait``'s sleep running. ``kill_process_tree`` reaches
+    descendants (``taskkill /T`` on Windows); on POSIX the group the shell led also catches members
+    that already outlived it."""
+    if proc.returncode is None:
+        from agent.deadline import kill_process_tree
+        await asyncio.to_thread(kill_process_tree, proc.pid)
+    if sys.platform != "win32":
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only branch; start_new_session made pid the pgid
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(proc.wait(), timeout=5)
 
 
 class GatewayInboundHooksMixin:
@@ -138,22 +161,33 @@ class GatewayInboundHooksMixin:
                     return False, None, event.get_command()
         return False, None, None
 
-    async def _hm_run_exec_quick_command(self, command: str, exec_cmd: str) -> str:
-        """Run a ``type: exec`` quick command in the gateway process (30 s cap, sanitized env — the
-        gateway process has every API key in os.environ; output is redacted too)."""
+    async def _hm_run_exec_quick_command(self, command: str, exec_cmd: str, cwd: Optional[str] = None) -> str:
+        """Run a ``type: exec`` quick command as a host shell of the gateway process: sanitized env
+        (the gateway process has every API key in os.environ), redacted output, its process tree
+        killed after 30 s or when the awaiting task is cancelled (gateway shutdown).
+        ``cwd`` is a local session's folder; None keeps the gateway's own (messaging)."""
+        proc = None
         try:
             from tools.environments.local import build_subprocess_env
             proc = await asyncio.create_subprocess_shell(
                 exec_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                env=build_subprocess_env(),
+                env=build_subprocess_env(), cwd=cwd,
+                # Its own process group, so cleanup can reach what the shell started (POSIX;
+                # Windows ignores it and _stop_exec_tree walks the tree with taskkill /T).
+                start_new_session=True,
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_EXEC_QUICK_COMMAND_TIMEOUT)
             output = (stdout or stderr).decode().strip()
             if output:
                 from agent.redact import redact_sensitive_text
                 output = redact_sensitive_text(output)
             return output or t("gateway.quick_command.no_output")
-        except TimeoutError:
+        except (TimeoutError, asyncio.CancelledError) as stopped:
+            # One cleanup for both: a cancelled await must not leave the command running either.
+            if proc is not None:
+                await asyncio.shield(_stop_exec_tree(proc))
+            if isinstance(stopped, asyncio.CancelledError):
+                raise
             return t("gateway.quick_command.timed_out")
         except Exception as e:  # health: allow BLE001 -- moved unchanged from run_inbound.py (main has the same handler): an operator quick command's failure is its reply
             return t("gateway.quick_command.error", error=e)
@@ -190,8 +224,17 @@ class GatewayInboundHooksMixin:
                 return True, t("gateway.quick_command.no_target", command=command), command
             command = new_command  # Fall through to normal command dispatch below
 
-        # Plugin-registered slash commands. Underscores normalize to hyphens so Telegram's
-        # underscored autocomplete form matches plugin commands registered with hyphens.
+        if not command:
+            return False, None, command
+        return await self._hm_dispatch_plugin_command(event, source, command)
+
+    async def _hm_dispatch_plugin_command(
+        self, event: MessageEvent, source: SessionSource, command: str
+    ) -> tuple[bool, Optional[str], Optional[str]]:
+        """Plugin-registered slash command *command* → ``(handled, result, command)``. No quick
+        commands: a local session resolves those in its own profile before calling this."""
+        # Underscores normalize to hyphens so Telegram's underscored autocomplete form matches
+        # plugin commands registered with hyphens.
         if command:
             try:
                 from hermes_cli.plugins import get_plugin_command_handler

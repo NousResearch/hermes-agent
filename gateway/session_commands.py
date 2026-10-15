@@ -5,6 +5,7 @@ Executing those here would double-submit and bypass their retry identity.
 """
 import asyncio
 from contextlib import contextmanager
+import os
 from pathlib import Path
 import shlex
 
@@ -106,9 +107,10 @@ def _resolve_alias(name, arg):
             raise RuntimeStoreError('invalid_params')
         seen.add(name)
         entry = quick[name]
-        # Shell/plugin execution has no canonical approval or retry contract here.
-        if not isinstance(entry, dict) or entry.get('type') != 'alias':
+        if not isinstance(entry, dict) or entry.get('type') not in {'alias', 'exec'}:
             raise RuntimeStoreError('unsupported_command')
+        if entry['type'] == 'exec':
+            return name, arg
         target = entry.get('target')
         if not isinstance(target, str) or not target.strip():
             raise RuntimeStoreError('invalid_params')
@@ -116,6 +118,43 @@ def _resolve_alias(name, arg):
         name = parts[0]
         arg = ' '.join(p for p in (*parts[1:], arg) if p)
     return name, arg
+
+
+def _runner_command(name):
+    """``('exec', shell)`` for a ``type: exec`` quick command, ``('plugin', None)`` for a plugin
+    slash command, else None (read in the owning profile's scope)."""
+    from gateway.run import _load_gateway_config
+    from hermes_cli.plugins import get_plugin_command_handler
+    entry = (_load_gateway_config().get('quick_commands') or {}).get(name)
+    if isinstance(entry, dict) and entry.get('type') == 'exec':
+        return 'exec', str(entry.get('command') or '')
+    return ('plugin', None) if get_plugin_command_handler(name.replace('_', '-')) else None
+
+
+async def _run_runner_command(runner, live, name, arg, kind, shell):
+    """The messaging gateway's own quick-command / plugin-command dispatch for this session
+    (``run_inbound_hooks``): the operator's slash access policy, the 30 s sanitized-env exec with
+    redacted output, the plugin handler under this session's env scope."""
+    from agent.i18n import t
+    from gateway.platforms.base import MessageEvent
+    if kind == 'exec':
+        if not shell:
+            return t('gateway.quick_command.no_command', command=name)
+        refused = runner._check_slash_access(live.source, name)
+        if refused:
+            return refused
+        from gateway.session_policy import policy_for_source
+        policy = policy_for_source(runner, live.source)
+        cwd = getattr(policy, 'cwd', None) or None
+        if cwd is None or not await asyncio.to_thread(os.path.isdir, cwd):
+            # Never fall back to the gateway's own folder: a relative command would act there.
+            raise RuntimeStoreError('cwd_unavailable')
+        return await runner._hm_run_exec_quick_command(name, shell, cwd=cwd)
+    # Plugin-only: the runner's quick commands are the launch profile's under multiplex, and this
+    # session's own were already resolved above in its profile (``_resolve_alias``/``_runner_command``).
+    event = MessageEvent(text='/' + name + (' ' + arg if arg else ''), source=live.source)
+    _handled, output, _command = await runner._hm_dispatch_plugin_command(event, live.source, name)
+    return output
 
 
 def _skill_directive(name, arg, route):
@@ -190,9 +229,15 @@ async def execute_command(connection, ref, params, *, dispatch=False):
     verdict = command_verdict(canonical, arg) if definition else None
     if definition is not None and (tui := await _tui_read(authority, actor, ref, canonical, arg)) is not None:
         return tui
+    runner_command = None
+    if definition is None:
+        def lookup():
+            with _profile_runtime_scope(home):
+                return _runner_command(name)
+        runner_command = await asyncio.to_thread(lookup)
     capability = ('session:read' if verdict == 'read' else
                   'session:approve' if canonical in _APPROVAL_COMMANDS else
-                  'session:control' if definition else 'session:submit')
+                  'session:control' if definition or runner_command else 'session:submit')
     authority.authorize(actor, ref, capability)
     if verdict == 'refused':
         raise RuntimeStoreError('unsupported_command')
@@ -202,6 +247,10 @@ async def execute_command(connection, ref, params, *, dispatch=False):
         raise RuntimeStoreError('permission_denied')
     if capability != 'session:read':
         authority._require_admission_open()
+    if runner_command is not None:
+        with _profile_runtime_scope(home), _session_workspace(authority.runner, live.source):
+            output = await _run_runner_command(authority.runner, live, name, arg, *runner_command)
+        return {'type': 'exec', 'output': _text(output)}
     if definition is None:
         def build():
             with _profile_runtime_scope(home):

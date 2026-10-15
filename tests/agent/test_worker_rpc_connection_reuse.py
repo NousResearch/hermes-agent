@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.waiting import wait_until
+
 
 class _Relay:
     """Loopback TCP relay whose owner->worker direction can be held: the bytes an owner with a
@@ -79,7 +81,7 @@ def owner(monkeypatch, tmp_path):
                 # sessions.changed keeps flowing while the worker is busy in a model call; the owner's
                 # keepalive then needs a pong, which a worker that stopped reading never sends.
                 for index in range(request['params']['events']):
-                    time.sleep(0.005)  # separate broadcasts, not one coalesced socket read
+                    time.sleep(0.005)  # health: allow HX013 -- separate broadcasts, not one coalesced socket read
                     ws.send(json.dumps({'jsonrpc': '2.0', 'method': 'event',
                                         'params': {'type': 'sessions.changed', 'index': index}}))
                 state.pongs.append(ws.ping().wait(2))
@@ -126,7 +128,8 @@ def test_reconnects_with_a_fresh_ticket_after_the_owner_drops_it(owner, tmp_path
     owner.drop = 'after_reply'
     assert rpc('worker.persist') == {'n': 1}
     assert owner.closed.wait(5)
-    time.sleep(0.2)  # the worker observes the idle close before its next call
+    # The worker observes the idle close before its next call.
+    wait_until(lambda: not rpc.link.reader.is_alive(), timeout=5)
     assert rpc('worker.persist') == {'n': 2}
     assert (owner.connections, owner.tickets) == (2, 2)
 

@@ -77,7 +77,7 @@ class _OwnerLink:
                     continue
                 if isinstance(frame, dict) and self.awaiting is not None and frame.get('id') == self.awaiting:
                     self.replies.put(frame)
-        except Exception as exc:  # ConnectionClosed included: the waiting (or next) caller raises it
+        except Exception as exc:  # health: allow BLE001 -- handed to the caller, which raises it (ConnectionClosed included)
             self.replies.put(exc)
 
     def call(self, request_id, message, timeout):

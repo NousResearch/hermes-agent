@@ -109,10 +109,10 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
         try:
             raw, include_sig = config_includes.merge_config_includes(config_path, raw)
         except Exception as exc:
-            if fail_closed:
+            if fail_closed or path_key not in _LAST_GOOD_INCLUDED:
                 raise
             _warn_config_parse_failure(config_path, exc, fallback="last-known-good")
-            raw, recovered = copy.deepcopy(_LAST_GOOD_INCLUDED.get(path_key, {})), True
+            raw, recovered = copy.deepcopy(_LAST_GOOD_INCLUDED[path_key]), True
         else:
             _INCLUDE_SIGNATURES[path_key] = include_sig
             if not recovered:

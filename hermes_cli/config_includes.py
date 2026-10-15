@@ -3,7 +3,8 @@
 A config file may name other YAML files (paths relative to the declaring file) whose values sit
 under its own: the declaring file wins, nested includes recurse, cycles are skipped. Loaders cache
 on the root file's signature, so each include's stat signature is recorded and re-checked without
-reparsing YAML. An include that exists but cannot be read raises ``ValueError``.
+reparsing YAML. An include that exists but cannot be read raises ``ConfigIncludeError``: a partial
+policy is not a safe fallback.
 """
 
 from __future__ import annotations
@@ -21,6 +22,10 @@ logger = logging.getLogger(__name__)
 CONFIG_INCLUDE_KEYS = ("include", "includes")
 # config path -> include signatures recorded by load_config(); see config_includes_unchanged().
 INCLUDE_SIGNATURES: dict[str, tuple[tuple[Any, ...], ...]] = {}
+
+
+class ConfigIncludeError(ValueError):
+    """An include could not be read; a partial policy is not a safe fallback."""
 
 
 def without_include_keys(config: dict[str, Any]) -> dict[str, Any]:
@@ -78,7 +83,7 @@ def merge_config_includes(
         try:
             include_config = read_config_yaml(include_path)
         except Exception as e:
-            raise ValueError(f"Invalid config include {include_path}") from e
+            raise ConfigIncludeError(f"Invalid config include {include_path}") from e
         include_merged, include_sig = merge_config_includes(include_path, include_config, seen=seen)
         signatures.extend(include_sig)
         merged = _deep_merge(merged, include_merged)
@@ -108,6 +113,23 @@ def config_includes_unchanged(path_key: str, signatures=None) -> bool:
         if signature != tuple(previous_signature):
             return False
     return True
+
+
+def recover_last_good(config_path: Path, path_key: str, error: ConfigIncludeError):
+    """load_config()'s answer to an unreadable include: the last expanded config, or re-raise.
+
+    A root-only backup cannot prove the included policy was loaded, so the root file's backups are
+    not consulted. Recovery is never cached under the root signature: repairing only a newly
+    introduced include must be visible on the next read.
+    """
+    from hermes_cli import config as _config
+
+    _config._LOAD_CONFIG_CACHE.pop(path_key, None)
+    lkg = _config._LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
+    if lkg is None:
+        raise error
+    _config._warn_config_parse_failure(config_path, error, fallback="last-known-good")
+    return _config.FailedConfigRead(_config._expand_env_vars(copy.deepcopy(lkg)), error=error)
 
 
 def includes_for_save(config_path: Path, raw: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:

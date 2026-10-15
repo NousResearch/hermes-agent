@@ -182,7 +182,10 @@ def verified_tools(names: Sequence[str], *, source_store: Path, target: str,
         if (not fact or fact.get("entry") != expected
                 or not entry.is_dir() or not entry.resolve().is_relative_to(source_store)
                 or not facts.installed(package.name, version, source_store, identity)
-                or tree_digest(entry) != fact.get("digest")):
+                # A python entry's digest may be recorded with or without its
+                # mutable site-packages layer; either spelling vouches for it.
+                or fact.get("digest") not in (tree_digest(entry, package.digest_skip_dirs),
+                                              tree_digest(entry))):
             raise InstallError(package.name, "tool source failed verification", "run preparation again")
         _copy_links(package, entry)
         binary = package.binary(entry, target)

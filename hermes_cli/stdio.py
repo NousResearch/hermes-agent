@@ -90,6 +90,27 @@ def _default_windows_editor() -> str:
     return "notepad" if shutil.which("notepad") else ""
 
 
+def _pinned_git_tool_dirs() -> list:
+    r"""``cmd`` / ``bin`` / ``usr\bin`` of pm's pinned Git-for-Windows entry, or ``[]``.
+
+    Asked of pm rather than spelled out: the entry dir carries the pinned version
+    (``git-2.53.0+3-win32-x64``), so no fixed path can name it. Same lookup
+    ``boot_bootstrap._git_binary`` makes. The import is local and the ``except`` broad because
+    this module runs before logging is configured — a tool lookup must not stop console setup,
+    and it has nowhere to report to.
+    """
+    try:
+        from pm import installed_package
+
+        installed = installed_package("git")
+    except Exception:  # health: allow BLE001 -- runs before logging exists, so there is nowhere to report a traceback; any pm failure must leave console setup on the legacy dirs
+        return []
+    if installed is None:
+        return []
+    root = installed.path
+    return [str(root / "cmd"), str(root / "bin"), str(root / "usr" / "bin")]
+
+
 def _augment_path_with_known_tools() -> None:
     r"""Prepend Hermes-managed tool directories to ``PATH`` (no-op on POSIX / missing dirs).
 
@@ -97,22 +118,29 @@ def _augment_path_with_known_tools() -> None:
     ``SetEnvironmentVariable``, but already-running shells never see that broadcast, so a hermes
     launched from the install session would not find rg / bash / grep. Prepending the known dirs
     at startup closes that first-launch gap.
+
+    The pinned git has since moved into the PM store (``<data root>\tools\git-<version>-<target>``),
+    and install.ps1's ``Ensure-Git`` prepends it to the INSTALLER process only — deliberately, so a
+    run never inherits an unpinned system Git. On a host whose ONLY git is that one, every fixed
+    entry below names a directory that does not exist, so git *and* the ``bash.exe`` contract the
+    rest of the tree trusts were both missing from ``PATH`` (#134600). pm knows where it published
+    them; ask it first.
     """
     if not is_windows():
         return
+    # Ahead of the LOCALAPPDATA guard: pm resolves the store itself, including a relocated one.
+    candidate_dirs = _pinned_git_tool_dirs()
     local_appdata = os.environ.get("LOCALAPPDATA", "")
-    if not local_appdata:
-        return
-
-    # Kept in sync with the PATH entries scripts/install.ps1 adds to User scope. The venv Scripts
-    # dir hosts hermes.exe + pip console scripts; WinGet\Links is where ``winget install`` drops
-    # CLI shims (ripgrep lands there as rg.exe).
-    candidate_dirs = [
-        os.path.join(local_appdata, "hermes", "git", "cmd"),
-        os.path.join(local_appdata, "hermes", "git", "bin"),
-        os.path.join(local_appdata, "hermes", "git", "usr", "bin"),
-        os.path.join(local_appdata, "hermes", "hermes-agent", "venv", "Scripts"),
-        os.path.join(local_appdata, "Microsoft", "WinGet", "Links")]
+    if local_appdata:
+        # Kept in sync with the PATH entries scripts/install.ps1 adds to User scope. The venv
+        # Scripts dir hosts hermes.exe + pip console scripts; WinGet\Links is where
+        # ``winget install`` drops CLI shims (ripgrep lands there as rg.exe).
+        candidate_dirs += [
+            os.path.join(local_appdata, "hermes", "git", "cmd"),
+            os.path.join(local_appdata, "hermes", "git", "bin"),
+            os.path.join(local_appdata, "hermes", "git", "usr", "bin"),
+            os.path.join(local_appdata, "hermes", "hermes-agent", "venv", "Scripts"),
+            os.path.join(local_appdata, "Microsoft", "WinGet", "Links")]
     existing = os.environ.get("PATH", "")
     existing_lower = {p.lower() for p in existing.split(os.pathsep) if p}
     prepend = [d for d in candidate_dirs if os.path.isdir(d) and d.lower() not in existing_lower]

@@ -3,7 +3,12 @@ import path from 'node:path'
 
 import { describe, test } from 'vitest'
 
-import { type GitCandidateFs, ugitGitBinaries, windowsGitCandidates } from './git-binary-candidates'
+import {
+  type GitCandidateFs,
+  pmPinnedGitBinaries,
+  ugitGitBinaries,
+  windowsGitCandidates
+} from './git-binary-candidates'
 
 const LAD = path.join('C:', 'Users', 'suceru', 'AppData', 'Local')
 
@@ -24,6 +29,45 @@ function fakeFs(dirs: Record<string, string[]>, files: string[]): GitCandidateFs
 
 const ugitGitExe = (version: string): string =>
   path.join(LAD, 'UGit', `app-${version}`, 'resources', 'app', 'git', 'cmd', 'git.exe')
+
+const pmStore = path.join(LAD, 'hermes', 'tools')
+
+const pmGitExe = (version: string): string => path.join(pmStore, `git-${version}-win32-x64`, 'cmd', 'git.exe')
+
+describe('pmPinnedGitBinaries (#134600)', () => {
+  test('enumerates the PM store and returns each pinned git.exe, newest first', () => {
+    const fs = fakeFs({ [pmStore]: ['git-2.52.0+1-win32-x64', 'git-2.53.0+3-win32-x64', 'node-24.0.0-win32-x64'] }, [
+      pmGitExe('2.52.0+1'),
+      pmGitExe('2.53.0+3')
+    ])
+
+    assert.deepEqual(pmPinnedGitBinaries(LAD, fs), [pmGitExe('2.53.0+3'), pmGitExe('2.52.0+1')])
+  })
+
+  test('sorts entries by version, not lexically (git-2.10.0 beats git-2.9.0)', () => {
+    const fs = fakeFs({ [pmStore]: ['git-2.9.0+1-win32-x64', 'git-2.10.0+1-win32-x64'] }, [
+      pmGitExe('2.9.0+1'),
+      pmGitExe('2.10.0+1')
+    ])
+
+    assert.deepEqual(pmPinnedGitBinaries(LAD, fs), [pmGitExe('2.10.0+1'), pmGitExe('2.9.0+1')])
+  })
+
+  test('returns [] when the store does not exist (a missing dir must not throw)', () => {
+    assert.deepEqual(pmPinnedGitBinaries(LAD, fakeFs({}, [])), [])
+  })
+
+  test('skips an entry mid-install whose git.exe is not there yet', () => {
+    assert.deepEqual(pmPinnedGitBinaries(LAD, fakeFs({ [pmStore]: ['git-2.53.0+3-win32-x64'] }, [])), [])
+  })
+
+  test('ignores a store entry that merely starts with "git" (a future git-lfs pin)', () => {
+    const lfs = path.join(pmStore, 'git-lfs-3.5.1-win32-x64', 'cmd', 'git.exe')
+    const fs = fakeFs({ [pmStore]: ['git-lfs-3.5.1-win32-x64'] }, [lfs])
+
+    assert.deepEqual(pmPinnedGitBinaries(LAD, fs), [])
+  })
+})
 
 describe('ugitGitBinaries (#61494)', () => {
   test('enumerates the UGit app-* glob and returns each bundled git.exe, newest first', () => {
@@ -95,7 +139,7 @@ describe('windowsGitCandidates (#61494)', () => {
     assert.equal(candidates.find(fs.existsSync), portable)
   })
 
-  test('keeps the historical candidates when UGit is absent', () => {
+  test('keeps the historical candidates when neither UGit nor a PM store is present', () => {
     const candidates = windowsGitCandidates(env, fakeFs({}, []))
 
     assert.deepEqual(candidates, [
@@ -105,5 +149,27 @@ describe('windowsGitCandidates (#61494)', () => {
       path.join(env.programFilesX86, 'Git', 'cmd', 'git.exe'),
       path.join(env.localAppData, 'Programs', 'Git', 'cmd', 'git.exe')
     ])
+  })
+
+  test('selects the PM-pinned git when it is the only one on the host (#134600)', () => {
+    // The reported host: no system Git for Windows, no UGit, no legacy
+    // `hermes\git`, and the pinned git's own dir is on no persisted PATH -- so
+    // the fixed list is the only thing that can find it. Without it the resolver
+    // fell through to the bare string 'git', every spawn ENOENTed, and the
+    // update check reported "Could not read the installed revision".
+    const pinned = pmGitExe('2.53.0+3')
+    const fs = fakeFs({ [pmStore]: ['git-2.53.0+3-win32-x64'] }, [pinned])
+
+    assert.equal(windowsGitCandidates(env, fs).find(fs.existsSync), pinned)
+  })
+
+  test('prefers the PM-pinned git over a system Git for Windows', () => {
+    // install.ps1's Ensure-Git prepends the pinned git for the same reason:
+    // a run must never inherit an unpinned system Git.
+    const pinned = pmGitExe('2.53.0+3')
+    const system = path.join(env.programFiles, 'Git', 'cmd', 'git.exe')
+    const fs = fakeFs({ [pmStore]: ['git-2.53.0+3-win32-x64'] }, [pinned, system])
+
+    assert.equal(windowsGitCandidates(env, fs).find(fs.existsSync), pinned)
   })
 })

@@ -101,7 +101,8 @@ def adopt_legacy_session(authority, actor, row):
     params, api_mode = legacy_launch_params(row)
     params['source'] = LEGACY_CREATION_SOURCES.get(row['source'], row['source'])
     private = {}
-    policy = build_policy(params, _load_gateway_config(), private_secrets=private)
+    # The row's saved folder is no fresh client pick: an adopted session keeps the profile's toolsets.
+    policy = build_policy(params, _load_gateway_config(), private_secrets=private, workspace_posture=False)
     if api_mode:
         config = json.loads(policy.config_json)
         config.setdefault('model', {})['api_mode'] = api_mode

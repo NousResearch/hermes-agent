@@ -8,7 +8,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 @pytest.fixture(autouse=True)
@@ -189,6 +189,7 @@ def test_catalog_install_action_forwards_network_and_owner(monkeypatch, client, 
     entry = catalog_entry()
     entry.install = SimpleNamespace()
     (home / "profiles" / "unity").mkdir(parents=True)
+    (home / "profiles" / "unity" / "config.yaml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(mcp_catalog, "get_entry", lambda name: entry)
     calls = []
     monkeypatch.setattr(router, "_spawn_hermes_action", lambda args, action: calls.append((args, action)))

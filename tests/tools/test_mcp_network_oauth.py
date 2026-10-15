@@ -36,7 +36,7 @@ finally:
 '''
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 @pytest.mark.parametrize("network", ["auto", "windows"])
 async def test_cli_device_login_and_cold_refresh_share_windows_routing(tmp_path, monkeypatch, network):
@@ -83,7 +83,7 @@ async def test_cli_device_login_and_cold_refresh_share_windows_routing(tmp_path,
         reset_hermes_home_override(token)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 async def test_legacy_omitted_network_device_oauth_sends_nothing_to_windows_canary(tmp_path, monkeypatch):
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override

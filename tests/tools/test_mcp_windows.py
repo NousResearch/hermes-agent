@@ -159,7 +159,7 @@ def _tls_contexts(tmp_path):
     return server, client, names
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 @pytest.mark.parametrize("httpx_name", ["httpx", "httpx2"])
 @pytest.mark.parametrize("scheme", ["http", "https"])
@@ -205,7 +205,7 @@ async def test_bridge_preserves_origin_tls_streaming_and_never_captures_another_
             assert sni and set(sni) == {"localhost"}
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 @pytest.mark.parametrize("transport", ["http", "sse"])
 @pytest.mark.parametrize("network", ["auto", "windows"])
@@ -241,7 +241,7 @@ async def test_real_mcp_probe_and_runtime_use_the_same_windows_route(monkeypatch
             await task.shutdown()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 async def test_legacy_omission_never_opens_windows_bridge_or_sends_authorization(monkeypatch):
     """A stopped WSL server cannot transfer authority to a Windows canary.
@@ -271,7 +271,7 @@ async def test_legacy_omission_never_opens_windows_bridge_or_sends_authorization
         assert canary_requests == []
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 @pytest.mark.parametrize("network", ["auto", "windows"])
 async def test_explicit_cross_namespace_choice_reaches_authorized_canary(monkeypatch, network):
@@ -298,7 +298,7 @@ async def test_explicit_cross_namespace_choice_reaches_authorized_canary(monkeyp
         assert canary_requests[0][2]["Authorization"] == "Bearer allowed-to-cross"
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.asyncio
 @pytest.mark.parametrize("host,bind_host", [("127.0.0.1", "127.0.0.1"), ("localhost", "127.0.0.1"),
                                           ("::1", "::1"), ("localhost", "::1")])

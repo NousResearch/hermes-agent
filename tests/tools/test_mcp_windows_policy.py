@@ -24,7 +24,7 @@ async def test_explicit_windows_target_never_bridges_other_origins(url):
             pytest.fail('non-loopback origin was accepted')
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 async def test_wsl_legacy_omission_stays_local_and_explicit_auto_or_windows_can_bridge(monkeypatch):
     # Substitute only WSL's environment-detection boundary; all socket/process
@@ -80,8 +80,33 @@ async def test_bad_network_fails_fast_even_when_preflight_is_skipped(transport, 
     assert task._ready.is_set()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.asyncio
 async def test_native_windows_explicit_target_is_direct():
     async with mcp_windows.mcp_http_route('http://localhost:8080/mcp', network='windows') as route:
         assert route is None
+
+
+@pytest.mark.asyncio
+async def test_windows_mount_keeps_body_cap_and_direct_other_origins(monkeypatch):
+    import httpx
+    from tools import mcp_tool_transport as transport
+    from tools.mcp_tool_errors import _make_mcp_body_cap_transport
+
+    options = []
+
+    class Route:
+        def client_options(self, client_module, **kwargs):
+            options.append(kwargs)
+            return {"mounts": {"http://localhost:1": client_module.MockTransport(
+                lambda request: client_module.Response(200, content=b"x" * 33))}}
+
+    monkeypatch.setattr(transport, "_make_mcp_body_cap_transport",
+                        lambda module, inner: _make_mcp_body_cap_transport(module, inner, limit=32))
+    mounts = transport._mcp_http_mounts(httpx, "http://localhost:1/mcp", False, None, "fixture", Route())
+    direct = httpx.MockTransport(lambda request: httpx.Response(200, text="direct"))
+    async with httpx.AsyncClient(transport=direct, mounts=mounts) as client:
+        with pytest.raises(httpx.ReadError, match="Content-Length"):
+            await client.get("http://localhost:1/mcp")
+        assert (await client.get("http://other.test/mcp")).text == "direct"
+    assert options == [{"verify": False, "cert": None}]

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { api, setManagementProfile, type McpNetwork } from './api'
+import { api, setManagementProfile } from "./api";
+import type { McpNetwork } from "./api-types";
 
 const fetchMock = vi.fn<typeof fetch>(
   async () =>

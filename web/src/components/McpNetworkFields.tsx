@@ -1,6 +1,6 @@
 import { Label } from "@nous-research/ui/ui/components/label";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
-import type { McpNetwork } from "@/lib/api";
+import type { McpNetwork } from "@/lib/api-types";
 
 interface McpNetworkFieldsProps {
   id: string;

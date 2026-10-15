@@ -188,4 +188,15 @@ describe('ModelEditSubmenu pricing section', () => {
     expect(screen.getByText('Free')).toBeTruthy()
     expect(screen.queryByText('Input')).toBeNull()
   })
+  it('shows a dash for an unknown price, never $0', () => {
+    renderSubmenu({
+      fastControl: { kind: 'none' },
+      onSetOptions: vi.fn(),
+      pricing: { free: false, input: '$1.25', output: '' },
+      reasoning: true
+    })
+
+    expect(screen.getByText('$1.25')).toBeTruthy()
+    expect(screen.getByText('—')).toBeTruthy()
+  })
 })

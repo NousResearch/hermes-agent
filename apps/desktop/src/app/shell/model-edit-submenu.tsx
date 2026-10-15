@@ -137,11 +137,11 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
          <dl>
            <div>
              <dt>Input</dt>
-             <dd>{pricing.input}</dd>
+             <dd>{pricing.input || '—'}</dd>
            </div>
            <div>
              <dt>Output</dt>
-             <dd>{pricing.output}</dd>
+             <dd>{pricing.output || '—'}</dd>
            </div>
          </dl>
        )}

@@ -36,9 +36,9 @@ def test_generated_files_are_current(gen):
 # The emitter inventory the old gateway-events.json scan used, kept as the completeness oracle:
 # names must come from CODE the gateway runs, never from the contract tables themselves.
 _EMIT_HELPERS = ("_emit", "_broadcast_global_event", "_voice_emit", "_pet_emit", "_emit_tool_lifecycle")
-_LITERAL_EMIT = re.compile(r"\b(?:%s)\(\s*\"([a-z_][a-z0-9_.]*)\"" % "|".join(_EMIT_HELPERS))
+_LITERAL_EMIT = re.compile(r"\b(?:{})\(\s*\"([a-z_][a-z0-9_.]*)\"".format("|".join(_EMIT_HELPERS)))
 _REQUEST_HELPERS = ("server_requests\\.send", "server_requests\\.send_async", "_ask", "_read_block")
-_LITERAL_REQUEST = re.compile(r"\b(?:%s)\(\s*\"([a-z_][a-z0-9_.]*)\"" % "|".join(_REQUEST_HELPERS))
+_LITERAL_REQUEST = re.compile(r"\b(?:{})\(\s*\"([a-z_][a-z0-9_.]*)\"".format("|".join(_REQUEST_HELPERS)))
 _LITERAL_FRAME = re.compile(r"\"method\":\s*\"event\".{0,120}?\"type\":\s*\"([a-z_][a-z0-9_.]*)\"", re.DOTALL)
 _SIDE_AGENT = re.compile(r"_spawn_side_agent\((?:[^()]|\([^()]*\))*?\"([a-z_][a-z0-9_.]*\.complete)\"", re.DOTALL)
 _SUBAGENT_RELAY = re.compile(r"\"(subagent\.[a-z_]+)\"")
@@ -46,6 +46,8 @@ _DESKTOP_UI_EMIT = re.compile(r"desktop_ui\.(?:emit|emit_or_error)\(\s*\"([a-z_]
 _BROKER_FRAME = re.compile(r"^FRAME_[A-Z_]+ = \"(browser\.controller\.[a-z_]+)\"", re.MULTILINE)
 _SETUP_READY = re.compile(r"^SETUP_READY_EVENT = \"([a-z_.]+)\"", re.MULTILINE)
 _FREE_TIER_CHALLENGE = re.compile(r"^CHALLENGE_EVENT = \"([a-z_.]+)\"", re.MULTILINE)
+# Session-authority local-viewer turn projections (gateway/local_viewer_events.py).
+_LOCAL_VIEWER_PUBLISH = re.compile(r"\b(?:publish|_publish_execution)\(\s*\"([a-z_][a-z0-9_.]*)\"")
 
 
 def _read(path: Path) -> str:
@@ -74,6 +76,7 @@ def emitted_event_names() -> set[str]:
     names.update(_BROKER_FRAME.findall(_read(REPO / "gateway" / "browser_control_broker.py")))
     names.update(_SETUP_READY.findall(_read(REPO / "hermes_cli" / "free_tier_bootstrap.py")))
     names.update(_FREE_TIER_CHALLENGE.findall(_read(REPO / "hermes_cli" / "anon_challenge.py")))
+    names.update(_LOCAL_VIEWER_PUBLISH.findall(_read(REPO / "gateway" / "local_viewer_events.py")))
     return names
 
 

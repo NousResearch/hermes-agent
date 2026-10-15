@@ -100,7 +100,7 @@ class TestSessionActiveDirectory:
         monkeypatch.chdir(launch_dir)
 
         record_session_cwd("gateway:999", str(workspace))
-        tokens = set_session_vars(session_key="gateway:999")
+        set_session_vars(session_key="gateway:999")
         try:
             prompt = build_init_prompt_for_cwd()
             assert f"for the project at: {workspace}" in prompt

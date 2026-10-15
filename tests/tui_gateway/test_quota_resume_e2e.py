@@ -92,7 +92,7 @@ def test_captured_anthropic_overload_payload_yields_no_plan():
 def test_max_retries_result_attaches_quota_resume(monkeypatch):
     """The terminal result is where the deadline stops being thrown away."""
     from agent.error_classifier import FailoverReason
-    import agent.turn_recovery as turn_recovery
+    from agent import turn_recovery
 
     reset_at = time.time() + 1800
 
@@ -115,7 +115,7 @@ def test_max_retries_result_attaches_quota_resume(monkeypatch):
 
 def test_max_retries_result_omits_plan_for_overload():
     from agent.error_classifier import FailoverReason
-    import agent.turn_recovery as turn_recovery
+    from agent import turn_recovery
 
     class _Classified:
         reason = FailoverReason.overloaded
@@ -317,6 +317,7 @@ def test_quota_failure_survives_strict_wire_validation(server, monkeypatch, enab
         result=result, agent=agent, prompt_text="finish the interrupted task",
         terminal_callback=None, receipt_committed=False, receipt_attempted=False,
         marker_key="", error_retained=False, error_detail="",
+        history=[], history_version=0, compression_count=None,
     )
     payload, _, status = server._complete_turn_payload(session, turn, None, 80, sid="quota-test")
     assert status == "error"

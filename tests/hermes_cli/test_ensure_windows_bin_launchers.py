@@ -31,6 +31,7 @@ import pytest
 # Real launcher serialization is host-dependent, despite injectable registry I/O.
 pytestmark = pytest.mark.platforms("windows")
 
+from hermes_cli import _launchers
 from hermes_cli._install_repair import (
     _WINDOWS_BIN_LAUNCHERS,
     _normalize_windows_path,
@@ -41,13 +42,15 @@ from hermes_cli._install_repair import (
 
 def _make_managed(tmp_path, monkeypatch):
     """Fake managed layout: HERMES_HOME/hermes-agent/venv (+ a fake venv
-    python whose path legacy trampolines would embed)."""
+    python whose path legacy trampolines would embed). New consoles resolve
+    this home, so the PATH migration may edit the (injected) User PATH."""
     home = tmp_path / "hermes"
     root = home / "hermes-agent"
     (root / "venv" / "Scripts").mkdir(parents=True)
     (root / "venv" / "Scripts" / "python.exe").write_bytes(b"MZ fake venv python")
     (root / "venv" / "pyvenv.cfg").write_text("home = X\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(_launchers, "new_console_hermes_root", lambda: home)
     return home, root
 
 
@@ -365,6 +368,36 @@ def test_migration_refuses_empty_store_without_changing_path(tmp_path, monkeypat
     assert state["writes"] == 0
 
 
+def test_migration_leaves_path_when_new_consoles_use_another_home(managed_install, tmp_path, monkeypatch):
+    """A sandbox's managed clone stages its own launchers but never edits the User PATH."""
+    home, root = managed_install
+    monkeypatch.setattr(_launchers, "new_console_hermes_root", lambda: tmp_path / "real-home")
+    state, read, write = _fake_registry([str(root / "bin"), r"C:\Windows\system32"])
+
+    ok = migrate_windows_bin_path(
+        root, windows=True, read_user_path=read, write_user_path=write
+    )
+
+    assert not ok
+    assert state["writes"] == 0
+    for name in _WINDOWS_BIN_LAUNCHERS:
+        assert _launcher_files(home / "bin", name)
+
+
+def test_migration_fails_closed_when_the_console_check_raises(managed_install, monkeypatch):
+    """The migration promises never to raise, so a failing console check leaves the PATH alone."""
+    _home, root = managed_install
+
+    def broken():
+        raise OSError("CreateEnvironmentBlock failed")
+
+    monkeypatch.setattr(_launchers, "new_console_hermes_root", broken)
+    state, read, write = _fake_registry([str(root / "bin")])
+
+    assert not migrate_windows_bin_path(root, windows=True, read_user_path=read, write_user_path=write)
+    assert state["writes"] == 0
+
+
 def test_migration_skips_source_checkouts(tmp_path, monkeypatch):
     home = tmp_path / "hermes-home"
     home.mkdir()
@@ -431,6 +464,7 @@ def test_repo_gitignores_the_legacy_bin_dir():
     result = subprocess.run(
         [git, "-C", str(repo_root), "check-ignore", "-q", "bin/hermes.exe"],
         capture_output=True, env=env,
+        check=False,
     )
     assert result.returncode == 0, (
         "bin/hermes.exe is not gitignored — hermes update's autostash "

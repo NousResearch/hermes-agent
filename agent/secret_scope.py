@@ -307,7 +307,7 @@ def _parse_env_value(raw_value: str) -> str:
 # symlink repointed mid-read can't file one file's contents under another's identity.
 # ``invalidate_env_file_cache()`` is the explicit knob; ``hermes_cli.config.invalidate_env_cache()``
 # calls it for Hermes's own .env writers.
-_ENV_FILE_CACHE: "OrderedDict[str, tuple[tuple, dict[str, str]]]" = OrderedDict()
+_ENV_FILE_CACHE: OrderedDict[str, tuple[tuple, dict[str, str]]] = OrderedDict()
 _ENV_FILE_CACHE_LOCK = threading.Lock()
 _ENV_FILE_CACHE_MAX = 64  # one entry per profile home in practice
 
@@ -324,8 +324,7 @@ def invalidate_env_file_cache(env_path: Optional[Path] = None) -> None:
 def _decode_env_bytes(raw: bytes) -> str:
     """BOM stripped; invalid UTF-8 falls back to latin-1 exactly as
     ``env_loader._load_dotenv_with_fallback`` installs it into ``os.environ``."""
-    if raw.startswith(codecs.BOM_UTF8):
-        raw = raw[len(codecs.BOM_UTF8):]
+    raw = raw.removeprefix(codecs.BOM_UTF8)
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError:

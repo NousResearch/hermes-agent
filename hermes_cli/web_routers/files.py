@@ -250,10 +250,10 @@ def _fs_git_branch(cwd: str) -> str:
         # git emits UTF-8 (branch names, localized "not a git repository" stderr); the locale codec
         # (cp936 on zh-CN Windows) raised inside communicate()'s reader threads on every poll (#83851).
         run_kwargs: dict[str, Any] = {"capture_output": True, "text": True, "encoding": "utf-8",
-                                      "errors": "replace", "timeout": 2, "check": False}
+                                      "errors": "replace", "timeout": 2}
         if sys.platform == "win32":
             run_kwargs["creationflags"] = windows_hide_flags()
-        result = subprocess.run(["git", "-C", cwd, "branch", "--show-current"], **run_kwargs)
+        result = subprocess.run(["git", "-C", cwd, "branch", "--show-current"], **run_kwargs, check=False)
         return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:
         return ""
@@ -478,8 +478,9 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     """
     def _run():
         data, mime_type, ext = _decode_chat_image_upload(payload)
-        with _profile_scope(profile) as scoped_home:
-            img_dir = Path(scoped_home or get_hermes_home()) / "images"
+        with _profile_scope(profile):
+            from gateway.platforms.base import get_image_cache_dir
+            img_dir = get_image_cache_dir()
             with _io_errors("Image directory is not writable", "Could not create image directory"):
                 img_dir.mkdir(parents=True, exist_ok=True)
 

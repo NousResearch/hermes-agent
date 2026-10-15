@@ -52,7 +52,7 @@ def _git_proc_running() -> bool:
         argv = (["tasklist", "/FI", "IMAGENAME eq git.exe", "/FO", "CSV"]
                 if os.name == "nt" else ["pgrep", "-x", "git"])
         proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                               timeout=10, creationflags=windows_hide_flags())
+                               timeout=10, creationflags=windows_hide_flags(), check=False)
         if os.name == "nt":
             return "git.exe" in proc.stdout.lower()
         return proc.returncode == 0
@@ -196,7 +196,7 @@ def _killed_update_owns(lock: Path) -> bool:
     return last.get("outcome") in ("running", "interrupted") and not update_receipt._owner_alive(last)
 
 
-def _windows_git_in_checkout(root: Path) -> "bool | None":
+def _windows_git_in_checkout(root: Path) -> bool | None:
     """Whether any git (``git.exe``, a dashed ``git-<sub>.exe``) works in ``root``; None when unknowable.
 
     Works in: its cwd, a path argument or a ``GIT_DIR``-style variable is inside the checkout or
@@ -462,7 +462,7 @@ class _ShallowLock:
         self._path = shallow_path
         self._lock_path = shallow_path.with_name(shallow_path.name + ".lock")
 
-    def __enter__(self) -> "_ShallowLock":
+    def __enter__(self) -> _ShallowLock:
         try:
             fd = os.open(self._lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
@@ -623,7 +623,7 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
         return 0
 
 
-def _partial_clone_filter(repo_root: Path, **run_kwargs) -> "str | None":
+def _partial_clone_filter(repo_root: Path, **run_kwargs) -> str | None:
     """The checkout's own ``remote.origin.partialclonefilter``, or None for a non-partial clone."""
     result = run_git(
         ["git"], ["config", "--get", "remote.origin.promisor"],
@@ -761,7 +761,7 @@ def convert_treeless_checkout(repo_root: Path, **run_kwargs) -> bool:
                "--filter=blob:none", "origin"]
     fetch_kwargs = dict(cwd=str(repo_root), capture_output=True, text=True,
                         encoding="utf-8", errors="replace", timeout=900, **run_kwargs)
-    subprocess.run([*refetch, "--tags"], check=False, **fetch_kwargs)
+    subprocess.run([*refetch, "--tags"], **fetch_kwargs)  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **run_kwargs; an explicit check=False would raise TypeError
     if not _history_trees_complete(repo_root, **run_kwargs):
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo_root), check=True,
                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
@@ -800,7 +800,7 @@ def convert_treeless_checkout_first(repo_root: Path) -> None:
 
 
 def _git_version(**run_kwargs) -> tuple:
-    out = subprocess.run(["git", "--version"], capture_output=True, text=True, encoding="utf-8",
+    out = subprocess.run(["git", "--version"], capture_output=True, text=True, encoding="utf-8",  # noqa: PLW1510 -- forwarding wrapper: **run_kwargs may carry check
                          errors="replace", timeout=30, **run_kwargs).stdout
     match = re.search(r"(\d+)\.(\d+)", out)
     return (int(match[1]), int(match[2])) if match else (0, 0)
@@ -809,7 +809,7 @@ def _git_version(**run_kwargs) -> tuple:
 def _history_trees_complete(repo_root: Path, **run_kwargs) -> bool:
     """Whether every tree in HEAD's history is local, checked without fetching (~3 s for this repo)."""
     env = dict(run_kwargs.pop("env", None) or noninteractive_git_env(), GIT_NO_LAZY_FETCH="1")
-    walk = subprocess.run(
+    walk = subprocess.run(  # noqa: PLW1510 -- forwarding wrapper: **run_kwargs may carry check
         ["git", "rev-list", "--objects", "--filter=blob:none", "--missing=print", "HEAD"],
         cwd=str(repo_root), capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=300, env=env, **run_kwargs,

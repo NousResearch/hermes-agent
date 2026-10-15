@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
@@ -48,9 +48,9 @@ def _fp(token: str) -> str:
 
 def _snapshot(used: float, *, resets_in_hours: float = 2.0, scope: str = "account") -> AccountUsageSnapshot:
     return AccountUsageSnapshot(
-        provider="openrouter", source="test", fetched_at=datetime.now(timezone.utc),
+        provider="openrouter", source="test", fetched_at=datetime.now(UTC),
         windows=(AccountUsageWindow(label="API key quota", used_percent=used,
-                                    reset_at=datetime.now(timezone.utc) + timedelta(hours=resets_in_hours),
+                                    reset_at=datetime.now(UTC) + timedelta(hours=resets_in_hours),
                                     scope=scope),))
 
 
@@ -181,7 +181,7 @@ def test_limited_account_resets_at_is_latest_exhausted_window(monkeypatch, tmp_p
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "a"))
     _write_pool(tmp_path / "a", "openrouter", [_entry("c1", "tok-1"), _entry("c2", "tok-2")])
     _clear_cache()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     snapshot = AccountUsageSnapshot(
         provider="openrouter", source="test", fetched_at=now,
         windows=(
@@ -221,7 +221,7 @@ def test_live_cooldown_marks_account_limited_without_mutating_pool(monkeypatch, 
     from datetime import datetime as _dt
 
     assert accounts[_fp("tok-1")]["state"] == "limited"
-    assert accounts[_fp("tok-1")]["resets_at"] == _dt.fromtimestamp(reset_at, timezone.utc).isoformat()
+    assert accounts[_fp("tok-1")]["resets_at"] == _dt.fromtimestamp(reset_at, UTC).isoformat()
     assert accounts[_fp("tok-2")]["state"] == "ready", "a benched sibling never hides a healthy account"
     disk = json.loads((tmp_path / "a" / "auth.json").read_text())
     assert len(disk["credential_pool"]["openrouter"]) == 2, "read path must not prune or rewrite the pool"
@@ -356,7 +356,7 @@ def test_model_scoped_window_exhaustion_does_not_limit_account(monkeypatch, tmp_
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "a"))
     _write_pool(tmp_path / "a", "openrouter", [_entry("c1", "tok-1"), _entry("c2", "tok-2")])
     _clear_cache()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     snapshot = AccountUsageSnapshot(
         provider="openrouter", source="test", fetched_at=now,
         windows=(AccountUsageWindow(label="Opus week", used_percent=100.0,

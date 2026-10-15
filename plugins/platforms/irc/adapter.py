@@ -177,7 +177,7 @@ class IRCAdapter(BasePlatformAdapter):
         self._recv_task = asyncio.create_task(self._receive_loop())
         try:  # wait for registration (001 RPL_WELCOME)
             await asyncio.wait_for(self._registration_event.wait(), timeout=30.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error("IRC: registration timed out")
             await self.disconnect()
             return self._fail("registration_timeout", "IRC server did not send RPL_WELCOME", retryable=True)
@@ -462,7 +462,7 @@ class _StandaloneConn:
         while (remaining := deadline - self._loop.time()) > 0:
             try:
                 raw_line = await asyncio.wait_for(self.reader.readuntil(b"\r\n"), timeout=remaining)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return None
             except asyncio.IncompleteReadError:
                 return _EOF

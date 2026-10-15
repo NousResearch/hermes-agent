@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Optional
 
 import pytest
@@ -53,7 +53,7 @@ class _Snapshot:
 
 def _install_usage_api(monkeypatch, snapshot, *, raises: bool = False):
     """Stub agent.account_usage.fetch_account_usage where quota_resume imports it."""
-    import agent.account_usage as account_usage
+    from agent import account_usage
 
     def _fake(provider, **_kwargs):
         if raises:
@@ -212,7 +212,7 @@ def test_pool_returning_none_falls_through_to_usage_api(monkeypatch):
 def test_usage_api_skipped_for_providers_without_one(monkeypatch):
     called = {"n": 0}
 
-    import agent.account_usage as account_usage
+    from agent import account_usage
 
     def _fake(provider, **_kwargs):
         called["n"] += 1
@@ -229,11 +229,10 @@ def test_usage_api_skipped_for_providers_without_one(monkeypatch):
 def test_usage_api_not_consulted_when_error_already_gave_a_deadline(monkeypatch):
     called = {"n": 0}
 
-    import agent.account_usage as account_usage
+    from agent import account_usage
 
     def _fake(provider, **_kwargs):
         called["n"] += 1
-        return None
 
     monkeypatch.setattr(account_usage, "fetch_account_usage", _fake)
     plan_quota_resume(
@@ -273,7 +272,7 @@ def test_usage_api_picks_earliest_exhausted_window(monkeypatch):
 
 
 def test_usage_api_accepts_datetime_reset(monkeypatch):
-    reset = datetime.fromtimestamp(NOW, tz=timezone.utc) + timedelta(hours=4)
+    reset = datetime.fromtimestamp(NOW, tz=UTC) + timedelta(hours=4)
     _install_usage_api(monkeypatch, _Snapshot(windows=(
         _Window("Current session", 100.0, reset),
     )))

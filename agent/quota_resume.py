@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -124,7 +124,7 @@ def coerce_reset_timestamp(value: Any, *, now: Optional[float] = None) -> Option
             except ValueError:
                 return None
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
+                parsed = parsed.replace(tzinfo=UTC)
             return parsed.timestamp()
     else:
         return None
@@ -277,12 +277,12 @@ def plan_quota_resume(
 __all__ = [
     "DEFAULT_GRACE_SECONDS",
     "DEFAULT_MAX_WAIT_SECONDS",
-    "QuotaResumePlan",
     "RESUMABLE_FAILURE_REASONS",
     "SOURCE_CREDENTIAL_POOL",
     "SOURCE_PROVIDER_ERROR",
     "SOURCE_USAGE_API",
     "USAGE_API_PROVIDERS",
+    "QuotaResumePlan",
     "coerce_reset_timestamp",
     "plan_quota_resume",
 ]

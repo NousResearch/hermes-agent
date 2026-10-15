@@ -248,7 +248,9 @@ class SignalAdapter(BasePlatformAdapter):
             if resp.status_code != 200:
                 logger.error("Signal: health check failed (status %d)", resp.status_code)
                 return False
-            self._running = True
+            # Publishes the runtime status (sets _running, clears fatal-error state) so the
+            # Messaging page sees state=connected instead of a permanent "Restart needed" (#138709).
+            self._mark_connected()
             self._last_sse_activity = time.time()
             self._sse_task = asyncio.create_task(self._sse_listener())
             self._health_monitor_task = asyncio.create_task(self._health_monitor())
@@ -277,6 +279,7 @@ class SignalAdapter(BasePlatformAdapter):
         self._typing_tasks.clear()
         await self._close_client()
         self._release_platform_lock()
+        self._mark_disconnected()
         logger.info("Signal: disconnected")
 
     async def _handle_sse_line(self, line: str) -> None:

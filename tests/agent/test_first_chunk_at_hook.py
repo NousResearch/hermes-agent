@@ -253,6 +253,42 @@ class TestStreamHelperStashesFirstChunkAt:
         assert isinstance(decode_seconds, float)
         assert _MIN_MEASURED_S <= decode_seconds < 1.0
 
+    def test_attempt_start_clears_a_dropped_attempt_decode_stamp(self, agent):
+        """A decode stamp inherited from a dropped attempt would measure the retry
+        backoff as decode time — every attempt opens its window from its own stamp,
+        so starting an attempt always clears the previous attempt's stamp."""
+        from agent.chat_completion_helpers import _StreamingCall
+
+        call = _StreamingCall(agent, {}, None)
+        call._decode_first_delta_at = 1756000000.512  # stamp left by a dropped attempt
+        call._start_stream_attempt()
+
+        assert call._decode_first_delta_at is None
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_stream_end_without_finish_reason_leaves_the_window_unmeasured(
+        self, _mock_close, mock_create, agent
+    ):
+        """A stream that ends cleanly with no finish reason delivered no clean
+        terminal — the window stays unmeasured, never a speed for a response
+        the provider never confirmed as finished."""
+        chunks = [
+            _make_stream_chunk(content="partial"),
+            _make_stream_chunk(content=" text"),  # no chunk ever carries a finish reason
+        ]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_stream_iterator(chunks)
+        mock_create.return_value = mock_client
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        agent._last_api_first_chunk_at = None
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "partial text"
+        assert agent._last_api_decode_seconds is None
+
 
 # ── Conversation loop / hook payload level ───────────────────────────────
 

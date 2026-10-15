@@ -897,8 +897,10 @@ class _CodexResponseAssembler:
             self.next_output_sequence += 1
         if "function_call" in str(item_type):
             self.has_tool_calls = True
-            # Tool call data reached the wire; stamp the decode start before routing it.
-            if self.decode_first_delta_at is None:
+            # An announcement may carry no generated payload at all: backends announce the call
+            # with empty arguments and stream the real args in later argument events. Only args
+            # already on the wire start the window; the argument-event handler stamps those.
+            if self.decode_first_delta_at is None and str(_event_field(item, "arguments", "") or ""):
                 self.decode_first_delta_at = time.monotonic()
             if item_id:
                 announced_sequence, announced_index = self.announced_output_order[item_id]
@@ -1038,8 +1040,10 @@ class _CodexResponseAssembler:
 
     def _on_terminal(self, event: Any, event_type: str) -> bool:
         self.saw_terminal = True
-        # Decode end: the terminal frame for this model call was processed.
-        self.decode_terminal_at = time.monotonic()
+        # Decode end: only a confirmed clean completion closes the window; failed/incomplete
+        # terminals leave the window unmeasured (the settled-window gate reads saw_response_completed).
+        if event_type == "response.completed":
+            self.decode_terminal_at = time.monotonic()
         resp_obj = _event_field(event, "response")
         if resp_obj is not None:
             self.terminal_usage, self.terminal_response_id = _event_field(resp_obj, "usage"), _event_field(resp_obj, "id")
@@ -1111,9 +1115,10 @@ class _CodexResponseAssembler:
             id=self.terminal_response_id, model=self.model, incomplete_details=self.terminal_incomplete_details,
             error=self.terminal_error, service_tier=self.terminal_service_tier,
             # Decode window: measured only when this call's own stream delivered both stamps
-            # (first real-data delta → observed terminal frame); unmeasured stays None.
+            # under a clean terminal (first real-data delta → observed response.completed);
+            # failed/incomplete terminals and unopened windows stay None.
             decode_seconds=(float(self.decode_terminal_at - self.decode_first_delta_at)
-                if self.saw_terminal and self.decode_first_delta_at is not None
+                if self.saw_response_completed and self.decode_first_delta_at is not None
                 and self.decode_terminal_at is not None else None))
 
 

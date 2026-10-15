@@ -2815,6 +2815,9 @@ class _StreamingCall(StreamingWaitMonitor):
         # Attempt-local like provider_tool_in_flight: a tool name from a stream that died
         # before any text must not label a later attempt's partial stub or its retry decision.
         self.result["partial_tool_names"] = []
+        # Every attempt's decode window opens with that attempt's OWN first real-data delta:
+        # a stamp inherited from a dropped attempt would measure the retry backoff as decode.
+        self._decode_first_delta_at = None
         return attempt_id
 
     def _cancel_current_stream_attempt(self, reason: str) -> None:
@@ -2851,11 +2854,16 @@ class _StreamingCall(StreamingWaitMonitor):
             stream_attempt_id, discarded_chunks, discarded_bytes,
         )
 
+    def _mark_decode_start(self) -> None:
+        """Decode start: this attempt's first real-data delta reached the wire. Stamp before
+        anything a display callback might do; the measurement is decoupled from the notice."""
+        if self._decode_first_delta_at is None:
+            self._decode_first_delta_at = time.monotonic()
+
     def _fire_first_delta(self):
+        # Display notice only: replay/display paths fire the notice without opening a
+        # measurement window — the stamp belongs to _mark_decode_start at real-data delivery.
         if not self.first_delta_fired["done"]:
-            # Decode start: stamp the arrival before anything a display callback might do.
-            if self._decode_first_delta_at is None:
-                self._decode_first_delta_at = time.monotonic()
             if self.on_first_delta:
                 self.first_delta_fired["done"] = True
                 self._quiet(self.on_first_delta)
@@ -2870,6 +2878,7 @@ class _StreamingCall(StreamingWaitMonitor):
             self.agent._last_api_decode_seconds = time.monotonic() - first
 
     def _emit_text(self, text: str) -> None:
+        self._mark_decode_start()
         self._fire_first_delta()
         self.agent._fire_stream_delta(text)
         self.deltas_were_sent["yes"] = True
@@ -2881,10 +2890,12 @@ class _StreamingCall(StreamingWaitMonitor):
         return bool((getattr(self.agent, "_current_streamed_assistant_text", "") or "").strip())
 
     def _emit_reasoning(self, text: str) -> None:
+        self._mark_decode_start()
         self._fire_first_delta()
         self.agent._fire_reasoning_delta(text)
 
     def _emit_tool_started(self, name: str) -> None:
+        self._mark_decode_start()
         self._fire_first_delta()
         self.agent._fire_tool_gen_started(name)
 
@@ -3241,9 +3252,10 @@ class _StreamingCall(StreamingWaitMonitor):
         if runaway:
             # Cut, not finished: the length path ends the turn on this mark instead of continuing.
             response._runaway_repetition = True
-        # Decode window: the terminal response was processed. Runaway cut and interrupt
-        # deliveries never measured a clean window — leave them unmeasured.
-        self._record_decode_seconds(counted=not runaway and not self.agent._interrupt_requested)
+        # Decode window: only a clean terminal measures. A partial-stub response carries no
+        # finish reason, so it stays unmeasured — like the runaway cut and interrupt deliveries.
+        self._record_decode_seconds(counted=(not runaway and finish_reason is not None
+            and not self.agent._interrupt_requested))
         return response
 
     def _log_runaway_cut(self, channel: str) -> None:
@@ -3639,7 +3651,6 @@ class _StreamingCall(StreamingWaitMonitor):
                 self._quiet(self.agent._reset_stream_delivery_tracking)
                 self.deltas_were_sent["yes"] = False
                 self.first_delta_fired["done"] = False
-                self._decode_first_delta_at = None  # retry must not inherit pre-retry stamps
         if self.deltas_were_sent["yes"]:
             # Died AFTER tokens were delivered: normally no retry (would duplicate
             # text). Exception: a tool call in flight — aborting discards it, so
@@ -3656,7 +3667,6 @@ class _StreamingCall(StreamingWaitMonitor):
             self._quiet(self.agent._reset_stream_delivery_tracking)
             self.deltas_were_sent["yes"] = False
             self.first_delta_fired["done"] = False
-            self._decode_first_delta_at = None  # retry must not inherit pre-retry stamps
             self._retry_after_drop(e, attempt, max_retries, mid_tool_call=True, reason="stream_mid_tool_retry_cleanup")
             return True
 

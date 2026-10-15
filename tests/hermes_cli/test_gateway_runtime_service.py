@@ -354,7 +354,7 @@ def test_windows_startup_folder_entry_still_restarts_a_stopped_owner(tmp_path, m
     assert all(argv[:2] == ["schtasks.exe", "/Query"] for argv in queries)  # nothing installed or run
 
 
-@pytest.mark.platforms("linux")
+@pytest.mark.platforms("windows")
 def test_task_discovery_reads_localized_schtasks_output(tmp_path, monkeypatch):
     """A localized host (zh-CN, console cp936) with Python in UTF-8 mode: schtasks and whoami write
     cp936 bytes, and /XML declares UTF-16 over them with the defaults elided (#139083, #139013).
@@ -371,8 +371,8 @@ def test_task_discovery_reads_localized_schtasks_output(tmp_path, monkeypatch):
     # whoami first: it is queried with /FO CSV too.
     out = {"whoami.exe": f'"{account}","{sid}"\r\n', "/XML": _as_schtasks_exports(
         _build_scheduled_task_xml(name, script, account)), "/FO": f'"\\{name}","N/A","\u5c31\u7eea"\r\n'}
+    # The console code page this host would report; the bytes below are what such a console writes.
     monkeypatch.setattr(gateway_windows, "_windows_console_encodings", lambda: ["cp936"])
-    monkeypatch.setattr(service.sys, "platform", "win32")
 
     def run(argv, *_args, encoding=None, **_kwargs):  # subprocess semantics: bytes, or decoded with encoding
         data = next(text for key, text in out.items() if key in argv).encode("cp936")

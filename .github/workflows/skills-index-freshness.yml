@@ -82,9 +82,9 @@ jobs:
 
           # Floors — same as build_skills_index.py EXPECTED_FLOORS.
           floors = {
-              "skills.sh": 100,
+              "skills.sh": 10000,
               "lobehub": 100,
-              "clawhub": 50,
+              "clawhub": 20000,
               "official": 50,
               "github": 30,
               "browse-sh": 50,

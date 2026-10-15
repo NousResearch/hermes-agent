@@ -75,6 +75,20 @@ class TestHandleFunctionCall:
 
     def test_tool_request_and_execution_middleware_wrap_registry_dispatch(self, monkeypatch):
         seen = {}
+        from tools.registry import registry
+        original_schema = registry.get_schema
+
+        def extended_schema(name):
+            schema = original_schema(name)
+            if name != "web_search":
+                return schema
+            parameters = schema["parameters"]
+            return {**schema, "parameters": {**parameters, "properties": {
+                **parameters["properties"], "rewritten": {"type": "boolean"}, "wrapped": {"type": "boolean"},
+            }}}
+
+        # Middleware extensions must be declared in the handler's current contract.
+        monkeypatch.setattr(registry, "get_schema", extended_schema)
 
         def fake_invoke_middleware(kind, **kwargs):
             if kind == "tool_request":

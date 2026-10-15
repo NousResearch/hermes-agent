@@ -218,19 +218,31 @@ class SessionPortabilityMixin:
 
     def list_cron_job_runs(self, job_id: str, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
         """Run sessions of one cron job, newest first, in the ``list_sessions_rich`` row shape.
-        Cron runs are flat ``cron_{job_id}_{timestamp}`` sessions that never compress or
-        branch, so this skips ``list_sessions_rich``'s compression-chain CTE /
-        leading-wildcard ``id_query`` path (which seeds from EVERY ``source='cron'`` row)
-        for a ``[prefix, prefix_hi)`` id range scan that scales with the window."""
+        Legacy cron runs are flat ``cron_{job_id}_{timestamp}`` sessions. Unified-runtime
+        runs retain their local session id, while their immutable local-policy receipt carries
+        the cron job id. Both representations skip ``list_sessions_rich``'s compression-chain
+        CTE and identify only sessions whose ``source`` is ``cron``."""
         prefix = f"cron_{job_id}_"
         # Half-open upper bound: bump the final byte so the range covers exactly the prefix.
         prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+        receipt_prefix = "gateway.local_policy.v1:"
+        receipt_prefix_hi = receipt_prefix[:-1] + chr(ord(receipt_prefix[-1]) + 1)
         query = _rich_select(
-            "s.*", "s.source = 'cron' AND s.id >= ? AND s.id < ?",
+            "s.*", """s.source = 'cron' AND (
+                (s.id >= ? AND s.id < ?)
+                OR s.id IN (
+                    SELECT substr(receipt.key, length(?) + 1)
+                    FROM state_meta AS receipt
+                    WHERE receipt.key >= ? AND receipt.key < ?
+                    AND json_extract(json_extract(receipt.value, '$.policy.request_json'), '$.cron_job.id') = ?
+                )
+            )""",
             "\n            ORDER BY s.started_at DESC, s.id DESC\n            LIMIT ? OFFSET ?",
             prompt_select=f",\n                {_PROMPT_RESOLVED_SQL}",
         )
-        return [self._rich_row(row) for row in self._read_rows(query, (prefix, prefix_hi, limit, offset))]
+        return [self._rich_row(row) for row in self._read_rows(
+            query, (prefix, prefix_hi, receipt_prefix, receipt_prefix, receipt_prefix_hi, job_id, limit, offset)
+        )]
 
     def _get_session_rich_row(self, session_id: str, compact_rows: bool = False) -> Optional[dict[str, Any]]:
         """One session with the ``list_sessions_rich`` enriched columns, or None.

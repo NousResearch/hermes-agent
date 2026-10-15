@@ -5162,6 +5162,31 @@ class TestListCronJobRuns:
         assert runs[0]["preview"].startswith("run 4 for alpha")
         assert runs[0]["last_active"] >= runs[0]["started_at"]
 
+    def test_includes_unified_runtime_session_by_frozen_cron_job(self, db):
+        """A unified-runtime fire keeps its local id but freezes the job in its receipt."""
+        db.create_session(session_id="local-unified-cron", source="cron")
+        db.create_session(session_id="local-other-job", source="cron")
+        db.append_message("local-unified-cron", role="user", content="run alpha")
+        db._conn.execute(
+            "INSERT INTO state_meta(key, value) VALUES (?, ?)",
+            (
+                "gateway.local_policy.v1:local-unified-cron",
+                '{"policy":{"request_json":"{\\"cron_job\\":{\\"id\\":\\"alpha\\"}}"}}',
+            ),
+        )
+        db._conn.execute(
+            "INSERT INTO state_meta(key, value) VALUES (?, ?)",
+            (
+                "gateway.local_policy.v1:local-other-job",
+                '{"policy":{"request_json":"{\\"cron_job\\":{\\"id\\":\\"beta\\"}}"}}',
+            ),
+        )
+        db._conn.commit()
+
+        runs = db.list_cron_job_runs("alpha")
+
+        assert [run["id"] for run in runs] == ["local-unified-cron"]
+
 
 
     def test_limit_and_offset_paging(self, db):

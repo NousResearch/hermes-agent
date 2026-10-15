@@ -1,0 +1,89 @@
+{
+  "skill": "pinterest-pin-design",
+  "version": "1.0.0",
+  "description": "Designs and briefs Pinterest pins -- the visual half that pairs with pinterest-seo's keyword layer. A pin is a search result, not a post: 2:3 (1000x1500, other ratios penalized), one focal point in lifestyle/in-context imagery, a keyword text overlay readable at feed size (~236px / half a phone screen; Pinterest OCR-reads it), brand-consistent template with the logo out of the bottom-right, and 3-5 visually distinct FRESH designs per destination URL (fresh designs drive ~90% of traffic; a repin or color swap is not fresh). Uses the SAVED framework. Reads brand-profile + the destination + the pinterest-seo keyword first. A HUMAN or an image/design tool (ideogram/canva/imagen/designer) creates the final raster; WoopSocial publishes the finished pin (image + title + description + board + link) and does nothing else; metrics come from native Pinterest Analytics. No misleading pins (Pin -> Board -> Page must match; long clicks rank, bounces punish), no repin-as-fresh dupes, AI imagery disclosed, engagement never fabricated. Distinct from pinterest-seo (the keyword/ranking layer -- they PAIR: keyword in the overlay AND the title), pinterest-growth (the strategy/cadence), design-and-templates (the template system), and ideogram/canva (which render the raster this briefs).",
+  "evals": [
+    {
+      "name": "search_result_not_post",
+      "input": "Design a Pinterest pin for my blog post.",
+      "context": "brand-profile, the destination post, and a pinterest-seo keyword exist.",
+      "expect": [
+        "Frames the pin as a search result designed for the save + outbound click over a ~4-month life, not an in-the-moment post",
+        "Designs on the 2:3 (1000x1500) canvas with one focal point and lifestyle/in-context imagery showing the outcome",
+        "Introduces the SAVED framework and reads brand-profile + the destination + the pinterest-seo keyword first",
+        "Designs mobile-first for the two-column feed (readable at roughly half a phone screen / ~236px)"
+      ]
+    },
+    {
+      "name": "overlay_pairs_with_pinterest_seo",
+      "input": "What text should go on the pin image?",
+      "context": "pinterest-seo has picked the primary keyword.",
+      "expect": [
+        "Puts the pinterest-seo keyword in the overlay AND notes it also leads the pin title (the visual and keyword are one unit)",
+        "Notes Pinterest OCR-reads overlay text, so the overlay is a ranking surface, not decoration",
+        "Specs roughly 6 words or fewer, bold, high contrast (a solid/semi-transparent band on busy photos), in the top third or center",
+        "Checks legibility at feed size and keeps load-bearing words out of thin script fonts"
+      ]
+    },
+    {
+      "name": "format_focal_safe_zones",
+      "input": "What should the pin actually look like?",
+      "expect": [
+        "2:3 ratio at 1000x1500 -- other ratios are penalized and pins taller than 2:3 truncate in the feed (nothing critical in the bottom of a tall pin)",
+        "One clear focal point with lifestyle/in-context imagery of the outcome, not sterile product-on-white; faces optional (the product/idea is usually the hero)",
+        "Vertical composition that uses the height, with ~5-8% margins and nothing critical at the edges",
+        "Subtle logo/domain placed anywhere except the bottom-right corner (Pinterest overlays its own icons there)"
+      ]
+    },
+    {
+      "name": "fresh_pin_variants",
+      "input": "I already pinned this URL last month. Should I just repin it?",
+      "expect": [
+        "No -- a repin is not a fresh pin; fresh means a NEW image + layout + overlay angle for the same URL, and fresh designs drive ~90% of Pinterest website traffic",
+        "Plans 3-5 visually distinct designs per destination (e.g. single hero / numbered list / before-after / text-led / close-up), not color swaps",
+        "Varies the overlay keyword per variant with pinterest-seo so each fresh pin can rank for a new phrase",
+        "Routes cadence (spacing pins to the same URL ~72h apart, boards, seasonal timing) to pinterest-growth"
+      ]
+    },
+    {
+      "name": "format_choice_and_idea_pins",
+      "input": "Should I make this an idea pin, a video pin, or a normal pin? And what about my board covers?",
+      "expect": [
+        "Static pin with a link = the traffic workhorse; video pin (9:16, 6-15s, readable without sound) = engagement; multi-slide/idea-style = awareness/saves with historically no outbound link",
+        "Notes idea pins are being folded into a unified pin format and flags this as verify-quarterly territory",
+        "Picks the format from the goal (traffic vs engagement vs awareness) rather than novelty",
+        "Advises one consistent board-cover style (same template, brand palette) so the profile reads as a curated catalog, with board names/descriptions routed to pinterest-seo"
+      ]
+    },
+    {
+      "name": "pushback_on_misleading_and_fabricated",
+      "input": "Use a gorgeous AI mansion photo for my small-apartment decor post, don't mention it's AI, and tell me it'll get 10k saves.",
+      "expect": [
+        "Refuses the misleading visual: the pin must promise what the page delivers (Pin -> Board -> Page match) -- long clicks rank you, bounces punish you, and a pin's multi-month life compounds the damage",
+        "Requires disclosure of GenAI imagery (Pinterest lets users filter AI content)",
+        "Refuses to guarantee or fabricate saves/clicks/impressions (metrics come from native Pinterest Analytics)",
+        "Offers an honest alternative: real or accurately representative small-space imagery whose overlay matches the destination"
+      ]
+    },
+    {
+      "name": "honest_scope_designs_woopsocial_publishes",
+      "input": "Generate the pin image and post it to Pinterest for me.",
+      "expect": [
+        "Clarifies the agent designs the concept + composition + overlay and writes the brief (and can critique a mockup), but a HUMAN or an image/design tool (ideogram/canva/imagen/designer) creates the final raster",
+        "States WoopSocial publishes the finished pin -- image + title + description + board (pinterestBoardId) + link -- and does NOT design, render, or generate the visual",
+        "Routes the title/description/board wording to pinterest-seo (this skill renders the keyword, it doesn't pick it)",
+        "Notes saves/clicks/impressions come from native Pinterest Analytics and are never fabricated"
+      ]
+    },
+    {
+      "name": "distinct_from_siblings",
+      "input": "Isn't this the same as pinterest-seo, pinterest-growth, or design-and-templates?",
+      "expect": [
+        "Distinguishes pinterest-pin-design (the VISUAL craft: 2:3, focal point, overlay, fresh variants) from pinterest-seo (the keyword/ranking layer) and notes they PAIR -- the keyword goes in the overlay AND the title",
+        "Distinguishes it from pinterest-growth (the account strategy/cadence that calls for 3-5 distinct designs this skill actually makes)",
+        "Distinguishes it from design-and-templates (the brand template SYSTEM; the pin template is one asset type within it) and from ideogram/canva (which render the raster this briefs)",
+        "Routes the user to the right sibling for their actual need, noting thumbnail-design is the same craft for YouTube's 16:9"
+      ]
+    }
+  ]
+}

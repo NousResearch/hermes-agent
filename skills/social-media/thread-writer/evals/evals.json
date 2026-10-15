@@ -1,0 +1,84 @@
+{
+  "skill": "thread-writer",
+  "version": "1.0.0",
+  "description": "Scenario tests for thread-writer. A run passes only when every item in 'expect' is satisfied. Written before the skill body (test-first).",
+  "evals": [
+    {
+      "name": "happy-path-thread",
+      "input": "Write an X thread about how we cut our churn in half.",
+      "expect": [
+        "reads brand-profile and voice first",
+        "opens with a post that hooks AND promises the payoff, and stands alone",
+        "makes one cohesive idea with a clear spine, one beat per post",
+        "every post front-loads its point and pulls forward (no filler)",
+        "closes by landing the payoff with exactly one CTA (e.g., reshare the opener)"
+      ]
+    },
+    {
+      "name": "opener-hooks-and-promises",
+      "input": "Give me the first tweet for a thread about our launch.",
+      "expect": [
+        "the opener uses a real hook mechanism (via hook-writer)",
+        "it also promises what the thread delivers",
+        "it works as a standalone, reshareable post — not just setup for post 2",
+        "no slow wind-up or 'a thread:' with no hook"
+      ]
+    },
+    {
+      "name": "one-idea-not-chopped-article",
+      "input": "Turn this blog post into a thread.",
+      "expect": [
+        "atomizes the idea and rebuilds a native thread rather than slicing the article into chunks",
+        "the thread has one cohesive through-line, one beat per post",
+        "does NOT produce arbitrarily split paragraphs with no flow"
+      ]
+    },
+    {
+      "name": "each-post-earns-the-next",
+      "input": "Write a thread on our 7 onboarding lessons.",
+      "expect": [
+        "each post delivers a distinct beat and pulls forward",
+        "cuts filler posts; every post earns its place",
+        "uses numbering/transitions to maintain momentum"
+      ]
+    },
+    {
+      "name": "when-not-to-thread",
+      "input": "Make a thread out of this: 'consistency beats volume.'",
+      "expect": [
+        "recognizes a single sharp take with no sub-beats",
+        "recommends a single strong post instead of padding a thread",
+        "does NOT manufacture filler posts to force a thread"
+      ]
+    },
+    {
+      "name": "platform-adaptation",
+      "input": "Write this as a thread for Threads, not X.",
+      "expect": [
+        "adapts to Threads mechanics (looser register, ~500 char posts, lighter numbering, one tag)",
+        "does not blindly apply X conventions (heavy numbering, RT-opener) where they don't fit",
+        "keeps the brand voice"
+      ]
+    },
+    {
+      "name": "reads-voice",
+      "input": "Write a thread about our pricing change.",
+      "context": "voice.md bans exclamation marks and hype words.",
+      "expect": [
+        "every post is in the brand voice with no exclamation marks or banned words",
+        "the register is conversational/native to the platform",
+        "the opener doesn't open with 'We're excited to announce'"
+      ]
+    },
+    {
+      "name": "close-and-growth-mechanic",
+      "input": "Write a thread to grow my following.",
+      "expect": [
+        "the close lands the payoff rather than trailing off",
+        "uses exactly one CTA",
+        "leverages the reshare-the-opener growth move on X (in voice)",
+        "any link is placed to avoid dampening reach (reply or final post)"
+      ]
+    }
+  ]
+}

@@ -95,12 +95,16 @@ def _encode_memory_prefetch_result(
     if type(value) is MemoryPrefetchResult:
         context = value.context
         observations = value.observations
+        observations_truncated = value._wire_truncated is True
     elif isinstance(value, dict):
-        fields = _builtin_dict_fields(value, ("context", "observations"))
+        fields = _builtin_dict_fields(
+            value, ("context", "observations", "observations_truncated")
+        )
         if "context" not in fields:
             return None
         context = fields["context"]
         observations = fields.get("observations", ())
+        observations_truncated = fields.get("observations_truncated") is True
     else:
         return None
     if type(observations) is list:
@@ -112,7 +116,9 @@ def _encode_memory_prefetch_result(
     else:
         count = 0
         get_item = lambda _index: None
+    source_count = count
     count = min(count, MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES + 1)
+    observations_truncated = observations_truncated or source_count > count
     budget = [MAX_MEMORY_OBSERVATION_OPERATION_NODES]
     remaining_bytes = MAX_MEMORY_OBSERVATION_BATCH_BYTES - 2
     encoded_observations = []
@@ -121,6 +127,7 @@ def _encode_memory_prefetch_result(
         encoded_size = len(json.dumps(encoded, separators=(",", ":")).encode("utf-8"))
         encoded_size += bool(encoded_observations)  # comma within the observation array
         if encoded_size > remaining_bytes:
+            observations_truncated = True
             break
         encoded_observations.append(encoded)
         remaining_bytes -= encoded_size
@@ -135,6 +142,7 @@ def _encode_memory_prefetch_result(
         "fields": {
             "context": encode(context, refs, depth + 1),
             "observations": encoded_observations,
+            "observations_truncated": observations_truncated,
         },
     }
 

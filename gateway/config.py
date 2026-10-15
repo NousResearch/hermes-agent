@@ -333,16 +333,13 @@ def platform_binds_port(
     # Plugin adapters declare conditional listeners through their registry
     # metadata. Resolve lazily so config.py stays dependency-light and plugin
     # discovery remains the owner of adapter imports.
-    try:
-        from gateway.platform_registry import platform_registry
+    from gateway.platform_registry import platform_registry
 
-        entry = platform_registry.get(platform_value)
-        predicate = entry.is_port_binding_fn if entry else None
-        if predicate is None:
-            return False
-        config = platform_config or PlatformConfig(extra=dict(extra or {}))
-    except Exception:
+    entry = platform_registry.get(platform_value)
+    predicate = entry.is_port_binding_fn if entry else None
+    if predicate is None:
         return False
+    config = platform_config or PlatformConfig(extra=dict(extra or {}))
     try:
         return bool(predicate(config))
     except Exception:

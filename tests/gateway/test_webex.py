@@ -2,7 +2,7 @@
 
 import hashlib
 import hmac
-import json
+import json as jsonlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -42,23 +42,6 @@ class TestWebexConfigLoading:
         assert seed["public_url"] == "https://bot.example.com"
         assert seed["secret"] == "super-secret"
         assert seed["home_channel"]["chat_id"] == "Y2lzY29zcGFyazovL3VzL1JPT00vabc"
-
-    def test_person_id_and_email_are_equivalent_allowlist_principals(self):
-        from gateway.authz_mixin import _principal_matches_allowlist
-
-        source = SimpleNamespace(
-            platform=Platform("webex"),
-            user_id_alt="Y2lzY29zcGFyazovL3VzL1BFT1BMRS9hbGljZQ",
-        )
-
-        assert _principal_matches_allowlist(
-            source,
-            "alice@example.com",
-            {"Y2lzY29zcGFyazovL3VzL1BFT1BMRS9hbGljZQ"},
-        )
-        assert _principal_matches_allowlist(
-            source, "alice@example.com", {"alice@example.com"}
-        )
 
     def test_shared_dependency_probe_does_not_require_websocket_packages(
         self, monkeypatch
@@ -404,7 +387,6 @@ class TestWebexEventBuilding:
 
 class TestWebexThreadContext:
     def test_active_thread_lookup_uses_public_profile_scoped_store_api(self):
-        from gateway.config import Platform
         from gateway.session import SessionSource, build_session_key
 
         adapter = _make_adapter()

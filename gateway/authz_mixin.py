@@ -169,12 +169,9 @@ def _principal_matches_allowlist(source, user_id: str, allowed_ids: set) -> bool
             check_ids.add(normalized_user_id)
 
     platform_value = source.platform.value if source.platform is not None else None
-    # SimpleX: SIMPLEX_ALLOWED_USERS matches only the stable numeric contactId (user_id).
-    # The display name (user_name) is attacker-controlled — any contact can adopt another
-    # contact's display name, so matching it would bypass the allowlist (#44729).
-    # Webex supplies both the sender's email and immutable person ID. Either
-    # operator-facing form identifies the same principal.
-    if platform_value == "webex" and source.user_id_alt:
+    # Only adapters that guarantee an immutable, service-verified alias may opt in.
+    # Display names remain excluded (SimpleX contacts can choose another sender's name).
+    if getattr(_registry_entry(source.platform), "allowlist_user_id_alt", False) is True and source.user_id_alt:
         check_ids.add(source.user_id_alt)
     # Buzz: allowlist may hold npub or hex; inbound pubkeys are hex.
     if platform_value == "buzz":
@@ -508,7 +505,7 @@ class GatewayAuthorizationMixin:
         if callable(normalize):
             # Ids and entries may spell the same principal differently (Buzz hex vs npub).
             allowed = {normalize(entry) or entry for entry in allowed}
-        return _allows(allowed, user_id)
+        return "*" in allowed or _principal_matches_allowlist(source, user_id, allowed)
 
     def _adapter_resolved_allowlist_ids(self, source) -> set[str]:
         """IDs an adapter resolved from username-shaped allowlist entries at connect time (Discord).

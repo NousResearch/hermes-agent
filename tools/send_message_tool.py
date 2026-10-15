@@ -733,15 +733,16 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # Generic path: text only. Buzz delivers media natively via _send_via_adapter, so no warning.
+    # Only the legacy text senders omit media. Generic plugin delivery uses the
+    # live adapter's media APIs or the registered standalone sender below.
+    text_sender = _TEXT_SENDERS.get(platform_name)
     warning = None
-    if media_files and platform_name != "buzz":
+    if media_files and text_sender is not None:
         if not message.strip():
             return {"error": (f"send_message MEDIA delivery is currently only supported for {_MEDIA_PLATFORMS_NOTE}; "
                               f"target {platform_name} had only media attachments")}
         warning = (f"MEDIA attachments were omitted for {platform_name}; "
                    f"native send_message media delivery is currently only supported for {_MEDIA_PLATFORMS_NOTE}")
-    text_sender = _TEXT_SENDERS.get(platform_name)
     if text_sender is not None:
         send_one = lambda chunk, is_last: text_sender(pconfig, chat_id, chunk, thread_id)
     else:

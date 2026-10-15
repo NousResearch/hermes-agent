@@ -46,13 +46,14 @@ npm ci --omit=optional --prefix plugins/platforms/webex
 
 ## Step 3: Configure Hermes
 
-### Option A: Interactive Setup
+### Option A: Setup Guidance
 
 ```bash
 hermes gateway setup
 ```
 
-Select **Webex** when prompted.
+Select **Webex** to see the required credentials, then save them using the
+manual configuration below.
 
 ### Option B: Manual Configuration
 
@@ -117,6 +118,14 @@ gateway:
         port: 8646
         path: /webex/webhook
 ```
+
+For a named profile served by a multiplexed gateway, callbacks use the default
+profile's API or webhook listener. Set the named profile's `public_url` to include
+its profile prefix, for example `https://example.com/p/work` for profile `work`.
+The resulting callback is `https://example.com/p/work/webex/webhook`; point your
+reverse proxy at the default listener. The named profile uses its own bot token
+and signing secret and does not bind another port. WebSocket mode needs no
+public listener or profile prefix.
 
 ## How Hermes Behaves in Webex
 

@@ -1412,8 +1412,11 @@ class GatewayAdapterLifecycleMixin:
         adapter._hermes_profile_name = profile_name
         # A secondary's port-binding adapter never binds: the default profile owns the one shared
         # listener, which forwards /p/<profile>/<path> to this adapter's app (shared_ingress.py).
+        adapter_config = getattr(adapter, "config", None)
         if self._multiplex_on() and platform.value not in SHARED_LISTENER_MIRROR_PLATFORMS \
-                and _platform_binds_port(platform.value, getattr(getattr(adapter, "config", None), "extra", None)):
+                and _platform_binds_port(
+                    platform.value, getattr(adapter_config, "extra", None),
+                    platform_config=adapter_config):
             adapter._shared_listener_profile = profile_name
 
     async def _secondary_reconnect_attempt(self, profile_name: str, platform: Platform, predecessor=None):

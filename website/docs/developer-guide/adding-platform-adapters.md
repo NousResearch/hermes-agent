@@ -212,7 +212,8 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | Gateway adapter creation | Registry checked before the built-in `_BUILTIN_ADAPTERS` table |
 | Config parsing | `Platform._missing_()` accepts any platform name |
 | Connected platform validation | Registry `validate_config()` called |
-| User authorization | `allowed_users_env` / `allow_all_env` checked |
+| Listener ownership | `is_port_binding_fn(config)` selects shared ingress for listener modes under profile multiplexing |
+| User authorization | `allowed_users_env` / `allow_all_env` checked; `allowlist_user_id_alt` accepts a verified immutable sender alias |
 | Env-only auto-enable | `env_enablement_fn` seeds `PlatformConfig.extra` + `home_channel` |
 | YAML config bridge | `apply_yaml_config_fn` translates `config.yaml` keys into env vars / extras |
 | Cron delivery | `cron_deliver_env_var` makes `deliver=<name>` work |
@@ -232,6 +233,14 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | Service-event authorization | `trusted_inbound=True` skips user allowlists/pairing (see below) |
 | Display defaults | `display_tier` picks the built-in tool-progress/streaming tier |
 | Profile clone credential strip | `shared_env_prefixes` keeps tool-shared keys when the adapter is not in use |
+
+An adapter may set `allowlist_user_id_alt=True` only when it fills
+`SessionSource.user_id_alt` with a service-verified immutable identifier for the
+same principal as `user_id`. The gateway then accepts either identifier in env
+sender allowlists and YAML `allow_from`, `group_allow_from`, or `allowed_users`.
+Webex uses this for its immutable person ID alongside the sender's email.
+The default is `False`; never opt in for display names or other sender-controlled
+aliases. Explicit env allowlists retain precedence over YAML allowlists.
 
 ### Service adapters: `trusted_inbound`, `display_tier`, `shared_env_prefixes`
 

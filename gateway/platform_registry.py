@@ -118,6 +118,11 @@ class PlatformEntry:
     # Env prefixes shared with a non-channel capability (the same plugin's tools): profile clones
     # strip keys under them only when the source profile runs the adapter (profile_channels.py).
     shared_env_prefixes: tuple = ()
+    # Mode-dependent listener ownership for profile multiplexing and migration.
+    is_port_binding_fn: Optional[Callable[[Any], bool]] = None
+    # Opt in only when inbound user_id_alt is a service-verified immutable identifier for
+    # user_id's principal. Both env and YAML sender allowlists then accept that identifier.
+    allowlist_user_id_alt: bool = False
 
 
 def core_ships_platform(name: str) -> bool:
@@ -129,9 +134,6 @@ def core_ships_platform(name: str) -> bool:
     return value in {Platform[member].value for member in Platform._member_names_} or (
         value in Platform._scan_bundled_plugin_platforms()[0])
 
-    # Return True when this PlatformConfig binds a local TCP listener. Used by
-    # profile multiplexing to reject only modes that would collide.
-    is_port_binding_fn: Optional[Callable[[Any], bool]] = None
 
 
 class PlatformRegistry:

@@ -20,8 +20,6 @@ import logging
 import mimetypes
 import re
 import shutil
-import socket as _socket
-import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,6 +54,7 @@ from gateway.platforms.base import (
 from gateway.platforms._shared import (
     coerce_port,
     get_scoped_secret as _get_scoped_secret,
+    seed_extra_from_env,
 )
 from gateway.platforms.helpers import MessageDeduplicator
 from hermes_cli.commands import resolve_command
@@ -63,6 +62,10 @@ from hermes_constants import (
     find_node_executable,
     get_hermes_home,
     with_hermes_node_path,
+)
+from .listener_runtime import (
+    install_listener_dependencies,
+    listener_installation_complete,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,7 +137,7 @@ def _listener_dependencies_available(listener_dir: Path) -> bool:
         package_json = listener_dir / "node_modules" / package / "package.json"
         try:
             installed_version = json.loads(
-                package_json.read_text(encoding="utf-8")
+                package_json.read_text(encoding="utf-8-sig")
             ).get("version")
         except (OSError, json.JSONDecodeError, AttributeError):
             return False
@@ -164,60 +167,35 @@ def _listener_runtime_dir() -> Optional[Path]:
     return runtime_dir
 
 
-def ensure_websocket_listener_requirements() -> Optional[Path]:
+async def ensure_websocket_listener_requirements() -> Optional[Path]:
     """Install locked listener packages for WebSocket mode only."""
-    listener_dir = _listener_runtime_dir()
+    listener_dir = await asyncio.to_thread(_listener_runtime_dir)
     if listener_dir is None:
         return None
-    if _listener_dependencies_available(listener_dir):
+
+    def ready() -> bool:
+        return _listener_dependencies_available(listener_dir) and (
+            listener_dir == _PLUGIN_DIR or listener_installation_complete(listener_dir)
+        )
+
+    if await asyncio.to_thread(ready):
         return listener_dir
-    npm = find_node_executable("npm")
-    if not npm:
-        logger.error("[Webex] npm is required to install listener dependencies")
+    if not await install_listener_dependencies(listener_dir):
         return None
-    try:
-        result = subprocess.run(
-            [npm, "ci", "--omit=optional"],
-            cwd=str(listener_dir),
-            env=with_hermes_node_path(),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=300,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        logger.error("[Webex] Listener dependency install failed: %s", exc)
-        return None
-    if result.returncode != 0:
-        logger.error(
-            "[Webex] Listener dependency install exited with code %s",
-            result.returncode,
-        )
-        return None
-    return listener_dir if _listener_dependencies_available(listener_dir) else None
+    return listener_dir if await asyncio.to_thread(ready) else None
 
 
 class WebexAdapter(BasePlatformAdapter):
     """Gateway adapter for Webex Messaging bots."""
 
     SUPPORTS_MESSAGE_EDITING = True
+    serves_profile_prefix = True
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("webex"))
         extra = config.extra or {}
         self._token: str = config.token or _get_scoped_secret("WEBEX_BOT_TOKEN", "")
-        self._connection_mode: str = (
-            str(
-                extra.get("connection_mode")
-                or _get_scoped_secret("WEBEX_CONNECTION_MODE", DEFAULT_CONNECTION_MODE)
-            )
-            .strip()
-            .lower()
-            or DEFAULT_CONNECTION_MODE
-        )
+        self._connection_mode = _configured_connection_mode(config)
         self._host: str = str(
             extra.get("host") or _get_scoped_secret("WEBEX_WEBHOOK_HOST", DEFAULT_HOST)
         )
@@ -247,7 +225,6 @@ class WebexAdapter(BasePlatformAdapter):
         )
 
         self._runner: Optional[web.AppRunner] = None
-        self._site: Optional[web.TCPSite] = None
         self._app: Optional[web.Application] = None
         self._session: Any = None  # aiohttp.ClientSession
         self._poll_task: Optional[asyncio.Task] = None
@@ -264,9 +241,9 @@ class WebexAdapter(BasePlatformAdapter):
         self._bot_id: str = ""
         self._bot_email: str = ""
         self._bot_display_name: str = ""
-        self._room_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-        self._thread_context_cache: Dict[str, _WebexThreadContextCache] = {}
-        self._managed_webhook_ids: List[str] = []
+        self._room_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._thread_context_cache: dict[str, _WebexThreadContextCache] = {}
+        self._managed_webhook_ids: list[str] = []
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -318,24 +295,23 @@ class WebexAdapter(BasePlatformAdapter):
                 f"Invalid Webex webhook path {self._path!r}.",
                 retryable=False,
             )
+        if self._connection_mode == "webhook":
+            from gateway.platforms.shared_ingress import shared_ingress_profile
+
+            profile = shared_ingress_profile(self)
+            if profile and not urlsplit(self._target_url).path.endswith(
+                f"/p/{profile}{self._path}"
+            ):
+                return self._fail_startup(
+                    "webex_invalid_config",
+                    f"Shared Webex callbacks must end with /p/{profile}{self._path}; "
+                    f"include /p/{profile} in public_url.",
+                    retryable=False,
+                )
         if not self._acquire_platform_lock(
             "webex-bot-token", self._token, "Webex bot token"
         ):
             return False
-
-        if self._connection_mode == "webhook":
-            try:
-                with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
-                    sock.settimeout(1)
-                    sock.connect(("127.0.0.1", self._port))
-                self._release_platform_lock()
-                return self._fail_startup(
-                    "webex_port_in_use",
-                    f"Webhook port {self._port} is already in use.",
-                    retryable=True,
-                )
-            except (ConnectionRefusedError, OSError):
-                pass
 
         try:
             timeout = aiohttp.ClientTimeout(total=30)
@@ -343,19 +319,11 @@ class WebexAdapter(BasePlatformAdapter):
             await self._load_bot_identity()
 
             if self._connection_mode == "webhook":
-                self._app = web.Application(client_max_size=WEBHOOK_MAX_BODY_BYTES)
-                self._app.router.add_get("/health", self._handle_health)
-                self._app.router.add_post(self._path, self._handle_webhook)
-                self._runner = web.AppRunner(self._app)
-                await self._runner.setup()
-                self._site = web.TCPSite(self._runner, self._host, self._port)
-                await self._site.start()
+                await self._start_webhook_listener()
                 await self._ensure_managed_webhooks()
 
             else:
-                self._listener_dir = await asyncio.to_thread(
-                    ensure_websocket_listener_requirements
-                )
+                self._listener_dir = await ensure_websocket_listener_requirements()
                 if self._listener_dir is None:
                     raise _WebexStartupError(
                         "webex_missing_dependency",
@@ -366,8 +334,7 @@ class WebexAdapter(BasePlatformAdapter):
 
             self._poll_task = asyncio.create_task(self._poll_loop())
             self._mark_connected()
-            self._wire_plugin_handlers(None)
-            if self._connection_mode == "webhook":
+            if self._connection_mode == "webhook" and self._runner is not None:
                 logger.info(
                     "[Webex] Listening on %s:%s%s and delivering via %s",
                     self._host,
@@ -375,7 +342,8 @@ class WebexAdapter(BasePlatformAdapter):
                     self._path,
                     safe_url_for_log(self._target_url),
                 )
-            else:
+            elif self._connection_mode == "websocket":
+                self._wire_plugin_handlers(None)
                 logger.info(
                     "[Webex] Connected in websocket mode via local SDK listener"
                 )
@@ -431,7 +399,7 @@ class WebexAdapter(BasePlatformAdapter):
 
     async def _cleanup(self) -> None:
         await self._stop_websocket_listener()
-        self._site = None
+        self._shared_ingress_app = None
         if self._runner:
             await self._runner.cleanup()
             self._runner = None
@@ -439,6 +407,16 @@ class WebexAdapter(BasePlatformAdapter):
         if self._session:
             await self._session.close()
             self._session = None
+
+    async def _start_webhook_listener(self) -> None:
+        from gateway.platforms.shared_ingress import bind_listener
+
+        self._app = web.Application(client_max_size=WEBHOOK_MAX_BODY_BYTES)
+        self._app.router.add_get("/health", self._handle_health)
+        self._app.router.add_post(self._path, self._handle_webhook)
+        self._wire_plugin_handlers(self._app)
+        self._runner = await bind_listener(
+            self, self._app, self._host, self._port, self._path)
 
     # ------------------------------------------------------------------
     # Outbound messaging
@@ -449,7 +427,7 @@ class WebexAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         message = self.format_message(content).strip()
         if not message:
@@ -505,7 +483,7 @@ class WebexAdapter(BasePlatformAdapter):
         image_url: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         payload = self._build_text_payload(chat_id, caption or "", metadata=metadata)
         if payload is None:
@@ -528,7 +506,7 @@ class WebexAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs: Any,
     ) -> SendResult:
         return await self._send_local_file(
@@ -542,7 +520,7 @@ class WebexAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs: Any,
     ) -> SendResult:
         return await self._send_local_file(
@@ -559,7 +537,7 @@ class WebexAdapter(BasePlatformAdapter):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs: Any,
     ) -> SendResult:
         return await self._send_local_file(
@@ -572,7 +550,7 @@ class WebexAdapter(BasePlatformAdapter):
         video_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         **kwargs: Any,
     ) -> SendResult:
         return await self._send_local_file(
@@ -585,11 +563,11 @@ class WebexAdapter(BasePlatformAdapter):
         file_path: str,
         *,
         caption: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Optional[dict[str, Any]] = None,
         file_name: Optional[str] = None,
     ) -> SendResult:
         path = Path(file_path)
-        if not path.exists():
+        if not await asyncio.to_thread(path.exists):
             return SendResult(success=False, error=f"File not found: {file_path}")
 
         form = FormData()
@@ -603,7 +581,7 @@ class WebexAdapter(BasePlatformAdapter):
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         form.add_field(
             "files",
-            path.read_bytes(),
+            await asyncio.to_thread(path.read_bytes),
             filename=file_name or path.name,
             content_type=content_type,
         )
@@ -617,7 +595,7 @@ class WebexAdapter(BasePlatformAdapter):
             success=False, error=json.dumps(data or {"error": "upload failed"})
         )
 
-    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+    async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         room = await self._get_room(chat_id)
         room_type = room.get("type", "group")
         return {
@@ -692,7 +670,7 @@ class WebexAdapter(BasePlatformAdapter):
             process.terminate()
             try:
                 await asyncio.wait_for(process.wait(), timeout=5)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 process.kill()
                 await process.wait()
 
@@ -750,7 +728,7 @@ class WebexAdapter(BasePlatformAdapter):
                 logger.warning("[Webex] Listener stderr: %s", raw)
 
     async def _listener_exit_loop(self, process: asyncio.subprocess.Process) -> None:
-        returncode = await process.wait()
+        returncode = await process.wait()  # health: allow HX006 -- Lifetime watcher; disconnect kills and reaps the child.
         if self._listener_ready and not self._listener_ready.done():
             self._listener_ready.set_exception(
                 RuntimeError(
@@ -766,7 +744,7 @@ class WebexAdapter(BasePlatformAdapter):
             self._set_fatal_error("webex_listener_exited", message, retryable=True)
             await self._notify_fatal_error()
 
-    async def _handle_listener_message(self, payload: Dict[str, Any]) -> None:
+    async def _handle_listener_message(self, payload: dict[str, Any]) -> None:
         msg_type = str(payload.get("type") or "").strip().lower()
         if msg_type == "ready":
             if self._listener_ready and not self._listener_ready.done():
@@ -870,7 +848,7 @@ class WebexAdapter(BasePlatformAdapter):
             except Exception:
                 logger.exception("[Webex] Failed to process inbound payload")
 
-    async def _build_event(self, payload: Dict[str, Any]) -> Optional[MessageEvent]:
+    async def _build_event(self, payload: dict[str, Any]) -> Optional[MessageEvent]:
         data = payload.get("data") or {}
         message_id = str(data.get("id") or "")
         if not message_id:
@@ -968,7 +946,7 @@ class WebexAdapter(BasePlatformAdapter):
         )
 
     @staticmethod
-    def _coerce_event_message(data: Any) -> Dict[str, Any]:
+    def _coerce_event_message(data: Any) -> dict[str, Any]:
         if not isinstance(data, dict):
             return {}
         if not data.get("id") or not data.get("roomId") or not data.get("personId"):
@@ -976,7 +954,7 @@ class WebexAdapter(BasePlatformAdapter):
         return dict(data)
 
     @staticmethod
-    def _needs_full_message_fetch(message: Dict[str, Any]) -> bool:
+    def _needs_full_message_fetch(message: dict[str, Any]) -> bool:
         return not bool(
             message.get("text") or message.get("markdown") or message.get("files")
         )
@@ -996,7 +974,7 @@ class WebexAdapter(BasePlatformAdapter):
             me.get("displayName") or self._bot_email or self._bot_id
         )
 
-    async def _get_room(self, room_id: str) -> Dict[str, Any]:
+    async def _get_room(self, room_id: str) -> dict[str, Any]:
         cached = self._room_cache.get(room_id)
         now = time.time()
         if cached and cached[0] > now:
@@ -1015,10 +993,10 @@ class WebexAdapter(BasePlatformAdapter):
     async def _api_get_json(
         self,
         path: str,
-        params: Optional[Dict[str, Any]] = None,
+        params: Optional[dict[str, Any]] = None,
         *,
         raise_on_error: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if not self._session:
             if raise_on_error:
                 raise _WebexAPIRequestError(path)
@@ -1044,8 +1022,8 @@ class WebexAdapter(BasePlatformAdapter):
             return {}
 
     async def _api_post_json(
-        self, path: str, payload: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        self, path: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
         if not self._session:
             return {}
         url = f"{API_BASE}/{path.lstrip('/')}"
@@ -1058,11 +1036,11 @@ class WebexAdapter(BasePlatformAdapter):
                     logger.warning("[Webex] POST %s -> HTTP %s", path, resp.status)
                     return {}
                 return json.loads(text) if text else {}
-        except Exception as exc:
+        except (TimeoutError, aiohttp.ClientError, ValueError) as exc:
             logger.warning("[Webex] POST %s failed: %s", path, exc)
             return {}
 
-    async def _api_post_form(self, path: str, form: FormData) -> Dict[str, Any]:
+    async def _api_post_form(self, path: str, form: FormData) -> dict[str, Any]:
         if not self._session:
             return {}
         url = f"{API_BASE}/{path.lstrip('/')}"
@@ -1075,11 +1053,11 @@ class WebexAdapter(BasePlatformAdapter):
                     logger.warning("[Webex] POST %s -> HTTP %s", path, resp.status)
                     return {}
                 return json.loads(text) if text else {}
-        except Exception as exc:
+        except (TimeoutError, aiohttp.ClientError, ValueError) as exc:
             logger.warning("[Webex] POST %s failed: %s", path, exc)
             return {}
 
-    async def _api_put_json(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def _api_put_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not self._session:
             return {}
         url = f"{API_BASE}/{path.lstrip('/')}"
@@ -1092,7 +1070,7 @@ class WebexAdapter(BasePlatformAdapter):
                     logger.warning("[Webex] PUT %s -> HTTP %s", path, resp.status)
                     return {}
                 return json.loads(text) if text else {}
-        except Exception as exc:
+        except (TimeoutError, aiohttp.ClientError, ValueError) as exc:
             logger.warning("[Webex] PUT %s failed: %s", path, exc)
             return {}
 
@@ -1106,17 +1084,17 @@ class WebexAdapter(BasePlatformAdapter):
                     logger.warning("[Webex] DELETE %s -> HTTP %s", path, resp.status)
                     return False
                 return True
-        except Exception as exc:
+        except (TimeoutError, aiohttp.ClientError, ValueError) as exc:
             logger.warning("[Webex] DELETE %s failed: %s", path, exc)
             return False
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self._token}",
             "Accept": "application/json",
         }
 
-    def _json_headers(self) -> Dict[str, str]:
+    def _json_headers(self) -> dict[str, str]:
         headers = self._headers()
         headers["Content-Type"] = "application/json"
         return headers
@@ -1148,7 +1126,7 @@ class WebexAdapter(BasePlatformAdapter):
             "filter": "mentionedPeople=me" if self._require_mention else "",
         })
 
-        matched_ids: Dict[Tuple[str, str, str, str], str] = {}
+        matched_ids: dict[tuple[str, str, str, str], str] = {}
         desired_keys = {
             (spec["resource"], spec["event"], spec["filter"], self._target_url)
             for spec in desired
@@ -1177,7 +1155,18 @@ class WebexAdapter(BasePlatformAdapter):
         for spec in desired:
             key = (spec["resource"], spec["event"], spec["filter"], self._target_url)
             if key in matched_ids:
-                self._managed_webhook_ids.append(matched_ids[key])
+                webhook_id = matched_ids[key]
+                # Webex does not return the signing key when listing hooks.
+                # Always reconcile it and recover hooks disabled after an outage.
+                updated = await self._api_put_json(f"webhooks/{webhook_id}", {
+                    "name": spec["name"],
+                    "targetUrl": self._target_url,
+                    "secret": self._secret,
+                    "status": "active",
+                })
+                if not updated.get("id") or updated.get("status") != "active":
+                    raise RuntimeError("Failed to update managed Webex webhook")
+                self._managed_webhook_ids.append(webhook_id)
                 continue
             payload = {
                 "name": spec["name"],
@@ -1233,7 +1222,7 @@ class WebexAdapter(BasePlatformAdapter):
         return False
 
     @staticmethod
-    def _parse_signature_header(value: str) -> List[Tuple[Optional[str], str]]:
+    def _parse_signature_header(value: str) -> list[tuple[Optional[str], str]]:
         parts = []
         for token in re.split(r"[,\s;]+", value):
             token = token.strip()
@@ -1262,12 +1251,12 @@ class WebexAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         *,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Dict[str, Any]]:
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> Optional[dict[str, Any]]:
         chat_id = str(chat_id or "").strip()
         if not chat_id:
             return None
-        payload: Dict[str, Any] = {}
+        payload: dict[str, Any] = {}
         if "@" in chat_id and " " not in chat_id:
             payload["toPersonEmail"] = chat_id
         else:
@@ -1287,7 +1276,7 @@ class WebexAdapter(BasePlatformAdapter):
             form.add_field("roomId", chat_id)
 
     @staticmethod
-    def _extract_parent_id(metadata: Optional[Dict[str, Any]]) -> Optional[str]:
+    def _extract_parent_id(metadata: Optional[dict[str, Any]]) -> Optional[str]:
         if not metadata:
             return None
         parent_id = metadata.get("thread_id")
@@ -1337,7 +1326,7 @@ class WebexAdapter(BasePlatformAdapter):
         command = text.split(maxsplit=1)[0]
         return resolve_command(command) is not None
 
-    def _group_message_mentions_bot(self, message: Dict[str, Any]) -> bool:
+    def _group_message_mentions_bot(self, message: dict[str, Any]) -> bool:
         mentioned = message.get("mentionedPeople")
         if isinstance(mentioned, list):
             for candidate in mentioned:
@@ -1369,7 +1358,7 @@ class WebexAdapter(BasePlatformAdapter):
                     return True
         return False
 
-    def _detect_message_type(self, text: str, media_types: List[str]) -> MessageType:
+    def _detect_message_type(self, text: str, media_types: list[str]) -> MessageType:
         if text.startswith("/"):
             return MessageType.COMMAND
         if not media_types:
@@ -1401,37 +1390,15 @@ class WebexAdapter(BasePlatformAdapter):
         if not session_store:
             return False
 
-        try:
-            from gateway.session import SessionSource, build_session_key
-
-            source = SessionSource(
-                platform=Platform("webex"),
-                chat_id=room_id,
-                chat_type=chat_type,
-                user_id=user_id,
-                thread_id=parent_id,
-                user_id_alt=user_id_alt,
-            )
-            store_cfg = getattr(session_store, "config", None)
-            group_sessions_per_user = (
-                getattr(store_cfg, "group_sessions_per_user", True)
-                if store_cfg
-                else True
-            )
-            thread_sessions_per_user = (
-                getattr(store_cfg, "thread_sessions_per_user", False)
-                if store_cfg
-                else False
-            )
-            session_key = build_session_key(
-                source,
-                group_sessions_per_user=group_sessions_per_user,
-                thread_sessions_per_user=thread_sessions_per_user,
-                profile=self._session_key_profile(source),
-            )
-            return session_store.lookup_by_session_key(session_key) is not None
-        except Exception:
-            return False
+        source = self.build_source(
+            chat_id=room_id,
+            chat_type=chat_type,
+            user_id=user_id,
+            thread_id=parent_id,
+            user_id_alt=user_id_alt,
+        )
+        session_key = self._source_session_key(source)
+        return session_store.lookup_by_session_key(session_key) is not None
 
     async def _fetch_thread_context(
         self,
@@ -1465,7 +1432,7 @@ class WebexAdapter(BasePlatformAdapter):
         if not isinstance(replies, list):
             replies = []
 
-        parts: List[str] = []
+        parts: list[str] = []
         parent_text = self._message_text(parent)
         parent_line = await self._format_thread_message(parent, is_parent=True)
         if parent_line:
@@ -1518,7 +1485,7 @@ class WebexAdapter(BasePlatformAdapter):
         return self._message_text(parent)
 
     async def _format_thread_message(
-        self, message: Dict[str, Any], *, is_parent: bool
+        self, message: dict[str, Any], *, is_parent: bool
     ) -> str:
         text = self._message_text(message)
         if not text:
@@ -1540,21 +1507,21 @@ class WebexAdapter(BasePlatformAdapter):
         return f"{prefix}{name}: {text}"
 
     @staticmethod
-    def _message_text(message: Dict[str, Any]) -> str:
+    def _message_text(message: dict[str, Any]) -> str:
         return str(message.get("text") or message.get("markdown") or "").strip()
 
     async def _download_attachments(
-        self, files: List[str]
-    ) -> Tuple[List[str], List[str]]:
-        media_urls: List[str] = []
-        media_types: List[str] = []
+        self, files: list[str]
+    ) -> tuple[list[str], list[str]]:
+        media_urls: list[str] = []
+        media_types: list[str] = []
         for file_url in files:
             try:
                 local_path, mime = await self._download_attachment(file_url)
                 if local_path:
                     media_urls.append(local_path)
                     media_types.append(mime)
-            except Exception as exc:
+            except (TimeoutError, aiohttp.ClientError, OSError, RuntimeError, ValueError) as exc:
                 logger.warning(
                     "[Webex] Failed to download attachment %s: %s",
                     safe_url_for_log(file_url),
@@ -1562,7 +1529,7 @@ class WebexAdapter(BasePlatformAdapter):
                 )
         return media_urls, media_types
 
-    async def _download_attachment(self, file_url: str) -> Tuple[str, str]:
+    async def _download_attachment(self, file_url: str) -> tuple[str, str]:
         if not self._session:
             raise RuntimeError("HTTP session is not available")
         async with self._session.get(file_url, headers=self._headers()) as resp:
@@ -1613,7 +1580,7 @@ class WebexAdapter(BasePlatformAdapter):
                     max_bytes=max_bytes,
                 )
 
-        chunks: List[bytes] = []
+        chunks: list[bytes] = []
         total = 0
         async for chunk in resp.content.iter_chunked(ATTACHMENT_READ_CHUNK_SIZE):
             total += len(chunk)
@@ -1635,43 +1602,28 @@ class WebexAdapter(BasePlatformAdapter):
         return path_name or "attachment"
 
 
-def _env_enablement() -> Optional[Dict[str, Any]]:
+def _env_enablement() -> Optional[dict[str, Any]]:
     token = _get_scoped_secret("WEBEX_BOT_TOKEN", "").strip()
     if not token:
         return None
-    seed: Dict[str, Any] = {
-        "connection_mode": _get_scoped_secret(
-            "WEBEX_CONNECTION_MODE", DEFAULT_CONNECTION_MODE
+    return seed_extra_from_env(
+        (
+            ("WEBEX_CONNECTION_MODE", "connection_mode", None),
+            ("WEBEX_WEBHOOK_PUBLIC_URL", "public_url", None),
+            ("WEBEX_WEBHOOK_SECRET", "secret", None),
+            ("WEBEX_WEBHOOK_HOST", "host", None),
+            ("WEBEX_WEBHOOK_PORT", "port", int),
+            ("WEBEX_WEBHOOK_PATH", "path", None),
         ),
-    }
-    for env_name, key in (
-        ("WEBEX_WEBHOOK_PUBLIC_URL", "public_url"),
-        ("WEBEX_WEBHOOK_SECRET", "secret"),
-        ("WEBEX_WEBHOOK_HOST", "host"),
-        ("WEBEX_WEBHOOK_PORT", "port"),
-        ("WEBEX_WEBHOOK_PATH", "path"),
-    ):
-        value = _get_scoped_secret(env_name, "").strip()
-        if value:
-            seed[key] = coerce_port(value, DEFAULT_PORT) if key == "port" else value
-    home = _get_scoped_secret("WEBEX_HOME_CHANNEL", "").strip()
-    if home:
-        seed["home_channel"] = {"chat_id": home, "name": "Webex home room"}
-    return seed
+        home_env="WEBEX_HOME_CHANNEL",
+    )
 
 
 def _validate_config(config: PlatformConfig) -> bool:
     if not (config.token or _get_scoped_secret("WEBEX_BOT_TOKEN", "")):
         return False
     extra = config.extra or {}
-    mode = (
-        str(
-            extra.get("connection_mode")
-            or _get_scoped_secret("WEBEX_CONNECTION_MODE", DEFAULT_CONNECTION_MODE)
-        )
-        .strip()
-        .lower()
-    )
+    mode = _configured_connection_mode(config)
     if mode not in {"websocket", "webhook"}:
         return False
     if mode == "webhook":
@@ -1686,10 +1638,15 @@ def _validate_config(config: PlatformConfig) -> bool:
     return True
 
 
+def _configured_connection_mode(config: PlatformConfig) -> str:
+    return str(
+        (config.extra or {}).get("connection_mode")
+        or _get_scoped_secret("WEBEX_CONNECTION_MODE", DEFAULT_CONNECTION_MODE)
+    ).strip().lower() or DEFAULT_CONNECTION_MODE
+
+
 def _is_port_binding(config: PlatformConfig) -> bool:
-    extra = config.extra or {}
-    mode = str(extra.get("connection_mode") or DEFAULT_CONNECTION_MODE).strip().lower()
-    return mode == "webhook"
+    return _configured_connection_mode(config) == "webhook"
 
 
 async def _standalone_send(
@@ -1698,9 +1655,9 @@ async def _standalone_send(
     message: str,
     *,
     thread_id: Optional[str] = None,
-    media_files: Optional[List[str]] = None,
+    media_files: Optional[list[tuple[str, bool]]] = None,
     force_document: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     del force_document
     token = pconfig.token or _get_scoped_secret("WEBEX_BOT_TOKEN", "")
     if not token:
@@ -1708,7 +1665,7 @@ async def _standalone_send(
     target_field = (
         "toPersonEmail" if "@" in chat_id and " " not in chat_id else "roomId"
     )
-    payload: Dict[str, Any] = {target_field: chat_id, "markdown": message}
+    payload: dict[str, Any] = {target_field: chat_id, "markdown": message}
     if thread_id:
         payload["parentId"] = thread_id
     headers = {"Authorization": f"Bearer {token}"}
@@ -1723,8 +1680,8 @@ async def _standalone_send(
                     form.add_field("parentId", thread_id)
                 handles = []
                 try:
-                    for path in media_files:
-                        handle = open(path, "rb")
+                    for path, _is_voice in media_files:
+                        handle = await asyncio.to_thread(open, path, "rb")
                         handles.append(handle)
                         form.add_field("files", handle, filename=Path(path).name)
                     response = await session.post(
@@ -1742,7 +1699,7 @@ async def _standalone_send(
                 if response.status >= 400:
                     return {"error": f"Webex HTTP {response.status}"}
                 return {"success": True, "message_id": body.get("id", "")}
-    except Exception as exc:
+    except (TimeoutError, aiohttp.ClientError, OSError, ValueError) as exc:
         return {"error": str(exc)}
 
 
@@ -1760,6 +1717,7 @@ def register(ctx: Any) -> None:
         cron_deliver_env_var="WEBEX_HOME_CHANNEL",
         allowed_users_env="WEBEX_ALLOWED_USERS",
         allow_all_env="WEBEX_ALLOW_ALL_USERS",
+        allowlist_user_id_alt=True,
         max_message_length=7439,
         platform_hint=(
             "You are chatting via Webex. Markdown and threaded replies are supported."

@@ -228,6 +228,7 @@ class TestTrustGateApprovalRouting:
         ("webhook", "", False),
         ("telegram", "1", False),
         ("api_server", "", True),
+        ("local", "", True),  # a `chat -q` turn admitted to the gateway: finite, nobody answers
     ])
     def test_unattended_cron_and_single_query_contexts_do_not_use_callback(
         self, monkeypatch, platform, cron, single_query

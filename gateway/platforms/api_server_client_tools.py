@@ -120,41 +120,59 @@ def parse_client_tools(self, body: dict, *, _openai_error) -> tuple[list[dict[st
 
 
 def apply_client_tools(agent, client_tools: Optional[list[dict[str, Any]]], session_key: str) -> None:
-    """Merge client-supplied tools into a freshly built agent's tool list so the model can call
-    them, tagged so the executor suspends and relays instead of dispatching on the host."""
-    if not client_tools:
+    """Make *client_tools* the agent's client tools for this turn, tagged so the executor
+    suspends and relays them instead of dispatching on the host.
+
+    Canonical API turns reuse a cached agent, so this replaces whatever an earlier turn applied
+    (``None`` or ``[]`` removes it) and restores host tools a client tool shadowed. The cached
+    system prompt is only invalidated when the client tool set actually changes, so a client
+    that sends the same tools every turn keeps its prompt-cache prefix."""
+    previous = getattr(agent, "_client_tool_defs", None) or []
+    defs = [fn for fn in ((t or {}).get("function", {}) or {} for t in client_tools or ()) if fn.get("name")]
+    agent._client_tool_session_key = session_key or ""
+    if defs == previous:
         return
-    # The agent is built fresh per run, but copy the (possibly shared) tool structures
-    # defensively before mutating.
-    tools = list(getattr(agent, "tools", None) or [])
-    valid_names = set(getattr(agent, "valid_tool_names", None) or set())
-    client_names: set[str] = set()
-    client_defs: list[dict[str, Any]] = []
-    for tool_def in client_tools:
-        fn = (tool_def or {}).get("function", {}) or {}
-        name = fn.get("name")
-        if not name:
-            continue
-        client_defs.append(fn)
-        # A client tool shadowing a same-named host tool wins: drop the host entry so the relay
-        # path handles it.
-        tools = [t for t in tools if (t.get("function", {}) or {}).get("name") != name]
-        tools.append({"type": "function", "function": fn})
-        valid_names.add(name)
-        client_names.add(name)
-    agent.tools, agent.valid_tool_names = tools, valid_names
-    agent._client_tool_names = client_names
+    old_names = getattr(agent, "_client_tool_names", None) or set()
+    # Copy before mutating: the tool structures may be shared with other agents.
+    tools = [t for t in (getattr(agent, "tools", None) or [])
+             if (t.get("function", {}) or {}).get("name") not in old_names]
+    tools.extend(getattr(agent, "_client_tool_shadowed", None) or [])
+    valid_names = (set(getattr(agent, "valid_tool_names", None) or set()) - old_names) | {
+        (t.get("function", {}) or {}).get("name") for t in tools}
+    names = {fn["name"] for fn in defs}
+    # A client tool shadowing a same-named host tool wins: park the host entry so the relay path
+    # handles the name, and give it back once the client stops supplying that tool.
+    shadowed = [t for t in tools if (t.get("function", {}) or {}).get("name") in names]
+    tools = [t for t in tools if (t.get("function", {}) or {}).get("name") not in names]
+    tools.extend({"type": "function", "function": fn} for fn in defs)
+    agent.tools, agent.valid_tool_names = tools, valid_names | names
+    agent._client_tool_names, agent._client_tool_shadowed = names, shadowed
     # Stored so tools.mcp_tool_agent._reinject_post_build_tools re-appends them when a
     # turn-boundary rebuild refreshes agent.tools.
-    agent._client_tool_defs = client_defs
-    agent._client_tool_session_key = session_key or ""
+    agent._client_tool_defs = defs
     # The system prompt (with its <tools> block) is cached at build time: invalidate it so the
-    # merged client tools appear in the model's tool documentation.
+    # changed client tools appear in the model's tool documentation.
     try:
         agent._invalidate_system_prompt()
     except Exception:
         logger.debug("system prompt invalidation failed; clearing the cache directly", exc_info=True)
         agent._cached_system_prompt = None
+
+
+def client_tool_observer(client_tools: Optional[list[dict[str, Any]]], session_key: str) -> dict[str, Any]:
+    """Observer fields that carry a run's client tools to its canonical (session-authority)
+    turn. Request-owned like the SSE sinks: a turn recovered after a restart has no caller to
+    relay to, so it runs without them."""
+    if not client_tools:
+        return {}
+    return {"client_tools": client_tools, "client_tool_session_key": session_key}
+
+
+def apply_turn_client_tools(agent, observers) -> None:
+    """Per-turn wiring of a canonical API turn's cached agent: this turn's client tools from its
+    request observer, or none (dropping an earlier turn's)."""
+    observer = next((o for o in observers if o.get("client_tools")), {})
+    apply_client_tools(agent, observer.get("client_tools"), observer.get("client_tool_session_key", ""))
 
 
 def classify_server_tool_kind(self, run_id: str, tool_name: Optional[str]) -> Optional[str]:

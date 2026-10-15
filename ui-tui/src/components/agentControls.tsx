@@ -18,6 +18,11 @@ export function rosterViewport(height: number, count: number, cursor: number) {
 }
 
 export async function sendAgentSteer(gw: GatewayClient, sid: string, id: string, text: string) {
+  // The shared owner serves no subagent.steer: the sidecar would answer "session not found".
+  if (gw.isCanonical) {
+    return { accepted: false, message: messages().canonical.controls.notAvailable('agents steer') }
+  }
+
   const result = asRpcResult<{ status: string }>(
     await gw.request('subagent.steer', { session_id: sid, subagent_id: id, text })
   )

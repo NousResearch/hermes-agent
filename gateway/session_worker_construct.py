@@ -105,12 +105,18 @@ def route_runtime(policy, frozen, model, key):
             explicit_api_key=key, explicit_base_url=launch_url, target_model=model)
 
 
-def worker_api_key(policy):
+def worker_api_key(policy, construct):
     """Child side, for a worker launched without a key (every Kanban run): the route's own credential,
     resolved as the in-process turn resolves it, from this process's profile home (its HERMES_HOME and
     ``.env``). A fallback entry's key belongs to another provider and model, so the primary never
-    carries it; the agent's own fallback chain switches all three together (#139155)."""
+    carries it; the agent's own fallback chain switches all three together (#139155).
+
+    A primary AuthError walks the chain the agent will actually get: the owner's per-turn
+    ``construct_v1`` chain (an ordinary session's refreshed profile fallbacks) when it was sent,
+    the frozen snapshot's otherwise (older owner)."""
     frozen, model = policy.effective()
+    if 'fallback_model' in construct:
+        frozen = {**frozen, 'fallback_providers': construct['fallback_model'] or [], 'fallback_model': None}
     runtime, fallback_entry = route_runtime(policy, frozen, model, None)
     return runtime.get('api_key') if fallback_entry is None else None
 

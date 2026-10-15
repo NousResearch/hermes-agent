@@ -152,6 +152,58 @@ def test_keyless_worker_credential_failure_keeps_the_kanban_start_exit(tmp_path,
     assert session_kanban.worker_exit_code(path, context) == expected
 
 
+FALLBACK = {'provider': 'openrouter', 'model': 'fallback-model'}
+
+
+def _with_turn_chain(frame, chain):
+    """The owner's per-turn ``construct_v1``: an ordinary session's refreshed profile chain, which the
+    frozen snapshot (no fallbacks here) does not carry."""
+    request = json.loads(frame['policy']['request_json'])
+    request['construct_v1'] = {'fallback_model': chain, 'ephemeral_system_prompt': None, 'prefill_messages': None}
+    return {**frame, 'policy': {**frame['policy'], 'request_json': json.dumps(request)}}
+
+
+def _primary_auth_failure(monkeypatch, fallback_ok):
+    from hermes_cli.auth import AuthError
+    calls = []
+
+    def resolve(requested=None, **kwargs):
+        calls.append(requested)
+        if requested == FALLBACK['provider'] and fallback_ok:
+            return {'provider': 'openrouter', 'api_key': 'fake-fallback', 'base_url': 'https://openrouter.ai/api/v1'}
+        raise AuthError('relogin', provider='nous', relogin_required=True)
+    monkeypatch.setattr('hermes_cli.runtime_provider_custom._resolve_named_custom_runtime', lambda **kw: None)
+    monkeypatch.setattr('hermes_cli.runtime_provider.resolve_runtime_provider', resolve)
+    return calls
+
+
+def test_primary_auth_failure_reaches_the_turns_refreshed_fallback_chain(tmp_path, monkeypatch):
+    """An expired primary with a fallback the user added after session creation: the worker resolves
+    against the chain supplied for this turn, so the agent is built (key-less, its own chain switches
+    provider, model and key together) instead of a start failure."""
+    calls = _primary_auth_failure(monkeypatch, fallback_ok=True)
+    built = _execute(_with_turn_chain(_minimax_frame(tmp_path, monkeypatch), [FALLBACK]), monkeypatch)
+    assert FALLBACK['provider'] in calls
+    assert built['fallback_model'] == [FALLBACK] and built['api_key'] is None
+
+
+def test_primary_auth_failure_with_an_unusable_turn_chain_keeps_the_kanban_start_exit(tmp_path, monkeypatch):
+    from gateway import session_kanban
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.auth import AuthError
+    from tests.gateway.test_kanban_result_exit import _bound_claim
+    path, context = _bound_claim(tmp_path / 'kanban', monkeypatch)
+    frame = _with_turn_chain(_minimax_frame(tmp_path, monkeypatch), [FALLBACK])
+    frame = {**frame, 'policy': {**frame['policy'], 'kanban_json': json.dumps(context)}}
+    _primary_auth_failure(monkeypatch, fallback_ok=False)
+    monkeypatch.setattr(session_kanban, 'bind_worker_context', lambda frame: None)
+    built = {}
+    with pytest.raises(AuthError):
+        _execute(frame, monkeypatch, built=built)
+    assert built == {}
+    assert session_kanban.worker_exit_code(path, context) == kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+
+
 def test_keyless_worker_on_a_fallback_never_sends_its_key_to_the_primary_endpoint(tmp_path, monkeypatch):
     """Resolution landing on a configured fallback: the real agent's primary (MiniMax, Anthropic
     protocol) client is built without the fallback provider's key. Asserted where the HTTP client

@@ -4,12 +4,13 @@ Background: /retry re-dispatches the last user turn by building a NEW MessageEve
 calling the gateway's message handler directly, which bypasses the adapter's
 native_callback wrapper. admission matches provenance by event identity, so a freshly
 built event carries no provenance and native admission refuses it as invalid_params when
-gateway.multiplex_profiles is true. The fix re-enters the ambient native callback around
-the re-dispatched turn (gateway/session_ingress_context.redispatched_native).
+gateway.multiplex_profiles is true. The fix carries the /retry event's native callback to
+the re-dispatched turn (gateway/session_ingress_context.carry_callback), which is built on
+the same authenticated source object.
 
 This test reproduces the refusal on a real multiplexed authority and asserts the fix makes
-the re-dispatched turn admit (provenance resolved). Without the fix the re-dispatch raises
-RuntimeStoreError('invalid_params').
+the re-dispatched turn's envelope prepare with its provenance resolved. Without the fix the
+re-dispatch raises RuntimeStoreError('invalid_params').
 """
 import weakref
 from pathlib import Path

@@ -538,7 +538,7 @@ def scoped_deferrable_names(tool_defs: list[dict[str, Any]]) -> frozenset[str]:
                      if n and is_deferrable_tool_name(n, defer_tools))
 
 
-def post_build_tool_sources(agent: Any, engine_names: Iterable[str]) -> Dict[str, str]:
+def post_build_tool_sources(agent: Any, engine_names: Iterable[str]) -> dict[str, str]:
     """Owning plugin name per memory-provider / context-engine tool, for catalog grouping."""
     owner_names = getattr(getattr(agent, "_memory_manager", None), "get_tool_owner_names", None)
     sources = owner_names() if callable(owner_names) else {}
@@ -546,10 +546,10 @@ def post_build_tool_sources(agent: Any, engine_names: Iterable[str]) -> Dict[str
     return {**sources, **{name: engine for name in engine_names if isinstance(engine, str) and engine}}
 
 
-def defer_post_build_tools(tool_defs: List[Dict[str, Any]], *,
-                           enabled_toolsets: Optional[List[str]] = None,
-                           disabled_toolsets: Optional[List[str]] = None,
-                           sources: Optional[Dict[str, str]] = None) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def defer_post_build_tools(tool_defs: list[dict[str, Any]], *,
+                           enabled_toolsets: Optional[list[str]] = None,
+                           disabled_toolsets: Optional[list[str]] = None,
+                           sources: Optional[dict[str, str]] = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Fold non-registry tools named in ``defer`` into the Tool Search bridge (#110341).
     ``sources`` names each tool's plugin so the catalog groups it there, not under ``other``."""
     config = load_config()

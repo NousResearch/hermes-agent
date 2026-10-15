@@ -1303,11 +1303,13 @@ _PRE_EXEC_GUARD_MIN_TIMEOUT_S = 30
 
 
 def _kanban_stop_note_ship_block(command: str) -> Optional[str]:
-    """Refuse merge/deploy/push-to-main when this worker's card must not ship.
+    """Refuse merge/deploy/git-push when this worker's card must not ship.
 
     Second line of defence after ``add_comment`` SIGTERMs the worker: if the
     process is still alive (signal lost, poll window) it must not ship.
-    Ordinary ``git push`` to a feature branch is not a ship command.
+    Any ``git push`` is re-read against the card — including a bare push
+    whose upstream is main — and allowed only while the card is running
+    with no hold.
     """
     tid = os.environ.get("HERMES_KANBAN_TASK")
     if not tid:
@@ -1336,17 +1338,15 @@ def _kanban_ship_abort_reason(task_id: str) -> Optional[str]:
         with connect_closing() as conn:
             task = get_task(conn, task_id)
             if task is None:
-                return "Kanban task missing — merge/deploy/push-to-main refused."
+                return "Kanban task missing — merge/deploy/push refused."
             if task.status != "running":
-                return (
-                    f"Kanban task is {task.status} — merge/deploy/push-to-main refused."
-                )
+                return f"Kanban task is {task.status} — merge/deploy/push refused."
             env_run = os.environ.get("HERMES_KANBAN_RUN_ID")
             if env_run and str(task.current_run_id or "") != str(env_run):
-                return "Kanban run is stale — merge/deploy/push-to-main refused."
+                return "Kanban run is stale — merge/deploy/push refused."
             if stop_note_holds(conn, task_id):
                 return (
-                    "Stop/close note on this kanban task — merge/deploy/push-to-main "
+                    "Stop/close note on this kanban task — merge/deploy/push "
                     "refused. Unblock the card if the operator actually wants this shipped."
                 )
             return None
@@ -1355,7 +1355,7 @@ def _kanban_ship_abort_reason(task_id: str) -> Optional[str]:
             "kanban stop-note ship guard could not read the board for %s; refusing ship",
             task_id,
         )
-        return "Kanban board unreadable — merge/deploy/push-to-main refused."
+        return "Kanban board unreadable — merge/deploy/push refused."
 
 
 def _pre_exec_block(

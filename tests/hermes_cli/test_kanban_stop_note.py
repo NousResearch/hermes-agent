@@ -56,7 +56,7 @@ def test_looks_like_stop_note_matches_operator_phrases():
     assert not looks_like_close_note("Please CLOSE the dropdown")
 
 
-def test_looks_like_ship_command_is_narrow():
+def test_looks_like_ship_command_covers_git_push():
     assert looks_like_ship_command("gh pr merge 12")
     assert looks_like_ship_command("gh merge 12")
     assert looks_like_ship_command("./lab deploy backend")
@@ -64,9 +64,9 @@ def test_looks_like_ship_command_is_narrow():
     assert looks_like_ship_command("git push origin main")
     assert looks_like_ship_command("git push origin HEAD:main")
     assert looks_like_ship_command("echo x && gh pr merge --auto 9")
-    assert not looks_like_ship_command("git push origin feat/stop-note")
-    assert not looks_like_ship_command("git push origin feat/main-page")
-    assert not looks_like_ship_command("git push")
+    assert looks_like_ship_command("git push origin feat/stop-note")
+    assert looks_like_ship_command("git push origin feat/main-page")
+    assert looks_like_ship_command("git push")
     assert not looks_like_ship_command("gh pr create --fill")
     assert not looks_like_ship_command("echo do not merge")
 
@@ -201,3 +201,29 @@ def test_stop_comment_on_ready_task_parks_without_signalling(kanban_home):
             (tid,),
         ).fetchone()
         assert row is None
+
+
+def test_unblock_rechecks_hold_inside_write_txn(kanban_home, monkeypatch):
+    """A stop that lands after the pre-lock read must still refuse the unblock."""
+    from hermes_cli import kanban_db_stop as kbs
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="live", assignee="a")
+        kb.block_task(conn, tid, reason="need a human")
+        n = {"calls": 0}
+
+        def stale_then_hold(_conn, _tid):
+            n["calls"] += 1
+            return n["calls"] >= 2
+
+        monkeypatch.setattr(kbs, "stop_note_holds", stale_then_hold)
+        assert kb.unblock_task(conn, tid) is False
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert n["calls"] >= 2
+        kinds = [
+            r["kind"]
+            for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (tid,),
+            ).fetchall()
+        ]
+        assert "unblocked" not in kinds

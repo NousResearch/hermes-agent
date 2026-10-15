@@ -1,4 +1,4 @@
-"""Terminal tool refuses merge/deploy/push-to-main when a stop note holds."""
+"""Terminal tool refuses merge/deploy/git-push when a stop note holds."""
 
 from __future__ import annotations
 
@@ -14,8 +14,29 @@ def test_ship_block_skips_when_not_a_kanban_worker(monkeypatch):
 
 def test_ship_block_skips_non_ship_commands(monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
-    assert _kanban_stop_note_ship_block("git push origin feat/foo") is None
     assert _kanban_stop_note_ship_block("gh pr create --fill") is None
+    assert _kanban_stop_note_ship_block("pytest tests/foo.py") is None
+
+
+def test_ship_block_consults_card_for_any_git_push(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    monkeypatch.setattr(
+        "tools.terminal_tool._kanban_ship_abort_reason", lambda _tid: None,
+    )
+    assert _kanban_stop_note_ship_block("git push") is None
+    assert _kanban_stop_note_ship_block("git push origin feat/foo") is None
+
+
+def test_ship_block_refuses_bare_git_push_when_stop_holds(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    monkeypatch.setattr(
+        "tools.terminal_tool._kanban_ship_abort_reason",
+        lambda _tid: "Stop/close note on this kanban task — merge/deploy/push refused.",
+    )
+    raw = _kanban_stop_note_ship_block("git push")
+    body = json.loads(raw)
+    assert body["status"] == "blocked"
+    assert "Stop/close note" in body["error"]
 
 
 def test_ship_block_refuses_when_stop_note_holds(monkeypatch):

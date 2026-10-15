@@ -46,30 +46,20 @@ def looks_like_close_note(body: Optional[str]) -> bool:
 
 
 def looks_like_ship_command(command: Optional[str]) -> bool:
-    """True when ``command`` would merge a PR, deploy, or push to main/master."""
+    """True when ``command`` would merge a PR, deploy, or git-push.
+
+    Any ``git push`` is a ship command, including a bare ``git push`` whose
+    upstream is ``main``/``master`` (no refspec to parse). The task-state
+    re-read then allows it while the card is running with no hold, so a
+    feature-branch push during normal work still goes through.
+    """
     if not command or not str(command).strip():
         return False
     for part in _SHELL_SPLIT_RE.split(str(command)):
         s = part.strip()
         if not s:
             continue
-        if _GH_MERGE_RE.match(s) or _LAB_DEPLOY_RE.match(s):
-            return True
-        if _GIT_PUSH_RE.match(s) and _git_push_targets_main(s):
-            return True
-    return False
-
-
-def _git_push_targets_main(segment: str) -> bool:
-    """True when a ``git push …`` segment names ``main`` or ``master`` as a ref."""
-    tokens = segment.split()
-    # ``git push`` [options] [remote] [refspec…] — skip the two-word prefix.
-    for raw in tokens[2:]:
-        if raw.startswith("-"):
-            continue
-        ref = raw.split(":", 1)[-1]  # HEAD:main / +refs/heads/main
-        name = ref.rstrip("/").split("/")[-1]
-        if name in {"main", "master"}:
+        if _GH_MERGE_RE.match(s) or _LAB_DEPLOY_RE.match(s) or _GIT_PUSH_RE.match(s):
             return True
     return False
 
@@ -205,6 +195,11 @@ def apply_stop_note(
     return termination
 
 
+def _bare_unblock_refused(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True when a bare unblock would lift an R3 or stop-note hold."""
+    return initial_status_hold(conn, task_id) or stop_note_holds(conn, task_id)
+
+
 def unblock_task(conn: sqlite3.Connection, task_id: str, *, force: bool = False) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
     when that is where it left off), closing any leaked run first.
@@ -213,6 +208,11 @@ def unblock_task(conn: sqlite3.Connection, task_id: str, *, force: bool = False)
     blocked unless ``force=True``. A bare unblock is how gated cards used to
     leak onto the dispatcher ~5 s after create. A stop note also refuses a
     bare unblock so CLOSE/HARD STOP cannot be undone by an empty unblock.
+
+    The hold is checked again inside ``write_txn`` immediately before the
+    status update. A concurrent ``add_comment`` can commit a stop note after
+    the pre-lock read; serializing the predicate with the transition stops
+    that unblock from clearing ``stop_note_holds`` and respawning the worker.
     """
     import time
 
@@ -225,10 +225,12 @@ def unblock_task(conn: sqlite3.Connection, task_id: str, *, force: bool = False)
         write_txn,
     )
 
-    if not force and (initial_status_hold(conn, task_id) or stop_note_holds(conn, task_id)):
+    if not force and _bare_unblock_refused(conn, task_id):
         return False
     now = int(time.time())
     with write_txn(conn):
+        if not force and _bare_unblock_refused(conn, task_id):
+            return False
         resume_status = (
             _resume_status_from_events(conn, task_id)
             if _task_status(conn, task_id) == "blocked"

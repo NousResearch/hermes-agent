@@ -60,8 +60,11 @@ def validate_servers(servers):
                 raise ValueError('duplicate server')
             names.add(model.name)
     except (ValidationError, KeyError, AttributeError, TypeError, ValueError) as exc:
+        # The validator's message quotes the spec. A long or secret-shaped spec is not
+        # echoed; the field still says which check refused.
+        from hermes_state_runtime import publish_client_value
         raise RuntimeStoreError('invalid_params', field='editor.mcp_servers',
-                                detail=f'unusable server spec: {str(exc)[:120]}') from exc
+                                detail=f'unusable server spec: {publish_client_value(str(exc))}') from exc
 
 
 def private_editor_request(request, private):

@@ -54,40 +54,119 @@ def _native_metadata(event):
     return projected
 
 
+_NATIVE_DETAIL = {
+    'native.source': 'a message needs a source',
+    'native.text': 'must be a string',
+    'native.message_type': 'must be a message type',
+    'native.command': 'a command is not admitted as a turn',
+    'native.internal': 'an internal event is not admitted as a turn',
+    'native.metadata': 'metadata is not a native projection',
+    'native.prompt_response': 'a prompt response is not a turn',
+    'native.stale_roles': 'role authorization is stale',
+    'native.relay_provenance': 'a relayed message needs relay provenance',
+    'native.profile_route_rejected': 'the profile route was rejected',
+    'native.provenance_missing(authorization_home)': 'a routed profile needs provenance',
+    'native.provenance_missing(multiplex)': 'a multiplex gateway message needs provenance',
+    'native.channel_prompt': 'must be a string',
+    'native.channel_context': 'must be a string',
+    'native.reply_expected': 'must be a boolean',
+    'native.auto_skill': 'must be a skill name or a list of skill names',
+    'native.media_urls': 'must be a list of strings',
+    'native.media_types': 'must be a list of strings',
+    'native.media_text_inlined': 'must be a list of booleans',
+    'native.media_length': 'must match the number of media urls',
+}
+
+
+def _native_shape_clause(event):
+    """The first shape check ``_validate_native`` used to fold into one bare refusal."""
+    source = event.source
+    if source is None:
+        return 'native.source'
+    if not isinstance(event.text, str):
+        return 'native.text'
+    if not isinstance(event.message_type, MessageType):
+        return 'native.message_type'
+    # The ingress router's own classifier: ``/tmp/x is broken`` is text, not a command.
+    if event.message_type == MessageType.COMMAND or event.get_command():
+        return 'native.command'
+    if event.internal:
+        return 'native.internal'
+    if _native_metadata(event) is None:
+        return 'native.metadata'
+    if event.prompt_response:
+        return 'native.prompt_response'
+    return None
+
+
+def _has_relay_provenance(provenance):
+    return bool(provenance and 'relay' in provenance)
+
+
+def _native_trust_clause(runner, source, provenance, fresh_roles):
+    if source.role_authorized and not fresh_roles:
+        return 'native.stale_roles'
+    if source.delivered_via_upstream_relay and not _has_relay_provenance(provenance):
+        return 'native.relay_provenance'
+    if source.profile_route_rejected:
+        return 'native.profile_route_rejected'
+    if getattr(source, '_authorization_profile_home', None) is not None and provenance is None:
+        return 'native.provenance_missing(authorization_home)'
+    if getattr(runner.config, 'multiplex_profiles', False) and provenance is None:
+        return 'native.provenance_missing(multiplex)'
+    return None
+
+
+def _native_context_clause(event):
+    for value, name in ((event.channel_prompt, 'native.channel_prompt'),
+                        (event.channel_context, 'native.channel_context')):
+        if value is not None and not isinstance(value, str):
+            return name
+    if event.reply_expected is not None and type(event.reply_expected) is not bool:
+        return 'native.reply_expected'
+    skill = event.auto_skill
+    if skill is None or isinstance(skill, str):
+        return None
+    if isinstance(skill, list) and all(isinstance(item, str) for item in skill):
+        return None
+    return 'native.auto_skill'
+
+
+def _strings(values):
+    return isinstance(values, list) and all(isinstance(item, str) for item in values)
+
+
+def _native_media_clause(event):
+    urls = event.media_urls
+    if not _strings(urls):
+        return 'native.media_urls'
+    if not _strings(event.media_types):
+        return 'native.media_types'
+    inlined = event.media_text_inlined
+    if not isinstance(inlined, list) or any(item is not None and type(item) is not bool for item in inlined):
+        return 'native.media_text_inlined'
+    if len(event.media_types) not in (0, len(urls)) or len(inlined) not in (0, len(urls)):
+        return 'native.media_length'
+    return None
+
+
+def _refuse_native(clause):
+    if clause:
+        raise RuntimeStoreError('invalid_params', field=clause, detail=_NATIVE_DETAIL[clause])
+
+
 def _validate_native(runner, event, provenance=None, fresh_roles=False):
     source = event.source
-    if (source is None or not isinstance(event.text, str)
-            or not isinstance(event.message_type, MessageType)
-            # The ingress router's own classifier: ``/tmp/x is broken`` is text, not a command.
-            or event.message_type == MessageType.COMMAND or event.get_command()
-            or event.internal or _native_metadata(event) is None or event.prompt_response
-            or (source.role_authorized and not fresh_roles)
-            or (source.delivered_via_upstream_relay and not (provenance and 'relay' in provenance))
-            or source.profile_route_rejected
-            or (getattr(source, '_authorization_profile_home', None) is not None and provenance is None)
-            or (getattr(runner.config, 'multiplex_profiles', False) and provenance is None)):
-        raise RuntimeStoreError('invalid_params')
+    _refuse_native(_native_shape_clause(event))
+    _refuse_native(_native_trust_clause(runner, source, provenance, fresh_roles))
     if provenance is not None:
         from gateway.session_ingress_context import restore_provenance
         restore_provenance(runner, source, provenance)
-    delegated = fresh_roles or bool(provenance and 'relay' in provenance)
+    delegated = fresh_roles or _has_relay_provenance(provenance)
     if not runner._is_user_authorized_for_source(source, allow_adapter_delegation=delegated):
         raise RuntimeStoreError('permission_denied')
-    if (any(value is not None and not isinstance(value, str)
-            for value in (event.channel_prompt, event.channel_context))
-            or event.reply_expected is not None and type(event.reply_expected) is not bool):
-        raise RuntimeStoreError('invalid_params')
-    skill = event.auto_skill
-    if not (skill is None or isinstance(skill, str)
-            or isinstance(skill, list) and all(isinstance(item, str) for item in skill)):
-        raise RuntimeStoreError('invalid_params')
-    if (not isinstance(event.media_urls, list) or not all(isinstance(item, str) for item in event.media_urls)
-            or not isinstance(event.media_types, list) or not all(isinstance(item, str) for item in event.media_types)
-            or not isinstance(event.media_text_inlined, list)
-            or not all(item is None or type(item) is bool for item in event.media_text_inlined)
-            or len(event.media_types) not in (0, len(event.media_urls))
-            or len(event.media_text_inlined) not in (0, len(event.media_urls))):
-        raise RuntimeStoreError('invalid_params')
+    _refuse_native(_native_context_clause(event))
+    _refuse_native(_native_media_clause(event))
     encoded_source = source.to_dict()
     encoded_source['is_bot'] = source.is_bot
     restored_source = SessionSource.from_dict(encoded_source)

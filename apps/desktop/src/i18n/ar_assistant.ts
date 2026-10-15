@@ -118,6 +118,7 @@ export const arAssistant = {
       confirmAndContinueLabel: 'تأكيد ومتابعة',
       singleSelectHint: 'اختر واحدا',
       multiSelectHint: 'حدد كل ما ينطبق',
+      recommended: '(موصى به)',
       oneQuestion: 'سؤال واحد',
       questionProgress: (answered, total) => `تمت الإجابة على ${answered} من ${total}`
     },

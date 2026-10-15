@@ -592,7 +592,7 @@ def get_project_skill_allowlist() -> Optional[frozenset]:
         return None
     allowlist_file = root / PROJECT_SKILL_ALLOWLIST_FILE
     try:
-        lines = allowlist_file.read_text(encoding="utf-8").splitlines()
+        lines = allowlist_file.read_text(encoding="utf-8-sig").splitlines()
     except (OSError, UnicodeDecodeError):
         return None
     names = {line.split("#", 1)[0].strip() for line in lines}

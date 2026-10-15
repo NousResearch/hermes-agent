@@ -71,9 +71,24 @@ def test_untrusted_repo_allowlist_is_ignored(env):
     assert "pytest-flow" in index and "audio-mixing" in index
 
 
-def test_empty_allowlist_means_no_narrowing(env):
+@pytest.mark.parametrize("prefix", ["", "\ufeff"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_allowlist_preserves_first_skill_with_optional_bom(env, prefix, newline):
     _trust(env)
-    _write_allowlist(env, "# only comments\n\n")
+    _write_allowlist(env, prefix + newline.join(["vitest-flow", "pytest-flow", ""]))
+    assert su.get_project_skill_allowlist() == frozenset(
+        {"vitest-flow", "pytest-flow"} | set(su.ESSENTIAL_SKILLS)
+    )
+    prompt = build_skills_system_prompt()
+    assert "vitest-flow" in prompt
+    assert "pytest-flow" in prompt
+    assert "audio-mixing" not in prompt
+
+
+@pytest.mark.parametrize("content", ["# only comments\n\n", "\ufeff", "\ufeff# only comments\r\n\r\n"])
+def test_empty_allowlist_means_no_narrowing(env, content):
+    _trust(env)
+    _write_allowlist(env, content)
     assert su.get_project_skill_allowlist() is None
     assert "audio-mixing" in build_skills_system_prompt()
 

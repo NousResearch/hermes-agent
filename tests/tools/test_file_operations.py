@@ -490,6 +490,17 @@ class TestSearchFilesIncludesDirectories:
         assert set(combined.files) == {str(empty_dir), str(regular_file)}
 
 
+@pytest.mark.platforms("macos")
+def test_directory_supplement_never_lists_pruned_hidden_dirs(tmp_path):
+    """BSD find has no -printf; its fallback needs an explicit -print, or the
+    implicit one also prints every pruned hidden directory."""
+    (tmp_path / ".hidden").mkdir()
+    (tmp_path / "notes.txt").mkdir()
+    ops = ShellFileOperations(LocalEnvironment("/"))
+    dirs, _reason = ops._search_directories_with_find("*.txt", str(tmp_path), 50)
+    assert dirs == [str(tmp_path / "notes.txt")]
+
+
 class TestSearchFilesFallbackHiddenPaths:
     def _make_env(self):
         return LocalEnvironment("/")

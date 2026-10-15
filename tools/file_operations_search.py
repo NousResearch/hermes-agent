@@ -780,7 +780,7 @@ class SearchMixin:
             # Try without -printf (BSD find compatibility -- macOS)
             cmd_simple = (
                 f"find -H {escaped_path} -mindepth 1 {hidden_prune} -o -type d "
-                f"! -name '.*' -name {escaped_pattern} 2>/dev/null"
+                f"! -name '.*' -name {escaped_pattern} -print 2>/dev/null"
             )
             result = self._exec(cmd_simple, timeout=30)
             stdout, limit_reason = _search_stdout_and_limit(result)

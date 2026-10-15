@@ -248,6 +248,58 @@ class TestVoiceChannelSidecarNote:
 
 
 # ---------------------------------------------------------------------------
+# 4b. Voice-channel sidecar note under multiplexing: the receiving bot's adapter
+# ---------------------------------------------------------------------------
+
+
+def _multiplex_vc_runner(primary_vc: str, secondary_vc: str):
+    primary = _VcAdapter(primary_vc)
+    secondary = _VcAdapter(secondary_vc)
+    runner = _make_runner(adapters={Platform.DISCORD: primary})
+    runner._profile_adapters = {"otto": {Platform.DISCORD: secondary}}
+    runner.config = SimpleNamespace(multiplex_profiles=True)
+    return runner, primary, secondary
+
+
+def _sec_source():
+    return SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="c1",
+        chat_type="channel",
+        user_id="u1",
+        profile="otto",
+    )
+
+
+class TestVoiceChannelSidecarNoteMultiplexed:
+    """#139345: the note must read the adapter of the bot that received the turn. The primary
+    profile's Discord adapter is a different bot whose voice binding (and call state) is its own."""
+
+    def test_secondary_in_call_gets_the_note(self):
+        runner, _primary, _secondary = _multiplex_vc_runner(
+            "", "**Voice:** dev-vc (2 members)"
+        )
+        note = runner._voice_channel_sidecar_note(_vc_event(), _sec_source(), "sk")
+        assert note and "dev-vc (2 members)" in note
+
+    def test_secondary_never_borrows_the_primary_call(self):
+        runner, _primary, _secondary = _multiplex_vc_runner(
+            "**Voice:** ops-vc (5 members)", ""
+        )
+        note = runner._voice_channel_sidecar_note(_vc_event(), _sec_source(), "sk")
+        assert note is None
+
+    def test_disconnected_secondary_fails_closed(self):
+        # The profile's adapter is gone: no note, and never the primary bot's call as a stand-in.
+        runner, _primary, _secondary = _multiplex_vc_runner(
+            "**Voice:** ops-vc (5 members)", ""
+        )
+        runner._profile_adapters = {}
+        note = runner._voice_channel_sidecar_note(_vc_event(), _sec_source(), "sk")
+        assert note is None
+
+
+# ---------------------------------------------------------------------------
 # 5. Sidecar note staging: one-shot per turn
 # ---------------------------------------------------------------------------
 

@@ -649,7 +649,10 @@ class GatewayAgentCacheMixin:
         member/speaking churn can't touch the prompt."""
         if source.platform != Platform.DISCORD:
             return None
-        adapter = self.adapters.get(Platform.DISCORD)
+        # The bot that RECEIVED the turn owns the voice binding; under multiplexing the primary's
+        # Discord adapter is a different bot that isn't in the call (#139345). Fail-closed: a
+        # disconnected secondary resolves to no adapter, same as a standalone gateway without one.
+        adapter = self._delivery_adapter_for(source)
         guild_id = self._get_guild_id(event)
         if not (guild_id and adapter and hasattr(adapter, "get_voice_channel_context")):
             return None

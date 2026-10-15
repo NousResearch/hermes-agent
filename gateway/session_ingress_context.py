@@ -69,28 +69,13 @@ def native_callback(runner, event, transport_home, profile=None):
 
 
 def carry_callback(event, rewritten):
-    """A gateway-side rewrite of a callback's event (``pre_gateway_dispatch``) keeps the callback's
-    provenance: it changes the text only, never the source the callback authenticated (#139045)."""
+    """Gateway code that rebuilds a callback's event (a ``pre_gateway_dispatch`` rewrite, the
+    ``/retry`` re-send) keeps the callback's provenance, but only on the source object the callback
+    authenticated: a new event with a swapped source carries nothing (#139045, #139040)."""
     for bound_var in (_callback, _relay_callback):
         bound = bound_var.get()
         if bound is not None and bound[1] is event and rewritten.source is event.source:
             bound_var.set((bound[0], rewritten, *bound[2:]))
-
-
-@contextmanager
-def redispatched_native(runner, event):
-    """Re-enter the ambient native callback for an event a handler re-sends itself.
-
-    A slash handler's re-dispatched turn (``/retry``) is not a new inbound event: admission
-    matches provenance by event identity, so a freshly built event carries none and native
-    admission refuses it as ``invalid_params`` under session authority.
-    """
-    context = _callback.get()
-    if context is None or context[0] is not runner:
-        yield
-        return
-    with native_callback(runner, event, context[2], context[3]):
-        yield
 
 
 def _binding(runner, source, profile):

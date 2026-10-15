@@ -121,7 +121,13 @@ def _binding(runner, source, profile):
         matches = [route for route in runner.config.profile_routes if route.matches(
             source.platform.value, guild_id=source.scope_id, chat_id=source.chat_id,
             thread_id=source.thread_id, parent_chat_id=source.parent_chat_id, adapter_profile=profile)]
-        if matches:
+        if relay and source.profile:
+            # The connector's per-scope profile route (Team Gateway). The relay flag is set only by
+            # the authenticated WS reader or a verified seal, and the seal covers source.profile, so
+            # a stored row cannot be rerouted. It wins over local routes, as resolve_identity
+            # routes only an unstamped source; an unserved profile is refused below.
+            runtime_profile = source.profile
+        elif matches:
             rank = max(route.specificity for route in matches)
             best = [route for route in matches if route.specificity == rank]
             if len(best) != 1:

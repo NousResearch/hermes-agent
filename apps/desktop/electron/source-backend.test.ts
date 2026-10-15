@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { test, vi } from 'vitest'
+import { test } from 'vitest'
 import WebSocket from 'ws'
 
 import { serveBackendArgs } from './backend-command'
@@ -72,11 +72,8 @@ test.skipIf(process.platform === 'win32')(
     const temp: string = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-pm-start-'))
     const home: string = path.join(temp, 'home with spaces')
 
-    const env: NodeJS.ProcessEnv = Object.fromEntries(
-      Object.entries(process.env).filter(
-        ([key]: [string, string | undefined]): boolean => !/^(HERMES_|PYTHON|UV_|VIRTUAL_ENV|XDG_)/.test(key)
-      )
-    )
+    // The subprocesses need tools, not the developer's credentials or settings.
+    const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, LANG: 'en_US.UTF-8' }
 
     Object.assign(env, {
       HOME: home,
@@ -94,7 +91,8 @@ test.skipIf(process.platform === 'win32')(
     const fixtureScript: string = path.join(import.meta.dirname, 'fixtures', 'source-backend.py')
     const token: string = 'desktop-pm-contract'
     env.HERMES_DASHBOARD_SESSION_TOKEN = token
-    vi.stubEnv('HOME', home)
+    const inheritedEnv: NodeJS.ProcessEnv = process.env
+    process.env = { ...env }
 
     try {
       const fixture: Fixture = JSON.parse(
@@ -121,6 +119,46 @@ test.skipIf(process.platform === 'win32')(
       assert.equal(origin.python, fixture.python)
       assert.ok(origin.module.startsWith(`${fixture.selected}${path.sep}`))
       assert.equal(origin.value, 'selected by PM')
+
+      const main: string = path.join(fixture.root, 'hermes_cli', 'main.py')
+      const mainSource: Buffer = fs.readFileSync(main)
+      const cliStarted: string = path.join(temp, 'normal-cli-started')
+
+      // Reject the normal CLI entry point: version's passive update check and
+      // help's boot maintenance must not participate in runtime validation.
+      fs.writeFileSync(
+        main,
+        `from pathlib import Path\nPath(${JSON.stringify(cliStarted)}).touch()\nraise SystemExit(91)\n`
+      )
+
+      try {
+        const backend: SourceBackend | null = await resolveSourceInstallationBackend(fixture.root, serveBackendArgs(), {
+          hermesHome: env.HERMES_HOME,
+          env
+        })
+
+        assert.ok(backend, 'a healthy PM runtime must be accepted without starting the normal CLI')
+        assert.equal(fs.existsSync(cliStarted), false, 'validation must not run CLI update checks or boot maintenance')
+      } finally {
+        fs.writeFileSync(main, mainSource)
+      }
+
+      // A launcher on disk is not enough: its selected interpreter must run.
+      const unavailablePython: string = `${fixture.python}.unavailable`
+      fs.renameSync(fixture.python, unavailablePython)
+
+      try {
+        assert.equal(
+          await resolveSourceInstallationBackend(fixture.root, serveBackendArgs(), {
+            hermesHome: env.HERMES_HOME,
+            env
+          }),
+          null,
+          'a launcher whose selected interpreter is missing must be rejected'
+        )
+      } finally {
+        fs.renameSync(unavailablePython, fixture.python)
+      }
 
       for (const poisoned of [false, true]) {
         const poison: string = path.join(temp, 'legacy-python-used')
@@ -204,10 +242,59 @@ test.skipIf(process.platform === 'win32')(
       )
     } finally {
       fs.rmSync(temp, { recursive: true, force: true })
-      vi.unstubAllEnvs()
+      process.env = inheritedEnv
     }
   },
   150_000
+)
+
+test.skipIf(process.platform === 'win32').each(['legacy', 'missing-helper', 'pre-module-launcher', 'broken-runtime'])(
+  'source installation probe compatibility: %s (POSIX)',
+  async (installation: string): Promise<void> => {
+    const temp: string = fs.mkdtempSync(path.join(os.tmpdir(), 'desktop-probe-fallback-'))
+    const root: string = path.join(temp, 'repo')
+    const launcher: string = path.join(root, '.hermes', 'bin', 'hermes')
+    const inheritedEnv: NodeJS.ProcessEnv = process.env
+    process.env = { HOME: temp, HERMES_HOME: temp, PATH: inheritedEnv.PATH }
+
+    try {
+      fs.mkdirSync(path.dirname(launcher), { recursive: true })
+      fs.mkdirSync(path.join(root, 'hermes_cli'))
+      fs.writeFileSync(path.join(root, 'hermes_cli', 'main.py'), '')
+
+      if (installation !== 'legacy') {
+        fs.mkdirSync(path.join(root, 'pm'))
+      }
+
+      if (installation !== 'missing-helper') {
+        // An old non-PM checkout may have a helper; both guards are necessary.
+        fs.writeFileSync(path.join(root, 'hermes_cli', '_startup_fast.py'), '')
+      }
+
+      const script: string =
+        installation === 'broken-runtime'
+          ? '#!/bin/sh\nexit 91\n'
+          : '#!/bin/sh\n[ "$#" -eq 1 ] && [ "$1" = "--version" ]\n'
+
+      fs.writeFileSync(launcher, script, { mode: 0o755 })
+
+      const backend: SourceBackend | null = await resolveSourceInstallationBackend(root, ['serve'], {
+        hermesHome: temp,
+        env: process.env
+      })
+
+      if (installation === 'broken-runtime') {
+        assert.equal(backend, null, 'a runtime that fails both probes must remain rejected')
+      } else {
+        assert.ok(backend, 'older installations supporting only --version remain usable')
+        assert.equal(backend.command, launcher)
+        assert.deepEqual(backend.args, ['serve'])
+      }
+    } finally {
+      process.env = inheritedEnv
+      fs.rmSync(temp, { recursive: true, force: true })
+    }
+  }
 )
 
 test('Windows console selection uses only the selected interpreter directory', (): void => {

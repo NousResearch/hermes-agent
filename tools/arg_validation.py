@@ -1,78 +1,111 @@
-"""Dispatch-time argument checks for tools whose silent argument drops mislead the model.
+"""Reject missing or unsupported arguments for registered tools before dispatch.
 
-``coerce_tool_args`` repairs types but ignores keys outside the schema and never checks
-``required``; handlers then default missing values (``pattern=""`` matches every line). The
-registry schema is not always what a handler accepts (hidden keys, dynamic overrides), so
-checking is opt-in per tool in ``_RULES`` rather than applied to every tool.
+The model-facing schema is deliberately smaller than some handlers' accepted input.
+Compatibility rules below preserve those known arguments/forms without exempting any
+whole tool from validation. Internal dispatch kwargs are never model arguments.
 """
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+import logging
+import re
+from typing import Any, Dict, Optional
 
 from tools.registry import registry, tool_error
 
+logger = logging.getLogger(__name__)
 
-@dataclass(frozen=True)
-class _Rule:
-    # Keys the handler reads that the schema does not declare; never reported as unknown.
-    extra_keys: frozenset = frozenset()
-    # Unknown keys reject the call (destructive tools) instead of warning after it ran.
-    reject_unknown: bool = False
+# Accepted but unadvertised inputs, documented by the corresponding handlers.
+# These extend accepted keys only: other unknown keys are still rejected.
+_COMPATIBILITY_ARGUMENTS = {
+    "write_file": frozenset({"cross_profile"}),  # sandbox-mirror override
+    "patch": frozenset({"cross_profile", "mode", "patch"}),  # model-dependent V4A schema
+    "terminal": frozenset({"notify_on_complete", "watch_patterns"}),  # legacy notify interface
+    "delegate_task": frozenset({"goal", "context", "output_schema", "role", "max_iterations"}),
+    "clarify": frozenset({"question", "choices", "multi_select"}),  # legacy single question
+    "cronjob_manage": frozenset({"include_disabled", "monitor_script", "monitor_url"}),
+    "image_generate": frozenset({"image_url", "reference_image_urls", "upscale"}),  # capability-gated
+    "video_generate": frozenset({"image_url", "reference_image_urls", "negative_prompt", "audio", "seed", "upscale"}),
+    "browser_exec": frozenset({"local"}),  # dynamically advertised backend selector
+    "kanban_create": frozenset({"project_id", "session_id"}),
+    "kanban_attach_url": frozenset({"title"}),  # legacy filename alias
+    # Shipped A2A plugin's explicitly supported aliases.
+    "a2a_call": frozenset({"agent_name", "name", "text", "task", "contextId"}),
+    "a2a_history": frozenset({"contextId"}),
+    "a2a_orchestrate": frozenset({"task"}),
+}
 
-
-_RULES: Dict[str, _Rule] = {
-    "search_files": _Rule(),
-    "web_search": _Rule(),
-    "write_file": _Rule(extra_keys=frozenset({"cross_profile"}), reject_unknown=True),
-    "execute_code": _Rule(),
+_REQUIRED_ALIASES = {
+    "clarify": {"questions": ("question",)},
+    "delegate_task": {"tasks": ("goal",)},
+    "a2a_call": {"agent": ("agent_name", "name"), "message": ("text", "task")},
+    "a2a_history": {"context_id": ("contextId",)},
+    "a2a_orchestrate": {"message": ("task",)},
 }
 
 
-def validate_tool_args(tool_name: str, args: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
-    """``(error_json, warning)`` for a call about to be dispatched. ``error_json`` means do NOT
-    run the tool; ``warning`` is advisory text for a call that runs with some keys ignored."""
-    rule = _RULES.get(tool_name)
-    schema = registry.get_schema(tool_name) if rule else None
-    params = (schema or {}).get("parameters") or {}
-    properties = params.get("properties")
-    if not rule or not isinstance(args, dict) or not properties:
-        return None, None
+def _validation_parameters(tool_name: str) -> Optional[dict]:
+    schema = registry.get_schema(tool_name)
+    if not isinstance(schema, dict):
+        return None  # Unknown/unregistered tools keep their existing routing error.
+    fn = schema.get("function") if schema.get("type") == "function" else schema
+    params = fn.get("parameters") if isinstance(fn, dict) else None
+    if not isinstance(params, dict):
+        return None
+    # Dynamic schemas can advertise parameters not in the static registration.
+    # Retain static properties too: some dynamic schemas hide accepted legacy inputs.
+    entry = registry.get_entry(tool_name)
+    override = getattr(entry, "dynamic_schema_overrides", None)
+    if override is not None:
+        try:
+            dynamic = override()
+            live = dynamic.get("parameters") if isinstance(dynamic, dict) else None
+            if isinstance(live, dict):
+                params = {**params, **live, "properties": {
+                    **(params.get("properties") or {}), **(live.get("properties") or {}),
+                }}
+        except Exception:
+            logger.debug("Dynamic argument schema unavailable for %s; using registration", tool_name, exc_info=True)
+    return params
 
-    valid = ", ".join(properties)
-    missing = [
-        key for key in params.get("required") or []
-        if args.get(key) is None]
+
+def validate_tool_args(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
+    """Check required and supported argument names; return an error JSON or ``None``.
+
+    Runs after coercion and middleware. Parameter values remain the handler's contract
+    (and deferred tools' existing JSON Schema validator). No alias guessing, argument
+    removal, or automatic retry. Explicit open schemas/patternProperties are respected.
+    """
+    params = _validation_parameters(tool_name)
+    if params is None or not isinstance(args, dict):
+        return None
+    properties = params.get("properties")
+    if not isinstance(properties, dict):
+        return None  # No declared key set to close; open object schemas remain open.
+
+    required = params.get("required") or []
+    if tool_name == "patch":
+        # Both forms are accepted regardless of the main model's advertised schema.
+        required = ["patch"] if args.get("mode", "replace") == "patch" else ["path", "old_string", "new_string"]
+    aliases = _REQUIRED_ALIASES.get(tool_name, {})
+    missing = [key for key in required
+               if key not in args and not any(alias in args for alias in aliases.get(key, ()))]
+    valid = ", ".join(properties) or "none"
     if missing:
         return tool_error(
             f"{tool_name} is missing required argument(s): {', '.join(missing)}. "
-            f"The tool was NOT invoked. Valid arguments: {valid}."), None
+            f"The tool was NOT invoked. Valid arguments: {valid}.")
 
-    unknown = [key for key in args if key not in properties and key not in rule.extra_keys]
-    if not unknown:
-        return None, None
-    if rule.reject_unknown:
+    additional = params.get("additionalProperties", False)
+    if additional is True or isinstance(additional, dict):
+        return None
+    patterns = params.get("patternProperties") or {}
+    extra_keys = _COMPATIBILITY_ARGUMENTS.get(tool_name, ())
+    unknown = [key for key in args
+               if key not in properties and key not in extra_keys
+               and not any(re.search(pattern, key) for pattern in patterns)]
+    if unknown:
         return tool_error(
             f"{tool_name} does not accept argument(s): {', '.join(unknown)}. "
-            f"The tool was NOT invoked and nothing was changed. Valid arguments: {valid}."), None
-    return None, (f"Ignored unknown argument(s): {', '.join(unknown)}. The tool ran WITHOUT them, so the result "
-                  f"may not be what you intended. Valid arguments: {valid}. See the tool description for what "
-                  f"each argument does, and retry with the correct ones if you still need that behavior.")
-
-
-def attach_arg_warning(result: Any, warning: Optional[str]) -> Any:
-    """Put ``warning`` first in a JSON-object tool result; anything else passes through.
-    A handler's own ``warning`` (e.g. execute_code truncation) is kept after ours."""
-    if not warning or not isinstance(result, str):
-        return result
-    try:
-        data = json.loads(result)
-    except ValueError:
-        return result
-    if not isinstance(data, dict):
-        return result
-    existing = data.pop("warning", None)
-    first = f"{warning}\n{existing}" if existing else warning
-    return json.dumps({"warning": first, **data}, ensure_ascii=False)
+            f"The tool was NOT invoked. Valid arguments: {valid}.")
+    return None

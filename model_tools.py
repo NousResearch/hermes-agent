@@ -22,7 +22,7 @@ from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
-from tools.arg_validation import attach_arg_warning, validate_tool_args
+from tools.arg_validation import validate_tool_args
 from tools.todo_tool import TODO_LEGACY_ALIASES, TODO_SCHEMA
 from utils import file_signature
 
@@ -840,17 +840,15 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
         nonlocal observer_fields
         # Hooks and execution middleware may repair or replace arguments; only the
         # final handler payload tells us which keys would actually be dropped.
-        arg_error, arg_warning = validate_tool_args(function_name, next_args)
+        arg_error = validate_tool_args(function_name, next_args)
         if arg_error is not None:
             observer_fields = ("error", "invalid_arguments", json.loads(arg_error)["error"])
             return arg_error
 
         from tools.connectors import dispatch_connector_call, is_connector_name
         if is_connector_name(function_name):
-            result = dispatch_connector_call(function_name, next_args, ids.tool_call_id, ids.turn_id, ids.task_id)
-        else:
-            result = registry.dispatch(function_name, next_args, **dispatch_kwargs)
-        return attach_arg_warning(result, arg_warning)
+            return dispatch_connector_call(function_name, next_args, ids.tool_call_id, ids.turn_id, ids.task_id)
+        return registry.dispatch(function_name, next_args, **dispatch_kwargs)
 
     with _approval_observability(ids):
         if skip_tool_execution_middleware:

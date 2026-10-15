@@ -743,6 +743,14 @@ def _dispatch_authorized_once(
             block_body=block_body, block_error_type=block_error_type, guardrail_decision=guardrail_decision,
         )
 
+    # Inline tools (notably delegation) bypass model_tools.handle_function_call.
+    # Check the final rewritten arguments here too, before any handler can run.
+    from tools.arg_validation import validate_tool_args
+    argument_error = validate_tool_args(ref.name, ref.args)
+    if argument_error is not None:
+        _advance_start_order()
+        return argument_error
+
     if ref.name == "memory":
         agent._turns_since_memory = 0
     elif ref.name == "skill_manage":

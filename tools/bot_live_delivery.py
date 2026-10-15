@@ -121,10 +121,7 @@ def _locked(home: Path | str):
     created = not root.is_dir()
     root.parent.mkdir(parents=True, exist_ok=True)
     root.mkdir(mode=0o700, exist_ok=True)
-    if os.name != "nt":
-        # Windows chmod only sets or clears the read-only attribute, so it adds nothing there:
-        # the owner-only DACL comes from mkdir's mode (CPython 3.13+) when it creates the dir.
-        root.chmod(0o700)
+    root.chmod(0o700)
     if created:
         # Only a fresh mailbox dir needs its parents durably linked; the live
         # poller re-enters this lock twice a second per profile, and two

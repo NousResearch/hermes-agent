@@ -19,7 +19,11 @@ def native_reasoning_items(value: Any, expected_text: str) -> list[dict]:
             value = json.loads(value)
         except (TypeError, ValueError):
             return []
-    if not isinstance(value, list) or not isinstance(expected_text, str) or not expected_text:
+    if (
+        not isinstance(value, list)
+        or not isinstance(expected_text, str)
+        or not expected_text
+    ):
         return []
     result, groups, seen = [], [], set()
     for item in value:
@@ -28,13 +32,23 @@ def native_reasoning_items(value: Any, expected_text: str) -> list[dict]:
         if item.get("type") == "compaction":
             continue
         item_id, summary = item.get("id"), item.get("summary")
-        if (item.get("type") != "reasoning" or not isinstance(item_id, str) or not item_id
-                or item_id in seen or not isinstance(summary, list) or not summary):
+        if (
+            item.get("type") != "reasoning"
+            or not isinstance(item_id, str)
+            or not item_id
+            or item_id in seen
+            or not isinstance(summary, list)
+            or not summary
+        ):
             return []
         parts = []
         for part in summary:
-            if (not isinstance(part, dict) or part.get("type") != "summary_text"
-                    or not isinstance(part.get("text"), str) or not part["text"]):
+            if (
+                not isinstance(part, dict)
+                or part.get("type") != "summary_text"
+                or not isinstance(part.get("text"), str)
+                or not part["text"]
+            ):
                 return []
             parts.append({"type": "summary_text", "text": part["text"]})
         seen.add(item_id)
@@ -47,9 +61,15 @@ def project_reasoning_identity(message: dict) -> dict:
     """Annotate the already-selected reasoning view without adding or replacing its text."""
     if message.get("role") != "assistant" or message.get("display_kind") == "hidden":
         return message
-    reasoning = message.get("display_reasoning", (
-        message.get("reasoning") or message.get("reasoning_content") or message.get("reasoning_details") or ""
-    ))
+    reasoning = message.get(
+        "display_reasoning",
+        (
+            message.get("reasoning")
+            or message.get("reasoning_content")
+            or message.get("reasoning_details")
+            or ""
+        ),
+    )
     items = native_reasoning_items(message.get("codex_reasoning_items"), reasoning)
     if not items:
         return message

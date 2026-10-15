@@ -112,9 +112,13 @@ async function assertBackendDisplaySidecars(page: Page, sessionId: string): Prom
   expect(persistedRow!.display_commentary).toEqual([COMMENTARY])
   expect(persistedRow!.display_reasoning).toBe(SUMMARY)
   expect(persistedRow!.content).toBe(CANONICAL_FINAL)
-  expect(persistedRow!.display_reasoning_items).toEqual([{
-    type: 'reasoning', id: 'rs_resume', summary: [{ type: 'summary_text', text: SUMMARY }]
-  }])
+  expect(persistedRow!.display_reasoning_items).toEqual([
+    {
+      type: 'reasoning',
+      id: 'rs_resume',
+      summary: [{ type: 'summary_text', text: SUMMARY }]
+    }
+  ])
 }
 
 async function openSeededSession(page: Page): Promise<void> {

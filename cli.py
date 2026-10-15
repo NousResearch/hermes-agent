@@ -921,7 +921,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                 config=self.config,
                 # Writer identity: a re-claim by this process replaces its own entry.
                 # See #94595.
-                metadata={"live_session_id": str(self.session_id)},
+                metadata=self._active_session_metadata(),
             )
         except Exception as exc:
             logger.warning("Failed to claim active session slot: %s", exc)

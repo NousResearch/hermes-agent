@@ -415,6 +415,15 @@ test('a ?profile= request on the shared host descriptor mints for the sibling pr
   expect(() => routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/x?profile=../evil', path.resolve('hermes-home'))).toThrow('Invalid profile route')
 })
 
+test('a profile SOUL route mints for the profile named in its path', () => {
+  const endpoint = { profile_id: path.resolve('hermes-home'), instance_id: 'i', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1', capabilities: [], supervisor: 'none', control_home: null }
+
+  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/profiles/p2/soul', path.resolve('hermes-home'))).toMatchObject({
+    profile_id: path.resolve('hermes-home', 'profiles', 'p2'),
+    control_home: path.resolve('hermes-home')
+  })
+})
+
 // The batched sidebar names its owner in `recents_profile`; a grant for the window's own profile
 // is refused there (profile_scope_mismatch) and the sidebar drops that profile's sessions.
 test('a sidebar read mints for the profile its recents_profile names', () => {

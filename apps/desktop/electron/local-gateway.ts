@@ -316,10 +316,35 @@ function shellQuote(file: string): string {
   return `'${file.replace(/'/g, `'\\''`)}'`
 }
 
-/** The batched sidebar names its owner in `recents_profile` (the gateway checks that selector);
- *  every other profile-scoped route uses `profile`. */
+// These are collection routes beneath /api/profiles, not profile names. Keep this in step with
+// dashboard_auth.native_http._check_profile_scope: every other first path segment names the
+// profile whose native ticket must be minted.
+const PROFILE_COLLECTION_ROUTES = new Set([
+  'active', 'import', 'projects', 'sessions'
+])
+
+/** The batched sidebar names its owner in `recents_profile`. A named profile route carries its
+ *  owner in the first path segment; all other profile-scoped routes use `profile`. */
 function scopedProfileOf(url: URL): null | string {
-  return url.searchParams.get(url.pathname.replace(/\/+$/, '') === '/api/profiles/sessions/sidebar' ? 'recents_profile' : 'profile')
+  const pathname = url.pathname.replace(/\/+$/, '')
+
+  if (pathname === '/api/profiles/sessions/sidebar') {
+    return url.searchParams.get('recents_profile')
+  }
+
+  const prefix = '/api/profiles/'
+  const suffix = pathname.startsWith(prefix) ? pathname.slice(prefix.length) : ''
+  const segment = suffix.split('/', 1)[0]
+
+  if (segment && !PROFILE_COLLECTION_ROUTES.has(segment)) {
+    try {
+      return decodeURIComponent(segment)
+    } catch {
+      return null
+    }
+  }
+
+  return url.searchParams.get('profile')
 }
 
 /** The endpoint a `?profile=<name>` request is scoped to on a shared host descriptor: the same

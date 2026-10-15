@@ -262,7 +262,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5", "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro",
         "mimo-v2-omni", "minimax-m3", "minimax-m2.7", "minimax-m2.5", "deepseek-v4-pro",
         "deepseek-v4-flash", "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus",
-        "qwen3.5-plus", "hy3", "hy3-preview", "muse-spark-1.2-contributor", "muse-spark-1.3-contributor",
+        "qwen3.5-plus", "hy4-preview", "hy3", "hy3-preview", "muse-spark-1.2-contributor",
+        "muse-spark-1.3-contributor",
     ],
     "kilocode": [
         "anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4",

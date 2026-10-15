@@ -119,7 +119,8 @@ def _binding(runner, source, profile):
         # (#104933), so the receiving adapter's owner is part of the match.
         matches = [route for route in runner.config.profile_routes if route.matches(
             source.platform.value, guild_id=source.scope_id, chat_id=source.chat_id,
-            thread_id=source.thread_id, parent_chat_id=source.parent_chat_id, adapter_profile=profile)]
+            thread_id=source.thread_id, parent_chat_id=source.parent_chat_id, adapter_profile=profile,
+            user_id=getattr(source, 'user_id', None))]
         if matches:
             rank = max(route.specificity for route in matches)
             best = [route for route in matches if route.specificity == rank]

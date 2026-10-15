@@ -722,10 +722,13 @@ hermes computer-use status
 
 For a named profile, run each command with `hermes -p PROFILE` instead of `hermes`.
 Restart that WSL backend after changing the target; this does not hot-switch existing sessions.
-Windows PowerShell/WSL interop must be enabled. Installation uses the official Windows installer
-and may request Windows UAC consent. Status prints the selected Windows executable path.
+Windows PowerShell/WSL interop must be enabled. Installation stages the Windows driver pinned
+by Hermes PM. Autostart registration stays opt-in through `computer_use.autostart` and may
+request Windows UAC consent. Status prints the selected Windows executable path.
 The same resolver is used by the agent and by Desktop's existing status/install endpoints.
 `computer_use.target: auto` keeps legacy resolution; `linux` restricts it to the guest.
 An incompatible `HERMES_CUA_DRIVER_CMD` is not silently replaced. A Windows-host profile cannot
 also drive a running Linux **Bot Screen**: stop that screen or use a separate profile.
+With a sandboxed terminal backend, Windows-host control requires an explicit
+`bot_desktop.placement: gateway` choice. Terminal placement remains inside its sandbox.
 This uses same-PC executable interop, not a relay to an arbitrary remote frontend's desktop.

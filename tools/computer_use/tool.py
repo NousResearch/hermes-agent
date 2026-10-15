@@ -330,9 +330,9 @@ def handle_computer_use(args: dict[str, Any], **kwargs) -> Any:
         admitted = _bd_lease.assert_agent_may_act()
     except _bd_lease.HumanHasControl as e:
         return _refused(e)
-    from tools.computer_use.cua_backend_driver import computer_use_target
+    from tools.computer_use.cua_backend_driver import computer_use_target, is_windows_driver, resolve_cua_driver_cmd
     try:
-        if computer_use_target() != "windows":
+        if computer_use_target() != "windows" and not is_windows_driver(resolve_cua_driver_cmd()):
             _bd_ensure_started()  # headless guest profiles keep the existing Xvnc path
     except ValueError as e:
         return json.dumps({"error": str(e)})

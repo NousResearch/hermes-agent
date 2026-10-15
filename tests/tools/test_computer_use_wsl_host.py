@@ -105,6 +105,8 @@ def interop(tmp_path, monkeypatch):
     monkeypatch.setattr(cb, '_run_quiet', run)
     if discovery := getattr(driver, '_wsl_windows_install_paths', None):
         discovery.cache_clear()
+    monkeypatch.setattr('pm.installed_package', lambda name: SimpleNamespace(binary=guest))
+    monkeypatch.setattr('pm.ensure', lambda *a, **kw: None)
     tool.reset_backend_for_tests()
     yield host, guest, calls
     tool.reset_backend_for_tests()
@@ -112,7 +114,7 @@ def interop(tmp_path, monkeypatch):
         discovery.cache_clear()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize('permission', ['standard', 'unrestricted'])
 def test_profile_selection_reaches_mcp_windows_and_capture(interop, tmp_path, monkeypatch, permission):
     host, guest, calls = interop
@@ -146,7 +148,7 @@ def test_profile_selection_reaches_mcp_windows_and_capture(interop, tmp_path, mo
                    for args in launches)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize('failure', ['missing', 'timeout', 'json', 'partial'])
 def test_discovery_failure_retries_and_selection_never_crosses_targets(interop, tmp_path, monkeypatch, failure):
     host, guest, _ = interop
@@ -179,3 +181,90 @@ def test_discovery_failure_retries_and_selection_never_crosses_targets(interop, 
     monkeypatch.setattr('tools.bot_desktop.runtime.published_env', lambda: {'DISPLAY': ':20'})
     with pytest.raises(ValueError, match='active Linux Bot Screen'):
         driver.resolve_cua_driver_cmd()
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("failure", ["nonzero", "empty", "multiline", "missing", "timeout"])
+def test_manifest_translation_failure_is_a_retryable_tool_error(interop, tmp_path, monkeypatch, failure):
+    """The existing tool boundary must refuse startup, not drop the manifest or cache a broken backend."""
+    from hermes_cli.config import save_config
+
+    host, _, _ = interop
+    manifest = tmp_path / "capabilities.yaml"
+    manifest.write_text("version: 3\n")
+    save_config({"computer_use": {"target": "windows", "permission_mode": "bounded",
+                                  "capability_manifest": str(manifest)}})
+    real_run = cb._run_quiet
+    translations = []
+
+    def failed_translation(argv, **kwargs):
+        if argv[:2] == ["wslpath", "-w"]:
+            translations.append(argv)
+            if failure == "missing":
+                raise FileNotFoundError("wslpath is unavailable")
+            if failure == "timeout":
+                raise driver.subprocess.TimeoutExpired(argv, 3.0)
+            output = {"nonzero": "ignored", "empty": "", "multiline": "first\nsecond"}[failure]
+            return SimpleNamespace(returncode=1 if failure == "nonzero" else 0, stdout=output)
+        return real_run(argv, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(cb, "_run_quiet", failed_translation)
+        result = json.loads(registry.dispatch("computer_use", {"action": "capture", "app": "screen"},
+                                              session_id="manifest-error"))
+    assert translations == [["wslpath", "-w", str(manifest)]]
+    assert "computer_use backend unavailable:" in result["error"], result
+    message = "wslpath" if failure in {"missing", "timeout"} else "Cannot translate the capability manifest"
+    assert message in result["error"], result
+    assert not tool._backends
+    launches = [json.loads(line) for line in host.with_suffix(".log").read_text().splitlines()]
+    assert not any(args[0] in {"serve", "mcp"} for args in launches)
+
+    # Retrying through the same public entry point succeeds once translation recovers.
+    result = json.loads(registry.dispatch("computer_use", {"action": "list_windows"}, session_id="manifest-error"))
+    assert result["windows"][0]["app_name"] == "HOST", result
+    launches = [json.loads(line) for line in host.with_suffix(".log").read_text().splitlines()]
+    serve = [args for args in launches if args[0] == "serve"]
+    assert len(serve) == 1
+    args = serve[0]
+    assert args[args.index("--capability-manifest") + 1] == r"\\wsl.localhost\Ubuntu\manifest.yaml"
+    assert "--approve-capability-manifest" in args
+
+
+@pytest.mark.platforms("linux")
+def test_auto_windows_override_does_not_start_a_linux_screen(tmp_path, monkeypatch):
+    import json
+    from hermes_cli.config import save_config
+    from tools.computer_use import tool
+    from tools.computer_use_tool import registry
+
+    host = tmp_path / "cua-driver.exe"
+    host.write_text("host binary fixture")
+    host.chmod(0o755)
+    save_config({"computer_use": {"target": "auto"}})
+    monkeypatch.setattr("hermes_constants.is_wsl", lambda: True)
+    monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", str(host))
+    monkeypatch.setattr("tools.bot_desktop.runtime.ensure_started_for_tool", lambda: pytest.fail("Windows override started a Linux screen"))
+    monkeypatch.setattr(tool, "_new_backend", lambda mode: tool._NoopBackend())
+    tool.reset_backend_for_tests()
+    try:
+        result = json.loads(registry.dispatch("computer_use", {"action": "list_apps"}, session_id="auto-host"))
+        assert "error" not in result, result
+    finally:
+        tool.reset_backend_for_tests()
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("target,override", [("windows", ""), ("auto", "cua-driver.exe")])
+def test_windows_host_refuses_terminal_placement_before_starting_a_screen(tmp_path, monkeypatch, target, override):
+    from hermes_cli.config import save_config
+    from tools.bot_desktop import placement, runtime
+    from tools.computer_use import cua_backend
+
+    save_config({"computer_use": {"target": target}})
+    monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", override)
+    monkeypatch.setattr("hermes_constants.is_wsl", lambda: True)
+    monkeypatch.setattr(runtime, "tool_placement", lambda: placement.TERMINAL)
+    monkeypatch.setattr(runtime, "published_env", lambda: pytest.fail("Windows target accessed a terminal screen"))
+    with pytest.raises(RuntimeError, match="requires gateway desktop placement"):
+        cua_backend.sandbox_mcp_invocation()

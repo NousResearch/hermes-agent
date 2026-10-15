@@ -173,6 +173,9 @@ class _EmbeddedCuaDaemon:
         if not driver_cmd:
             raise RuntimeError(_driver.cua_driver_install_hint())
         self._command, self._mcp_args = _driver._resolve_mcp_invocation(driver_cmd)
+        token = uuid.uuid4().hex[:12]
+        self.socket_path = (rf"\\.\pipe\hermes-cua-{token}" if sys.platform == "win32" or _driver.is_windows_driver(self._command)
+                            else os.path.join(tempfile.gettempdir(), f"hc-{token}.sock"))
         env = self._sanitized_env()
         command = _embedded_daemon_spawn_command(self._command, self._serve_args(), platform=sys.platform)
         self._process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,

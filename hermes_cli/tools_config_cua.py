@@ -106,13 +106,19 @@ def _cua_driver_install_ready() -> bool:
 
 def _install_wsl_windows_driver(*, upgrade: bool) -> bool:
     """Explicit host setup stages the same Windows pin; runtime never installs across OSes."""
+    from pm import get_package
     from pm.client import stage_only
     from tools.computer_use.cua_backend_driver import _wsl_windows_pm_target
 
     override = os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip()
     if not override:
         try:
-            stage_only("cua-driver", _wsl_windows_pm_target())
+            target = _wsl_windows_pm_target()
+            entry = stage_only("cua-driver", target)
+            binary = get_package("cua-driver").binary(entry, target)
+            if binary is not None:
+                # Windows archives need no POSIX mode, but WSL interop exec does.
+                binary.chmod(binary.stat().st_mode | 0o111)
         except Exception as exc:
             return _fail(f"    Windows cua-driver preparation failed: {exc}")
     binary = _resolved_cua_driver_cmd()

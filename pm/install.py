@@ -137,10 +137,10 @@ def installed_package(name: str, *, allow_outdated: bool = False) -> InstalledPa
 def staged_package(name: str, target: str) -> InstalledPackage | None:
     """Read a current cross-target stage without acquisition or native-facts mutation."""
     package, lockfile = get_package(name), _lockfile()
-    version = lockfile.version(name)
-    if version is None:
+    version, artifacts = lockfile.version(name), lockfile.artifacts(name, target)
+    if version is None or not artifacts:
         return None
-    pin = json.dumps({"target": target, "sha256": [a["sha256"] for a in lockfile.artifacts(name, target)]})
+    pin = json.dumps({"target": target, "sha256": [a["sha256"] for a in artifacts]})
     for root in dict.fromkeys((paths.store_root(), paths.writable_store_root())):
         store = Store(root)
         entry = store.entry(package.store_entry(version, target))

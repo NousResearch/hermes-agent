@@ -35,9 +35,14 @@ def _cu_status(args) -> int:
     _exit_if_plugin_backend()
     import os as _os
     from hermes_cli.tools_config_cua import _cua_driver_contract_status, _cua_version_summary
-    from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
+    from tools.computer_use.cua_backend_driver import is_windows_driver, resolve_cua_driver_cmd
 
-    path = resolve_cua_driver_cmd()
+    try:
+        path = resolve_cua_driver_cmd()
+    except ValueError as exc:
+        print(f"cua-driver target error: {exc}", file=sys.stderr)
+        return 1
+
     override = _os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip()
     if not path:
         print("cua-driver: not installed")
@@ -69,6 +74,7 @@ def _cu_status(args) -> int:
                 print(f"    Check: systemctl --user status {unit}  (reinstalling the driver does not start it)")
                 rc = 1
     print("  ✓ Runtime contract ready (externally managed)." if override
+          else "  ✓ Windows-host runtime contract ready." if sys.platform == "linux" and is_windows_driver(path)
           else "  ✓ Runtime contract ready (Hermes PM pin).")
     return rc
 
@@ -95,7 +101,8 @@ def _cu_perms_status(args) -> None:
         print(f"Computer Use is not supported on {st['platform']}.")
         sys.exit(1)
     if not st["installed"]:
-        print("cua-driver: not installed. Run: hermes computer-use install")
+        print(f"cua-driver: {st['error']}" if st["error"] else
+              "cua-driver: not installed. Run: hermes computer-use install")
         sys.exit(1)
     glyph = lambda v: "✅" if v is True else ("❌" if v is False else "•")
     print(f"cua-driver: {st['version'] or 'installed'} ({st['platform']})")

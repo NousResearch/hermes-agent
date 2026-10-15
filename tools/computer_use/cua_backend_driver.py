@@ -116,7 +116,7 @@ def _wsl_windows_install_paths() -> Tuple[str, ...]:
 
 def _wsl_windows_pm_target() -> str:
     from hermes_platform.host.facts import native_arch
-    return "win32-" + native_arch()
+    return "win32-" + {"amd64": "x64", "arm64": "arm64"}[native_arch()]
 
 
 def resolve_cua_driver_cmd(override: Optional[str] = None) -> Optional[str]:

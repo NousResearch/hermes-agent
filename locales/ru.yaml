@@ -1657,7 +1657,7 @@ slash:
   restart:
     description: "Аккуратно перезапустить шлюз после завершения активных запусков"
   usage:
-    description: "Показать расход токенов и лимиты; `reset` использует накопленный сброс лимита Codex"
+    description: "Расход токенов"
   subscription:
     description: "Посмотреть ваш тариф Nous и изменить его в браузере"
   login:

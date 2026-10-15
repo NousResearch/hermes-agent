@@ -591,9 +591,11 @@ def _run_debug_share_nous(args, *, log_lines: int, redact: bool) -> None:
     try:
         res = share_to_nous(build_nous_bundle(bundle, redact=redact))
     except Exception as exc:
+        from pm.network import edge_block
+
         error = redact_debug_support_text(exc)
-        print(f"\nNous upload failed: {error}\n"
-              "\nThe Nous diagnostics service may be unavailable or not yet provisioned.\n"
+        cause = edge_block(exc) or "The Nous diagnostics service may be unavailable or not yet provisioned"
+        print(f"\nNous upload failed: {error}\n\n{cause}.\n"
               "Run `hermes debug share --local` to print the report instead, "
               "or `hermes debug share` to upload to a public paste service.\n", file=sys.stderr)
         sys.exit(1)

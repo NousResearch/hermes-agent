@@ -1508,7 +1508,9 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
         for t in toolsets:
             toolsets_list.extend([x.strip() for x in t.split(",")] if isinstance(t, str) else [str(t)])
     elif not toolsets:
-        # Coding posture inside a code workspace, else the shared platform resolver.
+        # Coding posture inside a code workspace, else the shared platform resolver. Neither is a
+        # pick: the gateway resolves both from the session's cwd, so this list only feeds the display.
+        profile_default = True
         try:
             from agent.coding_context import coding_selection
             toolsets_list = coding_selection(platform="cli", config=CLI_CONFIG)
@@ -1517,7 +1519,6 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
         if toolsets_list is None:
             from hermes_cli.tools_config import _get_platform_tools
             toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
-            profile_default = True
 
     parsed_skills = _parse_skills_argument(skills)
 
@@ -1546,7 +1547,7 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
             sys.exit(1)
         raise
     if profile_default:
-        cli._explicit_toolsets = False  # the gateway resolves the profile's toolsets itself
+        cli._explicit_toolsets = False  # the gateway resolves the default and coding posture itself
     # Only a typed -t is checked against a resumed session's frozen toolsets.
     cli._typed_toolsets = toolsets_list if toolsets else None
 

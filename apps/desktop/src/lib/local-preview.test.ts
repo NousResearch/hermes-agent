@@ -233,7 +233,9 @@ describe('PDF previews', () => {
 describe('Office previews', () => {
   it.each([
     ['/tmp/notes.docx', 'document'],
+    ['/tmp/notes.odt', 'document'],
     ['/tmp/book.xlsx', 'spreadsheet'],
+    ['/tmp/book.ods', 'spreadsheet'],
     ['/tmp/legacy.xls', 'spreadsheet'],
     ['/tmp/people.csv', 'spreadsheet'],
     ['/tmp/deck.pptx', 'presentation']

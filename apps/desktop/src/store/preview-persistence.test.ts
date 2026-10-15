@@ -97,7 +97,9 @@ describe('persisted preview migration', () => {
 
   it.each([
     ['/work/notes.docx', 'document'],
+    ['/work/notes.odt', 'document'],
     ['/work/book.xlsx', 'spreadsheet'],
+    ['/work/book.ods', 'spreadsheet'],
     ['/work/legacy.xls', 'spreadsheet'],
     ['/work/people.csv', 'spreadsheet'],
     ['/work/deck.pptx', 'presentation']

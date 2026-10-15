@@ -6,6 +6,8 @@ export type OfficePreviewKind = 'document' | 'presentation' | 'spreadsheet'
 const OFFICE_KIND_BY_EXT: Record<string, OfficePreviewKind> = {
   '.csv': 'spreadsheet',
   '.docx': 'document',
+  '.ods': 'spreadsheet',
+  '.odt': 'document',
   '.pptx': 'presentation',
   '.xls': 'spreadsheet',
   '.xlsx': 'spreadsheet'

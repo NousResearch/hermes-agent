@@ -2,6 +2,7 @@ import type { OfficePreviewKind } from '@hermes/shared'
 import { useEffect, useState } from 'react'
 
 import { docxPreviewDocument } from '@/lib/office-document'
+import { odtPreviewDocument } from '@/lib/office-odf'
 import { parsePptx, type SlidePreview } from '@/lib/office-pptx'
 import { dataUrlBytes, parseSpreadsheet, type SheetPreview } from '@/lib/office-workbook'
 
@@ -50,7 +51,7 @@ export function OfficePreview({
         const bytes = dataUrlBytes(dataUrl)
 
         if (kind === 'document') {
-          const document = await docxPreviewDocument(bytes)
+          const document = /\.odt$/i.test(label) ? odtPreviewDocument(bytes) : await docxPreviewDocument(bytes)
 
           if (active) {
             setHtml(document)

@@ -1,10 +1,15 @@
 import { parseCsv } from './office-csv'
+import { parseOds } from './office-odf'
 import { parseXls } from './office-xls'
 import { parseXlsx, type SheetPreview } from './office-xlsx'
 
 export type { SheetPreview }
 
 export function parseSpreadsheet(bytes: Uint8Array, name?: string): SheetPreview[] {
+  if (name && /\.ods$/i.test(name)) {
+    return parseOds(bytes)
+  }
+
   if (bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4b) {
     return parseXlsx(bytes)
   }

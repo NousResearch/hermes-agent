@@ -64,13 +64,17 @@ export async function docxPreviewDocument(bytes: Uint8Array): Promise<string> {
     throw new Error('Could not read this Word document')
   }
 
+  return officePageDocument(html)
+}
+
+export function officePageDocument(html: string): string {
   const clean = DOMPurify.sanitize(html, {
     FORBID_TAGS: ['script', 'template', 'iframe', 'frame', 'object', 'embed', 'link', 'meta', 'base'],
     FORBID_ATTR: ['href', 'srcset', 'action', 'formaction', 'target', 'ping']
   })
 
   if (!clean.trim()) {
-    throw new Error('This Word document has no previewable text')
+    throw new Error('This document has no previewable text')
   }
 
   return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}"><style>${PAGE_CSS}</style></head><body><article class="page">${clean}</article></body></html>`

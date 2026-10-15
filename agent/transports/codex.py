@@ -11,7 +11,7 @@ import re
 from typing import Any, Callable, Optional
 
 from agent.reasoning_effort import (
-    CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS,
+    CODEX_ASTRA_EFFORTS, CODEX_LEGACY_EFFORTS, GROQ_GPT_OSS_EFFORTS,
     XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
     # per-model — "max" availability varies; "minimal"/"ultra" clamp to a listed level.
@@ -348,7 +348,13 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
     # motivating case, #124103), so anything that still doesn't match `supported` would
     # 400 rather than degrade. Fall back to the declared floor instead of shipping it.
     normalized_supported = [str(level).strip().lower() for level in supported]
-    if declared is not None and str(clamped).strip().lower() not in normalized_supported:
+    # Only for the exact-vocabulary case: a custom relay's declared set is the widest
+    # OpenAI-compat ceiling (floor "none"), so a bespoke tier there must keep passing verbatim.
+    if (
+        declared is not None
+        and tuple(normalized_supported) == GROQ_GPT_OSS_EFFORTS
+        and str(clamped).strip().lower() not in normalized_supported
+    ):
         clamped = supported[0]
     return clamped, reasoning_enabled
 

@@ -374,3 +374,35 @@ class TestCustomResponsesEffortVocabulary:
             },
         )
         assert (effort, enabled) == ("xhigh", True)
+
+    def test_custom_relay_keeps_a_bespoke_tier_verbatim_on_responses(self, custom_profile):
+        """The Groq GPT-OSS re-validation in ``_resolve_reasoning`` must not leak onto other
+        routes: a custom relay declares the widest OpenAI-compat vocabulary (floor ``none``)
+        and passes bespoke tiers through by design, exactly like chat-completions. Falling
+        back to the declared floor here would turn reasoning off (#124103)."""
+        from agent.transports.codex import _resolve_reasoning
+
+        reasoning = {"enabled": True, "effort": "turbo"}
+        _, top_level = custom_profile.build_api_kwargs_extras(
+            reasoning_config=reasoning, base_url="https://relay.example/v1"
+        )
+        effort, enabled = _resolve_reasoning(
+            "relay-model",
+            {"provider": "custom:relay", "base_url": "https://relay.example/v1", "reasoning_config": reasoning},
+        )
+        assert (effort, enabled) == (top_level["reasoning_effort"], True) == ("turbo", True)
+
+    def test_same_gpt_oss_model_on_a_custom_relay_is_not_narrowed_to_groq_efforts(self, custom_profile):
+        """A same-named ``gpt-oss`` model behind a non-Groq relay keeps the relay's open
+        vocabulary: a bespoke tier is neither rewritten nor floored to ``low``."""
+        from agent.transports.codex import _resolve_reasoning
+
+        effort, enabled = _resolve_reasoning(
+            "openai/gpt-oss-120b",
+            {
+                "provider": "custom:relay",
+                "base_url": "https://relay.example/v1",
+                "reasoning_config": {"enabled": True, "effort": "turbo"},
+            },
+        )
+        assert (effort, enabled) == ("turbo", True)

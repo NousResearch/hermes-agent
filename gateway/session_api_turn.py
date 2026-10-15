@@ -250,10 +250,13 @@ def admit_api_steps(adapter, **kwargs):
 
 
 def _admit_api_payload(authority, adapter, sid, request_id, payload, settings, declared_key, kwargs):
-    from hermes_state_terminal import backfill_consumed_api_requests, retry_terminal_admission
+    from hermes_state_terminal import (
+        backfill_consumed_api_requests, consumed_api_requests_backfilled, retry_terminal_admission)
     # Project terminal admissions left by deletes from before the request-id pointer, once,
-    # so this read and later ones see the same consumed key.
-    backfill_consumed_api_requests(authority.db)
+    # so this read and later ones see the same consumed key. The projection is a write, so it
+    # is a yielded step like the admission itself: a held writer must not stall the owner loop.
+    if not consumed_api_requests_backfilled(authority.db):
+        yield partial(backfill_consumed_api_requests, authority.db)
     row = retry_terminal_admission(authority.db, epoch=authority.epoch, principal_id='api',
         session_id=sid, request_id=request_id, payload=payload)
     if row is not None:

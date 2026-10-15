@@ -139,15 +139,20 @@ def _backfill_consumed_api_requests(conn):
     return len(rows)
 
 
+def consumed_api_requests_backfilled(db):
+    with db._read_ctx() as conn:
+        return conn.execute('SELECT 1 FROM state_meta WHERE key=?',
+                            (API_REQUEST_BACKFILL_KEY,)).fetchone() is not None
+
+
 def backfill_consumed_api_requests(db):
     """One write per store: existing terminal admissions gain a request-id pointer.
 
     ``ON CONFLICT DO NOTHING`` so an older tombstone cannot replace a key this process
     already recorded for a newer delete. A read of the marker skips the scan afterwards.
     """
-    with db._read_ctx() as conn:
-        if conn.execute('SELECT 1 FROM state_meta WHERE key=?', (API_REQUEST_BACKFILL_KEY,)).fetchone():
-            return 0
+    if consumed_api_requests_backfilled(db):
+        return 0
     return db._execute_write(_backfill_consumed_api_requests)
 
 

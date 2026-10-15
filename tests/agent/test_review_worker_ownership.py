@@ -55,7 +55,14 @@ def test_exit_waits_through_receipt_delivery(monkeypatch, tmp_path, surface):
     agent.shutdown_memory_provider = lambda *args: None
     agent._session_messages = []
     if surface == "query":
-        monkeypatch.setattr(cli, "_wait_for_oneshot_background_completions", lambda *_: entered.set())
+        from agent import review_lifecycle
+        real_drain = review_lifecycle.drain_background_reviews
+
+        def drain(*args, **kwargs):
+            entered.set()
+            return real_drain(*args, **kwargs)
+
+        monkeypatch.setattr(review_lifecycle, "drain_background_reviews", drain)
         monkeypatch.setattr(cli, "_flush_one_shot_session_store", lambda *_: None)
         monkeypatch.setattr(cli, "_notify_single_query_session_finalize", lambda *_: None)
         monkeypatch.setattr(cli, "_run_cleanup", lambda **_: close())

@@ -518,7 +518,6 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
         _cleanup_in_progress = False
 
 
-
 def _reset_terminal_input_modes_on_exit() -> None:
     """Disable focus reporting + mouse tracking on TUI exit (best-effort).
 

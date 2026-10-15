@@ -32339,6 +32339,31 @@
         "title": "ResumePhaseStatus",
         "type": "string"
       },
+      "ReviewStatusPayload": {
+        "additionalProperties": false,
+        "description": "Worker ownership snapshot mirrored by the isolated compute-host parent.",
+        "properties": {
+          "pending": {
+            "title": "Pending",
+            "type": "boolean"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "shutdown_timeout_s": {
+            "title": "Shutdown Timeout S",
+            "type": "number"
+          }
+        },
+        "required": [
+          "pending",
+          "revision",
+          "shutdown_timeout_s"
+        ],
+        "title": "ReviewStatusPayload",
+        "type": "object"
+      },
       "ReviewSummaryPayload": {
         "additionalProperties": false,
         "description": "``server`` background_review_callback.",
@@ -47950,6 +47975,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/RequestCancelPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "review.status",
+      "summary": "Background review worker ownership changed.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ReviewStatusPayload"
           }
         }
       ]

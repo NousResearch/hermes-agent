@@ -114,6 +114,9 @@ export interface WindowRendererLifecycleOptions {
    *  `did-fail-load` (primary content windows; off by default so OAuth/portal
    *  windows loading remote URLs never auto-reload into a loop). */
   reloadOnFailedLoad?: boolean
+  /** Observes every render-process-gone on a live window (not user close or
+   *  intentional teardown) with Electron's raw `details.reason`. */
+  onRendererGone?: (reason: unknown) => void
   now?: () => number
 }
 
@@ -288,6 +291,14 @@ export function installWindowRendererLifecycle(
     const destroyed = win.isDestroyed() || options.isIntentionalTeardown?.() === true
 
     log(describeRendererLifecycleEvent({ kind, event: 'render-process-gone', ...details, isDestroyed: destroyed }))
+
+    if (!destroyed && options.onRendererGone) {
+      try {
+        options.onRendererGone(details?.reason)
+      } catch {
+        // An observer never changes the recovery path.
+      }
+    }
 
     const nowMs = safeNow(now)
     const recent = pruneReloadTimes(budgetRef.current, nowMs, reloadWindowMs)

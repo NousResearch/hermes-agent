@@ -37,10 +37,18 @@ _STREAM_BUFFER_FLUSH_CHARS = 4000
 _TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 
-def live_transcript_root() -> Path:
-    """Root directory for live transcripts (profile-safe, never ~/.hermes)."""
+def live_transcript_root(home: Optional[Path] = None) -> Path:
+    """Root directory for live transcripts (profile-safe, never ~/.hermes).
+
+    Pass ``home`` when the caller holds stable parent-owned profile state
+    (e.g. the parent agent's SessionDB path). Ambient ``get_hermes_home()``
+    consults a ContextVar that raw ``threading.Thread`` boundaries drop, so
+    in a multi-profile process an ambient resolve can land transcripts under
+    whatever profile the process-wide ``HERMES_HOME`` names at that moment
+    (#91996).
+    """
     from hermes_constants import get_hermes_dir
-    return get_hermes_dir("cache/delegation", "delegation_cache") / "live"
+    return get_hermes_dir("cache/delegation", "delegation_cache", home=home) / "live"
 
 
 @contextmanager
@@ -48,7 +56,7 @@ def _best_effort(what: str):
     """Swallow and debug-log any failure: nothing here may reach the agent loop."""
     try:
         yield
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("Live transcript %s failed: %s", what, exc)
 
 
@@ -76,7 +84,7 @@ def _joined(*parts: str) -> str:
     return " ".join(filter(None, parts))
 
 
-def _dump_json(path: Path, payload: Dict[str, Any]) -> None:
+def _dump_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
@@ -90,7 +98,7 @@ class LiveTranscriptWriter:
         self.task_index = task_index
         self._ok = False
         self._lock = threading.Lock()
-        self._stream_buf: List[str] = []
+        self._stream_buf: list[str] = []
         self._stream_len = 0
         self.path: Optional[Path] = None
         with _best_effort(f"init ({delegation_id} task {task_index})"):
@@ -194,7 +202,7 @@ class LiveTranscriptWriter:
         if handler is not None:
             handler(self, tool_name, preview, args, kwargs)
 
-    def finalize(self, entry: Dict[str, Any]) -> None:
+    def finalize(self, entry: dict[str, Any]) -> None:
         """Terminal marker with exit-reason detail subagent.complete lacks."""
         exit_reason = entry.get("exit_reason")
         self.marker(_joined(
@@ -225,38 +233,47 @@ def wrap_progress_callback(inner_cb, writer: LiveTranscriptWriter):
 
 
 def create_live_transcripts(
-    task_list: List[Dict[str, Any]], context: Optional[str] = None,
+    task_list: list[dict[str, Any]], context: Optional[str] = None,
     delegation_id: Optional[str] = None, model: Optional[str] = None,
     provider: Optional[str] = None,
-) -> tuple[Optional[str], List[Optional[LiveTranscriptWriter]], List[str]]:
+    home: Optional[Path] = None,
+) -> tuple[Optional[str], list[Optional[LiveTranscriptWriter]], list[str]]:
     """One pre-headered writer per task + a manifest.json; prunes stale dirs.
     Returns ``(delegation_id, writers, paths)``; on any top-level failure
-    ``(None, [None]*n, [])`` so delegation proceeds untouched."""
+    ``(None, [None]*n, [])`` so delegation proceeds untouched.
+
+    ``home`` pins every transcript and the manifest to one explicit profile
+    home instead of an ambient resolve that raw thread boundaries can strip
+    of its ContextVar override (#91996). Retention pruning runs against the
+    same resolved root, so pinned homes clean their own stale dirs.
+    """
     n = len(task_list)
-    prune_stale_live_dirs()  # best-effort; never raises
+    prune_stale_live_dirs(root=live_transcript_root(home))  # best-effort; never raises
     with _best_effort("creation"):
         # Same id shape as async_delegation's so the dir name matches the handle.
         deleg_id = delegation_id or f"deleg_{uuid.uuid4().hex[:8]}"
-        made = [LiveTranscriptWriter(deleg_id, i, str(t.get("goal", "")), context=t.get("context") or context)
+        root = live_transcript_root(home)
+        made = [LiveTranscriptWriter(deleg_id, i, str(t.get("goal", "")),
+                                     context=t.get("context") or context, root=root)
                 for i, t in enumerate(task_list)]
-        writers: List[Optional[LiveTranscriptWriter]] = [w if w.path is not None else None for w in made]
-        paths: List[str] = [str(w.path) for w in made if w.path is not None]
+        writers: list[Optional[LiveTranscriptWriter]] = [w if w.path is not None else None for w in made]
+        paths: list[str] = [str(w.path) for w in made if w.path is not None]
         if not paths:
             return None, [None] * n, []
-        _write_manifest(deleg_id, task_list, paths, model=model, provider=provider)
+        _write_manifest(deleg_id, task_list, paths, model=model, provider=provider, home=home)
         return deleg_id, writers, paths
     return None, [None] * n, []
 
 
-def _manifest_path(delegation_id: str) -> Path:
-    return live_transcript_root() / delegation_id / "manifest.json"
+def _manifest_path(delegation_id: str, home: Optional[Path] = None) -> Path:
+    return live_transcript_root(home) / delegation_id / "manifest.json"
 
 
-def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
-                    paths: List[str], model: Optional[str] = None,
-                    provider: Optional[str] = None) -> None:
+def _write_manifest(delegation_id: str, task_list: list[dict[str, Any]],
+                    paths: list[str], model: Optional[str] = None,
+                    provider: Optional[str] = None, home: Optional[Path] = None) -> None:
     with _best_effort("manifest write"):
-        _dump_json(_manifest_path(delegation_id), {
+        _dump_json(_manifest_path(delegation_id, home), {
             "delegation_id": delegation_id, "started": time.strftime(_TIME_FMT),
             "task_count": len(task_list), "model": model, "provider": provider,
             "tasks": [{
@@ -268,12 +285,13 @@ def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
 
 
 def update_manifest_statuses(delegation_id: Optional[str],
-                             results: List[Dict[str, Any]]) -> None:
+                             results: list[dict[str, Any]],
+                             home: Optional[Path] = None) -> None:
     """Best-effort per-task status update once the batch has aggregated."""
     if not delegation_id:
         return
     with _best_effort("manifest update"):
-        mp = _manifest_path(delegation_id)
+        mp = _manifest_path(delegation_id, home)
         manifest = json.loads(mp.read_text(encoding="utf-8-sig"))
         by_index = {r.get("task_index"): r for r in results if isinstance(r, dict)}
         for task in manifest.get("tasks", []):
@@ -286,15 +304,20 @@ def update_manifest_statuses(delegation_id: Optional[str],
         _dump_json(mp, manifest)
 
 
-def prune_stale_live_dirs(max_age_days: int = LIVE_RETENTION_DAYS) -> int:
-    """Remove live/<delegation_id> dirs older than the retention window. Best-effort."""
+def prune_stale_live_dirs(max_age_days: int = LIVE_RETENTION_DAYS, root: Optional[Path] = None) -> int:
+    """Remove live/<delegation_id> dirs older than the retention window. Best-effort.
+
+    ``root`` defaults to the ambient resolve; callers that pin transcripts to an
+    explicit home pass the same root so the prune sweeps where the writes actually
+    land (stale dirs under other profiles' roots stay those profiles' business).
+    """
     removed = 0
     with _best_effort("pruning"):
-        root = live_transcript_root()
-        if not root.is_dir():
+        root_dir = root if root is not None else live_transcript_root()
+        if not root_dir.is_dir():
             return 0
         cutoff = time.time() - max_age_days * 86400
-        for child in root.iterdir():
+        for child in root_dir.iterdir():
             try:
                 if child.is_dir() and child.stat().st_mtime < cutoff:
                     shutil.rmtree(child, ignore_errors=True)
@@ -302,14 +325,3 @@ def prune_stale_live_dirs(max_age_days: int = LIVE_RETENTION_DAYS) -> int:
             except OSError:
                 continue
     return removed
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def new_live_delegation_id() -> str:
-    """Same shape as async_delegation's ids so the dir name matches the handle."""
-    return f"deleg_{uuid.uuid4().hex[:8]}"
-# ---- END PLUGIN-COMPAT ----

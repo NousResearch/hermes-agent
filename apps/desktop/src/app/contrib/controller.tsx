@@ -6,10 +6,8 @@ import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
-import { AskDirective } from '@/components/assistant-ui/ask-directive'
 import { InlinePreviewDirective } from '@/components/assistant-ui/inline-preview-directive'
 import { IdleMount } from '@/components/idle-mount'
-import { OnboardingChatDirective } from '@/components/onboarding-chat/directive'
 import { $layoutEditMode, toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { allPaneIds } from '@/components/pane-shell/tree/model'
 import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
@@ -54,10 +52,10 @@ import {
   Zap
 } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
-import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
 import { setYoloEnabled } from '@/lib/yolo-session'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { watchDeadSessionPrune } from '@/store/dead-session-prune'
 import { $interfaceMode, $showsAdvancedChrome, setModeContext, toggleSimpleMode } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
@@ -117,11 +115,14 @@ import { HudShell } from '../hud/hud-shell'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { terminalPaletteToggle } from '../right-sidebar/terminal/reveal-focus'
 import { $workspaceIsPage, WORKSPACE_PAGE_HEADER_AREA } from '../routes'
+import { Butterbar } from '../shell/butterbar'
+import { TermsButterbar } from '../shell/terms-butterbar'
 
 import { BASIC_TREE, DEFAULT_TREE, registerLayoutPresets } from './layout-presets'
 import { bindLayoutSides } from './layout-sides'
 import { FilesPane, LogsPane, ReviewPaneContent } from './panes'
 import { ContribWiring, WiredPane } from './wiring'
+import { WorkspacePageHeaderHostContext } from './workspace-page-header'
 
 /**
  * Stripped-down app root (bb/contrib-areas) on the layout TREE model, mounting
@@ -144,7 +145,13 @@ import { ContribWiring, WiredPane } from './wiring'
 
 // ONE render identity for the workspace pane — syncWorkspaceTitle re-registers
 // the contribution (new title) and a fresh closure would remount the chat.
-const renderWorkspacePane = () => <WiredPane part="chatRoutes" />
+// The host context marks this subtree as the one whose zone paints
+// WORKSPACE_PAGE_HEADER_AREA; route tiles and the HUD render outside it.
+const renderWorkspacePane = () => (
+  <WorkspacePageHeaderHostContext.Provider value={true}>
+    <WiredPane part="chatRoutes" />
+  </WorkspacePageHeaderHostContext.Provider>
+)
 
 // Boot-hidden panes mount behind display:none (instant-toggle contract) — defer
 // them to idle so they're off the first-paint path, warm before reveal.
@@ -341,28 +348,6 @@ registry.registerMany([
       render: ({ attrs, streaming }) => <InlinePreviewDirective attrs={attrs} streaming={streaming} />
     } satisfies TranscriptDirectiveContribution
   },
-  ...(isOnboardingEnabled()
-    ? [
-        {
-          id: 'transcript.onboarding',
-          area: TRANSCRIPT_DIRECTIVE_AREA,
-          data: {
-            name: 'onboarding',
-            render: ({ attrs, streaming }) => <OnboardingChatDirective attrs={attrs} streaming={streaming} />
-          } satisfies TranscriptDirectiveContribution
-        },
-        // ::ask is the guided chat's question card, registered only with the
-        // onboarding flag. B4 decides its wider use.
-        {
-          id: 'transcript.ask',
-          area: TRANSCRIPT_DIRECTIVE_AREA,
-          data: {
-            name: 'ask',
-            render: ({ attrs, streaming }) => <AskDirective attrs={attrs} streaming={streaming} />
-          } satisfies TranscriptDirectiveContribution
-        }
-      ]
-    : []),
   {
     id: 'layout.reset',
     area: PALETTE_AREA,
@@ -489,6 +474,10 @@ watchSessionPins()
 
 // Release unread-write guards once a list page confirms the value we wrote.
 watchUnreadWriteGuard()
+
+// Drop local pins/drafts/queued prompts whose sessions no longer exist on the
+// backend — otherwise every boot re-requests the dead ids and 404s on each.
+watchDeadSessionPrune()
 
 // The main tab reads as its SESSION (the loaded title, "New session" on a
 // fresh draft) — a stack of main + tiles is then just a row of session names.
@@ -841,6 +830,10 @@ export function ContribController() {
               statusBar.left/right contributions merged in. Unmounted — not
               just hidden — while toggled off, so its 15s status poll and the
               per-turn readouts stop with it. */}
+          {/* Notices registered through `registerButterbar` / `useButterbar`;
+              renders nothing while none are registered. */}
+          <Butterbar />
+          <TermsButterbar />
           {statusbarVisible && <WiredPane part="statusbar" />}
         </div>
       </ContribWiring>

@@ -87,3 +87,65 @@ def test_buildable_pyproject_member_keeps_its_declared_name(tmp_path):
     member = _workspace_member(plugin, root, identity=plugin)
     assert (member / "pyproject.toml").read_text(encoding="utf-8") == (
         plugin / "pyproject.toml").read_text(encoding="utf-8")
+
+
+def test_virtual_member_without_project_metadata_gets_a_version(tmp_path):
+    """A metadata-only member whose pyproject declares no [project] (lint config
+    only) is emitted as ``[project] name = …``; uv rejects a [project] table
+    without ``version`` (or ``dynamic``) at ``uv lock`` time, aborting the whole
+    update. Generated virtual members carry the same inert version plugin-deps
+    use."""
+    import tomllib
+    from pm.workspace import _workspace_member
+
+    plugin = tmp_path / "home" / "plugins" / "hermes-lcm"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text('[tool.ruff]\ntarget-version = "py311"\n', encoding="utf-8")
+    root = tmp_path / "gen"
+    root.mkdir()
+    member = _workspace_member(plugin, root, identity=plugin)
+    project = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert project["version"] == "0.0.0"
+
+
+def test_virtual_member_declaring_dynamic_version_is_left_alone(tmp_path):
+    """PEP 621 forbids supplying ``project.version`` while it is listed under
+    ``project.dynamic`` ("You cannot provide a value for project.version and
+    list it under project.dynamic at the same time"). A metadata-only member
+    may legitimately declare ``dynamic = ["version"]``; the generated member
+    must not gain a static version in that case, or ``uv lock`` rejects the
+    conflicted manifest."""
+    import tomllib
+    from pm.workspace import _workspace_member
+
+    plugin = tmp_path / "home" / "plugins" / "dynver"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname = "dynver"\ndynamic = ["version"]\n', encoding="utf-8"
+    )
+    root = tmp_path / "gen"
+    root.mkdir()
+    member = _workspace_member(plugin, root, identity=plugin)
+    project = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert "version" not in project
+    assert project["dynamic"] == ["version"]
+
+
+def test_buildable_member_without_a_version_gets_one_and_keeps_its_name(tmp_path):
+    """uv rejects a [project] table with no version at parse time, buildable or not.
+    A buildable member still keeps its declared name (uv checks it against its backend)."""
+    import tomllib
+    from pm.workspace import _workspace_member
+
+    plugin = tmp_path / "home" / "plugins" / "noversion"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname = "noversion-plugin"\n'
+        '[build-system]\nrequires = []\nbuild-backend = "backend"\n',
+        encoding="utf-8",
+    )
+    root = tmp_path / "gen"
+    root.mkdir()
+    member = _workspace_member(plugin, root, identity=plugin)
+    project = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert project == {"name": "noversion-plugin", "version": "0.0.0"}

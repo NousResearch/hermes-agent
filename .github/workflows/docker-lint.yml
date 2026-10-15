@@ -12,39 +12,45 @@ name: Docker / shell lint
 
 on:
   workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: docker-lint-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  group: docker-lint-${{ (github.ref_type == 'tag' || inputs.commit != '') && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && inputs.commit == '' }}
 
 jobs:
-  hadolint:
+  lint-docker-and-shell:
     name: Lint Dockerfile (hadolint)
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit }}
 
-      - name: hadolint
+      - name: Lint Dockerfile (hadolint)
         uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           dockerfile: Dockerfile
           config: .hadolint.yaml
           failure-threshold: warning
 
-  shellcheck:
-    name: Lint docker/ shell scripts (shellcheck)
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Lint Dockerfile (hadolint, sandbox desktop image)
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
+        with:
+          dockerfile: docker/sandbox-desktop.Dockerfile
+          config: .hadolint.yaml
+          failure-threshold: warning
 
-      - name: shellcheck
+      - name: Lint shell scripts (shellcheck)
         uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
         env:
           # Severity = error: SC1091 (can't follow sourced script) is info-

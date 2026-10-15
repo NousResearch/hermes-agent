@@ -35,7 +35,7 @@ def _run_stdio_with_mocks(os_name: str, attach_mock) -> None:
 
     task = MCPServerTask("test-win-orphan")
     task._serve_session = _serve
-    task._session_kwargs = lambda: {}
+    task._session_kwargs = dict
 
     async def fake_preflight(name, command, args):
         return command, args

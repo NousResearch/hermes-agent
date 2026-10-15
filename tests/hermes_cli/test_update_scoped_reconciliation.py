@@ -29,7 +29,11 @@ CASES = [
     ("missing-sibling", {"outcome": "failed", "plan": {"runtimes": [GATEWAY, dict(GATEWAY, profile="beta")]}}, "new", [CURRENT], True),
     ("stale-successor", {"outcome": "failed", "plan": {"runtimes": [GATEWAY]}}, None, [dict(CURRENT, state="stale", code_sha="old")], True),
     ("unknown-successor", {"outcome": "failed", "plan": {"runtimes": [GATEWAY]}}, None, [dict(CURRENT, state="unknown")], True),
-    ("marker-no-sha", {}, "", [CURRENT], True),
+    # An inventory-less record armed with no SHA is held to the checkout like any other
+    # inventory-less marker (#125952): it clears once every live gateway is current on it and
+    # stays pending while a row is stale.
+    ("marker-no-sha", {}, "", [CURRENT], False),
+    ("marker-no-sha-stale", {}, "", [dict(CURRENT, state="stale", code_sha="old")], True),
     ("checkout-moved", {}, "old", [CURRENT], True),
     ("marker-empty-no-receipt", {}, "new", [], True),
     ("markerless-stamped-manual", {"outcome": "partial", "plan": {"runtimes": [MANUAL]}}, None, [], False),

@@ -98,7 +98,7 @@ class TestAgentConfigSignature:
                 },
             },
         )
-        monkeypatch.setattr(runtime_provider, "_get_model_config", lambda: {})
+        monkeypatch.setattr(runtime_provider, "_get_model_config", dict)
 
         runtime = _resolve_runtime_agent_kwargs()
 
@@ -149,16 +149,16 @@ class TestExtractCacheBustingConfig:
         for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
             assert out[f"{section}.{key}"] == cfg_get(DEFAULT_CONFIG, section, key)
 
-    def test_explicit_null_differs_from_absent_when_default_is_set(self):
-        """`threshold_tokens: null` opts out of the shipped cap; the signature must keep it distinct from
-        'absent' (= the default) so the opt-out rebuilds the cached agent instead of waiting for a restart."""
+    def test_explicit_cap_differs_from_absent(self):
+        """Setting or clearing `threshold_tokens` rebuilds the cached agent (the signature changes), while
+        absent and an explicit default build the same agent (the signature matches)."""
         from gateway.run import GatewayRunner
 
         default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
-        assert default_cap is not None  # the premise: a non-None default whose opt-out is null
-        sig = lambda cfg: GatewayRunner._extract_cache_busting_config(cfg)["compression.threshold_tokens"]  # noqa: E731
+        other_cap = (default_cap or 0) + 100_000
+        sig = lambda cfg: GatewayRunner._extract_cache_busting_config(cfg)["compression.threshold_tokens"]
         assert sig({}) == sig({"compression": {"threshold_tokens": default_cap}}) == default_cap
-        assert sig({"compression": {"threshold_tokens": None}}) is None
+        assert sig({"compression": {"threshold_tokens": other_cap}}) == other_cap != sig({})
 
     def test_legacy_checkpoints_bool_carries_defaults_for_the_other_keys(self):
         """`checkpoints: true` builds the agent with DEFAULT_CONFIG's limits (`_checkpoint_agent_kwargs`), so

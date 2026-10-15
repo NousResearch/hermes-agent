@@ -33,7 +33,7 @@ def _exec_py(image: str, py: str) -> str:
         "docker", "run", "--rm", "--network=none", "--entrypoint", "su", image,
         "hermes", "-s", "/bin/bash", "-c", inner,
     ]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
     assert r.returncode == 0, f"in-container python failed:\n{r.stderr[-2000:]}"
     return r.stdout.strip()
 
@@ -82,3 +82,45 @@ def test_prebuilt_bundle_present_and_no_runtime_install(built_image: str) -> Non
     assert "npm" not in out["argv"][0].lower(), (
         f"launcher resolved to an npm invocation, not the prebuilt bundle: {out['argv']!r}"
     )
+
+
+def test_tui_gateway_child_uses_packaged_python(built_image: str) -> None:
+    """The TUI child must inherit the image's dependency environment."""
+    py = '''
+import json
+import os
+import subprocess
+import sys
+from hermes_cli.main_tui_launch import _apply_tui_python_env
+
+env = dict(os.environ)
+_apply_tui_python_env(env)
+child = subprocess.run(
+    [env["HERMES_PYTHON"], "-c",
+     "import os, sys; print(os.path.realpath(sys.executable), flush=True); import tui_gateway.entry"],
+    cwd="/opt/hermes", env=env, capture_output=True, text=True, timeout=30,
+)
+print(json.dumps({
+    "parent": os.path.realpath(sys.executable),
+    "child": child.stdout.strip().splitlines()[0] if child.stdout.strip() else "",
+    "returncode": child.returncode,
+    "stderr": child.stderr[-1000:],
+}))
+'''
+    # Run as the image user without `su`, which would erase Docker's
+    # HERMES_PYTHON and hide the broken runtime environment.
+    inner = (
+        "source /opt/hermes/.venv/bin/activate && "
+        "cd /opt/hermes && "
+        f"python3 -c {shlex.quote(py)}"
+    )
+    r = subprocess.run(
+        ["docker", "run", "--rm", "--network=none", "--user", "hermes",
+         "--entrypoint", "/bin/bash", built_image, "-c", inner],
+        capture_output=True, text=True, timeout=120,
+        check=False,
+    )
+    assert r.returncode == 0, r.stderr[-2000:]
+    out = json.loads(r.stdout.strip())
+    assert out["returncode"] == 0, out["stderr"]
+    assert out["child"] == out["parent"], out

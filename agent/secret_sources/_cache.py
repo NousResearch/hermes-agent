@@ -39,7 +39,7 @@ def fingerprint(material: str) -> str:
 class CachedFetch:
     """A set of fetched secret values plus when they were fetched."""
 
-    secrets: Dict[str, str]
+    secrets: dict[str, str]
     fetched_at: float
 
     def is_fresh(self, ttl_seconds: float) -> bool:
@@ -144,7 +144,7 @@ class SecretCache(Generic[K]):
     """
 
     def __init__(self, basename: str, *, key_serializer: Callable[[K], str]) -> None:
-        self.memory: Dict[K, CachedFetch] = {}
+        self.memory: dict[K, CachedFetch] = {}
         self.disk: DiskCache[K] = DiskCache(basename, key_serializer=key_serializer)
 
     def lookup(self, key: K, ttl_seconds: float, home_path: Optional[Path] = None,
@@ -168,26 +168,3 @@ class SecretCache(Generic[K]):
     def clear(self, home_path: Optional[Path] = None) -> None:
         self.memory.clear()
         self.disk.clear(home_path)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'FetchResult': ('agent.secret_sources.base', 'FetchResult'),
-    'is_valid_env_name': ('agent.secret_sources.base', 'is_valid_env_name'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

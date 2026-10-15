@@ -14,7 +14,7 @@ from hermes_cli.dashboard_auth import ws_tickets
 def test_install_worker_keeps_the_requested_profile_scope(tmp_path, monkeypatch):
     from hermes_constants import get_hermes_home
     from tools.bot_desktop import install, runtime
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     named = tmp_path / "profiles" / "named"
     named.mkdir(parents=True)
@@ -52,7 +52,7 @@ def _call(server, method, params):
 def test_thumbnail_is_suppressed_while_a_human_holds_the_lease(monkeypatch, _fresh_lease):
     """The Desktop polls thumbnails on a timer; while a human drives the screen that grab would ship
     whatever they are typing to every connected client, so it must not touch the framebuffer at all."""
-    import tui_gateway.server as server
+    from tui_gateway import server
     from tools.bot_desktop import thumbnail
 
     grabs = []
@@ -68,7 +68,7 @@ def test_thumbnail_is_suppressed_while_a_human_holds_the_lease(monkeypatch, _fre
 def test_release_without_viewer_id_cannot_yank_another_viewers_lease(monkeypatch, tmp_path, _fresh_lease):
     """lease.release(None) skips the holder check, so a client that lost its viewer id (or a bare RPC)
     must be refused unless it forces; the holder's own (minted) viewer id and force keep working."""
-    import tui_gateway.server as server
+    from tui_gateway import server
     from tools.bot_desktop import runtime
 
     monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
@@ -90,7 +90,7 @@ def test_observe_mints_the_viewer_id_and_status_never_discloses_the_holder(monke
     their lease), and no snapshot or broadcast carries the raw holder id — only a hash the holder
     itself can match."""
     from tools.bot_desktop import lease, runtime
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
     lease._reset_for_tests()
@@ -131,7 +131,7 @@ def test_observe_mints_the_viewer_id_and_status_never_discloses_the_holder(monke
 def test_stop_cannot_kill_the_screen_under_a_human_without_force(monkeypatch, _fresh_lease):
     """display.stop released the lease unconditionally before stopping Xvnc: any authenticated caller
     could yank a human mid-login and kill the screen under them. Same rule as display.lease.release."""
-    import tui_gateway.server as server
+    from tui_gateway import server
     from tools.bot_desktop import runtime
 
     stops = []
@@ -167,7 +167,7 @@ def test_lease_acquire_and_release_only_honour_an_id_this_connection_minted(monk
     """The minted identity is worthless if acquire takes any string: a caller could acquire under a
     made-up id (evicting the human) or release with a guessed one. Both must insist on an id that
     display.observe minted for THIS connection."""
-    import tui_gateway.server as server
+    from tui_gateway import server
     from tools.bot_desktop import runtime
 
     monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
@@ -198,7 +198,7 @@ def test_install_sudo_card_ignores_a_client_supplied_session_id(monkeypatch):
     pins the transport) with an EMPTY session. Honouring params.session_id let a caller route the
     masked password card into ANOTHER window's chat; the wire contract now refuses the key outright
     (4000), and the request the handler sends carries no session either way."""
-    import tui_gateway.server as server
+    from tui_gateway import server
     from tools.bot_desktop import install, runtime
 
     monkeypatch.setattr(runtime, "is_supported_host", lambda: True)
@@ -230,7 +230,7 @@ def test_thumbnail_grabbed_across_a_takeover_is_suppressed(monkeypatch, _fresh_l
     """The human_holds() check happens before the grab; a takeover that lands while the framebuffer
     is being read means the returned frame may already show the human's session. The lease epoch
     must match before and after the grab or the frame is dropped."""
-    import tui_gateway.server as server
+    from tui_gateway import server
     from tools.bot_desktop import thumbnail
 
     def grab_while_human_takes_over():
@@ -240,3 +240,29 @@ def test_thumbnail_grabbed_across_a_takeover_is_suppressed(monkeypatch, _fresh_l
     monkeypatch.setattr(thumbnail, "thumbnail_data_url", grab_while_human_takes_over)
     result = _call(server, "display.thumbnail", {})["result"]
     assert result["data_url"] is None and result["suppressed"] == "human_has_control", result
+
+
+def test_switch_sandbox_image_decides_only_a_pending_switch(monkeypatch, tmp_path):
+    """The pane's button: refused when nothing is pending (a stale pane cannot rewrite config);
+    otherwise the decision is made through the same module the CLI offer uses and the fresh
+    status rides back."""
+    from tui_gateway import server
+    from hermes_cli import sandbox_image_switch as sw
+    from tools.bot_desktop import runtime
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(sw, "pending", lambda: None)
+    resp = _call(server, "display.switchSandboxImage", {"approve": True})
+    assert "error" in resp and "pending" in resp["error"]["message"]
+
+    decided = []
+    switch = sw.PendingSwitch("old/base:1", "nousresearch/hermes-sandbox:desktop", ["hermes-a"])
+    monkeypatch.setattr(sw, "pending", lambda: switch)
+    monkeypatch.setattr(sw, "decide", lambda s, approve: decided.append((s, approve)) or s.target_image)
+    monkeypatch.setattr(runtime, "status", lambda profile=None: runtime.DesktopStatus(
+        profile="default", supported=True, installed=True, missing=[], running=False, pid=None, display=None,
+        socket=None, geometry="1280x800", install_command=None, browser=None))
+    resp = _call(server, "display.switchSandboxImage", {"approve": False})
+    assert decided == [(switch, False)]
+    assert resp["result"]["docker_image"] == "nousresearch/hermes-sandbox:desktop"
+    assert resp["result"]["running"] is False and "lease" in resp["result"]

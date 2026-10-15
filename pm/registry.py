@@ -51,9 +51,14 @@ def all_packages() -> list[str]:
 
 
 def source_install_packages(names: list[str]) -> list[str]:
-    """Select runtime roots; internal tools enter only through dependencies."""
+    """Select supported runtime roots; internal tools enter only through dependencies."""
+    from pm.store import current_target
+
+    target = current_target()
     return [name for name in names
-            if not get_package(name).internal and (name == "python" or not get_package(name).optional)]
+            if not get_package(name).internal
+            and (name == "python" or not get_package(name).optional)
+            and get_package(name).missing_reason(target) is None]
 
 
 def tool_roots(names: list[str]) -> list[str]:

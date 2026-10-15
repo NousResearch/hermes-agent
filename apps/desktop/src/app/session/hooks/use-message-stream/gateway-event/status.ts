@@ -34,6 +34,13 @@ export function isFallbackSwitchStatus(kind: string | undefined, text: string): 
 // that narrow compatibility path; new runtimes identify recall by kind instead.
 const LEGACY_MEMORY_RECALL_RE = /^.+ — recalled (?:[1-9]\d* memor(?:y|ies)|relevant memory)$/u
 
+function isMemoryRecallStatus(kind: string | undefined, text: unknown): boolean {
+  return (
+    kind === 'memory_recall' ||
+    (kind === 'lifecycle' && typeof text === 'string' && LEGACY_MEMORY_RECALL_RE.test(text.trim()))
+  )
+}
+
 /** status.update / review.summary / notification.show / notification.clear /
  *  error — the status-and-notice tail of the dispatcher. */
 export function handleStatusEvent(ctx: GatewayEventContext): boolean {
@@ -124,13 +131,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       void refreshBackgroundProcesses(sessionId)
     } else if (sessionId && payload?.kind === 'goal') {
       applyGoalStatusText(sessionId, coerceGatewayText(payload?.text))
-    } else if (
-      sessionId &&
-      (payload?.kind === 'memory_recall' ||
-        (payload?.kind === 'lifecycle' &&
-          typeof payload?.text === 'string' &&
-          LEGACY_MEMORY_RECALL_RE.test(payload.text.trim())))
-    ) {
+    } else if (sessionId && isMemoryRecallStatus(payload?.kind, payload?.text)) {
       const text = typeof payload?.text === 'string' ? payload.text.trim() : ''
 
       if (text) {

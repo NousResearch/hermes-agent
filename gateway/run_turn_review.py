@@ -233,10 +233,12 @@ async def begin_gateway_review_admission(
     runner: Any, event: Any, source: Any, session_entry: Any, quick_key: str
 ) -> _GatewayReviewAdmission:
     """Register the turn as live and park its completion where its delivery owner reads it:
-    the live session Event for an adapter task (a drain handoff re-uses the Event; an inline
-    dispatch reads it for the turn it nests), or the event itself for a direct-call ingress
-    that completes ownership from its own event (the CLI->gateway handoff) — it may run beside
-    a live adapter task on the same chat, whose Event carries that task's own completion."""
+    the live session Event for an adapter task (a drain handoff re-uses the Event), or the
+    event itself for a direct-call ingress that completes ownership from its own event (the
+    CLI->gateway handoff; the turn ``/retry`` nests, re-homed onto the command event its inline
+    dispatch completes) — it may run beside a live adapter task on the same chat, whose Event
+    carries that task's own completion, or beside a drain task that reads the guard it
+    installed."""
     from agent import review_admission
     from hermes_constants import hermes_home_key
 

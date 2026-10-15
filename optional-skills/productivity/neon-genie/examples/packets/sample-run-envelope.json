@@ -1,0 +1,277 @@
+{
+  "schema_id": "neon-genie/run-envelope",
+  "schema_version": "1.0.0",
+  "run_id": "ng_run_c1314d748580",
+  "request_id": "ng_req_e6eec9a7b872",
+  "skill": "neon-genie",
+  "skill_version": "3.20.0",
+  "created_at": "2026-07-30T20:27:32Z",
+  "authority": "advisory_only",
+  "grants_execution": false,
+  "request": {
+    "request_id": "ng_req_e6eec9a7b872",
+    "summary": "recipe:product-audit",
+    "brief_path": "examples/product-audit.brief.yaml",
+    "recipe": "product-audit",
+    "requested_profiles": []
+  },
+  "resolved_profiles": [
+    "core",
+    "product_architecture",
+    "commercial",
+    "wayfinder_handoff"
+  ],
+  "selected_profiles": [
+    "core",
+    "product_architecture",
+    "commercial",
+    "wayfinder_handoff"
+  ],
+  "mode_status": {
+    "OPEN": "complete",
+    "ALIGN": "complete",
+    "ASCEND": "complete",
+    "CLEAR": "complete",
+    "SEAL": "complete"
+  },
+  "primary_artifact": {
+    "type": "product_packet",
+    "path": "product-packet.stub.json",
+    "artifact_id": "ng_product_packet_50fe0db6e087",
+    "content_hash": "sha256:b13b8adf4d6784c3941894e70d40b958fb328f15eef7636fa51567b4421a9951"
+  },
+  "artifacts": [
+    {
+      "artifact_id": "ng_data_request_8f52e4b4221e",
+      "type": "data_request",
+      "path": "data-requests.json",
+      "content_hash": "sha256:68f78cc7a8e9d342b03061e4b5b6d177e631d9e3ce5961e3d65a881648aceb24",
+      "parent_artifact_ids": [],
+      "schema_version": "1.0.0"
+    },
+    {
+      "artifact_id": "ng_product_packet_50fe0db6e087",
+      "type": "product_packet",
+      "path": "product-packet.stub.json",
+      "content_hash": "sha256:b13b8adf4d6784c3941894e70d40b958fb328f15eef7636fa51567b4421a9951",
+      "parent_artifact_ids": [
+        "ng_data_request_8f52e4b4221e"
+      ],
+      "schema_version": "1.0.0",
+      "schema_id": "neon-genie/product-packet"
+    },
+    {
+      "artifact_id": "ng_profile_route_85d2ffb4612d",
+      "type": "profile_route",
+      "path": "profile-route.json",
+      "content_hash": "sha256:8fe36ecc3b5c36b76227d32e95a729215bf4ea42a0ee84a69d652f897a873235",
+      "parent_artifact_ids": [
+        "ng_data_request_8f52e4b4221e"
+      ],
+      "schema_version": "1.0.0"
+    },
+    {
+      "artifact_id": "ng_recipe_summary_d61e8baf27ef",
+      "type": "recipe_summary",
+      "path": "recipe-summary.json",
+      "content_hash": "sha256:eb7d640b3d9c6e1bc4f1195439a4707780a7dbd20d42a4c2357884bad30a4b43",
+      "parent_artifact_ids": [
+        "ng_data_request_8f52e4b4221e"
+      ],
+      "schema_version": "1.0.0"
+    },
+    {
+      "artifact_id": "ng_run_receipt_9a5823c42fc0",
+      "type": "run_receipt",
+      "path": "run-receipt.json",
+      "content_hash": "sha256:09b117f9436132c861031bcd5624b0a863aaabe70e82937d4164d6c8c6ef6654",
+      "parent_artifact_ids": [
+        "ng_data_request_8f52e4b4221e"
+      ],
+      "schema_version": "1.0.0",
+      "schema_id": "neon-genie/run-receipt"
+    },
+    {
+      "artifact_id": "ng_wayfinder_execution_packet_deb34b43ac2a",
+      "type": "wayfinder_execution_packet",
+      "path": "wayfinder-handoff.stub.json",
+      "content_hash": "sha256:58cf970cf6cfef04fed32edbf4eff6fc625055e331cda3acc8c102f7ec0b805c",
+      "parent_artifact_ids": [
+        "ng_data_request_8f52e4b4221e"
+      ],
+      "schema_version": "1.0.0",
+      "schema_id": "neon-genie/wayfinder-execution-packet"
+    }
+  ],
+  "outputs": [
+    {
+      "artifact_id": "ng_data_request_8f52e4b4221e",
+      "type": "data_request",
+      "path": "data-requests.json",
+      "content_hash": "sha256:68f78cc7a8e9d342b03061e4b5b6d177e631d9e3ce5961e3d65a881648aceb24",
+      "parent_artifact_ids": [],
+      "schema_version": "1.0.0"
+    },
+    {
+      "artifact_id": "ng_product_packet_50fe0db6e087",
+      "type": "product_packet",
+      "path": "product-packet.stub.json",
+      "content_hash": "sha256:b13b8adf4d6784c3941894e70d40b958fb328f15eef7636fa51567b4421a9951",
+      "parent_artifact_ids": [
+        "ng_data_request_8f52e4b4221e"
+      ],
+      "schema_version": "1.0.0",
+      "schema_id": "neon-genie/product-packet"
+    },
+    {
+      "artifact_id": "ng_profile_route_85d2ffb4612d",
+      "type": "profile_route",
+      "path": "profile-route.json",
+      "content_hash": "sha256:8fe36ecc3b5c36b76227d32e95a729215bf4ea42a0ee84a69d652f897a873235",
+      "parent_artifact_ids": [
+        "ng_data_request_8f52e4b4221e"
+      ],
+      "schema_version": "1.0.0"
+    },
+    {
+      "artifact_id": "ng_recipe_summary_d61e8baf27ef",
+      "type": "recipe_summary",
+      "path": "recipe-summary.json",
+      "content_hash": "sha256:eb7d640b3d9c6e1bc4f1195439a4707780a7dbd20d42a4c2357884bad30a4b43",
+      "parent_artifact_ids": [
+        "ng_data_request_8f52e4b4221e"
+      ],
+      "schema_version": "1.0.0"
+    },
+    {
+      "artifact_id": "ng_run_receipt_9a5823c42fc0",
+      "type": "run_receipt",
+      "path": "run-receipt.json",
+      "content_hash": "sha256:09b117f9436132c861031bcd5624b0a863aaabe70e82937d4164d6c8c6ef6654",
+      "parent_artifact_ids": [
+        "ng_data_request_8f52e4b4221e"
+      ],
+      "schema_version": "1.0.0",
+      "schema_id": "neon-genie/run-receipt"
+    },
+    {
+      "artifact_id": "ng_wayfinder_execution_packet_deb34b43ac2a",
+      "type": "wayfinder_execution_packet",
+      "path": "wayfinder-handoff.stub.json",
+      "content_hash": "sha256:58cf970cf6cfef04fed32edbf4eff6fc625055e331cda3acc8c102f7ec0b805c",
+      "parent_artifact_ids": [
+        "ng_data_request_8f52e4b4221e"
+      ],
+      "schema_version": "1.0.0",
+      "schema_id": "neon-genie/wayfinder-execution-packet"
+    }
+  ],
+  "data_requests": [
+    {
+      "request_id": "dr-product-access",
+      "field": "critical_integration_access",
+      "why_decision_critical": "Integration feasibility cannot be OBSERVED without declared access",
+      "sensitivity": "private",
+      "suggested_source": "Operator environment credentials or access inventory",
+      "blocks_promotion": true,
+      "status": "open"
+    }
+  ],
+  "gate_results": [],
+  "promotion": {
+    "state": "SPEC_COMPLETE",
+    "blocking_gates": [],
+    "open_blocking_requests": [
+      {
+        "request_id": "dr-product-access",
+        "field": "critical_integration_access",
+        "why_decision_critical": "Integration feasibility cannot be OBSERVED without declared access",
+        "sensitivity": "private",
+        "suggested_source": "Operator environment credentials or access inventory",
+        "blocks_promotion": true,
+        "status": "open"
+      }
+    ]
+  },
+  "receipt": {
+    "path": "run-receipt.json",
+    "status": "PROPOSED",
+    "promotion_state": "SPEC_COMPLETE",
+    "authority": "advisory_only",
+    "grants_execution": false,
+    "content_hash": "sha256:09b117f9436132c861031bcd5624b0a863aaabe70e82937d4164d6c8c6ef6654"
+  },
+  "receipt_path": "run-receipt.json",
+  "generator": {
+    "skill": "neon-genie",
+    "version": "3.20.0",
+    "tool": "scripts/build_envelope.py"
+  },
+  "wayfinder": {
+    "ingest": "run-envelope.json",
+    "product_intent_changes_require_neon_genie_review": true,
+    "handoff_path": "wayfinder-handoff.stub.json"
+  },
+  "canonical_sources": [],
+  "assumptions": [],
+  "content_hash": "sha256:13a1832002a280b2d51e95fb7ce7300bb0145bcb58d33eb2b106cc4436d6df2b",
+  "privacy": {
+    "contract_version": "1.0.0",
+    "mode": "local_only",
+    "telemetry": "disabled",
+    "training_use": "none_by_neon_genie",
+    "retention": {
+      "artifact_path": "out/neon-genie/example",
+      "automatic_expiry": null,
+      "host_provider_retention": "NOT_COMPUTABLE",
+      "repository_retention": "operator_selected_output_path"
+    },
+    "egress": {
+      "allowed": false,
+      "approved_domains": [],
+      "approved_tool_classes": []
+    },
+    "redaction": {
+      "enabled": true,
+      "blocked_categories": [
+        "credentials",
+        "secrets",
+        "government_ids",
+        "private_keys"
+      ]
+    },
+    "consents": [],
+    "data_sources_used": [],
+    "external_actions": [],
+    "privacy_warnings": [],
+    "deletion_instructions": "Delete the operator-selected output directory: out/neon-genie/example.",
+    "unknowns": {
+      "host_providers": "NOT_COMPUTABLE",
+      "provider_retention": "NOT_COMPUTABLE",
+      "provider_processing": "NOT_COMPUTABLE"
+    },
+    "learning_ledger": {
+      "location": "local_operator_selected_path",
+      "default_path": "out/neon-genie/learning-ledger.jsonl",
+      "auto_apply_forbidden": true,
+      "ships_with_skill": false,
+      "disclosure": "Learning ledger entries are local operator artifacts under the chosen output path; they are never auto-applied to the skill corpus and must not contain raw secrets or private source payloads."
+    }
+  },
+  "privacy_mode": "local_only",
+  "data_sources_used": [],
+  "external_actions": [],
+  "artifact_paths": [
+    "out/neon-genie/example"
+  ],
+  "telemetry_status": "disabled",
+  "retention_statement": "Artifacts remain at the operator-selected output location. Host/provider retention is NOT_COMPUTABLE.",
+  "privacy_warnings": [],
+  "deletion_instructions": "Delete the operator-selected output directory: out/neon-genie/example.",
+  "privacy_unknowns": {
+    "host_providers": "NOT_COMPUTABLE",
+    "provider_retention": "NOT_COMPUTABLE",
+    "provider_processing": "NOT_COMPUTABLE"
+  },
+  "learning_ledger_disclosure": "Learning ledger entries are local operator artifacts under the chosen output path; they are never auto-applied to the skill corpus and must not contain raw secrets or private source payloads."
+}

@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Learning Ledger Entry",
+  "type": "object",
+  "required": [
+    "entry_id",
+    "observed_at",
+    "source_run",
+    "observation_class",
+    "summary",
+    "canon_status",
+    "authority"
+  ],
+  "properties": {
+    "entry_id": { "type": "string", "minLength": 1 },
+    "observed_at": { "type": "string", "minLength": 1 },
+    "source_run": { "type": "string" },
+    "run_id": {
+      "type": "string",
+      "description": "Canonical id from run-envelope.json (preferred linkage)"
+    },
+    "envelope_path": { "type": "string" },
+    "recipe": { "type": "string" },
+    "skill": { "type": "string" },
+    "observation_class": {
+      "type": "string",
+      "enum": [
+        "failed_opportunity",
+        "brittle_integration",
+        "buyer_failure",
+        "distribution_failure",
+        "anti_capture_failure",
+        "proof_obtained",
+        "proof_failed",
+        "data_request_satisfied",
+        "false_route",
+        "false_gate",
+        "other"
+      ]
+    },
+    "summary": { "type": "string", "minLength": 1 },
+    "related_profiles": { "type": "array" },
+    "related_gates": { "type": "array" },
+    "evidence_refs": { "type": "array" },
+    "routing_quality": {
+      "type": "string",
+      "enum": ["correct", "over_routed", "under_routed", "wrong_profile", "n/a"]
+    },
+    "gate_quality": {
+      "type": "string",
+      "enum": [
+        "correct_fail_closed",
+        "false_positive_block",
+        "false_negative_allowed",
+        "n/a"
+      ]
+    },
+    "canon_status": {
+      "type": "string",
+      "enum": ["PROPOSED", "OBSERVATION"]
+    },
+    "authority": {
+      "type": "string",
+      "enum": ["advisory_only"]
+    },
+    "auto_apply_forbidden": { "type": "boolean", "const": true },
+    "privacy_mode": {
+      "type": "string",
+      "enum": ["local_only", "external_research_allowed", "custom"]
+    },
+    "privacy_contract_version": { "type": "string" },
+    "privacy_telemetry": { "const": "disabled" },
+    "learning_local_only": { "type": "boolean", "const": true },
+    "learning_auto_apply_forbidden": { "type": "boolean", "const": true },
+    "learning_disclosure": { "type": "string" },
+    "host_provider_retention": { "const": "NOT_COMPUTABLE" }
+  },
+  "additionalProperties": true
+}
+

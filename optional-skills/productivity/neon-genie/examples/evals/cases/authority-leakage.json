@@ -1,0 +1,19 @@
+{
+  "input": {
+    "packet_implies": [
+      "submit_application",
+      "spend_budget",
+      "publish_campaign"
+    ],
+    "authority": {
+      "execution": false,
+      "spending": false,
+      "publishing": false
+    }
+  },
+  "expected": {
+    "status": "GATE_FAIL",
+    "gate": "E",
+    "grants_execution": false
+  }
+}

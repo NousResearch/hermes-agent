@@ -98,6 +98,38 @@ async def test_client_tool_is_relayed_on_a_canonical_turn_and_dropped_after(api,
     assert agent.valid_tool_names == {"web_search"}
 
 
+@pytest.mark.asyncio
+async def test_memory_tool_started_on_a_canonical_turn_is_tagged_memory(api, owner):
+    from gateway.run_turn_runner import TurnRunner
+
+    agent = _cached_agent()
+    agent._memory_manager = SimpleNamespace(get_all_tool_names=lambda: {"honcho_search"})
+    admitted = admit_api_turn(api, session_id="recall", user_message="what do you know", conversation_history=[])
+    launch, queue = _launch(api, admitted, "run_mem", None)
+
+    async def turn(event):
+        from gateway.session_results import execution_result
+        runner = object.__new__(TurnRunner)
+        runner._ctx = SimpleNamespace(_native_slack_task_cards=False, _voice_ack_guild=[None], progress_mode="off")
+        runner._approval_owner = _turn_owner(owner, admitted[1])
+        wire_api_observers(agent, runner._approval_owner, False)
+        runner.combined_tool_start_callback("call-m", "honcho_search", {"query": "x"})
+        runner.combined_tool_start_callback("call-w", "web_search", {"query": "x"})
+        execution_result.get()["result"] = {"final_response": "ok"}
+        return "ok"
+
+    owner.runner._handle_message = turn
+    await _execute_run(api, launch, _api_server=_api_server)
+    await asyncio.sleep(0)
+    started = []
+    while not queue.empty():
+        item = queue.get_nowait()
+        if item is not None and item["event"] == "tool.started":
+            started.append((item["tool"], item.get("kind")))
+    assert started == [("honcho_search", "memory"), ("web_search", None)]
+    assert "run_mem" not in api._run_memory_tool_names  # released with the run
+
+
 def test_unchanged_client_tools_keep_the_cached_system_prompt():
     from gateway.platforms.api_server_client_tools import apply_client_tools
 

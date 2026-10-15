@@ -240,6 +240,9 @@ def _initialize_run_state(self, *, store_factory) -> None:
     # split_runtime: a run may carry a ``tools`` array relayed to the client for execution
     # (resolved via POST /v1/runs/{run_id}/tool_result). Off by default.
     self._split_runtime: bool = _client_tools.adapter_split_runtime(getattr(self.config, "extra", None) or {})
+    # run_id -> its agent's memory-provider tool names, reported by a canonical turn's wiring:
+    # those runs never hold the agent, and the ``tool.started`` "memory" tag needs the names.
+    self._run_memory_tool_names: dict[str, frozenset[str]] = {}
 
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
@@ -571,7 +574,7 @@ def _forget_run(self, run_id: str, *tables) -> None:
 def _retire_live_run(self, run_id: str) -> None:
     """Retire agent/task/approval control state once the executor-backed task is done."""
     _forget_run(self, run_id, self._active_run_agents, self._active_run_tasks, self._run_approval_sessions,
-                self._stopping_run_ids, self._shutdown_interrupted_run_ids)
+                self._stopping_run_ids, self._shutdown_interrupted_run_ids, self._run_memory_tool_names)
 
 
 def _drop_run_transport(self, run_id: str) -> None:
@@ -1124,7 +1127,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 result, usage = await observe_api_turn(
                     run.admission, stream_delta_callback=_text_cb,
                     tool_start_callback=_tool_start, tool_complete_callback=_tool_complete,
-                    **_client_tools.client_tool_observer(run.client_tools, run.approval_session_key))
+                    **_client_tools.run_observer(self, run_id, run.client_tools, run.approval_session_key))
             # The canonical turn has no agent object here; the served pair rides on the
             # committed usage/result runtime metadata when the turn recorded one.
             served_runtime = ((usage or {}).get("runtime") if isinstance(usage, dict) else None) or (

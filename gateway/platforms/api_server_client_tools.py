@@ -9,6 +9,7 @@ split-runtime is enabled AND a run carries a non-empty ``tools`` array.
 import json
 import logging
 import os
+from functools import partial
 from typing import Any, Optional
 
 from gateway.platforms.api_server_room_grants import _json_error
@@ -159,18 +160,28 @@ def apply_client_tools(agent, client_tools: Optional[list[dict[str, Any]]], sess
         agent._cached_system_prompt = None
 
 
-def client_tool_observer(client_tools: Optional[list[dict[str, Any]]], session_key: str) -> dict[str, Any]:
-    """Observer fields that carry a run's client tools to its canonical (session-authority)
-    turn. Request-owned like the SSE sinks: a turn recovered after a restart has no caller to
-    relay to, so it runs without them."""
-    if not client_tools:
-        return {}
-    return {"client_tools": client_tools, "client_tool_session_key": session_key}
+def run_observer(self, run_id: str, client_tools: Optional[list[dict[str, Any]]],
+                 session_key: str) -> dict[str, Any]:
+    """Observer fields a canonical (session-authority) /v1/runs turn carries: a sink for its
+    agent's memory-provider tool names (``classify_server_tool_kind`` needs them, and the run
+    never holds the agent), plus the run's client tools when it supplied any. Request-owned
+    like the SSE sinks: a turn recovered after a restart has no caller to relay to, so it runs
+    without them."""
+    fields: dict[str, Any] = {"memory_tool_names_callback": partial(self._run_memory_tool_names.__setitem__, run_id)}
+    if client_tools:
+        fields.update(client_tools=client_tools, client_tool_session_key=session_key)
+    return fields
 
 
-def apply_turn_client_tools(agent, observers) -> None:
-    """Per-turn wiring of a canonical API turn's cached agent: this turn's client tools from its
-    request observer, or none (dropping an earlier turn's)."""
+def wire_turn_observers(agent, observers) -> None:
+    """Per-turn wiring of a canonical API turn's cached agent: report its memory-tool names to
+    the run, and apply this turn's client tools (or none, dropping an earlier turn's)."""
+    manager = getattr(agent, "_memory_manager", None)
+    memory_names = frozenset(manager.get_all_tool_names()) if manager is not None else frozenset()
+    for observer in observers:
+        report = observer.get("memory_tool_names_callback")
+        if report is not None:
+            report(memory_names)
     observer = next((o for o in observers if o.get("client_tools")), {})
     apply_client_tools(agent, observer.get("client_tools"), observer.get("client_tool_session_key", ""))
 
@@ -184,7 +195,10 @@ def classify_server_tool_kind(self, run_id: str, tool_name: Optional[str]) -> Op
     # MCP tools are registered under the ``mcp_{server}_{tool}`` namespace.
     if tool_name.startswith("mcp_"):
         return "mcp"
-    # Memory-provider tools are only knowable from the live agent's memory manager.
+    # Memory-provider tools are only knowable from the agent's memory manager: reported by a
+    # canonical turn's wiring, or read from the agent an in-process run built itself.
+    if tool_name in self._run_memory_tool_names.get(run_id, ()):
+        return "memory"
     memory_manager = getattr(self._active_run_agents.get(run_id), "_memory_manager", None)
     try:
         if memory_manager is not None and memory_manager.has_tool(tool_name):

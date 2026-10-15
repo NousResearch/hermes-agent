@@ -353,20 +353,20 @@ def _list_cron_output_runs(
     canonical_job_id: str,
     profile: Optional[str],
     limit: int,
-) -> list[dict[str, Any]]:
-    """SessionDB-less run history for jobs that never create agent sessions.
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """SessionDB-less run records for jobs that never create agent sessions: ``(docs, attempts)``.
 
     Script-only (no_agent) jobs deliberately skip SessionDB (cron/scheduler.run_job),
     so their completed runs are invisible to the run-history endpoint. Their
-    output docs — one .md per fire under cron/output/<job_id>/ — are the only
-    per-run record. Rows mirror /api/sessions shape with source='cron_output'
-    so the frontend reuses SessionInfo; ids use a cron_output: prefix that can
-    never collide with a SessionDB session id.
-
-    Status comes from the execution ledger (one row per fire), matched to a doc
-    by claim window — never from ``last_run_at`` proximity, which mislabels an
-    older doc when the newest run's doc is missing. Terminal attempts with no
-    surviving doc get their own metadata rows.
+    output docs (one .md per fire under cron/output/<job_id>/) and the execution
+    ledger (one row per fire) are the only per-run records. ``docs`` are rows in
+    /api/sessions shape with source='cron_output', newest first, so the frontend
+    reuses SessionInfo; ids use a cron_output: prefix that can never collide with a
+    SessionDB session id. ``attempts`` are the job's terminal ledger rows, newest
+    first. A doc never records its execution, so which attempt it stands for is
+    decided by ``_reconcile_cron_runs`` beside the sessions, never here, and never
+    from ``last_run_at`` proximity, which mislabels an older doc when the newest
+    run's doc is missing.
     """
     output_dir = _cron_output_runs_dir(profile, canonical_job_id)
     try:
@@ -378,10 +378,8 @@ def _list_cron_output_runs(
     except OSError:
         files = []
 
-    executions = _owner_profile_executions(canonical_job_id)
-    represented: set = set()
-    runs: list[dict[str, Any]] = []
-
+    attempts = _owner_profile_executions(canonical_job_id)
+    docs: list[dict[str, Any]] = []
     for path in files[:limit]:
         started_at = _cron_output_run_timestamp(path)
         if started_at is None:
@@ -390,57 +388,20 @@ def _list_cron_output_runs(
             except OSError:
                 started_at = 0.0
         preview = _cron_output_run_preview(path)
-        title = preview or "Script-only run"
-        candidates = [
-            (index, attempt) for index, attempt in enumerate(executions)
-            if attempt["status"] in ("completed", "failed") and _execution_contains(attempt, started_at)
-        ]
-        if candidates:
-            # Newest first: the latest attempt claimed by the doc's second is the likeliest writer.
-            index, attempt = candidates[0]
-            represented.add(index)
-            title = _execution_status_title(attempt["status"], attempt["error"], title)
-        runs.append({
+        docs.append({
             "id": f"cron_output:{canonical_job_id}:{path.stem}",
-            **_cron_output_run_row(started_at, title, preview),
-            # Internal: a doc never records its execution, so this is a window guess — every
-            # attempt it could be, for the caller to pair with a session by time, never by id.
-            "_execution_candidates": tuple(attempt["id"] for _, attempt in candidates),
+            **_cron_output_run_row(started_at, preview or "Script-only run", preview),
         })
 
-    # Terminal attempts whose output doc is gone (pruned, or the run never
-    # wrote one — e.g. a failed fire) are still real executions: give each its
-    # own metadata row from the ledger instead of letting the latest attempt's
-    # status bleed onto an older surviving document.
-    for index, attempt in enumerate(executions):
-        if index in represented or attempt["status"] not in ("completed", "failed"):
-            continue
-        if len(runs) >= limit:
-            break
-        when = attempt["finished_at"] or attempt["claimed_at"]
-        error = attempt["error"]
-        runs.append({
-            "id": f"cron_output:{canonical_job_id}:exec:{index}",
-            **_cron_output_run_row(
-                when,
-                _execution_status_title(attempt["status"], error, "Script-only run"),
-                error or None,
-            ),
-            # Internal: the attempt itself (durable), so the caller drops this row
-            # exactly when a session already represents the same execution.
-            "_execution_id": attempt["id"],
-        })
-    runs.sort(key=lambda r: float(r.get("started_at") or 0), reverse=True)
-
-    if runs:
-        return runs
+    if docs or any(attempt["status"] in ("completed", "failed") for attempt in attempts):
+        return docs, attempts
 
     # No output docs survived (pruned or never written) but the job HAS run:
     # surface one metadata-only row from last_run_at/last_status instead of the
     # bare "No runs" the issue reports.
     latest_ts = _cron_job_last_run_timestamp(job)
     if latest_ts is None:
-        return []
+        return [], attempts
 
     preview = ""
     if isinstance(job, dict):
@@ -451,7 +412,7 @@ def _list_cron_output_runs(
     return [{
         "id": f"cron_output:{canonical_job_id}:latest",
         **_cron_output_run_row(latest_ts, title, preview),
-    }]
+    }], attempts
 
 
 # A legacy run's session row is written just AFTER its execution claim; the grace only
@@ -565,60 +526,92 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
             if selected:
                 s["profile"] = selected
 
-        doc_runs = _list_cron_output_runs(job, canonical, selected, limit_n)
+        docs, attempts = _list_cron_output_runs(job, canonical, selected, limit_n)
 
-    return {"runs": _reconcile_cron_runs(session_runs, doc_runs, limit_n), "limit": limit_n}
+    return {"runs": _reconcile_cron_runs(session_runs, docs, attempts, canonical, limit_n), "limit": limit_n}
+
+
+# A doc within this of a session's span can be that session's run's doc (see _doc_matches_session).
+_SESSION_DOC_MATCH_SECONDS = 300.0
 
 
 def _reconcile_cron_runs(
     session_runs: list[dict[str, Any]],
-    doc_runs: list[dict[str, Any]],
+    docs: list[dict[str, Any]],
+    attempts: list[dict[str, Any]],
+    canonical_job_id: str,
     limit: int,
 ) -> list[dict[str, Any]]:
-    """Merge session rows and output-doc rows per execution, newest first.
+    """One row per execution, newest first: each terminal ledger attempt is its session, else the
+    output doc it wrote, else a metadata row from the ledger.
 
-    An agent fire writes BOTH a session and an output doc for the same
-    execution; keeping both would double-render the run. Sessions carry the
-    richer record (tokens, message counts, chat navigation), so the session
-    wins. Only a durable association pairs by id: a unified-runtime session
-    names its execution and a ledger row IS its attempt, so a neighbouring fire
-    inside the time window (one that failed before it created a session) keeps
-    its own row. An output doc never records its execution, only a window guess
-    (``_execution_candidates``), so it pairs by time: a doc within
-    ``_SESSION_DOC_MATCH_SECONDS`` of a legacy session, or of the session whose
-    execution is its likeliest writer (the newest candidate, whose ledger row the
-    doc already stands in for), is that session's execution (a doc no attempt
-    claims is matched against every session). Doc rows matching no
-    session are distinct executions — script-only fires — and are kept. A session
-    row must never be dropped in favor of a doc: the doc is the fallback
-    representation.
+    An agent fire writes BOTH a session and an output doc; sessions carry the richer
+    record (tokens, message counts, chat navigation), so the session wins and is never
+    dropped. A unified-runtime session names its execution, so that pairing is exact.
+    A doc only has a window guess (``_execution_contains``), so docs pair with attempts
+    only once every attempt's session is known (``_doc_writer``), one doc per attempt:
+    the doc folds into its writer's session, or into a legacy session (which names no
+    execution) by time, and otherwise is its writer's row with the ledger status. A doc
+    no attempt claims is matched against every session by time, and kept if none matches.
     """
-    _SESSION_DOC_MATCH_SECONDS = 300.0
+    def matches(doc_ts: float, sessions: list[dict[str, Any]]) -> bool:
+        return any(_doc_matches_session(doc_ts, s, _SESSION_DOC_MATCH_SECONDS) for s in sessions)
 
-    executions = {s["cron_execution_id"] for s in session_runs if s.get("cron_execution_id")}
+    by_execution = {s["cron_execution_id"]: s for s in session_runs if s.get("cron_execution_id")}
     legacy = [s for s in session_runs if not s.get("cron_execution_id")]
+    terminal = [(index, a) for index, a in enumerate(attempts) if a["status"] in ("completed", "failed")]
+    represented = {index for index, a in terminal if a["id"] in by_execution}
+    paired: set = set()
     merged = list(session_runs)
-    for doc in doc_runs:
-        candidates = doc.get("_execution_candidates")
-        execution_id = doc.get("_execution_id")
-        if candidates:
-            # The likeliest writer is the doc's newest candidate, the attempt _list_cron_output_runs
-            # folded into it. When no unified session names that attempt, the doc is its only row:
-            # only a legacy session can still claim it by time.
-            window = legacy + [s for s in session_runs if s.get("cron_execution_id") == candidates[0]]
-        elif candidates is None and execution_id:
-            if execution_id in executions:
-                continue
-            window = legacy
-        else:
-            window = session_runs
-        doc = {k: v for k, v in doc.items() if not k.startswith("_")}
+
+    for doc in docs:
         doc_ts = float(doc.get("started_at") or 0)
-        if any(_doc_matches_session(doc_ts, s, _SESSION_DOC_MATCH_SECONDS) for s in window):
+        candidates = [(index, a) for index, a in terminal
+                      if index not in paired and _execution_contains(a, doc_ts)]
+        if not candidates:
+            if not matches(doc_ts, session_runs):
+                merged.append(doc)
             continue
-        merged.append(doc)
+        index, attempt = min(candidates, key=lambda c: _doc_writer(doc_ts, c[1], by_execution.get(c[1]["id"])))
+        paired.add(index)
+        represented.add(index)
+        if attempt["id"] in by_execution or matches(doc_ts, legacy):
+            continue
+        merged.append({**doc, "title": _execution_status_title(attempt["status"], attempt["error"], doc["title"])})
+
+    # Attempts with neither a session nor a surviving doc (pruned, or the run never wrote one,
+    # e.g. a failed fire) are still real executions: each keeps its own ledger row instead of
+    # letting a neighbour's status bleed onto its doc. Only a legacy session can claim one by time.
+    for index, attempt in terminal:
+        if index in represented:
+            continue
+        when = attempt["finished_at"] or attempt["claimed_at"]
+        if matches(when, legacy):
+            continue
+        error = attempt["error"]
+        merged.append({
+            "id": f"cron_output:{canonical_job_id}:exec:{index}",
+            **_cron_output_run_row(
+                when, _execution_status_title(attempt["status"], error, "Script-only run"), error or None),
+        })
     merged.sort(key=lambda r: float(r.get("started_at") or 0), reverse=True)
     return merged[:limit]
+
+
+def _doc_writer(doc_ts: float, attempt: dict[str, Any], session: Optional[dict[str, Any]]) -> tuple:
+    """Sort key over a doc's candidate attempts, likeliest writer first.
+
+    ``save_job_output`` runs before ``finish_execution``, so an attempt that closed before
+    the doc's second only reaches it through the grace. Among the rest, an attempt whose
+    own session spans the doc beats an overlapping one that has none (a manual run claimed
+    while a tick's run was still going); then the newest claim wins.
+    """
+    finish = attempt["finished_at"]
+    return (
+        finish is not None and doc_ts > finish,
+        session is None or not _doc_matches_session(doc_ts, session, _SESSION_DOC_MATCH_SECONDS),
+        -attempt["claimed_at"],
+    )
 
 
 def _doc_matches_session(doc_ts: float, session: dict[str, Any], grace_seconds: float) -> bool:

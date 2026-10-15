@@ -6,43 +6,22 @@ carry ``cron_{job_id}_{timestamp}``. These drive that real producer over SQLite 
 no agent turn) and read back through ``SessionDB.list_cron_job_runs``.
 """
 import sqlite3
-from types import SimpleNamespace
 
 import pytest
 
-from cron import executions, jobs
-from gateway import run, session_cron
-from gateway.config import GatewayConfig
-from gateway.session import SessionStore
-from gateway.session_authority import SessionAuthority
+from cron import jobs
+from gateway import session_cron
 from hermes_state import SessionDB
-from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch
+from hermes_state_runtime import RuntimeStoreError
+from tests.fakes.cron_owner import admit_fire, cron_owner
 
 
 @pytest.fixture()
 def owner(tmp_path, monkeypatch):
     """A real SessionAuthority over ``tmp_path/state.db`` that admits cron fires without running them."""
-    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    (tmp_path / 'config.yaml').write_text('model: test-model\n', encoding='utf-8')
-    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {}, 'platform_toolsets': {'cli': []}})
-    db = SessionDB(tmp_path / 'state.db')
-    runner = SimpleNamespace(_draining=False, session_store=SessionStore(tmp_path / 'sessions', GatewayConfig()),
-                             adapters={})
-    authority = SessionAuthority(runner, profile_id=str(tmp_path), instance_id='test', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='test'))
-    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
-    runner.session_authority = authority
+    authority = cron_owner(tmp_path, monkeypatch)
     yield authority
-    db.close()
-
-
-async def _fire(authority, job_id):
-    """One scheduler fire through the real producer: its ledger row, then the owner's submit."""
-    execution_id = executions.create_execution(job_id, source='test')['id']
-    receipt = await session_cron.operation(
-        authority, 'submit', {'job_id': job_id, 'request_id': execution_id, 'extra_prompt': None})
-    authority.db.append_message(receipt['session_id'], role='user', content=f'run {job_id}')
-    return receipt['session_id'], execution_id
+    authority.db.close()
 
 
 @pytest.mark.asyncio
@@ -54,8 +33,8 @@ async def test_unified_runs_are_listed_with_legacy_runs_and_only_for_their_job(o
     db.create_session(legacy, source='cron')  # a run from before the unified runtime
     db._conn.execute('UPDATE sessions SET started_at = started_at - 86400 WHERE id = ?', (legacy,))
     db._conn.commit()
-    alpha_run, alpha_fire = await _fire(owner, alpha)
-    beta_run, beta_fire = await _fire(owner, beta)
+    alpha_run, alpha_fire = await admit_fire(owner, alpha)
+    beta_run, beta_fire = await admit_fire(owner, beta)
     assert alpha_run.startswith('local-') and beta_run.startswith('local-')
 
     alpha_runs = db.list_cron_job_runs(alpha)

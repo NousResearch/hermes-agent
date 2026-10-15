@@ -8,7 +8,6 @@ session detail could not say whether the scheduler still owned it. These drive t
 through the real routes in a temp default profile.
 """
 from datetime import timedelta
-from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -17,12 +16,8 @@ import hermes_cli.web_routers.cron as cron_routes
 import hermes_cli.web_routers.sessions as session_routes
 import hermes_time
 from cron import executions, jobs
-from gateway import run, session_cron
-from gateway.config import GatewayConfig
-from gateway.session import SessionStore
-from gateway.session_authority import SessionAuthority
-from hermes_state import SessionDB
-from hermes_state_runtime import begin_runtime_epoch, claim_session_input, settle_session_input
+from hermes_state_runtime import claim_session_input, settle_session_input
+from tests.fakes.cron_owner import admit_fire, cron_owner
 
 
 @pytest.fixture()
@@ -33,25 +28,16 @@ def owner(tmp_path, monkeypatch):
 
     home = tmp_path / '.hermes'
     (home / 'cron').mkdir(parents=True)
-    (home / 'config.yaml').write_text('model: test-model\n', encoding='utf-8')
     monkeypatch.setattr(profiles, '_get_default_hermes_home', lambda: home)
     monkeypatch.setattr(profiles, '_get_profiles_root', lambda: home / 'profiles')
-    monkeypatch.setenv('HERMES_HOME', str(home))
-    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {}, 'platform_toolsets': {'cli': []}})
-    db = SessionDB(home / 'state.db')
-    runner = SimpleNamespace(_draining=False, session_store=SessionStore(home / 'sessions', GatewayConfig()),
-                             adapters={})
-    authority = SessionAuthority(runner, profile_id=str(home), instance_id='test', db=db,
-                                 epoch=begin_runtime_epoch(db, instance_id='test'))
-    monkeypatch.setattr(authority, '_schedule', lambda ref: None)
-    runner.session_authority = authority
+    authority = cron_owner(home, monkeypatch)
     # Pin the configured zone so the output writer and the run-history reader resolve the same
     # one, whatever the process's C-level zone (conftest sets TZ=UTC in the env without tzset).
     utc = ZoneInfo('UTC')
     monkeypatch.setattr(hermes_time, 'get_timezone', lambda: utc)
     monkeypatch.setattr(cron_routes, '_get_timezone', lambda: utc)
     yield authority
-    db.close()
+    authority.db.close()
 
 
 @pytest.fixture()
@@ -69,12 +55,7 @@ def clock(monkeypatch):
 
 async def _start_fire(authority, job_id):
     """A scheduler fire as it starts: its running ledger row, then the owner admits and claims it."""
-    execution_id = executions.create_execution(job_id, source='test')['id']
-    executions.mark_execution_running(execution_id)
-    receipt = await session_cron.operation(
-        authority, 'submit', {'job_id': job_id, 'request_id': execution_id, 'extra_prompt': None})
-    session_id = receipt['session_id']
-    authority.db.append_message(session_id, role='user', content=f'report for {job_id}')
+    session_id, execution_id = await admit_fire(authority, job_id, running=True)
     claim = claim_session_input(authority.db, epoch=authority.epoch, session_id=session_id)
     return session_id, execution_id, claim
 
@@ -174,9 +155,6 @@ async def test_a_same_second_output_doc_is_not_pinned_on_the_earlier_execution(
     while an earlier script-only fire that failed within the grace also spans that second. The
     guess must not decide the doc is that neighbour's: one row per execution, and the neighbour's
     failure keeps its own row."""
-    import hermes_time
-    from datetime import timedelta
-
     start = hermes_time.now().replace(microsecond=0) - timedelta(hours=1)
     wall = {'at': start}
     monkeypatch.setattr(executions, '_hermes_now', lambda: wall['at'])
@@ -212,3 +190,33 @@ async def test_a_same_second_output_doc_is_not_pinned_on_the_earlier_execution(
     assert (runs[0]['id'], runs[0]['cron_execution_id']) == (session_id, fire)
     assert runs[1]['title'].startswith('FAILED')
     assert ('script failed' if neighbour_doc_survives else 'script_failed') in runs[1]['preview']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('overlap_finishes_after_doc', [False, True])
+async def test_an_overlapping_attempt_claimed_before_a_runs_doc_keeps_its_own_row(
+        owner, clock, overlap_finishes_after_doc):
+    """A manual ``hermes cron run`` overlapping a tick: attempt B is claimed while run A is still
+    going, before A writes its doc, and fails without creating a session. B is the doc's newest
+    candidate, but the doc is A's: it folds into A's session, and B keeps its own failed row."""
+    job = jobs.create_job(prompt='report', schedule='every 1h', deliver='local')['id']
+    session_id, fire, claim = await _start_fire(owner, job)
+    clock['seconds'] = 10
+    overlap = executions.create_execution(job, source='test')['id']
+    executions.mark_execution_running(overlap)
+    if not overlap_finishes_after_doc:
+        clock['seconds'] = 12
+        executions.finish_execution(overlap, success=False, error='owner_unavailable')
+    _close_run(owner, session_id, claim)
+    clock['seconds'] = 20
+    jobs.save_job_output(job, '# Cron Job: report\n\nreport done')
+    executions.finish_execution(fire, success=True)
+    if overlap_finishes_after_doc:
+        clock['seconds'] = 25
+        executions.finish_execution(overlap, success=False, error='owner_unavailable')
+
+    runs = _runs(job)
+
+    assert [r['source'] for r in runs] == ['cron_output', 'cron'], runs
+    assert runs[0]['title'].startswith('FAILED') and runs[0]['preview'] == 'owner_unavailable', runs
+    assert (runs[1]['id'], runs[1]['cron_execution_id']) == (session_id, fire)

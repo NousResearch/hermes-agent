@@ -16,7 +16,10 @@ from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_SCAFFOLD_SQL
 from utils import safe_json_loads
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_ids import new_session_id
-from hermes_state_keys import CRON_PRINCIPAL_ID, cron_request_range, cron_run_from_request, legacy_cron_run_job
+from hermes_state_keys import (
+    CRON_PRINCIPAL_ID, CRON_REQUEST_PREFIX, cron_request_range, cron_run_from_request, legacy_cron_run_job,
+    prefix_range,
+)
 from hermes_state_local import POLICY_PREFIX
 from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
 from hermes_state_messages import _parse_tool_calls, _tool_calls_count
@@ -102,7 +105,7 @@ _CRON_POLICY_JOB_SQL = (
     f" FROM state_meta WHERE key = '{POLICY_PREFIX}' || target_session_id))")
 _CRON_ADMISSION_SQL = (
     f"principal_id = '{CRON_PRINCIPAL_ID}' AND request_id >= :request_lo AND request_id < :request_hi"
-    " AND ((instr(substr(request_id, 6), ':') = length(:request_lo) - 5"
+    f" AND ((instr(substr(request_id, {len(CRON_REQUEST_PREFIX) + 1}), ':') = length(:request_lo) - {len(CRON_REQUEST_PREFIX)}"
     " AND instr(substr(request_id, length(:request_lo) + 1), ':') = 0)"
     f" OR {_CRON_POLICY_JOB_SQL} = :job_id)")
 _CRON_RUN_IDS_SQL = (
@@ -256,9 +259,7 @@ class SessionPortabilityMixin:
         Limitation (legacy runs had it too): only a run's FIRST session is listed. A run that
         compressed continues in a child session this does not return, and the row's liveness
         (``scheduler_owned``) and detail identity follow that first session, not the tip."""
-        prefix = f"cron_{job_id}_"
-        # Half-open upper bound: bump the final byte so the range covers exactly the prefix.
-        prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+        prefix, prefix_hi = prefix_range(f"cron_{job_id}_")
         request_lo, request_hi = cron_request_range(job_id)
         query = _rich_select(
             f"s.*, {_CRON_EXECUTION_SQL} AS cron_execution_id", f"s.source = 'cron' AND s.id IN ({_CRON_RUN_IDS_SQL})",

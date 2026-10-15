@@ -13,19 +13,24 @@ import re
 # id, so its admission row is the run's durable job/execution association. Runs from before the
 # unified runtime were named ``cron_{job_id}_{YYYYmmdd_HHMMSS}`` (``cron/scheduler.py::run_job``).
 CRON_PRINCIPAL_ID = 'cron-owner'
-_CRON_REQUEST_PREFIX = 'cron:'
+CRON_REQUEST_PREFIX = 'cron:'
 _LEGACY_CRON_RUN_ID = re.compile(r'^cron_(.+)_\d{8}_\d{6}$')
 
 
 def cron_request_id(job_id, execution_id):
     """The admission request id of one cron fire (``execution_id`` is its ledger row id)."""
-    return f'{_CRON_REQUEST_PREFIX}{job_id}:{execution_id}'
+    return f'{CRON_REQUEST_PREFIX}{job_id}:{execution_id}'
+
+
+def prefix_range(prefix):
+    """Half-open ``[prefix, hi)`` bounds of every key starting with *prefix*, for an index range
+    scan: bump the final character so the range covers exactly the prefix."""
+    return prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1)
 
 
 def cron_request_range(job_id):
     """Half-open ``[lo, hi)`` bounds of *job_id*'s cron request ids, for an index range scan."""
-    lo = cron_request_id(job_id, '')
-    return lo, lo[:-1] + chr(ord(lo[-1]) + 1)
+    return prefix_range(cron_request_id(job_id, ''))
 
 
 def cron_run_from_request(request_id, job_id=None):
@@ -35,10 +40,10 @@ def cron_run_from_request(request_id, job_id=None):
     prefix splits there. More than one is ambiguous (a job id holding ``:``, or an execution id
     admitted with one before that was refused): only the *job_id* its stored policy names splits
     it, and must prefix it."""
-    if not isinstance(request_id, str) or not request_id.startswith(_CRON_REQUEST_PREFIX):
+    if not isinstance(request_id, str) or not request_id.startswith(CRON_REQUEST_PREFIX):
         return None
     if job_id is None:
-        rest = request_id[len(_CRON_REQUEST_PREFIX):]
+        rest = request_id[len(CRON_REQUEST_PREFIX):]
         if rest.count(':') != 1:
             return None
         job_id, _, execution_id = rest.partition(':')

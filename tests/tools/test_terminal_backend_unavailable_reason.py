@@ -81,6 +81,43 @@ def test_non_positive_or_unparsable_probe_timeout_falls_back(monkeypatch, raw):
     assert _probe_timeout() == 20.0
 
 
+@pytest.mark.parametrize("raw", ["1e7", "600.5", "3000000"])
+def test_probe_timeout_above_the_maximum_is_capped(monkeypatch, raw):
+    """A huge finite value would make subprocess raise OverflowError, which would
+    remove the terminal tools: the failure this setting exists to prevent."""
+    from tools.terminal_tool_config import _probe_timeout
+
+    monkeypatch.setenv("TERMINAL_PROBE_TIMEOUT", raw)
+    assert _probe_timeout() == 600.0
+    probe = subprocess.run(["true"], capture_output=True, timeout=_probe_timeout(),
+                           stdin=subprocess.DEVNULL, check=False)
+    assert probe.returncode == 0
+
+
+def test_probe_timeout_reads_the_active_terminal_scope(monkeypatch):
+    """Under a multiplexed gateway each profile's TERMINAL_* settings arrive in its
+    scope; the process env may hold another profile's value."""
+    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from tools.terminal_tool_config import _probe_timeout
+
+    monkeypatch.setenv("TERMINAL_PROBE_TIMEOUT", "5")
+    token = set_terminal_scope({"TERMINAL_PROBE_TIMEOUT": "60"})
+    try:
+        assert _probe_timeout() == 60.0
+    finally:
+        reset_terminal_scope(token)
+
+
+def test_invalid_probe_timeout_warns_once(monkeypatch, caplog):
+    from tools.terminal_tool_config import _probe_timeout
+
+    monkeypatch.setenv("TERMINAL_PROBE_TIMEOUT", "30s-warn-once")
+    with caplog.at_level("WARNING", logger="tools.terminal_tool"):
+        assert _probe_timeout() == 20.0
+        assert _probe_timeout() == 20.0
+    assert sum("TERMINAL_PROBE_TIMEOUT" in r.getMessage() for r in caplog.records) == 1
+
+
 def test_docker_preflight_uses_the_probe_timeout(monkeypatch):
     """The Docker backend's own preflight honours the same setting as the requirements check."""
     import tools.environments.docker as docker_env

@@ -569,22 +569,23 @@ class TestBrowserExecLocalArg:
         assert err == "chrome exited"
         assert "BU_CDP_URL" not in env
 
-    def test_browser_exec_route_falls_back_and_keeps_the_fallback(self):
-        """browser_exec: a failed real profile routes to the normal backend with the reason on the
-        sentinel; once a route fell back it skips the real profile, so a task never swaps browsers."""
+    def test_local_request_falls_back_to_a_fresh_local_browser_never_the_cloud(self):
+        """browser_exec(local=True) under a cloud backend: a real profile that can't load runs on the
+        local sidecar (which never loads the profile) with the note, and the route keeps it."""
         import tools.browser_use_cli as bu
         env = self._env()
         rp = Mock(return_value=(None, "chrome holds the Cookies"))
         with patch.object(bu, "_real_profile_consented", return_value=True), \
-             patch.object(bu, "_read_browser_cfg", return_value={}), \
              patch("tools.browser_tool_cdp._get_cdp_override_raw", return_value=""), \
-             patch("tools.browser_tool_cloud._get_cloud_provider", return_value=None), \
+             patch("tools.browser_tool_cloud._get_cloud_provider", return_value=Mock()), \
              patch("tools.browser_tool_real_profile._real_profile_cdp", rp), \
-             patch.object(bu, "_resolve_backend_cdp", return_value=None) as normal:
-            assert bu._route_backend(env, "", "t1", False) is None
-            assert env[bu._REAL_PROFILE_FALLBACK_SENTINEL] == "chrome holds the Cookies"
-            assert bu._route_backend({}, "", "t1", False, real_profile=False) is None
-        assert rp.call_count == 1 and normal.call_count == 2
+             patch.object(bu, "_resolve_backend_cdp", return_value=None) as backend:
+            assert bu._route_backend(env, "", "t1", True) is None
+            assert "chrome holds the Cookies" in env[bu._REAL_PROFILE_FALLBACK_SENTINEL]
+            assert env[bu._LOCAL_FALLBACK_SENTINEL] == "1"
+            assert bu._route_backend({}, "", "t1", True, real_profile=False) is None
+        assert rp.call_count == 1
+        assert [c.kwargs["force_local_sidecar"] for c in backend.call_args_list] == [True, True]
 
     def test_explicit_bu_env_override_wins(self):
         import tools.browser_use_cli as bu

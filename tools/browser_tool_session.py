@@ -264,6 +264,12 @@ def _session_record(prefix: str, cdp_url: Optional[str], features: dict[str, Any
             "cdp_url": cdp_url, "features": features}
 
 
+def real_profile_note(task_id: str) -> Optional[str]:
+    """The real-profile fallback note on ``task_id``'s existing session; never creates or touches one."""
+    with _bt._cleanup_lock:
+        return (_bt._active_sessions.get(task_id) or {}).get("real_profile_unavailable")
+
+
 def _create_local_session(task_id: str, allow_real_profile: bool = True) -> dict[str, str]:
     """Local Chromium session; consented real-profile CDP attach when allowed.
 

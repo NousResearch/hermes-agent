@@ -36,8 +36,10 @@ _PRIVATE_BROWSER_SENTINEL = "_HERMES_BU_PRIVATE_BROWSER"
 # Internal route provenance: this exec resolved to a browser on the Bot Desktop display and must use
 # the same human-control lease fence as the built-in browser tools. Popped before launching the CLI.
 _BOT_DESKTOP_BROWSER_SENTINEL = "_HERMES_BU_BOT_DESKTOP_BROWSER"
-# Why the consented real profile could not load this call (the route fell back). Popped before launch.
+# The note when the consented real profile could not load (the route fell back). Popped before launch.
 _REAL_PROFILE_FALLBACK_SENTINEL = "_HERMES_BU_REAL_PROFILE_FALLBACK"
+# local=True whose real profile could not load: run on the local sidecar browser. Popped before launch.
+_LOCAL_FALLBACK_SENTINEL = "_HERMES_BU_LOCAL_FALLBACK"
 
 # Prepended to the model's code for named sessions on SHARED browsers (a /browser connect CDP override): the
 # harness daemon attaches to the first existing page at startup, so two fresh named daemons can land on the
@@ -377,6 +379,15 @@ def _sidecar_daemon_name(name: str) -> str:
     return f"_local_{name or 'default'}"[:64]
 
 
+def _export_real_profile_note(env: dict, key: str) -> None:
+    """The session layer decides real profile vs fresh browser once per key; carry its note (if it fell
+    back) so the result reports the browser this call actually drives."""
+    from tools.browser_tool_session import real_profile_note
+    note = real_profile_note(key)
+    if note:
+        env.setdefault(_REAL_PROFILE_FALLBACK_SENTINEL, note)
+
+
 def _resolve_lightpanda_cdp(env: dict, task_id: Optional[str], session_name: str = "",
                             sidecar: bool = False) -> Optional[str]:
     """Point the harness at a Hermes-spawned ``lightpanda serve`` (``browser.engine: lightpanda`` and
@@ -399,6 +410,7 @@ def _resolve_lightpanda_cdp(env: dict, task_id: Optional[str], session_name: str
     if err is None:
         env[_PRIVATE_BROWSER_SENTINEL] = "1"
         env[_BOT_DESKTOP_BROWSER_SENTINEL] = "1"
+        _export_real_profile_note(env, _backend_cache_key(task_id, session_name, sidecar))
     return err
 
 
@@ -452,6 +464,7 @@ def _resolve_managed_chromium_cdp(env: dict, task_id: Optional[str], session_nam
     _set_cdp_env(env, cdp)
     env[_PRIVATE_BROWSER_SENTINEL] = "1"  # one Chromium per cache key: nothing to share a tab with
     env[_BOT_DESKTOP_BROWSER_SENTINEL] = "1"
+    _export_real_profile_note(env, _backend_cache_key(task_id, session_name, sidecar))
     return None
 
 
@@ -596,17 +609,22 @@ def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool,
 
     ``force_local_sidecar`` (a call carrying a private URL) declines the cloud provider for the hybrid local
     sidecar; unlike ``local`` (the consent-gated real-profile browser) it never touches the user's profile."""
-    # A real profile that can't load falls back to the normal backend: the reason rides out on
-    # the env sentinel (popped by browser_exec), and ``real_profile=False`` keeps that route on
-    # the fallback browser instead of swapping browsers mid-task once the profile frees up.
+    # ``real_profile=False``: this route already fell back, so it stays on its fresh browser instead
+    # of swapping browsers mid-task once the profile frees up.
     rp_err = _resolve_real_profile_cdp(env, force_local=local) if real_profile else None
-    if rp_err:
-        logger.warning("browser_exec: real-profile unavailable, using the normal backend: %s", rp_err)
-        env[_REAL_PROFILE_FALLBACK_SENTINEL] = rp_err
     # local=True is only served by the real-profile route; consent off must not pretend.
     if local and not _has_cdp_env(env) and not _real_profile_consented():
         return ("local=true was requested but browser.use_real_profile is off. Enable it in config.yaml "
                 "(browser.use_real_profile: true) or the desktop Settings → Browser section, then retry.")
+    # local=True promised the user's own machine: a profile that can't load runs on a fresh LOCAL browser
+    # (the sidecar, which never loads the profile), never the cloud one. Without ``local`` the session
+    # layer makes the one real-profile-or-fresh decision and reports it (_resolve_managed_chromium_cdp).
+    if local and not _has_cdp_env(env) and (rp_err or not real_profile):
+        if rp_err:
+            from tools.browser_tool_real_profile import real_profile_fallback_note
+            env[_REAL_PROFILE_FALLBACK_SENTINEL] = real_profile_fallback_note(rp_err)
+        env[_LOCAL_FALLBACK_SENTINEL] = "1"
+        force_local_sidecar = True
     return _resolve_backend_cdp(env, task_id, session_name=session,
                                 force_local_sidecar=force_local_sidecar)
 
@@ -681,6 +699,7 @@ _driven_daemons_lock = threading.Lock()
 _exec_route_is_sidecar: dict[str, bool] = {}
 # Route cache key -> the note from its real-profile fallback; that route stays on the fallback browser.
 _real_profile_fallback: dict[str, str] = {}
+_real_profile_note_delivered: set = set()
 
 
 def stop_harness_daemons() -> None:
@@ -699,17 +718,24 @@ def stop_harness_daemons() -> None:
 
 
 def _route_exec(env: dict, session: str, task_id: Optional[str], local: bool, local_sidecar: bool,
-                route_key: str) -> tuple[Optional[str], dict]:
-    """``_route_backend`` for one browser_exec call, plus the result fields when the real profile
-    fell back this call. A route that fell back once stays on the fallback browser."""
+                route_key: str) -> tuple[Optional[str], bool]:
+    """``_route_backend`` for one browser_exec call; returns ``(error, runs on the local sidecar)``.
+    A real-profile fallback is remembered per route: the route keeps its fresh browser and the note
+    waits until a result carries it (``_take_real_profile_note``)."""
     route_err = _route_backend(env, session, task_id, local, force_local_sidecar=local_sidecar,
                                real_profile=route_key not in _real_profile_fallback)
-    reason = env.pop(_REAL_PROFILE_FALLBACK_SENTINEL, None)
-    if not reason:
-        return route_err, {}
-    from tools.browser_tool_real_profile import real_profile_fallback_note
-    note = _real_profile_fallback[route_key] = real_profile_fallback_note(reason)
-    return route_err, {"real_profile_unavailable": note}
+    note = env.pop(_REAL_PROFILE_FALLBACK_SENTINEL, None)
+    if note:
+        _real_profile_fallback.setdefault(route_key, note)
+    return route_err, local_sidecar or bool(env.pop(_LOCAL_FALLBACK_SENTINEL, None))
+
+
+def _take_real_profile_note(route_key: str) -> dict:
+    """The fallback note for the first result this route returns after falling back, then nothing."""
+    if route_key not in _real_profile_fallback or route_key in _real_profile_note_delivered:
+        return {}
+    _real_profile_note_delivered.add(route_key)
+    return {"real_profile_unavailable": _real_profile_fallback[route_key]}
 
 
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
@@ -741,7 +767,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return tool_error(f"Invalid session name {session!r}: use 1-64 letters, digits, "
                               "dashes, or underscores (e.g. 'r7k2').")
         env["BU_NAME"] = session
-    route_err, rp_extra = _route_exec(env, session, task_id, bool(local), local_sidecar, route_key)
+    route_err, local_sidecar = _route_exec(env, session, task_id, bool(local), local_sidecar, route_key)
     if route_err:
         return tool_error(route_err)
     if local_sidecar:
@@ -804,7 +830,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         result["workspace"] = workspace
     if session:
         result["session"] = session
-    result.update(rp_extra)
+    result.update(_take_real_profile_note(route_key))
     stderr = redact_sensitive_text((proc.stderr or "").strip(), force=True)
     if len(stderr) > _STDERR_CAP_CHARS:
         stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"

@@ -1884,10 +1884,10 @@ DEFAULT_CONFIG = {
     # promotes dependency-satisfied todos to ready, and fires `hermes -p <assignee> chat -q ...` per
     # claimable task. Run ONE dispatcher per profile; two on the same kanban.db race for claims.
     "kanban": {
-        # Auto-subscribe the originating gateway/TUI session to completion + block events when
-        # kanban_create is called from a session with a persistent delivery channel. Disable for
-        # profiles that prefer explicit kanban_notify-subscribe calls per task.
+        # Auto-subscribe the originating gateway/TUI session to terminal events on kanban_create (false = explicit
+        # kanban_notify-subscribe only); auto_subscribe_wake: true = notify+wake, false = notify, list = wake only those.
         "auto_subscribe_on_create": True,
+        "auto_subscribe_wake": True,
         # Poll and deliver Kanban subscriptions from this gateway. Disable on profiles that do
         # not own notification subscriptions to avoid an idle five-second board probe.
         "notify_in_gateway": True,

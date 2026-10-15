@@ -1222,8 +1222,38 @@ def _resolve_notify_target() -> Optional[dict[str, Any]]:
         user_id=env("HERMES_SESSION_USER_ID", "") or None,
         user_id_alt=env("HERMES_SESSION_USER_ID_ALT", "") or None,
         notifier_profile=notifier_profile,
-        delivery_mode="notify+wake" if platform != "tui" else None,
+        delivery_mode=_auto_subscribe_delivery_mode(platform),
         delivery_metadata=delivery_metadata or None)
+
+
+def _wake_enabled_for(platform: str, setting: Any) -> bool:
+    """``kanban.auto_subscribe_wake`` for one platform: bool (all / none), list or comma string of platforms."""
+    if setting is None or isinstance(setting, bool):
+        return setting is not False
+    if isinstance(setting, str):
+        word = setting.strip().lower()
+        if word in ("", "true", "yes", "on", "1"):
+            return True
+        if word in ("false", "no", "off", "0", "none"):
+            return False
+        setting = word.split(",")
+    if isinstance(setting, (list, tuple, set)):
+        return platform.lower() in {str(p).strip().lower() for p in setting}
+    return bool(setting)
+
+
+def _auto_subscribe_delivery_mode(platform: str) -> Optional[str]:
+    """Delivery mode of a chat-originated auto-subscription (``kanban.auto_subscribe_wake``).
+
+    ``true`` (default) keeps ``notify+wake``: every terminal event resumes the creator with a synthetic
+    turn. ``false`` makes it passive ``notify`` everywhere; a list of platform names (e.g. ``[telegram]``)
+    wakes only those. A passive subscription on an adapter without a push channel (``api_server``) is
+    acknowledged without delivery: the client reads task events itself and decides when the agent
+    should take a turn. TUI keeps its poller default (``None``)."""
+    if platform == "tui":
+        return None
+    setting = cfg_get(load_config(), "kanban", "auto_subscribe_wake", default=True)
+    return "notify+wake" if _wake_enabled_for(platform, setting) else "notify"
 
 
 def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:

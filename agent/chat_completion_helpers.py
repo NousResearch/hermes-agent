@@ -2034,20 +2034,6 @@ def _update_fallback_context_compressor(agent) -> None:
         revalidate_compression_feasibility(agent)
 
 
-def _reresolve_fallback_reasoning_config(agent) -> None:
-    """Per-model override > global reasoning_effort (YAML False = disabled); a config load
-    failure keeps the current reasoning_config rather than killing the swap."""
-    try:
-        # Re-resolve reasoning_config for the new fallback model (Closes #21256). Wrapped in try/except
-        # because a config load failure must not kill the swap.
-        from hermes_cli.config import load_config
-        from hermes_constants import resolve_reasoning_config
-        agent.reasoning_config = resolve_reasoning_config(load_config() or {}, agent.model)
-        logger.info("Fallback %s: reasoning_config resolved: %s", agent.model, agent.reasoning_config)
-    except Exception as _reasoning_err:
-        logger.debug("Failed to resolve reasoning_config for fallback %s; keeping current: %s", agent.model, _reasoning_err)
-
-
 def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_base_url: str) -> None:
     """Drop the OLD provider's custom_providers-contributed extra_body keys, then merge the fallback
     provider's own. KEY-SCOPED: a key is dropped only if its value still equals what the old provider's
@@ -2087,6 +2073,9 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
+    from agent.fallback_policy import fallback_reason_allowed
+    if not fallback_reason_allowed(agent, reason):
+        return False
     from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False

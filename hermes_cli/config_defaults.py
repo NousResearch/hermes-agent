@@ -2230,16 +2230,16 @@ DEFAULT_CONFIG = {
         # HERMES_MEDIA_TRUST_RECENT_SECONDS. Only consulted when strict is true.
         "trust_recent_files_seconds": 600,
         "api_server": {  # OpenAI-compatible API server platform (gateway/platforms/api_server.py).
-            # Max concurrent agent runs. Requests to /v1/chat/completions, /v1/responses, and
-            # /v1/runs beyond this get HTTP 429 + Retry-After, bounding CPU/memory/LLM-quota
-            # exhaustion from a request flood. 0 = no cap.
+            # Max concurrent agent runs; requests to /v1/chat/completions, /v1/responses and /v1/runs
+            # beyond it get HTTP 429 + Retry-After, bounding a request flood. 0 = no cap.
             "max_concurrent_runs": 10,
-            # Cap (chars) on each tool output and tool-call argument string in the stored
-            # /v1/responses conversation history used for previous_response_id chaining. The
-            # stored history is cumulative, so a few large tool outputs can make one
-            # response_store.db write several hundred KB. 0 = store tool outputs verbatim
-            # (default: the capped text is what the model is replayed on the next turn).
+            # Cap (chars) on each tool output / tool-call argument in the stored /v1/responses history
+            # for previous_response_id chaining (cumulative: large outputs bloat response_store.db).
+            # 0 = store verbatim (default); otherwise the capped text is replayed on the next turn.
             "history_tool_output_max_chars": 0,
+            # The API server's own fallback chain ([{provider, model}, ...]), used for capacity failures
+            # only (rate limits, overload). null = the global fallback_providers chain; [] = none.
+            "fallback_providers": None,
         },
     },
     # Real-time token streaming to messaging platforms (gateway; restart after enabling). Off by

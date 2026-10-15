@@ -2291,13 +2291,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session ``/model`` override, disables the fallback chain and fails closed."""
         from run_agent import AIAgent
         from gateway.run import (
-            _checkpoint_agent_kwargs, _current_max_iterations, _resolve_runtime_agent_kwargs,
-            _resolve_gateway_model, _load_gateway_config, GatewayRunner)
+            _checkpoint_agent_kwargs, _current_max_iterations, _resolve_gateway_model, _load_gateway_config,
+            GatewayRunner)
         from hermes_cli.tools_config import _get_platform_tools
+        from gateway.platforms.api_server_model_policy import base_runtime_kwargs, constructor_fallback, create_api_agent
+        user_config = _load_gateway_config()
         # RuntimeError is caught ONLY here (sole provider-auth raiser); the typed subclass keeps
         # run_conversation() errors distinct.
         try:
-            runtime_kwargs = _resolve_runtime_agent_kwargs()
+            runtime_kwargs = base_runtime_kwargs(user_config, requested_provider, requested_model)
         except RuntimeError as exc:
             raise _ProviderAuthResolutionError(str(exc)) from exc
         # A fallback-provider runtime carries its own ``model``: pop it (overrides config, and
@@ -2311,7 +2313,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             requested_model=requested_model, requested_provider=requested_provider, route=route,
             session_model=session_model, confirmed_runtime_lock=confirmed_runtime_lock,
             gateway_session_key=gateway_session_key, session_id=session_id)
-        user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
         # Same gate the messaging gateway and TUI apply: ``display.interim_assistant_messages``
         # off means no callback is installed, so mid-turn commentary never leaves the agent.
@@ -2341,8 +2342,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "reasoning_callback": reasoning_callback,
             "status_callback": status_callback,
             "session_db": self._ensure_session_db(),
-            # Same fallback provider chain as Telegram/Discord/Slack.
-            "fallback_model": None if confirmed_runtime_lock else GatewayRunner._load_fallback_model(),
+            "fallback_model": constructor_fallback(user_config, confirmed_runtime_lock),
             "reasoning_config": request_reasoning_config,
             "gateway_session_key": gateway_session_key,
             # The session's provider from the previous request, so its queued recall reaches this turn
@@ -2350,7 +2350,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "memory_manager": self._memory_sessions.checkout(session_id)}
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
-        agent = AIAgent(**agent_kwargs)
+        agent = create_api_agent(AIAgent, agent_kwargs, user_config, confirmed_runtime_lock, _request_reasoning_config(model_options))
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
             else "session_model_override" if session_override

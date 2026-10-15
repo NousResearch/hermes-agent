@@ -2056,7 +2056,7 @@ def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_b
     KEY-SCOPED rule). A nested or list value that is only partly config-owned goes too, and so does
     the whole body of an agent without a ledger (unknown provenance)."""
     try:
-        from agent.agent_init import (
+        from agent.agent_init_extra_body import (
             _custom_provider_extra_body_for_agent, _drop_config_owned_extra_body, _merge_custom_provider_extra_body,
         )
         custom_providers = getattr(agent, "_custom_providers", None) or []

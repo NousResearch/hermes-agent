@@ -2016,7 +2016,7 @@ Three escape hatches bypass the interactive prompt — any one is sufficient:
 2. `HERMES_ACCEPT_HOOKS=1` environment variable
 3. `hooks_auto_accept: true` in `~/.hermes/config.yaml`
 
-Non-TTY runs (gateway, cron, CI) need one of these three — otherwise any newly-added hook silently stays un-registered and logs a warning.
+Non-TTY runs (gateway, cron, CI) need one of these three — otherwise any newly-added hook silently stays un-registered and logs a warning. Because those channels are only resolved during a start-up registration pass, a running non-TTY process can also be approved out-of-band with `hermes hooks accept`, which records the same `(event, command)` entry the prompt would write.
 
 **Script edits are silently trusted.** The allowlist keys on the exact command string, not the script's hash, so editing the script on disk does not invalidate consent. `hermes hooks doctor` flags mtime drift so you can spot edits and decide whether to re-approve.
 
@@ -2042,6 +2042,7 @@ The command string must match the configured hook command exactly. A path-keyed 
 | Command | What it does |
 |---------|--------------|
 | `hermes hooks list` | Dump configured hooks with matcher, timeout, and consent status |
+| `hermes hooks accept [command...]` | Record first-use consent for configured hooks without a TTY prompt (all not-yet-allowlisted hooks, or only those whose command string is given) |
 | `hermes hooks test <event> [--for-tool X] [--payload-file F]` | Fire every matching hook against a synthetic payload and print the parsed response |
 | `hermes hooks revoke <command>` | Remove every allowlist entry matching `<command>` (takes effect on next restart) |
 | `hermes hooks doctor` | For every configured hook: check exec bit, allowlist status, mtime drift, JSON output validity, and rough execution time |

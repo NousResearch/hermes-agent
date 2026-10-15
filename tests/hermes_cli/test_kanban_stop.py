@@ -68,3 +68,64 @@ def test_stop_retains_unverified_worker_and_retry_terminates_after_identity_is_k
             if worker.poll() is None:
                 worker.kill()
             worker.wait(timeout=10)
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.live_system_guard_bypass  # Cleanup must reap the exact child if its worker orphaned it.
+@pytest.mark.parametrize("persist", [False, True])
+def test_stop_reaps_real_hermes_background_process(tmp_path, monkeypatch, persist):
+    import os
+    from pathlib import Path
+
+    from hermes_cli.kanban_db_dispatch import _pid_alive
+    from tests.waiting import wait_until
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "board.db"))
+    ready = tmp_path / "ready.json"
+    script = tmp_path / "worker.py"
+    script.write_text('''
+import json, os, signal, sys
+from pathlib import Path
+from types import SimpleNamespace
+from run_agent import AIAgent
+from hermes_cli.cli_single_query import _install_single_query_signal_handlers
+from tools.process_registry import process_registry
+agent = AIAgent(model="test/stop-proof", provider="openrouter", api_key="dummy-proof-key",
+    base_url="http://127.0.0.1:1/v1", enabled_toolsets=[], skip_memory=True,
+    skip_background_review=True, quiet_mode=True, skip_context_files=True)
+_install_single_query_signal_handlers(SimpleNamespace(agent=agent))
+session = process_registry.spawn_local("sleep 300", task_id="proof", owner_task_id="proof",
+    persist_on_release=sys.argv[2] == "True")
+Path(sys.argv[1]).write_text(json.dumps({"pid": session.pid,
+    "handler": str(signal.getsignal(signal.SIGTERM))}))
+signal.pause()
+''')
+    with connect(tmp_path / "board.db") as conn, (tmp_path / "worker.log").open("w+") as log:
+        task = kb.create_task(conn, title="background stop", workspace_kind="dir", workspace_path=str(tmp_path))
+        assert kb.claim_task(conn, task) is not None
+        env = {**os.environ, "HERMES_KANBAN_TASK": task,
+               "PYTHONPATH": str(Path(__file__).resolve().parents[2])}
+        worker = subprocess.Popen([sys.executable, str(script), str(ready), str(persist)],
+                                  env=env, stdout=log, stderr=log)
+        child = None
+        try:
+            wait_until(lambda: ready.exists() or worker.poll() is not None, timeout=60,
+                       what="Hermes worker background process")
+            log.seek(0)
+            assert ready.exists(), log.read()
+            receipt = json.loads(ready.read_text())
+            assert "_signal_handler_q" in receipt["handler"], receipt
+            import psutil
+            child = psutil.Process(receipt["pid"])
+            _set_worker_pid(conn, task, worker.pid)
+            assert stop_task(conn, task, "operator stop").stopped
+            code = worker.wait(timeout=10)
+            log.seek(0)
+            assert code == 0, log.read()
+            assert not _pid_alive(child.pid), "worker exited but its background work survived"
+        finally:
+            if worker.poll() is None:
+                worker.kill()
+            worker.wait(timeout=10)
+            if child is not None and child.is_running() and child.status() != psutil.STATUS_ZOMBIE:
+                child.kill()

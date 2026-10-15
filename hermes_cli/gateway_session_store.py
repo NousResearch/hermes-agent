@@ -348,51 +348,32 @@ _LOCAL_LABELLED = frozenset({"cli", "tui", "gui"})
 class SurfaceLabelReader:
     """A read-only ``SessionDB`` whose source-filtered listings read main's labels: ``source='cli'``
     also matches a gateway row labelled ``local`` that the CLI created (``created_source='cli'``), so
-    main's /resume picker, /sessions, /history and bare ``-c`` find the sessions the CLI made.
-
-    The surface predicate runs in SQL before LIMIT/OFFSET. Filtering a fixed over-fetch of every
-    ``local`` row dropped CLI sessions once newer Desktop/TUI rows filled that window.
-
-    Read-only opens do not migrate. A store that has no ``created_source`` column is matched on
-    ``source`` alone (there are no gateway ``local`` rows yet). ``created_source='unknown'`` stays
-    unmatched once the column exists. Only a successful "column present" probe is cached: a lock
-    error is not a missing column, and another connection can add the column later.
+    main's /resume picker, /sessions, /history and bare ``-c`` find the sessions the CLI made. The
+    surface predicate runs in SQL, before LIMIT/OFFSET.
     """
 
     def __init__(self, db):
         self._wrapped = db
-        self._created_source_column: bool | None = None
+        self._has_column = False
 
     def __getattr__(self, name):
         return getattr(self._wrapped, name)
 
     def _has_created_source_column(self) -> bool:
-        """Whether ``sessions.created_source`` is on this connection.
-
-        The probe is a read, so it uses the same disk-I/O retry as every other
-        read (``_read_retrying_ioerr``). A positive answer is cached. An absent
-        answer is re-probed: a later ``ALTER TABLE`` from another connection is
-        visible to the next statement. A lock or an I/O error that survives the
-        retry budget propagates and is not stored. This read does not write.
-        """
-        if self._created_source_column is True:
-            return True
-        rows = self._wrapped._read_all("PRAGMA table_info(sessions)")
-        present = any(row[1] == "created_source" for row in rows)
-        if present:
-            self._created_source_column = True
-        return present
+        """Read-only opens don't migrate, so ``created_source`` may be missing. Only "present" is
+        cached: a lock or I/O error is not proof of absence, and another connection may add it."""
+        if not self._has_column:
+            rows = self._wrapped._read_all("PRAGMA table_info(sessions)")
+            self._has_column = any(row[1] == "created_source" for row in rows)
+        return self._has_column
 
     def _labelled(self, requested, limit, offset, call):
         wanted = {requested} if isinstance(requested, str) else set(requested or ())
         surfaces = wanted & _LOCAL_LABELLED
-        # No column: naming ``created_source`` raises, and the read-only caller swallows that
-        # into an empty page. Match the requested labels only, as the old filter did when the
-        # key was absent (a ``local`` row could not prove its surface).
+        # No column (and so no gateway ``local`` rows yet): naming it would raise, and the caller
+        # swallows that into an empty page.
         if not surfaces or not self._has_created_source_column():
             return call(requested, limit, offset, None)
-        # ``local`` is the gateway label; ``created_source`` is the surface. Page the rows this
-        # surface can see, not a window of every local row.
         return call(sorted(wanted | {"local"}), limit, offset, sorted(surfaces))
 
     def search_sessions(self, source=None, limit=20, offset=0, **kw):

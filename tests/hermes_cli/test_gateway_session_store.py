@@ -529,6 +529,21 @@ def test_explicit_flags_on_resume_are_checked_against_the_frozen_route(store):
         assert GatewaySessionStore(db.connection).open_session(cli("local-old", resumed=True), launch) == "local-old"
 
 
+def test_explicit_toolsets_on_resume_are_checked_against_the_frozen_route(store):
+    """CLI-2 `-t`: only an explicit `-t` (``cli._typed_toolsets``) is checked on resume; the CLI's
+    resolved default selection in ``launch`` never refuses one."""
+    db, client = store
+    _frozen_launch(client, {"toolsets": ["file"]})
+    host = cli("local-old", resumed=True)
+    host._typed_toolsets = ["web"]
+    with pytest.raises(GatewayClientError, match="Resume retains gateway session policy"):
+        GatewaySessionStore(db.connection).open_session(host, {"toolsets": ["web"]})
+    host._typed_toolsets = ["file"]
+    assert GatewaySessionStore(db.connection).open_session(host, {"toolsets": ["file"]}) == "local-old"
+    host._typed_toolsets = None
+    assert GatewaySessionStore(db.connection).open_session(host, {"toolsets": ["web"]}) == "local-old"
+
+
 def test_new_session_keeps_the_runs_launch_policy(store, monkeypatch):
     """CLI-3: `/new` keeps `--max-turns`, `--checkpoints`, `--run-budget`, `-v` and `-s` (main kept one
     AIAgent across /new); only the explicit model route is left to the profile default."""

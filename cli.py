@@ -1547,6 +1547,8 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
         raise
     if profile_default:
         cli._explicit_toolsets = False  # the gateway resolves the profile's toolsets itself
+    # Only a typed -t is checked against a resumed session's frozen toolsets.
+    cli._typed_toolsets = toolsets_list if toolsets else None
 
     # skills.auto_load rides the same background preload as -s; --ignore-rules skips it with
     # the rest of the auto-injected context. Resolved here (not lazily in the agent) so the
@@ -1745,16 +1747,7 @@ def main(
     if _join_worktree is not None and not wt_info:
         return
 
-    # Inject worktree context into agent's system prompt
-    if wt_info:
-        wt_note = (
-            f"\n\n[System note: You are working in an isolated git worktree at "
-            f"{wt_info['path']}. Your branch is `{wt_info['branch']}`. "
-            f"Changes here do not affect the main working tree or other agents. "
-            f"Remember to commit and push your changes, and create a PR if appropriate. "
-            f"The original repo is at {wt_info['repo_root']}.]"
-        )
-        cli.system_prompt = (cli.system_prompt or "") + wt_note
+    # The worktree note is rendered by the gateway from the session's folder (agent/coding_context.py).
 
     if list_tools or list_toolsets:
         cli.show_banner()

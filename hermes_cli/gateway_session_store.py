@@ -134,7 +134,8 @@ class GatewaySessionStore:
                 if str(exc) in {"not_found", "permission_denied"}:
                     return None
                 raise
-            _check_resume_launch(launch or {}, snapshot)
+            # The CLI always sends its resolved toolsets; only an explicit -t is checked.
+            _check_resume_launch({**(launch or {}), "toolsets": getattr(cli, "_typed_toolsets", None)}, snapshot)
             return self._adopt(snapshot)
         return self.create(launch)
 
@@ -409,16 +410,18 @@ def _classic_only_policy(launch):
     return policy
 
 
-# Flags a resume may only repeat. Not ``toolsets``: the classic CLI always sends its resolved selection, so
-# an unset ``-t`` cannot be told from an explicit one here.
-_RESUME_CHECKED = tuple(key for key in _LAUNCH_POLICY if key != "toolsets")
+# Flags a resume may only repeat (``toolsets`` arrives here only from an explicit ``-t``).
+_RESUME_CHECKED = _LAUNCH_POLICY
 
 
 def _check_resume_launch(launch, snapshot):
     """Explicit launch flags on ``--resume`` / ``-c`` against the session's frozen route, as the thin
     client checks them: the same flags again are fine, a different value is refused, never dropped."""
     from hermes_cli.gateway_chat import _RESUME_POLICY_MISMATCH, check_resume_policy
-    check_resume_policy(argparse.Namespace(**{key: launch.get(key) for key in _RESUME_CHECKED}), snapshot)
+    fields = {key: launch.get(key) for key in _RESUME_CHECKED}
+    if isinstance(fields.get("toolsets"), (list, tuple)):
+        fields["toolsets"] = ",".join(str(item) for item in fields["toolsets"])
+    check_resume_policy(argparse.Namespace(**fields), snapshot)
     frozen = ((snapshot.get("info") or {}).get("launch_request") or {})
     if any(frozen.get(key) != value for key, value in _classic_only_policy(launch).items()):
         raise GatewayClientError(_RESUME_POLICY_MISMATCH)

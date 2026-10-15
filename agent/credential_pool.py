@@ -877,7 +877,7 @@ def persist_pool_entries(
     removed_ids: Optional[Iterable[str]] = None,
     status_cleared_ids: Optional[Iterable[str]] = None,
     token_bases: Optional[dict[str, tuple[Any, Any]]] = None,
-) -> Optional[list[dict[str, Any]]]:
+) -> tuple[Optional[list[dict[str, Any]]], Optional[Path]]:
     """Persist a provider's pool rows to the store that OWNS them.
 
     A named profile that sees a single-use-refresh provider (see
@@ -887,6 +887,12 @@ def persist_pool_entries(
     pair only to its own file, and root plus every sibling die with
     ``invalid_grant`` (#100339). Such rows are written back to the root store
     (under the root lock); everything else goes to the active store.
+
+    Returns ``(rows, tombstone_path)``: the rows the owning store kept, and the
+    store whose ``credential_pool_removals`` govern them — the global root for
+    a borrowed single-use pool (``hermes auth remove`` in the root tombstones
+    there), ``None`` (the active store) otherwise. ``(None, None)`` means the
+    borrowed-root write-through failed and nothing was persisted.
     """
     if provider in SINGLE_USE_REFRESH_POOL_PROVIDERS and not _profile_owns_pool_provider(provider):
         global_path = _borrowed_single_use_pool_root()
@@ -895,7 +901,7 @@ def persist_pool_entries(
                 return _update_root_pool_rows(
                     provider, payloads, global_path,
                     status_cleared_ids=status_cleared_ids, token_bases=token_bases,
-                )
+                ), global_path
             except Exception as exc:
                 # Fail closed on the FORK, not on the save: never fall back to
                 # writing a local copy (that IS the bug). The in-memory pool
@@ -905,11 +911,11 @@ def persist_pool_entries(
                     "not materializing a profile-local copy",
                     provider, exc,
                 )
-            return None
+            return None, None
     return write_credential_pool(
         provider, payloads, removed_ids=removed_ids, status_cleared_ids=status_cleared_ids,
         token_bases=token_bases,
-    )
+    ), None
 
 
 # --- Per-provider singleton refresh plumbing -------------------------------
@@ -1112,7 +1118,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         # Self-locking: snapshotting self._entries must not race a rotation.
         with self._lock:
             payloads = [entry.to_dict() for entry in self._entries]
-            written = persist_pool_entries(
+            written, tombstone_path = persist_pool_entries(
                 self.provider, payloads,
                 removed_ids=removed_ids,
                 status_cleared_ids=status_cleared_ids,
@@ -1125,9 +1131,11 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             # Rows the write dropped carry removal tombstones recorded by a peer's
             # ``hermes auth remove``; mirror the drop in memory or this process keeps
             # selecting — and reflushing — the removed credential until it restarts
-            # (#138756).
+            # (#138756). The tombstones live in the store the rows were written to:
+            # the root for a borrowed single-use pool, the active store otherwise.
             gone = auth_mod.credential_pool_removal_ids(
-                self.provider, [e.id for e in self._entries if e.id not in rows])
+                self.provider, [e.id for e in self._entries if e.id not in rows],
+                target_path=tombstone_path)
             if gone:
                 self._entries = [e for e in self._entries if e.id not in gone]
                 if self._current_id in gone:

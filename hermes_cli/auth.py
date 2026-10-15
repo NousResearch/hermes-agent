@@ -1058,17 +1058,20 @@ def write_credential_pool(
 
 def credential_pool_removal_ids(
     provider_id: str, candidates: Optional[Iterable[str]] = None,
+    *, target_path: Optional[Path] = None,
 ) -> set[str]:
     """Unexpired removal tombstone ids for *provider_id* (see ``write_credential_pool``).
 
     With *candidates*, restricted to those ids. A process that loaded the pool before the
     removal asks the store which of its rows were removed elsewhere, so its next flush can
-    drop them from memory too instead of keeping them selectable until restart (#138756)."""
+    drop them from memory too instead of keeping them selectable until restart (#138756).
+    *target_path* reads one specific store — the global root for a pool whose rows persist
+    there (borrowed single-use pools); the default is the active store."""
     wanted = {cid for cid in candidates if cid} if candidates is not None else None
     if wanted is not None and not wanted:
         return set()  # hot path: an ordinary flush with no store-dropped rows
-    with _auth_store_lock():
-        section = _load_auth_store().get("credential_pool_removals")
+    with _auth_store_lock(target_path=target_path):
+        section = _load_auth_store(target_path).get("credential_pool_removals")
         raw = section.get(provider_id) if isinstance(section, dict) else None
         now = time.time()
         return {

@@ -125,6 +125,9 @@ class SubagentResult:
     usage_metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     tool_execution_summary: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     result_hash: Optional[str] = None
+    # Appended fields keep positional compatibility with earlier contract consumers.
+    summary_truncated: bool = False
+    summary_full_path: Optional[str] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -427,11 +430,20 @@ class SubagentLifecycleService:
                 state = SubagentState.CANCELLED if record.state == SubagentState.CANCEL_REQUESTED else SubagentState.INTERRUPTED
             else:
                 state = SubagentState.SUCCEEDED if status == "completed" else SubagentState.FAILED
+            summary_value = raw.get("summary")
+            summary_truncated = raw.get("summary_truncated")
+            summary_full_path = raw.get("summary_full_path")
             fields: dict[str, Any] = dict(
-                summary=_clip(raw.get("summary")), error_message=_clip(raw.get("error") or None),
+                # Native finalization (tools.delegate_tool_results._apply_summary_budget) already owns the
+                # summary budget; a second clip here would cut the recovery footer off the end, so the
+                # finalized text passes through unclipped.
+                summary=None if summary_value is None else str(summary_value),
+                error_message=_clip(raw.get("error") or None),
                 error_classification=None if state == SubagentState.SUCCEEDED else status.upper(),
                 usage_metadata={"api_calls": raw.get("api_calls", 0)} if is_dict else {},
                 tool_execution_summary={"duration_seconds": raw.get("duration_seconds", 0)} if is_dict else {},
+                summary_truncated=summary_truncated if isinstance(summary_truncated, bool) else False,
+                summary_full_path=summary_full_path if isinstance(summary_full_path, str) and summary_full_path else None,
             )
         except Exception as exc:
             state = SubagentState.FAILED

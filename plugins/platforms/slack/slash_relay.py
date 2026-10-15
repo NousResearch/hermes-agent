@@ -46,7 +46,7 @@ import time
 import uuid
 from contextlib import closing
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ DEFAULT_PURGE_KEEP_S = 86_400.0
 OWNER_CACHE_TTL_S = 60.0
 
 # root path str → (monotonic timestamp, {channel_id: profile})
-_owner_cache: Dict[str, tuple] = {}
+_owner_cache: dict[str, tuple] = {}
 
 
 def _default_root() -> Path:
@@ -81,9 +81,9 @@ def _resolve_root(root: Optional[Any]) -> Path:
 # Channel → profile resolution
 # ---------------------------------------------------------------------------
 
-def _profile_homes(root: Path) -> Dict[str, Path]:
+def _profile_homes(root: Path) -> dict[str, Path]:
     """Return {profile_name: home_dir} for the default + named profiles."""
-    homes: Dict[str, Path] = {}
+    homes: dict[str, Path] = {}
     if (root / "config.yaml").exists():
         homes["default"] = root
     profiles_root = root / "profiles"
@@ -94,7 +94,7 @@ def _profile_homes(root: Path) -> Dict[str, Path]:
     return homes
 
 
-def _split_channel_csv(raw: Any) -> Set[str]:
+def _split_channel_csv(raw: Any) -> set[str]:
     """Parse a channels value that may be a list, CSV string, or scalar."""
     if isinstance(raw, list):
         return {str(part).strip() for part in raw if str(part).strip()}
@@ -104,7 +104,7 @@ def _split_channel_csv(raw: Any) -> Set[str]:
     return {part.strip() for part in s.split(",") if part.strip()}
 
 
-def _explicit_channel_claims(home: Path) -> Set[str]:
+def _explicit_channel_claims(home: Path) -> set[str]:
     """Channels a profile claims in config.yaml (slack.free_response_channels
     / slack.allowed_channels, under the top-level ``slack:`` block or a
     ``platforms.slack`` block)."""
@@ -127,7 +127,7 @@ def _explicit_channel_claims(home: Path) -> Set[str]:
         data.get("slack"),
         platforms.get("slack") if isinstance(platforms, dict) else None,
     ]
-    claims: Set[str] = set()
+    claims: set[str] = set()
     for block in blocks:
         if not isinstance(block, dict):
             continue
@@ -136,7 +136,7 @@ def _explicit_channel_claims(home: Path) -> Set[str]:
     return claims
 
 
-def _observed_channel_claims(home: Path) -> Set[str]:
+def _observed_channel_claims(home: Path) -> set[str]:
     """Slack channel ids a profile's gateway has actually seen traffic in
     (channel_directory.json), including its own bot-DM channels. Thread
     entries like ``C123:171...`` collapse to the base channel id."""
@@ -152,7 +152,7 @@ def _observed_channel_claims(home: Path) -> Set[str]:
         return set()
     platforms = data.get("platforms")
     entries = platforms.get("slack") if isinstance(platforms, dict) else None
-    claims: Set[str] = set()
+    claims: set[str] = set()
     if isinstance(entries, list):
         for entry in entries:
             if not isinstance(entry, dict):
@@ -163,7 +163,7 @@ def _observed_channel_claims(home: Path) -> Set[str]:
     return claims
 
 
-def build_channel_owner_map(root: Optional[Any] = None) -> Dict[str, str]:
+def build_channel_owner_map(root: Optional[Any] = None) -> dict[str, str]:
     """Compute {channel_id: owning_profile} across all profile homes.
 
     Explicit config claims score 2, observed directory claims score 1; a
@@ -173,13 +173,13 @@ def build_channel_owner_map(root: Optional[Any] = None) -> Dict[str, str]:
     that merely inherited the channel in a copied config (score 2).
     """
     root_path = _resolve_root(root)
-    scores: Dict[str, Dict[str, int]] = {}
+    scores: dict[str, dict[str, int]] = {}
     for name, home in _profile_homes(root_path).items():
         for cid in _explicit_channel_claims(home):
             scores.setdefault(cid, {})[name] = scores.get(cid, {}).get(name, 0) + 2
         for cid in _observed_channel_claims(home):
             scores.setdefault(cid, {})[name] = scores.get(cid, {}).get(name, 0) + 1
-    owners: Dict[str, str] = {}
+    owners: dict[str, str] = {}
     for cid, per_profile in scores.items():
         best = max(per_profile.values())
         winners = [p for p, s in per_profile.items() if s == best]
@@ -279,7 +279,7 @@ def _connect(root: Path) -> sqlite3.Connection:
 def enqueue(
     target_profile: str,
     source_profile: str,
-    payload: Dict[str, Any],
+    payload: dict[str, Any],
     *,
     root: Optional[Any] = None,
 ) -> int:
@@ -295,45 +295,70 @@ def enqueue(
         return int(cur.lastrowid)
 
 
-def claim_pending(
+def claim_next(
     profile: str,
     *,
     root: Optional[Any] = None,
     max_age_s: float = DEFAULT_CLAIM_MAX_AGE_S,
     keep_s: float = DEFAULT_PURGE_KEEP_S,
-) -> List[Dict[str, Any]]:
-    """Atomically claim every unclaimed, unexpired row addressed to
-    ``profile``. Returns [{"id": int, "payload": dict}, ...]; a row is
-    handed out exactly once across all processes (single-UPDATE claim with
-    a unique token). Undecodable payloads are marked done and skipped.
+) -> Optional[dict[str, Any]]:
+    """Atomically claim the oldest unclaimed, unexpired row addressed to
+    ``profile``. Returns {"id": int, "payload": dict}, or None when the inbox
+    is empty. A row is handed out exactly once across all processes
+    (single-UPDATE claim with a unique token). Undecodable payloads are
+    marked done and skipped.
+
+    One row at a time: the consumer claims a row just before it runs it, so
+    a claimed row is one whose command has started. Rows still waiting stay
+    unclaimed, so a consumer that stops (disconnect, restart) leaves them for
+    the next poll, and the receiver's unclaimed-row warning still sees them.
 
     Each poll also deletes rows older than ``keep_s`` (24 h by default), so
     stale ``response_url`` values and command text never accumulate."""
     root_path = _resolve_root(root)
     now = time.time()
-    token = f"{profile}:{uuid.uuid4().hex}"
     with closing(_connect(root_path)) as conn, conn:
         conn.execute(
             "DELETE FROM slash_relay WHERE created_at < ?", (now - keep_s,)
         )
+        while True:
+            token = f"{profile}:{uuid.uuid4().hex}"
+            conn.execute(
+                "UPDATE slash_relay SET claimed_at = ?, claimed_by = ?"
+                " WHERE claimed_at IS NULL AND id = ("
+                "   SELECT id FROM slash_relay"
+                "   WHERE target_profile = ? AND claimed_at IS NULL"
+                "     AND created_at >= ?"
+                "   ORDER BY id LIMIT 1)",
+                (now, token, profile, now - max_age_s),
+            )
+            row = conn.execute(
+                "SELECT id, payload FROM slash_relay WHERE claimed_by = ?",
+                (token,),
+            ).fetchone()
+            if row is None:
+                return None
+            row_id, payload_json = row
+            try:
+                return {"id": int(row_id), "payload": json.loads(payload_json)}
+            except (TypeError, ValueError):
+                logger.warning("slash-relay: dropping undecodable row %s", row_id)
+                conn.execute(
+                    "UPDATE slash_relay SET done_at = ? WHERE id = ?", (now, row_id)
+                )
+
+
+def release_claim(row_id: int, *, root: Optional[Any] = None) -> None:
+    """Return a claimed row to the inbox. Only for a row whose command never
+    started (the consumer was cancelled while claiming it); a row that may
+    have run stays claimed and is never re-delivered."""
+    root_path = _resolve_root(root)
+    with closing(_connect(root_path)) as conn, conn:
         conn.execute(
-            "UPDATE slash_relay SET claimed_at = ?, claimed_by = ?"
-            " WHERE target_profile = ? AND claimed_at IS NULL"
-            "   AND created_at >= ?",
-            (now, token, profile, now - max_age_s),
+            "UPDATE slash_relay SET claimed_at = NULL, claimed_by = NULL"
+            " WHERE id = ? AND done_at IS NULL",
+            (row_id,),
         )
-        rows = conn.execute(
-            "SELECT id, payload FROM slash_relay WHERE claimed_by = ?",
-            (token,),
-        ).fetchall()
-    claimed: List[Dict[str, Any]] = []
-    for row_id, payload_json in rows:
-        try:
-            claimed.append({"id": int(row_id), "payload": json.loads(payload_json)})
-        except (TypeError, ValueError):
-            logger.warning("slash-relay: dropping undecodable row %s", row_id)
-            mark_done(int(row_id), root=root_path)
-    return claimed
 
 
 def mark_done(row_id: int, *, root: Optional[Any] = None) -> None:

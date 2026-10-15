@@ -2,15 +2,20 @@
 
 Covers the channel→profile resolver (scored claims from config.yaml +
 channel_directory.json), the SQLite relay queue (exclusive claims, expiry,
-purge), the adapter seam (forwarding decision, consumer execution,
-unclaimed-row warning), the adapter lifecycle and slash delivery through a
+purge, one-row claims), the adapter seam (forwarding decision, consumer
+execution and cancellation, unclaimed-row warning, relayed replies), the adapter lifecycle and slash delivery through a
 mocked AsyncApp, and the ``slack.slash_relay`` kill switch loaded from a real
 config.yaml.
 """
 
 import asyncio
+import functools
+import itertools
 import json
-from typing import Any, Dict, Optional
+import sqlite3
+import threading
+from contextlib import ExitStack, closing
+from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from types import SimpleNamespace
@@ -186,37 +191,60 @@ class TestRelayQueue:
     def test_enqueue_claim_done_roundtrip(self, tmp_path):
         row_id = slash_relay.enqueue("beta", "alpha", PAYLOAD, root=tmp_path)
         assert not slash_relay.is_claimed(row_id, root=tmp_path)
-        rows = slash_relay.claim_pending("beta", root=tmp_path)
-        assert [r["id"] for r in rows] == [row_id]
-        assert rows[0]["payload"] == PAYLOAD
+        assert slash_relay.claim_next("beta", root=tmp_path) == {"id": row_id, "payload": PAYLOAD}
         assert slash_relay.is_claimed(row_id, root=tmp_path)
         slash_relay.mark_done(row_id, root=tmp_path)
-        assert slash_relay.claim_pending("beta", root=tmp_path) == []
+        assert slash_relay.claim_next("beta", root=tmp_path) is None
 
     def test_claims_are_exclusive(self, tmp_path):
         slash_relay.enqueue("beta", "alpha", PAYLOAD, root=tmp_path)
-        first = slash_relay.claim_pending("beta", root=tmp_path)
-        second = slash_relay.claim_pending("beta", root=tmp_path)
-        assert len(first) == 1
-        assert second == []
+        assert slash_relay.claim_next("beta", root=tmp_path) is not None
+        assert slash_relay.claim_next("beta", root=tmp_path) is None
+
+    def test_claims_one_row_at_a_time_oldest_first(self, tmp_path):
+        first = slash_relay.enqueue("beta", "alpha", PAYLOAD, root=tmp_path)
+        second = slash_relay.enqueue("beta", "alpha", PAYLOAD, root=tmp_path)
+        assert slash_relay.claim_next("beta", root=tmp_path)["id"] == first
+        # The second command has not started, so it is still waiting in the inbox.
+        assert not slash_relay.is_claimed(second, root=tmp_path)
+        assert slash_relay.claim_next("beta", root=tmp_path)["id"] == second
+
+    def test_released_claim_is_claimable_again(self, tmp_path):
+        row_id = slash_relay.enqueue("beta", "alpha", PAYLOAD, root=tmp_path)
+        slash_relay.claim_next("beta", root=tmp_path)
+        slash_relay.release_claim(row_id, root=tmp_path)
+        assert not slash_relay.is_claimed(row_id, root=tmp_path)
+        assert slash_relay.claim_next("beta", root=tmp_path)["id"] == row_id
+
+    def test_release_never_reopens_a_finished_row(self, tmp_path):
+        row_id = slash_relay.enqueue("beta", "alpha", PAYLOAD, root=tmp_path)
+        slash_relay.claim_next("beta", root=tmp_path)
+        slash_relay.mark_done(row_id, root=tmp_path)
+        slash_relay.release_claim(row_id, root=tmp_path)
+        assert slash_relay.claim_next("beta", root=tmp_path) is None
+
+    def test_undecodable_row_is_skipped_and_finished(self, tmp_path):
+        bad = slash_relay.enqueue("beta", "alpha", PAYLOAD, root=tmp_path)
+        good = slash_relay.enqueue("beta", "alpha", PAYLOAD, root=tmp_path)
+        with closing(sqlite3.connect(tmp_path / slash_relay.DB_FILENAME)) as conn, conn:
+            conn.execute("UPDATE slash_relay SET payload = '{not json' WHERE id = ?", (bad,))
+        assert slash_relay.claim_next("beta", root=tmp_path)["id"] == good
+        assert _row_state(tmp_path, bad) == (True, True)
 
     def test_claim_filters_by_target_profile(self, tmp_path):
         slash_relay.enqueue("beta", "alpha", PAYLOAD, root=tmp_path)
-        assert slash_relay.claim_pending("gamma", root=tmp_path) == []
-        assert len(slash_relay.claim_pending("beta", root=tmp_path)) == 1
+        assert slash_relay.claim_next("gamma", root=tmp_path) is None
+        assert slash_relay.claim_next("beta", root=tmp_path) is not None
 
     def test_stale_rows_never_claimed(self, tmp_path):
         row_id = slash_relay.enqueue("beta", "alpha", PAYLOAD, root=tmp_path)
-        assert (
-            slash_relay.claim_pending("beta", root=tmp_path, max_age_s=0.0)
-            == []
-        )
+        assert slash_relay.claim_next("beta", root=tmp_path, max_age_s=0.0) is None
         assert not slash_relay.is_claimed(row_id, root=tmp_path)
 
     def test_purge_removes_old_rows(self, tmp_path):
         slash_relay.enqueue("beta", "alpha", PAYLOAD, root=tmp_path)
         assert slash_relay.purge(root=tmp_path, keep_s=0.0) == 1
-        assert slash_relay.claim_pending("beta", root=tmp_path) == []
+        assert slash_relay.claim_next("beta", root=tmp_path) is None
 
     def test_is_claimed_missing_row(self, tmp_path):
         assert not slash_relay.is_claimed(12345, root=tmp_path)
@@ -250,18 +278,27 @@ class TestRelayQueue:
             )
 
         # A poll by ANY profile purges every expired row, whoever it was for.
-        assert slash_relay.claim_pending("beta", root=tmp_path) == []
+        assert slash_relay.claim_next("beta", root=tmp_path) is None
 
         with closing(sqlite3.connect(db)) as conn:
             ids = [r[0] for r in conn.execute("SELECT id FROM slash_relay")]
         assert ids == [fresh_id]
 
 
+def _row_state(root, row_id):
+    """(claimed, done) for one queue row."""
+    with closing(sqlite3.connect(root / slash_relay.DB_FILENAME)) as conn:
+        claimed_at, done_at = conn.execute(
+            "SELECT claimed_at, done_at FROM slash_relay WHERE id = ?", (row_id,)
+        ).fetchone()
+    return claimed_at is not None, done_at is not None
+
+
 # ---------------------------------------------------------------------------
 # Adapter seam
 # ---------------------------------------------------------------------------
 
-def _adapter_stub(profile: str = "alpha", extra: Optional[Dict[str, Any]] = None):
+def _adapter_stub(profile: str = "alpha", extra: Optional[dict[str, Any]] = None):
     """A bare object carrying just what the relay methods need."""
     from plugins.platforms.slack.adapter import SlackAdapter
 
@@ -275,10 +312,16 @@ def _adapter_stub(profile: str = "alpha", extra: Optional[Dict[str, Any]] = None
     return stub
 
 
+from plugins.platforms.slack.adapter_slash_relay import SlackSlashRelayMixin
+
+
 class _LoopStub:
     """Minimal non-mock stand-in for the consumer-loop tests: real
-    ``_running`` property (True for exactly one iteration) without touching
-    MagicMock class attributes."""
+    ``_running`` property (True for exactly one iteration by default) without
+    touching MagicMock class attributes."""
+
+    _claim_relayed_slash = SlackSlashRelayMixin._claim_relayed_slash
+    _run_relayed_slash = SlackSlashRelayMixin._run_relayed_slash
 
     def __init__(self):
         self._slash_relay_poll_s = 0.0
@@ -352,7 +395,8 @@ class TestForwardAndWarn:
         stub._handle_slash_command.assert_not_awaited()
         stub._warn_if_slash_unclaimed.assert_called_once()
 
-    def test_forward_failure_falls_back_to_local(self):
+    def test_forward_failure_refuses_privately_and_never_runs_locally(self):
+        """The owner is known: a failed enqueue must not turn into this profile acting."""
         from plugins.platforms.slack.adapter import SlackAdapter
 
         stub = _adapter_stub(profile="alpha")
@@ -362,7 +406,12 @@ class TestForwardAndWarn:
             asyncio.run(
                 SlackAdapter._forward_slash_to_profile(stub, "beta", PAYLOAD)
             )
-        stub._handle_slash_command.assert_awaited_once_with(PAYLOAD)
+        stub._handle_slash_command.assert_not_awaited()
+        stub._warn_if_slash_unclaimed.assert_not_called()
+        stub._send_slash_ephemeral.assert_awaited_once()
+        ctx, text = stub._send_slash_ephemeral.await_args.args
+        assert ctx == {"response_url": PAYLOAD["response_url"], "replace_original": False}
+        assert "beta" in text and "/cron" in text and "not run" in text
 
     def test_unclaimed_row_warns_via_response_url(self):
         from plugins.platforms.slack.adapter import SlackAdapter
@@ -392,148 +441,279 @@ class TestForwardAndWarn:
         stub._send_slash_ephemeral.assert_not_awaited()
 
 
+def _queue_on(stack, tmp_path, **overrides):
+    """Point the queue functions the consumer calls at a temporary root."""
+    for name in ("claim_next", "mark_done", "release_claim"):
+        fn = overrides.get(name) or functools.partial(getattr(slash_relay, name), root=tmp_path)
+        stack.enter_context(patch.object(slash_relay, name, fn))
+
+
 class TestConsumerLoop:
     def test_consumer_executes_payload_and_marks_done(self, tmp_path):
         """One full pass: enqueue → claim → _handle_slash_command → done."""
         from plugins.platforms.slack.adapter import SlackAdapter
 
         row_id = slash_relay.enqueue("alpha", "default", PAYLOAD, root=tmp_path)
-
         stub = _LoopStub()
-
-        real_claim = slash_relay.claim_pending
-        real_done = slash_relay.mark_done
-        with patch.object(
-            slash_relay,
-            "claim_pending",
-            lambda profile, **kw: real_claim(profile, root=tmp_path),
-        ), patch.object(
-            slash_relay,
-            "mark_done",
-            lambda rid, **kw: real_done(rid, root=tmp_path),
-        ), patch.object(slash_relay, "purge", MagicMock(return_value=0)):
+        with ExitStack() as stack:
+            _queue_on(stack, tmp_path)
             asyncio.run(SlackAdapter._slash_relay_loop(stub))
 
         stub._handle_slash_command.assert_awaited_once_with(PAYLOAD, relayed=True)
-        assert slash_relay.is_claimed(row_id, root=tmp_path)
-        assert slash_relay.claim_pending("alpha", root=tmp_path) == []
+        assert _row_state(tmp_path, row_id) == (True, True)
+        assert slash_relay.claim_next("alpha", root=tmp_path) is None
 
     def test_handler_error_still_marks_done(self, tmp_path):
         from plugins.platforms.slack.adapter import SlackAdapter
 
-        slash_relay.enqueue("alpha", "default", PAYLOAD, root=tmp_path)
+        row_id = slash_relay.enqueue("alpha", "default", PAYLOAD, root=tmp_path)
         stub = _LoopStub()
         stub._handle_slash_command = AsyncMock(side_effect=RuntimeError("boom"))
-
-        real_claim = slash_relay.claim_pending
-        real_done = slash_relay.mark_done
-        with patch.object(
-            slash_relay,
-            "claim_pending",
-            lambda profile, **kw: real_claim(profile, root=tmp_path),
-        ), patch.object(
-            slash_relay,
-            "mark_done",
-            lambda rid, **kw: real_done(rid, root=tmp_path),
-        ), patch.object(slash_relay, "purge", MagicMock(return_value=0)):
+        with ExitStack() as stack:
+            _queue_on(stack, tmp_path)
             asyncio.run(SlackAdapter._slash_relay_loop(stub))
 
-        # Errors are contained and the row is not re-delivered forever.
-        assert slash_relay.claim_pending("alpha", root=tmp_path) == []
+        # The handler ran: errors are contained and the row is not re-delivered.
+        assert _row_state(tmp_path, row_id) == (True, True)
+        assert slash_relay.claim_next("alpha", root=tmp_path) is None
+
+    def test_cancel_mid_run_keeps_waiting_rows_and_never_replays_the_started_one(self, tmp_path):
+        """Disconnect while the first of two relayed commands is running."""
+        from plugins.platforms.slack.adapter import SlackAdapter
+
+        first = slash_relay.enqueue("alpha", "default", {**PAYLOAD, "text": "one"}, root=tmp_path)
+        second = slash_relay.enqueue("alpha", "default", {**PAYLOAD, "text": "two"}, root=tmp_path)
+        started = []
+
+        async def scenario():
+            entered = asyncio.Event()
+
+            async def handler(payload, relayed):
+                started.append(payload["text"])
+                entered.set()
+                await asyncio.Event().wait()
+
+            stub = _LoopStub()
+            stub._runs = itertools.repeat(True)
+            stub._handle_slash_command = handler
+            task = asyncio.create_task(SlackAdapter._slash_relay_loop(stub))
+            await asyncio.wait_for(entered.wait(), 5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        with ExitStack() as stack:
+            _queue_on(stack, tmp_path)
+            asyncio.run(scenario())
+
+        assert started == ["one"]
+        # "one" may have acted: claimed, never marked done, never handed out again.
+        assert _row_state(tmp_path, first) == (True, False)
+        # "two" never started: still waiting, so a restarted consumer runs it.
+        assert _row_state(tmp_path, second) == (False, False)
+        assert slash_relay.claim_next("alpha", root=tmp_path)["id"] == second
+        assert slash_relay.claim_next("alpha", root=tmp_path) is None
+
+    def test_cancel_during_the_claim_hands_the_row_back(self, tmp_path):
+        """The claim finishes in its thread after the task is cancelled; that row never
+        started, so it goes back to the inbox."""
+        from plugins.platforms.slack.adapter import SlackAdapter
+
+        row_id = slash_relay.enqueue("alpha", "default", PAYLOAD, root=tmp_path)
+        real_claim = slash_relay.claim_next
+        in_thread, proceed = threading.Event(), threading.Event()
+
+        def slow_claim(profile, **_kw):
+            in_thread.set()
+            proceed.wait(5)
+            return real_claim(profile, root=tmp_path)
+
+        stub = _LoopStub()
+        stub._runs = itertools.repeat(True)
+
+        async def scenario():
+            task = asyncio.create_task(SlackAdapter._slash_relay_loop(stub))
+            assert await asyncio.to_thread(in_thread.wait, 5)
+            task.cancel()
+            for _ in range(3):  # let the cancel land while the claim is still in its thread
+                await asyncio.sleep(0)
+            proceed.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        with ExitStack() as stack:
+            _queue_on(stack, tmp_path, claim_next=slow_claim)
+            asyncio.run(scenario())
+
+        stub._handle_slash_command.assert_not_awaited()
+        assert _row_state(tmp_path, row_id) == (False, False)
 
 
-class TestRelayedReplyAttribution:
-    """Relayed slash replies must be attributed to the OWNING profile's app:
-    posted with its own bot token (chat.postEphemeral), with response_url
-    kept only as a delivery fallback."""
+class _BotClient:
+    """A workspace's WebClient: records ``chat_postEphemeral`` calls and fails
+    from post number ``fail_at`` on (0 = the first post fails)."""
 
-    def _ctx(self, **extra):
-        return {
-            "response_url": PAYLOAD["response_url"],
-            "ts": 0.0,
-            "via_bot": True,
-            "user_id": "U1",
-            "replace_original": False,
-            **extra,
-        }
+    def __init__(self, fail_at=None):
+        self.posts: list = []
+        self.fail_at = fail_at
+        self.chat_postMessage = AsyncMock()
 
-    def _stub(self):
-        stub = MagicMock()
-        stub.format_message = lambda c: c
-        stub.truncate_message = lambda c, _n: [c]
-        stub.MAX_MESSAGE_LENGTH = 40000
-        stub._send_slash_ephemeral = AsyncMock(return_value="fallback-result")
-        return stub
+    async def chat_postEphemeral(self, **kwargs):
+        if self.fail_at is not None and len(self.posts) >= self.fail_at:
+            return {"ok": False, "error": "channel_not_found"}
+        self.posts.append(kwargs)
+        return {"ok": True}
+
+
+class TestRelayedReplyDelivery:
+    """A relayed reply is posted with the OWNING profile's bot token in the invoking
+    workspace, in full, and stays private. Runs the real adapter and formatter."""
+
+    LONG = "\n\n".join(f"paragraph {i} " + "word " * 20 for i in range(6))
+
+    def _adapter(self, max_len=None, **clients):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import SendResult
+        from plugins.platforms.slack.adapter import SlackAdapter
+
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        clients = clients or {"T_A": _BotClient(), "T_B": _BotClient()}
+        adapter._team_clients = dict(clients)
+        adapter._app = SimpleNamespace(client=clients.get("T_A"))
+        adapter._channel_team = {}
+        adapter._send_slash_ephemeral = AsyncMock(return_value=SendResult(success=True))
+        adapter._clear_thread_status_quietly = AsyncMock()
+        if max_len:
+            adapter.MAX_MESSAGE_LENGTH = max_len
+        return adapter, clients
+
+    @staticmethod
+    def _ctx(team_id="", user_id="U1", **extra):
+        ctx = {"response_url": PAYLOAD["response_url"], "user_id": user_id, "ts": 0.0}
+        from plugins.platforms.slack.adapter import SlackAdapter
+
+        SlackAdapter._mark_relayed_slash_context(None, ctx, team_id)
+        ctx.update(extra)
+        return ctx
+
+    def _reply(self, adapter, ctx, content="the jobs", metadata=None):
+        return asyncio.run(
+            adapter._send_slash_reply("C_BETA", ctx, content, metadata)
+        )
 
     def test_reply_posts_via_own_bot_token(self):
-        from plugins.platforms.slack.adapter import SlackAdapter
-
-        stub = self._stub()
-        client = MagicMock()
-        client.chat_postEphemeral = AsyncMock()
-        stub._get_client = MagicMock(return_value=client)
-
-        result = asyncio.run(
-            SlackAdapter._send_slash_ephemeral_via_bot(
-                stub, "C_BETA", self._ctx(), "the jobs"
-            )
-        )
-        client.chat_postEphemeral.assert_awaited_once_with(
-            channel="C_BETA", user="U1", text="the jobs"
-        )
+        adapter, c = self._adapter()
+        result = self._reply(adapter, self._ctx("T_A"))
         assert result.success
-        stub._send_slash_ephemeral.assert_not_awaited()
+        assert c["T_A"].posts == [{"channel": "C_BETA", "user": "U1", "text": "the jobs"}]
+        adapter._send_slash_ephemeral.assert_not_awaited()
+        adapter._clear_thread_status_quietly.assert_awaited_once()
 
-    def test_post_failure_falls_back_to_response_url(self):
-        from plugins.platforms.slack.adapter import SlackAdapter
+    def test_named_workspace_wins_over_an_empty_channel_cache(self):
+        """A→B→A: each reply uses its own workspace's client, never the primary's."""
+        adapter, c = self._adapter()
+        for team in ("T_A", "T_B", "T_A"):
+            assert self._reply(adapter, self._ctx(team)).success
+        assert len(c["T_A"].posts) == 2 and len(c["T_B"].posts) == 1
+        # Outbound metadata names the workspace too.
+        assert self._reply(adapter, self._ctx(""), metadata={"slack_team_id": "T_B"}).success
+        assert len(c["T_B"].posts) == 2
 
-        stub = self._stub()
-        client = MagicMock()
-        client.chat_postEphemeral = AsyncMock(side_effect=RuntimeError("nope"))
-        stub._get_client = MagicMock(return_value=client)
+    def test_unambiguous_channel_cache_is_used_without_a_workspace(self):
+        adapter, c = self._adapter()
+        adapter._channel_team = {"C_BETA": "T_B"}
+        assert self._reply(adapter, self._ctx("")).success
+        assert len(c["T_B"].posts) == 1 and c["T_A"].posts == []
 
-        result = asyncio.run(
-            SlackAdapter._send_slash_ephemeral_via_bot(
-                stub, "C_BETA", self._ctx(), "the jobs"
-            )
-        )
-        stub._send_slash_ephemeral.assert_awaited_once()
-        assert result == "fallback-result"
+    def test_unknown_workspace_never_widens_to_another_client(self):
+        adapter, c = self._adapter()
+        ctx = self._ctx("T_GONE")
+        self._reply(adapter, ctx)
+        assert c["T_A"].posts == [] and c["T_B"].posts == []
+        # The private response_url is bound to the invocation itself.
+        adapter._send_slash_ephemeral.assert_awaited_once_with(ctx, "the jobs")
+
+    def test_every_chunk_of_a_long_reply_is_delivered(self):
+        adapter, c = self._adapter(max_len=200)
+        chunks = adapter._format_chunks(self.LONG)
+        assert len(chunks) > 2
+        result = self._reply(adapter, self._ctx("T_A"), self.LONG)
+        assert result.success
+        assert [p["text"] for p in c["T_A"].posts] == chunks
+        adapter._send_slash_ephemeral.assert_not_awaited()
+
+    def test_failure_before_any_chunk_falls_back_with_the_whole_reply(self):
+        adapter, c = self._adapter(max_len=200, T_A=_BotClient(fail_at=0))
+        ctx = self._ctx("T_A")
+        self._reply(adapter, ctx, self.LONG)
+        assert c["T_A"].posts == []
+        adapter._send_slash_ephemeral.assert_awaited_once_with(ctx, self.LONG)
+
+    def test_failure_after_a_prefix_is_reported_not_replayed(self):
+        adapter, c = self._adapter(max_len=200, T_A=_BotClient(fail_at=1))
+        chunks = adapter._format_chunks(self.LONG)
+        result = self._reply(adapter, self._ctx("T_A"), self.LONG)
+        assert [p["text"] for p in c["T_A"].posts] == chunks[:1]
+        assert not result.success
+        assert adapter._is_partial_delivery(result)
+        adapter._send_slash_ephemeral.assert_awaited_once()
+        ctx, text = adapter._send_slash_ephemeral.await_args.args
+        assert ctx == {"response_url": PAYLOAD["response_url"], "replace_original": False}
+        assert f"part 1 of {len(chunks)}" in text and "paragraph" not in text
+        adapter._clear_thread_status_quietly.assert_not_awaited()
+
+    @pytest.mark.parametrize("fail_at", [0, 1], ids=["nothing-delivered", "prefix-delivered"])
+    def test_failed_reply_is_never_resent_publicly(self, fail_at):
+        """Through send() and _send_with_retry: the slash context is used up by the
+        first attempt, so a resend or plain-text fallback would be a PUBLIC post."""
+        import plugins.platforms.slack.adapter as slack_mod
+        from gateway.platforms.base import SendResult
+
+        adapter, c = self._adapter(max_len=200, T_A=_BotClient(fail_at=fail_at), T_B=_BotClient())
+        adapter._send_slash_ephemeral = AsyncMock(
+            return_value=SendResult(success=False, error="response_url POST returned 404"))
+        adapter._stash_slash_context("T_A", "C_BETA", "U1", PAYLOAD["response_url"], relayed=True)
+
+        async def scenario():
+            token = slack_mod._slash_user_id.set("U1")
+            try:
+                return await adapter._send_with_retry(
+                    "C_BETA", self.LONG, metadata={"slack_team_id": "T_A"}, base_delay=0.0)
+            finally:
+                slack_mod._slash_user_id.reset(token)
+
+        result = asyncio.run(scenario())
+        assert not result.success
+        assert len(c["T_A"].posts) == fail_at
+        c["T_A"].chat_postMessage.assert_not_called()
+        c["T_B"].chat_postMessage.assert_not_called()
 
     def test_missing_user_id_goes_straight_to_fallback(self):
-        from plugins.platforms.slack.adapter import SlackAdapter
-
-        stub = self._stub()
-        result = asyncio.run(
-            SlackAdapter._send_slash_ephemeral_via_bot(
-                stub, "C_BETA", self._ctx(user_id=""), "the jobs"
-            )
-        )
-        stub._send_slash_ephemeral.assert_awaited_once()
-        assert result == "fallback-result"
+        adapter, c = self._adapter()
+        ctx = self._ctx("T_A", user_id="")
+        self._reply(adapter, ctx)
+        assert c["T_A"].posts == []
+        adapter._send_slash_ephemeral.assert_awaited_once_with(ctx, "the jobs")
 
     def test_no_route_at_all_reports_failure(self):
-        from plugins.platforms.slack.adapter import SlackAdapter
-
-        stub = self._stub()
-        result = asyncio.run(
-            SlackAdapter._send_slash_ephemeral_via_bot(
-                stub, "C_BETA", {"via_bot": True, "user_id": ""}, "x"
-            )
-        )
+        adapter, _c = self._adapter()
+        result = self._reply(adapter, self._ctx("T_A", user_id="", response_url=""))
         assert not result.success
+        adapter._send_slash_ephemeral.assert_not_awaited()
 
 
 class TestRelayedContextStash:
     def test_relayed_context_is_flagged_for_bot_token_reply(self):
         """A relayed context is flagged ``via_bot`` and opts out of
         ``replace_original``, so send() routes it through
-        ``_send_slash_ephemeral_via_bot``."""
+        ``_send_relayed_slash_reply`` in the invoking workspace."""
         from plugins.platforms.slack.adapter import SlackAdapter
 
         stub = SimpleNamespace(
             _slash_command_contexts={}, _SLASH_CTX_MAX=64,
             _purge_stale_slash_contexts=lambda: None)
+        stub._mark_relayed_slash_context = functools.partial(
+            SlackAdapter._mark_relayed_slash_context, stub)
         SlackAdapter._stash_slash_context(
             stub, "T1", "C1", "U1", "https://hooks.example/x", relayed=True)
         ctx = stub._slash_command_contexts[("T1", "C1", "U1")]
@@ -541,6 +721,7 @@ class TestRelayedContextStash:
         # The receiving app acked silently, so a fallback POST must create a new
         # message rather than replace a placeholder that does not exist.
         assert ctx["replace_original"] is False
+        assert ctx["team_id"] == "T1"
 
 
 # ---------------------------------------------------------------------------
@@ -556,7 +737,7 @@ class _ConnectedAdapter:
     The relay queue itself is patched so nothing touches disk.
     """
 
-    def __init__(self, extra: Optional[Dict[str, Any]] = None, profile: Optional[str] = "alpha"):
+    def __init__(self, extra: Optional[dict[str, Any]] = None, profile: Optional[str] = "alpha"):
         import os
 
         import plugins.platforms.slack.adapter as slack_mod
@@ -602,7 +783,7 @@ class _ConnectedAdapter:
         plugin_mgr = MagicMock()
         plugin_mgr.get_slack_action_handlers.return_value = []
 
-        self.claim_pending = MagicMock(return_value=[])
+        self.claim_next = MagicMock(return_value=None)
         self._patches = [
             patch.object(slack_mod, "SLACK_AVAILABLE", True),
             patch.object(slack_mod, "AsyncApp", MagicMock(return_value=app), create=True),
@@ -612,7 +793,7 @@ class _ConnectedAdapter:
             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)),
             patch("gateway.status.release_scoped_lock"),
             patch("hermes_cli.plugins.get_plugin_manager", return_value=plugin_mgr),
-            patch.object(slash_relay, "claim_pending", self.claim_pending),
+            patch.object(slash_relay, "claim_next", self.claim_next),
             patch.object(slash_relay, "purge", MagicMock(return_value=0)),
         ]
 
@@ -664,7 +845,7 @@ class TestAdapterLifecycle:
             # Let the consumer run a poll: it claims rows for THIS profile.
             for _ in range(5):
                 await asyncio.sleep(0)
-            h.claim_pending.assert_called_with("alpha")
+            h.claim_next.assert_called_with("alpha")
 
             await h.adapter.disconnect()
             assert h.adapter._slash_relay_task is None
@@ -678,7 +859,7 @@ class TestAdapterLifecycle:
             assert await h.adapter.connect() is True
             try:
                 assert h.adapter._slash_relay_task is None
-                h.claim_pending.assert_not_called()
+                h.claim_next.assert_not_called()
             finally:
                 await h.adapter.disconnect()
 
@@ -689,10 +870,10 @@ class TestAdapterLifecycle:
 class TestSlashDelivery:
     """Drive the registered ``@app.command`` handler with a Slack payload."""
 
-    def _payload(self, channel: str) -> Dict[str, Any]:
+    def _payload(self, channel: str) -> dict[str, Any]:
         return {**PAYLOAD, "command": _native_slash(), "channel_id": channel}
 
-    def _run(self, h, payload, owner):
+    def _run(self, h, payload, owner, resolver=None):
         enqueue = MagicMock(return_value=7)
         ack = AsyncMock()
 
@@ -702,7 +883,8 @@ class TestSlashDelivery:
                 h.adapter._handle_slash_command = AsyncMock()
                 h.adapter._warn_if_slash_unclaimed = AsyncMock()
                 with patch.object(
-                    slash_relay, "resolve_channel_owner", return_value=owner
+                    slash_relay, "resolve_channel_owner",
+                    resolver or MagicMock(return_value=owner),
                 ), patch.object(slash_relay, "enqueue", enqueue):
                     await h.slash_handler()(ack=ack, command=payload)
                     # Let the fire-and-forget unclaimed-warning task start.
@@ -744,10 +926,57 @@ class TestSlashDelivery:
             enqueue.assert_not_called()
             h.adapter._handle_slash_command.assert_awaited_once_with(payload)
 
+    def test_owner_lookup_runs_off_the_event_loop(self):
+        """A cache miss rescans every profile's files; that must not stall the loop
+        inside Slack's 3-second ack window."""
+        threads = []
+
+        def resolver(_channel_id, *_a, **_kw):
+            try:
+                asyncio.get_running_loop()
+                threads.append("event loop")
+            except RuntimeError:
+                threads.append("worker thread")
+            return "beta"
+
+        with _ConnectedAdapter(profile="alpha") as h:
+            _ack, enqueue = self._run(h, self._payload("C_BETA"), owner=None, resolver=resolver)
+        assert threads == ["worker thread"]
+        enqueue.assert_called_once()
+
+    def test_queue_failure_refuses_privately_and_keeps_the_owner(self, profiles_root):
+        """The registered callback with a real owner config and a real SQLite open
+        failure: the owner stays beta, nothing runs in alpha, and the user is told
+        privately that the command was not run."""
+        (profiles_root / slash_relay.DB_FILENAME).mkdir()  # SQLite cannot open a directory
+        payload = self._payload("C_BETA")
+        ack = AsyncMock()
+
+        async def scenario(h):
+            assert await h.adapter.connect() is True
+            try:
+                h.adapter._handle_slash_command = AsyncMock()
+                h.adapter._send_slash_ephemeral = AsyncMock()
+                await h.slash_handler()(ack=ack, command=payload)
+                await asyncio.sleep(0)
+                assert not h.adapter._slash_relay_warn_tasks
+            finally:
+                await h.adapter.disconnect()
+
+        with _ConnectedAdapter(profile="alpha") as h, patch.object(
+            slash_relay, "_default_root", return_value=profiles_root
+        ):
+            asyncio.run(scenario(h))
+            assert slash_relay.resolve_channel_owner("C_BETA") == "beta"
+        ack.assert_awaited_once_with()
+        h.adapter._handle_slash_command.assert_not_awaited()
+        ctx, text = h.adapter._send_slash_ephemeral.await_args.args
+        assert ctx["replace_original"] is False and "beta" in text
+
     def test_kill_switch_answers_foreign_channel_locally(self):
         payload = self._payload("C_BETA")
         with _ConnectedAdapter(extra={"slash_relay": False}, profile="alpha") as h:
-            ack, enqueue = self._run(h, payload, owner="beta")
+            _ack, enqueue = self._run(h, payload, owner="beta")
             enqueue.assert_not_called()
             h.adapter._handle_slash_command.assert_awaited_once_with(payload)
 
@@ -871,7 +1100,7 @@ class TestMultiplexedProfile:
             assert h.adapter._resolve_slash_relay_profile() == "default"
             await connect_in_scope(h)
             try:
-                h.claim_pending.assert_called_with("beta")
+                h.claim_next.assert_called_with("beta")
                 h.adapter._warn_if_slash_unclaimed = AsyncMock()
                 # Dispatch OUTSIDE the scope: the captured identity still holds.
                 with patch.object(

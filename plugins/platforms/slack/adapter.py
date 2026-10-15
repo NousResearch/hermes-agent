@@ -56,6 +56,10 @@ try:  # sibling module; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
+try:
+    from .adapter_slash_relay import SlackSlashRelayMixin
+except ImportError:  # pragma: no cover - plugin loaded outside package context
+    from adapter_slash_relay import SlackSlashRelayMixin  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -1003,7 +1007,7 @@ def _extra_or_env_channel_set_getter(
     return getter
 
 
-class SlackAdapter(BasePlatformAdapter):
+class SlackAdapter(SlackSlashRelayMixin, BasePlatformAdapter):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
@@ -1134,15 +1138,6 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_handler_started_monotonic: Optional[float] = None
-
-        # Cross-profile slash relay (see the slash_relay module — routes
-        # workspace-global slash commands to the profile that owns the invoking
-        # channel): consumer task, the profile name captured at connect, and the
-        # pending "owner never claimed it" warning tasks.
-        self._slash_relay_task: Optional[asyncio.Task] = None
-        self._slash_relay_poll_s = 1.5
-        self._slash_relay_profile_name: Optional[str] = None
-        self._slash_relay_warn_tasks: set = set()
 
     async def _close_workspace_clients(self) -> None:
         """Close any Slack SDK clients that may own aiohttp sessions."""
@@ -1493,33 +1488,6 @@ class SlackAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         return self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH) or [formatted]
 
-    async def _send_slash_ephemeral_via_bot(
-        self, chat_id: str, ctx: dict[str, Any], content: str) -> SendResult:
-        """Ephemeral slash reply posted with THIS bot's token.
-
-        Used for relayed slash commands (see the slash relay): a ``chat.postEphemeral``
-        from the owning profile's bot is attributed to that profile's app in Slack,
-        unlike a ``response_url`` POST, which always shows the app that received the
-        slash. Falls back to the stashed ``response_url`` if the API call fails (e.g.
-        the bot is not a member of the channel).
-        """
-        user_id = str(ctx.get("user_id") or "")
-        if user_id:
-            formatted = self.format_message(content)
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-            text = chunks[0] if chunks else formatted
-            try:
-                client = self._get_client(chat_id)
-                await client.chat_postEphemeral(channel=chat_id, user=user_id, text=text)
-                return SendResult(success=True, message_id=None)
-            except Exception as e:
-                logger.warning(
-                    "[Slack] chat_postEphemeral for relayed slash failed (%s) — "
-                    "falling back to response_url", e, exc_info=True)
-        if ctx.get("response_url"):
-            return await self._send_slash_ephemeral(ctx, content)
-        return SendResult(success=False, error="No ephemeral route available")
-
     async def _send_slash_ephemeral(self, ctx: dict[str, Any], content: str) -> SendResult:
         """Replace the ephemeral ack via ``response_url`` (``replace_original`` valid 30 min). First
         chunk replaces the ack, the rest post as new ephemerals; Slack caps a response_url at 5
@@ -1543,13 +1511,9 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             async with aiohttp.ClientSession(trust_env=gateway_trust_env()) as session:
                 for idx, chunk in enumerate(chunks):
-                    # Only the first chunk replaces the ack. Relayed slash commands ack
-                    # SILENTLY on the receiving app (no placeholder exists to replace), so
-                    # their contexts set replace_original False and every chunk creates a
-                    # fresh ephemeral message.
-                    payload = {"response_type": "ephemeral",
-                               "replace_original": idx == 0 and ctx.get("replace_original", True),
-                               "text": chunk}
+                    # Only the first chunk replaces the ack (a relayed slash's silent ack has none).
+                    payload = {"response_type": "ephemeral", "text": chunk,
+                               "replace_original": idx == 0 and ctx.get("replace_original", True)}
                     async with session.post(
                         ctx["response_url"], json=payload, timeout=aiohttp.ClientTimeout(total=10)
                     ) as resp:
@@ -1563,30 +1527,6 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         except Exception as e:
             logger.warning("[Slack] response_url POST failed: %s", e)
-            return SendResult(success=False, error=str(e))
-
-    async def _post_ephemeral_fallback(
-        self, chat_id: str, ctx: dict[str, Any], content: str) -> SendResult:
-        """Deliver a slash reply via ``chat.postEphemeral`` when ``response_url`` fails.
-        Keeps the reply private (a public channel post must never happen for an ephemeral reply).
-        Cannot ``replace_original``, so the ack stays; no 5-POST cap applies here.
-
-        See #19688.
-        """
-        user_id = ctx.get("user_id", "")
-        if not user_id:
-            return SendResult(success=False, error="no user_id in slash context for postEphemeral")
-        chunks = self._format_chunks(content)
-        try:
-            client = self._get_client(chat_id)
-            for chunk in chunks:
-                result = await client.chat_postEphemeral(channel=chat_id, user=user_id, text=chunk)
-                payload = _slack_response_payload(result)
-                if not payload.get("ok"):
-                    err = payload.get("error", "unknown_error") if payload else "unexpected_response"
-                    return SendResult(success=False, error=f"chat.postEphemeral failed: {err}")
-            return SendResult(success=True, message_id=None)
-        except Exception as e:
             return SendResult(success=False, error=str(e))
 
     def _warn_if_missing_group_dm_scopes(self, auth_response, team_name: str) -> None:
@@ -1943,22 +1883,7 @@ class SlackAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Slack."""
         self._running = False
-
-        relay_task = self._slash_relay_task
-        self._slash_relay_task = None
-        if relay_task is not None and not relay_task.done():
-            relay_task.cancel()
-            try:
-                await relay_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:  # pragma: no cover - defensive logging
-                logger.debug("[Slack] Slash relay task raised during disconnect", exc_info=True)
-        warn_tasks, self._slash_relay_warn_tasks = self._slash_relay_warn_tasks, set()
-        for warn_task in warn_tasks:
-            warn_task.cancel()
-        if warn_tasks:
-            await asyncio.gather(*warn_tasks, return_exceptions=True)
+        await self._stop_slash_relay()
         # Seal dangling native streams so no live-typing indicator survives a restart.
         for key, stream in list(self._active_streams.items()):
             await self._seal_stream(key, stream)
@@ -2369,14 +2294,8 @@ class SlackAdapter(BasePlatformAdapter):
         """Ephemeral slash reply replacing the "Running /cmd…" ack: response_url, then
         chat.postEphemeral, NEVER a public post (a private reply must not leak because a path
         failed). Ephemerals don't auto-clear the Assistant status, so clear it here."""
-        if slash_ctx.get("via_bot"):
-            # Relayed slash command: reply through THIS bot's token so Slack attributes
-            # the message to the owning profile's app (a response_url reply would show
-            # the receiving app's name). response_url stays available as fallback.
-            via_bot_result = await self._send_slash_ephemeral_via_bot(chat_id, slash_ctx, content)
-            if via_bot_result.success:
-                await self._clear_thread_status_quietly(chat_id, metadata)
-            return via_bot_result
+        if slash_ctx.get("via_bot"):  # relayed from another profile's app
+            return await self._send_relayed_slash_reply(chat_id, slash_ctx, content, metadata)
         ephemeral_result = await self._send_slash_ephemeral(slash_ctx, content)
         if ephemeral_result.success:
             await self._clear_thread_status_quietly(chat_id, metadata)
@@ -6113,19 +6032,7 @@ class SlackAdapter(BasePlatformAdapter):
     async def _handle_hermes_command(self, ack, command: dict) -> None:
         """Bolt listener for every native slash: ack within 3s, then run. A gated channel gets a
         bare ack, never a "Running /x" promise the gate in _handle_slash_command will break."""
-        # Slash names are workspace-global: Slack delivers every colliding /command
-        # to ONE app, regardless of channel. When the invoking channel belongs to
-        # another profile, ack here (only the receiving app can, within Slack's 3s
-        # window) and relay the payload to the owning profile's gateway. This runs
-        # before the channel gate: a foreign channel is by definition outside this
-        # profile's allowed_channels, and the owner applies its own gate on arrival.
-        owner = self._resolve_foreign_slash_owner(command)
-        if owner:
-            # Silent ack: any text here (and any response_url POST) would be
-            # attributed to THIS app, not the owning profile's. The owner replies
-            # via its own bot token, so the user only ever sees the right app name.
-            await ack()
-            await self._forward_slash_to_profile(owner, command)
+        if await self._maybe_relay_slash(ack, command):  # another profile's channel
             return
         if self._slash_channel_gated(command.get("channel_id", "")):
             await ack()
@@ -6133,171 +6040,6 @@ class SlackAdapter(BasePlatformAdapter):
             slash = (command.get("command") or "").lstrip("/")
             await ack(response_type="ephemeral", text=t("platform.slack.slash.running", command=slash))
         await self._handle_slash_command(command)
-
-    # ── Cross-profile slash relay ────────────────────────────────────────
-    # Slack slash names are workspace-global; with multiple profile apps in
-    # one workspace, Slack delivers every colliding /command to a single app.
-    # The receiving adapter resolves the invoking channel's owning profile
-    # (slash_relay.resolve_channel_owner) and, when foreign, enqueues the
-    # payload on a shared SQLite queue; every adapter polls its own inbox
-    # and executes relayed payloads through its normal slash pipeline.
-
-    def _slash_relay_enabled(self) -> bool:
-        """Kill switch: ``slack.slash_relay: false`` in config.yaml (bridged into
-        ``config.extra`` by ``_YAML_BRIDGE``) or ``SLACK_SLASH_RELAY=false``. Default on."""
-        raw = _extra_or_secret(self.config.extra, "slash_relay", "SLACK_SLASH_RELAY", None)
-        if raw is None:
-            return True
-        return str(raw).strip().lower() not in {"false", "0", "no", "off"}
-
-    def _slash_relay_profile(self) -> str:
-        """The profile name this adapter represents: the name captured at
-        connect, else the current scope's."""
-        return self._slash_relay_profile_name or self._resolve_slash_relay_profile()
-
-    @staticmethod
-    def _resolve_slash_relay_profile() -> str:
-        """Profile of the current scope. Under a multiplexed gateway a secondary
-        profile's adapter connects inside that profile's ``HERMES_HOME`` override
-        (a ContextVar), which ``current_profile_name`` reads first."""
-        try:
-            from hermes_cli.profiles import current_profile_name
-
-            return current_profile_name("default") or "default"
-        except Exception:
-            logger.debug("[Slack] slash relay: profile name unresolved", exc_info=True)
-            return "default"
-
-    def _resolve_foreign_slash_owner(self, command: dict) -> Optional[str]:
-        """Return the owning profile of the invoking channel when it is NOT
-        this gateway's profile; None means handle the command locally."""
-        if not self._slash_relay_enabled():
-            return None
-        channel_id = str(command.get("channel_id") or "")
-        if not channel_id:
-            return None
-        try:
-            from plugins.platforms.slack import slash_relay
-
-            owner = slash_relay.resolve_channel_owner(channel_id)
-        except Exception:
-            logger.debug(
-                "[Slack] Slash relay owner lookup failed", exc_info=True
-            )
-            return None
-        if owner is None or owner == self._slash_relay_profile():
-            return None
-        return owner
-
-    async def _forward_slash_to_profile(self, owner: str, command: dict) -> None:
-        """Enqueue a foreign-channel slash payload for *owner*'s gateway.
-
-        Falls back to local handling (pre-relay behavior) if the enqueue
-        fails — a wrong-profile answer beats no answer.
-        """
-        from plugins.platforms.slack import slash_relay
-
-        slash = (command.get("command") or "").lstrip("/")
-        try:
-            row_id = await asyncio.to_thread(
-                slash_relay.enqueue,
-                owner,
-                self._slash_relay_profile(),
-                command,
-            )
-        except Exception:
-            logger.warning(
-                "[Slack] Slash relay enqueue failed — handling /%s locally",
-                slash,
-                exc_info=True,
-            )
-            await self._handle_slash_command(command)
-            return
-        logger.info(
-            "[Slack] Relayed /%s in %s to profile %s (row %d)",
-            slash,
-            command.get("channel_id"),
-            owner,
-            row_id,
-        )
-        if command.get("response_url"):
-            # Keep a reference (a bare create_task can be garbage-collected)
-            # so disconnect() can cancel a warning that is still waiting.
-            warn_task = asyncio.create_task(
-                self._warn_if_slash_unclaimed(owner, command, row_id)
-            )
-            self._slash_relay_warn_tasks.add(warn_task)
-            warn_task.add_done_callback(self._slash_relay_warn_tasks.discard)
-
-    async def _warn_if_slash_unclaimed(
-        self,
-        owner: str,
-        command: dict,
-        row_id: int,
-        delay_s: float = 20.0,
-    ) -> None:
-        """Replace the routed-ack with a warning if *owner* never picks the
-        relayed command up (its gateway is likely down)."""
-        await asyncio.sleep(delay_s)
-        try:
-            from plugins.platforms.slack import slash_relay
-
-            claimed = await asyncio.to_thread(slash_relay.is_claimed, row_id)
-        except Exception:
-            logger.debug("[Slack] slash relay: claim check failed", exc_info=True)
-            return
-        if claimed:
-            return
-        slash = (command.get("command") or "").lstrip("/")
-        await self._send_slash_ephemeral(
-            # The ack was silent, so create a new ephemeral rather than
-            # replacing a (nonexistent) original.
-            {"response_url": command["response_url"], "replace_original": False},
-            f"⚠️ *{owner}*'s gateway hasn't picked up `/{slash}` — "
-            "is it running?",
-        )
-
-    def _ensure_slash_relay_task(self) -> None:
-        # Capture the profile now: connect() runs inside the profile's scope, and
-        # Bolt's dispatch tasks must not depend on inheriting that ContextVar.
-        self._slash_relay_profile_name = self._resolve_slash_relay_profile()
-        if not self._slash_relay_enabled():
-            return
-        if self._slash_relay_task is None or self._slash_relay_task.done():
-            self._slash_relay_task = asyncio.create_task(
-                self._slash_relay_loop()
-            )
-
-    async def _slash_relay_loop(self) -> None:
-        """Poll the shared relay for slash payloads addressed to this
-        profile and run each through the normal slash pipeline. Each poll
-        also purges rows older than 24 h (``slash_relay.claim_pending``)."""
-        from plugins.platforms.slack import slash_relay
-
-        profile = self._slash_relay_profile()
-        logger.info("[Slack] Slash relay consumer started (profile %s)", profile)
-        while self._running:
-            try:
-                rows = await asyncio.to_thread(slash_relay.claim_pending, profile)
-                for row in rows:
-                    try:
-                        await self._handle_slash_command(
-                            row["payload"], relayed=True
-                        )
-                    except Exception:
-                        logger.warning(
-                            "[Slack] Relayed slash command failed",
-                            exc_info=True,
-                        )
-                    finally:
-                        await asyncio.to_thread(slash_relay.mark_done, row["id"])
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.debug(
-                    "[Slack] Slash relay loop error", exc_info=True
-                )
-            await asyncio.sleep(self._slash_relay_poll_s)
 
     async def _handle_slash_command(self, command: dict, *, relayed: bool = False) -> None:
         """Slash commands: native ``/<command> [args]`` for every COMMAND_REGISTRY entry, or
@@ -6385,13 +6127,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._slash_command_contexts[context_key] = {
             "response_url": response_url, "user_id": user_id, "ts": time.monotonic()}
         if relayed:
-            # Relayed from another profile's app: reply via THIS bot
-            # (chat.postEphemeral) so Slack shows the owning profile's app name, keeping
-            # response_url only as fallback. The receiving app acked silently, so a
-            # fallback POST must create a new message, not replace one. ``user_id`` is
-            # already stashed above for the postEphemeral path.
-            self._slash_command_contexts[context_key]["via_bot"] = True
-            self._slash_command_contexts[context_key]["replace_original"] = False
+            self._mark_relayed_slash_context(self._slash_command_contexts[context_key], team_id)
         if len(self._slash_command_contexts) <= self._SLASH_CTX_MAX:
             return
         self._purge_stale_slash_contexts()

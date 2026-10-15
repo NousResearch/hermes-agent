@@ -26,6 +26,8 @@ Duplicate-reply invariant:
     via chat.update).
   * A genuinely uncommittable stream (stopStream AND chat.update fail) still
     falls back to a fresh post so the answer is not lost.
+  * A stream reopened after a server-side seal spans two messages: a restyled
+    final is committed to the second one without repeating the sealed prefix.
   * Interim sends (``_interim_send`` / ``expect_edits``) never seal a stream.
   * Streams are keyed per (team, channel, thread): two threads in one channel
     never seal each other's stream.
@@ -71,8 +73,37 @@ def _open_streams(adapter, chat_id="D1"):
     return [s for k, s in adapter._active_streams.items() if k[1] == chat_id]
 
 
+def _wire_texts(client):
+    """Every text payload the adapter put on the wire (unordered across API methods)."""
+    sources = ((client.chat_startStream, "markdown_text"), (client.chat_appendStream, "markdown_text"),
+               (client.chat_stopStream, "markdown_text"), (client.chat_update, "text"),
+               (client.chat_postMessage, "text"))
+    return [c.kwargs[field] for mock, field in sources
+            for c in mock.await_args_list if c.kwargs.get(field)]
+
+
 META = {"thread_id": "111.000", "user_id": "U123"}
 META_B = {"thread_id": "222.000", "user_id": "U123"}
+
+# A long turn Slack sealed server-side reopens the stream as a SECOND message holding only the
+# text past the sealed one (see test_expired_stream_reopens_seeded_with_only_the_unsent_tail);
+# the turn-final then arrives restyled by the mrkdwn conversion.
+SEG_ONE = "*Step one:* did the thing"
+SEG_TWO = "\n*Step two:* and the other"
+RESTYLED = "_Step one:_ did the thing\n_Step two:_ and the other"
+
+
+async def _reopen_after_server_seal(adapter, client):
+    """Stream SEG_ONE, let Slack seal it, stream on: returns with a reopened stream at 124.000.
+
+    The mocks are re-armed in place rather than replaced, so the whole scenario's wire history
+    stays on ``await_args_list`` for _wire_texts."""
+    await adapter.send_draft("D1", 7, SEG_ONE, metadata=META)
+    client.chat_appendStream.side_effect = _StreamExpiredError(
+        "expired", {"ok": False, "error": "message_not_in_streaming_state"})
+    client.chat_startStream.return_value = {"ok": True, "ts": "124.000"}
+    await adapter.send_draft("D1", 7, SEG_ONE + SEG_TWO, metadata=META)
+    client.chat_appendStream.side_effect = None
 
 
 class TestSupportsDraftStreaming:
@@ -340,6 +371,41 @@ class TestSendFinalization:
         result = await adapter.send("D1", "_Draft:_ answer that got restyled", metadata=dict(META, notify=True))
         assert result.success
         client.chat_postMessage.assert_awaited_once()
+        assert not _open_streams(adapter)
+
+    @pytest.mark.asyncio
+    async def test_restyled_final_on_a_reopened_stream_never_repeats_the_sealed_prefix(self):
+        """The reopened message holds ONLY the text past the server-sealed one, and a restyled
+        final is not prefix-aligned, so replacing it with the whole answer would show the prefix
+        twice. The streamed text stands: seal, no rewrite, and still no duplicate post."""
+        adapter, client = _make_adapter()
+        await _reopen_after_server_seal(adapter, client)
+
+        result = await adapter.send("D1", RESTYLED, metadata=dict(META, notify=True))
+
+        assert result.success
+        assert result.message_id == "124.000"
+        # Strict oracle: the sealed message's text went out exactly once, in its own frame.
+        assert [t for t in _wire_texts(client) if "Step one" in t] == [SEG_ONE]
+        client.chat_update.assert_not_awaited()
+        client.chat_postMessage.assert_not_awaited()
+        assert not _open_streams(adapter)
+
+    @pytest.mark.asyncio
+    async def test_restyled_final_on_a_reopened_stream_commits_its_own_tail_when_the_seal_fails(self):
+        """Same reopen with chat.stopStream failing: the in-place commit carries this message's
+        tail only — never the whole answer — and no fresh post follows it."""
+        adapter, client = _make_adapter()
+        await _reopen_after_server_seal(adapter, client)
+        client.chat_stopStream = AsyncMock(side_effect=Exception("boom"))
+
+        result = await adapter.send("D1", RESTYLED, metadata=dict(META, notify=True))
+
+        assert result.success
+        assert result.message_id == "124.000"
+        updated = client.chat_update.await_args.kwargs["text"]
+        assert "Step two" in updated and "Step one" not in updated
+        client.chat_postMessage.assert_not_awaited()
         assert not _open_streams(adapter)
 
 

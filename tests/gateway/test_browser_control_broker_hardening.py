@@ -226,6 +226,9 @@ def test_timeout_while_disconnected_flushes_cancel_before_new_dispatch():
         }
     ]
 
+    # The timeout assertion above deliberately uses 20ms; the succeeding
+    # dispatch must not race a second incidental deadline on a loaded runner.
+    broker._command_timeout = 1.0
     second = {}
 
     def run_second():

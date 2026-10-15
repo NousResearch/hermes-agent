@@ -61,10 +61,13 @@ def is_runtime() -> bool:
 
 
 def _resident_runtime() -> tuple[Path, Path] | None:
+    from pm.environments import _is_git_checkout
     from pm.paths import repo_root
 
     project = repo_root()
-    payload = project.parent if (project.parent / "manifest.json").is_file() else None
+    # A git checkout is never a sealed payload (#126816): don't probe a sibling manifest.json.
+    sealed = not _is_git_checkout(project) and (project.parent / "manifest.json").is_file()
+    payload = project.parent if sealed else None
     if payload is not None:
         runtime = payload / "pm-runtime"
     else:

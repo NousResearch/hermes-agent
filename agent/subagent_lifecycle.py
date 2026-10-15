@@ -144,6 +144,7 @@ class _Record:
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
     result: Optional[SubagentResult] = None
+    parent_ref: Optional[weakref.ReferenceType] = None
 
 
 @dataclasses.dataclass
@@ -314,7 +315,11 @@ class SubagentLifecycleService:
             getattr(child, "provider", None), getattr(child, "model", None), getattr(child, "_delegate_role", request.role),
             int(getattr(child, "_delegate_depth", 1) or 1), self._capability(subagent_id, parent_session_id, created),
         )
-        record = _Record(handle, SubagentState.PENDING, created, agent=child)
+        try:
+            parent_ref = weakref.ref(parent)
+        except TypeError:
+            parent_ref = None  # non-weak-referenceable hosts rely on their durable session identity
+        record = _Record(handle, SubagentState.PENDING, created, agent=child, parent_ref=parent_ref)
         with _REGISTRY.lock:
             _REGISTRY.records[subagent_id] = record
             if request.correlation_id:
@@ -394,10 +399,19 @@ class SubagentLifecycleService:
         expected = self._capability(handle.subagent_id, handle.parent_session_id, handle.created_at)
         if not hmac.compare_digest(handle.capability, expected):
             return None
-        if _session_id_of(self._parent_agent_resolver()) != handle.parent_session_id:
+        parent = self._parent_agent_resolver()
+        if parent is None:
             return None
         with _REGISTRY.lock:
-            return _REGISTRY.records.get(handle.subagent_id)
+            record = _REGISTRY.records.get(handle.subagent_id)
+        if record is None:
+            return None
+        if record.parent_ref is not None and record.parent_ref() is parent:
+            return record
+        # The same durable conversation may acquire a new agent object or session id.
+        # Resolve outside the registry lock: lineage lookup can read the SessionDB.
+        from tools.delegate_tool_registry import _session_lineage_matches
+        return record if _session_lineage_matches(record.handle.parent_session_id, parent) else None
 
     @staticmethod
     def _cleanup_locked() -> None:

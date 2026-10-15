@@ -26,6 +26,7 @@ import type { AnyGatewayEvent } from './gatewayTypes.js'
 import { t } from './i18n/runtime.js'
 import { CircularBuffer } from './lib/circularBuffer.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
+import { pythonHelperPath } from './lib/pythonHelpers.js'
 
 const MAX_GATEWAY_LOG_LINES = 200
 const MAX_LOG_LINE_BYTES = 4096
@@ -133,7 +134,7 @@ const bootstrapLocalGateway = async (start: boolean, recover = false): Promise<L
   const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
 
   const { stdout } = await promisify(execFile)(resolvePython(),
-    [resolve(root, 'ui-tui/scripts/gateway_bootstrap.py'), ...(start ? ['--start'] : recover ? ['--recover'] : [])],
+    [pythonHelperPath('gateway_bootstrap.py', root), ...(start ? ['--start'] : recover ? ['--recover'] : [])],
     { cwd: root, env: { ...process.env, PYTHONPATH: root }, timeout: 40_000, maxBuffer: 1024 * 1024 })
 
   return JSON.parse(stdout) as LocalGatewayGrant

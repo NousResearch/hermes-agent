@@ -11,9 +11,15 @@ target a different attribute (e.g. `regex_pattern`, `sql_query`, `code_block`).
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
+import os
 import pickle
 import sys
 from pathlib import Path
+
+
+HERMES_SNAPSHOT_SECRET = "HERMES_SNAPSHOT_SECRET"
 
 
 def main() -> int:
@@ -45,6 +51,36 @@ def main() -> int:
             "code from the snapshot file. Only proceed if you created/control this "
             "file, then re-run with --i-trust-this-file.\n"
             f"  file: {args.snapshot}"
+        )
+
+    # Verify HMAC integrity before unpickling. The HMAC must live in a sidecar
+    # file (e.g. `iteration_N.pkl.hmac`) so we can verify the raw bytes WITHOUT
+    # unpickling them first. pickle.loads() executes arbitrary code, so the
+    # integrity check MUST happen on the file bytes, not on values extracted
+    # post-unpickle.
+    secret = os.environ.get(HERMES_SNAPSHOT_SECRET)
+    if secret:
+        hmac_path = args.snapshot.with_suffix(args.snapshot.suffix + ".hmac")
+        if not hmac_path.exists():
+            sys.exit(
+                f"HMAC sidecar not found: {hmac_path}. The snapshot must be "
+                "accompanied by an HMAC file written by the producer."
+            )
+        raw_bytes = args.snapshot.read_bytes()
+        expected_hmac = hmac_path.read_text().strip()
+        computed = hmac.new(
+            secret.encode(), raw_bytes, hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(computed, expected_hmac):
+            sys.exit(
+                f"HMAC verification failed for {args.snapshot} — "
+                "snapshot may have been tampered with or corrupted."
+            )
+    else:
+        print(
+            f"WARNING: HERMES_SNAPSHOT_SECRET is not set — skipping HMAC verification "
+            f"for {args.snapshot}. Set the environment variable to enable integrity checks.",
+            file=sys.stderr,
         )
 
     print(

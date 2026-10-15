@@ -648,3 +648,47 @@ def test_branch_never_shows_yolo_the_gateway_refused(store):
     finally:
         for key in ("local-old", "local-child"):
             approval.disable_session_yolo(key)
+
+
+def test_exported_ignore_rules_never_refuses_a_bare_resume(store, monkeypatch):
+    """CLI-2: an exported HERMES_IGNORE_RULES is creation policy only, so a bare `hermes -c` continues a
+    session created without it (Desktop, Ink, before the export); a typed --ignore-rules is still refused,
+    as the thin client refuses it."""
+    from hermes_cli.cli_init_mixin import CLIInitMixin, _gateway_launch
+    monkeypatch.setenv("HERMES_IGNORE_RULES", "1")
+    db, client = store
+    _frozen_launch(client, {"model": "m-frozen"})
+
+    def host(typed):
+        h = cli("local-old", resumed=True)
+        CLIInitMixin._init_checkpoints_and_rules(h, False, False, typed)
+        return h
+
+    bare = host(False)
+    assert bare.ignore_rules and _gateway_launch(bare)["ignore_rules"] is True  # a new session still gets it
+    assert GatewaySessionStore(db.connection).open_session(bare, _gateway_launch(bare)) == "local-old"
+    typed = host(True)
+    with pytest.raises(GatewayClientError, match="Resume retains gateway session policy"):
+        GatewaySessionStore(db.connection).open_session(typed, _gateway_launch(typed))
+
+
+def test_resume_refusal_names_the_clashing_flag_and_the_way_forward(store):
+    """CLI-2: the refusal (one text for both clients) names the flag that differs from the frozen launch
+    and how to go on: resume without it, then the slash command that switches it live."""
+    import argparse
+    from hermes_cli.gateway_chat import check_resume_policy
+    db, client = store
+    _frozen_launch(client, {"model": "m-frozen", "max_turns": 5})
+    host = cli("local-old", resumed=True)
+    with pytest.raises(GatewayClientError, match="Resume retains gateway session policy") as refused:
+        GatewaySessionStore(db.connection).open_session(host, {"model": "m-other"})
+    assert "-m/--model differs" in str(refused.value) and "use /model after resuming" in str(refused.value)
+    with pytest.raises(GatewayClientError, match="--max-turns differs") as refused:
+        GatewaySessionStore(db.connection).open_session(host, {"max_turns": 1})
+    assert "start a new session" in str(refused.value)
+    with pytest.raises(GatewayClientError, match="--run-budget differs"):
+        GatewaySessionStore(db.connection).open_session(host, {"run_budget": 30})
+    # The thin client raises the same text.
+    with pytest.raises(GatewayClientError, match="--provider differs .* use /model after resuming"):
+        check_resume_policy(argparse.Namespace(provider="anthropic"),
+                            {"info": {"launch_request": {"provider": "openrouter"}}})

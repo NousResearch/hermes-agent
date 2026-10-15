@@ -634,6 +634,8 @@ class CLIAgentSetupMixin:
         try:
             self._ensure_gateway_session()
         except Exception as e:  # health: allow BLE001 -- any session.create/resume failure is main's agent-init failure copy, never a traceback
+            from hermes_cli.gateway_chat import exit_on_resume_refusal
+            exit_on_resume_refusal(e)  # -q: a changed flag on --resume is interactive startup's `Error:` + exit 2
             ChatConsole().print(f"[bold red]{_escape(agent_init_failure_message(e))}[/]")
             return False
         if (

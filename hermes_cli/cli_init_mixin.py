@@ -290,6 +290,8 @@ class CLIInitMixin:
         self.pass_session_id = pass_session_id
         # --ignore-rules: AIAgent skips context files (AGENTS.md/SOUL.md/...) and memory.
         self.ignore_rules = ignore_rules or is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
+        # The env opt-in is creation policy only: a resume checks just a typed --ignore-rules (the thin client's rule).
+        self._explicit_ignore_rules = bool(ignore_rules)
 
     def _init_prompt_and_reasoning(self, reasoning):
         """Ephemeral system prompt/prefill, reasoning + service tier, OpenRouter routing knobs, fallback chain."""

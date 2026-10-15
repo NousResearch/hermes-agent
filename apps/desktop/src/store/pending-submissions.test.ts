@@ -220,3 +220,40 @@ it('a tip-keyed tracked receipt keeps its status, text and Discard across root p
     $sessions.set([])
   }
 })
+
+// Every send tracks its admission before the request and again after the reply, on the renderer
+// thread. That must cost the one admission's record, not a parse of every saved session's journal.
+it('tracking a submission reads its own record without enumerating other sessions', () => {
+  for (let index = 0; index < 20; index += 1) {
+    trackPendingSubmission(`other-${index}`, { id: `a-${index}`, text: 'elsewhere', status: 'queued' })
+  }
+
+  window.localStorage.setItem('hermes.desktop.pendingSubmissions.v1', JSON.stringify({ solo: { old: { id: 'old', text: 'legacy', displayText: '/old' } } }))
+  const enumerate = vi.spyOn(window.localStorage, 'key')
+
+  try {
+    trackPendingSubmission('solo', { id: 'mine', text: 'hi', displayText: '/hi' })
+    trackPendingSubmission('solo', { id: 'mine', text: 'hi', status: 'queued' })
+    // A legacy receipt still merges into its tracked successor.
+    trackPendingSubmission('solo', { id: 'old', text: '', status: 'unknown' })
+    expect(enumerate).not.toHaveBeenCalled()
+
+    // A newly known tip->root lineage adopts the tip's journal once; later sends read directly.
+    trackPendingSubmission('late-tip', { id: 'early', text: 'early', displayText: '/early', status: 'unknown' })
+    $sessions.set([{ id: 'late-tip', _lineage_root_id: 'late-root' } as SessionInfo])
+    trackPendingSubmission('late-tip', { id: 'next', text: 'next' })
+    expect(readPendingSubmissions('late-root').early).toMatchObject({ status: 'unknown', displayText: '/early' })
+    enumerate.mockClear()
+    trackPendingSubmission('late-tip', { id: 'next', text: 'next', status: 'queued' })
+    expect(enumerate).not.toHaveBeenCalled()
+  } finally {
+    enumerate.mockRestore()
+    $sessions.set([])
+  }
+
+  expect(readPendingSubmissions('solo')).toMatchObject({
+    mine: { text: 'hi', displayText: '/hi', status: 'queued' },
+    old: { text: 'legacy', displayText: '/old', status: 'unknown' }
+  })
+  expect(readPendingSubmissions('late-root').next).toMatchObject({ status: 'queued' })
+})

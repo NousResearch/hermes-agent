@@ -52,6 +52,12 @@ export function readPendingSubmissions(session: string): Record<string, PendingS
   return entries
 }
 
+/** One admission's record without enumerating the journal: its v2 key, else the legacy blob. */
+function readPendingSubmission(session: string, id: string): PendingSubmission | undefined {
+  return parse<null | PendingSubmission>(window.localStorage.getItem(entryKey(session, id)), null) ??
+    parse(window.localStorage.getItem(LEGACY_KEY), {} as Record<string, Record<string, PendingSubmission>>)[session]?.[id]
+}
+
 function writeEntries(session: string, before: Record<string, PendingSubmission>, after: Record<string, PendingSubmission>): void {
   for (const id of Object.keys(before)) {
     if (!(id in after)) { window.localStorage.removeItem(entryKey(session, id)) }
@@ -133,11 +139,22 @@ function adoptJournal(from: string, to: string): void {
   writeEntries(from, stray, {})
 }
 
+// Tip->root lineages whose tip journal tracking already folded. Adoption enumerates the journal,
+// so a send pays for it only when it first observes the lineage; reconciliation still adopts
+// whatever another window journals under the tip afterwards.
+const adoptedLineages = new Set<string>()
+
 // Not an outbox: an uncertain accepted input must never be replayed automatically.
 export function trackPendingSubmission(storedId: string, entry: PendingSubmission): void {
   const key = journalKey(storedId)
-  adoptJournal(storedId, key)
-  const held = readPendingSubmissions(key)[entry.id]
+  const lineage = JSON.stringify([storedId, key])
+
+  if (storedId !== key && !adoptedLineages.has(lineage)) {
+    adoptJournal(storedId, key)
+    adoptedLineages.add(lineage)
+  }
+
+  const held = readPendingSubmission(key, entry.id)
   window.localStorage.setItem(entryKey(key, entry.id), JSON.stringify(mergeReceipt(held, entry)))
 }
 

@@ -389,6 +389,18 @@ def _lock_vault_managers(session: dict) -> None:
         logging.getLogger(__name__).debug("vault manager lock on session end failed", exc_info=True)
 
 
+def _review_profile_key(session: dict) -> str | None:
+    """The key the session's background review is published under: ``agent/review_admission.py``
+    buckets by ``(profile, session)``, and the teardown/interrupt cancels below run on unscoped
+    reaper, Timer and RPC-pool threads whose ambient home is the launch profile's -- resolved
+    there, a hosted secondary session would fence the launch profile's review on the same
+    session id and leave its own running. ``None`` (unresolvable) keeps the ambient key."""
+    with contextlib.suppress(Exception):
+        from hermes_constants import hermes_home_key
+        return hermes_home_key(session.get("profile_home") or None)
+    return None
+
+
 def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
     """Best-effort finalize hook + memory commit; mirrors the CLI exit path so a force-quit mid-turn (double
     Ctrl-C, terminal close, SIGHUP) loses nothing."""
@@ -500,7 +512,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             from agent.background_review import cancel_background_review_for_live_turn
             cancel_background_review_for_live_turn(
                 agent, wait=False, message=f"session ended ({end_reason})",
-                tool_reason="session ended")
+                tool_reason="session ended", profile_key=_review_profile_key(session))
     # Close the slash-worker in this single ``_finalized``-guarded chokepoint (a direct caller can't leak it); idempotent.
     with contextlib.suppress(Exception):
         if worker := session.get("slash_worker"):
@@ -805,7 +817,7 @@ def _interrupt_session_turn(
             from agent.background_review import cancel_background_review_for_live_turn
             cancel_background_review_for_live_turn(
                 agent_for_review, wait=False, message="session interrupted",
-                tool_reason="session interrupted")
+                tool_reason="session interrupted", profile_key=_review_profile_key(session))
     _clear_pending(sid)
     with contextlib.suppress(Exception):
         # Deny-resolve every pending approval so no agent thread blocks on the queue. The

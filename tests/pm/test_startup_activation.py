@@ -1,9 +1,12 @@
 """Startup consumes one real PM verdict; activation never serves a partial toolchain."""
 
 import importlib
+import importlib.util
 import os
+import shutil
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -82,9 +85,36 @@ def test_drift_activates_intact_chains_and_reports_the_live_verdict(checked_stor
     assert os.environ["PATH"].split(os.pathsep) == [str(binaries[0].parent), user_dir]
 
 
+@pytest.fixture
+def booted_checkout(checked_store, tmp_path, monkeypatch):
+    """Boot real code from a temporary payload, not the operator's installation.
+
+    A sandboxed HERMES_HOME cannot relocate the manifest beside __file__.
+    Keep dependency activation real; a payload without a bundled venv uses the
+    test interpreter's own dependencies.
+    """
+    checkout = tmp_path / "repo"
+    checkout.mkdir()
+    (tmp_path / "manifest.json").write_text('{"repo": "repo"}', encoding="utf-8")
+    bootstrap_path = checkout / "hermes_bootstrap.py"
+    shutil.copyfile(Path(pm.__file__).resolve().parent.parent / "hermes_bootstrap.py", bootstrap_path)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    spec = importlib.util.spec_from_file_location("hermes_bootstrap", bootstrap_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "hermes_bootstrap", module)
+    from pm import environments
+
+    with patch.object(environments, "activate_dependencies", wraps=environments.activate_dependencies) as activate:
+        spec.loader.exec_module(module)
+        activate.assert_called_once_with(checkout)
+    assert module._root == checkout
+    return checkout
+
+
 @pytest.mark.parametrize("surface", ["gateway", "cli"])
 @pytest.mark.parametrize("damaged", [False, True])
-def test_startup_uses_one_verdict(checked_store, monkeypatch, capsys, caplog, surface, damaged):
+def test_startup_uses_one_verdict(checked_store, booted_checkout, monkeypatch, capsys, caplog, surface, damaged):
     binaries, checks = checked_store
     if surface == "gateway":
         from gateway import run

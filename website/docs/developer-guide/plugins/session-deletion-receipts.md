@@ -29,6 +29,10 @@ keyword, defaulting to `"unknown"`. Only these two exact values prepare receipts
 
 These values are authored by the actual handlers, not accepted from REST/RPC
 payloads. They describe local caller intent, **not external authorization**.
+Single REST deletion retains the owner's request/revision/generation fences and
+passes provenance as a private Python keyword, outside the client payload. Its
+identity preparation and mutation retry receipt share one transaction; an exact
+retry replays the committed result without preparing another deletion receipt.
 Plugins are trusted code; the Python keyword is not an access-control boundary.
 An absent, unknown or unrecognized origin does not authorize external cleanup.
 Retention/prune, empty sweeps (including a sweep requested through REST), draft
@@ -48,8 +52,9 @@ The receipt contains:
 - `identities`: sorted exact removed rows, each with `id`, `source`, `session_key`,
   `chat_id`, `chat_type`, `thread_id`, `parent_session_id` (nullable where unknown).
 
-The set includes recursive delegate cascades and compression-chain links when
-that delete uses chain expansion. Surviving branches and unknown/skipped IDs are
+The set includes recursive delegate cascades, the entire local reset lineage,
+and compression-chain links when that delete uses chain expansion.
+Surviving branches and unknown/skipped IDs are
 excluded. These are routing identifiers, not proof that the plugin owns the
 resource. No messages, titles, summaries, model config, origin JSON, user names,
 credentials or file contents enter the receipt. Routing identifiers and local

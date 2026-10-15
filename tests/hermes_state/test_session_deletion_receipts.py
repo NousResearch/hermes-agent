@@ -227,3 +227,41 @@ def test_unreconciled_read_only_receipt_schema_raises_operational_error(tmp_path
 def test_receipt_replay_is_bounded(db, kwargs):
     with pytest.raises(ValueError):
         db.list_session_deletion_receipts(**kwargs)
+
+
+@pytest.mark.parametrize("bulk", [False, True])
+@pytest.mark.parametrize("queued", [False, True])
+def test_local_reset_receipt_matches_whole_deleted_conversation(tmp_path, bulk, queued):
+    from tests.hermes_state.test_reset_lineage_delete_queued_work import _conversation
+    from hermes_state_runtime import RuntimeStoreError
+
+    database, root, tip, _ = _conversation(tmp_path, "bulk" if bulk else "single", queued)
+    with database:
+        delete = database.delete_sessions if bulk else database.delete_session
+        if queued:
+            with pytest.raises(RuntimeStoreError, match="session_busy"):
+                delete([tip] if bulk else tip, deletion_origin="user_rpc", exclude_active_write_guards=True)
+            assert database.list_session_deletion_receipts() == []
+            assert database.get_session(root) is not None
+            assert database.get_session(tip) is not None
+        else:
+            assert delete([tip] if bulk else tip, deletion_origin="user_rpc", exclude_active_write_guards=True)
+            identities = database.list_session_deletion_receipts()[0]["deletion"]["identities"]
+            assert {row["id"] for row in identities} == {root, tip}
+            assert database.get_session(root) is None
+            assert database.get_session(tip) is None
+
+
+def test_runtime_delete_without_trusted_provenance_never_prepares(db):
+    from hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, mutate_runtime_session
+
+    db.create_session("runtime", source="example")
+    fields = dict(epoch=begin_runtime_epoch(db, instance_id="owner"), principal_id="human",
+                  session_id="runtime", request_id="delete", expected_revision=0,
+                  expected_generation=0, operation="delete")
+    with pytest.raises(RuntimeStoreError, match="invalid_params"):
+        mutate_runtime_session(db, **fields, payload={"deletion_origin": "user_rest"})
+    assert db.get_session("runtime") is not None
+    assert db.list_session_deletion_receipts() == []
+    assert mutate_runtime_session(db, **fields, payload={})["deleted_ids"] == ["runtime"]
+    assert db.list_session_deletion_receipts() == []

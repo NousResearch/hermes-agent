@@ -42,8 +42,47 @@ const CARD_TOOL_NAMES = [
 
 export type CardToolName = (typeof CARD_TOOL_NAMES)[number]
 
+// Card kinds a tool may declare (`ui_card=` on registration) → the built-in card
+// that draws them. The gateway stamps `card` on tool.start / tool.complete and on
+// rehydrated history rows.
+const TOOL_CARD_KINDS = { delegate: 'delegate_task' } as const satisfies Record<string, CardToolName>
+
+export type ToolCardKind = keyof typeof TOOL_CARD_KINDS
+
+// Plugin tools (e.g. a fan-out `agents_run`) declare their card at registration
+// time in Python, so a static name list can never know them. Learn the mapping
+// from the first event or history row that carries it and consult it wherever the
+// built-in names are consulted. Module-level on purpose: a reloaded transcript
+// and the live stream must classify the same tool identically.
+const learnedCards = new Map<string, CardToolName>()
+
+function isToolCardKind(kind: string): kind is ToolCardKind {
+  return Object.hasOwn(TOOL_CARD_KINDS, kind)
+}
+
+export function learnToolCard(toolName: string, kind: unknown): void {
+  if (!toolName || typeof kind !== 'string' || !isToolCardKind(kind)) {
+    return
+  }
+
+  learnedCards.set(toolName, TOOL_CARD_KINDS[kind])
+}
+
+/** The built-in card that draws this tool: its own name if built in, else the card it declared. */
+export function cardToolName(toolName: string): CardToolName | undefined {
+  if ((CARD_TOOL_NAMES as readonly string[]).includes(toolName)) {
+    return toolName as CardToolName
+  }
+
+  return learnedCards.get(toolName)
+}
+
 export function isCardToolName(toolName: string): toolName is CardToolName {
-  return (CARD_TOOL_NAMES as readonly string[]).includes(toolName)
+  return cardToolName(toolName) !== undefined
+}
+
+export function _resetToolCardsForTests(): void {
+  learnedCards.clear()
 }
 
 // Name the run splitter uses for a manage_connections part it has classified as a card.

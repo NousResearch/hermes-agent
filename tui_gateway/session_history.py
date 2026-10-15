@@ -3,6 +3,8 @@ turn tracking and turn-failure detail. Bodies are rebound onto server.py's globa
 
 from __future__ import annotations
 
+import contextlib
+import json
 import re
 
 from .method_ctx import bind_module
@@ -331,7 +333,8 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
                              **({"content": m.get("content")} if name in {"write_file", "patch", "skill_manage"} else {}),
                              **{key: m[key] for key in ("tool_call_id", "timestamp", "display_metadata")
                                 if m.get(key) is not None},
-                             **({"args": args} if args else {}), **({"labels": labels} if labels else {})})
+                             **({"args": args} if args else {}), **({"labels": labels} if labels else {}),
+                             **({"card": card} if (card := _stored_tool_card(m) or _tool_ui_card(name)) else {})})
             continue
         # Assistant detail sidecars can carry the only visible reply or reasoning after resume/reload.
         has_assistant_detail = role == "assistant" and any(m.get(key) for key in _HISTORY_ASSISTANT_DETAIL_KEYS)
@@ -381,6 +384,20 @@ def _coerce_seed_history(value: Any) -> list[dict]:
 
 def _inflight_text(value: Any) -> str:
     return _content_display_text(value).strip()
+
+
+def _stored_tool_card(message: dict) -> str | None:
+    """The card kind stamped on a tool row when its result was written (``display_metadata``
+    ``tool_result_metadata.card``); the live registry is only a fallback for rows older than the stamp."""
+    metadata = message.get("display_metadata")
+    if isinstance(metadata, str):
+        with contextlib.suppress(Exception):
+            metadata = json.loads(metadata)
+    if not isinstance(metadata, dict):
+        return None
+    inner = metadata.get("tool_result_metadata")
+    card = inner.get("card") if isinstance(inner, dict) else None
+    return card if isinstance(card, str) and card else None
 
 
 def _start_inflight_turn(

@@ -347,6 +347,124 @@ def test_plugin_toolsets_are_known_toolsets(lifecycle, monkeypatch):
         narrow.launch(SubagentLaunchRequest(goal="use the plugin", allowed_toolsets=("plugin-tools",)))
 
 
+@pytest.fixture
+def batch_lifecycle(monkeypatch, tmp_path):
+    """Real child construction stubbed at ``AIAgent``; live transcripts land under ``tmp_path``."""
+    from tools import delegate_tool, delegation_live_log
+
+    parent = SimpleNamespace(session_id="parent-batch", enabled_toolsets=["file"],
+                             _session_db=SimpleNamespace(db_path=str(tmp_path / "state.db")))
+    built = []
+
+    def build(**kwargs):
+        child = FakeChild(f"sa-{kwargs['task_index']}-batch")
+        child._progress_identity_ref = {"session_id": f"child-{kwargs['task_index']}"}
+        child.tool_progress_callback = None
+        built.append((kwargs, child))
+        return child
+
+    def run(task_index, _goal, child, _parent):
+        return {"task_index": task_index, "status": "completed", "summary": f"done {task_index}",
+                "api_calls": 1, "duration_seconds": 0.01}
+
+    monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
+    monkeypatch.setattr("tools.delegate_tool._run_single_child", run)
+    monkeypatch.setattr(delegate_tool, "_resolve_delegation_credentials",
+                        lambda cfg, parent: {"model": "fixture-model", "provider": None, "base_url": None,
+                                             "api_key": None, "api_mode": None}, raising=False)
+    monkeypatch.setattr(delegation_live_log, "prune_stale_live_dirs", lambda **_kwargs: 0)
+    return SubagentLifecycleService(lambda: parent), built, tmp_path
+
+
+def test_launch_batch_is_one_delegation(batch_lifecycle):
+    """A batch shares one delegation id, numbers its children, and gives each a live transcript."""
+    import json
+
+    service, built, home = batch_lifecycle
+    handles = service.launch_batch([
+        SubagentLaunchRequest(goal="first", correlation_id="c-0"),
+        {"goal": "second", "context": "why"},
+        SubagentLaunchRequest(goal="third"),
+    ])
+    assert [h.subagent_id for h in handles] == ["sa-0-batch", "sa-1-batch", "sa-2-batch"]
+    assert [kwargs["task_index"] for kwargs, _ in built] == [0, 1, 2]
+    assert {kwargs["task_count"] for kwargs, _ in built} == {3}
+    children = [child for _, child in built]
+    delegation_ids = {child._delegation_id for child in children}
+    assert len(delegation_ids) == 1 and next(iter(delegation_ids)).startswith("deleg_")
+    assert all(child._progress_identity_ref["delegation_id"] == child._delegation_id for child in children)
+    paths = [child._live_transcript_path for child in children]
+    assert all(path.startswith(str(home)) for path in paths), paths
+    assert [path.rsplit("/", 1)[-1] for path in paths] == ["task-0.log", "task-1.log", "task-2.log"]
+    # The relay is teed into the transcript: the wrapper keeps the _flush contract.
+    assert callable(children[0].tool_progress_callback) and callable(children[0].tool_progress_callback._flush)
+    for handle in handles:
+        assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    manifest = json.loads((home / "cache" / "delegation" / "live" / children[0]._delegation_id / "manifest.json").read_text())
+    assert [task["status"] for task in manifest["tasks"]] == ["completed"] * 3
+    assert service.result(handles[1]).summary == "done 1"
+
+
+def test_launch_is_a_batch_of_one(batch_lifecycle):
+    service, built, _home = batch_lifecycle
+    handle = service.launch(SubagentLaunchRequest(goal="solo"))
+    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    kwargs, child = built[0]
+    assert (kwargs["task_index"], kwargs["task_count"]) == (0, 1)
+    assert child._delegation_id and child._live_transcript_path.endswith("task-0.log")
+
+
+def test_launch_batch_releases_built_siblings_when_one_fails_to_build(batch_lifecycle, monkeypatch):
+    """A build failure partway through the batch starts nothing: earlier children are closed and detached."""
+    import json
+
+    service, built, home = batch_lifecycle
+    closed = []
+    parent = service._parent_agent_resolver()
+    parent._active_children = []
+
+    def build(**kwargs):
+        if kwargs["task_index"] == 1:
+            raise ValueError("no credentials for this route")
+        child = FakeChild(f"sa-{kwargs['task_index']}-batch")
+        child._progress_identity_ref = {"session_id": f"child-{kwargs['task_index']}"}
+        child.tool_progress_callback = None
+        child.close = lambda: closed.append(child._subagent_id)
+        parent._active_children.append(child)
+        built.append((kwargs, child))
+        return child
+
+    monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
+    with pytest.raises(SubagentLifecycleError, match="no credentials"):
+        service.launch_batch([SubagentLaunchRequest(goal="first"), SubagentLaunchRequest(goal="second")])
+    assert closed == ["sa-0-batch"] and parent._active_children == []
+    delegation_dirs = list((home / "cache" / "delegation" / "live").iterdir())
+    manifest = json.loads((delegation_dirs[0] / "manifest.json").read_text())
+    assert manifest["tasks"][0]["status"] == "error"
+    assert "end status=error" in (delegation_dirs[0] / "task-0.log").read_text()
+    assert len(built) == 1  # the second child never built, the first never ran
+
+
+def test_launch_batch_caps_at_max_concurrent_children(batch_lifecycle, monkeypatch):
+    service, built, _home = batch_lifecycle
+    monkeypatch.setattr("tools.delegate_tool_config._get_max_concurrent_children", lambda: 2)
+    with pytest.raises(SubagentLifecycleError, match="at most 2"):
+        service.launch_batch([SubagentLaunchRequest(goal=str(i)) for i in range(3)])
+    assert built == []
+
+
+def test_launch_batch_rejects_before_building_anything(batch_lifecycle):
+    service, built, _home = batch_lifecycle
+    with pytest.raises(SubagentLifecycleError, match="goal must be"):
+        service.launch_batch([SubagentLaunchRequest(goal="fine"), SubagentLaunchRequest(goal=" ")])
+    with pytest.raises(SubagentLifecycleError, match="within one batch"):
+        service.launch_batch([SubagentLaunchRequest(goal="a", correlation_id="dup"),
+                              SubagentLaunchRequest(goal="b", correlation_id="dup")])
+    with pytest.raises(SubagentLifecycleError, match="non-empty sequence"):
+        service.launch_batch([])
+    assert built == []
+
+
 def test_provider_is_plugin_facing_only():
     """``provider`` lives on the plugin request; no model-facing delegate_task field can carry a route."""
     import dataclasses

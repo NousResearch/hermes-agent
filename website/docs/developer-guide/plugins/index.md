@@ -773,6 +773,7 @@ def register(ctx):
 **What `register()` does:**
 - Called exactly once at startup
 - `ctx.register_tool()` puts your tool in the registry — the model sees it immediately
+- `ctx.register_tool(..., ui_card="delegate")` makes Hermes Desktop render the call as a delegation card (like `delegate_task`), live and after a transcript reload, and keeps its tool lifecycle visible under `display.tool_progress: off`; `"delegate"` is the only card kind today
 - `ctx.register_hook()` subscribes to lifecycle events
 - `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
 - `ctx.register_command()` registers an in-session slash command (e.g. `/myplugin <args>` inside CLI / gateway chat) — see [Register slash commands](#register-slash-commands) below

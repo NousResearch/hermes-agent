@@ -212,6 +212,10 @@ def _save_discovery_cache(cache: dict[str, list]) -> None:
         logger.debug("Could not write tool discovery cache %s: %s", path, e)
 
 
+# Card kinds a tool may declare via ``register(ui_card=...)``; "delegate" renders as the delegation card.
+UI_CARD_KINDS = frozenset({"delegate"})
+
+
 @dataclass(eq=False, slots=True)
 class ToolEntry:
     """Metadata for one registered tool (identity semantics: restore/CAS paths compare ``is``)."""
@@ -230,6 +234,8 @@ class ToolEntry:
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
     execution_timeout: float | None = None
+    # Display card kind the UI renders this tool as (member of UI_CARD_KINDS), or None.
+    ui_card: str | None = None
 
 
 class _PluginOverridePolicy:
@@ -711,7 +717,8 @@ class ToolRegistry:
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", max_result_size_chars: float | None = None,
         dynamic_schema_overrides: Callable | None = None, override: bool = False,
-        scope: Optional[str] = None, execution_timeout: float | None = None):
+        scope: Optional[str] = None, execution_timeout: float | None = None,
+        ui_card: str | None = None):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
         browser backend); without it, cross-toolset shadowing is rejected."""
@@ -726,6 +733,9 @@ class ToolRegistry:
             raise ValueError(
                 f"Tool {name!r}: schema['parameters'] must be an object (JSON Schema dict), "
                 f"got {type(params).__name__}")
+        if ui_card is not None and ui_card not in UI_CARD_KINDS:
+            raise ValueError(
+                f"Tool {name!r}: ui_card must be one of {sorted(UI_CARD_KINDS)}, got {ui_card!r}")
         handler_owner = self._plugin_owner_of(handler)
         caller_owner = self._plugin_namespace_of_module(self._caller_module())
         owner = caller_owner or handler_owner
@@ -776,7 +786,7 @@ class ToolRegistry:
                 requires_env=requires_env or [], is_async=is_async,
                 description=description or schema.get("description", ""), emoji=emoji,
                 max_result_size_chars=max_result_size_chars, execution_timeout=execution_timeout,
-                dynamic_schema_overrides=dynamic_schema_overrides)
+                dynamic_schema_overrides=dynamic_schema_overrides, ui_card=ui_card)
             # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
             # longer gates a toolset; it still feeds get_toolset_requirements ->
             # TOOLSET_REQUIREMENTS["check_fn"], which banner.py reads (presence only,
@@ -991,6 +1001,10 @@ class ToolRegistry:
     def get_emoji(self, name: str, default: str = "⚡") -> str:
         """Return the emoji for a tool, or *default* if unset."""
         return self._attr(name, "emoji") or default
+
+    def get_ui_card(self, name: str) -> Optional[str]:
+        """Return the display card kind the tool declared at registration, or None."""
+        return self._attr(name, "ui_card")
 
     def get_tool_to_toolset_map(self) -> dict[str, str]:
         return {entry.name: entry.toolset for entry in self._snapshot_entries()}

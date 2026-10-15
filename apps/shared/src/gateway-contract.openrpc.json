@@ -42800,6 +42800,18 @@
             ],
             "default": null,
             "title": "Labels"
+          },
+          "card": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Card"
           }
         },
         "required": [
@@ -43032,6 +43044,18 @@
             ],
             "default": null,
             "title": "Labels"
+          },
+          "card": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Card"
           }
         },
         "required": [
@@ -43620,6 +43644,18 @@
             ],
             "default": null,
             "title": "Labels"
+          },
+          "card": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Card"
           },
           "reasoning": {
             "anyOf": [

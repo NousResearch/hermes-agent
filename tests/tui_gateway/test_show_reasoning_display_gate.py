@@ -251,6 +251,37 @@ def test_tool_progress_off_keeps_card_tool_lifecycle(monkeypatch):
         assert lifecycle == ["tool.start", "tool.complete"], tool_id
 
 
+def test_declared_ui_card_keeps_lifecycle_and_tags_payloads(monkeypatch):
+    """A plugin tool declaring `ui_card="delegate"` displays like delegate_task."""
+    from tools.registry import registry
+
+    registry.register(
+        name="plugin_fanout", toolset="test_ui_card",
+        schema={"name": "plugin_fanout", "description": "x", "parameters": {"type": "object", "properties": {}}},
+        handler=lambda args, **kw: "{}", ui_card="delegate",
+    )
+    try:
+        events = _capture(monkeypatch)
+        _session(monkeypatch, "card-plugin", show_reasoning=False, tool_progress="off")
+        args = {"tasks": [{"goal": "x"}]}
+        server._on_tool_start("card-plugin", "call-1", "plugin_fanout", args)
+        server._on_tool_complete("card-plugin", "call-1", "plugin_fanout", args, json.dumps({"results": []}))
+        assert [event[0] for event in events] == ["tool.start", "tool.complete"]
+        assert all(event[2]["card"] == "delegate" for event in events)
+        # The stamp is stored with the result row too, so a cold transcript load renders the same card.
+        prepared = server._prepare_tool_result_metadata("card-plugin", "call-9", "plugin_fanout", args, "{}")
+        assert prepared == {"tool_result_metadata": {"card": "delegate"}}
+        assert server._prepare_tool_result_metadata("card-plugin", "call-8", "plain_unknown_tool", {}, "{}") == {}
+
+        # The gate is the declaration: an undeclared tool still follows tool_progress=off.
+        events.clear()
+        server._on_tool_start("card-plugin", "call-2", "plain_unknown_tool", {"a": 1})
+        server._on_tool_complete("card-plugin", "call-2", "plain_unknown_tool", {"a": 1}, json.dumps({"ok": True}))
+        assert events == []
+    finally:
+        registry.deregister("plugin_fanout")
+
+
 def test_tool_progress_off_keeps_file_edit_lifecycle_pair(monkeypatch):
     """A file edit is a diff card (`isFileEditTool`): answer-only keeps it visible.
 

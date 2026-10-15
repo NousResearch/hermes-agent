@@ -3092,6 +3092,7 @@ export interface TranscriptMessage {
   context?: string | null
   args?: Record<string, unknown> | null
   labels?: ToolLabel[] | null
+  card?: string | null
   reasoning?: string | null
   [key: string]: unknown
 }
@@ -5609,6 +5610,7 @@ export interface ToolStartPayload {
   args_text?: string | null
   preview?: string | null
   labels?: ToolLabel[] | null
+  card?: string | null
 }
 /** ``tool_progress._on_tool_complete``; ``todos``/``revision`` merged in for the todo tools. */
 export interface ToolCompletePayload {
@@ -5623,6 +5625,7 @@ export interface ToolCompletePayload {
   todos?: unknown[] | null
   revision?: number | null
   labels?: ToolLabel[] | null
+  card?: string | null
 }
 /** ``agent_callbacks`` tool_gen_callback. */
 export interface ToolGeneratingPayload {

@@ -2530,16 +2530,23 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
+    #
+    # Keep this prose free of bracket-marker + tool-name imperatives
+    # ("[IMPORTANT: … do NOT use send_message …").  The previous wording was
+    # observed to make DeepSeek-backed routes on a self-hosted
+    # OpenAI-compatible gateway stall past the origin timeout (Cloudflare
+    # 504 origin_gateway_timeout, ~90s, every tick, for *every* cron job on
+    # such a model) purely because of the prepended hint text — the job's own
+    # prompt was irrelevant.  Rewording the hint fixed it while preserving the
+    # delivery + silence contract; "[SILENT]" stays a literal token because
+    # cron's silence matcher keys off it.
     cron_hint = (
-        "[IMPORTANT: You are running as a scheduled cron job. "
-        "DELIVERY: Your final response will be automatically delivered "
-        "to the user — do NOT use send_message or try to deliver "
-        "the output yourself. Just produce your report/output as your "
-        "final response and the system handles the rest. "
-        "SILENT: If there is genuinely nothing new to report, respond "
-        "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
-        "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
+        "Important: this is a scheduled cron run. Your reply is handed to the "
+        "user by the system, so make it your final response and do not call a "
+        "messaging tool yourself. If there is genuinely nothing new to report, "
+        "answer with the single token \"[SILENT]\" and nothing else so the "
+        "system skips delivery. Otherwise report normally, and never mix "
+        "\"[SILENT]\" with real content.\n\n"
     )
     prompt = cron_hint + prompt
     if skills is None:

@@ -1,4 +1,5 @@
-"""config.yaml readers for the Discord adapter: DM role-auth guild opt-in and button-view timeout.
+"""config.yaml readers for the Discord adapter: DM role-auth guild opt-in, button-view timeout and
+exec-approval admin gate.
 
 Re-exported from ``plugins.platforms.discord.adapter`` (callers and tests import them there).
 """
@@ -53,3 +54,21 @@ def _read_discord_prompt_timeout() -> int:
     if seconds > _DISCORD_PROMPT_TIMEOUT_MAX:
         return _DISCORD_PROMPT_TIMEOUT_MAX
     return seconds
+
+
+def _resolve_exec_approval_admin_gate(config_extra: Optional[dict]) -> tuple[bool, set]:
+    """Resolve the exec-approval admin gate from ``extra``; returns ``(require_admin, admin_user_ids)``.
+    Default OFF (user-scope buttons). When ``require_admin_for_exec_approval`` is true only
+    ``allow_admin_from`` ids may click; on with no admins -> ``(True, set())`` (fail closed, log once).
+    """
+    extra = config_extra if isinstance(config_extra, dict) else {}
+    raw_toggle = extra.get("require_admin_for_exec_approval", False)
+    require_admin = str(raw_toggle).strip().lower() in {"true", "1", "yes"}
+    if not require_admin:
+        return (False, set())
+    try:
+        from gateway.slash_access import _coerce_id_list
+        admin_ids = set(_coerce_id_list(extra.get("allow_admin_from")))
+    except Exception:
+        admin_ids = set()
+    return (True, admin_ids)

@@ -121,7 +121,8 @@ def _scope_profile_name(path: Path) -> Optional[str]:
     return path.name
 
 
-def _write_profile_model(profile_dir: Path, provider: str, model: str, validate_in: Optional[Path] = None) -> None:
+def _write_profile_model(profile_dir: Path, provider: str, model: str, validate_in: Optional[Path] = None,
+                         base_url: str = "") -> None:
     """Write the main model assignment into ``profile_dir``'s config.yaml (HERMES_HOME-scoped)
     through the same validated /model shape as ``POST /api/model/set``.
 
@@ -133,11 +134,14 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str, validate_
     Both spans enter ``_config_profile_scope`` (home + secret scope), matching ``/api/model/set``:
     once the dashboard has served a secondary profile, ``switch_model``'s ``key_env`` probe goes
     through ``get_secret``, which fails closed without a scope and reports the provider as
-    unconnected (UnscopedSecretError class, #114676)."""
+    unconnected (UnscopedSecretError class, #114676).
+
+    ``base_url`` is the endpoint a bare ``custom``/``local`` pick binds to (a fresh profile's config
+    names none); other providers ignore it."""
     from hermes_cli.config import load_config, save_config
     with _config_profile_scope(_scope_profile_name(validate_in or profile_dir)):
         provider, model = _normalize_main_model_assignment(provider, model)
-        result = _validated_main_model_selection(load_config(), provider, model)
+        result = _validated_main_model_selection(load_config(), provider, model, base_url)
     with _config_profile_scope(_scope_profile_name(profile_dir)), _CONFIG_MUTATION_LOCK:  # RMW span
         cfg = load_config()
         cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)

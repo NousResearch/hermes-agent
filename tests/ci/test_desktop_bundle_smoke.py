@@ -132,7 +132,7 @@ def test_stable_phase_result_requires_smoke_but_preserves_other_phases(tmp_path,
                   and not set(needs_of(jobs[name])) - {'validate'}]
     (store,) = [name for name in needs_of(jobs[verdict]) if publish in needs_of(jobs[name])]
 
-    def run_phase(phase, selected, failed=None, skip_tests=False):
+    def run_phase(phase, selected, failed=None, skip_tests=False, skip_signed=False):
         needs = {name: {'result': 'success'} for name in needs_of(jobs[verdict])}
         needs['validate']['outputs'] = {group: ('true' if group in selected else 'false')
                                         for group in group_jobs}
@@ -143,18 +143,26 @@ def test_stable_phase_result_requires_smoke_but_preserves_other_phases(tmp_path,
         if skip_tests:
             for smoke in smokes.values():
                 needs[smoke]['result'] = 'skipped'
+        if skip_signed:
+            for target in ('win32-arm64', 'win32-x64'):
+                needs[smokes[target]]['result'] = 'skipped'
         if failed:
             needs[failed]['result'] = 'cancelled'
         (step,) = [step for step in jobs[verdict]['steps'] if 'SKIP_TESTS' in (step.get('env') or {})]
         return shell_step(tmp_path, r2_server, '', '',
                           {'RELEASE_NEEDS': json.dumps(needs), 'RELEASE_PHASE': phase,
-                           'SKIP_TESTS': 'true' if skip_tests else 'false'}, script=step['run'])
+                           'SKIP_TESTS': 'true' if skip_tests else 'false',
+                           'SKIP_SIGNED': 'true' if skip_signed else 'false'}, script=step['run'])
 
     every = set(group_jobs)
     assert run_phase('candidate', every).returncode == 0
     # A claim that skipped tests runs no smoke, and every build still counts.
     assert run_phase('candidate', every, skip_tests=True).returncode == 0
     assert run_phase('candidate', every, failed=gates['win32-x64'], skip_tests=True).returncode != 0
+    # A Store-only Windows claim smokes no Windows package, but its builds and the Mac smoke still count.
+    assert run_phase('candidate', every, skip_signed=True).returncode == 0
+    assert run_phase('candidate', every, failed=gates['win32-x64'], skip_signed=True).returncode != 0
+    assert run_phase('candidate', every, failed=smokes['darwin-arm64'], skip_signed=True).returncode != 0
     assert run_phase('publish', every).returncode == 0
     assert run_phase('publish', every - {'termux'}).returncode == 0
     for group in group_jobs:

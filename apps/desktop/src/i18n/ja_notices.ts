@@ -1,6 +1,6 @@
 import type { TranslationOverrides } from './define-locale'
 
-// Shell notices (remote-display toast, butterbar), spread into ja.ts.
+// Shell notices (remote-display toast, butterbar, keep-awake offer), spread into ja.ts.
 export const jaNotices = {
   remoteDisplayBanner: {
     message: reason =>
@@ -15,5 +15,11 @@ export const jaNotices = {
       privacy: 'プライバシーポリシー',
       after: 'が適用されます。'
     }
+  },
+  keepAwakeOffer: {
+    title: 'Hermes の作業中にコンピューターがスリープしました',
+    message:
+      'タスクの実行中は、Hermes がコンピューターのスリープを防げます。画面はいつもどおりオフになり、バッテリー駆動中はスリープすることがあります。',
+    action: '実行中はスリープしない'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'keepAwakeOffer'>

@@ -159,7 +159,7 @@ hermes plugins enable touchdesigner   # same as: hermes plugins enable td
 
 In the Desktop app a package with both an agent half and a Desktop half
 (`desktop/plugin.js`) is one row with one switch per half. Turning the
-package on (the install dialog's **Enable agent plugin after install**, or
+package on (installing it from the install dialog, which turns it on, or
 the row's **Agent** switch) turns its Desktop half on as well, unless you
 switched that half off yourself. Turning it off stays per half, because the
 Desktop half is shared by every profile.

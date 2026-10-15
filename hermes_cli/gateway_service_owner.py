@@ -97,13 +97,29 @@ def unit_belongs_to_caller(unit_path: Path, system: bool, action: str, run_as_us
     return definition_belongs_to_home(unit_path, home, action)
 
 
+def service_definition_homes(definition: str) -> list[str]:
+    """Every HERMES_HOME a gateway service definition sets: systemd ``Environment=``, launchd
+    ``EnvironmentVariables``, the Windows ``gateway.cmd`` ``set`` line and the ``gateway.vbs`` env item."""
+    import re
+    homes = re.findall(r'HERMES_HOME=([^"\r\n]+)', definition)
+    homes += re.findall(r"<key>HERMES_HOME</key>\s*<string>(.*?)</string>", definition, flags=re.DOTALL)
+    homes += re.findall(r'Item\("HERMES_HOME"\)\s*=\s*"([^"\r\n]+)"', definition)
+    return homes
+
+
+def service_definition_launchers(definition: str) -> list[str]:
+    """The scripts a definition starts, by their quoted absolute paths. The Windows Startup-folder
+    fallback and a Scheduled Task's action name no home: they start the home's ``gateway.vbs``, which does."""
+    import re
+    found = re.findall(r'"((?:[A-Za-z]:[\\/]|\\\\|/)[^"\r\n]*\.(?:vbs|cmd))"', definition, flags=re.IGNORECASE)
+    return list(dict.fromkeys(found))
+
+
 def temp_home_in_service_definition(definition: str) -> str | None:
     """Temp-dir HERMES_HOME baked into a systemd unit / launchd plist, or None. A temp home means a
     test/E2E harness generated it; installing it leaves the gateway "running" but deaf to every platform."""
-    import re
     import tempfile
-    candidates = re.findall(r'HERMES_HOME=([^"\n]+)', definition)
-    candidates += re.findall(r"<key>HERMES_HOME</key>\s*<string>(.*?)</string>", definition, flags=re.DOTALL)
+    candidates = service_definition_homes(definition)
     temp_roots = {
         Path(tempfile.gettempdir()).resolve(),
         Path("/tmp"), Path("/var/tmp"), Path("/private/tmp"), Path("/private/var/tmp"),  # no-tmp: ok — detects a temp HERMES_HOME in service definitions

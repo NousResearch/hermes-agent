@@ -1,5 +1,7 @@
 """Tests for the fuzzy matching module."""
 
+import pytest
+
 from tools.fuzzy_match import IDENTICAL_STRINGS_ERROR, fuzzy_find_and_replace
 
 
@@ -145,6 +147,33 @@ class TestIndentationPreservation:
         assert lines[0] == "    a = 1"
         assert lines[1] == ""
         assert lines[2] == "    b = 99"
+
+    @pytest.mark.parametrize("anchor_indent", ["", "    ", "\t"])
+    def test_mid_line_anchor_keeps_new_string_indentation(self, anchor_indent):
+        # Whitespace-bearing anchors match the separator after '='. Their indentation
+        # differs from that separator, so the old re-anchoring shifts continuation lines.
+        content = "def f():\n        total = compute(a,  b)\n"
+        old = anchor_indent + "compute(a, b)"
+        new = anchor_indent + "compute(\n            a, b)"
+        out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
+        assert err is None and count == 1 and strategy != "exact"
+        assert out.splitlines()[-1] == new.splitlines()[-1]
+        compile(out, "<patched>", "exec")
+
+    @pytest.mark.parametrize("leading_breaks", ["\n", "\n\n", "\n \t\n", "\r\n", "\r\n\r\n"])
+    @pytest.mark.parametrize("anchor_indent", ["    ", "\t"])
+    def test_match_starting_with_line_break_is_reindented(self, leading_breaks, anchor_indent):
+        # old_string starts with the line break that ends the previous line, so the
+        # match starts at the end of a line, but every code line in it is whole.
+        line_break = "\r\n" if leading_breaks.startswith("\r\n") else "\n"
+        prefix = line_break.join(("class A:", "    def f(self):", "        x = 1"))
+        content = prefix + leading_breaks + "        return x" + line_break
+        old = leading_breaks + anchor_indent + "return x"
+        new = leading_breaks + anchor_indent + "return x + 1"
+        out, count, strategy, err = fuzzy_find_and_replace(content, old, new)
+        assert err is None and count == 1 and strategy != "exact"
+        assert out == prefix + leading_breaks + "        return x + 1" + line_break
+        compile(out, "<patched>", "exec")
 
 
 class TestReplaceAll:
@@ -722,7 +751,7 @@ class TestBackslashDoublingDrift:
         new = old + ' # touched'
         result, count, _strategy, err = self.replace(content, old, new)
         assert count == 0
-        assert err is not None and "twice as long" in err
+        assert err is not None and "intentional backslashes" in err
         assert result == content  # untouched
 
     def test_matching_backslashes_apply(self):
@@ -743,16 +772,14 @@ class TestBackslashDoublingDrift:
         assert count == 1 and err is None
         assert strategy == "exact"
 
-    def test_model_corrected_new_string_allowed(self):
-        """Doubled old_string but corrected new_string writes the right bytes."""
+    def test_model_corrected_new_string_requires_clean_anchor(self):
+        """A corrected replacement is still unverifiable beside a doubled anchor."""
         b = "\\"
         content, old = self._make(n_file=2, n_args=4)
         new = old.replace(b * 4, b * 2).replace("next line", "corrected")
         result, count, _strategy, err = self.replace(content, old, new)
-        assert count == 1 and err is None
-        assert "corrected" in result
-        # No doubling in the output
-        assert b * 4 not in result
+        assert count == 0 and "intentional backslashes" in err
+        assert result == content
 
     def test_single_prose_backslash_not_blocked(self):
         """A lone ``\\`` vs ``\\`` in prose is too weak a signal to block."""
@@ -763,12 +790,12 @@ class TestBackslashDoublingDrift:
         _result, _count, _strategy, err = self.replace(content, old, new)
         assert err is None or "twice" not in err
 
-    def test_quote_drift_guard_still_fires(self):
-        """The pre-existing apostrophe escape-drift guard must keep working."""
+    def test_verified_quote_drift_is_corrected(self):
+        """Shared matching corrects quote drift when its anchor is verified."""
         b = "\\"
         content = "print('hello world')\nrest = 1\n"
         old = "print(" + b + "'hello world" + b + "')\nrest = 1"
         new = "print(" + b + "'hello there" + b + "')\nrest = 1"
-        _result, count, _strategy, err = self.replace(content, old, new)
-        assert count == 0
-        assert err is not None and "apostrophe" in err
+        result, count, _strategy, err = self.replace(content, old, new)
+        assert count == 1 and err is None
+        assert result == "print('hello there')\nrest = 1\n"

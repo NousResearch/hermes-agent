@@ -400,6 +400,18 @@ def _run_single_child(
         run.cleanup(heartbeat=heartbeat, child_pool=child_pool, leased_cred_id=leased_cred_id, close_deferred=_child_close_deferred)
 
 
+def _credential_overrides(creds: dict[str, Any], routing_cfg: dict[str, Any]) -> dict[str, Any]:
+    """``_build_child_agent`` override kwargs for a resolved credential bundle (delegate_task and the lifecycle API)."""
+    return {
+        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
+        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
+        "override_request_overrides": creds.get("request_overrides"),
+        "override_acp_command": creds.get("command"),
+        "override_acp_args": creds.get("args"),
+        "routing_cfg": routing_cfg,
+    }
+
+
 def _build_children(
     task_list: list[dict[str, Any]], task_schemas: list[Optional[dict[str, Any]]], creds: dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: dict[str, Any],
@@ -409,14 +421,7 @@ def _build_children(
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
-    overrides = {
-        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
-        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
-        "override_request_overrides": creds.get("request_overrides"),
-        "override_acp_command": creds.get("command"),
-        "override_acp_args": creds.get("args"),
-        "routing_cfg": routing_cfg,
-    }
+    overrides = _credential_overrides(creds, routing_cfg)
     children = []
     for i, t in enumerate(task_list):
         _task_schema = task_schemas[i] if i < len(task_schemas) else None

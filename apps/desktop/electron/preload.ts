@@ -15,7 +15,7 @@ const translucencySupport = ipcRenderer.sendSync('hermes:translucency:support')
 const hudWindowing = ipcRenderer.sendSync('hermes:hud:windowing')
 const hudNativeDrag = hudWindowing?.nativeDrag === true
 
-const launchFlags: { localModels?: boolean; guestOnboarding?: boolean } | undefined =
+const launchFlags: { localModels?: boolean; assumeFreshInstall?: boolean } | undefined =
   ipcRenderer.sendSync('hermes:feature-flags')
 
 // Local, sanitized skin payload for the first renderer theme paint. This does
@@ -31,10 +31,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   // Launch-flag fact: the app was started with --local, so the renderer may
   // show the local-models surfaces. Static for the window's lifetime.
   localModelsEnabled: launchFlags?.localModels === true,
-  // Launch-flag fact: the Nous free tier is on for this launch
-  // (HERMES_GUEST_ONBOARDING=1 or --guest-onboarding). Read-only; the same
-  // decision is stamped onto every backend the app spawns.
-  guestOnboardingEnabled: launchFlags?.guestOnboarding === true,
+  // Dev-only launch fact: an unpackaged app started with --fresh-install, so
+  // onboarding treats this launch as a fresh install. Always false when packaged.
+  assumeFreshInstall: launchFlags?.assumeFreshInstall === true,
   localSkin: localSkin && typeof localSkin === 'object' ? localSkin : null,
   getConnection: (profile, opts) => ipcRenderer.invoke('hermes:connection', profile, opts),
   // Loopback origin that hosts YouTube's player for the file:// renderer.
@@ -387,6 +386,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
   setKeepAwake: mode => ipcRenderer.send('hermes:keep-awake', mode),
+  // Once per computer, after a timed sleep interrupted a turn with keep-awake off.
+  onKeepAwakeOffer: callback => {
+    const listener = () => callback()
+    ipcRenderer.on('hermes:keep-awake-offer', listener)
+
+    return () => ipcRenderer.removeListener('hermes:keep-awake-offer', listener)
+  },
   minimizeToTray: {
     get: () => ipcRenderer.invoke('hermes:minimize-to-tray:get'),
     set: on => ipcRenderer.invoke('hermes:minimize-to-tray:set', on),

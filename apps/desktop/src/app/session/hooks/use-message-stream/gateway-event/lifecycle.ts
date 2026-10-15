@@ -4,6 +4,7 @@ import type { HermesSkin } from '@hermes/shared/skin'
 import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { clearClarifyRequest } from '@/store/clarify'
 import {
+  noteGatewayReady,
   notifyCronChanged,
   notifyPairingChanged,
   notifyPetChanged,
@@ -23,18 +24,25 @@ import { ingestBackendSkin } from '@/themes/backend-sync'
 
 import type { GatewayEventContext } from './types'
 
+function onGatewayReady(ready: GatewayEvent<'gateway.ready'>['payload'], activeSource: boolean): void {
+  // Seed the active skin into the desktop theme registry without applying,
+  // so a fresh connect never overrides the user's persisted desktop theme.
+  ingestBackendSkin(ready?.skin, { apply: false })
+  // Backends with the change watcher broadcast pet/cron/sessions change
+  // events; consumers demote their legacy polls to slow backstops.
+  setChangeEventsAvailable(Boolean(ready?.change_events))
+
+  if (activeSource) {
+    noteGatewayReady() // the onboarding due check counts its way-out budget from here
+  }
+}
+
 /** gateway.ready / setup.ready / skin.changed / change-watcher broadcasts / session.reclaimed. */
 export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, fromActiveSource } = ctx
 
   if (event.type === 'gateway.ready') {
-    const ready = (event as GatewayEvent<'gateway.ready'>).payload
-    // Seed the active skin into the desktop theme registry without applying,
-    // so a fresh connect never overrides the user's persisted desktop theme.
-    ingestBackendSkin(ready?.skin, { apply: false })
-    // Backends with the change watcher broadcast pet/cron/sessions change
-    // events; consumers demote their legacy polls to slow backstops.
-    setChangeEventsAvailable(Boolean(ready?.change_events))
+    onGatewayReady((event as GatewayEvent<'gateway.ready'>).payload, fromActiveSource())
 
     return true
   }

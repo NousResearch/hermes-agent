@@ -44,6 +44,24 @@ def test_exec_schtasks_decodes_ansi_output_under_utf8_mode(monkeypatch):
 
 
 @pytest.mark.platforms("windows")
+def test_registered_task_launchers_reads_each_hermes_task_action(monkeypatch):
+    """The install probe's view of the Scheduled Tasks: the launcher each ``Hermes_Gateway*`` task
+    starts, as the task XML this module writes names it, and a pre-``wscript`` task's ``.cmd``."""
+    launcher = r"C:\Users\Ann Lee\custom hermes\gateway-service\Hermes_Gateway_work.vbs"
+    legacy = r"C:\Users\ann\h2\gateway-service\Hermes_Gateway.cmd"
+    current = gateway_windows._build_scheduled_task_xml("Hermes_Gateway_work", Path(launcher), "PC\\ann")
+    older = current.replace("<Command>wscript.exe</Command>", f"<Command>{legacy}</Command>").replace(
+        f'//B //Nologo "{launcher}"', "")
+    listing = ('\r\n"\\Microsoft\\Windows\\Defrag\\ScheduledDefrag","N/A","Ready"\r\n'
+               '"\\Hermes_Gateway_work","N/A","Ready"\r\n"\\Hermes_Gateway","N/A","Running"\r\n')
+    xml = {"Hermes_Gateway_work": current, "Hermes_Gateway": older}
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks",
+                        lambda args, timeout=None: (0, listing if "/FO" in args else xml[args[2]], ""))
+
+    assert gateway_windows.registered_task_launchers() == [launcher, legacy]
+
+
+@pytest.mark.platforms("windows")
 def test_exec_schtasks_round_trips_non_ascii_task_argument_live(monkeypatch):
     """Real schtasks.exe on a real task whose argument carries a non-ASCII (ANSI-representable)
     character, queried from a UTF-8-mode interpreter: the template/live comparison in

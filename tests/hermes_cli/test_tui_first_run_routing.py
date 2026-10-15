@@ -20,7 +20,6 @@ class _Launched(Exception):
 def _run_chat(monkeypatch, argv, *, provider_configured):
     import hermes_cli.main as main_mod
     from hermes_cli._parser import build_top_level_parser
-    import hermes_cli.free_tier_bootstrap as bootstrap
     import hermes_cli.observability.shared_metrics_consent as consent
 
     parser, _subparsers, chat_parser = build_top_level_parser()
@@ -35,7 +34,6 @@ def _run_chat(monkeypatch, argv, *, provider_configured):
     def classic_main(**_k):
         calls.append("classic")
 
-    monkeypatch.setattr(bootstrap, "run_bootstrap", lambda **_k: None)
     monkeypatch.setattr(main_mod, "_has_any_provider_configured", lambda: provider_configured)
     monkeypatch.setattr(main_mod, "_first_run_setup_guard", lambda _args: calls.append("guard"))
     monkeypatch.setattr(consent, "offer_consent_before_chat", lambda _args: calls.append("offer"))

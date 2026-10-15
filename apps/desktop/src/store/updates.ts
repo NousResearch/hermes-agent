@@ -514,6 +514,8 @@ export function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateS
     error: checkFailed ? 'check-failed' : undefined,
     message: res.message ?? undefined,
     updateAvailable: res.update_available,
+    rollback: Boolean(res.rollback_to),
+    sourceVersion: res.rollback_to ?? undefined,
     behind: behind === null || behind < 0 ? null : behind,
     currentVersion: res.current_version,
     targetSha: res.update_available ? `backend:${res.current_version}` : undefined,

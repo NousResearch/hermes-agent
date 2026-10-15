@@ -1906,10 +1906,10 @@ export interface HookCreate {
 export interface UpdateCheckResponse {
   install_method: string;
   current_version: string;
-  // commits behind: >=1 known count, 0 up to date, -1 behind by unknown
-  // count (nix/pypi), or null when the check could not run.
+  // commits behind: >=1 known, 0 up to date, -1 unknown count (nix/pypi), null = check could not run.
   behind: number | null;
   update_available: boolean;
+  rollback_to?: string | null; // a stable release this build already contains: applying it moves back
   can_apply: boolean;
   update_command: string;
   message: string | null;

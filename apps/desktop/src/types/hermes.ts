@@ -1596,6 +1596,8 @@ export interface BackendUpdateCheckResponse {
   current_version: string
   behind: number | null
   update_available: boolean
+  /** A stable release this build already contains: applying it moves back. */
+  rollback_to?: null | string
   can_apply: boolean
   update_command: string | null
   message: string | null

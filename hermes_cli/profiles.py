@@ -91,7 +91,6 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # seed_profile_skills() callers (fresh-create, `hermes update` all-profile sync, the
 # dashboard) skip bundled-skill seeding. Delete the file to opt back in.
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
-SETUP_PROFILE_MARKER = ".setup-profile.json"
 
 # Header seeded into a profile's empty .env so it owns a credentials file from day one.
 _PLACEHOLDER_ENV = (
@@ -306,10 +305,17 @@ def _wrapper_path(alias: str) -> Path:
     return _get_wrapper_dir() / (f"{alias}.bat" if sys.platform == "win32" else alias)
 
 
+def _find_our_wrapper(alias: str) -> Optional[Path]:
+    """The Hermes wrapper for *alias*: :func:`_wrapper_path`, else a pre-``.bat`` bare Windows one."""
+    candidates = [_wrapper_path(alias), _get_wrapper_dir() / alias] if sys.platform == "win32" else [_wrapper_path(alias)]
+    return next((p for p in candidates if _is_our_wrapper(p)), None)
+
+
 def _is_our_wrapper(path: Path) -> bool:
-    """True when *path* reads as a Hermes-generated wrapper (contains ``hermes -p``)."""
+    """True when *path* reads as a Hermes-generated wrapper (``hermes -p`` in its head)."""
     try:
-        return "hermes -p" in path.read_text(encoding="utf-8-sig")
+        with open(path, encoding="utf-8-sig") as f:
+            return "hermes -p" in f.read(_WRAPPER_READ_LIMIT)
     except Exception:
         return False
 
@@ -566,15 +572,12 @@ def remove_wrapper_script(name: str) -> bool:
     except ValueError:
         return False
 
-    # Both the extensionless path (POSIX) and .bat (Windows)
-    candidates = [_get_wrapper_dir() / canon]
-    if sys.platform == "win32":
-        candidates.insert(0, _get_wrapper_dir() / f"{canon}.bat")
-    for wrapper_path in candidates:
-        if wrapper_path.exists() and _is_our_wrapper(wrapper_path):
-            with contextlib.suppress(Exception):
-                wrapper_path.unlink()
-                return True
+    wrapper_path = _find_our_wrapper(canon)
+    if wrapper_path is None:
+        return False
+    with contextlib.suppress(Exception):
+        wrapper_path.unlink()
+        return True
     return False
 
 
@@ -626,10 +629,8 @@ def build_alias_map() -> dict[str, str]:
     for entry in sorted(wrapper_dir.iterdir()):
         if not entry.is_file():
             continue
-        # Our wrappers are named after the alias and (on Windows only) carry .bat.
-        if is_windows and entry.suffix != ".bat":
-            continue
-        if not is_windows and entry.suffix:
+        # Our wrappers are named after the alias; Windows ones carry .bat (none before #34796).
+        if entry.suffix and not (is_windows and entry.suffix == ".bat"):
             continue
         try:
             with open(entry, "r", encoding="utf-8-sig", errors="strict") as f:
@@ -773,22 +774,6 @@ def _read_config_model(profile_dir: Path) -> tuple:
     return _cached_profile_read(config_path, "config-model", _read)
 
 
-def launch_model_seed(source_cfg: dict) -> dict:
-    """The config a fresh profile needs to run the launch profile's model: its ``model`` block plus,
-    when that block points at a custom ``providers:`` gateway (self-hosted / local endpoint), that
-    provider's definition — ``model.provider: my-gateway`` alone is "Unknown provider" on the first
-    turn. ``{}`` when the launch profile has no model."""
-    model_cfg = source_cfg.get("model")
-    if not model_cfg:
-        return {}
-    seed = {"model": model_cfg}
-    providers = source_cfg.get("providers")
-    name = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
-    if isinstance(providers, dict) and name in providers:
-        seed["providers"] = {name: providers[name]}
-    return seed
-
-
 def _seed_model_config(profile_dir: Path) -> None:
     """Copy (not link) the active profile's model block into a fresh profile so it is usable;
     profiles stay independent islands afterwards."""
@@ -798,6 +783,7 @@ def _seed_model_config(profile_dir: Path) -> None:
     with contextlib.suppress(Exception):  # creation must not fail over this; `hermes model` sets it later
         from hermes_constants import get_hermes_home
         from hermes_cli.config import atomic_config_write, read_user_config_raw
+        from hermes_cli.profile_model_seed import launch_model_seed
         source = get_hermes_home() / "config.yaml"
         seed = launch_model_seed(read_user_config_raw(source)) if source.is_file() else {}
         if seed:
@@ -1030,9 +1016,7 @@ def _profile_info(name: str, path: Path, *, is_default: bool, alias_name: Option
     model, provider = _read_config_model(path)
     dist_name, dist_version, dist_source = _read_distribution_meta(path)
     meta = read_profile_meta(path)
-    alias_path = _wrapper_path(alias_name) if alias_name else None
-    if alias_path is not None and not alias_path.exists():
-        alias_path = None
+    alias_path = _find_our_wrapper(alias_name) if alias_name else None
     gateway_running = _check_gateway_running(path)
     if not is_default:
         gateway_running = gateway_running or _served_by_running_multiplexer(name)
@@ -1437,9 +1421,6 @@ def create_profile(
             _clone_all_into(source_dir, staging, canon)
         else:
             _bootstrap_profile_dir(staging, source_dir, sync_imports=sync_imports)
-        if source_dir is not None:
-            from hermes_cli.setup_profile import release_setup_copy, setup_marker_state
-            release_setup_copy(staging, setup_state=setup_marker_state(source_dir))
         if source_dir is not None and not clone_channels:
             from hermes_cli.profile_channels import strip_channel_settings
             stripped = strip_channel_settings(staging, include_state=clone_all, source_dir=source_dir)
@@ -1831,9 +1812,8 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         raise ValueError("Cannot delete the default profile (~/.hermes).\nTo remove everything, use: hermes uninstall")
     canon, profile_dir = _existing_profile_dir(canon)
     gw_running = _check_gateway_running(profile_dir)
-    wrapper_path = _get_wrapper_dir() / canon
-    has_wrapper = wrapper_path.exists()
-    _print_delete_summary(canon, profile_dir, gw_running, wrapper_path if has_wrapper else None)
+    wrapper_path = _find_our_wrapper(canon)
+    _print_delete_summary(canon, profile_dir, gw_running, wrapper_path)
     if not yes:
         print()
         try:
@@ -1898,7 +1878,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             print(f"✓ Released {_released_logs} profile log handler(s) held by this process")
 
     # 3. Remove wrapper script
-    if has_wrapper and remove_wrapper_script(canon):
+    if wrapper_path and remove_wrapper_script(canon):
         print(f"✓ Removed {wrapper_path}")
 
     # 4. Remove profile directory
@@ -2363,8 +2343,6 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
                     shutil.rmtree(child)
                 else:
                     child.unlink()
-        from hermes_cli.setup_profile import release_setup_copy, setup_marker_state
-        release_setup_copy(final_source, setup_state=setup_marker_state(final_source))
         shutil.move(str(final_source), str(profile_dir))
     return profile_dir
 

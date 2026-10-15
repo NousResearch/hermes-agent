@@ -1,0 +1,23 @@
+name: tameru
+title: Tameru
+repo: https://github.com/0xWhiteMage/hermes-tameru-plugin
+sha: 9a3642f6c0aa76ea7f10cb59cf604890c1ed4100
+subdir: hermes_tameru_plugin
+version: "1.4.1"
+description: "Deterministic, local context compaction with query-aware tool-result extraction and recovery. Disclosure — Subclasses Hermes's built-in ContextCompressor and overrides its private prune/demote methods (checks their shape at startup and falls back to stock compaction when they change). Unless you set them yourself, turns on proactive tool-result pruning at compression.proactive_prune_tokens=48000 and lowers proactive_prune_min_result_chars to 2000. Adds a model-callable tameru_expand tool that returns pruned tool output from memory or from this session's archive; complex regex greps run in a short-lived local Python child process. No network calls; the render log is off by default."
+maintainer: 0xWhiteMage
+tier: community
+category: general
+docs_url: https://github.com/0xWhiteMage/hermes-tameru-plugin
+readme: false
+platforms: [linux]
+known_issues:
+  - Full archive recovery requires plugins.isolation to be in_process; host mode limits recovery.
+  - Overrides private ContextCompressor signatures and falls back when the host contract changes.
+capabilities:
+  provides_tools:
+    - tameru_expand
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.7"

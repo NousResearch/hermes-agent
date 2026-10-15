@@ -1544,9 +1544,9 @@ def _logged_in_oauth_active_provider(*, skip_free_tier: bool = False) -> Optiona
     try:
         _maybe = _load_auth_store().get("active_provider")
         if _maybe == "nous":
-            from hermes_cli.anon_auth import guest_enabled, has_guest
-            if has_guest() and (skip_free_tier or not guest_enabled()):
-                return None  # the free tier is off (or being discounted), so a guest is not a login
+            from hermes_cli.anon_auth import free_inference_active, has_guest
+            if has_guest() and (skip_free_tier or not free_inference_active()):
+                return None  # this guest carries no inference here (or is being discounted): not a login
         if _maybe and _maybe in PROVIDER_REGISTRY and get_auth_status(_maybe).get("logged_in"):
             return _maybe
     except Exception as e:
@@ -1637,7 +1637,7 @@ def resolve_provider(
     "auto" priority (explicit intent beats a stale OAuth login): 1. CLI api_key/base_url ->
     "openrouter"; 2. config.yaml ``model.provider``; 3. OPENROUTER_API_KEY (or an sk-or- key in
     OPENAI_API_KEY) -> "openrouter"; 4. OpenRouter pool; 5. provider env keys; 6. auth.json ``active_provider``;
-    7. Nous free tier when it is on and its identity exists (never created here);
+    7. Nous free tier when a claimed guest exists on the desktop's local backend (never created here);
     8. AWS Bedrock chain; 9. AuthError(no_provider_configured).
 
     ``skip_free_tier`` hides rungs 6-for-a-free-tier-identity and 7: the boot bootstrap asks
@@ -1690,16 +1690,16 @@ def resolve_provider(
                 _oauth_active)
         return _oauth_active
 
-    # Nous free tier, when it is on and its identity already exists. This rung sits ABOVE the Bedrock
+    # Nous free tier, when this guest claimed the welcome trial and this is the desktop's local
+    # backend (``anon_auth.free_inference_active``). This rung sits ABOVE the Bedrock
     # chain on purpose: every rung above this line is explicit user intent (CLI creds, config, env
     # keys, a sign-in); the boto chain below is implicit host state, and a leftover ~/.aws profile
     # used to win the first turn of a fresh install (NS-829). The rung never CREATES the identity:
-    # that is the boot bootstrap's job (free_tier_bootstrap), so provider resolution stays free of
-    # network and a fresh install without the bootstrap resolves exactly as upstream does.
+    # only the desktop's trial claim does (welcome_trial), so provider resolution stays free of network.
     if not skip_free_tier:
         try:
-            from hermes_cli.anon_auth import guest_enabled, has_guest
-            if guest_enabled() and has_guest():
+            from hermes_cli.anon_auth import free_inference_active
+            if free_inference_active():
                 return "nous"
         except Exception as exc:
             logger.debug("free tier check during provider resolution skipped: %s", exc)
@@ -1707,15 +1707,15 @@ def resolve_provider(
     # below explicit keys and below the free tier.
     try:
         from agent.bedrock_adapter import has_aws_credentials
-        if has_aws_credentials():
+        from hermes_cli.anon_auth import on_local_desktop_backend  # a laptop: no EC2 metadata lookup
+        if has_aws_credentials(instance_metadata=not on_local_desktop_backend()):
             return "bedrock"
     except ImportError:
         pass  # boto3 not installed
     from hermes_constants import display_hermes_home
     raise AuthError(
-        "Hermes is not connected to any AI provider yet. Run `hermes model` to pick one (the free "
-        "Nous tier needs no API key), type `/login` in chat, or add a key with "
-        f"`hermes auth add <provider>`. (Advanced: put an API key such as OPENROUTER_API_KEY in "
+        "Hermes is not connected to any AI provider yet. Run `hermes model` to pick one, type `/login` in chat, "
+        f"or add a key with `hermes auth add <provider>`. (Advanced: put an API key such as OPENROUTER_API_KEY in "
         f"{display_hermes_home()}/.env.)",
         code="no_provider_configured")
 
@@ -1808,10 +1808,9 @@ def resolve_nous_access_token(
     insecure: Optional[bool] = None,
     ca_bundle: Optional[str] = None,
     refresh_skew_seconds: int = ACCESS_TOKEN_REFRESH_SKEW_SECONDS) -> str:
-    """Resolve a refresh-aware Nous Portal access token for managed tool gateways.
-
-    A free-tier exchange may be answered with a browser challenge (``anon_challenge``); it is worked
-    here, after the exchange's locks have unwound, and the exchange is then run once more."""
+    """Refresh-aware Nous Portal token for managed tool gateways, connectors and account reads, never
+    the free model: a guest gets a live held token, else a connectors-only mint NAS never challenges.
+    Only a NAS from before hermes-portal#1516 challenges that mint; it is worked here as before."""
     from hermes_cli.anon_challenge import run_with_challenge
     return run_with_challenge(lambda: _resolve_nous_access_token(
         timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle,
@@ -1850,20 +1849,17 @@ def _resolve_nous_access_token(
 
         lock_timeout = max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)
         with _nous_shared_store_lock(timeout_seconds=lock_timeout):
-            from hermes_cli.anon_auth import is_guest_state, refresh_guest_state
+            from hermes_cli.anon_auth import held_connectors_token, is_guest_state, refresh_guest_state
             if is_guest_state(state):
-                # Guest seam: the anon_ credential is the identity; a first use has no access token
-                # yet and an expired one is re-exchanged. No refresh token, no quarantine.
-                access_token = state.get("access_token")
-                if isinstance(access_token, str) and access_token and not _is_expiring(
-                        state.get("expires_at"), refresh_skew_seconds):
+                # A live held token serves (an inference one is a superset); else mint connectors-only.
+                if access_token := held_connectors_token(state, skew_seconds=refresh_skew_seconds):
                     return _memo(access_token)
                 with httpx.Client(timeout=httpx.Timeout(timeout_seconds or 15.0),
                                   headers={"Accept": "application/json"}, verify=verify) as client:
-                    refresh_guest_state(state, client)
+                    minted = refresh_guest_state(state, client, purpose="connectors")
                 persist()
                 _write_shared_nous_state(state)
-                return _memo(state["access_token"])
+                return _memo(minted)
 
             merged_shared = _merge_shared_nous_oauth_state(state)
             access_token = state.get("access_token")

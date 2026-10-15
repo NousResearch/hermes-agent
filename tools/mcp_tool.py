@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 from tools.mcp_tool_common import _DEFAULT_TOOL_TIMEOUT, mcp_field
-from tools.mcp_tool_config import _get_mcp_stderr_log, _npx_cached_bin
+from tools.mcp_tool_config import _get_mcp_stderr_log, _npx_cached_bin, _packaged_npx_entry
 from tools.mcp_tool_sampling import ElicitationHandler, SamplingHandler
 from tools.mcp_tool_transport import MCPServerTransportMixin
 from tools.mcp_tool_server_run import MCPServerRunMixin
@@ -57,6 +57,11 @@ async def _preflight_stdio_command(server_name: str, command: str, args: list) -
     # nothing (~48 MB per server, measured). Hermes already supervises the child (shared death
     # supervisor), so a cached package is spawned directly; a cache miss leaves npx untouched.
     if os.path.basename(command).lower().startswith("npx"):
+        # A sealed Windows payload's own npx cannot start its node through cmd.exe.
+        packaged = await asyncio.to_thread(_packaged_npx_entry, command, args)
+        if packaged:
+            logger.debug("MCP server '%s': running %s on the packaged node", server_name, packaged[1][0])
+            return packaged
         cached = _npx_cached_bin(args)
         if cached:
             direct_command, direct_args = cached
@@ -310,6 +315,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
     keepalive/liveness live in the three mixins."""
 
     __slots__ = (
+        "_auth_park",
         "_auth_type",
         "_config",
         "_elicitation",
@@ -391,6 +397,8 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         # (revoked credentials, dead endpoint) that must not run the job tool-less forever.
         self._park_reason: Optional[str] = None
         self._last_park_line: Optional[str] = None  # last park WARNING text; identical re-parks log at DEBUG
+        # (token storage, credential stamp) while parked on an OAuth failure; see _arm_auth_park.
+        self._auth_park: Optional[tuple] = None
         # Digest of the resolved inputs the transport last connected with; a cross-profile adopter
         # must resolve the same digest in its own scope. None until the transport publishes it.
         self._resolved_identity: Optional[str] = None

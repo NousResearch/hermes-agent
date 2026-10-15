@@ -1092,7 +1092,7 @@ def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool)
 def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     """Check if at least one inference provider is usable. Never creates one: the Nous free tier
     counts only once its identity exists, and the boot bootstrap (``hermes_cli.free_tier_bootstrap``)
-    is the only thing that creates it; ``cmd_chat`` runs the bootstrap before asking.
+    creates it at boot (a first connector use can too); ``cmd_chat`` runs the bootstrap before asking.
 
     ``strict_profile_scope``: the caller has bound a NAMED profile's home and
     secret scope and wants an answer for that profile only — launch-process
@@ -1177,12 +1177,6 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
         except Exception:
             pass
 
-    # Nothing explicit anywhere: an existing Nous free-tier identity counts while the tier is on.
-    try:
-        from hermes_cli.anon_auth import guest_enabled, has_guest
-        return guest_enabled() and has_guest()
-    except Exception as exc:
-        logger.debug("free tier check on first run skipped: %s", exc)
     return False
 
 
@@ -1745,11 +1739,6 @@ def cmd_chat(args):
 
     _warn_retired_xai_models()
 
-    # First-run guard: the free-tier bootstrap runs first (synchronously here; it is the only thing
-    # that may create the identity), then the inventory decides whether setup is needed.
-    from hermes_cli.free_tier_bootstrap import run_bootstrap
-
-    run_bootstrap(announce=False)
     # The TUI owns its first-run state: it renders "Setup Required" with in-place /setup.
     # The classic prompt only fronts the classic CLI.
     provider_configured = _has_any_provider_configured()

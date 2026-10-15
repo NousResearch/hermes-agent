@@ -15,22 +15,27 @@ files on `main`.
    `abandoned-rc.*`). Derive the next SemVer from the published release family
    seeded at `0.21.5` (the last legacy CalVer release, v2026.9.24) alone: the newer of the protected R2 stable head and the
    newest published non-prerelease GitHub release with a `vX.Y.Z` tag. A
-   release that skipped bundles moves only the second. Attempts do not move the
+   release that builds no desktop packages moves only the second. Attempts do not move the
    version line. A cut whose next version already has a final `vX.Y.Z` tag is
    refused until that publication finishes.
 2. Push an annotated `rc.<N>-vX.Y.Z` attempt ref atomically, create one
-   non-prerelease GitHub draft on it, and dispatch `Stable Release` on that exact
-   ref. The attempt number comes from the existing attempt refs of that version.
+   non-prerelease GitHub draft on it, and dispatch `Stable Release` from the
+   default branch with that ref as its `tag` input. The attempt number comes from the existing attempt refs of that version.
    The claim message binds its commit, attempt number, autopublish policy,
-   `skipBundles`, `skipTests`, `includeMacosIntel` and `includeTermux` flags, and
+   lane set (see [Lanes](#lanes)), and
    one monotonically allocated epoch. That epoch is the release date and native
    packaging clock for every matrix leg and retry. One outstanding attempt, of
    any version, blocks a new `release`.
-3. Admit the exact remote annotated tag-object SHA, peeled commit, `GITHUB_REF`,
-   `GITHUB_SHA`, checked-out `HEAD`, and ancestry on `origin/main`.
-4. Run the whole source, Docker, Nix, PM bundle, install/update, Windows,
-   signed-package, and native-upgrade acceptance graph (plus macOS Intel and
-   Termux when the claim opted into them).
+3. Admit the exact remote annotated tag-object SHA, its peeled commit, and that
+   commit's ancestry on `origin/main`. The run itself must be the default-branch
+   dispatch of `Stable Release`. Its workflows and release scripts come from
+   `main`, so its Actions caches share one scope across attempts. `GITHUB_SHA` is
+   `main`'s tip, never the commit under test. Every lane that tests or builds the
+   payload is passed the admitted commit, and the commit-threading lint in
+   `tests/ci/test_stable_release_commit_threading.py` enforces that.
+4. Run the lanes the claim records: by default the whole source, Docker, Nix,
+   PM bundle, install/update, Windows, signed-package, and native-upgrade
+   acceptance graph, without macOS Intel and Termux.
 5. Push immutable versioned Docker and R2 artifacts from the tested bytes. The
    Docker image is pushed as soon as its own tests pass, tagged by the attempt
    ref. Do not move `stable` or `latest` aliases yet and do not rebuild for
@@ -99,102 +104,96 @@ Add `--autopublish` to publish immediately when the claim becomes the oldest
 green release. Without it, the release stays a draft until an explicit publish
 or a later green claim forces ordered resolution.
 
-### Skip bundles or tests
+### Lanes
 
-Two `release` flags remove parts of the pipeline. They can be used together,
-and they combine with `--autopublish`.
+A stable release is a set of lanes. A build lane produces something users get;
+a test lane is a suite that gates the release. `release` starts from the
+default set and edits it:
 
 ```sh
-# Tag, GitHub release and Docker image only
-python scripts/release.py release --commit "$(git rev-parse origin/main)" --skip-bundles --remote origin
-# Emergency release: build and publish everything, run no tests
-python scripts/release.py release --commit "$(git rev-parse origin/main)" --skip-tests --remote origin
+# The default: everything except macOS Intel and Termux
+python scripts/release.py release --commit "$(git rev-parse origin/main)" --remote origin
+# Only the signed Windows bundles and the Docker image, no tests
+python scripts/release.py release --commit "$(git rev-parse origin/main)" --only windows,docker --remote origin
+# Everything except the signed Windows pipeline (the Store bundle still builds and is submitted)
+python scripts/release.py release --commit "$(git rev-parse origin/main)" --without windows --remote origin
+# Only the Store bundle: no Azure signing anywhere
+python scripts/release.py release --commit "$(git rev-parse origin/main)" --only windows-store --remote origin
+# Everything, plus macOS Intel, without the install/update E2E
+python scripts/release.py release --commit "$(git rev-parse origin/main)" --with macos-intel --without install-e2e --remote origin
 ```
 
-| | `--skip-bundles` | `--skip-tests` |
+`--only` replaces the default set, `--with` adds lanes and `--without`
+removes them. Each takes comma-separated names and can repeat. `release --help`
+lists every lane.
+
+| Lane | Default | What it controls |
 |---|---|---|
-| Source CI (`ci.yaml`), Nix, Termux, Windows live, install/update E2E, bootstrap identity | run | skipped |
-| Docker image | built, tested, published | built and published, `tests/docker` skipped |
-| Native PM bundle check | skipped | skipped |
-| Desktop and Termux candidates | skipped | built, signed and staged, with no native smokes or in-build test suites |
-| Signed-package upgrade acceptance (`transitions-*`, `*-packaged`) | skipped | skipped |
-| Publication | final tag, GitHub release, Docker `stable`/`latest` aliases | everything, as a normal release |
+| `docker` | on | build and publish the Docker image |
+| `windows` | on | signed Windows x64 and arm64 MSIX and the universal bundle, which feed the update channel |
+| `windows-store` | on | the unsigned Microsoft Store bundle, submitted to Partner Center (needs no Azure signing) |
+| `macos-arm64` | on | macOS Apple Silicon DMG and ZIP |
+| `macos-intel` | off | macOS Intel DMG and ZIP: unsupported on `main`, and its runner adds over an hour |
+| `termux` | off | Termux (Android aarch64) APT package |
+| `ci`, `nix`, `docker-tests`, `pm-bundle`, `windows-live`, `install-e2e`, `bootstrap-version` | on | the standalone suites |
+| `termux-checks` | on | Termux verification; runs only with `termux` |
+| `smoke` | on | native install and chat smoke of each built desktop package |
+| `upgrade` | on | signed-package upgrade acceptance (OLD to NEW) of each built desktop package |
 
-The flags are written into the claim message, never passed as workflow
-inputs. `admit` reads them from the claim and emits `skip-bundles` and
-`skip-tests`. Every job condition and every gate reads those outputs. A
-recovery rerun cannot change them. To change a flag, `abandon` the attempt and
-cut again.
+Lanes are independent switches. A job runs only when every lane it needs is on
+(`JOB_LANES` in `scripts/releases/lanes.py`), so a test lane for something that
+is not built does nothing: `upgrade` with `macos-arm64` off plans no macOS
+upgrade arm.
 
-The gates stay strict. `scripts.releases.stable gate` reads the flags and
-requires each job the flags remove to report `skipped`, and every other gated
-job to report `success`. A job that ran although a flag removes it also
-blocks the release. `SKIPPED_BY` in `scripts/releases/stable.py` is the one
-table of which flag removes which job.
+The lane set is written into the claim message (`"lanes": [...]`), never passed
+as a workflow input. `admit` reads it from the claim and emits two outputs:
+`lanes` (one flag per lane) and `jobs` (one run flag per lane-controlled job).
+Every such job's `if` reads its own `jobs` entry, so the lane table is the only
+place that says what runs. A recovery rerun cannot change it. To change a lane,
+`abandon` the attempt and cut again.
 
-**`--skip-bundles`.** The draft, Docker image, final tag and GitHub release are
-the whole release. No candidate manifest exists, so the final tag records
-`candidateManifestSha256: null`. Publication moves only the Docker aliases. The
-protected R2 stable head, App Installer and macOS feeds, APT channel,
-downloads page, `releases/stable/release-candidates.json`, signed-package
-baseline, and Store submission all stay on the previous bundle release. Source
-checkouts on the official repository follow
-`releases/stable/release-candidates.json`, so they also stay on the previous
-bundle release. Such a release is complete when the Docker `stable` alias
-carries the digest its final tag binds. The sequencer uses that alias, next to
-the R2 head, to decide which releases still need their publication pass.
+The gates stay strict. `scripts.releases.stable gate` reads the lanes and
+requires each job they remove to report `skipped`, and every other gated job to
+report `success`. A job that ran although a lane removes it also blocks the
+release. A claim cut before lanes existed (`skipBundles`, `skipTests`,
+`includeMacosIntel`, `includeTermux`) reads as the lane set that gated the same
+jobs. A claim without `lanesRevision` was cut when `windows` also meant the Store
+bundle, so its `windows` reads as `windows` plus `windows-store`.
 
-**`--skip-tests`.** Every artifact is built, signed, staged and published the
-same way as a normal release. The candidate manifest records each native smoke
-as `skipped`, never as passed. The next release uses that manifest as its
-upgrade baseline like any other. Every reader that knows the claim (`complete`
-and the protected R2 advance) refuses a manifest whose smoke results disagree
-with the claim's `skipTests` flag. Use it only for an emergency fix, and cut a
-normal release after it.
+What a release publishes follows what it built:
 
-### macOS Intel and Termux are opt-in
+- **Docker.** With `docker` off no image is built or promoted, and the final
+  tag records `dockerManifestDigest: null`.
+- **Bundles.** With no desktop or Termux lane there is no candidate manifest,
+  and the final tag records `candidateManifestSha256: null`.
+- **The desktop channel moves only for the full desktop set** (`windows` and
+  `macos-arm64`). A partial set still stages its packages, records a candidate
+  manifest with exactly the targets it built, and submits the Store bundle when
+  `windows-store` is on. A Store-only release has no package rows, only the Store
+  bundle file, and moves no channel. The protected R2 stable head, the App Installer and macOS
+  feeds, the APT channel, downloads page,
+  `releases/stable/release-candidates.json` and the signed-package baseline stay
+  on the previous full release. Source checkouts on the official repository
+  follow `releases/stable/release-candidates.json`, so they stay too.
+- **Finished.** A release that advances the desktop channel is finished when
+  the protected R2 head names it. One that only moves Docker is finished when
+  the `stable` alias carries the digest its final tag binds. One that moves no
+  channel is finished once it is public. The sequencer uses these markers to
+  decide which releases still need their publication pass.
+- **No tests.** The candidate manifest records each native smoke as `skipped`,
+  never as passed, and every reader that knows the claim (`complete` and the
+  protected R2 advance) refuses a manifest whose smoke results disagree with the
+  claim's `smoke` lane. The next full release uses that manifest as its upgrade
+  baseline like any other. Cut a normal release after an untested one.
 
-A stable release does not build the macOS Intel (`darwin-x64`) desktop bundle
-or the Termux (Android aarch64) APT package unless the claim asks for them.
-Intel macOS is not supported on `main`, and its `macos-15-intel` bundle leg
-alone takes well over an hour. Both remain buildable:
-
-```sh
-python scripts/release.py release --commit "$(git rev-parse origin/main)" \
-  --include-macos-intel --include-termux --remote origin
-```
-
-| | default | `--include-macos-intel` | `--include-termux` |
-|---|---|---|---|
-| `candidates-darwin-x64`, `transitions-darwin-x64`, `macos-packaged-x64` | skipped | run | skipped |
-| `candidates-termux`, `termux-checks` | skipped | skipped | run |
-
-Like the skip flags, `--include-macos-intel` and `--include-termux` are written
-into the claim (`includeMacosIntel`, `includeTermux`) and `admit` emits them as
-`include-macos-intel` and `include-termux`. A claim without those keys, which
-includes every claim cut before they existed, reads them as `false`. The gate
-requires an opted-out job to report `skipped`, and `--skip-bundles` /
-`--skip-tests` still remove these jobs when the platform is opted in.
-
-When a platform is left out, its rows are absent from the candidate manifest,
-the release body's downloads table and the downloads page. The two channels
-behave differently:
-
-- **macOS Intel:** there is one macOS stable feed
-  (`releases/darwin/stable/stable-mac.yml`), and `promote` replaces it with
-  the arm64 leg alone. Intel Macs on that feed get no update until a release is
-  cut with `--include-macos-intel`. The protected R2 head carries three native
-  packages, and a preview channel that ships macOS Intel cannot be retired into
-  a stable head without it.
-- **Termux:** the APT indexes are not rewritten, so the APT channel stays on
-  its previous release.
-
-A release that opts macOS Intel back in after one that left it out has no
-published Intel baseline, so its Intel upgrade arm is skipped like a first
-release.
-
-The claim flags, the jobs they remove, the handoffs, targets and smoke jobs for
-both platforms are defined once in `scripts/releases/optional_platforms.py`.
+When macOS Intel is left out, its rows are absent from the candidate manifest,
+the release body's downloads table and the downloads page. There is one macOS
+stable feed (`releases/darwin/stable/stable-mac.yml`), and `promote` replaces it
+with the arm64 leg alone, so Intel Macs on that feed get no update until a
+release is cut with `--with macos-intel`. When Termux is left out the APT
+indexes are not rewritten, so the APT channel stays on its previous release.
+A release that adds a target back after one that left it out has no published
+baseline for it, so that target's upgrade arm is skipped like a first release.
 
 The claim push is the atomic version lock. Two callers may derive the same next
 version, but only one push wins; the loser reports the winning tagger, time, and
@@ -213,7 +212,7 @@ writes an `abandoned-rc.<N>-vX.Y.Z` marker ref, and keeps the attempt ref. The
 marker is the record of abandonment; the attempt ref is never deleted. The
 version is not spent, so the next cut is `rc.<N+1>-vX.Y.Z`.
 
-Do not manually dispatch `Stable Release` from a final tag. Recovery keeps the
+Do not manually dispatch `Stable Release` with a final tag. Recovery keeps the
 original claim ref, object SHA, commit, draft database ID, autopublish policy,
 and skip flags.
 
@@ -296,8 +295,8 @@ retain no downloadable job artifacts.
 The desktop workflow takes a `jobs` input with the groups `darwin-arm64`,
 `darwin-x64`, `win32-arm64`, `win32-x64`, `win32-bundle`, `linux-x64`,
 `linux-arm64`, and `termux`. Stable calls it once per group, except the linux
-groups, which wait for a real Linux build, and the opt-in `darwin-x64` and
-`termux` groups, which it calls only when the claim includes them. Each Mac arch and the Windows bundle
+groups, which wait for a real Linux build, and the `darwin-x64`, `termux` and
+any other group whose lane the claim leaves out, which it does not call. Each Mac arch and the Windows bundle
 stage a receipt, and each install arm starts from its own receipt as soon as
 its own bytes are staged. `acceptance` is the one join that blocks publication.
 
@@ -491,8 +490,8 @@ See [the bundled update contract](https://github.com/NousResearch/hermes-agent/b
   because it is flaky. It is reported as deferred, not passed. Stabilize it
   and prove repeatable CI runs before adding it to this gate.
 - Install/update E2E and native signed-package acceptance are **not** deferred.
-  Only a claim cut with `--skip-tests` removes them, and the gate then requires
-  them to be skipped.
+  Only a claim without the `install-e2e`, `smoke` or `upgrade` lane removes
+  them, and the gate then requires them to be skipped.
 - PR-only history, label and diff review checks do not apply to a stable tag.
   All applicable source CI jobs still run, regardless of changed paths.
 - OSV vulnerability findings retain their existing advisory policy. Required

@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from hermes_cli import anon_auth
 from hermes_cli.auth import _load_auth_store
 from hermes_cli.web_server import _SESSION_TOKEN, app
+from tests.hermes_cli.anon_portal import as_local_desktop_backend, claimed_trial
 from tests.hermes_cli.test_anon_upgrade import (
     EMAIL, FREE_PICK, INFERENCE, PORTAL, WELCOME, _model_config, _write_model_config, free_account, portal)
 
@@ -73,14 +74,23 @@ def test_a_transfer_the_user_declined_is_reported_with_its_reason_and_keeps_the_
     assert _load_auth_store()["providers"]["nous"]["anon_token"] == guest["anon_token"]
 
 
-def test_status_routes_report_the_free_tier(portal):
-    anon_auth.ensure_portal_identity(explicit=True)
+def test_status_routes_report_the_free_tier(portal, monkeypatch):
+    claimed_trial(monkeypatch)
     portal_status = client.get("/api/portal", headers=HEADERS).json()
     assert portal_status["free_tier"] is True
     assert portal_status["account_tier"] == "anonymous"
     providers = client.get("/api/providers/oauth", headers=HEADERS).json()["providers"]
     nous = next(p for p in providers if p["id"] == "nous")
     assert nous["status"]["free_tier"] is True
+
+
+def test_a_connector_only_guest_is_not_reported_as_the_free_tier(portal, monkeypatch):
+    as_local_desktop_backend(monkeypatch)
+    anon_auth.ensure_portal_identity(explicit=True)
+    assert client.get("/api/portal", headers=HEADERS).json()["free_tier"] is False
+    providers = client.get("/api/providers/oauth", headers=HEADERS).json()["providers"]
+    nous = next(p for p in providers if p["id"] == "nous")
+    assert not nous["status"].get("free_tier")
 
 
 def test_a_sign_in_cancelled_while_waiting_never_persists_the_account(portal, free_account, monkeypatch):

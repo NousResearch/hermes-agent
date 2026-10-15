@@ -794,6 +794,26 @@ describe('ClarifyTool batch card', () => {
     expect(screen.getByText('1 of 2 answered')).toBeTruthy()
   })
 
+  it('lets an answer locked from the composer replace the pick staged on the card', () => {
+    renderLiveBatch()
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+
+    act(() =>
+      setClarifyRequest({
+        lockedAnswers: { q0: 'blue' },
+        questions: [
+          { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' },
+          { choices: null, multiSelect: false, qid: 'q1', question: 'Name?' }
+        ],
+        requestId: 'request-batch',
+        sessionId: 'session-1'
+      })
+    )
+
+    expect(screen.getByRole('button', { name: /blue/ }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: /red/ }).getAttribute('aria-pressed')).toBe('false')
+  })
+
   it('Skip cancels the whole batch with an empty response (no answers)', async () => {
     const { request, respond } = renderLiveBatch()
 

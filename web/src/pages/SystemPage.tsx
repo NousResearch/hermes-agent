@@ -107,6 +107,19 @@ function backupFileName(path: string | null): string {
  * backup, import, skills update, checkpoints prune, gateway start/stop).
  * Polls /api/actions/<name>/status until the process exits.
  */
+/** Badge for an available update; a rollback names the release it returns to. */
+function updateBadge(info: UpdateCheckResponse): string {
+  if (info.rollback_to) return `newer than v${info.rollback_to}`;
+  return info.behind && info.behind > 0 ? `${info.behind} behind` : "update available";
+}
+
+function updateToast(info: UpdateCheckResponse): string {
+  if (info.rollback_to && info.message) return info.message;
+  return info.behind && info.behind > 0
+    ? `Update available — ${info.behind} commit${info.behind === 1 ? "" : "s"} behind`
+    : "Update available";
+}
+
 function ActionLogViewer({
   action,
   onClose,
@@ -584,12 +597,7 @@ export default function SystemPage() {
         setUpdateInfo(info);
         if (force) {
           if (info.update_available) {
-            showToast(
-              info.behind && info.behind > 0
-                ? `Update available — ${info.behind} commit${info.behind === 1 ? "" : "s"} behind`
-                : "Update available",
-              "success",
-            );
+            showToast(updateToast(info), "success");
           } else if (info.behind === 0) {
             showToast("You're on the latest version", "success");
           } else if (info.message) {
@@ -930,9 +938,7 @@ export default function SystemPage() {
                     updateInfo &&
                     (updateInfo.update_available ? (
                       <Badge tone="warning">
-                        {updateInfo.behind && updateInfo.behind > 0
-                          ? `${updateInfo.behind} behind`
-                          : "update available"}
+                        {updateBadge(updateInfo)}
                       </Badge>
                     ) : updateInfo.behind === 0 ? (
                       <Badge tone="success">latest</Badge>

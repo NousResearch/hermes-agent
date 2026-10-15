@@ -1,6 +1,6 @@
 import type { TranslationOverrides } from './define-locale'
 
-// Shell notices (remote-display toast, butterbar), spread into zh.ts.
+// Shell notices (remote-display toast, butterbar, keep-awake offer), spread into zh.ts.
 export const zhNotices = {
   remoteDisplayBanner: {
     message: reason => `软件渲染已启用 — 检测到远程显示（${reason}）。为防止画面闪烁，已禁用 GPU 加速。`
@@ -14,5 +14,10 @@ export const zhNotices = {
       privacy: '隐私政策',
       after: '约束。'
     }
+  },
+  keepAwakeOffer: {
+    title: '电脑在 Hermes 工作时进入了睡眠',
+    message: 'Hermes 可以在任务运行时保持电脑唤醒。屏幕仍会照常关闭，使用电池时电脑仍可能睡眠。',
+    action: '运行期间保持唤醒'
   }
-} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar'>
+} satisfies Pick<TranslationOverrides, 'remoteDisplayBanner' | 'butterbar' | 'keepAwakeOffer'>

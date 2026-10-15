@@ -492,7 +492,9 @@ class TestStdioPgroupReaping:
             deadline = _time.time() + 10
             def _alive() -> bool:
                 try:
-                    return psutil.Process(grandchild_pid).status() != psutil.STATUS_ZOMBIE
+                    # 'dead' = mid-reap (exited), not a survivor.
+                    return psutil.Process(grandchild_pid).status() not in (
+                        psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD)
                 except psutil.NoSuchProcess:
                     return False
             while _time.time() < deadline and _alive():

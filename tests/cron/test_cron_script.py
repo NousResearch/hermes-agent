@@ -778,7 +778,9 @@ class TestScriptTimeoutTreeKill:
         def is_live(pid):
             try:
                 process = psutil.Process(pid)
-                return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+                # 'dead' = mid-reap (exited); see test_script_termination_reaps_descendants.
+                return process.is_running() and process.status() not in (
+                    psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD)
             except (psutil.NoSuchProcess, psutil.ZombieProcess):
                 return False
 

@@ -3,6 +3,10 @@ name: Tests
 on:
   workflow_call:
     inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
       # The E2E jobs below are slow lanes (scripts/ci/classify_changes.py).
       # ci.yaml passes the classifier's answer; a caller that passes nothing
       # gets every job.
@@ -28,8 +32,8 @@ permissions:
 
 # Cancel in-progress runs for the same ref
 concurrency:
-  group: tests-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  group: tests-${{ (github.ref_type == 'tag' || inputs.commit != '') && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' && inputs.commit == '' }}
 
 jobs:
   test:
@@ -48,6 +52,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
 
       - name: Install ripgrep (prebuilt binary)
         run: |
@@ -141,6 +147,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
 
       - name: Set up locked Python, Node and test dependencies
         # toolchain: all puts PM's locked Node in the runner's PM store, not
@@ -239,6 +247,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
+          ref: ${{ inputs.commit }}
           # The clean-worktree step below loads its action from the checkout.
           sparse-checkout: |
             tests/e2e/core/upgrade
@@ -284,6 +293,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
+          ref: ${{ inputs.commit }}
           # N-1 = `git describe --tags --abbrev=0 HEAD~1`.
           fetch-depth: 0
           fetch-tags: true

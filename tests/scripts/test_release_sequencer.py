@@ -6,6 +6,7 @@ it; already-resolvable older green claims still make progress.
 """
 import hashlib
 import json
+import subprocess
 
 import pytest
 from datetime import UTC
@@ -393,11 +394,16 @@ def test_two_outstanding_attempts_are_refused_across_versions():
 
 
 def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b" * 64,
-                       drafts_on_claim_tag=False, skip_bundles=False):
-    """Two green claims with their final tags; releases start as drafts."""
+                       drafts_on_claim_tag=False, skip_bundles=False, final_tags=True, lanes=None):
+    """Two green claims with their final tags; releases start as drafts.
+
+    final_tags=False is a fresh green claim: no receipt tag yet, the draft on
+    the attempt ref, and one successful Stable Release run.
+    """
     commit = "a" * 40
     tags = {}
     releases = []
+    workflow_runs = []
     for index, version in enumerate(versions, start=1):
         claim_tag, tag = f"rc.1-v{version}", f"v{version}"
         claim_object, final_object = str(index) * 40, str(index + 2) * 40
@@ -406,6 +412,8 @@ def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b"
             "autopublish": False, "skipBundles": skip_bundles, "skipTests": False,
             "claimEpoch": 1_790_000_000 + index,
         }
+        if lanes is not None:
+            claim = {**{k: v for k, v in claim.items() if not k.startswith("skip")}, "lanes": sorted(lanes)}
         final = {
             "schema": 1, "version": version, "commit": commit,
             "autopublish": False, "claimEpoch": claim["claimEpoch"],
@@ -416,12 +424,31 @@ def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b"
             "archive": f"releases/tag/{claim_tag}/",
         }
         tags[claim_tag] = (claim_object, commit, claim)
-        tags[tag] = (final_object, commit, final)
+        if final_tags:
+            tags[tag] = (final_object, commit, final)
+        else:
+            workflow_runs.append({"id": 100 + index, "run_attempt": 1, "status": "completed",
+                                  "conclusion": "success", "head_branch": claim_tag,
+                                  "head_sha": commit})
         releases.append({
-            "id": index, "tag_name": claim_tag if drafts_on_claim_tag else tag,
+            "id": index, "tag_name": claim_tag if drafts_on_claim_tag or not final_tags else tag,
             "draft": True, "prerelease": False, "published_at": None,
             "body": "notes",
         })
+
+    def rev_parse(argv):
+        # git fails for a tag that does not exist (a fresh claim has no receipt yet).
+        name = argv[-1].removeprefix("refs/tags/")
+        if name not in tags:
+            raise subprocess.CalledProcessError(128, argv)
+        return tags[name][0]
+
+    def create_tag(argv):
+        # A new receipt records the message the code wrote; a repeated one keeps its own.
+        tag = argv[argv.index("-a") + 1]
+        message = tags[tag][2] if tag in tags else json.loads(argv[argv.index("-m") + 1])
+        tags[tag] = (str(len(tags)) * 40, argv[argv.index("-a") + 2], message)
+        return ""
 
     def run(argv):
         if argv[:2] == ["git", "fetch"]:
@@ -444,7 +471,7 @@ def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b"
                         lines[-1] = f"{target}\t{ref}"
             return "\n".join(lines)
         if argv[:2] == ["git", "rev-parse"]:
-            return tags[argv[-1].removeprefix("refs/tags/")][0]
+            return rev_parse(argv)
         if argv[:3] == ["git", "cat-file", "-t"]:
             return "tag"
         if argv[:3] == ["git", "cat-file", "-p"]:
@@ -454,17 +481,15 @@ def _sequencer_fixture(*versions, manifest_digest, docker_digest="sha256:" + "b"
         if argv[:3] == ["git", "tag", "-l"]:
             return json.dumps(tags[argv[3]][2])
         if "tag" in argv and "-a" in argv:
-            tag = argv[argv.index("-a") + 1]
-            tags[tag] = (str(len(tags)) * 40, tags[claim_tag][1], tags[tag][2])
-            return ""
-        if argv[:2] == ["git", "push"]:
+            return create_tag(argv)
+        if argv[0] == "git" and "push" in argv:
             return ""
         if argv[:3] == ["docker", "buildx", "imagetools"]:
             return json.dumps(docker_digest)
         if argv[:4] == ["gh", "api", "--paginate", "--slurp"]:
             if "/releases?" in argv[-1]:
                 return json.dumps([releases])
-            return json.dumps([{"workflow_runs": []}])
+            return json.dumps([{"workflow_runs": workflow_runs}])
         if argv[:3] == ["gh", "api", "--method"]:
             release = next(row for row in releases if row["id"] == int(argv[4].rsplit("/", 1)[1]))
             for _flag, value in zip(argv[5::2], argv[6::2]):
@@ -527,6 +552,42 @@ def test_reconcile_discovers_custody_flips_then_advances_oldest_first():
         assert release["tag_name"] == f"v{version}" and release["draft"] is False
 
 
+def test_a_fresh_flip_advances_the_head_with_the_receipt_it_just_wrote():
+    """The normal publish: no receipt tag when discover() runs, flip and advance in one pass.
+
+    discover() records no receipt digests for a claim without its final tag, so
+    the advance must see the ones publish_attempt() just wrote. Otherwise the
+    channel advance compares the archive digest against None and every
+    first-pass publish fails after making the release public (0.21.7).
+    """
+    from scripts.releases.sequencer import reconcile
+
+    manifest_digest = hashlib.sha256(b"m").hexdigest()
+    docker_digest = "sha256:" + "c" * 64
+    tags, releases, run = _sequencer_fixture(
+        "0.21.5", manifest_digest=manifest_digest, docker_digest=docker_digest, final_tags=False)
+    assert "v0.21.5" not in tags
+    head = ["0.21.4"]
+    advanced = []
+
+    def advance(record):
+        advanced.append({key: record[key] for key in (
+            "tag", "candidate_manifest_sha256", "docker_manifest_digest")})
+        head[0] = record["version"]
+
+    steps = reconcile(
+        {"GITHUB_REPOSITORY": "example/project", "REQUESTED_VERSION": "0.21.5"},
+        run=run, read_head=lambda: head[0], advance_head=advance,
+        read_archive=lambda _key: b"m",
+    )
+
+    assert steps == [{"flip": "0.21.5"}, {"advance": "0.21.5"}]
+    assert advanced == [{"tag": "v0.21.5", "candidate_manifest_sha256": manifest_digest,
+                         "docker_manifest_digest": docker_digest}]
+    assert tags["v0.21.5"][2]["candidateManifestSha256"] == manifest_digest
+    assert releases[0]["tag_name"] == "v0.21.5" and releases[0]["draft"] is False
+
+
 def test_the_store_check_joins_the_pass_after_the_aliases_move(monkeypatch):
     from scripts.releases import channel_releases, docker, sequencer, store
 
@@ -541,7 +602,7 @@ def test_the_store_check_joins_the_pass_after_the_aliases_move(monkeypatch):
                                    events.append(("feed", record["version"]))))
     monkeypatch.setattr(
         docker, "promote_stable",
-        lambda claim_tag, digest: events.append(("aliases", claim_tag)))
+        lambda claim_tag, digest, release_tag: events.append(("aliases", claim_tag, release_tag)))
     seen_env = []
     monkeypatch.setattr(
         store, "check_from_env",
@@ -554,7 +615,7 @@ def test_the_store_check_joins_the_pass_after_the_aliases_move(monkeypatch):
     )
 
     assert steps == [{"advance": "0.21.5"}]
-    assert events == [("feed", "0.21.5"), ("aliases", "rc.1-v0.21.5"), ("store",)]
+    assert events == [("feed", "0.21.5"), ("aliases", "rc.1-v0.21.5", "v0.21.5"), ("store",)]
     assert seen_env[0]["MS_STORE_PRODUCT_ID"] == "9NTEST"
 
 
@@ -594,8 +655,8 @@ def test_a_release_that_skipped_bundles_ships_only_its_tag_release_and_docker_al
     alias = [None]
     events = []
 
-    def promote(claim_tag, digest):
-        events.append(("aliases", claim_tag))
+    def promote(claim_tag, digest, release_tag):
+        events.append(("aliases", claim_tag, release_tag))
         alias[0] = digest
 
     monkeypatch.setattr(channel_releases, "advance_stable",
@@ -612,9 +673,112 @@ def test_a_release_that_skipped_bundles_ships_only_its_tag_release_and_docker_al
     steps = sequencer.reconcile(env, run=run, read_archive=no_archive)
 
     assert steps == [{"flip": "0.21.5"}, {"advance": "0.21.5"}]
-    assert events == [("aliases", "rc.1-v0.21.5")]
+    assert events == [("aliases", "rc.1-v0.21.5", "v0.21.5")]
     assert releases[0]["tag_name"] == "v0.21.5" and releases[0]["draft"] is False
     # The R2 head still names 0.21.4, but the stable alias carries the 0.21.5
     # receipt digest, so the next pass has nothing left to advance.
     assert sequencer.reconcile(env, run=run, read_archive=no_archive) == []
-    assert events == [("aliases", "rc.1-v0.21.5")]
+    assert events == [("aliases", "rc.1-v0.21.5", "v0.21.5")]
+
+
+@pytest.mark.parametrize("lanes,docker,store_checked", [
+    # --only windows,docker: a partial desktop set. Only the aliases move; the channel stays.
+    (["windows", "docker"], True, True),
+    # --only windows: no channel moves at all, so the release is finished once public.
+    (["windows"], False, True),
+    # --only macos-arm64,docker: no Store, no channel.
+    (["macos-arm64", "docker"], True, False),
+])
+def test_a_partial_desktop_release_moves_only_what_it_built(monkeypatch, lanes, docker, store_checked):
+    from scripts.releases import channel_releases, docker as docker_module, sequencer, store
+
+    docker_digest = "sha256:" + "b" * 64 if docker else None
+    manifest = hashlib.sha256(b"m").hexdigest()
+    _tags, releases, run = _sequencer_fixture(
+        "0.21.5", manifest_digest=manifest, docker_digest=docker_digest, lanes=lanes)
+    alias = [None]
+    events = []
+
+    def promote(claim_tag, digest, release_tag):
+        events.append(("aliases", claim_tag, release_tag))
+        alias[0] = digest
+
+    monkeypatch.setattr(channel_releases, "advance_stable",
+                        lambda *_args: pytest.fail("a partial desktop set moved the protected head"))
+    monkeypatch.setattr(store, "check_from_env", lambda _env: events.append(("store",)))
+    monkeypatch.setattr(channel_releases, "stable_head_version", lambda _env: "0.21.4")
+    monkeypatch.setattr(docker_module, "promote_stable", promote)
+    monkeypatch.setattr(docker_module, "stable_alias_digest", lambda: alias[0])
+    env = {"GITHUB_REPOSITORY": "example/project", "REQUESTED_VERSION": "0.21.5"}
+
+    steps = sequencer.reconcile(env, run=run, read_archive=lambda _key: b"m")
+
+    assert steps == [{"flip": "0.21.5"}, {"advance": "0.21.5"}]
+    assert events == ([("aliases", "rc.1-v0.21.5", "v0.21.5")] if docker else []) + \
+        ([("store",)] if store_checked else [])
+    assert releases[0]["tag_name"] == "v0.21.5" and releases[0]["draft"] is False
+    # Finished: the alias carries the receipt's digest, or the release moves no channel at all.
+    assert sequencer.reconcile(env, run=run, read_archive=lambda _key: b"m") == []
+
+
+def test_the_sequencer_narrates_every_phase_on_stderr_and_keeps_stdout_json(capsys):
+    """Discovery, each claim's state and why, the plan, every step and every command."""
+    from scripts.releases.sequencer import reconcile
+
+    manifest_digest = hashlib.sha256(b"m").hexdigest()
+    _tags, _releases, run = _sequencer_fixture(
+        "0.21.5", manifest_digest=manifest_digest, final_tags=False)
+    head = ["0.21.4"]
+
+    def advance(record):
+        head[0] = record["version"]
+
+    reconcile({"GITHUB_REPOSITORY": "example/project", "REQUESTED_VERSION": "0.21.5"},
+              run=run, read_head=lambda: head[0], advance_head=advance,
+              read_archive=lambda _key: b"m")
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    err = captured.err
+    for expected in (
+        "Stable sequencer: repository=example/project requested=0.21.5",
+        "::group::Discover stable claims",
+        "rc.1-v0.21.5 @ aaaaaaaaaa: GREEN — run 101 attempt 1 completed/success; draft on rc.1-v0.21.5",
+        "Channel head: 0.21.4",
+        "plan 0.21.5: green — publish then advance (requested)",
+        "Steps: flip 0.21.5, advance 0.21.5",
+        "[1/2] Publish 0.21.5",
+        f"Receipt v0.21.5: manifest {manifest_digest}",
+        "::notice title=Stable sequencer::v0.21.5 is public",
+        "[2/2] Advance channels to 0.21.5",
+        "Channel head after the pass: 0.21.5 (planned 0.21.5)",
+        "Stable sequencer finished: flip 0.21.5, advance 0.21.5",
+        "  $ git push origin refs/tags/v0.21.5",
+    ):
+        assert expected in err, expected
+    assert err.count("::group::") == err.count("::endgroup::")
+
+
+def test_a_held_claim_says_why_it_was_held(capsys):
+    from scripts.releases.sequencer import plan
+
+    plan([{"version": "0.21.5", "state": "green", "autopublish": False}], head="0.21.4")
+    assert "plan 0.21.5: green but held" in capsys.readouterr().err
+
+
+def test_main_prints_only_the_steps_on_stdout_and_annotates_a_failure(monkeypatch, capsys):
+    from scripts.releases import sequencer
+
+    monkeypatch.setattr(sequencer, "reconcile", lambda env: [{"advance": "0.21.5"}])
+    sequencer.main([], {})
+    assert json.loads(capsys.readouterr().out) == [{"advance": "0.21.5"}]
+
+    def boom(env):
+        raise ValueError("Stable protected head did not reach the planned version")
+
+    monkeypatch.setattr(sequencer, "reconcile", boom)
+    with pytest.raises(ValueError):
+        sequencer.main([], {})
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert ("::error title=Stable sequencer failed::ValueError: "
+            "Stable protected head did not reach the planned version") in captured.err

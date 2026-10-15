@@ -88,6 +88,7 @@ import { recycleOwnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import { createInstalledRuntimeGate } from './backend-resolution'
 import { createBackendServeSupportResolver } from './backend-serve-support'
+import { desktopBackendSpawnEnv } from './backend-spawn-env'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
@@ -286,7 +287,6 @@ import { resolveGatewayVersion } from './gateway-version'
 import { probeGatewayWebSocket, spawnedBackendProbeOptions } from './gateway-ws-probe'
 import { windowsGitCandidates } from './git-binary-candidates'
 import { registerGitIpc } from './git-ipc'
-import { desktopBackendSpawnEnv, guestOnboardingEnabled } from './guest-onboarding'
 import {
   assertExistingPathForOpen,
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
@@ -335,6 +335,7 @@ import { buildHudWindowUrl } from './hud-url'
 import { linuxOzoneBackend, resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
+import { createKeepAwakeController } from './keep-awake-controller'
 import { applyLaunchProfileOverride } from './launch-profile'
 import { fetchLinkTitle, resolveFaviconCached } from './link-metadata'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
@@ -450,18 +451,12 @@ import {
 import { createPoolStopper } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createPortalSession, resolvePortalBaseUrl } from './portal-session'
-import {
-  createKeepAwake,
-  type KeepAwakeMode,
-  keepAwakeWanted,
-  parseKeepAwakeMode,
-  readKeepAwakeMode
-} from './power-save'
 import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
 import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
 import { commandFocusedGuest, notePreviewGuestHidden } from './preview-guest-offscreen'
+import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
 import { PreviewReachRegistry } from './preview-reach'
 import { previewHttpUrlTarget } from './preview-url-target'
 import {
@@ -1422,8 +1417,6 @@ const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
 // nobody to answer a modal, so the active-work confirmation would hang the
 // caller instead of letting the process exit. Force quits set this.
 const SKIP_QUIT_CONFIRM = process.env.HERMES_DESKTOP_SKIP_QUIT_CONFIRM === '1'
-// One launch decision must reach both the renderer and every backend spawn.
-const GUEST_ONBOARDING: boolean = guestOnboardingEnabled()
 
 const BOOT_FAKE_STEP_MS = (() => {
   const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
@@ -6625,6 +6618,8 @@ function registerPowerResumeListeners() {
     // 'resume' covers sleep/wake; 'unlock-screen' covers lock/unlock without a
     // full suspend. Either can drop an idle socket.
     powerMonitor.on('resume', sendPowerResume)
+    powerMonitor.on('suspend', () => keepAwake.noteSuspend(powerMonitor.getSystemIdleTime()))
+    powerMonitor.on('resume', () => keepAwake.noteResume())
     powerMonitor.on('unlock-screen', sendPowerResume)
     powerMonitor.on('on-battery', () => broadcastBatteryState(true))
     powerMonitor.on('on-ac', () => broadcastBatteryState(false))
@@ -10232,7 +10227,6 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
       probeReuseProof: sshProbeReuseProof,
       adoptServedToken: adoptServedDashboardToken,
       rememberLog: sshRememberLog,
-      guestOnboarding: GUEST_ONBOARDING,
       signal: lease.signal
     })
   } catch (error: any) {
@@ -12233,27 +12227,24 @@ async function runPoolBackendStart(
     backend.args,
     hiddenWindowsChildOptions({
       cwd: hermesCwd,
-      env: desktopBackendSpawnEnv(
-        {
-          // Never another profile's dotenv credentials from the Desktop env (#68367), and never
-          // the launch profile's TERMINAL_CWD: a pooled backend serves THIS --profile, whose
-          // placeholder/unset terminal.cwd sessions must resolve their own workspace, not the
-          // app-global one (#87584). The child re-resolves from its profile config like a
-          // standalone `hermes -p X serve`.
-          ...pooledProfileBackendEnv({ hermesHome: HERMES_HOME, profile, backendEnv: backend.env }),
-          HERMES_DASHBOARD_SESSION_TOKEN: token,
-          // Marks this dashboard backend as desktop-spawned so it runs the cron
-          // scheduler tick loop (the gateway isn't running under the app).
-          HERMES_DESKTOP: '1',
-          // Exact parent identity lets the backend self-exit after an unclean
-          // Desktop death without mistaking a reused PID for its owner. If the
-          // optional marker probe fails, retain legacy PID-only tracking.
-          ...parentIdentityEnv,
-          HERMES_WEB_DIST: webDist,
-          ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
-        },
-        GUEST_ONBOARDING
-      ),
+      env: desktopBackendSpawnEnv({
+        // Never another profile's dotenv credentials from the Desktop env (#68367), and never
+        // the launch profile's TERMINAL_CWD: a pooled backend serves THIS --profile, whose
+        // placeholder/unset terminal.cwd sessions must resolve their own workspace, not the
+        // app-global one (#87584). The child re-resolves from its profile config like a
+        // standalone `hermes -p X serve`.
+        ...pooledProfileBackendEnv({ hermesHome: HERMES_HOME, profile, backendEnv: backend.env }),
+        HERMES_DASHBOARD_SESSION_TOKEN: token,
+        // Marks this dashboard backend as desktop-spawned so it runs the cron
+        // scheduler tick loop (the gateway isn't running under the app).
+        HERMES_DESKTOP: '1',
+        // Exact parent identity lets the backend self-exit after an unclean
+        // Desktop death without mistaking a reused PID for its owner. If the
+        // optional marker probe fails, retain legacy PID-only tracking.
+        ...parentIdentityEnv,
+        HERMES_WEB_DIST: webDist,
+        ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
+      }),
       shell: backend.shell,
       stdio: ['ignore', 'pipe', 'pipe']
     })
@@ -13147,34 +13138,31 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       backend.args,
       hiddenWindowsChildOptions({
         cwd: hermesCwd,
-        env: desktopBackendSpawnEnv(
-          {
-            // Never another profile's dotenv credentials from the Desktop env (#68367).
-            ...profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: activeProfile }),
-            // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
-            // resolves to the SAME location our resolveHermesHome() picked. Without
-            // this pin, Python falls back to ~/.hermes on every platform — fine on
-            // mac/linux (where our default matches), but on Windows our default is
-            // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
-            // Mismatch would split config / sessions / .env / logs across two
-            // directories. install.ps1 sets HERMES_HOME via setx; the desktop
-            // can't reliably do that, so we set it inline for every spawn.
-            HERMES_HOME,
-            ...backend.env,
-            TERMINAL_CWD: hermesCwd,
-            HERMES_DASHBOARD_SESSION_TOKEN: token,
-            // Marks this dashboard backend as desktop-spawned so it runs the cron
-            // scheduler tick loop (the gateway isn't running under the app).
-            HERMES_DESKTOP: '1',
-            // Exact parent identity lets the backend self-exit after an unclean
-            // Desktop death without mistaking a reused PID for its owner. If the
-            // optional marker probe fails, retain legacy PID-only tracking.
-            ...parentIdentityEnv,
-            HERMES_WEB_DIST: webDist,
-            ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
-          },
-          GUEST_ONBOARDING
-        ),
+        env: desktopBackendSpawnEnv({
+          // Never another profile's dotenv credentials from the Desktop env (#68367).
+          ...profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: activeProfile }),
+          // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
+          // resolves to the SAME location our resolveHermesHome() picked. Without
+          // this pin, Python falls back to ~/.hermes on every platform — fine on
+          // mac/linux (where our default matches), but on Windows our default is
+          // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
+          // Mismatch would split config / sessions / .env / logs across two
+          // directories. install.ps1 sets HERMES_HOME via setx; the desktop
+          // can't reliably do that, so we set it inline for every spawn.
+          HERMES_HOME,
+          ...backend.env,
+          TERMINAL_CWD: hermesCwd,
+          HERMES_DASHBOARD_SESSION_TOKEN: token,
+          // Marks this dashboard backend as desktop-spawned so it runs the cron
+          // scheduler tick loop (the gateway isn't running under the app).
+          HERMES_DESKTOP: '1',
+          // Exact parent identity lets the backend self-exit after an unclean
+          // Desktop death without mistaking a reused PID for its owner. If the
+          // optional marker probe fails, retain legacy PID-only tracking.
+          ...parentIdentityEnv,
+          HERMES_WEB_DIST: webDist,
+          ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
+        }),
         shell: backend.shell,
         stdio: ['ignore', 'pipe', 'pipe']
       })
@@ -13652,11 +13640,7 @@ function installPreviewGuestPreload() {
     }
 
     contents.on('will-attach-webview', (_attachEvent, webPreferences, params) => {
-      if (params.partition !== 'persist:hermes-preview') {
-        return
-      }
-
-      webPreferences.preload = PREVIEW_GUEST_PRELOAD_PATH
+      applyPreviewGuestAttachPrefs(webPreferences, params.partition, PREVIEW_GUEST_PRELOAD_PATH)
     })
   })
 }
@@ -14018,7 +14002,7 @@ const wakeIndicatorController = createWakeIndicatorWindowController({
   wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('wakeIndicator'))
 })
 
-registerWindowSizing({ enabled: GUEST_ONBOARDING, mainWindow: (): BrowserWindow | null => mainWindow })
+registerWindowSizing({ mainWindow: (): BrowserWindow | null => mainWindow })
 registerMachineProfile()
 
 // The pet overlay: a single transparent, frameless, always-on-top window that
@@ -18207,7 +18191,9 @@ ipcMain.on('hermes:feature-flags', (event: IpcMainEvent): void => {
       argv: process.argv,
       canary: resolveUpdaterChannelFromStamp() === 'canary'
     }),
-    guestOnboarding: GUEST_ONBOARDING
+    // Dev-only: `--fresh-install` makes onboarding treat this launch as a fresh
+    // install. Packaged builds never honour it.
+    assumeFreshInstall: !app.isPackaged && process.argv.includes('--fresh-install')
   }
 })
 
@@ -18258,43 +18244,29 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
 // merged active-work picture that already drives stream throttling, so it is
 // held exactly while a turn is in flight and released at idle. See
 // store/keep-awake + power-save.ts.
-const KEEP_AWAKE_CONFIG_PATH = path.join(app.getPath('userData'), 'keep-awake.json')
-const keepAwake = createKeepAwake(powerSaveBlocker)
-let keepAwakeMode: KeepAwakeMode = 'off'
+const keepAwake = createKeepAwakeController({
+  blocker: powerSaveBlocker,
+  configPath: path.join(app.getPath('userData'), 'keep-awake.json'),
+  isWorking: () => isAnyTurnInFlight(),
+  log: rememberLog,
+  // The main chat window only: Quick Entry and the HUD have no toast surface.
+  offer: () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return false
+    }
 
-function readPersistedKeepAwakeMode(): KeepAwakeMode {
-  try {
-    return readKeepAwakeMode(JSON.parse(fs.readFileSync(KEEP_AWAKE_CONFIG_PATH, 'utf8')))
-  } catch {
-    return 'off'
-  }
-}
+    mainWindow.webContents.send('hermes:keep-awake-offer')
 
-// Reconcile the blocker with the mode and the live turn picture. Called from
-// every mode change and every active-work report — both happen after app
-// ready, when `keepAwake` and `keepAwakeMode` above are initialised.
-function applyKeepAwake(working = isAnyTurnInFlight()) {
-  keepAwake.set(keepAwakeWanted(keepAwakeMode, working))
-}
-
-ipcMain.on('hermes:keep-awake', (_event, value) => {
-  // Accepts the mode string, or the boolean the pre-mode toggle sent.
-  const mode = parseKeepAwakeMode(value)
-
-  if (mode === null) {
-    return
-  }
-
-  keepAwakeMode = mode
-  applyKeepAwake()
-
-  try {
-    fs.mkdirSync(path.dirname(KEEP_AWAKE_CONFIG_PATH), { recursive: true })
-    fs.writeFileSync(KEEP_AWAKE_CONFIG_PATH, JSON.stringify({ mode }, null, 2), 'utf8')
-  } catch (error) {
-    rememberLog(`[keep-awake] write failed: ${error.message}`)
+    return true
   }
 })
+
+// Called from every mode change and every active-work report, after app ready.
+function applyKeepAwake(working = isAnyTurnInFlight()) {
+  keepAwake.apply(working)
+}
+
+ipcMain.on('hermes:keep-awake', (_event, value) => keepAwake.setMode(value))
 
 // Quick Entry: the renderer reads the live registration state on settings mount
 // and writes the preference back. Main is authoritative — it owns the OS
@@ -19377,8 +19349,7 @@ app.whenReady().then(() => {
   ensureWslWindowsFonts()
   configureSpellChecker()
   registerPowerResumeListeners()
-  keepAwakeMode = readPersistedKeepAwakeMode()
-  applyKeepAwake()
+  keepAwake.restore()
   void minimizeToTray.start()
   mainProcessLagWatchdog.start()
   f12Blocked = readPersistedDisableF12()

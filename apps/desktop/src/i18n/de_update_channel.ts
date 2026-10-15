@@ -12,5 +12,9 @@ export const deUpdateChannel = {
   detailsLabel: 'Kanal',
   branch: (b: string) => `Branch: ${b}`,
   change: 'Ändern',
-  latestRelease: (v: string) => `Du nutzt das neueste stabile Release (${v}).`
+  latestRelease: (v: string) => `Du nutzt das neueste stabile Release (${v}).`,
+  rollbackTitle: (v: string) => `Zurück zum stabilen Release ${v}`,
+  rollbackBody: (v: string) =>
+    `Dieser Build ist neuer als das stabile Release ${v}. Die Installation setzt Hermes auf dieses Release zurück.`,
+  rollbackAction: (v: string) => `Zurück auf ${v}`
 }

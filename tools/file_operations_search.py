@@ -118,6 +118,18 @@ def _search_stdout_and_limit(result: ExecuteResult) -> tuple[str, Optional[str]]
     return result.stdout, None
 
 
+def _bundled_rg() -> Optional[str]:
+    """Hermes's pinned ripgrep, forward-slashed for the shell transports, or None."""
+    import pm
+
+    try:
+        installed = pm.installed_package("ripgrep")
+    except (OSError, RuntimeError, ValueError):
+        return None
+    binary = installed.binary if installed is not None else None
+    return str(binary).replace("\\", "/") if binary is not None and binary.is_file() else None
+
+
 # A real rg/grep output line is a whitespace-free path token followed by ``:``
 # (match/count), ``-`` (context), or nothing (files_only); tool diagnostics
 # ("rg: ...", indented carets) never match.
@@ -281,6 +293,14 @@ class SearchMixin:
         cached = self._rg_resolution_cache.get(cmd)
         if cached:
             return cached
+        from tools.environments.local import LocalEnvironment, _IS_WINDOWS
+
+        # A local search is Hermes's own work, so it runs the pinned ripgrep, never the
+        # first rg on the terminal PATH, where the user's tools come first.
+        bundled = _bundled_rg() if isinstance(self.env, LocalEnvironment) else None
+        if bundled:
+            self._rg_resolution_cache[cmd] = bundled
+            return bundled
         result = self._exec("command -v rg 2>/dev/null")
         if result.exit_code == 0 and result.stdout.strip():
             resolved = result.stdout.strip().splitlines()[0]
@@ -288,7 +308,6 @@ class SearchMixin:
                 resolved = "rg"
             self._rg_resolution_cache[cmd] = resolved
             return resolved
-        from tools.environments.local import LocalEnvironment, _IS_WINDOWS
 
         if _IS_WINDOWS and isinstance(self.env, LocalEnvironment):
             user_profile = os.environ.get("USERPROFILE") or str(Path.home())

@@ -128,6 +128,12 @@ A base URL on any other host (a proxy) is never rewritten. Express keys are
 separate from the OAuth-based
 [Vertex AI provider](./google-vertex.md), which needs no API key.
 
+Models served only in the `global` location (Gemini 4 Argon) are not reachable on
+the bare express host, which routes to `us-central1`. For those, set the base URL
+to the project-scoped form,
+`https://aiplatform.googleapis.com/v1beta1/projects/<project>/locations/global`,
+and Hermes completes it to `…/publishers/google` the same way.
+
 :::warning Upgrade note for existing express-key users
 Earlier Hermes releases detected the `AQ.` prefix and rerouted such keys to
 `aiplatform.googleapis.com` automatically, so the documented setup was "set
@@ -144,6 +150,7 @@ The `hermes model` picker shows Gemini models maintained in Hermes' provider reg
 
 | Model | ID | Notes |
 |-------|----|-------|
+| Gemini 4 Argon | `gemini-4-argon` | Flagship reasoning model; shared 1M input+output window, long decode up to 1M output tokens |
 | Gemini 3.8 Flash | `gemini-3.8-flash` | Most capable Flash model for long-horizon agentic and coding work |
 | Gemini 3.7 Flash | `gemini-3.7-flash` | Recommended default balance of speed, capability, and multimodal understanding |
 | Gemini 3.1 Pro Preview | `gemini-3.1-pro-preview` | Most capable reasoning, math, and coding model |
@@ -156,6 +163,33 @@ Model availability changes over time. If a model disappears or is not enabled fo
 :::info Model IDs
 Use Gemini's native model IDs such as `gemini-3.7-flash`, not OpenRouter-style IDs like `google/gemini-3.7-flash`, when `provider: gemini`.
 :::
+
+### Gemini 4 Argon: Reasoning Effort and Long Decode
+
+Gemini 4 Argon always thinks; Hermes maps the reasoning effort (`/reasoning`,
+`agent.reasoning_effort`) onto its `thinkingLevel`:
+
+| Hermes effort | `thinkingLevel` | Total output budget |
+|---------------|-----------------|---------------------|
+| `none`, `minimal`, `low` | `low` (thoughts hidden for `none`) | Per-request cap |
+| `medium` (Google's default) | `medium` | Per-request cap |
+| `high` | `high` | Per-request cap |
+| `xhigh` | `high` | 262,144 tokens (long decode) |
+| `max`, `ultra` | `high` | 1,048,576 tokens minus the input (long decode) |
+
+Without long decode a single request stops at 65,536 output tokens when streaming
+(32,768 non-streaming), thinking included. With `xhigh` or `max`, Hermes raises
+`maxOutputTokens` and, when a request reaches the per-request cap with budget left
+(`finishReason: CONTINUATION`), resends the same request with Google's
+`continuationToken` until the model finishes. The hops are joined into one reply.
+
+Usage across hops is reported the way Google bills it: every hop re-reads the
+prompt plus the output so far, so the summed input count is far larger than the
+real context. Hermes prices the summed counts but feeds context compaction and the
+context meter the first hop's prompt size, so a long-decode turn does not trigger
+an early compaction. Long decode runs only on the native endpoints (AI Studio and
+Vertex AI express); Google's `/openai` compatibility endpoint, OpenRouter and the
+OAuth [Vertex AI provider](./google-vertex.md) stop at the per-request cap.
 
 ### Latest Aliases
 

@@ -567,7 +567,8 @@ def _preview(text: str, limit: int) -> str:
 
 # Memory op -> (glyph, which field carries the preview, preview length).
 _MEMORY_OP_FORMATS: dict[str, tuple[str, str, int]] = {
-    "add": ("➕", "content", 120), "replace": ("✏️", "content", 120), "remove": ("➖", "old_text", 60)
+    "add": ("➕", "content", 120), "replace": ("✏️", "content", 120), "patch": ("✏️", "content", 120),
+    "remove": ("➖", "old_text", 60)
 }
 
 

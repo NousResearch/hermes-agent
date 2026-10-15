@@ -415,7 +415,7 @@ def _mirror_personality(sid, session, agent, arg) -> None:
 
 
 _FAST_TIERS = {"fast": "priority", "on": "priority", "normal": None, "off": None, "auto": "auto", "cold": "cold",
-               "ultrafast": "ultrafast"}
+               "ultrafast": "ultrafast", "ultra": "ultrafast"}
 
 
 def _mirror_fast(sid, session, agent, arg) -> None:

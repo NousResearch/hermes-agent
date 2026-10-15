@@ -279,3 +279,65 @@ def test_hosted_memory_provider_stays_live_across_a_host_crash(tmp_path, monkeyp
         assert provider.whoami() not in {first_pid, os.getpid()}
     finally:
         host.shutdown()
+
+
+@pytest.mark.platforms("any")
+def test_host_plugin_can_launch_status_and_steer_subagent(tmp_path, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    from agent.subagent_lifecycle import bind_subagent_parent, SubagentLifecycleService
+    from tools.delegate_tool_registry import _register_subagent, _unregister_subagent
+    from tools.registry import registry
+
+    body = '''
+import json, os
+from agent.subagent_lifecycle import SubagentLaunchRequest
+def register(ctx):
+    def run(args, **kw):
+        service = ctx.subagent_lifecycle
+        handle = service.launch(SubagentLaunchRequest(goal="review from host"))
+        return json.dumps({"pid": os.getpid(), "state": service.status(handle).state,
+                           "accepted": service.steer(handle, "check correctness"), "handle": handle})
+    ctx.register_tool(name="host_lifecycle", toolset="hostlife",
+        schema={"name": "host_lifecycle", "description": "d",
+                "parameters": {"type": "object", "properties": {}}}, handler=run)
+'''
+    finish, steering = threading.Event(), []
+    child = SimpleNamespace(_subagent_id="sa-host-lifecycle", provider="test", model="test-model",
+                            steer=lambda text: steering.append(text) is None)
+    parent = SimpleNamespace(session_id="parent-host-lifecycle")
+
+    def build(**kwargs):
+        assert kwargs["parent_agent"] is parent
+        assert kwargs["goal"] == "review from host"
+        _register_subagent({"subagent_id": child._subagent_id, "agent": child})
+        return child
+
+    def run(*_args):
+        assert finish.wait(5)
+        return {"status": "completed", "summary": "host child done"}
+
+    monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
+    monkeypatch.setattr("tools.delegate_tool._run_single_child", run)
+    _home_with_plugins(tmp_path, monkeypatch, {"hostlife": body})
+    manager = PluginManager()
+    manager.discover_and_load()
+    service = SubagentLifecycleService(lambda: parent)
+    result = None
+    try:
+        with bind_subagent_parent(parent):
+            result = json.loads(registry.dispatch("host_lifecycle", {}, scope=manager.scope_key))
+        assert result["pid"] != os.getpid()
+        assert result["state"] in {"PENDING", "RUNNING"}
+        assert result["accepted"] is True
+        assert steering == ["check correctness"]
+    finally:
+        finish.set()
+        from agent.subagent_lifecycle import _REGISTRY
+        record = _REGISTRY.records.get(child._subagent_id)
+        if record is not None:
+            record.future.result(timeout=5)
+        _unregister_subagent(child._subagent_id, agent=child)
+        manager.unload()
+        manager._plugin_host().shutdown()
+    assert service.result(result["handle"]).summary == "host child done"

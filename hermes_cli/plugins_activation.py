@@ -167,7 +167,7 @@ def _go_live(name: str) -> Optional[dict[str, Any]]:
     if server is not None and (servers or note):
         from hermes_constants import get_hermes_home
         try:
-            server.refresh_plugin_sessions(Path(get_hermes_home()), note)
+            server.refresh_plugin_sessions(Path(get_hermes_home()), activation["key"], note)
         except Exception:
             logger.warning("open chats were not refreshed after activating %r", name, exc_info=True)
     return activation

@@ -32,5 +32,14 @@ export const frConnectorCard: TranslationOverrides['connectors'] = {
   authorizedToolsUnavailable: 'Autorisé. Outils indisponibles.',
   required: 'Obligatoire',
   namedAccount: (app: string, alias: string) => `Hermes a nommé ce compte ${app} ${alias}.`,
-  renameAccount: 'Renommer'
+  renameAccount: 'Renommer',
+  directory: {
+    suggested: 'Suggérées',
+    allApps: 'Toutes les apps',
+    receiptConnected: apps => `Connectées : ${apps}`,
+    receiptNone: 'Aucune nouvelle app connectée',
+    receiptTimedOut: 'Fermé après 5 minutes',
+    finishInBrowser: 'Terminez dans votre navigateur',
+    signInFailed: 'Échec de la connexion. Cliquez pour réessayer'
+  }
 }

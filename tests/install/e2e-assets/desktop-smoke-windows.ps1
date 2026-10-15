@@ -49,3 +49,8 @@ function Close-VerifiedDesktop([string]$Exe, [int]$ProcessId = 0) {
     } while ((Get-Date) -lt $deadline)
     throw 'Verified desktop children did not exit normally; no smoke relaunch attempted'
 }
+
+function Main-Processes([string]$Exe) {
+    # Prevent the function output pipeline from unrolling zero/one process arrays.
+    return ,@(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath -ieq $Exe -and $_.CommandLine -notmatch '(?:^|\s)--type(?:=|\s)' })
+}

@@ -68,10 +68,6 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         return None
     if not marker.get("auto_continue", True):
         return None  # The mailbox owns recovery and receipt identity for imported turns.
-    from agent.initiate_setup_prompt import intro_resends
-    if intro_resends(marker["prompt"], _session_source(session)):
-        clear_turn_marker(home, session_key)  # the desktop intro sends /initiate-setup again itself
-        return None
     # Ownership, not forensics: a sibling backend sharing this HERMES_HOME can be mid-turn on this very session, so
     # its live marker says "someone is working on it", never "someone crashed". Leave the marker for its writer —
     # clearing it would cancel the live turn's own account of itself. See #94778.

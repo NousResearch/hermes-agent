@@ -1,0 +1,18 @@
+name: hermes-mobile
+repo: https://github.com/geniok1980/hermes-mobile-adapter
+sha: 7fdaf232bc43df2d8b730c04bf7460557fb35c82
+subdir: adapter/hermes_mobile
+title: Hermes Mobile Adapter
+description: "WebSocket platform for your own mobile, desktop or web app: it talks to the agent directly — text, voice, images, video and documents in both directions, approval/clarify/slash cards answered from the app, streaming edits, typing and avatar state events, cron delivery to a chosen device. Ships TypeScript and Python SDKs, platform guides and an acceptance checklist. Disclosure — opens a listening WebSocket server (plain ws://, no built-in TLS; 127.0.0.1:8787 by default, the wildcard address only when set, behind a wss proxy) guarded by MOBILE_TOKEN plus optional per-device tokens; anyone holding an unbound token can chat with the agent, run slash commands and answer the approval and clarify cards of the device id they connect as; device_id=token entries bind a token to one device. deliver frames are accepted only from loopback peers or MOBILE_DELIVER_TOKENS. Inbound media is written under $HERMES_HOME/mobile-media; secrets are read through Hermes's profile-scoped route; approvals resolve through Hermes's own resolvers; no telemetry, no third-party network calls, no self-update."
+maintainer: geniok1980
+tier: community
+category: platform
+requires_hermes: ">=0.21.6"
+docs_url: https://geniok1980.github.io/hermes-mobile-adapter/
+version: "1.0.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - MOBILE_TOKEN

@@ -18,7 +18,7 @@
     "node-pty": "1.1.0",
     "plist": "3.1.1",
     "typescript": "6.0.3",
-    "vitest": "4.1.10"
+    "vitest": "4.1.11"
   },
   "dependencies": {
     "@playwright/test": "1.62.1",

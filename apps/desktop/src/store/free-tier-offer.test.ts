@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $freeTierStatus, type FreeTierRequester } from '@/store/free-tier'
 import { $freeTierSignIn, closeFreeTierSignIn, stopFreeTierOffer, syncFreeTierOffer } from '@/store/free-tier-sign-in'
 import { activeGatewayProfileKey, ensureGatewayForProfile } from '@/store/gateway'
-import { $onboardingGate } from '@/store/onboarding-gate'
+import { $localModelOfferPending } from '@/store/local-model-offer'
+import { $onboardingDecided, markOnboardingDecided, setOnboardingSurfaceActive } from '@/store/onboarding-presence'
 import type { FreeTierStatus } from '@/types/hermes'
 
 const status = (nudge_due_in: null | number, available = true): FreeTierStatus => ({
@@ -52,6 +53,8 @@ function own(requestGateway: FreeTierRequester) {
 
 beforeEach(() => {
   vi.useFakeTimers()
+  // Onboarding's due check answered "not due": nothing first-run owns the screen.
+  markOnboardingDecided()
 })
 
 afterEach(() => {
@@ -60,12 +63,26 @@ afterEach(() => {
   stopFreeTierOffer()
   closeFreeTierSignIn()
   $freeTierStatus.set(null)
-  $onboardingGate.set({ guideKickoff: 'idle', guideQueued: false, phase: 'idle' })
-  Reflect.deleteProperty(window, 'hermesDesktop')
+  setOnboardingSurfaceActive('onboarding', false)
   vi.useRealTimers()
 })
 
 describe('sign-in offer after a finished task', () => {
+  it('waits for the local-model offer to be answered, then claims', async () => {
+    const requestGateway = gateway({ statuses: [status(null)] })
+    $localModelOfferPending.set(true)
+
+    syncFreeTierOffer(status(0), requestGateway)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(claims(requestGateway)).toBe(0)
+
+    $localModelOfferPending.set(false)
+    syncFreeTierOffer(status(0), requestGateway)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(claims(requestGateway)).toBe(1)
+    expect($freeTierSignIn.get().status).toBe('offer')
+  })
+
   it('due now: claims once and opens the offer', async () => {
     const requestGateway = gateway({ statuses: [status(null)] })
 
@@ -103,14 +120,23 @@ describe('sign-in offer after a finished task', () => {
     expect($freeTierSignIn.get()).toEqual({ status: 'closed' })
   })
 
-  it('does not claim while guided onboarding is on screen, the dialog is open, or off the free tier', async () => {
+  it('does not claim before the due check answers', async () => {
     const requestGateway = gateway({ statuses: [status(0)] })
 
-    Object.assign(window, { hermesDesktop: { guestOnboardingEnabled: true } })
-    $onboardingGate.set({ guideKickoff: 'started', guideQueued: false, phase: 'guided' })
+    $onboardingDecided.set(false)
     syncFreeTierOffer(status(0), requestGateway)
     await vi.advanceTimersByTimeAsync(0)
-    $onboardingGate.set({ guideKickoff: 'started', guideQueued: false, phase: 'done' })
+
+    expect(claims(requestGateway)).toBe(0)
+  })
+
+  it('does not claim while onboarding is on screen, the dialog is open, or off the free tier', async () => {
+    const requestGateway = gateway({ statuses: [status(0)] })
+
+    setOnboardingSurfaceActive('onboarding', true)
+    syncFreeTierOffer(status(0), requestGateway)
+    await vi.advanceTimersByTimeAsync(0)
+    setOnboardingSurfaceActive('onboarding', false)
 
     $freeTierSignIn.set({ status: 'requested' })
     syncFreeTierOffer(status(0), requestGateway)

@@ -40,9 +40,9 @@ import {
   stopFreeTierOffer,
   syncFreeTierOffer
 } from '@/store/free-tier-sign-in'
+import { $localModelOfferPending } from '@/store/local-model-offer'
 import { refreshOnboardingProviders } from '@/store/onboarding'
-import { $onboardingGate } from '@/store/onboarding-gate'
-import { $onboardingSurfaces } from '@/store/onboarding-presence'
+import { $onboardingSurfaceClear } from '@/store/onboarding-presence'
 import { $currentModel, setModelPickerOpen } from '@/store/session'
 
 interface FreeTierSignInDialogProps {
@@ -84,7 +84,7 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
     }
   }, [owned, requestGateway, state.status])
 
-  // The sign-in offer rides every status read, and retries once guided
+  // The sign-in offer rides every status read, and retries once the first-run
   // onboarding leaves the screen. A completed free-tier turn re-reads the
   // status, since that is when the backend arms the next offer. Only the
   // owner (main windows) times it.
@@ -97,8 +97,8 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
 
     const stops = [
       $freeTierStatus.listen(sync),
-      $onboardingGate.listen(sync),
-      $onboardingSurfaces.listen(sync),
+      $onboardingSurfaceClear.listen(sync),
+      $localModelOfferPending.listen(sync),
       $freeTierTurnCompleted.listen(() => void refreshFreeTierStatus(requestGateway, sameGatewayRoute()))
     ]
 

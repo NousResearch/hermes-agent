@@ -15,6 +15,11 @@ name: History Check
 
 on:
   workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
     outputs:
       review_status:
         description: "JSON array of review_status objects for the synthesizer."
@@ -32,6 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
+          ref: ${{ inputs.commit }}
           fetch-depth: 0 # full history both sides for merge-base
 
       - id: merge-base-check

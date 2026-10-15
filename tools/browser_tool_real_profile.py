@@ -8,6 +8,7 @@ through ``_bt`` (resolved per call — never import ``tools.browser_tool`` at im
 
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import time
@@ -148,6 +149,45 @@ _REAL_PROFILE_CHROME_FLAGS = (
     "--disable-hang-monitor", "--disable-popup-blocking", "--disable-prompt-on-repost",
     "--disable-sync", "--disable-features=Translate", "--no-startup-window",
 )
+
+
+def _count_real_profile_cookies(copy_dir: str) -> Optional[int]:
+    """Count cookies in a real-profile copy's cookie DB, best-effort.
+
+    Reads the copy's ``Default/Network/Cookies`` (falling back to the legacy
+    ``Default/Cookies`` location) with a short-timeout read-only SQLite
+    connection. Any failure (missing DB, locked by the running copy-browser,
+    non-SQLite file) returns ``None`` — callers treat that as "cannot tell"
+    and skip the purge check rather than guess.
+    """
+    for rel in ("Network/Cookies", "Cookies"):
+        db = os.path.join(copy_dir, "Default", *rel.split("/"))
+        if not os.path.isfile(db):
+            continue
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", timeout=1.0, uri=True)
+            try:
+                row = conn.execute("SELECT COUNT(*) FROM cookies").fetchone()
+            finally:
+                conn.close()
+            return int(row[0]) if row else 0
+        except (sqlite3.Error, OSError, ValueError):
+            return None
+    return None
+
+
+def _cookies_purged_after_launch(before: Optional[int], after: Optional[int]) -> bool:
+    """True when the post-launch cookie count shows an active purge.
+
+    Chrome's app-bound-encryption purge wipes essentially the whole jar (556 → 6
+    and 3507 → ~0 in the #96993 reports), so a >50% drop from a non-trivial
+    baseline is unambiguous; normal startup work (expired-cookie sweeping,
+    fresh visitor cookies) moves counts by a handful. Counts below 5 are
+    ignored — a near-empty jar has nothing worth warning about.
+    """
+    if before is None or after is None or before < 5:
+        return False
+    return after * 2 < before
 
 
 def _real_profile_unsupported_reason(browser) -> Optional[str]:
@@ -328,6 +368,11 @@ def _real_profile_cdp() -> tuple:
         copy_dir, err = snapshot_real_profile(browser)
         if err or not copy_dir:
             return None, _real_profile_snapshot_error(err)
+        # Baseline cookie count while nothing holds the copy's DBs: after the
+        # launch below, a Chromium that purges copied cookies (Chrome ≥151 on
+        # Windows, #96993) will have rewritten the jar down to ~zero, and the
+        # drop is what we warn on — not the copy, which snapshot just verified.
+        cookies_before_launch = _count_real_profile_cookies(copy_dir)
         real_binary = chromium_executable(browser)
         if real_binary is None:
             return None, f"{_RP}the real browser binary for '{browser}' could not be found. Reinstall it or turn the toggle off."
@@ -338,6 +383,24 @@ def _real_profile_cdp() -> tuple:
         if not cdp:
             return None, err
         _bt._real_profile_cdp_cache["cdp"] = cdp
+        cookies_after_launch = _count_real_profile_cookies(copy_dir)
+        if _cookies_purged_after_launch(cookies_before_launch, cookies_after_launch):
+            notice = (
+                "Chrome deleted the cookies copied from your real profile on "
+                "this copy browser's first launch (current Chrome binds cookie "
+                "encryption to the original profile, so copies are purged; "
+                "#96993). Sites will start signed out even though you are "
+                "signed in locally. Logins created inside this copy browser do "
+                "persist across sessions, but sites that refuse automated "
+                "browsers (e.g. Google sign-in) may reject a login here."
+            )
+            _bt._real_profile_purge_notice["msg"] = notice
+            _bt.logger.warning(
+                "real-profile cookie purge detected: %d cookies copied, %d "
+                "survived the copy-browser launch — sessions will start "
+                "signed out (#96993)",
+                cookies_before_launch, cookies_after_launch,
+            )
         _bt.logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
         return cdp, None
     finally:

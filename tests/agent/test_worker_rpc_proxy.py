@@ -1,5 +1,6 @@
 """Private loopback worker persistence does not use ambient HTTP proxies."""
 import json
+import queue
 from types import SimpleNamespace
 
 from websockets.exceptions import ConnectionClosed
@@ -20,13 +21,19 @@ def test_worker_persistence_explicitly_bypasses_proxy(tmp_path, monkeypatch):
     calls = []
     def connect(url, **kwargs):
         calls.append(kwargs)
-        def recv(timeout=None):
-            if timeout == 0:  # the owner dropped the idle connection: the next call redials (draining)
+        frames = queue.SimpleQueue()
+        def recv():
+            frame = frames.get()
+            if frame is None:
                 raise ConnectionClosed(None, None)
-            return json.dumps({'id': len(calls), 'result': {'ok': True}})
-        return SimpleNamespace(send=lambda value: None, recv=recv, close=lambda: None)
+            return frame
+        def send(value):
+            frames.put(json.dumps({'id': json.loads(value)['id'], 'result': {'ok': True}}))
+            frames.put(None)  # then the owner drops the idle connection: the next call redials (draining)
+        return SimpleNamespace(send=send, recv=recv, close=lambda: frames.put(None))
     monkeypatch.setattr('websockets.sync.client.connect', connect)
     rpc = WorkerRPC(tmp_path)
     assert rpc('worker.persist') == {'ok': True}
+    rpc.link.reader.join(5)
     assert rpc('worker.persist') == {'ok': True}
     assert len(calls) == 2 and all(call['proxy'] is None for call in calls)

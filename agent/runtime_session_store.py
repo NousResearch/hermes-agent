@@ -11,6 +11,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import queue
 import sys
 import threading
 
@@ -55,10 +56,45 @@ def _caller_summary(limit=8):
     return ' <- '.join(frames)
 
 
+class _OwnerLink:
+    """One owner WebSocket and the only thread that reads it. Events the owner broadcasts to every
+    transport are discarded as they arrive, idle or not: left queued, websockets' bounded receive
+    buffer pauses socket reads, which also stalls pongs and the close handshake. The reply to the
+    one outstanding request id goes to its caller; a closed connection goes to it as the exception."""
+    def __init__(self, ws):
+        self.ws = ws
+        self.awaiting = None
+        self.replies = queue.SimpleQueue()
+        self.reader = threading.Thread(target=self._read, name='worker-rpc-reader', daemon=True)
+        self.reader.start()
+
+    def _read(self):
+        try:
+            while True:
+                try:
+                    frame = json.loads(self.ws.recv())
+                except ValueError:
+                    continue
+                if isinstance(frame, dict) and self.awaiting is not None and frame.get('id') == self.awaiting:
+                    self.replies.put(frame)
+        except Exception as exc:  # ConnectionClosed included: the waiting (or next) caller raises it
+            self.replies.put(exc)
+
+    def call(self, request_id, message, timeout):
+        self.awaiting = request_id
+        self.ws.send(message)
+        try:
+            reply = self.replies.get(timeout=timeout)
+        except queue.Empty:
+            raise TimeoutError('worker_receipt_timeout') from None
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+
 class WorkerRPC:
     """Bounded authenticated calls to an existing owner; never starts a daemon.
 
-    websockets.sync owns a dedicated frame receiver, independent of the caller.
     No owner-loop synchronous self-RPC or SQLite fallback is permitted.
     One connection serves every call (serialized by ``lock``, correlated by id); it is
     discovered, identified and ticketed on connect exactly as each call once was.
@@ -67,20 +103,15 @@ class WorkerRPC:
         self.home = Path(home).resolve()
         self.lock = threading.Lock()
         self.endpoint = None
-        self.ws = None
+        self.link = None
         self.request_id = 0
 
     def _connection(self):
-        from websockets.exceptions import ConnectionClosed
-        if self.ws is not None:
-            try:
-                # Discard events broadcast between calls; a close the owner sent surfaces here, before any send.
-                while True:
-                    self.ws.recv(timeout=0)
-            except TimeoutError:
-                return self.ws
-            except ConnectionClosed:
-                self._drop()
+        if self.link is not None:
+            if self.link.reader.is_alive():
+                return self.link
+            # The owner closed it while idle, before any send: redial with a fresh ticket.
+            self._drop()
         from hermes_cli.gateway_client import _session_ticket, gateway_ws_target
         from hermes_cli.gateway_runtime_discovery import query_identify
         from websockets.sync.client import connect
@@ -99,15 +130,17 @@ class WorkerRPC:
         ticket = _session_ticket(self.home, endpoint, purpose='worker-adoption')
         url, protocols = gateway_ws_target(endpoint, ticket)
         # The owner is loopback, like connect_gateway's peer: an inherited HTTPS_PROXY must not carry it.
-        self.ws = connect(url, subprotocols=protocols,
-                          open_timeout=5, close_timeout=1, max_size=8 * 1024 * 1024, proxy=None)
-        return self.ws
+        # No library keepalive: its pong deadline would run independently of (and could fail) a call
+        # inside its receipt budget; that budget and the observed close are the liveness checks.
+        self.link = _OwnerLink(connect(url, subprotocols=protocols, open_timeout=5, close_timeout=1,
+                                       max_size=8 * 1024 * 1024, proxy=None, ping_interval=None))
+        return self.link
 
     def _drop(self):
-        ws, self.ws = self.ws, None
-        if ws is not None:
+        link, self.link = self.link, None
+        if link is not None:
             with contextlib.suppress(OSError):  # a broken socket is already gone
-                ws.close()
+                link.ws.close()
 
     def close(self):
         with self.lock:
@@ -126,17 +159,8 @@ class WorkerRPC:
             self.request_id += 1
             request_id = self.request_id
             try:
-                ws = self._connection()
-                ws.send(json.dumps({'jsonrpc': '2.0', 'id': request_id, 'method': method, 'params': params}))
-                import time
-                deadline = time.monotonic() + 20
-                while True:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise TimeoutError('worker_receipt_timeout')
-                    response = json.loads(ws.recv(timeout=remaining))
-                    if response.get('id') == request_id:
-                        break
+                response = self._connection().call(request_id, json.dumps(
+                    {'jsonrpc': '2.0', 'id': request_id, 'method': method, 'params': params}), 20)
             except BaseException:
                 # Outcome unknown once sent: surface the error and never resend; the next call redials.
                 self._drop()

@@ -1970,7 +1970,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         if self.provider == "anthropic":
             if entry.expires_at_ms is None:
                 return False
-            return int(entry.expires_at_ms) <= int(time.time() * 1000) + 120_000
+            # 10-min skew: fresh ACP/editor spawns re-select per process and have no proactive
+            # refresher; 120s left tokens to mid-turn 401s on long first turns (Wing episodic 401s).
+            return int(entry.expires_at_ms) <= int(time.time() * 1000) + 600_000
         if self.provider == "openai-codex":
             return _codex_access_token_is_expiring(entry.access_token, CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)
         if self.provider == "xai-oauth":

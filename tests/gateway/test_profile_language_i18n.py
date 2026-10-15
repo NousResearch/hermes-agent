@@ -64,3 +64,27 @@ async def test_localized_reset_retains_current_notification_policy(tmp_path, mon
         assert '/resume' in content
     else:
         adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_arabic_reset_notice_uses_arabic_catalog(tmp_path, monkeypatch):
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.delenv('HERMES_LANGUAGE', raising=False)
+    (tmp_path / 'config.yaml').write_text('display:\n  language: ar\n')
+    runner = object.__new__(GatewayRunner)
+    adapter = SimpleNamespace(send=AsyncMock())
+    runner._adapter_for_source = lambda source: adapter
+    runner._profile_scope_for_source = lambda source: _profile_runtime_scope(tmp_path)
+    monkeypatch.setattr('gateway.run._resolve_gateway_model_context', lambda: SimpleNamespace(
+        model='model-id', provider='custom', context_length=8192, context_source='config', base_url=''))
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id='123', user_id='u')
+    entry = SimpleNamespace(auto_reset_reason='suspended')
+
+    await runner._hmwa_deliver_auto_reset_notice(entry, source, [])
+
+    content = adapter.send.call_args.args[1]
+    assert 'أُعيد تعيين الجلسة بعد إيقافها' in content
+    assert 'Session reset after being stopped' not in content
+    assert '◆ النموذج: `model-id`' in content
+    assert '/resume' in content
+

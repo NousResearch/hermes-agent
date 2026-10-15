@@ -4,6 +4,7 @@ import type { HermesGateway } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type QueuedPromptEntry, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { notifyError } from '@/store/notifications'
+import { storedSessionIdForRuntimeId } from '@/store/session-states'
 
 import type { QueueEditState } from './composer-utils'
 import { cancelQueuedPrompt, discardLostPrompt } from './discard-lost-prompt'
@@ -23,6 +24,28 @@ export interface ComposerQueueSlotInputs {
   sessionId: null | string | undefined
   steerQueuedNow: (id: string) => unknown
   t: Translations
+}
+
+/**
+ * The composer's draft/queue scope. A routed chat uses its durable key. Without
+ * one (a new-chat route) the runtime id stands in only while no stored session
+ * claims it: a claimed runtime there is the chat just left, still active for a
+ * frame after the switch, and its queue is not this chat's (#139190).
+ */
+export function composerQueueScopeKey(
+  queueSessionKey: null | string | undefined,
+  sessionId: null | string | undefined,
+  freshDraftKey: null | string | undefined
+): null | string {
+  if (queueSessionKey) {
+    return queueSessionKey
+  }
+
+  if (sessionId && !storedSessionIdForRuntimeId(sessionId)) {
+    return sessionId
+  }
+
+  return freshDraftKey || null
 }
 
 /**

@@ -5,9 +5,11 @@ import { handleSessionInfoEvent } from '@/app/session/hooks/use-message-stream/g
 import type { GatewayEventContext } from '@/app/session/hooks/use-message-stream/gateway-event/types'
 import { applyRuntimeInfo } from '@/app/session/hooks/use-session-actions/utils'
 import { isSteerableEntry } from '@/store/composer-queue'
+import type { SessionInfo } from '@/types/hermes'
 
-import { $queuedPromptsBySession, enqueueQueuedPrompt, getQueuedPrompts } from './composer-queue'
+import { $queuedPromptsBySession, enqueueQueuedPrompt, getQueuedPrompts, migrateQueuedPrompts } from './composer-queue'
 import { readPendingSubmissions, reconcilePendingSubmissions, trackPendingSubmission } from './pending-submissions'
+import { $sessions } from './session'
 
 beforeEach(() => {
   window.localStorage.clear()
@@ -144,4 +146,31 @@ it('a stale started snapshot keeps an existing unknown card and its Discard cont
   // Its real absence from a current snapshot still retires it.
   reconcilePendingSubmissions('lost', [])
   expect(getQueuedPrompts('lost')).toEqual([])
+})
+
+// After compression the panel reads the lineage root while the runtime reports the tip. A tip-keyed
+// projection only reached the panel through rotation migrations, which stacked copies there that no
+// later snapshot could retire: duplicate, undeletable, back after a delete (#138934).
+it('projects a compressed tip snapshot onto the lineage key the panel reads', () => {
+  $sessions.set([{ id: 'tip', _lineage_root_id: 'root' } as SessionInfo])
+
+  try {
+    const listed = [{ admission_id: 'x', status: 'queued', user: 'later' }]
+    reconcilePendingSubmissions('tip', listed, { epoch: 'e', sequence: 1 })
+    migrateQueuedPrompts('tip', 'root')
+    reconcilePendingSubmissions('tip', listed, { epoch: 'e', sequence: 2 })
+    migrateQueuedPrompts('tip', 'root')
+    expect(getQueuedPrompts('root').map(entry => [entry.id, entry.serverStatus])).toEqual([['x', 'queued']])
+
+    // Withdrawn at the gateway: the next snapshot no longer lists it.
+    reconcilePendingSubmissions('tip', [], { epoch: 'e', sequence: 3 })
+    expect(getQueuedPrompts('root')).toEqual([])
+
+    // The same earlier status mirrored again does not bring it back.
+    reconcilePendingSubmissions('tip', listed, { epoch: 'e', sequence: 2 })
+    migrateQueuedPrompts('tip', 'root')
+    expect(getQueuedPrompts('root')).toEqual([])
+  } finally {
+    $sessions.set([])
+  }
 })

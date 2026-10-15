@@ -1,4 +1,5 @@
 import { getQueuedPrompts, type QueuedPromptEntry, writeSessionQueue } from './composer-queue'
+import { $sessions, resolveComposerSessionKey } from './session'
 
 // One localStorage key per (session, admission). Every Desktop window of the origin shares this
 // storage with last-writer-wins per KEY, so a single journal blob let one window's
@@ -203,10 +204,14 @@ function updateKnownReceipts(known: Record<string, PendingSubmission>, value: Ra
 
 /** Project one pending snapshot onto the session's queue. `fence` orders canonical snapshots so a
  *  delayed older one cannot retire an admission a newer one still listed. */
-export function reconcilePendingSubmissions(key: string, value: unknown, fence?: PendingSnapshotFence): void {
+export function reconcilePendingSubmissions(storedId: string, value: unknown, fence?: PendingSnapshotFence): void {
   if (!Array.isArray(value)) {
     return
   }
+
+  // Project onto the key the queue panel reads. After compression that is the lineage root, not
+  // the tip the runtime reports, and only snapshots projected there can retire a card shown there.
+  const key = resolveComposerSessionKey(storedId, $sessions.get()) ?? storedId
 
   const before = readPendingSubmissions(key)
   const known = { ...before }

@@ -19,6 +19,9 @@ method = _registry.method
 _voice_sid_lock = threading.Lock()
 _voice_event_sid: str = ""
 _voice_wake_owner: Optional[Transport] = None
+# The transport that started the capture. A shared-owner (canonical) session is not in this process's
+# ``_sessions``, so ``write_json`` cannot route its voice events by sid; they go to this caller instead.
+_voice_event_transport: Optional[Transport] = None
 
 
 def _caller_transport():
@@ -28,8 +31,13 @@ def _caller_transport():
 def _voice_emit(event: str, payload: dict | None = None) -> None:
     """Emit toward the session that most recently turned voice on (empty sid = active session)."""
     with _voice_sid_lock:
-        sid = _voice_event_sid
-    _emit(event, sid, payload)
+        sid, transport = _voice_event_sid, _voice_event_transport
+    token = bind_transport(transport) if transport is not None else None
+    try:
+        _emit(event, sid, payload)
+    finally:
+        if token is not None:
+            reset_transport(token)
 
 
 def _resume_voice_wake() -> None:
@@ -724,11 +732,12 @@ def _(rid, params: dict) -> dict:
     if wake_owner is not None and wake_owner is not transport:
         return _ok(rid, {"status": "busy", "reason": "wake_owned"})
     try:
-        global _voice_event_sid, _voice_wake_owner
+        global _voice_event_sid, _voice_event_transport, _voice_wake_owner
         if action == "start" and not _voice_mode_enabled():
             return _err(rid, 4015, "voice mode is off — enable with /voice on")
         with _voice_sid_lock:
             _voice_event_sid = params.get("session_id") or _voice_event_sid
+            _voice_event_transport = transport
         if action == "stop":
             from hermes_cli.voice import stop_continuous
             stop_continuous(force_transcribe=True)

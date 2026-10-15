@@ -1,19 +1,11 @@
 import { atom } from 'nanostores'
 
-import { persistBoolean, readKey, storedBoolean } from '@/lib/storage'
+import { persistBoolean, storedBoolean } from '@/lib/storage'
 
 // Desktop read-aloud is local; voice.auto_tts belongs to the messaging gateway.
-const AUTO_SPEAK_KEY = 'hermes.desktop.autoSpeakReplies'
+// The old key could be auto-seeded from gateway config, so it cannot prove opt-in.
+const AUTO_SPEAK_KEY = 'hermes.desktop.autoSpeakReplies.v2'
 export const $autoSpeakReplies = atom<boolean>(storedBoolean(AUTO_SPEAK_KEY, false))
-// Best-effort persistence must not give config refresh authority again.
-let autoSpeakChosen = readKey(AUTO_SPEAK_KEY) !== null
-
-/** Migrate the legacy value once without editing the backend configuration. */
-export function applyAutoSpeakFromConfig(config: { voice?: { auto_tts?: unknown } | null } | null | undefined) {
-  if (config != null && !autoSpeakChosen) {
-    void setAutoSpeakReplies(Boolean(config.voice?.auto_tts))
-  }
-}
 
 // Backend default for `voice.stop_phrases` (DEFAULT_VOICE_STOP_PHRASES in
 // tools/voice_mode_transcript.py), used until `/api/config/defaults` answers.
@@ -156,9 +148,8 @@ export function applyThinkingSoundFromConfig(
   $thinkingSoundEnabled.set(config?.voice?.thinking_sound !== false)
 }
 
-/** Persist even an unchanged value, so migrating false is also one-time. */
+/** Persist only the user's explicit desktop choice. */
 export async function setAutoSpeakReplies(enabled: boolean): Promise<void> {
-  autoSpeakChosen = true
   persistBoolean(AUTO_SPEAK_KEY, enabled)
   $autoSpeakReplies.set(enabled)
 }

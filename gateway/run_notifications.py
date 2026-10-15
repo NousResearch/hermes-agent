@@ -106,6 +106,21 @@ def _raw_process_event_session_id(evt: dict) -> str:
     return str(evt.get("origin_session_id") or session_key or "").strip()
 
 
+def _local_completion_card(evt: dict) -> dict[str, str]:
+    """The async-result card main's in-process TUI wrote for a completion; the claim's
+    ``message.start`` carries it, and an idle classic CLI only opens a turn that has one (a
+    gateway-side ``/review`` reports as an async delegation). ``{}`` for a watch event."""
+    from tools.process_registry_notifications import (
+        PROCESS_COMPLETE_DISPLAY_KIND, async_delegation_display_text, process_completion_display_text)
+    evt_type = evt.get("type", "completion")
+    if evt_type == "completion":
+        return {"display_kind": PROCESS_COMPLETE_DISPLAY_KIND,
+                "display_text": evt.get("_display_text") or process_completion_display_text([evt])}
+    if evt_type == "async_delegation":
+        return {"display_kind": "async_delegation_complete", "display_text": async_delegation_display_text(evt)}
+    return {}
+
+
 def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
     """Synthetic-event metadata for a watch/completion notification: routing pins, proof ids,
     automation identities, and the local async-result card."""
@@ -121,13 +136,10 @@ def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
         metadata["gateway_session_id"] = parent_session_id
     if evt.get('_automation_identities'):
         metadata['automation_identities'] = evt['_automation_identities']
-    if source.platform == Platform.LOCAL and evt.get("type", "completion") == "completion":
+    if source.platform == Platform.LOCAL:
         # A local completion persists as the async-result card the in-process TUI wrote;
         # messaging rows stay internal_notification, as on main.
-        from tools.process_registry_notifications import (
-            PROCESS_COMPLETE_DISPLAY_KIND, process_completion_display_text)
-        metadata["display_kind"] = PROCESS_COMPLETE_DISPLAY_KIND
-        metadata["display_text"] = evt.get("_display_text") or process_completion_display_text([evt])
+        metadata.update(_local_completion_card(evt))
     proven_session_id = str(evt.get("proven_session_id") or "").strip()
     if proven_session_id:
         metadata["gateway_proven_session_id"] = proven_session_id

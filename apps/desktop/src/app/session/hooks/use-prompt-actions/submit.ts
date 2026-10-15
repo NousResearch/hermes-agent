@@ -41,7 +41,7 @@ import { profileScopeForSessionOwner } from '@/store/session-request-router'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
-import { isCronRunSessionId, refreshCronRunWriteGate } from '../../../cron/open-cron-run'
+import { isCronRunSession, refreshCronRunWriteGate } from '../../../cron/open-cron-run'
 import type { ClientSessionState } from '../../../types'
 import { routeTargetFromToken, sessionContextDrift } from '../session-context-drift'
 import type { CreateBackendSessionForSend } from '../use-session-actions/create-overrides'
@@ -328,7 +328,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // after a restart (no verdict yet) is gated too. No-op for non-cron
       // sessions. If the user moved to another chat meanwhile, drop the send
       // rather than route it on a stale target — the draft stays.
-      if (isCronRunSessionId(targetStoredSessionId) || isCronRunReadOnly(targetStoredSessionId)) {
+      if (isCronRunSession(targetStoredSessionId) || isCronRunReadOnly(targetStoredSessionId)) {
         const viewBeforeGate = selectedStoredSessionIdRef.current
 
         await refreshCronRunWriteGate(targetStoredSessionId, id =>

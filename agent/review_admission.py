@@ -46,6 +46,9 @@ REASON_REVIEW_SLOT_BUSY = "review_slot_busy"
 # not confirmed, or when the turn handed the session to a queued follow-up's drain task.
 REASON_DELIVERY_UNCONFIRMED = "delivery_unconfirmed"
 REASON_PENDING_HANDOFF = "pending_followup_handoff"
+# The shared runtime's drain could not commit the turn's terminal outcome (fenced unknown or
+# discarded): nobody is told an answer, so the turn's ownership is released without a review.
+REASON_TURN_UNSETTLED = "turn_unsettled"
 # A turn nested inside this turn's delivery window (/retry while the reply is on the wire)
 # rewound the transcript; the fresher nested candidate replaces this turn's retracted one.
 REASON_CANDIDATE_SUPERSEDED = "review_candidate_superseded"

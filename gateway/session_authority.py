@@ -1015,6 +1015,8 @@ class SessionAuthority:
                 if settled is None:
                     # Uncommitted (unknown or discarded): the user is not told an answer the FIFO lost.
                     self.pending_deliveries.pop(admission_id, None)
+                    from gateway.session_ingress_review import release_unsettled_review
+                    release_unsettled_review(self, admission_id)
                 from gateway.session_ingress import waiter_replies
                 waiter_replies(self).pop(admission_id, None)
             from gateway.session_ingress import deliver_settled

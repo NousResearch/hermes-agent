@@ -113,6 +113,42 @@ class TestBudgetForContextWindow:
         assert threshold < huge_len
         assert cfg.default_result_size < huge_len
 
+    def test_generic_result_threshold_config_via_hermes_home(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "tool_budget:\n  result_size_chars: 50000\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        cfg = budget_for_context_window(None)
+
+        assert cfg.default_result_size == 50_000
+        assert cfg.resolve_threshold("skill_view") == 50_000
+
+    def test_generic_result_threshold_survives_window_scaling(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "tool_budget:\n  result_size_chars: 50000\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert budget_for_context_window(200_000).default_result_size == 50_000
+        assert budget_for_context_window(16_384).default_result_size < 50_000
+
+    def test_generic_result_threshold_rejects_invalid_values(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for value in ("nope", "0", "-1"):
+            (tmp_path / "config.yaml").write_text(
+                f"tool_budget:\n  result_size_chars: {value}\n"
+            )
+            assert budget_for_context_window(None).default_result_size == DEFAULT_RESULT_SIZE_CHARS
+
+    def test_generic_result_threshold_cannot_raise_default(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "tool_budget:\n  result_size_chars: 200000\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        assert budget_for_context_window(None).default_result_size == DEFAULT_RESULT_SIZE_CHARS
+
 
 # ---------------------------------------------------------------------------
 # MCP-prefix threshold (mcp_result_size)

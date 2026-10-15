@@ -258,7 +258,7 @@ def present_sections(config):
     return config
 
 
-def build_policy(params, config, *, private_secrets=None, profile_terminal=True):
+def build_policy(params, config, *, private_secrets=None, profile_terminal=True, workspace_posture=True):
     from agent.runtime_cwd import resolve_agent_cwd
     from tools.terminal_scope import build_profile_terminal_scope, default_terminal_scope
     from hermes_constants import get_hermes_home
@@ -296,8 +296,9 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
         config.setdefault('model', {})['selection_profile'] = list(profile_target(config))
     _apply_launch_overrides(params, config)
     # Only a folder the client named is a workspace: the daemon's own directory (the fallback above, used by
-    # hosted rooms) must not switch a session into the coding posture.
-    named = 'cwd' in params and 'toolsets' not in params
+    # hosted rooms) must not switch a session into the coding posture, nor may a caller that opts out.
+    # ``tool`` is a third-party integration, not a person's workspace.
+    named = workspace_posture and source != 'tool' and 'cwd' in params and 'toolsets' not in params
     posture = _coding_posture(config, source, cwd) if named else None
     enabled = _resolve_toolsets(params, config, source, safe_mode, posture)
     terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()

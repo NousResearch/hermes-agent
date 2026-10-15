@@ -86,3 +86,15 @@ def test_a_profile_default_listing_coding_is_not_replayed_as_a_workspace(tmp_pat
     assert not policy.coding_posture and 'web' in policy.toolsets
     assert policy.current_toolsets(config) == policy.toolsets
 
+
+@pytest.mark.parametrize('params', [{'source': 'tool'}, {'source': 'cli', 'toolsets': ['terminal']}])
+def test_tool_sources_and_picks_keep_their_toolsets_in_a_workspace(project, params):
+    from gateway.session_policy import build_policy
+    policy = build_policy({**params, 'cwd': str(project)}, FOCUS)
+    assert not policy.coding_posture and policy.toolsets == ('terminal',)
+
+
+def test_a_caller_can_opt_out_of_the_workspace_posture(project):
+    from gateway.session_policy import build_policy
+    policy = build_policy({'source': 'cli', 'cwd': str(project)}, FOCUS, workspace_posture=False)
+    assert policy.toolsets == ('terminal',)

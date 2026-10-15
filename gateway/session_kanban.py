@@ -53,7 +53,8 @@ def build_kanban_policy(connection, params, config):
         if value:
             params_policy[name] = value
     private = {}
-    policy = build_policy(params_policy, config, private_secrets=private)
+    # A worker's task worktree is no client pick of the coding posture: it keeps the profile's toolsets.
+    policy = build_policy(params_policy, config, private_secrets=private, workspace_posture=False)
     if policy.model is None:
         from gateway.run import _resolve_gateway_model
         policy = replace(policy, model=_resolve_gateway_model(policy.config()))

@@ -18,6 +18,17 @@ export default defineConfig(async (environment) => {
         return `${root}browser/preview-pane.tsx`
       }
     },
+    transformIndexHtml: {
+      order: 'post',
+      handler(_html, context) {
+        // Fetch the renderer while the host and locale runtime initialize.
+        // Preloading does not evaluate it before installBrowserHost().
+        const renderer = Object.values(context.bundle || {}).find(chunk =>
+          chunk.type === 'chunk' && chunk.facadeModuleId === `${root}src/main.tsx`)
+
+        return renderer ? [{ tag: 'link', attrs: { rel: 'modulepreload', crossorigin: '', href: `./${renderer.fileName}` }, injectTo: 'head' }] : []
+      }
+    },
     generateBundle() {
       for (const id of this.getModuleIds()) {
         if (id.endsWith('/src/lib/mcp-dashboard-oauth.ts') || id.endsWith('/src/app/chat/right-rail/preview-pane.tsx')) {

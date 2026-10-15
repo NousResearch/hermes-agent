@@ -80,3 +80,63 @@ describe('same-origin browser transport', () => {
     await expect(parseApiResponse(new Response('not-json'))).rejects.toThrow('Expected a JSON response')
   })
 })
+
+
+describe('concurrent configuration reads', () => {
+  it('shares an in-flight read but refreshes after completion and isolates returned objects', async () => {
+    let resolve!: (response: Response) => void
+
+    const fetch = vi.fn().mockImplementationOnce(() => new Promise<Response>(done => { resolve = done }))
+      .mockResolvedValueOnce(Response.json({ value: 2 }))
+
+    vi.stubGlobal('fetch', fetch)
+
+    const first = requestJson<{ value: number }>({ path: '/api/config' })
+    const second = requestJson<{ value: number }>({ path: '/api/config' })
+    expect(fetch).toHaveBeenCalledTimes(1)
+    resolve(Response.json({ value: 1 }))
+    const [a, b] = await Promise.all([first, second])
+    a.value = 9
+    expect(b.value).toBe(1)
+    expect(await requestJson({ path: '/api/config' })).toEqual({ value: 2 })
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('separates profile scopes and never joins a read started before a write', async () => {
+    const resolvers: Array<(response: Response) => void> = []
+    const fetch = vi.fn().mockImplementation(() => new Promise<Response>(done => { resolvers.push(done) }))
+    vi.stubGlobal('fetch', fetch)
+    const first = requestJson({ path: '/api/config', profile: 'one' })
+    const other = requestJson({ path: '/api/config', profile: 'two' })
+    const write = requestJson({ path: '/api/config', profile: 'one', method: 'POST', body: {} })
+    const fresh = requestJson({ path: '/api/config', profile: 'one' })
+    expect(fetch).toHaveBeenCalledTimes(4)
+    resolvers.forEach(resolve => resolve(Response.json({})))
+    await Promise.all([first, other, write, fresh])
+  })
+})
+
+
+it('refreshes after write settlement instead of joining a read started during the write', async () => {
+  const resolvers: Array<(response: Response) => void> = []
+  const fetch = vi.fn().mockImplementation(() => new Promise<Response>(done => { resolvers.push(done) }))
+  vi.stubGlobal('fetch', fetch)
+  const write = requestJson({ path: '/api/config', method: 'POST', body: {} })
+  const during = requestJson({ path: '/api/config' })
+  resolvers[0](Response.json({}))
+  await write
+  const after = requestJson({ path: '/api/config' })
+  expect(fetch).toHaveBeenCalledTimes(3)
+  resolvers[1](Response.json({ version: 'old' }))
+  resolvers[2](Response.json({ version: 'new' }))
+  expect(await during).toEqual({ version: 'old' })
+  expect(await after).toEqual({ version: 'new' })
+})
+
+it('evicts failed config reads so a later retry reaches the server', async () => {
+  const fetch = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(Response.json({ ok: true }))
+  vi.stubGlobal('fetch', fetch)
+  await expect(requestJson({ path: '/api/config' })).rejects.toThrow('offline')
+  expect(await requestJson({ path: '/api/config' })).toEqual({ ok: true })
+  expect(fetch).toHaveBeenCalledTimes(2)
+})

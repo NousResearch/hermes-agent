@@ -82,7 +82,7 @@ export async function backendFetch(path: string, init: RequestInit = {}): Promis
   return response
 }
 
-export async function requestJson<T>(request: HermesApiRequest): Promise<T> {
+async function performRequestJson<T>(request: HermesApiRequest): Promise<T> {
   if (request.connectionId && request.connectionId !== connectionId) {throw new Error(browserMessage('backendTab'))}
   const headers = new Headers({ Accept: 'application/json' })
   let body: BodyInit | undefined
@@ -101,6 +101,39 @@ export async function requestJson<T>(request: HermesApiRequest): Promise<T> {
   return parseApiResponse<T>(await backendFetch(withScope(request.path, request.profile || activeProfile || initialProfile()), {
     method: request.method || (body === undefined ? 'GET' : 'POST'), headers, body, signal
   }))
+}
+
+// Share only overlapping config reads: completed values are never cached, and a
+// write strands older flights so its follow-up refresh always reaches the server.
+const configReads = new Map<string, Promise<unknown>>()
+
+export async function requestJson<T>(request: HermesApiRequest): Promise<T> {
+  const method = (request.method || (request.body === undefined && !request.upload ? 'GET' : 'POST')).toUpperCase()
+
+  if (method !== 'GET') {
+    configReads.clear()
+
+    try { return await performRequestJson<T>(request) } finally { configReads.clear() }
+  }
+
+  if (request.body !== undefined || request.upload || !['/api/config', '/api/config/defaults'].includes(request.path)) {
+    return performRequestJson<T>(request)
+  }
+
+  const key = JSON.stringify([window.location.origin, window.__HERMES_BASE_PATH__,
+    window.__HERMES_AUTH_REQUIRED__, window.__HERMES_SESSION_TOKEN__, request.connectionId,
+    withScope(request.path, request.profile || activeProfile || initialProfile()), request.timeoutMs || 60_000])
+
+  let flight = configReads.get(key)
+
+  if (!flight) {
+    flight = performRequestJson<T>(request).finally(() => {
+      if (configReads.get(key) === flight) {configReads.delete(key)}
+    })
+    configReads.set(key, flight)
+  }
+
+  return structuredClone(await flight) as T
 }
 
 export async function gatewayWsUrl(profile?: null | string, id?: null | string) {

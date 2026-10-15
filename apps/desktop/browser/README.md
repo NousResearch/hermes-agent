@@ -86,3 +86,14 @@ Hermes home. It exercises real password login, cookie-authenticated chat/tool
 streaming, reload/resume, file reads, spectator popouts and a phone viewport.
 Backend tests separately cover the OAuth callback/session/ticket round trip and
 real PTY execution, disconnect cleanup, capacity limits and sandbox refusal.
+
+## Hosting performance
+
+Serve the production build over HTTP/2 where available and enable gzip or Brotli
+for public `/assets/` responses. Preserve the backend's immutable cache headers
+for hashed assets; do not cache authenticated API responses. Compression can be
+limited to public assets so login and other secret-bearing responses are excluded.
+The browser build preloads the renderer during host/locale initialization without
+evaluating it before host installation. Overlapping configuration reads share a
+request within the same backend/profile/auth/timeout scope; results are not cached,
+and writes invalidate overlapping reads at both start and completion.

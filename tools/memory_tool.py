@@ -84,6 +84,45 @@ def _pin_matched_entries(store: MemoryStore, payload: dict[str, Any]) -> Optiona
 def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[str, Any]) -> Optional[str]:
     """JSON tool-result string when the write must NOT proceed (blocked or staged
     for approval), None to proceed. Fails open if the gate module can't load."""
+    # Phase 7 — acceptance_pipeline (7-stage gate) runs BEFORE wa.evaluate_gate.
+    # Fail-open on Exception (not just ImportError): a gate logic error degrades
+    # to proceed rather than hard-breaking chain-doc editing; the store's own
+    # guards (cap, _anchor_gate, drift) still run and keep the system safe.
+    try:
+        from tools.write_gate import acceptance_pipeline
+        # Resolve caller provenance: foreground == user's direct turn; anything
+        # else (background_review, etc.) is non-user (the agent fork).  On an
+        # unresolvable origin, use the "unknown" sentinel — never silently
+        # promote agent-inferred content to user-trusted (T2-1).
+        try:
+            from tools.write_approval import current_origin
+            origin = current_origin()
+            caller = "user" if origin == "foreground" else origin
+        except Exception:
+            caller = "unknown"
+        # Build the entries snapshot for the stale-entry stage via the store's
+        # doc-aware arm, so a doc: target anchors against the DOC's entries,
+        # not the anchor's (INTEG-2).
+        target = payload.get("target", "memory")
+        entries = list(store._entries_for(target))
+        refusal = acceptance_pipeline(
+            store,
+            action=payload.get("action", "add"),
+            target=target,
+            content=payload.get("content"),
+            old_text=payload.get("old_text"),
+            operations=payload.get("operations"),
+            caller=caller,
+            entries=entries,
+        )
+        if refusal is not None:
+            FAILURE_CLASS.set(refusal.failure_class)
+            return tool_error(refusal.rationale, success=False,
+                              failure_class=refusal.failure_class,
+                              reroute_target=refusal.reroute_target,
+                              action=refusal.action)
+    except Exception:
+        pass
     try:
         from tools import write_approval as wa
     except Exception:
@@ -286,7 +325,15 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
                or _apply_write_gate(store, action, target, content, old_text))
     if invalid is not None:
         return "rejected", invalid
-    return _applied(_STORE_ACTIONS[action][0](store, target, content, old_text))
+    result = _STORE_ACTIONS[action][0](store, target, content, old_text)
+    # Stage 7 — post-write read-back (T1-2): after an admitted replace/patch/remove,
+    # re-read the target and confirm old_text is gone. Bounded: one read per write.
+    if result.get("success"):
+        from tools.write_gate import verify_post_write
+        readback = verify_post_write(store, target, action, old_text)
+        if readback is not None:
+            return "failed", readback
+    return _applied(result)
 
 
 def get_builtin_memory_config(config: Optional[dict[str, Any]] = None) -> dict[str, Any]:

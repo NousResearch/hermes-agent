@@ -1,5 +1,126 @@
 [
   {
+    "id": "x-alexandermann-grandfather-safety-system",
+    "source": "x",
+    "author": "@AlexanderMann",
+    "url": "https://x.com/AlexanderMann/status/2107189008442728730",
+    "date": "2026-10-05",
+    "category": "personal-assistant",
+    "headline": "Hermes built a local safety system with panic buttons for his 89-year-old grandfather",
+    "quote": "my @NousResearch Hermes Agent installed @home_assistant on its MacMini then used a Zigbee radio USB to build my Grandfather a local home security system with tablet control, voice feedback, security, and wellness with panic buttons at bottom of stairs and bedroom. Hermes coded it all and even made a custom easy to read dashboard for him.",
+    "size": "lg"
+  },
+  {
+    "id": "x-coldemailchris-gtm-tam-slack-agent",
+    "source": "x",
+    "author": "@coldemailchris",
+    "url": "https://x.com/coldemailchris/status/2104975455334150583",
+    "date": "2026-09-29",
+    "category": "business-ops",
+    "headline": "A GTM team builds verified contact lists from one Slack message, on one shared subscription",
+    "quote": "Our team built an AI agent that builds our entire TAM. … You type what you need in Slack & it comes back with verified contacts. … The VPS keeps it on 24/7 inside our Slack, so the whole team works off that single subscription. That saves us about $800 a month against a Codex seat per person. … Hermes has access to our GitHub repo, which holds a skill for every part of GTM we run.",
+    "size": "lg"
+  },
+  {
+    "id": "x-nixxin-medianama-editorial-agents",
+    "source": "x",
+    "author": "@nixxin",
+    "url": "https://x.com/nixxin/status/2101315665504452959",
+    "date": "2026-09-19",
+    "category": "enterprise",
+    "headline": "A tech-policy publication runs Hermes agents for editorial suggestions and client proposals",
+    "quote": "Built mechanisms for Ed (MediaNama’s Hermes editorial assistant) to recommend speakers, guest authors and commentators for MediaNama events and stories … Created an Hermes agent led RTI agent on MediaNama OS … Added Hermes agent Ev for drafting first drafts of client proposals",
+    "size": "md"
+  },
+  {
+    "id": "x-alexcovo-eth-vapi-consulting-deal",
+    "source": "x",
+    "author": "@alexcovo_eth",
+    "url": "https://x.com/alexcovo_eth/status/2077615547303207315",
+    "date": "2026-07-16",
+    "category": "business-ops",
+    "headline": "A prospect phoned his Hermes agent about the proposal, and it closed the consulting deal",
+    "quote": "I set up @Vapi_AI with Hermes and a telephone number. I told the potential client to call if they were interested and then forgot about it. … It was fully aware of the SOW that had been proposed, and answered all questions related to the proposal. Everything from potential costs, deliverables, schedule, outcomes, etc. … I can't believe my agent closed the deal.",
+    "size": "md"
+  },
+  {
+    "id": "x-thomasbekkers-it-support-agent",
+    "source": "x",
+    "author": "@ThomasBekkers",
+    "url": "https://x.com/ThomasBekkers/status/2077494783761592768",
+    "date": "2026-07-15",
+    "category": "business-ops",
+    "headline": "A business added a Hermes IT-support agent that now solves 90% of issues on its own",
+    "quote": "Integrated a bunch of slack Hermes agents for my business. … Ended up creating a hermes agent that does IT support. 90% of issues solved on its own now. Gave it a guidelines it needs to follow. works great",
+    "size": "md"
+  },
+  {
+    "id": "linkedin-theanimeshs-founderos-seven-assistants",
+    "source": "linkedin",
+    "author": "theanimeshs",
+    "url": "https://www.linkedin.com/posts/theanimeshs_i-was-exhausted-running-my-startup-alone-activity-7493737755131301889-Ni2y",
+    "date": "2026-08-13",
+    "category": "business-ops",
+    "headline": "A solo founder split his startup across seven Hermes assistants, from growth to SRE",
+    "quote": "I was exhausted running my startup alone, so I built an AI team using Nous Research's Hermes Agent … my own FounderOS with not one but 7 assistants, each running a part of the business … Growth analyst: uses PostHog MCP, tracks traffic, signups, activation, trials, and conversion to find the real bottleneck. … SRE: connects to Better Stack to monitor app health and helps catch issues … Chief of Staff (Leo): connects to Linear MCP, manages and coordinates everything, turns data into daily decisions",
+    "size": "md"
+  },
+  {
+    "id": "x-advaitraykar-elmo-narrated-demos",
+    "source": "x",
+    "author": "@AdvaitRaykar",
+    "url": "https://x.com/AdvaitRaykar/status/2090406660405686754",
+    "date": "2026-08-20",
+    "category": "dev-workflow",
+    "headline": "Team agent implements customer requests and posts a narrated video demo for review",
+    "quote": "our team agent (elmo, built on hermes) does a lot within our company … when it sees a customer requests, implements it, and posts a video demo of it's work for review in the reviews channel … with my voice as the narrator",
+    "size": "md"
+  },
+  {
+    "id": "x-gsabin86-photo-to-cad",
+    "source": "x",
+    "author": "@Gsabin86",
+    "url": "https://x.com/Gsabin86/status/2078106180933521468",
+    "date": "2026-07-17",
+    "category": "creative",
+    "headline": "In the shop: photos plus spoken dimensions become a parametric CAD drawing and model",
+    "quote": "Built a photo-to-parametric drawing in CAD file workflow. Now I can just take photos and give critical dimension callouts verbally, and then a drawing and a model pop out … Using FreeCAD + Hermes agent … Game changer in the shop.",
+    "size": "md"
+  },
+  {
+    "id": "x-michaelgannotti-gabriel-pm-fleet",
+    "source": "x",
+    "author": "@MichaelGannotti",
+    "url": "https://x.com/MichaelGannotti/status/2079947861245014364",
+    "date": "2026-07-22",
+    "category": "dev-workflow",
+    "headline": "A Hermes project-manager agent orchestrates his fleet of coding and image-generation agents",
+    "quote": "my @NousResearch Hermes fleet of agents is humming along orchestrated by my Hermes Agent Gabriel who is our SMF Works Project Manager. I have agents coding on our Praxis and SMF Agent Swarm 2.0 projects, I have an agent grabbing and working on PRs for Hermes open source, I have another agent setting up and testing localized Image generation and editing",
+    "size": "md"
+  },
+  {
+    "id": "x-stefanmaier-football-manager-ares",
+    "source": "x",
+    "author": "@StefanMaier",
+    "url": "https://x.com/StefanMaier/status/2081285388967043125",
+    "date": "2026-07-26",
+    "category": "creative",
+    "headline": "Built his own football manager game, with a local Hermes agent as assistant coach and scout",
+    "quote": "my @NousResearch Hermes agent can plug into the active game and take on various roles. DeepSeek V4 Flash, running as a local LLM on my two @NVIDIAAI DGX Spark units, serves as the \"brain.\" … my Hermes agent, Ares, acts as my assistant coach, sporting director, and scout.",
+    "size": "md"
+  },
+  {
+    "id": "x-tborges77-imax-seat-hunt",
+    "source": "x",
+    "author": "@tborges77",
+    "url": "https://x.com/tborges77/status/2086497637973344579",
+    "date": "2026-08-09",
+    "category": "personal-assistant",
+    "headline": "Hermes kept checking a sold-out 70mm IMAX run and found him two adjacent seats",
+    "quote": "Everyday all sessions fully booked until mid September. … So, I asked my Hermes agent to keep looking for openings at my desired seat range and today it found two adjacent seats!",
+    "size": "sm"
+  },
+  {
     "id": "blog-razorpay-employee-agents",
     "source": "blog",
     "author": "Razorpay Engineering",
@@ -3683,17 +3804,6 @@
     "headline": "I had my research agent dig into what people are building with Hermes",
     "quote": "Had my (Hermes) research agent dig into what people are actually building with Hermes — turned up an ecosystem mosaic of trading bots, personal assistants, content pipelines and self-hosted everything.",
     "size": "sm"
-  },
-  {
-    "id": "alexcovo-movies",
-    "source": "x",
-    "author": "@alexcovo_eth",
-    "url": "https://x.com/alexcovo_eth/status/2046437996262539539",
-    "date": "2026-04-21",
-    "category": "creative",
-    "headline": "My Hermes agent makes movies now",
-    "quote": "My @NousResearch hermes-agent can make movies now using @browser_use skill. No API needed. No human intervention. I told it to set the mood, action, camera movement, dialog and overall story — it used Browser-Use and Seedance 2.0 to generate a video.",
-    "size": "md"
   },
   {
     "id": "mvanhorn-business-ops",

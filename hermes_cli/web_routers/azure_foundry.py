@@ -80,7 +80,7 @@ def _settings(cfg: dict) -> dict:
     }
 
 
-def _candidate_model(cfg: dict, body: FoundryUpdate) -> dict:
+def _candidate_model(cfg: dict, body: FoundryUpdate, *, require_model: bool = True) -> dict:
     from hermes_cli.azure_detect import normalize_foundry_base_url
 
     try:
@@ -91,7 +91,7 @@ def _candidate_model(cfg: dict, body: FoundryUpdate) -> dict:
         valid = False
     if not valid or parsed.query or parsed.fragment:
         raise HTTPException(400, "Enter an endpoint URL with an http or https scheme and host, without credentials or query parameters.")
-    if not body.model:
+    if require_model and not body.model:
         raise HTTPException(400, "Enter your Azure deployment name.")
     old_model = cfg.get("model")
     model = dict(old_model) if isinstance(old_model, dict) else {}
@@ -146,13 +146,18 @@ async def save_foundry(body: FoundryUpdate, profile: Optional[str] = None):
         return await config_scoped_to_thread(profile, lambda: _save(body))
 
 
-def _probe_runtime(body: FoundryUpdate) -> dict:
+def _candidate_runtime(body: FoundryUpdate, *, require_model: bool = True) -> dict:
     from hermes_cli.runtime_provider_backends import _resolve_azure_foundry_runtime
 
-    model = _candidate_model(load_config(), body)
+    model = _candidate_model(load_config(), body, require_model=require_model)
     key = _api_key(body.auth) if isinstance(body.auth, ApiKeyAuth) else None
     runtime = _resolve_azure_foundry_runtime(requested_provider="azure-foundry", model_cfg=model,
                                             explicit_api_key=key, target_model=body.model)
+    return runtime
+
+
+def _probe_runtime(body: FoundryUpdate) -> dict:
+    runtime = _candidate_runtime(body)
     token = materialize_bearer_for_http(runtime["api_key"])
     headers = {"Authorization": f"Bearer {token}"}
     base = runtime["base_url"]
@@ -174,13 +179,43 @@ async def validate_foundry(body: FoundryUpdate, profile: Optional[str] = None):
         raise
     except Exception:  # health: allow BLE001 -- SDK errors can embed CLI output; return a fixed hint without logging credentials
         # SDK errors may embed command output. Keep credential failures actionable without echoing it.
-        cli = isinstance(body.auth, EntraAuth) and isinstance(body.auth.entra, CliCredential)
-        message = ("Azure CLI could not provide a token. Install Azure CLI and run az login on the machine "
-                   "running this profile; check the selected tenant and subscription." if cli else
-                   "Could not obtain Foundry credentials. Check this profile's API key or Azure identity settings.")
-        return {"ok": False, "reachable": True, "message": message}
+        return {"ok": False, "reachable": True, "message": _credential_error(body)}
     async with _endpoint_probe_client(runtime["base_url"], 10.0) as client:
         failure = await _probe_transport_route(client, runtime["inference_base_url"], runtime["api_mode"], body.model,
                                                runtime["headers"], require_success=True, bearer_only=isinstance(body.auth, EntraAuth))
     return {"ok": not failure, "reachable": True, "message": failure,
             "resolved_base_url": runtime["base_url"], "transport_checked": runtime["api_mode"]}
+
+
+def _credential_error(body: FoundryUpdate) -> str:
+    if isinstance(body.auth, EntraAuth) and isinstance(body.auth.entra, CliCredential):
+        return ("Azure CLI could not provide a token. Install Azure CLI and run az login on the machine "
+                "running this profile; check the selected tenant or subscription.")
+    if isinstance(body.auth, ApiKeyAuth):
+        return "Could not obtain Foundry credentials. Check this profile's API key."
+    return ("Could not obtain Azure credentials for this profile. Configure its Azure identity "
+            "or choose Azure CLI login to use the account signed in on the machine running this profile.")
+
+
+def _discover_models(body: FoundryUpdate) -> dict:
+    from hermes_cli.azure_detect import _probe_openai_models
+
+    runtime = _candidate_runtime(body, require_model=False)
+    if runtime["api_mode"] == "anthropic_messages":
+        return {"models": []}
+    # Materialize once here so SDK errors cannot reach the probe's debug logger.
+    token = materialize_bearer_for_http(runtime["api_key"])
+    credential = (lambda: token) if isinstance(body.auth, EntraAuth) else token
+    _, models = _probe_openai_models(runtime["base_url"], credential)
+    return {"models": models}
+
+
+@router.post("/models")
+async def discover_foundry_models(body: FoundryUpdate, profile: Optional[str] = None):
+    profile = destructive_profile(profile, "Discover Foundry models")
+    try:
+        return await config_scoped_to_thread(profile, lambda: _discover_models(body))
+    except HTTPException:
+        raise
+    except Exception:  # health: allow BLE001 -- SDK errors can contain credentials; return a fixed hint without logging them
+        raise HTTPException(400, _credential_error(body)) from None

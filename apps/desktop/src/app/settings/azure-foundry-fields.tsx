@@ -1,12 +1,17 @@
 import type { FoundryCredential, FoundrySettings, FoundryUpdate } from '@/api/azure-foundry'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
-import { Loader2, Trash2 } from '@/lib/icons'
+import { Loader2, RefreshCw, Trash2 } from '@/lib/icons'
+
+import { ComboboxInput } from './combobox-input'
 
 interface FoundryFieldsProps {
-  busy: 'test' | 'save' | 'remove' | null
+  busy: 'test' | 'save' | 'remove' | 'discover' | null
+  models: string[]
+  discover: () => void
   form: FoundryUpdate
   settings: FoundrySettings | null
   setForm: (form: FoundryUpdate) => void
@@ -14,7 +19,16 @@ interface FoundryFieldsProps {
   submit: (action: 'test' | 'save') => void
 }
 
-export function FoundryFields({ busy, form, settings, setForm, submit, removeKey }: FoundryFieldsProps) {
+export function FoundryFields({
+  busy,
+  form,
+  settings,
+  setForm,
+  submit,
+  removeKey,
+  models,
+  discover
+}: FoundryFieldsProps) {
   const { t } = useI18n()
   const copy = t.settings.foundry
   const ce = t.settings.customEndpoints
@@ -33,10 +47,6 @@ export function FoundryFields({ busy, form, settings, setForm, submit, removeKey
           placeholder="https://your-resource.services.ai.azure.com/openai/v1"
           value={form.base_url}
         />
-      </label>
-      <label className="grid gap-1.5">
-        {copy.deployment}
-        <Input onChange={event => setForm({ ...form, model: event.target.value })} value={form.model} />
       </label>
       <fieldset className="grid min-w-0 gap-1.5">
         <legend className="mb-1.5">{ce.credentials.authentication}</legend>
@@ -70,24 +80,45 @@ export function FoundryFields({ busy, form, settings, setForm, submit, removeKey
       {credential && (
         <fieldset className="grid min-w-0 gap-1.5">
           <legend className="mb-1.5">{copy.source}</legend>
-          <SegmentedControl
-            className="w-full max-w-full"
-            onChange={credential_source =>
-              updateCredential(
-                credential_source === 'default'
-                  ? { credential_source, scope: credential.scope }
-                  : { credential_source, scope: credential.scope }
-              )
-            }
-            options={[
-              { id: 'default', label: copy.defaultChain },
-              { id: 'azure_cli', label: copy.azureCli }
-            ]}
+          <Select
             value={credential.credential_source}
-          />
+            disabled={busy !== null}
+            onValueChange={source => {
+              if (source === 'default') {
+                updateCredential({ credential_source: 'default', scope: credential.scope })
+              } else if (source === 'azure_cli') {
+                updateCredential({ credential_source: 'azure_cli', scope: credential.scope })
+              }
+            }}
+          >
+            <SelectTrigger aria-label={copy.source} className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="azure_cli">{copy.azureCli}</SelectItem>
+              <SelectItem value="default">{copy.automaticCredentials}</SelectItem>
+            </SelectContent>
+          </Select>
           <p>{credential.credential_source === 'azure_cli' ? copy.cliHint : copy.defaultHint}</p>
         </fieldset>
       )}
+      <div className="grid gap-1.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span>{copy.deployment}</span>
+          <Button disabled={!form.base_url.trim() || busy !== null} onClick={discover} size="sm" variant="ghost">
+            {busy === 'discover' ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            {copy.findModels}
+          </Button>
+        </div>
+        <ComboboxInput
+          aria-label={copy.deployment}
+          disabled={busy !== null}
+          onChange={model => setForm({ ...form, model })}
+          options={models}
+          value={form.model}
+        />
+        <p>{copy.deploymentHint}</p>
+      </div>
       <details className="grid gap-3">
         <summary className="cursor-pointer">{copy.advanced}</summary>
         <div className="mt-3 grid gap-3">

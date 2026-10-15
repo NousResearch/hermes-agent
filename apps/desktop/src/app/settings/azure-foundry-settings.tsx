@@ -4,6 +4,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import {
   deleteEnvVar,
+  discoverFoundryModels,
   type FoundrySettings,
   type FoundryUpdate,
   getFoundrySettings,
@@ -58,7 +59,8 @@ function FoundryCard({
   const [settings, setSettings] = useState<FoundrySettings | null>(null)
   const [form, setForm] = useState<FoundryUpdate | null>(null)
   const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error' | 'unsupported'>('loading')
-  const [busy, setBusy] = useState<'test' | 'save' | 'remove' | null>(null)
+  const [busy, setBusy] = useState<'test' | 'save' | 'remove' | 'discover' | null>(null)
+  const [discovery, setDiscovery] = useState<{ connection: string; models: string[] } | null>(null)
   const [attempt, setAttempt] = useState(0)
   const mounted = useRef(false)
 
@@ -141,6 +143,34 @@ function FoundryCard({
     }
   }
 
+  const discoveryKey = form && JSON.stringify({ base_url: form.base_url, api_mode: form.api_mode, auth: form.auth })
+  const models = discovery?.connection === discoveryKey ? discovery.models : []
+
+  async function discover() {
+    if (!form || !discoveryKey) {
+      return
+    }
+    setBusy('discover')
+    try {
+      const result = await discoverFoundryModels(form, scope)
+      if (!mounted.current) {
+        return
+      }
+      setDiscovery({ connection: discoveryKey, models: result.models })
+      if (!result.models.length) {
+        notify({ kind: 'warning', message: copy.modelsUnavailable })
+      }
+    } catch (error) {
+      if (mounted.current) {
+        notifyError(error, copy.modelsUnavailable)
+      }
+    } finally {
+      if (mounted.current) {
+        setBusy(null)
+      }
+    }
+  }
+
   async function removeKey() {
     const key = 'AZURE_FOUNDRY_API_KEY'
     if (!(await confirm({ destructive: true, title: t.settings.toolsets.removeConfirm(key) })) || !mounted.current) {
@@ -152,6 +182,7 @@ function FoundryCard({
       if (!mounted.current) {
         return
       }
+      setDiscovery(null)
       setSettings(current => current && { ...current, api_key_set: false })
       setForm(current => (current?.auth.kind === 'api_key' ? { ...current, auth: { kind: 'api_key' } } : current))
       void queryClient.invalidateQueries({ queryKey: ['model-options'] })
@@ -200,6 +231,8 @@ function FoundryCard({
       )}
       {expanded && loadState === 'ready' && form && (
         <FoundryFields
+          models={models}
+          discover={() => void discover()}
           removeKey={() => void removeKey()}
           busy={busy}
           form={form}

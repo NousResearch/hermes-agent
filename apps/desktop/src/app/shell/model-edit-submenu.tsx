@@ -117,7 +117,9 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
 
 /** Read-only price list for this row's model. A `<dl>`, not menu items, so
  *  keyboard navigation skips it. */
- function ModelPricingSection({ pricing }: { pricing: ModelPricing }) {
+function ModelPricingSection({ pricing }: { pricing: ModelPricing }) {
+  const { t } = useI18n()
+  const copy = t.shell.modelMenu.pricing
    const { free } = pricing
    const discount = free ? null : pricing.discount_percent
 
@@ -125,10 +127,10 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
      <>
        <DropdownMenuSeparator className="mx-0" />
        <DropdownMenuLabel className={cn(dropdownMenuSectionLabel, 'flex items-center justify-between')}>
-         {free ? 'Pricing' : 'Pricing · per 1M tokens'}
+         {free ? copy.title : copy.titlePerMillion}
          {free ? (
            <Badge className="uppercase" size="xs">
-             Free
+             	{copy.free}
            </Badge>
          ) : null}
          {discount ? <Badge size="xs">−{discount}%</Badge> : null}
@@ -136,11 +138,11 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
        {free ? null : (
          <dl className="flex flex-col gap-1 px-2.5 pt-0.5 pb-1.5 text-[0.7rem] leading-4 text-(--ui-text-tertiary)">
            <div className="flex items-center justify-between gap-2">
-             <dt>Input</dt>
+             <dt>{copy.input}</dt>
              <dd className="tabular-nums">{pricing.input || '—'}</dd>
            </div>
            <div className="flex items-center justify-between gap-2">
-             <dt>Output</dt>
+             	<dt>{copy.output}</dt>
              <dd className="tabular-nums">{pricing.output || '—'}</dd>
            </div>
          </dl>

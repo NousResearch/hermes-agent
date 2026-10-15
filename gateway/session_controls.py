@@ -76,6 +76,24 @@ def _log_refusal(profile, method, exc: RuntimeStoreError) -> None:
         logger.debug(line, *args)
 
 
+def named_turn_error(exc, empty_detail: str) -> tuple[str, str]:
+    """Messaging copy for a failed turn, and the one log line for that notice.
+
+    A named ``invalid_params`` is ``field: detail`` in the notice, not the class name. The log
+    follows the create-path rule: warning when the raiser named the check, debug for a bare
+    reason code.
+    """
+    if isinstance(exc, RuntimeStoreError):
+        _log_refusal(None, 'native.admit', exc)
+        if exc.reason == 'invalid_params' and (exc.field or exc.detail):
+            shown = exc.field or 'unnamed field'
+            if exc.detail:
+                shown = f'{shown}: {exc.detail}'
+            return exc.reason, shown[:300]
+    text = str(exc)
+    return type(exc).__name__, (text[:300] if text else empty_detail)
+
+
 # ``session.detach end_reason``: a short snake_case label, stored verbatim as ``sessions.end_reason``.
 _END_REASON = re.compile(r'[a-z][a-z_]{0,31}')
 # Verbs whose param sets are closed and never carried a ``profile`` key.

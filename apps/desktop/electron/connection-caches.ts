@@ -5,8 +5,8 @@
  * pointing at the same machine. Two lifecycle events break that: removing a connection (ids are
  * recycled label slugs — `connectionIdForLabel` suffixes only against CURRENTLY taken ids, so
  * re-adding "Mac mini" gets `mac-mini` back) and editing its dial material (same id, new host).
- * Neither used to evict, and `shouldRetrySshInventory` never retries a cached success, so the old
- * machine's profile list stayed authoritative for the rest of the app session.
+ * Neither used to evict, so the old machine's profile list stayed authoritative for the rest of the
+ * app session; the per-connection entries below are what a stale answer is made of.
  *
  * They live in one module so that invariant has somewhere to be stated — and tested — instead of
  * being three loose `Map`s in main.ts.
@@ -17,6 +17,13 @@ export const sshRosterCache = new Map<string, string[]>()
 
 /** When the ssh inventory probe last ran, for the retry backoff. */
 export const sshInventoryAttemptedAt = new Map<string, number>()
+
+/**
+ * When the cached roster was last read back from the remote, so a successful inventory ages out
+ * instead of answering for the rest of the app session: a profile created or deleted on the remote
+ * is otherwise invisible until something invalidates the cache by hand.
+ */
+export const sshInventorySucceededAt = new Map<string, number>()
 
 /**
  * Stable backend identity per connection (the `install_id` its /api/status reports; absent on
@@ -30,6 +37,7 @@ export const rosterSourceErrors = new Map<string, string>()
 const CONNECTION_SCOPED_CACHES: Map<string, unknown>[] = [
   sshRosterCache,
   sshInventoryAttemptedAt,
+  sshInventorySucceededAt,
   connectionInstallIds,
   rosterSourceErrors
 ]

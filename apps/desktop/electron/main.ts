@@ -145,6 +145,7 @@ import {
   evictConnectionCaches,
   rosterSourceErrors,
   sshInventoryAttemptedAt,
+  sshInventorySucceededAt,
   sshRosterCache
 } from './connection-caches'
 import {
@@ -8998,8 +8999,8 @@ async function saveRegistryConnection(input: any = {}) {
   // their secondaries for this connection id.
   if (existing && connectionDialFieldsChanged(existing, entry)) {
     await stopRegistryConnectionBackends(entry.id)
-    // The id now names a different machine: its cached roster/identity describe the old one,
-    // and a cached ssh inventory is never retried (`shouldRetrySshInventory`).
+    // The id now names a different machine: its cached roster/identity describe the old one, and
+    // a cached ssh roster outlasts the save that caused it (`shouldRetrySshInventory`).
     evictConnectionCaches(entry.id)
     broadcastConnectionsChanged({ connectionId: entry.id, reason: 'updated' })
   } else {
@@ -15022,6 +15023,7 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
     if (result?.reachable) {
       sshInventoryAttemptedAt.delete(entry.id)
       sshRosterCache.delete(entry.id)
+      sshInventorySucceededAt.delete(entry.id)
       await probeSshProfileInventory(entry)
     }
 
@@ -15100,6 +15102,12 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
 // removing a connection or re-pointing it must evict them (`evictConnectionCaches`).
 const SSH_INVENTORY_RETRY_MS = 60_000
 
+// How long a successful SSH profile inventory stays authoritative. A roster read once was never
+// re-read, so a profile created or deleted on the host stayed invisible until something invalidated
+// the cache by hand (the Test button). One TTL keeps that discovery bounded; the probe runs on its
+// own SSH session and lists profiles only, so a refresh never starts a remote backend.
+const SSH_INVENTORY_SUCCESS_TTL_MS = 5 * 60_000
+
 // Stable backend identity per registered connection: the `install_id` its
 // /api/status reports (absent on backends older than the field). Enumeration
 // runs on the ~5s Bot Mode roster poll and only hits /api/profiles, so the
@@ -15148,7 +15156,9 @@ async function probeSshProfileInventory(connection) {
       sshRosterCache.has(connection.id),
       sshInventoryAttemptedAt.get(connection.id),
       Date.now(),
-      SSH_INVENTORY_RETRY_MS
+      SSH_INVENTORY_RETRY_MS,
+      sshInventorySucceededAt.get(connection.id),
+      SSH_INVENTORY_SUCCESS_TTL_MS
     )
   ) {
     return
@@ -15180,6 +15190,7 @@ async function probeSshProfileInventory(connection) {
 
     if (profiles.length > 0) {
       sshRosterCache.set(connection.id, profiles)
+      sshInventorySucceededAt.set(connection.id, Date.now())
     }
 
     // Backend identity, on the session we already have open: without it an ssh connection has no
@@ -15191,6 +15202,13 @@ async function probeSshProfileInventory(connection) {
     })
   } catch (error: any) {
     sshRememberLog(`[ssh] profile inventory failed for ${connection.id}: ${error?.message || error}`)
+
+    // A refresh of an existing roster failed, so the roster on offer did not change: re-arm the
+    // TTL instead of redialing a host that answered once and stopped on every cooldown tick. The
+    // profiles it does gain show up within one more TTL instead.
+    if (sshRosterCache.has(connection.id)) {
+      sshInventorySucceededAt.set(connection.id, Date.now())
+    }
   } finally {
     try {
       await ssh.close()

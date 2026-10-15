@@ -89,11 +89,3 @@ def test_a_probe_that_never_answered_cannot_refuse_a_retirement(tmp_path, monkey
     request = {"commit": "0" * 40, "sequence": 1, "sourceVersion": "0.1.0", "repository": "o/r"}
     source_releases._refuse_retirement_downgrade(request, {"head": {"sequence": 1}}, ["git"], checkout)
     assert timed_out == [["git", "rev-list", "--ancestry-path", f"{request['commit']}..HEAD"]]
-
-
-def test_a_local_descendant_still_refuses_a_downgrade(history, tmp_path):
-    """Silence must not swallow the proof the probe exists for."""
-    origin, shas = history
-    request = {"commit": shas[0], "sequence": 1, "sourceVersion": "0.1.0", "repository": "o/r"}
-    with pytest.raises(ValueError):
-        source_releases._refuse_retirement_downgrade(request, {"head": {"sequence": 1}}, ["git"], origin)

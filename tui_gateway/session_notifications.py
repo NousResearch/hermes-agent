@@ -194,6 +194,7 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
         if payload.get("type") == "send" and payload.get("message"):
             if not _notif_claim_turn(session):
                 mgr.abandon_tick()
+                _publish_session_control_snapshot(sid, session)  # back to the countdown, not "running now"
                 return
             # Releases the claim on failure: the swallow below would otherwise leave the session busy for good.
             _notif_submit(rid, sid, session, payload["message"], "loop wakeup send failed")
@@ -325,6 +326,7 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
         _notif_release_turn(session)
         with contextlib.suppress(Exception):
             mgr.abandon_tick()
+        _publish_session_control_snapshot(sid, session)  # back to the countdown, not "running now"
 
 
 def _kb_first_line(value: Any, limit: int) -> str:

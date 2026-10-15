@@ -10,7 +10,7 @@ import { ComboboxInput } from './combobox-input'
 
 interface FoundryFieldsProps {
   busy: 'test' | 'save' | 'remove' | 'discover' | null
-  models: string[]
+  deployments: string[]
   discover: () => void
   form: FoundryUpdate
   settings: FoundrySettings | null
@@ -26,7 +26,7 @@ export function FoundryFields({
   setForm,
   submit,
   removeKey,
-  models,
+  deployments,
   discover
 }: FoundryFieldsProps) {
   const { t } = useI18n()
@@ -107,14 +107,15 @@ export function FoundryFields({
           <span>{copy.deployment}</span>
           <Button disabled={!form.base_url.trim() || busy !== null} onClick={discover} size="sm" variant="ghost">
             {busy === 'discover' ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-            {copy.findModels}
+            {copy.findDeployments}
           </Button>
         </div>
         <ComboboxInput
           aria-label={copy.deployment}
           disabled={busy !== null}
           onChange={model => setForm({ ...form, model })}
-          options={models}
+          options={deployments}
+          search={{ placeholder: copy.searchDeployments, emptyMessage: copy.noDeployments }}
           value={form.model}
         />
         <p>{copy.deploymentHint}</p>
@@ -199,51 +200,27 @@ function FoundryCliAccountFields({
   const { t } = useI18n()
   const copy = t.settings.foundry
   const base = { credential_source: 'azure_cli', scope: credential.scope } satisfies FoundryCredential
-  const selection = 'tenant_id' in credential ? 'tenant' : 'subscription' in credential ? 'subscription' : 'default'
-
   return (
     <>
-      <fieldset className="grid min-w-0 gap-1.5">
-        <legend className="mb-1.5">{copy.cliAccount}</legend>
-        <SegmentedControl
-          className="w-full max-w-full"
-          value={selection}
-          options={[
-            { id: 'default', label: copy.cliDefault },
-            { id: 'tenant', label: copy.tenant },
-            { id: 'subscription', label: copy.subscription }
-          ]}
-          onChange={choice =>
-            onChange(
-              choice === 'tenant'
-                ? { ...base, tenant_id: '' }
-                : choice === 'subscription'
-                  ? { ...base, subscription: '' }
-                  : base
-            )
-          }
+      <label className="grid gap-1.5">
+        {copy.tenant}
+        <Input
+          disabled={Boolean(credential.subscription?.trim())}
+          value={credential.tenant_id ?? ''}
+          placeholder={t.settings.credentials.optional}
+          onChange={event => onChange({ ...base, tenant_id: event.target.value })}
         />
-      </fieldset>
-      {selection === 'tenant' && (
-        <label className="grid gap-1.5">
-          {copy.tenant}
-          <Input
-            value={credential.tenant_id ?? ''}
-            placeholder={copy.cliDefault}
-            onChange={event => onChange({ ...base, tenant_id: event.target.value })}
-          />
-        </label>
-      )}
-      {selection === 'subscription' && (
-        <label className="grid gap-1.5">
-          {copy.subscription}
-          <Input
-            value={credential.subscription ?? ''}
-            placeholder={copy.cliDefault}
-            onChange={event => onChange({ ...base, subscription: event.target.value })}
-          />
-        </label>
-      )}
+      </label>
+      <label className="grid gap-1.5">
+        {copy.subscription}
+        <Input
+          disabled={Boolean(credential.tenant_id?.trim())}
+          value={credential.subscription ?? ''}
+          placeholder={t.settings.credentials.optional}
+          onChange={event => onChange({ ...base, subscription: event.target.value })}
+        />
+      </label>
+      <p>{copy.accountHint}</p>
     </>
   )
 }

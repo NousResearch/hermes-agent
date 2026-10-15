@@ -197,24 +197,22 @@ def _credential_error(body: FoundryUpdate) -> str:
             "or choose Azure CLI login to use the account signed in on the machine running this profile.")
 
 
-def _discover_models(body: FoundryUpdate) -> dict:
-    from hermes_cli.azure_detect import _probe_openai_models
+def _discover_deployments(body: FoundryUpdate) -> dict:
+    from hermes_cli.azure_foundry_deployments import discover_deployments
 
     runtime = _candidate_runtime(body, require_model=False)
-    if runtime["api_mode"] == "anthropic_messages":
-        return {"models": []}
-    # Materialize once here so SDK errors cannot reach the probe's debug logger.
+    # Materialize once so SDK errors cannot reach the HTTP probe's debug logger.
     token = materialize_bearer_for_http(runtime["api_key"])
     credential = (lambda: token) if isinstance(body.auth, EntraAuth) else token
-    _, models = _probe_openai_models(runtime["base_url"], credential)
-    return {"models": models}
+    entra = EntraIdentityConfig.from_dict(body.auth.entra.model_dump()) if isinstance(body.auth, EntraAuth) else None
+    return {"deployments": discover_deployments(runtime["base_url"], credential, entra)}
 
 
-@router.post("/models")
-async def discover_foundry_models(body: FoundryUpdate, profile: Optional[str] = None):
-    profile = destructive_profile(profile, "Discover Foundry models")
+@router.post("/deployments")
+async def discover_foundry_deployments(body: FoundryUpdate, profile: Optional[str] = None):
+    profile = destructive_profile(profile, "Discover Foundry deployments")
     try:
-        return await config_scoped_to_thread(profile, lambda: _discover_models(body))
+        return await config_scoped_to_thread(profile, lambda: _discover_deployments(body))
     except HTTPException:
         raise
     except Exception:  # health: allow BLE001 -- SDK errors can contain credentials; return a fixed hint without logging them

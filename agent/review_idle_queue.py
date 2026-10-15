@@ -18,7 +18,7 @@ import logging
 import threading
 import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -65,7 +65,7 @@ class _PendingReview:
     session_key: str
     kwargs: dict[str, Any]
     enqueued_at: float
-    context: contextvars.Context
+    context: contextvars.Context = field(default_factory=contextvars.copy_context)
 
 
 class ReviewIdleQueue:
@@ -74,6 +74,7 @@ class ReviewIdleQueue:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._pending: dict[str, _PendingReview] = {}
+        self._dispatching: dict[str, _PendingReview] = {}
         self._wake = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._live_turns = 0
@@ -94,10 +95,14 @@ class ReviewIdleQueue:
                 self._quiet_since = self._now()
         self._wake.set()
 
-    def enqueue(self, agent: Any, session_key: str, kwargs: dict[str, Any]) -> None:
+    def enqueue(self, agent: Any, session_key: str, kwargs: dict[str, Any]) -> bool:
         """Add (or replace — newest snapshot wins) a session's pending review, keeping the ORIGINAL
         enqueue time on coalesce so a busy session cannot push its age-out forever."""
+        from agent.review_lifecycle import publish_review_status, shutdown_timeout
+        agent._review_shutdown_timeout_s = shutdown_timeout(kwargs.get("task_cfg"))
         with self._lock:
+            if getattr(agent, "_background_review_closing", False) is True:
+                return False
             existing = self._pending.get(session_key)
             enqueued_at = existing.enqueued_at if existing is not None else self._now()
             self._pending[session_key] = _PendingReview(
@@ -105,6 +110,17 @@ class ReviewIdleQueue:
         self._ensure_thread()
         self._wake.set()
         logger.info("Background review deferred (session=%s, queued=%d)", session_key[-12:], len(self._pending))
+        publish_review_status(agent)
+        return True
+
+    def has_pending_for(self, agent: Any) -> bool:
+        with self._lock:
+            return any(item.agent is agent for item in (*self._pending.values(), *self._dispatching.values()))
+
+    def discard_for(self, agent: Any) -> None:
+        with self._lock:
+            self._pending = {key: item for key, item in self._pending.items() if item.agent is not agent}
+        self._wake.set()
 
     def pending_count(self) -> int:
         with self._lock:
@@ -139,7 +155,10 @@ class ReviewIdleQueue:
                 if not self._pending:
                     return None
                 candidate = min(self._pending.values(), key=lambda p: p.enqueued_at)
-            return self._pending.pop(candidate.session_key, None)
+            item = self._pending.pop(candidate.session_key, None)
+            if item is not None:
+                self._dispatching[item.session_key] = item
+            return item
 
     def _run(self) -> None:
         while True:
@@ -157,11 +176,17 @@ class ReviewIdleQueue:
                     item.context.run(self._dispatch, item)
             except Exception:
                 logger.warning("Deferred review dispatch failed", exc_info=True)
+            finally:
+                if item is not None:
+                    with self._lock:
+                        self._dispatching.pop(item.session_key, None)
+                    from agent.review_lifecycle import publish_review_status
+                    publish_review_status(item.agent)
             if item is None:
                 time.sleep(_POLL_INTERVAL_S)
 
     def _dispatch(self, item: _PendingReview) -> None:
-        if not self._still_enabled(item):
+        if getattr(item.agent, "_background_review_closing", False) is True or not self._still_enabled(item):
             logger.info(
                 "Deferred background review dropped: reviews were disabled while it was queued (session=%s)",
                 item.session_key[-12:])

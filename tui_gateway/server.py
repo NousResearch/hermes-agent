@@ -954,6 +954,7 @@ def _current_session_steer_authority(session_id: str) -> tuple[Transport | None,
 
 
 
+
 # ── Config I/O ────────────────────────────────────────────────────────
 
 

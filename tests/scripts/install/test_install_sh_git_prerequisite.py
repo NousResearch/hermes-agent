@@ -33,9 +33,13 @@ def _exe(path: Path, body: str) -> None:
 
 
 def _run_prerequisites(tmp_path: Path, *, git: str = "stub", interactive: bool = False, json: bool = False,
-                       brew: bool = False, clt_finishes: bool = True):
-    """git: "stub" (fails until the CLT install finishes), "license" (developer
-    tools present, Xcode license not accepted) or "working"."""
+                       brew: bool = False, clt_finishes: bool = True, dev: str | None = None,
+                       install_rc: int = 0):
+    """git: "stub" (fails until the CLT install finishes), "license" (Xcode
+    license not accepted) or "working". dev: the active developer directory
+    `xcode-select -p` reports: None (unset), "damaged" (a folder a macOS upgrade
+    left behind without its tools) or "complete" (holds usr/bin/git).
+    install_rc: exit status of `xcode-select --install`."""
     bin_dir = tmp_path / "bin"
     brew_bin = tmp_path / "brew-bin"
     brew_bin.mkdir()
@@ -49,15 +53,16 @@ def _run_prerequisites(tmp_path: Path, *, git: str = "stub", interactive: bool =
         _exe(bin_dir / "git", f'#!/bin/sh\nif [ -f "{done}" ]; then echo "git version 2.39.5"; exit 0; fi\n'
                               f'echo "{_STUB_ERR}" >&2\nexit 1\n')
     _exe(bin_dir / "curl", "#!/bin/sh\nexit 0\n")
-    # `-p` names the active developer directory only once the tools exist.
-    dev_dir = tmp_path / "Xcode.app" / "Contents" / "Developer"
-    if git == "license":
-        dev_dir.mkdir(parents=True)
+    dev_dir = tmp_path / "CommandLineTools"
+    if dev is not None:
+        dev_dir.mkdir()
+    if dev == "complete":
+        _exe(dev_dir / "usr" / "bin" / "git", _WORKING_GIT)
     _exe(bin_dir / "xcode-select",
          f'#!/bin/sh\nif [ "$1" = -p ]; then\n'
          f'  if [ -d "{dev_dir}" ]; then echo "{dev_dir}"; exit 0; fi\n'
          f'  echo "xcode-select: error: unable to get active developer directory" >&2; exit 2\nfi\n'
-         f'echo "xcode-select $*" >> "{calls}"\nexit 1\n')
+         f'echo "xcode-select $*" >> "{calls}"\nexit {install_rc}\n')
     # Each poll interval is where the user may finish Apple's dialog.
     finish = f'touch "{done}"\n' if clt_finishes else ""
     _exe(bin_dir / "sleep", f'#!/bin/sh\necho "sleep $*" >> "{calls}"\n{finish}exit 0\n')
@@ -136,13 +141,34 @@ def test_macos_stub_wait_gives_up_after_fifteen_minutes(tmp_path):
 @pytest.mark.platforms("macos")
 def test_macos_tools_present_but_git_fails_reports_git_error_without_waiting(tmp_path):
     """An unaccepted Xcode license: no dialog opens, so neither prompt nor wait."""
-    result, calls = _run_prerequisites(tmp_path, git="license", interactive=True)
+    result, calls = _run_prerequisites(tmp_path, git="license", dev="complete", interactive=True)
 
     assert result.returncode != 0
     assert "git is installed but cannot run" in result.stderr
     assert "sudo xcodebuild -license" in result.stderr
     assert "Command Line Tools" not in result.stderr
     assert calls == []
+
+
+@pytest.mark.platforms("macos")
+def test_macos_upgrade_leftover_tools_folder_still_opens_dialog(tmp_path):
+    """After a macOS upgrade `-p` names a folder that exists but holds no git."""
+    result, calls = _run_prerequisites(tmp_path, dev="damaged", interactive=True)
+
+    assert result.returncode == 0, result.stderr
+    assert "prerequisites ok" in result.stdout
+    assert calls == ["xcode-select --install", "sleep 5"]
+
+
+@pytest.mark.platforms("macos")
+def test_macos_damaged_tools_install_refused_fails_fast_with_reinstall_remedy(tmp_path):
+    """`--install` refuses over a leftover folder: no dialog opens, so no wait."""
+    result, calls = _run_prerequisites(tmp_path, dev="damaged", install_rc=1, interactive=True)
+
+    assert result.returncode != 0
+    assert "sudo rm -rf /Library/Developer/CommandLineTools" in result.stderr
+    assert "prerequisites ok" not in result.stdout
+    assert calls == ["xcode-select --install"]
 
 
 @pytest.mark.platforms("linux")

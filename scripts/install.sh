@@ -535,12 +535,17 @@ install_macos_git() {
         hash -r
         git_runs && return 0
     fi
-    # Developer tools already present (e.g. an Xcode license never accepted):
-    # no dialog will open, so let the caller report git's own error now.
+    # Developer tools present with their git (e.g. an Xcode license never
+    # accepted): no dialog will open, so let the caller report git's own error.
+    # A folder alone is not enough: a macOS upgrade can leave it behind empty.
     local _dev
-    _dev="$(xcode-select -p 2>/dev/null)" && [ -d "$_dev" ] && return 0
-    # Opens Apple's install dialog; harmless if it is already open.
-    xcode-select --install >/dev/null 2>&1 || true
+    _dev="$(xcode-select -p 2>/dev/null)" || _dev=""
+    [ -n "$_dev" ] && [ -x "$_dev/usr/bin/git" ] && return 0
+    # Opens Apple's install dialog. With a leftover folder it may refuse
+    # instead ("already installed"); no dialog opens, so don't wait for one.
+    if ! xcode-select --install >/dev/null 2>&1 && [ -n "$_dev" ] && [ -d "$_dev" ]; then
+        fail "The developer tools at $_dev are incomplete and xcode-select --install declined to reinstall them. Reinstall the Command Line Tools (run: sudo rm -rf /Library/Developer/CommandLineTools, then xcode-select --install), then re-run this installer." git_missing
+    fi
     local _remedy="Install Apple's Command Line Tools (run: xcode-select --install), then re-run this installer."
     # Hermes-Setup drives stages with --json: no stage timeout, a Cancel
     # button, and these log lines show as progress, so it waits too.

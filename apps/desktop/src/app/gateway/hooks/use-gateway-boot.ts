@@ -66,11 +66,7 @@ import {
 } from '@/store/gateway-switch'
 import { watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import { notify, notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
-import {
-  $activeGatewayProfile,
-  normalizeProfileKey,
-  refreshActiveProfile
-} from '@/store/profile'
+import { $activeGatewayProfile, normalizeProfileKey, refreshActiveProfile } from '@/store/profile'
 import { requestBackendRestart } from '@/store/recovery-requests'
 import {
   $activeSessionId,

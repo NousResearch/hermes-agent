@@ -65,8 +65,9 @@ class UIElement:
 @dataclass
 class CaptureResult:
     """Result of a screen capture call. mode="vision" → png_b64 only; mode="ax" → elements
-    only; mode="som" (default) → both: the PNG already carries numbered overlays drawn by
-    the backend and `elements` holds the matching index → element mapping."""
+    only; mode="som" (default) → both: the PNG is a plain screenshot (the driver never burns
+    numbers into it — `--no-overlay` only gates the agent cursor) and `elements` holds the
+    index → element mapping that `element=N` actions address."""
 
     mode: str
     width: int                      # screenshot width (logical px, pre-Anthropic-scale)

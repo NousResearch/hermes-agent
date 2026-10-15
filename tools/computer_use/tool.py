@@ -862,7 +862,7 @@ def _spill_elements_to_file(cap: CaptureResult) -> Optional[str]:
 
 # ── auxiliary.vision routing for captured screenshots ───────────────────────
 _MAX_VISION_DIM = 1456  # longest image side handed to the aux vision model: full-resolution desktop captures tokenize heavily
-# and can overflow small local-model context windows; ~1456px keeps SOM badges legible while cutting vision latency.
+# and can overflow small local-model context windows; ~1456px keeps on-screen detail legible while cutting vision latency.
 
 def _shrink_capture_for_vision(raw: bytes, ext: str, max_dim: int = _MAX_VISION_DIM) -> tuple[bytes, Optional[str]]:
     """Downscale encoded image bytes so the longest side is <= max_dim -> ``(bytes, scale_note)``. note is None when

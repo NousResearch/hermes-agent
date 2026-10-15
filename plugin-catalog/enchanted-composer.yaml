@@ -1,0 +1,26 @@
+name: enchanted-composer
+repo: https://github.com/noxius-studium/enchanted-composer
+sha: 63cb51633a68eb1c2739b6ab8d17a383361d20c4
+title: Enchanted Composer
+description: "Draft enhancement, reusable prompt libraries, undo/redo, and owner-bound full-duplex voice for Hermes Desktop. Disclosure — Derived from hermes-live-voice by Synero (itself derived from hermes-talk) and prompt-enhance by apoapostolov (both MIT; notices preserved). Starting voice captures microphone audio. The Codex-subscription lane spawns the official codex app-server CLI under its own login with a minimal environment; through it the captured profile's SOUL.md (up to 4,000 chars), the list of installed skills and enabled tools, and Hermes task results go to OpenAI. The API lane runs only when COMPOSER_REALTIME_OFFER_URL is set: it posts the SDP offer to that https URL with COMPOSER_OPENAI_API_KEY, or the profile's OPENAI_API_KEY, as a Bearer token (redirects refused). A user-configured wss:// bridge receives microphone audio, chat/profile identifiers and task results. Spoken requests the voice model delegates run as Hermes agent turns with tools in the chat where voice started; runs that need approval are stopped, not approved. Settings and usage totals are stored under HERMES_HOME/plugin-data/enchanted-composer/. No telemetry, no self-updater, no Codex OAuth-file reads."
+maintainer: Deadtrix21
+tier: community
+category: voice
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/noxius-studium/enchanted-composer/blob/63cb51633a68eb1c2739b6ab8d17a383361d20c4/README.md
+version: "0.2.0"
+image: https://raw.githubusercontent.com/noxius-studium/enchanted-composer/63cb51633a68eb1c2739b6ab8d17a383361d20c4/docs/media/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/noxius-studium/enchanted-composer/63cb51633a68eb1c2739b6ab8d17a383361d20c4/docs/media/enhancement-desktop.png
+  - https://raw.githubusercontent.com/noxius-studium/enchanted-composer/63cb51633a68eb1c2739b6ab8d17a383361d20c4/docs/media/voice-desktop.png
+  - https://raw.githubusercontent.com/noxius-studium/enchanted-composer/63cb51633a68eb1c2739b6ab8d17a383361d20c4/docs/media/prompts-mobile.png
+readme: true
+platforms: []
+known_issues:
+  - Codex subscription authentication is managed with `codex login` outside Hermes; the plugin does not read or write Codex OAuth files.
+  - Full two-sided persistent voice history and a phone voice client are not included in version 0.2.0.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

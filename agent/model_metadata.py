@@ -22,7 +22,7 @@ from agent import model_metadata_http
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
-from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, without_persistence_fields
+from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, UNPRICED_REPLAY_FIELDS, without_persistence_fields
 
 logger = logging.getLogger(__name__)
 
@@ -350,9 +350,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     "hy4-preview": 1_048_576, "hy3-preview": 262144, "hy3": 262144,
     # "Ox Alpha" stealth model (OpenCode Zen / OpenRouter slugs); "Union Alpha" stealth model
     # (OpenRouter ``stealth/union-alpha``, 262144 per /api/v1/models); NVIDIA Nemotron (128K
-    # except 3.5 Lightning); Poolside Laguna 2.1 (:free / -free slugs); Arcee; OpenRouter.
+    # except 3.5 Lightning and 3.5 Super); Poolside Laguna 2.1 (:free / -free slugs); Arcee; OpenRouter.
     "x-preview-f": 1_048_576, "ox-alpha": 1_048_576, "union-alpha": 262144,
-    "nemotron-3.5-lightning": 1_000_000, "nemotron": 131072,
+    "nemotron-3.5-lightning": 1_000_000, "nemotron-3.5-super-vl": 1_000_000, "nemotron": 131072,
     "laguna-s-2.1": 262144, "laguna-xs-2.1": 262144, "trinity": 262144, "elephant": 262144,
     # Hugging Face Inference Providers — model IDs use org/name format
     "Qwen/Qwen3.5-397B-A17B": 131072, "Qwen/Qwen3.5-35B-A3B": 131072, "deepseek-ai/DeepSeek-V3.2": 65536,
@@ -533,7 +533,7 @@ def _lmstudio_server_root(base_url: str) -> str:
 def _server_root(base_url: str) -> str:
     """Probe root for a local server: IPv4-resolved, ``/v1`` suffix stripped."""
     server_url = _localhost_to_ipv4(base_url.rstrip("/"))
-    return server_url[:-3] if server_url.endswith("/v1") else server_url
+    return server_url.removesuffix("/v1")
 
 
 # Families whose generation digit is part of the name (``solar-mini`` vs ``solar-mini4``): their keys
@@ -1870,10 +1870,8 @@ def _remember_no_codex_catalog(cache_key: str) -> None:
 
 
 def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: str = "") -> tuple[dict[str, int], bool]:
-    """Codex catalogue ``{slug: context_window}`` plus whether it came from HTTP. Cached per token
-    fingerprint (windows vary by entitlement); ``max_context_window`` lands in
-    ``_codex_oauth_max_context_cache`` under the same key. An in-process hit reports False: not a
-    fresh provider confirmation, must not drive persistent writes."""
+    """Account-scoped catalogue context lengths and HTTP freshness; also retain max-context and
+    speed metadata. In-process hits report False and must not drive persistent writes."""
     if not _codex_catalog_probe_allowed(access_token, base_url):
         return {}, False
     now = time.time()
@@ -1898,6 +1896,8 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
         logger.debug("Codex /models probe failed: %s", exc)
         _remember_no_codex_catalog(cache_key)
         return {}, False
+    from agent.codex_service_tiers import remember_catalog
+    remember_catalog(cache_key, entries)
     result: dict[str, int] = {}
     max_result: dict[str, int] = {}
     for item in entries:
@@ -2572,7 +2572,7 @@ def _wire_message_shadow(msg: dict[str, Any]) -> dict[str, Any]:
     drop_reasoning_dup = isinstance(_rc, str) and bool(_rc.strip())
     shadow: dict[str, Any] = {}
     for k, v in msg.items():
-        if k in ("_anthropic_content_blocks", "reasoning_details") or k in PERSISTENCE_ONLY_MESSAGE_FIELDS or (k == "reasoning" and drop_reasoning_dup):
+        if k in UNPRICED_REPLAY_FIELDS or k in PERSISTENCE_ONLY_MESSAGE_FIELDS or (k == "reasoning" and drop_reasoning_dup):
             continue
         if k == "api_content":
             if sidecar_wins:

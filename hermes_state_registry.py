@@ -69,7 +69,7 @@ class _Generation:
 
     __slots__ = ("db", "identity", "path", "refcount", "retired")
 
-    def __init__(self, path: Path, db: "SessionDB", identity: Optional[tuple[int, int]]) -> None:
+    def __init__(self, path: Path, db: SessionDB, identity: Optional[tuple[int, int]]) -> None:
         self.path = path
         self.db = db
         self.refcount = 1
@@ -98,21 +98,21 @@ _tearing_down: dict[Path, _TeardownBarrier] = {}
 _path_lifecycle_locks: dict[Path, threading.Lock] = {}
 
 
-def _open_session_db(path: Path) -> "SessionDB":
+def _open_session_db(path: Path) -> SessionDB:
     """Construct the SessionDB for *path* (call-time import avoids cycles; tests patch this)."""
     from hermes_state import SessionDB
 
     return SessionDB(db_path=path)
 
 
-def _teardown(db: "SessionDB") -> None:
+def _teardown(db: SessionDB) -> None:
     """Close a shared instance, clearing its registry-owned flag first."""
     with contextlib.suppress(Exception):
         db._shared_registry_owned = False
     _close_quietly(db, "Error closing shared SessionDB")
 
 
-def _close_quietly(db: "SessionDB", debug_message: str) -> None:
+def _close_quietly(db: SessionDB, debug_message: str) -> None:
     """close() that never propagates. A lost WAL generation whose capture failed is data at risk,
     not teardown noise: the handle stays open and the operator has to act, so that one surfaces."""
     try:
@@ -161,7 +161,7 @@ def _finish_teardown(path: Path, barrier: _TeardownBarrier) -> None:
 
 def _teardown_generation(
     path: Path,
-    db: "SessionDB",
+    db: SessionDB,
     *,
     barrier: Optional[_TeardownBarrier] = None,
 ) -> None:
@@ -176,7 +176,7 @@ def _teardown_generation(
             _finish_teardown(path, barrier)
 
 
-def _db_path_of(db: "SessionDB") -> Optional[Path]:
+def _db_path_of(db: SessionDB) -> Optional[Path]:
     """``Path(db.db_path)`` or None when absent/unconvertible."""
     path = getattr(db, "db_path", None)
     try:
@@ -192,7 +192,7 @@ def _finish_opening(path: Path, opening: threading.Event) -> None:
     opening.set()
 
 
-def acquire(db_path: Optional[Path] = None) -> "SessionDB":
+def acquire(db_path: Optional[Path] = None) -> SessionDB:
     """Return the shared SessionDB for *db_path*, incrementing its refcount. If the file was
     replaced (different inode) since the generation opened, that generation is RETIRED
     but stays alive for its holders, and a fresh one is opened in its place. Raises
@@ -273,7 +273,7 @@ def acquire(db_path: Optional[Path] = None) -> "SessionDB":
         return winner
 
 
-def release(db: "SessionDB") -> bool:
+def release(db: SessionDB) -> bool:
     """Decrement the refcount of a shared SessionDB. ``True`` if *db* was shared; ``False``
     if it is not registry-managed (caller owns close()). The final release tears the
     generation down OUTSIDE the registry lock. Lookup is object-keyed, so holders of an
@@ -399,7 +399,7 @@ def close_all_under(directory: str | Path) -> int:
 
 
 def other_generations_for_path(
-    db_path: Path, *, exclude: Optional["SessionDB"] = None
+    db_path: Path, *, exclude: Optional[SessionDB] = None
 ) -> list[str]:
     """Describe every other LIVE SessionDB generation THIS process holds for *db_path*.
 
@@ -430,7 +430,7 @@ def other_generations_for_path(
         ]
 
 
-def live_shared_session_dbs() -> list["SessionDB"]:
+def live_shared_session_dbs() -> list[SessionDB]:
     """Snapshot of every live (non-retired) shared SessionDB (refcounts untouched), for
     in-process maintenance. A concurrent final release may close an instance, in which
     case the callee sees ``_conn is None``."""
@@ -439,7 +439,7 @@ def live_shared_session_dbs() -> list["SessionDB"]:
 
 
 @contextlib.contextmanager
-def borrow_live_shared_session_dbs() -> Iterator[list["SessionDB"]]:
+def borrow_live_shared_session_dbs() -> Iterator[list[SessionDB]]:
     """Borrow live handles with registry references pinned for the whole block.
 
     Maintenance must not operate on the unowned snapshot returned by
@@ -471,7 +471,7 @@ def stats() -> dict[str, int]:
         }
 
 
-def release_or_close(db: "SessionDB") -> None:
+def release_or_close(db: SessionDB) -> None:
     """Release a shared instance, or close it when it is not registry-managed. Drop-in for a
     plain ``db.close()``: read-only opens, CLI one-shots and test fakes fall back."""
     if not release(db):

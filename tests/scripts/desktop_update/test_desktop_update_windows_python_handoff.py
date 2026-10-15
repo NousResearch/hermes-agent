@@ -58,6 +58,7 @@ def test_pm_handoff_reports_update_and_gateway_results(
                           'HANDOFF_CALLS': str(calls), 'HANDOFF_EXIT': str(code),
                           'GATEWAY_EXIT': str(gateway_code)},
         capture_output=True, text=True, timeout=120,
+        check=False,
     )
     assert result.returncode == code, result.stdout + result.stderr
     expected = [{'argv': ['update', '--yes'] + ([] if no_gateway else ['--gateway'])
@@ -96,6 +97,7 @@ def test_update_killed_by_idle_watchdog_after_completing_is_a_success(
                           'HANDOFF_CALLS': str(calls), 'HANDOFF_EXIT': '0', 'HANDOFF_HANG': output,
                           'HERMES_UPDATE_STEP_IDLE_SECONDS': '3', 'PYTHONIOENCODING': 'utf-8'},
         capture_output=True, text=True, timeout=180,
+        check=False,
     )
     assert result.returncode == code, result.stdout + result.stderr
     argv = [json.loads(line)['argv'][:2] for line in calls.read_text(encoding='utf-8-sig').splitlines()]
@@ -121,7 +123,7 @@ def test_earlier_pm_userbin_launcher_is_identity_checked(tmp_path: Path) -> None
         script = f". '{helper}'; try {{ @(Get-HermesRuntimeCommand -InstallRoot '{target}') | ConvertTo-Json -Compress }} catch {{ exit 1 }}"
         result = subprocess.run(['powershell', '-NoProfile', '-Command', script],
                                 env={**os.environ, 'HERMES_HOME': str(home)},
-                                capture_output=True, text=True, timeout=45)
+                                capture_output=True, text=True, timeout=45, check=False)
         assert result.returncode == expected_code, result.stdout + result.stderr
         if expected_code == 0:
             assert json.loads(result.stdout) == str(external)
@@ -141,7 +143,7 @@ def test_command_file_launcher_probe_runs_through_cmd_exe_explicitly(tmp_path: P
         script = (f". '{helper}'; try {{ $r = Invoke-HermesProbe '{target}' @('--version', '{argument}'); "
                   "[Console]::Out.Write(\"code=$($r.Code)`n$($r.Output)\") } catch { [Console]::Out.Write('refused'); exit 3 }")
         return subprocess.run(['powershell', '-NoProfile', '-Command', script],
-                              capture_output=True, text=True, timeout=60)
+                              capture_output=True, text=True, timeout=60, check=False)
 
     ok = probe('two words')
     assert ok.returncode == 0, ok.stdout + ok.stderr

@@ -31,6 +31,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { reportInstallMethodWarning } from '@/store/updates'
+import type { UsageStats } from '@/types/hermes'
 
 import {
   applySessionInfoStatePatch,
@@ -40,6 +41,62 @@ import {
 } from '../utils'
 
 import type { GatewayEventContext } from './types'
+
+/** Normalize canonical top-level counters; legacy ticker frames stay nested. */
+function canonicalUsage(payload: GatewayEventContext['payload']): Partial<UsageStats> | undefined {
+  if (!payload || payload.usage) {
+    return payload?.usage
+  }
+
+  const number = (value: unknown): number | undefined =>
+    typeof value === 'number' && Number.isFinite(value) ? value : undefined
+  const input = number(payload.input_tokens) ?? number(payload.prompt_tokens)
+  const output = number(payload.output_tokens)
+  const total = number(payload.total_tokens)
+  const calls = number(payload.api_calls)
+  const prompt = number(payload.prompt_tokens)
+  const cacheRead = number(payload.cache_read_tokens)
+  const contextMax = number(payload.context_length)
+  const contextUsed = number(payload.last_prompt_tokens)
+  const tokensPerSecond = number(payload.tokens_per_s)
+  const compressionCount = number(payload.compression_count)
+
+  if ([input, output, total, calls, prompt, cacheRead, contextMax, contextUsed, tokensPerSecond].every(value => value === undefined)) {
+    return undefined
+  }
+
+  const usage: Partial<UsageStats> = {}
+  if (input !== undefined) {
+    usage.input = input
+  }
+  if (output !== undefined) {
+    usage.output = output
+  }
+  if (total !== undefined) {
+    usage.total = total
+  }
+  if (calls !== undefined) {
+    usage.calls = calls
+  }
+  if (contextMax !== undefined && contextUsed !== undefined && contextUsed > 0) {
+    usage.context_used = Math.min(contextUsed, contextMax)
+    usage.context_max = contextMax
+    usage.context_percent = Math.max(0, Math.min(100, Math.round((contextUsed / contextMax) * 100)))
+    usage.context_source = payload.context_source ?? 'provider_usage'
+    usage.context_estimated = usage.context_source !== 'provider_usage'
+  }
+  if (compressionCount !== undefined && contextMax !== undefined) {
+    usage.compressions = compressionCount
+  }
+  if (prompt !== undefined && prompt > 0 && cacheRead !== undefined && cacheRead > 0) {
+    usage.cache_hit_pct = Math.max(0, Math.min(100, Math.round((cacheRead / prompt) * 100)))
+  }
+  if (tokensPerSecond !== undefined) {
+    usage.avg_tps = Math.round(tokensPerSecond * 10) / 10
+  }
+
+  return usage
+}
 
 /**
  * Whether a `session.info` payload's `stored_session_id` may be treated as the
@@ -535,16 +592,18 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // Live usage tick emitted while a turn is mid-flight (see tui_gateway
     // _start_usage_ticker) so the status-bar context window tracks growth
     // during the turn instead of only jumping at message.complete.
-    if (payload?.usage && sessionId) {
+    const usage = canonicalUsage(payload)
+
+    if (usage && sessionId) {
       // Per-session twin first: a focused secondary tile reads this cache,
       // while the primary-only global mirrors the active session.
       updateSessionState(sessionId, state => ({
         ...state,
-        usage: { calls: 0, input: 0, output: 0, total: 0, ...state.usage, ...payload.usage }
+        usage: { calls: 0, input: 0, output: 0, total: 0, ...state.usage, ...usage }
       }))
 
       if (isActiveEvent) {
-        setCurrentUsage(current => ({ ...current, ...payload.usage }))
+        setCurrentUsage(current => ({ ...current, ...usage }))
       }
     }
 

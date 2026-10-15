@@ -52,6 +52,37 @@ describe('useMessageStream status-bar usage scoping', () => {
     })
   })
 
+  it('normalizes a canonical top-level session.usage tick for the status bar', () => {
+    mountStream()
+
+    act(() =>
+      stream.handleEvent({
+        payload: {
+          api_calls: 3,
+          cache_read_tokens: 800,
+          input_tokens: 1_200,
+          output_tokens: 80,
+          prompt_tokens: 1_000,
+          tokens_per_s: 41.64,
+          total_tokens: 1_280
+        },
+        session_id: SID,
+        type: 'session.usage'
+      })
+    )
+
+    expect($currentUsage.get()).toEqual({
+      ...BASELINE,
+      avg_tps: 41.6,
+      cache_hit_pct: 80,
+      calls: 3,
+      input: 1_200,
+      output: 80,
+      total: 1_280
+    })
+    expect(sessionStates.get(SID)?.usage).toEqual($currentUsage.get())
+  })
+
   it('caches a background session.usage tick without overwriting the primary status bar', () => {
     mountStream()
 

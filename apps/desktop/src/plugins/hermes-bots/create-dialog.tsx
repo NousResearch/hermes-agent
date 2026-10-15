@@ -47,6 +47,7 @@ import { createCanonicalChat } from './canonical-chat'
 import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
 import { registerCanonicalGroup } from './canonical-group-registry'
 import { canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup } from './canonical-groups'
+import { persistNewBotLook } from './create-dialog-look'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
@@ -75,6 +76,7 @@ import { deleteBot } from './profile-ops'
 import { botRosterMeta } from './routing'
 import { HubSkillsSection } from './skills-hub'
 import { composeSoul } from './soul'
+import { TitleRoleFields } from './title-role-fields'
 import type { BotMeta, ConnectionRow, RosterRow } from './types'
 
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -135,6 +137,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   // createdRef must stay a slug string for its sibling consumers.
   const flightRef = useRef<Promise<null | string> | null>(null)
   const [title, setTitle] = useState('')
+  const [role, setRole] = useState('')
   const [description, setDescription] = useState('')
   // Default shapes mode: deterministic blob face drawn from the agent's name
   // (falls back to the legacy shape vocabulary on older SDKs).
@@ -268,6 +271,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   const reset = () => {
     setName('')
     setTitle('')
+    setRole('')
     setDescription('')
     setShape(blobatarSvg ? 'blobatar' : 'circle')
     setColor(null)
@@ -449,48 +453,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         /* capability application is best-effort */
       }
 
-      if (remoteTarget) {
-        // The bot lives on ANOTHER machine — local bot-meta is scoped to the
-        // active gateway, so write appearance/title into the remote
-        // profile's ui_meta (and asset store) directly. Best-effort: the
-        // profile exists either way.
-        const { image: avatarImage, ...look } = {
-          shape,
-          color,
-          image,
-          imageKind: image ? 'photo' : 'shape',
-          title: botTitle,
-          created: Date.now()
-        }
-
-        try {
-          void requestForTarget('profiles.configure', {
-            name: slug,
-            ui_meta: {
-              'hermes-bots': look
-            }
-          }).catch(() => undefined)
-
-          if (avatarImage) {
-            void requestForTarget('profiles.set_asset', {
-              name: slug,
-              asset: 'avatar',
-              data: avatarImage
-            }).catch(() => undefined)
-          }
-        } catch {
-          /* older remote gateway */
-        }
-      } else {
-        saveBotMeta(slug, {
-          shape,
-          color: color ?? undefined,
-          image,
-          imageKind: image ? 'photo' : 'shape',
-          title: botTitle,
-          created: Date.now()
-        })
-      }
+      persistNewBotLook(slug, { shape, color, image, title: botTitle, role }, remoteTarget ? requestForTarget : null)
 
       queryClient.invalidateQueries({
         queryKey: ROSTER_KEY
@@ -697,10 +660,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
           {remoteTarget ? (
             <div className="text-[0.7rem] leading-5 text-(--ui-text-tertiary)">{b.editor.remoteHint(targetLabel)}</div>
           ) : null}
-          {labeled(
-            b.editor.title,
-            <Input onChange={event => setTitle(event.target.value)} placeholder="Inbox Triage" value={title} />
-          )}
+          <TitleRoleFields onRole={setRole} onTitle={setTitle} placeholder="Inbox Triage" role={role} title={title} />
           {labeled(
             b.editor.description,
             <Textarea

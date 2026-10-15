@@ -26,6 +26,9 @@ export type BotsMessages = {
     newDescription: string
     name: string
     title: string
+    /** Short job label shown beside the name, e.g. "Deep Research". */
+    role: string
+    rolePlaceholder: string
     description: string
     createOn: string
     general: string

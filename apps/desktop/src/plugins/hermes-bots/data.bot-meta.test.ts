@@ -489,7 +489,7 @@ describe("a bot is named by its own backend, never by another bot's cached recor
   })
 
   it('Edit Profile sends only what the user changed since it opened', () => {
-    const opened = { color: '#ff0000', image: null, shape: 'circle' as const, title: 'Old title' }
+    const opened = { color: '#ff0000', image: null, role: '', shape: 'circle' as const, title: 'Old title' }
 
     // Renamed elsewhere meanwhile; this dialog only changes the color.
     expect(editedLook(opened, { ...opened, color: '#0000ff' })).toEqual({ color: '#0000ff', custom: true })

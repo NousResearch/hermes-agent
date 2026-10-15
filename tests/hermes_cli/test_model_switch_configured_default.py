@@ -119,6 +119,18 @@ def test_bare_custom_default_does_not_borrow_first_named_endpoint(providers, lis
     assert not switch._config_declares_model(ROUTER, "custom", ENDPOINT, providers, custom)
 
 
+def test_settings_only_provider_block_does_not_revoke_the_default(listing):
+    # The reporter's live shape (#138261 boundary matrix): providers.fireworks carries settings
+    # but no base_url and no models entry — the duplicate models entry was only a workaround, so
+    # model.default alone keeps the id declared on the provider's registry route. A near-miss id
+    # (routers/ -> models/) stays rejected: exact match only.
+    providers = {"fireworks": {}}
+    _config({"model": {"default": ROUTER, "provider": "fireworks"}, "providers": providers})
+    assert switch._config_declares_model(ROUTER, "fireworks", ENDPOINT, providers, [])
+    assert not switch._config_declares_model(
+        "accounts/fireworks/models/deepseek-v4p1-flash-us", "fireworks", ENDPOINT, providers, [])
+
+
 def test_default_declaration_is_profile_scoped_and_unreadable_config_fails_closed(tmp_path, monkeypatch, listing):
     for profile, declared in [("first", True), ("second", False)]:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / profile))

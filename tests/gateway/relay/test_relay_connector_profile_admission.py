@@ -2,7 +2,7 @@
 
 The connector (Team Gateway per-scope profile routing) stamps the Hermes profile that serves an
 inbound event. A single-profile gateway serves it from its one profile (the stamp is not a route
-there, as before shared session authority, but it is kept on the admission); a multiplexed gateway admits it into that profile's
+there, as before shared session authority, and never reaches durable state); a multiplexed gateway admits it into that profile's
 own ledger. Neither may acknowledge the frame and drop it. An unserved stamped profile is refused
 the way an unserved profile route is: acknowledged, never run.
 """
@@ -127,8 +127,12 @@ async def test_single_profile_gateway_serves_a_connector_stamped_profile(tmp_pat
             assert by_text['hello plain'] == (launch, 'agent:main:telegram:dm:chat-plain')
             rows = {r['request_id']: r for r in _requests(authority)}
             assert sorted(rows) == ['plain', 'stamped']
-            # The stamp is kept (sealed) in the durable admission, so a restored reply can echo it.
-            assert rows['stamped']['payload']['native_text_v1']['source'].get('profile') == 'work'
+            # No profile reaches durable state: the admission and the session origin (which later
+            # completion/notification scopes resolve a home from) both name the launch profile only.
+            assert 'profile' not in rows['stamped']['payload']['native_text_v1']['source']
+            entry = runner.session_store.lookup_by_session_key('agent:main:telegram:dm:chat-stamped')
+            assert entry is not None and not entry.origin.profile
+            assert Path(runner._resolve_profile_home_for_source(entry.origin)).resolve() == launch
             # The connector still gets its profile echoed on egress (persona attribution).
             assert _replies(outgoing, 'chat-stamped')[-1]['metadata'].get('profile') == 'work'
             # A replay of the stamped frame is the same admission, not a second turn.

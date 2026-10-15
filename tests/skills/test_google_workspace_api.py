@@ -144,6 +144,126 @@ def test_api_calendar_list_uses_events_list(api_module):
 
 
 
+def test_api_gmail_filter_create_uses_settings_api(api_module, capsys):
+    captured = {}
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        captured.update(parts=parts, params=params, body=body)
+        return {"id": "filter-1", **body}
+
+    api_module._run_gws = fake_run_gws
+    args = api_module.argparse.Namespace(
+        from_address="alerts@example.com",
+        to="",
+        subject="",
+        query="has:attachment",
+        negated_query="",
+        has_attachment=False,
+        exclude_chats=True,
+        add_labels="Label_1, STARRED",
+        remove_labels="INBOX",
+        func=api_module.gmail_filter_create,
+    )
+
+    api_module.gmail_filter_create(args)
+
+    assert captured == {
+        "parts": ["gmail", "users", "settings", "filters", "create"],
+        "params": {"userId": "me"},
+        "body": {
+            "criteria": {
+                "from": "alerts@example.com",
+                "query": "has:attachment",
+                "excludeChats": True,
+            },
+            "action": {
+                "addLabelIds": ["Label_1", "STARRED"],
+                "removeLabelIds": ["INBOX"],
+            },
+        },
+    }
+    assert json.loads(capsys.readouterr().out)["filter"]["id"] == "filter-1"
+
+
+def test_api_gmail_filter_list_get_delete_use_settings_api(api_module, capsys):
+    calls = []
+
+    def fake_run_gws(parts, *, params=None, body=None):
+        calls.append({"parts": parts, "params": params, "body": body})
+        if parts[-1] == "list":
+            return {"filter": [{"id": "filter-1"}]}
+        return {"id": params["id"]}
+
+    api_module._run_gws = fake_run_gws
+    api_module.gmail_filter_list(api_module.argparse.Namespace())
+    api_module.gmail_filter_get(api_module.argparse.Namespace(filter_id="filter-1"))
+    api_module.gmail_filter_delete(api_module.argparse.Namespace(filter_id="filter-1"))
+
+    assert calls == [
+        {
+            "parts": ["gmail", "users", "settings", "filters", "list"],
+            "params": {"userId": "me"},
+            "body": None,
+        },
+        {
+            "parts": ["gmail", "users", "settings", "filters", "get"],
+            "params": {"userId": "me", "id": "filter-1"},
+            "body": None,
+        },
+        {
+            "parts": ["gmail", "users", "settings", "filters", "delete"],
+            "params": {"userId": "me", "id": "filter-1"},
+            "body": None,
+        },
+    ]
+    output = capsys.readouterr().out
+    assert '"id": "filter-1"' in output
+    assert '"status": "deleted"' in output
+
+
+def test_api_gmail_filter_get_uses_python_fallback(api_module, capsys):
+    request = MagicMock()
+    request.execute.return_value = {"id": "filter-1"}
+    service = MagicMock()
+    service.users().settings().filters().get.return_value = request
+    api_module._gws_binary = lambda: None
+    api_module.build_service = MagicMock(return_value=service)
+
+    api_module.gmail_filter_get(api_module.argparse.Namespace(filter_id="filter-1"))
+
+    api_module.build_service.assert_called_once_with("gmail", "v1")
+    service.users().settings().filters().get.assert_called_once_with(
+        userId="me", id="filter-1"
+    )
+    assert json.loads(capsys.readouterr().out) == {"id": "filter-1"}
+
+
+@pytest.mark.parametrize(
+    ("criteria", "actions", "message"),
+    [
+        ({}, {"add_labels": "Label_1"}, "matching criterion"),
+        ({"from_address": "alerts@example.com"}, {}, "--add-labels or --remove-labels"),
+    ],
+)
+def test_api_gmail_filter_create_rejects_incomplete_filter(
+    api_module, criteria, actions, message
+):
+    values = {
+        "from_address": "",
+        "to": "",
+        "subject": "",
+        "query": "",
+        "negated_query": "",
+        "has_attachment": False,
+        "exclude_chats": False,
+        "add_labels": "",
+        "remove_labels": "",
+        **criteria,
+        **actions,
+    }
+
+    with pytest.raises(SystemExit, match=message):
+        api_module.gmail_filter_create(api_module.argparse.Namespace(**values))
 
 
 def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, monkeypatch):

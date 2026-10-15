@@ -53,9 +53,12 @@ says the checkout is newer, instead of announcing a new update.
 
 The installers (`install.sh`, `install.ps1` and Hermes-Setup) put a new install
 on the latest stable release too. Re-running one over an install that never
-chose a channel moves it forward to that release the same way (a checkout that
-already contains it stays). Over an install that chose a channel other than
-`main`, a rerun keeps its checkout where it is: only `hermes update` moves it.
+chose a channel moves it onto that release only when the release descends from
+its checkout. Any other checkout (one that followed `main`, or one already past
+the release) stays where it is, and `hermes update` decides that move: it refuses
+a release that predates the session stores the checkout already uses. Over an
+install that chose a channel other than `main`, a rerun keeps its checkout where
+it is: only `hermes update` moves it.
 To install the tip of `main` instead, pass `--channel main` (`-Channel main`
 for `install.ps1`, or set `HERMES_INSTALL_CHANNEL=main` before an
 `irm | iex` one-liner); the installer saves that choice the way

@@ -25,15 +25,20 @@ def _git(cwd, *args, env=None):
     ).stdout.strip()
 
 
-@pytest.mark.parametrize("start,channel,tagged,lands", [
-    (None, "", True, "release"),        # fresh install: the release, not main's tip
-    (None, "main", True, "tip"),        # explicit opt-out: main's tip
-    ("before", "", True, "release"),    # rerun behind the release: moves forward to it
-    ("tip", "", True, "tip"),           # rerun already containing it: never moves back
-    (None, "", False, None),            # release tag unreachable: fail, publish nothing
-    ("before", "", False, "before"),    # ... a rerun keeps its checkout instead
+@pytest.mark.parametrize("side,start,channel,tagged,lands", [
+    (False, None, "", True, "release"),        # fresh install: the release, not main's tip
+    (False, None, "main", True, "tip"),        # explicit opt-out: main's tip
+    (False, "before", "", True, "release"),    # rerun behind the release: moves forward to it
+    (False, "tip", "", True, "tip"),           # rerun already containing it: never moves back
+    (False, None, "", False, None),            # release tag unreachable: fail, publish nothing
+    (False, "before", "", False, "before"),    # ... a rerun keeps its checkout instead
+    # The release cut on a release branch, main past the fork point (v0.22.2's shape): main moves
+    # back only through `hermes update`, whose downgrade guard the installer cannot run.
+    (True, "tip", "", True, "tip"),
+    (True, "tip", "stable", True, "tip"),
+    (True, "before", "", True, "release"),
 ])
-def test_install_ps1_lands_on_the_latest_stable_release(tmp_path, start, channel, tagged, lands):
+def test_install_ps1_lands_on_the_latest_stable_release(tmp_path, side, start, channel, tagged, lands):
     powershell = shutil.which("powershell")
     if not powershell:
         pytest.skip("Windows PowerShell is required")
@@ -42,12 +47,16 @@ def test_install_ps1_lands_on_the_latest_stable_release(tmp_path, start, channel
     origin.mkdir()
     home.mkdir()
     _git(origin, "init", "-q", "-b", "main")
-    for label in ("before", "release", "newer"):
-        _git(origin, "commit", "-q", "--allow-empty", "-m", label)
+    _git(origin, "commit", "-q", "--allow-empty", "-m", "before")
+    if side:
+        _git(origin, "checkout", "-q", "-b", "release/1.2")
+    _git(origin, "commit", "-q", "--allow-empty", "-m", "release")
+    commits = {"before": _git(origin, "rev-parse", "HEAD~1"), "release": _git(origin, "rev-parse", "HEAD")}
     if tagged:
-        _git(origin, "tag", "-a", "v1.2.3", "-m", "release", "HEAD~1")
-    commits = {name: _git(origin, "rev-parse", ref)
-               for name, ref in (("before", "HEAD~2"), ("release", "HEAD~1"), ("tip", "HEAD"))}
+        _git(origin, "tag", "-a", "v1.2.3", "-m", "release")
+    _git(origin, "checkout", "-q", "main")
+    _git(origin, "commit", "-q", "--allow-empty", "-m", "newer")
+    commits["tip"] = _git(origin, "rev-parse", "HEAD")
     gitconfig = tmp_path / "gitconfig"
     gitconfig.write_text(f'[url "{origin.as_uri()}"]\n  insteadOf = {OFFICIAL}\n', encoding="utf-8")
     env = {**os.environ, "GIT_CONFIG_GLOBAL": str(gitconfig), "NO_COLOR": "1"}

@@ -737,12 +737,16 @@ stage_repository() {
             return 0
         fi
         if [ -n "$release" ]; then
-            # Without a choice the default only moves forward, as `hermes update`'s does: a
-            # checkout that already contains the release (one that followed main) stays. A
-            # shallow checkout cannot prove it does not, so it stays for `hermes update` too.
-            if [ "$CHANNEL" != stable ] && { git -C "$INSTALL_DIR" merge-base --is-ancestor "$release" HEAD 2>/dev/null \
-                || [ "$(git -C "$INSTALL_DIR" rev-parse --is-shallow-repository 2>/dev/null)" = true ]; }; then
+            # A rerun only moves a checkout forward onto the release. Any other move (a main
+            # checkout diverged from a release cut on release/*, one already past it, a shallow
+            # one that cannot tell) is `hermes update`'s: it refuses a release that predates the
+            # session stores this checkout wrote (update_downgrade_guard).
+            if git -C "$INSTALL_DIR" merge-base --is-ancestor "$release" HEAD 2>/dev/null; then
                 log "Keeping its checkout: it already has $release (\`hermes update\` moves it to the next release)"
+                return 0
+            fi
+            if ! git -C "$INSTALL_DIR" merge-base --is-ancestor HEAD "$release" 2>/dev/null; then
+                log "Keeping its checkout: $release does not descend from it (\`hermes update\` decides that move)"
                 return 0
             fi
         else

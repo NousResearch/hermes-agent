@@ -1058,17 +1058,19 @@ function Stage-Repository {
             return
         }
         if ($release) {
-            # Without a choice the default only moves forward, as `hermes update`'s does: a
-            # checkout that already contains the release (one that followed main) stays. A
-            # shallow checkout cannot prove it does not, so it stays for `hermes update` too.
-            if ($Channel -cne 'stable') {
-                Invoke-Native { git -C $InstallDir merge-base --is-ancestor $release HEAD 2>$null } | Out-Null
-                $contains = -not $LASTEXITCODE
-                $shallow = "$(Invoke-Native { git -C $InstallDir rev-parse --is-shallow-repository 2>$null })".Trim() -eq 'true'
-                if ($contains -or $shallow) {
-                    Log "Keeping its checkout: it already has $release (``hermes update`` moves it to the next release)"
-                    return
-                }
+            # A rerun only moves a checkout forward onto the release. Any other move (a main
+            # checkout diverged from a release cut on release/*, one already past it, a shallow
+            # one that cannot tell) is `hermes update`'s: it refuses a release that predates the
+            # session stores this checkout wrote (update_downgrade_guard).
+            Invoke-Native { git -C $InstallDir merge-base --is-ancestor $release HEAD 2>$null } | Out-Null
+            if (-not $LASTEXITCODE) {
+                Log "Keeping its checkout: it already has $release (``hermes update`` moves it to the next release)"
+                return
+            }
+            Invoke-Native { git -C $InstallDir merge-base --is-ancestor HEAD $release 2>$null } | Out-Null
+            if ($LASTEXITCODE) {
+                Log "Keeping its checkout: $release does not descend from it (``hermes update`` decides that move)"
+                return
             }
         } else {
             Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }

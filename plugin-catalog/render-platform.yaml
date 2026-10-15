@@ -2,7 +2,7 @@
 name: render-platform
 title: Render
 repo: https://github.com/ojusave/render-hermes-plugin
-sha: 3269568e922bed12ca42d7bbbcbbf682730e0939
+sha: 1d343332142c27e1b97281ff03e2811f8a083750
 version: "0.1.0"
 maintainer: ojusave
 tier: community

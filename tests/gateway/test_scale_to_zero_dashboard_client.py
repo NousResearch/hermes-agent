@@ -212,47 +212,48 @@ def _stub_ws_server(monkeypatch, ws_mod):
     monkeypatch.setattr(ws_mod, "_dashboard_client_touched_at", 0.0)
 
 
+class _FakeWS:
+    """Accepts, records what it is sent, serves ``frames`` (last first), then disconnects."""
+
+    def __init__(self, frames=(), before_receive=None):
+        self.sent: list[str] = []
+        self.frames = list(frames)
+        self.before_receive = before_receive
+
+    async def accept(self):
+        pass
+
+    async def send_text(self, line):
+        self.sent.append(line)
+
+    async def receive_text(self):
+        from tui_gateway import ws as ws_mod
+
+        if self.before_receive is not None:
+            self.before_receive()
+        if self.frames:
+            return self.frames.pop()
+        raise ws_mod._WebSocketDisconnect()
+
+    async def close(self):
+        pass
+
+
 def test_handle_ws_connect_touches_marker(hermes_home, monkeypatch):
-    from tui_gateway import server, ws as ws_mod
+    from tui_gateway import ws as ws_mod
 
-    monkeypatch.setattr(server, "_start_backend_heartbeat_refresher", lambda: None)
-    monkeypatch.setattr(server, "_schedule_startup_orphan_sweep", lambda: None, raising=False)
-    monkeypatch.setattr(server, "resolve_skin", lambda: "default")
-    monkeypatch.setattr(server, "_ensure_skin_watcher", lambda: None)
-    monkeypatch.setattr(server, "register_live_transport", lambda *_a, **_k: None)
-    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
-    monkeypatch.setattr(ws_mod, "_dashboard_client_touched_at", 0.0)
-
-    class FakeWS:
-        async def accept(self):
-            pass
-
-        async def send_text(self, line):
-            pass
-
-        async def receive_text(self):
-            raise ws_mod._WebSocketDisconnect()
-
-        async def close(self):
-            pass
-
+    _stub_ws_server(monkeypatch, ws_mod)
     assert s2z.dashboard_client_last_seen() is None
-    asyncio.run(ws_mod.handle_ws(FakeWS()))
+    asyncio.run(ws_mod.handle_ws(_FakeWS()))
     _drain_marker_writes(ws_mod)
     seen = s2z.dashboard_client_last_seen()
     assert seen is not None and abs(seen - time.time()) < 5
 
 
 def test_handle_ws_inbound_frames_refresh_marker(hermes_home, monkeypatch):
-    from tui_gateway import server, ws as ws_mod
+    from tui_gateway import ws as ws_mod
 
-    monkeypatch.setattr(server, "_start_backend_heartbeat_refresher", lambda: None)
-    monkeypatch.setattr(server, "_schedule_startup_orphan_sweep", lambda: None, raising=False)
-    monkeypatch.setattr(server, "resolve_skin", lambda: "default")
-    monkeypatch.setattr(server, "_ensure_skin_watcher", lambda: None)
-    monkeypatch.setattr(server, "register_live_transport", lambda *_a, **_k: None)
-    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
-    monkeypatch.setattr(ws_mod, "_dashboard_client_touched_at", 0.0)
+    _stub_ws_server(monkeypatch, ws_mod)
     # Disable the throttle so each frame is observable.
     monkeypatch.setattr(ws_mod, "_DASHBOARD_CLIENT_TOUCH_MIN_INTERVAL_S", 0.0)
 
@@ -266,24 +267,8 @@ def test_handle_ws_inbound_frames_refresh_marker(hermes_home, monkeypatch):
 
     monkeypatch.setattr(s2z, "touch_dashboard_client_heartbeat", _spy)
 
-    class FakeWS:
-        async def accept(self):
-            pass
-
-        async def send_text(self, line):
-            pass
-
-        async def receive_text(self):
-            # Let the previous write land so coalescing does not merge frame touches.
-            _drain_marker_writes(ws_mod)
-            if frames:
-                return frames.pop()
-            raise ws_mod._WebSocketDisconnect()
-
-        async def close(self):
-            pass
-
-    asyncio.run(ws_mod.handle_ws(FakeWS()))
+    # Let the previous write land before each frame so coalescing does not merge frame touches.
+    asyncio.run(ws_mod.handle_ws(_FakeWS(frames, before_receive=lambda: _drain_marker_writes(ws_mod))))
     _drain_marker_writes(ws_mod)
     # 1 on connect + 1 per inbound frame.
     assert len(touches) == 3
@@ -308,24 +293,6 @@ def test_note_activity_is_throttled(hermes_home, monkeypatch):
     assert calls["n"] == 2
 
 
-class _QuickDisconnectWS:
-    def __init__(self):
-        self.sent: list[str] = []
-
-    async def accept(self):
-        pass
-
-    async def send_text(self, line):
-        self.sent.append(line)
-
-    async def receive_text(self):
-        from tui_gateway import ws as ws_mod
-        raise ws_mod._WebSocketDisconnect()
-
-    async def close(self):
-        pass
-
-
 def test_slow_marker_write_does_not_hold_the_connection(hermes_home, monkeypatch):
     """#139011: the marker write is disk I/O. On the event loop a slow disk stalled the whole
     gateway (and every managed-worker RPC, each of which opens a socket here); awaited, it would
@@ -344,7 +311,7 @@ def test_slow_marker_write_does_not_hold_the_connection(hermes_home, monkeypatch
         return True
 
     monkeypatch.setattr(s2z, "touch_dashboard_client_heartbeat", _slow_touch)
-    fake = _QuickDisconnectWS()
+    fake = _FakeWS()
 
     async def _connect():
         loop_threads.append(threading.get_ident())
@@ -357,6 +324,31 @@ def test_slow_marker_write_does_not_hold_the_connection(hermes_home, monkeypatch
     assert any("gateway.ready" in line for line in fake.sent)
     assert written.wait(10)
     assert write_threads and loop_threads[0] not in write_threads
+
+
+def test_refused_marker_write_does_not_wedge_its_path(hermes_home, monkeypatch):
+    """Once interpreter shutdown starts the pool refuses work. The path must not stay pending, or
+    every later touch for it is coalesced into a write that never runs."""
+    from tui_gateway import ws as ws_mod
+
+    monkeypatch.setattr(ws_mod, "_dashboard_client_touched_at", 0.0)
+    calls = {"n": 0}
+    monkeypatch.setattr(
+        s2z, "touch_dashboard_client_heartbeat", lambda path=None: calls.__setitem__("n", calls["n"] + 1) or True
+    )
+
+    class _RefusingPool:
+        def submit(self, *_a, **_k):
+            raise RuntimeError("cannot schedule new futures after interpreter shutdown")
+
+    real_pool = ws_mod._dashboard_client_touch_pool
+    monkeypatch.setattr(ws_mod, "_dashboard_client_touch_pool", _RefusingPool())
+    ws_mod._note_dashboard_client_activity(force=True)
+    assert s2z.dashboard_client_heartbeat_path() not in ws_mod._dashboard_client_touch_pending
+    monkeypatch.setattr(ws_mod, "_dashboard_client_touch_pool", real_pool)
+    ws_mod._note_dashboard_client_activity(force=True)
+    _drain_marker_writes(ws_mod)
+    assert calls["n"] == 1
 
 
 def test_stalled_marker_write_coalesces_later_touches(hermes_home, monkeypatch):

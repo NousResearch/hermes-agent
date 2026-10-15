@@ -53,6 +53,7 @@ def _note_dashboard_client_activity(*, force: bool = False) -> None:
         if not force and now - _dashboard_client_touched_at < _DASHBOARD_CLIENT_TOUCH_MIN_INTERVAL_S:
             return
         _dashboard_client_touched_at = now
+    path = None
     try:
         from gateway.scale_to_zero import dashboard_client_heartbeat_path
         # Resolved here: the worker thread does not carry the caller's profile scope.
@@ -63,6 +64,7 @@ def _note_dashboard_client_activity(*, force: bool = False) -> None:
             _dashboard_client_touch_pending.add(path)
         _dashboard_client_touch_pool.submit(_touch_dashboard_client_marker, path)
     except Exception:
+        _dashboard_client_touch_pending.discard(path)  # a refused submit (shutdown) must not wedge it
         _log.debug("dashboard client heartbeat touch failed", exc_info=True)
 
 

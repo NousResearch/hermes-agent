@@ -264,6 +264,7 @@ async def _start_gateway_start_control_socket(runner):
         # start_gateway aborts startup: the listener mints every local client's attach ticket, so a
         # gateway without it can serve no local session. See #92091.
         from gateway.control_socket import GatewayControlServer, build_identify_payload
+        from gateway.activation_evidence import activation_evidence_handlers
         from gateway.run_profile_reconcile import (
             migrate_profile_identity_verb, purge_profile_identity_verb,
             unserve_profile_verb, serve_profile_verb,
@@ -283,8 +284,6 @@ async def _start_gateway_start_control_socket(runner):
             payload["supervisor"] = {"manual": "none", "desktop": "none"}.get(
                 payload.get("supervisor"), payload.get("supervisor", "none"))
             return payload
-        # pause-for-update: the updater asks us to drain + exit (freeing venv handles) vs. a tree-kill
-        # (same path as SIGUSR1). Handler runs on the socket executor thread, so marshal onto the loop.
         # pause-for-update (#92091 step 2): the updater asks this gateway to drain in-flight turns and exit
         # cleanly — releasing every venv file handle — instead of being tree-killed mid-turn. Same drain
         # path as SIGUSR1/service restarts (request_restart(via_service=True)); the updater (or the service
@@ -329,7 +328,8 @@ async def _start_gateway_start_control_socket(runner):
                 return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
 
         _control_server = GatewayControlServer(
-            verb_handlers={"pause-for-update": _pause_for_update_handler, "identify": _identify_runtime,
+            verb_handlers={**activation_evidence_handlers(runner, _main_loop),
+                           "pause-for-update": _pause_for_update_handler, "identify": _identify_runtime,
                            "rescan-profiles": _rescan_profiles_handler,
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),
                            "unserve-profile": unserve_profile_verb(runner),

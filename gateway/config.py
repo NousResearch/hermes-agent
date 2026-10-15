@@ -610,6 +610,7 @@ class GatewayConfig:
     # An explicit value (config.yaml, GATEWAY_MULTIPLEX_PROFILES, a constructor argument) is honoured
     # verbatim. Every reader tests truthiness, so an unresolved ``None`` never multiplexes by accident.
     multiplex_profiles: Optional[bool] = None
+    activation_evidence_export: bool = False  # opt-in local resolved-state observation
     # Public HTTPS endpoint for scoped RoomLink calls (an API key alone must never advertise a
     # route); HERMES_ROOM_LINK_URL overrides.
     room_link_url: Optional[str] = None
@@ -647,13 +648,15 @@ class GatewayConfig:
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
         "max_concurrent_sessions", "multiplex_profiles",
-        "on_all_adapters_down",
+        "on_all_adapters_down", "activation_evidence_export",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
     )
 
     def __post_init__(self) -> None:
+        if type(self.activation_evidence_export) is not bool:
+            raise ValueError("activation_evidence_export must be a boolean")
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(self.systemd_watchdog_seconds)
 
     def get_connected_platforms(self) -> list[Platform]:
@@ -800,6 +803,8 @@ class GatewayConfig:
             stt_enabled=_coerce_bool(stt_setting("stt_enabled", "enabled"), True),
             stt_echo_transcripts=_coerce_bool(stt_setting("stt_echo_transcripts", "echo_transcripts"), True),
             multiplex_profiles=None if multiplex_profiles is None else _coerce_bool(multiplex_profiles, True),
+            activation_evidence_export=(pick("activation_evidence_export")
+                if "activation_evidence_export" in data or "activation_evidence_export" in nested_gateway else False),
             room_link_url=room_link_url if isinstance(room_link_url, str) else None,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=_coerce_bool(pick("loop_watchdog"), True),
@@ -845,6 +850,8 @@ def load_gateway_config() -> GatewayConfig:
     try:
         config_loader.load_yaml_layer(_home, gw_data)
     except Exception as e:
+        if gw_data.get("activation_evidence_export") is True:
+            raise ValueError("activation_evidence_export requires valid configuration") from None
         logger.warning(
             # DingTalk settings → env vars: migrated to the dingtalk plugin's apply_yaml_config_fn hook
             # (plugins/platforms/dingtalk/adapter.py). #41112 / #3823.

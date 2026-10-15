@@ -30,8 +30,12 @@ interfaces. First launch does not build that base runtime. Provider access and
 optional integrations can still require network access.
 
 A `Hermes-Setup` bootstrap installer is different: it downloads a source
-installation and builds the desktop app. Light is a remote-only build variant,
-not a bundled local runtime. See [Hermes Desktop](../user-guide/desktop.md).
+installation and builds the desktop app. See [Hermes Desktop](../user-guide/desktop.md).
+
+There is no separate remote-only Desktop download. To use Desktop with a Hermes
+backend on another machine, install one of the packages above and connect it
+from **Settings → Gateways**; see
+[Connecting to a remote backend](../user-guide/desktop.md#connecting-to-a-remote-backend).
 
 :::note
 The macOS installer is **Apple Silicon only**. macOS on x86 (Intel) processors is [not a supported platform](./platform-support.md#unsupported).

@@ -25,6 +25,7 @@ from agent.context_compressor import (
     SUMMARY_PREFIX,
     ContextCompressor,
 )
+import itertools
 
 
 JOB_SENTINEL = "CRON_JOB_PROMPT_sentinel_brief_the_inbox_and_write_a_digest"
@@ -44,9 +45,9 @@ def _make_compressor() -> ContextCompressor:
     return compressor
 
 
-def _tool_pairs(count: int, start: int = 0) -> List[Dict[str, Any]]:
+def _tool_pairs(count: int, start: int = 0) -> list[dict[str, Any]]:
     """``count`` assistant(tool_calls) + tool result pairs."""
-    turns: List[Dict[str, Any]] = []
+    turns: list[dict[str, Any]] = []
     for i in range(start, start + count):
         turns.append(
             {
@@ -67,7 +68,7 @@ def _tool_pairs(count: int, start: int = 0) -> List[Dict[str, Any]]:
     return turns
 
 
-def _cron_transcript() -> List[Dict[str, Any]]:
+def _cron_transcript() -> list[dict[str, Any]]:
     """system + one user job prompt + many tool turns, NO trailing user."""
     return [
         {
@@ -80,7 +81,7 @@ def _cron_transcript() -> List[Dict[str, Any]]:
     ]
 
 
-def _compress(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _compress(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     response = MagicMock()
     response.choices = [MagicMock()]
     response.choices[0].message.content = (
@@ -92,7 +93,7 @@ def _compress(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return compressor.compress(messages, current_tokens=200_000, force=True)
 
 
-def _handoff_idx(compressed: List[Dict[str, Any]]) -> int:
+def _handoff_idx(compressed: list[dict[str, Any]]) -> int:
     """Index of the handoff row (standalone summary or merged carrier)."""
     for idx in range(len(compressed) - 1, -1, -1):
         content = compressed[idx].get("content")
@@ -102,12 +103,12 @@ def _handoff_idx(compressed: List[Dict[str, Any]]) -> int:
     return -1
 
 
-def _text(message: Dict[str, Any]) -> str:
+def _text(message: dict[str, Any]) -> str:
     content = message.get("content")
     return content if isinstance(content, str) else str(content)
 
 
-def _actionable_user_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _actionable_user_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         m
         for m in rows
@@ -155,7 +156,7 @@ def test_role_alternation_and_head_are_preserved():
             or (m.get("role") == "assistant" and m.get("tool_calls"))
         )
     ]
-    for previous, current in zip(visible, visible[1:]):
+    for previous, current in itertools.pairwise(visible):
         assert not (previous == current == "user"), (
             f"consecutive user rows in compressed transcript: {visible}"
         )
@@ -164,7 +165,7 @@ def test_role_alternation_and_head_are_preserved():
 def test_idle_session_without_inflight_task_is_not_reanimated():
     """#80622 must hold: a session whose only user-role row is an inherited
     handoff has no in-flight task, so compaction must not manufacture one."""
-    messages: List[Dict[str, Any]] = [
+    messages: list[dict[str, Any]] = [
         {"role": "system", "content": "You are Hermes."},
         {
             "role": "user",
@@ -205,7 +206,7 @@ def test_completed_exchange_is_not_replayed():
 # ---------------------------------------------------------------------------
 
 
-def _pending_tail_transcript() -> List[Dict[str, Any]]:
+def _pending_tail_transcript() -> list[dict[str, Any]]:
     """Cron shape whose LAST row is an assistant tool_calls turn still awaiting
     its result — compaction fired inside the tool-execution window."""
     msgs = _cron_transcript()
@@ -400,7 +401,7 @@ def test_replay_replaces_surviving_user_row_with_same_message_uid():
     assert compressed[1]["role"] == "user", [m["role"] for m in compressed]
     visible = [r for r in map(_template_visible_role, compressed[1:]) if r is not None]
     assert visible[0] == "user", visible
-    assert all(a != b for a, b in zip(visible, visible[1:])), visible
+    assert all(a != b for a, b in itertools.pairwise(visible)), visible
     assert JOB_SENTINEL in _text(compressed[_handoff_idx(compressed)]).split(_SUMMARY_END_MARKER)[-1]
 
     # Visible assistant text in the tail makes the summary merge into tail[0],

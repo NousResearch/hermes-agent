@@ -1,3 +1,4 @@
+import { arUpdateChannel } from './ar_update_channel'
 import type { TranslationOverrides } from './define-locale'
 
 export const arSettings = {
@@ -181,7 +182,17 @@ export const arSettings = {
         toolsConnected: n => `تم توصيل ${n} من الأدوات`,
         skillsReady: names => (names.length === 1 ? `المهارة ${names[0]} جاهزة` : `${names.length} من المهارات جاهزة`),
         nextChat: 'أدوات أخرى متاحة في دردشتك التالية',
-        serverNotConnected: (server, reason) => `خادم MCP ${server} غير متصل${reason ? `: ${reason}` : '.'}`
+        serverNotConnected: (server, reason) => `خادم MCP ${server} غير متصل${reason ? `: ${reason}` : '.'}`,
+        verified: 'موثّق',
+        unverified: 'غير موثّق',
+        reviewedByNous: 'راجعته Nous.',
+        installsAndEnables: profile => `يُثبَّت لملف ${profile} ويعمل فورًا.`,
+        installsOnly: profile => `يُثبَّت لملف ${profile}.`,
+        advanced: 'متقدم',
+        versionLabel: 'الإصدار',
+        reviewedPin: sha => (sha ? `الإصدار المثبّت المراجَع ${sha}` : 'الإصدار المثبّت المراجَع'),
+        latestCommit: 'أحدث إيداع',
+        nothingToInstall: 'لا تحتوي هذه الحزمة على ما يُثبَّت هنا.'
       }
     },
     notifications: {
@@ -506,7 +517,8 @@ export const arSettings = {
         'عندما يحدّث Hermes نفسه من التطبيق دون موجه طرفية، احتفظ بتعديلات المصدر المحلية أو تجاهلها.'
     },
     about: {
-      updates: 'التحديثات'
+      updates: 'التحديثات',
+      channel: arUpdateChannel
     },
 
     config: {
@@ -776,6 +788,7 @@ export const arSettings = {
           label: 'المراجعة',
           hint: 'وكيل المراجعة الفرعي /review'
         },
+        voice_chat: { label: 'دردشة صوتية', hint: 'ردود الوضع الصوتي' },
         triage_specifier: {
           label: 'محدد الفرز',
           hint: 'توضيح مواصفات كانبان'

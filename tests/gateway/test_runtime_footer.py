@@ -4,7 +4,7 @@ appended to final gateway replies."""
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
@@ -145,7 +145,7 @@ def test_format_footer_extended_fields_with_quota_and_underline():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",
         source="usage_api",
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
         plan="Team",
         windows=(
             AccountUsageWindow(label="5h", used_percent=20, reset_at=None),
@@ -171,12 +171,12 @@ def test_format_footer_compacts_reset_times_for_quota():
     snapshot = AccountUsageSnapshot(
         provider="anthropic",
         source="oauth_usage_api",
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
         windows=(
             AccountUsageWindow(
                 label="Current session",
                 used_percent=32.2,
-                reset_at=datetime.now(timezone.utc) + timedelta(hours=2, minutes=10),
+                reset_at=datetime.now(UTC) + timedelta(hours=2, minutes=10),
             ),
         ),
     )
@@ -192,9 +192,9 @@ def test_format_footer_compacts_reset_times_for_quota():
 
 
 def test_compact_reset_omits_zero_day_and_minute_components(monkeypatch):
-    import gateway.runtime_footer as runtime_footer
+    from gateway import runtime_footer
 
-    fixed_now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    fixed_now = datetime(2026, 1, 1, tzinfo=UTC)
 
     class FixedDateTime(datetime):
         @classmethod
@@ -202,7 +202,7 @@ def test_compact_reset_omits_zero_day_and_minute_components(monkeypatch):
             return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
 
     monkeypatch.setattr(runtime_footer, "datetime", FixedDateTime)
-    fixed_target = FixedDateTime(2026, 1, 1, tzinfo=timezone.utc)
+    fixed_target = FixedDateTime(2026, 1, 1, tzinfo=UTC)
 
     assert _compact_reset(fixed_target + timedelta(days=1)) == "1d"
     assert _compact_reset(fixed_target + timedelta(hours=1)) == "1h"
@@ -214,7 +214,7 @@ def test_format_footer_uses_provider_specific_compact_quota_labels():
     snapshot = AccountUsageSnapshot(
         provider="anthropic",
         source="oauth_usage_api",
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
         windows=(
             AccountUsageWindow(label="Current week", used_percent=40, reset_at=None),
             AccountUsageWindow(label="Opus week", used_percent=50, reset_at=None),
@@ -236,7 +236,7 @@ def test_format_footer_preserves_nonstandard_quota_durations():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",
         source="usage_api",
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
         windows=(
             AccountUsageWindow(label="15d", used_percent=10, reset_at=None),
             AccountUsageWindow(label="17h", used_percent=20, reset_at=None),
@@ -259,7 +259,7 @@ def test_format_footer_includes_balance_details_for_quota():
     snapshot = AccountUsageSnapshot(
         provider="deepseek",
         source="balance_api",
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
         details=("Balance: ¥110.00 CNY (granted ¥10.00, topped up ¥100.00)",),
     )
 
@@ -436,7 +436,7 @@ def test_build_footer_passes_extended_runtime_metadata():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",
         source="usage_api",
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
         plan="Team",
         windows=(
             AccountUsageWindow(label="5h", used_percent=20, reset_at=None),

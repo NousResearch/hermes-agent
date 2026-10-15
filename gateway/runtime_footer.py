@@ -19,7 +19,7 @@ from __future__ import annotations
 import math
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
@@ -126,14 +126,14 @@ def _format_latency(seconds: float) -> str:
     """Humanize a turn duration: ``<1s``, ``22s``, ``1m05s``."""
     if seconds < 1:
         return "<1s"
-    total = int(round(seconds))
+    total = round(seconds)
     if total < 60:
         return f"{total}s"
     m, sec = divmod(total, 60)
     return f"{m}m{sec:02d}s"
 
 
-def _compact_number(value: int | float) -> str:
+def _compact_number(value: float) -> str:
     try:
         n = float(value)
     except Exception:
@@ -152,14 +152,14 @@ def _compact_reset(dt: Any) -> str:
         return ""
     if isinstance(dt, str):
         try:
-            dt = datetime.fromisoformat(dt.strip().replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(dt.strip())
         except Exception:
             return ""
     if not isinstance(dt, datetime):
         return ""
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    seconds = int((dt - datetime.now(timezone.utc)).total_seconds())
+        dt = dt.replace(tzinfo=UTC)
+    seconds = int((dt - datetime.now(UTC)).total_seconds())
     if seconds <= 0:
         return "now"
     hours, rem = divmod(seconds, 3600)

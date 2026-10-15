@@ -8,7 +8,8 @@ import pytest
 
 def _git(repo: Path, *args: str) -> str:
     result = subprocess.run(
-        ["git", *args], cwd=str(repo), capture_output=True, text=True
+        ["git", *args], cwd=str(repo), capture_output=True, text=True,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     return result.stdout.strip()
@@ -55,7 +56,7 @@ def _mk_narrow_clone(tmp_path: Path) -> tuple[Path, Path]:
 def test_check_fetch_materialises_tracking_ref_on_narrow_clone(
     tmp_path, monkeypatch, capsys
 ):
-    import hermes_cli.update_cmd as update_cmd
+    from hermes_cli import update_cmd
 
     clone, origin = _mk_narrow_clone(tmp_path)
     assert "refs/heads/*" not in _git(
@@ -67,6 +68,7 @@ def test_check_fetch_materialises_tracking_ref_on_narrow_clone(
     unresolved = subprocess.run(
         ["git", "-C", str(clone), "rev-parse", "--verify", "--quiet", "origin/main"],
         capture_output=True,
+        check=False,
     )
     assert unresolved.returncode != 0
 

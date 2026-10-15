@@ -40,6 +40,35 @@ def test_sessions_delete_accepts_unique_id_prefix(monkeypatch, capsys):
     }
     assert "Deleted session '20260315_092437_c9a6ff'." in output
 
+@pytest.mark.parametrize('status', ['queued', 'unknown'])
+def test_sessions_delete_with_unfinished_turn_points_to_discard(tmp_path, monkeypatch, capsys, status):
+    """P3: the ledger's session_busy / unknown_execution refusal is a user-facing answer (exit 1
+    with what to do), not an uncaught RuntimeStoreError traceback."""
+    import hermes_cli.main as main_mod
+    import hermes_state
+    import hermes_state_runtime as rt
+    from hermes_state import SessionDB
+
+    db = SessionDB(tmp_path / 'state.db')
+    db.create_session('s1', source='cli')
+    epoch = rt.begin_runtime_epoch(db, instance_id='a')
+    rt.admit_session_input(db, epoch=epoch, principal_id='p', session_id='s1', request_id='r', payload={'text': 'x'})
+    if status == 'unknown':
+        rt.claim_session_input(db, epoch=epoch, session_id='s1')
+        rt.recover_session_inputs(db, epoch=rt.begin_runtime_epoch(db, instance_id='b'))
+    monkeypatch.setattr(hermes_state, 'SessionDB', lambda *args, **kwargs: db)
+    monkeypatch.setattr(sys, 'argv', ['hermes', 'sessions', 'delete', 's1', '--yes'])
+    with pytest.raises(SystemExit) as exited:
+        main_mod.main()
+    output = capsys.readouterr().out
+    assert exited.value.code == 1
+    assert ('hermes sessions discard s1' in output) == (status == 'unknown'), output
+    assert 'queued or running turn' in output or status == 'unknown', output
+    reopened = SessionDB(tmp_path / 'state.db')
+    assert reopened.get_session('s1') is not None
+    reopened.close()
+
+
 def _run_prune(monkeypatch, capsys, argv_tail, candidates=None, skipped_open=0):
     """Run `hermes sessions prune <argv_tail>` against a FakeDB, capturing
     the filter kwargs passed to list_prune_candidates. Auto-confirms."""

@@ -1,0 +1,38 @@
+name: Blob Size Check
+
+# Rejects PRs that add or modify a binary over 500 KiB, or add any new file over 500 KiB.
+#
+# Every blob a merge adds stays in every clone and every CI checkout forever, even after a later
+# commit deletes it. In three summer months main received a 2 MB PR screenshot, a 2 MB
+# default.tar.gz, PR infographics, a Windows cache database and a 1 MB fuzz corpus, none of
+# which any check looked at. Edits to existing text files are left to the code-health
+# FILE_LINES ratchet. Exact-path exceptions live in .github/blob-size-allowlist.txt
+# (CODEOWNERS-reviewed). Local: `python scripts/check --only blob-size`.
+#
+# Runs unconditionally (no change-classifier gate): a docs-only or asset-only PR skips the
+# Python and frontend lanes, and that is exactly the kind of PR that commits a screenshot.
+
+on:
+  workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  check-blob-size:
+    name: Reject large binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          fetch-depth: 2 # the merge commit and its first parent (the base branch tip)
+
+      - name: Judge files added or modified against the base branch tip
+        run: python3 scripts/ci/check_blob_size.py --base HEAD^1

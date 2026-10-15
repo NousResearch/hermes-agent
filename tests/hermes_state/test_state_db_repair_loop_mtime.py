@@ -347,6 +347,7 @@ def test_live_connection_keeps_its_write_lock_across_a_repair_pass(tmp_path):
             capture_output=True,
             text=True,
             timeout=60,
+            check=False,
         ).stdout.strip()
         assert out in {"WROTE", "BLOCKED"}, f"unexpected peer output: {out!r}"
         return out == "WROTE"

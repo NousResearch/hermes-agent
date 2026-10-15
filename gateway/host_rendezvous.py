@@ -41,7 +41,7 @@ import os
 import stat
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
@@ -120,7 +120,7 @@ class HostRecord:
         }
 
     @classmethod
-    def from_json(cls, payload: Any) -> Optional["HostRecord"]:
+    def from_json(cls, payload: Any) -> Optional[HostRecord]:
         if not isinstance(payload, dict):
             return None
         pid = payload.get("pid")
@@ -311,7 +311,7 @@ def probe_owner(record: HostRecord, *, timeout: float = PROBE_TIMEOUT_S) -> Opti
     request = urllib.request.Request(
         f"http://{host}:{record.port}{HOST_IDENTITY_PATH}", headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 — fixed http scheme
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             if response.status != 200:
                 return None
             payload = json.loads(response.read(65536).decode("utf-8", "replace"))
@@ -490,7 +490,7 @@ def publish_record(
         protocol_version=HOST_PROTOCOL_VERSION,
         token_fingerprint=token_fingerprint(token or ""),
         profiles=tuple(str(p) for p in profiles),
-        updated_at=datetime.now(timezone.utc).isoformat(),
+        updated_at=datetime.now(UTC).isoformat(),
         home=str(home or ""),
     )
     try:

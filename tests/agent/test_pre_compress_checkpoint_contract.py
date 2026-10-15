@@ -500,7 +500,7 @@ def test_turn_finalizer_never_micro_compacts_while_checkpoint_gate_armed(
         def __init__(self):
             self.calls = 0
 
-        def _micro_compact(self, messages):
+        def _micro_compact(self, messages, **_kwargs):
             self.calls += 1
             return list(messages)
 

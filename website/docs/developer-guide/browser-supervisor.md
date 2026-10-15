@@ -116,11 +116,14 @@ title = reply["result"]["result"]["value"]
 - `SUPERVISOR_REGISTRY.capture(task_id, *, timeout=10.0) -> CapturedCDP` pins the
   supervisor's current WebSocket and the default page session attached on it. It
   never starts, reconnects or refocuses a supervisor.
-- `CapturedCDP.call(method, params=None, *, session_id=None, timeout=10.0) -> dict`
+- `CapturedCDP.call(method, params=None, *, session_id=None, timeout=10.0, before_send=None) -> dict`
   returns the raw CDP reply (`{"id", "result"}`). `session_id=None` addresses the
   browser endpoint (`Target.*`); pass `page_session_id` or a session you attached
   yourself for page domains. A CDP error reply raises `RuntimeError`; no reply
-  within `timeout` raises `TimeoutError`. The call blocks its thread, so call it
+  within a finite `timeout` raises `TimeoutError`. Finite timeouts fence queue
+  admission with a monotonic deadline. `timeout=None` retains the reply until
+  response or connection closure; acquisition owners can keep late attach IDs
+  for cleanup beyond their own outer deadline. The call blocks its thread, so call it
   from a worker thread, never from the supervisor's own event loop.
 - `CapturedCDP.is_valid()` stays true until the supervisor reconnects, stops, or
   is replaced in the registry. After that every `call` raises
@@ -131,7 +134,11 @@ title = reply["result"]["result"]["value"]
   `focus_page` on the supervisor does not change it.
 - Sessions you attach (`Target.attachToTarget`) are yours to detach. A reply
   that arrives after `timeout` is dropped, so a timed-out attach can leave a
-  session attached until the connection closes; give attaches a generous timeout.
+  session attached until the connection closes. Use `timeout=None` with a retained
+  acquisition worker to own and detach late replies, rather than guessing a large timeout.
+- `before_send` is a trusted synchronous, nonblocking validator on the supervisor
+  loop immediately before dispatch. Return `None`, or raise to refuse; do not call
+  capture/CDP APIs from it. It does not revoke commands already dispatched.
 
 This is a trusted, in-process seam. It grants nothing in-process Python could
 not already reach, and it enforces no origin, consent or target-ownership

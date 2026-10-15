@@ -1006,6 +1006,13 @@ function Invoke-PhaseInstallGui {
 
     $env:HERMES_HOME = $HermesHome
     New-Item -ItemType Directory -Path $HermesHome -Force | Out-Null
+    # The installer launches the app, and a fresh desktop install opens the first-run
+    # onboarding chat with a live model turn that can hold the window open past the
+    # close below. This journey tests install and update: record onboarding as done.
+    $rootConfig = Join-Path $HermesHome 'config.yaml'
+    if (-not (Test-Path -LiteralPath $rootConfig)) {
+        Set-Content -LiteralPath $rootConfig -Value "onboarding:`n  run: false" -Encoding ascii
+    }
 
     $recorder = Start-DesktopRecorder (Join-Path $proof "desktop-frames")
     $ahkLog = Join-Path $proof "ahk.log"
@@ -1139,7 +1146,7 @@ function Invoke-GuiUpdateDesktopRoute([string]$TargetSha) {
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            & $node $driver $desktopExe $proof (Read-State).old 2>&1 |
+            & $node $driver $desktopExe $proof (Read-State).old $TargetSha 2>&1 |
                 ForEach-Object { Write-Host "  $_" }
             $driveExit = $LASTEXITCODE
         } finally {
@@ -1572,6 +1579,7 @@ function Invoke-PhaseUpdate {
     if ($Route -in @('open-app-update', 'hermes-desktop-app-update', 'desktop-installer@latest')) {
         Start-JourneyChat
     }
+    Set-SourceMainChannel $InstallDir
     # Snapshot every plugin tree BEFORE the upgrade moves anything.
     Invoke-PreserveSnapshot
     # ... and the user's own durable state, produced by the install phase

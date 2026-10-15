@@ -12,9 +12,15 @@ _registry = HandlerRegistry()
 
 
 def resolve_skin() -> dict:
+    return skin_payload(_load_cfg())
+
+
+def skin_payload(config: dict) -> dict:
+    """The ``skin.changed`` / ``gateway.ready`` skin for ``config``'s ``display.skin`` (``{}`` when the
+    skin engine fails). Pure of server state: the shared owner calls it under the profile's scope."""
     try:
         from hermes_cli.skin_engine import init_skin_from_config, get_active_skin
-        init_skin_from_config(_load_cfg())
+        init_skin_from_config(config)
         skin = get_active_skin()
         # light/dark are paired palettes: the TUI prefers the block matching terminal polarity.
         return {
@@ -25,7 +31,7 @@ def resolve_skin() -> dict:
             "help_header": (skin.branding or {}).get("help_header", ""),
             # Raw user CSS for the desktop GUI's <style> tag (32 KiB cap in the skin engine).
             "customCSS": skin.custom_css}
-    except Exception:
+    except Exception:  # health: allow BLE001 -- moved unchanged from resolve_skin (main keeps the same handler): a broken skin file boots the default theme
         return {}
 
 
@@ -67,23 +73,71 @@ def _skin_sig() -> tuple[str, float | None]:
         return name, None
 
 
+# A multiplexed gateway serves other profiles' TUIs from this one watcher thread (no profile
+# override): their baselines live here, keyed by home, and their repaints go to their own peers only
+# (main ran one gateway per profile, so a work TUI never saw the launch home's skin).
+_skin_sig_by_home: dict[str, tuple[str, float | None]] = {}
+
+
+def _skin_home_for(profile_id) -> str | None:
+    """The profile home a peer's skin follows, or None for the launch home (the ambient scope)."""
+    with contextlib.suppress(Exception):
+        home = Path(str(profile_id))
+        if home.is_absolute() and home.is_dir() and home.resolve() != Path(_hermes_home).resolve():
+            return str(home)
+    return None
+
+
+def _under_home(home: str, fn):
+    token = set_hermes_home_override(home)
+    try:
+        return fn()
+    finally:
+        reset_hermes_home_override(token)
+
+
 def _note_skin_broadcast() -> None:
     """Sync the baseline after the /skin RPC emits so the watcher doesn't re-broadcast it."""
     global _last_skin_sig
     with contextlib.suppress(Exception):
-        _last_skin_sig = _skin_sig()
+        if home := _skin_home_for(get_hermes_home_override()):
+            _skin_sig_by_home[home] = _skin_sig()
+        else:
+            _last_skin_sig = _skin_sig()
+
+
+def _skin_peers_by_home() -> dict[str, list]:
+    with _live_transports_lock:
+        targets = list(_live_transports)
+    peers: dict[str, list] = {}
+    for transport in targets:
+        if home := getattr(transport, "skin_home", None):
+            peers.setdefault(home, []).append(transport)
+    return peers
 
 
 def _broadcast_skin_if_changed() -> None:
     """Emit ``skin.changed`` when the active skin moved, via the SAME live path as
-    ``/skin`` so every surface repaints. The check is a dict lookup + one stat."""
+    ``/skin`` so every surface repaints. The check is a dict lookup + one stat per home."""
     global _last_skin_sig
+    by_home = _skin_peers_by_home()
     with contextlib.suppress(Exception):
         sig = _skin_sig()
-        if sig == _last_skin_sig:
-            return
-        _last_skin_sig = sig
-        _broadcast_global_event("skin.changed", resolve_skin())
+        if sig != _last_skin_sig:
+            _last_skin_sig = sig
+            _broadcast_global_event("skin.changed", resolve_skin(),
+                                    skip={peer for peers in by_home.values() for peer in peers})
+    for home, peers in by_home.items():
+        with contextlib.suppress(Exception):
+            sig = _under_home(home, _skin_sig)
+            seen = _skin_sig_by_home.get(home)
+            _skin_sig_by_home[home] = sig
+            if seen is None or sig == seen:
+                continue  # first sight seeds: the attach's runtime.describe already carried this skin
+            frame = _event_frame("skin.changed", "", _under_home(home, resolve_skin))
+            for peer in peers:
+                with contextlib.suppress(Exception):
+                    peer.write(frame)
 
 
 def _active_pet():
@@ -102,7 +156,7 @@ def _pet_sig() -> tuple:
         if active := _active_pet():
             pet, scale = active
             return (pet.slug, _pet_sheet_revision(pet.spritesheet), scale)
-    except Exception:  # noqa: BLE001 - cosmetic, never break the watcher
+    except Exception:
         pass
     return ("off",)
 
@@ -114,7 +168,7 @@ def _pet_changed_payload() -> dict:
             pet, scale = active
             return {"enabled": True, "slug": pet.slug, "displayName": pet.display_name,
                     "scale": scale, "spritesheetRevision": _pet_sheet_revision(pet.spritesheet)}
-    except Exception:  # noqa: BLE001 - cosmetic, never break the watcher
+    except Exception:
         pass
     return {"enabled": False}
 
@@ -177,7 +231,7 @@ def _session_db_content_sig(db_path: Path):
                 digest.update(repr(tuple(row)).encode("utf-8", "backslashreplace"))
                 digest.update(b"\0")
             signature = (fields, digest.digest())
-    except Exception:  # noqa: BLE001 - preserve the old wake-up signal if the read probe cannot run
+    except Exception:
         # A busy/locked read after a good one keeps the last digest and leaves the cached mtime
         # stale so the next pass re-reads: digest -> mtime -> digest would broadcast twice.
         if cached is not None and cached[1] is not None and cached[1][0] != "mtime-fallback":
@@ -284,16 +338,16 @@ def _bot_relay_outbox_sig():
 # persists platform connect/disconnect/health (the Messaging page's status signal).
 _CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
     "pet.changed": (2.0, _pet_sig, _pet_changed_payload),
-    "cron.changed": (1.0, lambda: _home_mtime_ns("cron", "jobs.json"), lambda: {}),
-    "sessions.changed": (0.5, _sessions_sig, lambda: {}),
+    "cron.changed": (1.0, lambda: _home_mtime_ns("cron", "jobs.json"), dict),
+    "sessions.changed": (0.5, _sessions_sig, dict),
     # Projects created/switched by CLI or agent tooling write projects.db without any
     # state.db movement, so sessions.changed never fires and the desktop Projects
     # sidebar goes stale until a manual refresh (#56757).
-    "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), lambda: {}),
-    "projects.changed": (2.0, _projects_sig, lambda: {}),
-    "pairing.changed": (2.0, _pairing_sig, lambda: {}),
+    "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), dict),
+    "projects.changed": (2.0, _projects_sig, dict),
+    "pairing.changed": (2.0, _pairing_sig, dict),
     # 1s so a queued DM envelope reaches the Desktop's push-triggered drain fast.
-    "bot_relay.outbox.pending": (1.0, _bot_relay_outbox_sig, lambda: {})}
+    "bot_relay.outbox.pending": (1.0, _bot_relay_outbox_sig, dict)}
 
 # state.db moves on every append of a streaming turn and gateway_state.json on
 # in-flight bookkeeping; the floor coalesces bursts to one broadcast per window,
@@ -315,7 +369,7 @@ def _broadcast_watched_changes(now: float | None = None) -> None:
         _change_checked_at[event] = now
         try:
             sig = sig_fn()
-        except Exception:  # noqa: BLE001 - a broken probe must not kill the loop
+        except Exception:
             continue
         if event not in _change_sigs:
             _change_sigs[event] = sig

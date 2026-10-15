@@ -543,11 +543,6 @@ export const zhHantChat = {
         text: '更新執行本機模型的引擎。進行中的本機請求可能會中斷。',
         action: '立即更新'
       },
-      'local-setup': {
-        title: '這台電腦可以本地執行模型',
-        text: '你的硬體可以執行本地模型。對話不離開你的電腦，而且完全免費。',
-        action: '立即設定'
-      },
       'right-pane': {
         title: '工作面板',
         text: '檔案、終端機、審閱與內建瀏覽器都在側邊面板裡。'

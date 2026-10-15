@@ -100,8 +100,8 @@ def test_micro_compaction_splice_rearms_read_dedup(served, splice, monkeypatch):
     # A splice returns a new list with the oldest exchange folded into the rolling summary;
     # a no-op (nothing to absorb, or a defrag) returns the input list.
     compressor._micro_compact = (
-        (lambda messages: [{"role": "user", "content": "[MICRO] loaded demo-skill"}, *messages[4:]])
-        if splice else (lambda messages: messages))
+        (lambda messages, **_kw: [{"role": "user", "content": "[MICRO] loaded demo-skill"}, *messages[4:]])
+        if splice else (lambda messages, **_kw: messages))
     agent.context_compressor = compressor
     agent.client.chat.completions.create.return_value = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(

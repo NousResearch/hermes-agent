@@ -1,0 +1,24 @@
+name: rea
+repo: https://github.com/NousResearch/hermes-official-plugins
+sha: 3a102d9a387983e9c95bf84379d08fa2492b1de8
+subdir: rea
+description: 'Reverse engineer programs with REA (rea.tools): native binaries, .NET assemblies,
+  Electron/JavaScript apps, Android packages, firmware and browser/process activity, through
+  REA''s MCP server (pinned rea-agents@6.4.0 over npx stdio) with REA''s reverse-engineer-anything
+  skill adapted for Hermes. Portable Agent Plugins v1 package (mcp.json + skills/); needs Node.js
+  22.19+/24.11+/26+ on PATH, plus your own Ghidra, Hopper or IDA for native decompilation.
+  Disclosure — a few REA tools run a command under a PTY, launch or drive an application, change
+  a connected Android device or overwrite a chosen file, and Hermes does not prompt before them;
+  the bundled skill tells the agent to ask first and to skip them in unattended runs.'
+maintainer: NousResearch
+tier: official
+category: tools
+requires_hermes: ">=0.22.1"
+docs_url: https://github.com/NousResearch/hermes-official-plugins/tree/main/rea
+image: https://raw.githubusercontent.com/NousResearch/hermes-official-plugins/3a102d9a387983e9c95bf84379d08fa2492b1de8/assets/rea.jpg
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

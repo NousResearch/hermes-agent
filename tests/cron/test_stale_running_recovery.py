@@ -56,6 +56,25 @@ def test_live_owner_stale_claim_gets_recovered(monkeypatch):
     assert recover_interrupted_executions() == 1
     assert _status(eid) == "unknown"
 
+    # A claim older than the bound whose owner stamped progress recently is a long healthy
+    # run, not a wedge: the bound measures silence since ``progress_at``, not run length.
+    busy = _seed_running("job-busy", age_seconds=bound + 60, pid=66666)
+    with _transaction() as conn:
+        conn.execute(
+            "UPDATE executions SET progress_at=? WHERE id=?",
+            ((_hermes_now() - timedelta(seconds=120)).isoformat(), busy),
+        )
+    assert recover_interrupted_executions() == 0
+    assert _status(busy) == "running"
+    # Once the stamps stop for longer than the bound, the same row is reclaimed.
+    with _transaction() as conn:
+        conn.execute(
+            "UPDATE executions SET progress_at=? WHERE id=?",
+            ((_hermes_now() - timedelta(seconds=bound + 1)).isoformat(), busy),
+        )
+    assert recover_interrupted_executions() == 1
+    assert _status(busy) == "unknown"
+
     # A larger inactivity timeout widens the bound: the same age is no longer stale.
     monkeypatch.setenv("HERMES_CRON_TIMEOUT", "3600")
     assert executions_mod._live_owner_stale_after_seconds() == pytest.approx(10800.0)

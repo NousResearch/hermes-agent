@@ -13,6 +13,11 @@ export const jaModelMenu = {
   cacheRead: 'キャッシュ読み取り',
   priceTitle: (input: string, output: string, cache: string) =>
     `入力 ${input}/Mtok · 出力 ${output}/Mtok` + (cache ? ` · キャッシュ読み取り ${cache}/Mtok` : ''),
+  localSetup: {
+    title: 'ローカルで実行 · 無料・プライベート',
+    text: (model: string, size: string) => `${model} はこのマシンで動きます · ${size} をダウンロード`,
+    action: '設定する'
+  },
   limited: '制限中',
   limitedUntil: (time: string) => `${time} まで制限中`,
   limitedTip: (provider: string, time: null | string) =>

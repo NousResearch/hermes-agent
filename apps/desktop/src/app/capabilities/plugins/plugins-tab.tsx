@@ -15,7 +15,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
-import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
+import { $pluginRecords, enablePackageDesktopHalf, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { discoverRuntimePlugins, uninstallDiskPlugin } from '@/contrib/runtime-loader'
 import { pluginSettingsRouteHref, SETTINGS_PLUGINS_AREA } from '@/contrib/settings-pages'
@@ -753,7 +753,17 @@ export const PluginsTab = memo(function PluginsTab({
                     return
                   }
 
-                  void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
+                  void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope).then(ok => {
+                    // Turning a unified package on turns its desktop half on too
+                    // (unless the user switched that half off on purpose).
+                    // Off stays per half: the desktop half is app-wide, and
+                    // another profile may still run the agent half.
+                    const half = pkg.desktop?.packageName
+
+                    if (ok && enable && half) {
+                      void enablePackageDesktopHalf(half, { keepUserChoice: true })
+                    }
+                  })
                 }}
                 onAgentUpdate={row => {
                   const finish = (outcome: AgentPluginUpdateOutcome) => {

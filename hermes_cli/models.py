@@ -361,7 +361,7 @@ _NOUS_RECOMMENDED_CACHE_TTL: int = 600  # seconds (10 minutes)
 _nous_recommended_cache: dict[tuple[str, str], tuple[dict[str, Any], float]] = {}
 
 
-def _nous_recommended_disk_path() -> "Path":
+def _nous_recommended_disk_path() -> Path:
     from hermes_constants import get_hermes_home
     return get_hermes_home() / "cache" / "nous_recommended_cache.json"
 
@@ -832,8 +832,8 @@ def _provider_has_credentials(pid: str) -> bool:
 
 
 def list_available_providers() -> list[dict[str, str]]:
-    """``{id, label, aliases, authenticated}`` for every provider usable with ``provider:model``,
-    derived from :data:`CANONICAL_PROVIDERS` (shared with ``hermes model`` and ``/model``)."""
+    """``{id, label, aliases, authenticated}`` per listed provider (shared with ``hermes model`` / ``/model``)."""
+    from hermes_cli.models_catalog_static import listed_canonical_providers
     aliases_for: dict[str, list[str]] = {}
     for alias, canonical in _PROVIDER_ALIASES.items():
         aliases_for.setdefault(canonical, []).append(alias)
@@ -843,7 +843,7 @@ def list_available_providers() -> list[dict[str, str]]:
             "label": _PROVIDER_LABELS.get(pid, pid),
             "aliases": aliases_for.get(pid, []),
             "authenticated": _provider_has_credentials(pid)}
-        for pid in [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]]
+        for pid in [p.slug for p in listed_canonical_providers()] + ["custom"]]
 
 
 def parse_model_input(
@@ -1465,17 +1465,17 @@ def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
 
 def _nous_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     try:
+        from hermes_cli.anon_challenge import background_caller
         from hermes_cli.auth import fetch_nous_models, resolve_nous_runtime_credentials
-
-        creds = resolve_nous_runtime_credentials()
+        with background_caller():  # never waits on or opens a challenge
+            creds = resolve_nous_runtime_credentials()
         if creds:
             live = fetch_nous_models(api_key=creds.get("api_key", ""), inference_base_url=creds.get("base_url", ""))
             if live:
                 return live
     except Exception:
         pass
-    # Live failed / no creds: the docs-hosted manifest — NOT the in-repo snapshot — so newly added
-    # Portal models still surface without a Hermes release.
+    # Live failed / no creds: the docs-hosted manifest, so new Portal models surface without a release.
     return get_curated_nous_model_ids() or None
 
 
@@ -1753,19 +1753,19 @@ def _configured_relay_base_url(provider: str) -> str:
     base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
     if not base_url:
         return ""
-    # A base_url equal to the provider's own endpoint is not a relay (setup persists canonical
-    # URLs too): keep native discovery, which OAuth providers such as Codex need because the
-    # generic relay probe only speaks api_key. Profiles cover providers PROVIDER_REGISTRY lacks
-    # (OpenRouter).
+    # A base_url equal to the provider's own endpoint (the profile's or the registry row's: TokenHub's
+    # profile leaves it empty; OpenRouter has no registry row) is not a relay: setup persists
+    # canonical URLs, and OAuth providers (Codex) need native discovery.
     try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
         from providers import get_provider_profile
 
-        canonical = getattr(get_provider_profile(normalized), "base_url", "") or ""
+        profile_url = getattr(get_provider_profile(normalized), "base_url", "")
+        registry_url = getattr(PROVIDER_REGISTRY.get(normalized), "inference_base_url", "")
+        canonical = {normalize_route_base_url(u) for u in (profile_url, registry_url) if u}
     except Exception:
         return base_url  # lookup failed: stay a relay, never widening where credentials go
-    if canonical and normalize_route_base_url(base_url) == normalize_route_base_url(canonical):
-        return ""
-    return base_url
+    return "" if normalize_route_base_url(base_url) in canonical else base_url
 
 
 def _relay_model_catalog(normalized: str, relay: str) -> Optional[list[str]]:
@@ -2548,12 +2548,12 @@ def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[s
 
 # Per-family (model-id prefix → api_mode) routing from OpenCode's published Zen/Go endpoint
 # tables, checked in order. GPT/Codex/Grok and Muse Spark use /v1/responses (Muse Spark 503s on
-# chat/completions); Claude (Zen), MiniMax (Go), Union Alpha, and Qwen use /v1/messages;
+# chat/completions); Claude, MiniMax (Go), Union Alpha, and Qwen use /v1/messages;
 # everything else falls through to /v1/chat/completions.
 _OPENCODE_API_MODE_PREFIXES: dict[str, tuple[tuple[tuple[str, ...], str], ...]] = {
     "opencode-go": (
         (("gpt-", "grok-", "muse-spark"), "codex_responses"),
-        (("minimax-", "qwen", "union-alpha"), "anthropic_messages")),
+        (("claude-", "minimax-", "qwen", "union-alpha"), "anthropic_messages")),
     "opencode-zen": (
         (("claude-", "union-alpha"), "anthropic_messages"), (("gpt-", "grok-", "muse-spark"), "codex_responses"),
         (("qwen",), "anthropic_messages"))}
@@ -2899,7 +2899,7 @@ def _custom_endpoint_fingerprint(
 
 
 def _cache_entry_valid(
-    entry: Any, fp: str, *, allow_empty: bool = False) -> "TypeGuard[dict[str, Any]]":
+    entry: Any, fp: str, *, allow_empty: bool = False) -> TypeGuard[dict[str, Any]]:
     """Well-formed cache row for fingerprint *fp*. Requires a numeric ``at`` so corrupt disk state
     degrades to a cache miss instead of raising; empty model lists are valid only when the caller
     opts into an authoritative empty catalog."""

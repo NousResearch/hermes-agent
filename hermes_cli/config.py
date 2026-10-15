@@ -2368,6 +2368,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
                 # byte-identical repeats and keeps a bounded count, so steady-state loads cost one stat.
                 from hermes_cli.config_backups import backup_config
                 backup_config(config_path, "good")
+            except config_includes.ConfigIncludeError as e:
+                return config_includes.recover_last_good(config_path, path_key, e)
             except Exception as e:
                 lkg_copy = _last_known_good_fallback(config_path, path_key, cache_sig, e)
                 if lkg_copy is not None:
@@ -2495,7 +2497,7 @@ def save_config(
         normalized = current_normalized
         if _raw_for_paths:
             normalized = _preserve_env_ref_templates(
-                normalized, _canonicalize_config(_raw_for_paths),
+                normalized, _canonicalize_config(_deep_merge(included_config, _raw_for_paths)),
                 _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)))
 
         effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())

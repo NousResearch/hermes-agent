@@ -118,6 +118,10 @@ class ProviderProfile:
     process_args: tuple = ()             # default argv tail, e.g. ("--acp", "--stdio")
     process_command_env_vars: tuple = ()  # env overrides for the binary, in priority order
     process_args_env_var: str = ""       # env override for argv (shlex-split)
+    # True when the provider's client returns a real chunk iterator for stream=True
+    # (e.g. a CLI that relays the model's own stream). ACP clients do not, so the
+    # default keeps external-process providers on the non-streaming path.
+    process_streams: bool = False
 
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.

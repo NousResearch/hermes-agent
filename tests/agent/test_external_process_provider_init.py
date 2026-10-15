@@ -97,3 +97,18 @@ def test_should_stream_is_off_for_any_external_process_profile(monkeypatch):
 
     assert _should_stream(make("acme-acp")) is False
     assert _should_stream(make("acme-http")) is True
+
+
+def test_should_stream_honors_an_external_process_profile_that_streams(monkeypatch):
+    """A subprocess provider whose client relays a real stream opts in with ``process_streams``;
+    an ``acp://`` base URL still never streams."""
+    from agent.turn_api_call import _should_stream
+    from providers.base import ProviderProfile
+
+    profile = ProviderProfile(name="acme-cli", auth_type="external_process", process_streams=True)
+    monkeypatch.setattr("providers.get_provider_profile", lambda name: profile if name == "acme-cli" else None)
+    make = lambda base_url: SimpleNamespace(  # noqa: E731
+        provider="acme-cli", base_url=base_url, _has_stream_consumers=lambda: True)
+
+    assert _should_stream(make("process://acme-cli")) is True
+    assert _should_stream(make("acp://acme-cli")) is False

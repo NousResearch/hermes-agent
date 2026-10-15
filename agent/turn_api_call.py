@@ -43,6 +43,17 @@ class ApiCallVerdict:
     interrupted: Any
 
 
+def _external_process_streams(provider: str) -> bool:
+    """An external-process profile opts into streaming with ``process_streams``."""
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider)
+    except Exception:
+        return False
+    return bool(getattr(profile, "process_streams", False))
+
+
 def _should_stream(agent: Any) -> bool:
     """Streaming is preferred even without consumers (stale-stream / read-timeout health
     checks); disabled on provider signal, ACP providers (``acp://`` scheme or an
@@ -53,7 +64,9 @@ def _should_stream(agent: Any) -> bool:
     _base = str(agent.base_url or "").lower()
     from hermes_cli.runtime_provider_backends import _is_external_process_provider
 
-    if _base.startswith(("acp://", "acp+tcp://")) or _is_external_process_provider(agent.provider):
+    if _base.startswith(("acp://", "acp+tcp://")):
+        return False
+    if _is_external_process_provider(agent.provider) and not _external_process_streams(agent.provider):
         return False
     if not agent._has_stream_consumers():
         if agent.provider == "moa":

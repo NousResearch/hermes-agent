@@ -47,9 +47,10 @@ def test_quarantined_fallback_hands_over_to_the_next_configured_entry():
                              {"provider": "xai-oauth"}, None, None)
     with patch.object(aux, "_try_configured_fallback_chain", return_value=(healthy, "m2", "fallback_chain[1](nous)")), \
          patch.object(aux, "_try_payment_fallback") as discovery:
-        client, _model, label = aux._next_fallback_after_quarantine(
+        client, _model, label, from_main_chain = aux._next_fallback_after_quarantine(
             "compression", "auto", True, route, None, None)
     assert client is healthy and label == "fallback_chain[1](nous)"
+    assert from_main_chain is False
     discovery.assert_not_called()
 
 

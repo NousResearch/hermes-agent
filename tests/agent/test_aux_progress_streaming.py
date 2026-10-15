@@ -16,7 +16,6 @@ import pytest
 
 from agent.auxiliary_client import (
     _AnthropicCompletionsAdapter,
-    _ChatStreamAccumulator,
     _CodexCompletionsAdapter,
     _acreate_with_progress,
     _acreate_with_stream,
@@ -31,6 +30,7 @@ from agent.auxiliary_client import (
     _provider_requires_stream,
     aux_progress_hook,
 )
+from agent.auxiliary_stream_watchdog import _ChatStreamAccumulator
 from agent.codex_runtime import _codex_event_has_content
 from agent.conversation_compression import CompressionCommitFence
 

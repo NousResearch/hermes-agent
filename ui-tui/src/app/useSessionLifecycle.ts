@@ -371,12 +371,17 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         // HERMES_TUI_CWD is the dashboard-picked workspace: an explicit cwd on
         // session.create on both transports, so /new stays in that workspace.
         const workspaceCwd = STARTUP_WORKSPACE_CWD ? { cwd: STARTUP_WORKSPACE_CWD } : {}
+        // The dashboard user PICKED this workspace (`/api/pty?cwd=`): say so, or the backend reads the
+        // pick as the app's inherited launch default and a settle may re-home the chat off it (#52589).
+        const pickedWorkspace = STARTUP_WORKSPACE_CWD
+          ? { cwd: STARTUP_WORKSPACE_CWD, cwd_explicit: true }
+          : {}
 
         const r = await rpc<SessionCreateResponse>(
           'session.create',
           gw.isCanonical
             ? { request_id: randomUUID(), ...localCreationOptions(), ...workspaceCwd }
-            : { cols: colsRef.current, ...workspaceCwd }
+            : { cols: colsRef.current, ...pickedWorkspace }
         )
 
         if (flight !== attachmentFlight.current) {

@@ -13,6 +13,7 @@ import { jaNotices } from './ja_notices'
 import { jaOnboarding } from './ja_onboarding'
 import { jaPluginSettings } from './ja_plugins'
 import { jaProjects } from './ja_projects'
+import { jaRepoScanDescriptions, jaRepoScanLabels } from './ja_repo_scan'
 import { jaSharedMetrics } from './ja_shared_metrics'
 import { jaThemePicker } from './ja_theme_picker'
 import { jaUpdateChannel } from './ja_update_channel'
@@ -675,11 +676,7 @@ export const jaOverrides = {
         personality: '人格',
         showReasoning: '推論ブロック'
       },
-      desktop: {
-        repoScanEnabled: 'リポジトリの自動検出',
-        repoScanRoots: 'リポジトリの検索ルート',
-        repoScanExcludePaths: '除外するリポジトリパス'
-      },
+      ...jaRepoScanLabels,
       agent: {
         maxTurns: '最大エージェントステップ',
         imageInputMode: '画像添付',
@@ -840,11 +837,7 @@ export const jaOverrides = {
         personality: '新しいセッションのデフォルトのアシスタントスタイルです。',
         showReasoning: 'バックエンドが推論内容を提供したときに表示します。'
       },
-      desktop: {
-        repoScanEnabled: 'ローカルフォルダを検索して Git リポジトリをプロジェクトに表示します。',
-        repoScanRoots: '検索するフォルダです。空の場合はホームディレクトリを検索します。',
-        repoScanExcludePaths: 'リポジトリ検出時に除外するフォルダとその配下です。'
-      },
+      ...jaRepoScanDescriptions,
       timezone:
         'Hermes がローカル時刻のコンテキストを必要とするときに使用します。空欄ならシステムのタイムゾーンを使います。',
       agent: {

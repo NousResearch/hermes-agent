@@ -23,10 +23,9 @@ import {
 } from '@/components/ui/sidebar'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useContributions } from '@/contrib/react/use-contributions'
-import { type SessionInfo, type SessionSearchResult } from '@/hermes'
+import { type SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
-import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
@@ -162,24 +161,25 @@ import { ProjectDialog } from './project-dialog'
 import { filterToSessionBearingProjects, resolveLiveProjectFilter } from './project-filter'
 import {
   excludeProjectSessions,
+  liveSessionsForProject,
+  nestProjectsByParent,
   orderProjectsByIds,
   overlayLiveLanes,
-  overlayLivePreviews,
-  PROJECT_PREVIEW_COUNT,
   ProjectBackRow,
   ProjectMenu,
   projectTreeCwd,
   reconcileEnteredProjectSessions,
-  sessionBucketId,
   sessionMatchesProjectFilter,
   sessionRecency as sessionTime,
   type SidebarProjectTree,
   type SidebarWorkspaceTree,
   sortProjectsForOverview,
   StartWorkButton,
+  useProjectRowData,
   useRepoWorktreeMap
 } from './projects'
 import { WorktreeDialog } from './projects/worktree-dialog'
+import { mergeSearchResults } from './search-results'
 import {
   SidebarBlankState,
   SidebarLoadErrorState,
@@ -279,97 +279,9 @@ const HEADER_ACTION_BTN =
 const HEADER_NAV_BTN =
   'text-(--ui-text-tertiary) opacity-70 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100'
 
-// FTS results cover sessions that aren't in the loaded page; synthesize a
-// minimal SessionInfo so they render in the same row component (resume works
-// by id; the snippet stands in for the preview).
-
-// The backend's FTS layer wraps matched terms in literal '>>>' / '<<<'
-// highlight markers (sqlite snippet() delimiters — see hermes_state_search.py).
-// The sidebar renders the snippet as plain text, so the markers must be
-// stripped or a search for "foo" paints rows titled ">>>foo<<<".
-// Exported for tests.
-export function stripFtsMarkers(snippet: string): string {
-  return snippet.replaceAll('>>>', '').replaceAll('<<<', '')
-}
-
-// The backend already ships the real session title on every search hit
-// (web_routers/sessions.py add_lineage_result enriches each result via
-// get_session_rich_row). Map it onto the synthesized row so the sidebar
-// paints the actual name; the snippet stays as the preview. Untitled
-// sessions keep today's snippet fallback via sessionTitle().
-// Exported for tests.
-export function searchResultToSession(result: SessionSearchResult): SessionInfo {
-  const ts = result.session_started ?? Date.now() / 1000
-
-  return {
-    archived: false,
-    cwd: null,
-    ended_at: null,
-    id: result.session_id,
-    _lineage_root_id: result.lineage_root ?? null,
-    input_tokens: 0,
-    is_active: false,
-    last_active: result.last_active ?? ts,
-    message_count: 0,
-    model: result.model ?? null,
-    output_tokens: 0,
-    preview: stripFtsMarkers(result.snippet ?? '').trim() || null,
-    source: result.source ?? null,
-    started_at: ts,
-    title: result.title?.trim() || null,
-    tool_call_count: 0
-  }
-}
-
-export function mergeSearchResults(
-  sortedSessions: readonly SessionInfo[],
-  query: string,
-  serverMatches: readonly SessionSearchResult[],
-  sessionByAnyId: ReadonlyMap<string, SessionInfo>,
-  searchPending: boolean
-): SessionInfo[] {
-  if (!query) {
-    return []
-  }
-
-  // While the request is in flight the client's own recency-ordered matches
-  // are all there is — instant feedback while typing, and no leftovers from
-  // whatever the previous query's request returned. Once the ranked server
-  // response lands, it decides the order: the backend runs direct id matches
-  // before FTS content hits, so pasting a session's exact id must keep that
-  // hit on top instead of letting newer quoting sessions bury it.
-  const out = new Map<string, SessionInfo>()
-
-  if (searchPending) {
-    for (const s of sortedSessions) {
-      if (sessionMatchesSearch(s, query)) {
-        out.set(s.id, s)
-      }
-    }
-
-    return [...out.values()]
-  }
-
-  for (const match of serverMatches) {
-    if (out.has(match.session_id)) {
-      continue
-    }
-
-    const loaded = sessionByAnyId.get(match.session_id)
-    out.set(match.session_id, loaded ?? searchResultToSession(match))
-  }
-
-  // Client-only matches that the server didn't return (e.g. cwd/git-branch
-  // fields the FTS index doesn't cover) still deserve a row — after the
-  // ranked hits, in recency order.
-  for (const s of sortedSessions) {
-    if (!out.has(s.id) && sessionMatchesSearch(s, query)) {
-      out.set(s.id, s)
-    }
-  }
-
-  return [...out.values()]
-}
+// FTS results cover sessions that are not in the loaded page; the search helpers in
+// `./search-results` synthesize a minimal SessionInfo so they render in the same row
+// component (resume works by id; the snippet stands in for the preview).
 
 interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   currentView: AppView
@@ -1022,7 +934,10 @@ export function ChatSidebar({
       return true
     })
 
-    return orderProjectsByIds(deduped, projectOrderIds)
+    //
+    // Nesting last: a project whose folder sits inside another's follows its
+    // parent (`nestProjectsByParent`) whatever order the two were dragged into.
+    return nestProjectsByParent(orderProjectsByIds(deduped, projectOrderIds))
   }, [
     projectTree,
     dismissedAutoProjects,
@@ -1087,10 +1002,14 @@ export function ChatSidebar({
     )
   }, [overviewEnteredProject, enteredProjectTree, orderRepos, isHiddenFromProjects])
 
-  const enteredProjectOverlaySessions = useMemo(
-    () => reconcileEnteredProjectSessions(agentSessions, overviewEnteredProject?.previewSessions),
-    [agentSessions, overviewEnteredProject?.previewSessions]
-  )
+  // The entered project's live rows: its own, plus ownerless ones (liveSessionsForProject). The
+  // per-repo overlay re-places every row it is handed by path prefix, so an unfiltered list would
+  // re-insert a NESTED project's chats into this project's lanes (#134012).
+  const enteredProjectOverlaySessions = useMemo(() => {
+    const live = reconcileEnteredProjectSessions(agentSessions, overviewEnteredProject?.previewSessions)
+
+    return enteredProjectId ? liveSessionsForProject(enteredProjectId, live, projects, projectOwners) : live
+  }, [agentSessions, overviewEnteredProject?.previewSessions, enteredProjectId, projects, projectOwners])
 
   // Overlay live `$sessions` onto the entered project so a just-created session
   // (which the backend snapshot hasn't folded in yet) counts as content and
@@ -1198,47 +1117,12 @@ export function ChatSidebar({
   // The project overview (drill-in list) vs. the entered project's content.
   const projectOverview = projectsActive && !inProject ? agentProjectTree : undefined
 
-  // Preview rows come from the backend tree (each project carries its
-  // most-recent sessions), overlaid with live $sessions so a just-created
-  // session shows under its project instantly (and with its working arc),
-  // matching the flat Recents list. Keyed by project id for the rows.
-  const overviewPreviews = useMemo<Record<string, SessionInfo[]>>(
-    () =>
-      overlayLivePreviews(
-        projectOverview ?? [],
-        agentSessions,
-        projects,
-        showAllSessions ? Infinity : PROJECT_PREVIEW_COUNT,
-        {
-          removed: removedSessionIds,
-          // Rank before the trim, so "3 priciest in this project" isn't "3 most
-          // recent, priciest first".
-          rankIds: sortOrderIds
-        }
-      ),
-    [projectOverview, agentSessions, projects, removedSessionIds, sortOrderIds, showAllSessions]
-  )
-
-  // A row's "Show all" hydrates raw backend lanes, which — like the drill-in —
-  // must go through the same exclusion as the previews above (pins, filter
-  // misses, optimistic removals), or a pinned chat renders twice and a
-  // just-deleted one comes back. The per-project count of loaded sessions
-  // that exclusion hides also corrects the backend's `sessionCount` in the
-  // "Show all N" label (a pin is always loaded — it renders in Pinned).
-  const overviewHidden = useMemo(() => {
-    const isHidden = (session: SessionInfo) => isHiddenFromProjects(session) || removedSessionIds.has(session.id)
-    const counts: Record<string, number> = {}
-
-    for (const session of sessions) {
-      const projectId = isHidden(session) ? sessionBucketId(session, projects, projectOwners) : null
-
-      if (projectId) {
-        counts[projectId] = (counts[projectId] ?? 0) + 1
-      }
-    }
-
-    return { isHidden, counts }
-  }, [sessions, projects, projectOwners, isHiddenFromProjects, removedSessionIds])
+  // The rows' preview sessions and the exclusion they share (see projects/row-data.ts).
+  const { hidden: overviewHidden, previews: overviewPreviews } = useProjectRowData({
+    isHiddenFromProjects,
+    liveSessions: agentSessions,
+    tree: agentProjectTree
+  })
 
   const onEnterProject = useCallback(
     (id: string) => {
@@ -1753,6 +1637,7 @@ export function ChatSidebar({
                 open
                 pinned={false}
                 preserveOrder
+                projectTree={undefined}
                 rootClassName="min-h-32 flex-1 overflow-hidden p-0"
                 sessions={searchResults}
                 showProfileTags={showAllProfiles}
@@ -1780,6 +1665,7 @@ export function ChatSidebar({
                 onToggleUnread={toggleUnread}
                 open={pinsOpen}
                 pinned
+                projectTree={undefined}
                 rootClassName="shrink-0 p-0 pb-1"
                 sessions={pinnedSessions}
                 showProfileTags={showAllProfiles}
@@ -1967,7 +1853,7 @@ export function ChatSidebar({
                 open={agentsOpen}
                 pinned={false}
                 projectBackRow={
-                  inProject ? <ProjectBackRow label={s.projects.back} onClick={exitProjectScope} /> : undefined
+                  inProject ? <ProjectBackRow label={s.projects.back} onExit={exitProjectScope} /> : undefined
                 }
                 projectContent={inProject ? enteredProjectContent : undefined}
                 projectOverview={projectOverview}
@@ -1975,6 +1861,7 @@ export function ChatSidebar({
                 projectOverviewPreviews={overviewPreviews}
                 projectRepoWorktrees={inProject ? scopedRepoWorktrees : undefined}
                 projectsLoading={worktreeGroupingActive ? projectTreeLoading : false}
+                projectTree={agentProjectTree}
                 removedSessionIds={inProject ? removedSessionIds : undefined}
                 rootClassName={cn(
                   'min-h-32 flex-1 overflow-hidden p-0',
@@ -2036,6 +1923,7 @@ export function ChatSidebar({
                     onToggleUnread={toggleUnread}
                     open={messagingOpenIds.includes(group.sourceId)}
                     pinned={false}
+                    projectTree={undefined}
                     rootClassName="shrink-0 p-0"
                     sessions={shownSessions}
                     showProfileTags={showAllProfiles && !ownerGrouped}

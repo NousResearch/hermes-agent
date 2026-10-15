@@ -146,6 +146,201 @@ export function orderProjectsByIds(projects: SidebarProjectTree[], orderIds: str
   ])
 }
 
+// Nest each project under its folder-ancestor, keeping the incoming order within every level.
+//
+// The result stays a FLAT, parent-first list — the overview renders that order and indents the rows
+// whose project names a parent (`project.parentId`), so nothing downstream (virtualisation, drag
+// order, owner maps) has to learn a nested shape. A `parentId` naming an absent project is treated
+// as top level rather than dropping the row, so filtering or dismissing a parent can't orphan a
+// child out of the sidebar. Membership is untouched: the child keeps its own sessions.
+export function nestProjectsByParent(projects: SidebarProjectTree[]): SidebarProjectTree[] {
+  const present = new Set(projects.map(project => project.id))
+
+  const parentOf = (project: SidebarProjectTree): null | string =>
+    project.parentId && project.parentId !== project.id && present.has(project.parentId) ? project.parentId : null
+
+  const children = new Map<string, SidebarProjectTree[]>()
+
+  const nested = projects.filter(project => parentOf(project))
+
+  // Nothing nests: hand the caller the same list it passed in (same contract as
+  // `orderProjectsByIds`), so an unnested sidebar keeps referential stability.
+  if (!nested.length) {
+    return projects
+  }
+
+  for (const project of nested) {
+    const parent = parentOf(project)
+
+    if (parent) {
+      children.set(parent, [...(children.get(parent) ?? []), project])
+    }
+  }
+
+  const out: SidebarProjectTree[] = []
+  const placed = new Set<string>()
+
+  const push = (project: SidebarProjectTree): void => {
+    if (placed.has(project.id)) {
+      return
+    }
+
+    placed.add(project.id)
+    out.push(project)
+
+    for (const child of children.get(project.id) ?? []) {
+      push(child)
+    }
+  }
+
+  for (const project of projects) {
+    if (!parentOf(project)) {
+      push(project)
+    }
+  }
+
+  // Belt and braces: a cycle in `parentId` would leave every member rootless and silently drop rows.
+  for (const project of projects) {
+    push(project)
+  }
+
+  return out
+}
+
+/**
+ * The dragged project plus everything nested under it, transitively, and the project itself — so
+ * `has(id)` answers "is this that project, or one of its descendants?".
+ */
+export function projectDescendantIds(projects: Pick<SidebarProjectTree, 'id' | 'parentId'>[], id: string): Set<string> {
+  const children = new Map<string, string[]>()
+
+  for (const project of projects) {
+    if (project.parentId) {
+      children.set(project.parentId, [...(children.get(project.parentId) ?? []), project.id])
+    }
+  }
+
+  const seen = new Set<string>([id])
+  const queue = [...(children.get(id) ?? [])]
+
+  while (queue.length) {
+    const next = queue.pop() as string
+
+    if (seen.has(next)) {
+      continue
+    }
+
+    seen.add(next)
+    queue.push(...(children.get(next) ?? []))
+  }
+
+  return seen
+}
+
+/**
+ * Where the entered view's back row goes: one level up — the parent of the project you are inside —
+ * or `null` for the overview when it is a top-level one. The mirror of entering a nested row, so a
+ * drill-down walks back out a step at a time.
+ */
+export function projectBackTarget(projects: Pick<SidebarProjectTree, 'id' | 'parentId'>[], id: string): null | string {
+  const parentId = projects.find(project => project.id === id)?.parentId
+
+  // A parent id that names no present project is no level to step back into (the same tolerance
+  // `nestProjectsByParent` has for a filtered-out parent): the overview is the answer.
+  return parentId && projects.some(project => project.id === parentId) ? parentId : null
+}
+
+/**
+ * Every project's nesting depth along its `parentId` chain — 0 for a top-level row, 1 for its child,
+ * 2 for its grandchild. The overview indents a row by this, so a subproject of a subproject is drawn
+ * one step further in than the subproject itself rather than beside it. Cycle-safe, and a `parentId`
+ * naming an absent project counts as top level — the same tolerance `visibleProjectRows` and
+ * `projectBackTarget` have.
+ */
+export function projectDepths(projects: Pick<SidebarProjectTree, 'id' | 'parentId'>[]): Map<string, number> {
+  const byId = new Map(projects.map(project => [project.id, project]))
+  const depths = new Map<string, number>()
+
+  for (const project of projects) {
+    const seen = new Set<string>([project.id])
+    let depth = 0
+    let parentId = project.parentId
+
+    while (parentId && !seen.has(parentId)) {
+      seen.add(parentId)
+
+      const parent = byId.get(parentId)
+
+      if (!parent) {
+        break
+      }
+
+      depth += 1
+      parentId = parent.parentId
+    }
+
+    depths.set(project.id, depth)
+  }
+
+  return depths
+}
+
+/**
+ * Every session a project stands for: its own rows plus the rows of every project nested under it,
+ * transitively. This is what a collapsed row folds its status up from — ownership is deepest-wins, so
+ * a subproject's sessions belong to the subproject and are absent from its ancestors' `sessionIds`.
+ */
+export function projectSubtreeSessionIds(projects: SidebarProjectTree[], id: string): string[] {
+  const subtree = projectDescendantIds(projects, id)
+  const ids: string[] = []
+
+  for (const project of projects) {
+    if (subtree.has(project.id)) {
+      ids.push(...(project.sessionIds ?? []))
+    }
+  }
+
+  return ids
+}
+
+/**
+ * The projects whose row should be on screen: a project whose ancestor chain is all open.
+ *
+ * Nesting is a display grouping, so a collapsed container hides everything under it — a subproject
+ * goes away with its parent, and comes back in whatever state it was left in (each row keeps its own
+ * open flag, keyed by project id, so expanding a child and collapsing its parent is not a reset).
+ * A parent that is not in this list (archived, or a stale id) cannot hide anything.
+ */
+export function visibleProjectRows(
+  projects: SidebarProjectTree[],
+  isOpen: (id: string) => boolean
+): SidebarProjectTree[] {
+  const byId = new Map(projects.map(project => [project.id, project]))
+
+  return projects.filter(project => {
+    const seen = new Set<string>()
+    let parentId = project.parentId
+
+    while (parentId && !seen.has(parentId)) {
+      seen.add(parentId)
+
+      const parent = byId.get(parentId)
+
+      if (!parent) {
+        break
+      }
+
+      if (!isOpen(parent.id)) {
+        return false
+      }
+
+      parentId = parent.parentId
+    }
+
+    return true
+  })
+}
+
 // Project drill-in lanes are git-driven: source them from `git worktree list` so
 // linked worktrees still appear even when their sessions aren't in the recents
 // payload currently loaded in memory.

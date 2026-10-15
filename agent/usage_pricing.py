@@ -196,6 +196,12 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         "claude-opus-5": _OPUS,
         "claude-opus-5-5": _OPUS_5_5,
     }),
+    # Fable 5.1 cache hits are 0.025x input (Fable 5: the standard 0.1x).
+    # Haiku 5.5 is context-tiered (below).
+    ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-10", {
+        "claude-fable-5": ("10.00", "50.00", "1.00", "12.50"),
+        "claude-fable-5-1": ("10.00", "50.00", "0.25", "12.50"),
+    }),
     ("openai", "https://openai.com/api/pricing/", "openai-pricing-2026-03-16", {
         "gpt-4o": ("2.50", "10.00", "1.25"), "gpt-4o-mini": ("0.15", "0.60", "0.075"),
         "gpt-4.1": ("2.00", "8.00", "0.50"), "gpt-4.1-mini": ("0.40", "1.60", "0.10"),
@@ -337,6 +343,14 @@ _OFFICIAL_DOCS_PRICING[("google", "gemini-2.5-pro")] = _snap(
     "1.25", "10.00", "0.125", url=_GOOGLE_URL, version="google-pricing-2026-07-07",
     tier_threshold_tokens=200_000, input_cost_per_million_above=Decimal("2.50"),
     output_cost_per_million_above=Decimal("15.00"),
+)
+# Claude Haiku 5.5 is priced by prompt length: a prompt over 100k tokens (cache reads
+# and writes included) bills the whole request at 5x the base rates.
+_OFFICIAL_DOCS_PRICING[("anthropic", "claude-haiku-5-5")] = _snap(
+    "0.10", "0.50", "0.01", "0.125", url=_ANTHROPIC_URL, version="anthropic-pricing-2026-10",
+    tier_threshold_tokens=100_000, input_cost_per_million_above=Decimal("0.50"),
+    output_cost_per_million_above=Decimal("2.50"), cache_read_cost_per_million_above=Decimal("0.05"),
+    cache_write_cost_per_million_above=Decimal("0.625"),
 )
 # Anthropic fast mode (``speed: "fast"``): a premium on the whole context window, with the
 # prompt-caching multipliers applied on top. Selected per response by ``usage.speed``.

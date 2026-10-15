@@ -622,6 +622,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/social-media/social-media-reddit-reading',
+                    'user-guide/skills/optional/social-media/social-media-twittrapi',
                   ],
                 },
                 {

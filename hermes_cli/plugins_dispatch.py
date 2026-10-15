@@ -349,7 +349,9 @@ class PluginDispatchMixin:
                 oldest_gate = min(abandoned, key=abandoned.__getitem__)
                 if time.monotonic() - abandoned[oldest_gate] > _HOOK_ABANDONED_SLOT_MAX_AGE_SECONDS:
                     del abandoned[oldest_gate]
-                    logger.warning(
+                    # ERROR, not WARNING: this failure mode wedges tool execution — operators
+                    # must be able to find the wedged plugin in the log.
+                    logger.error(
                         "Hook '%s' callback %s (%s): evicting an abandoned worker slot older than "
                         "%gs — the worker thread is wedged past any legitimate drain; admitting one "
                         "replacement (fail-closed skips resume if it also times out)",

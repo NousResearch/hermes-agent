@@ -1204,11 +1204,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._event_queue: queue.Queue[Any] = queue.Queue(maxsize=_EVENT_PENDING_CAP)
         self._event_worker: Optional[threading.Thread] = None
         self._emit_depth = threading.local()
-        # In-flight / recently-timed-out hook callbacks keyed by (hook_name, id(cb), call_identity)
-        # so a stuck policy hook cannot spawn a new abandoned thread on every fire.
+        # In-flight / recently-timed-out hook callbacks keyed by (hook_name, id(cb), call_identity).
         self._hook_running_callbacks: dict[tuple, object] = {}
-        # gate key -> monotonic time the slot was recorded, so a wedged worker's slot can age
-        # out (#138644) instead of holding one of the abandoned-worker slots until restart.
+        # gate key -> {gate: monotonic time recorded}; wedged slots age out (#138644).
         self._hook_abandoned: dict[tuple, dict[tuple, float]] = {}
         self._hook_timeout_suppressed_until: dict[tuple, float] = {}
         self._hook_timeout_lock = threading.Lock()

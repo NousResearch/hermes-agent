@@ -474,7 +474,10 @@ class GatewayACPAgent(acp.Agent):
         from acp.schema import SetSessionModelResponse
         session_id = self._aliases.get(session_id, session_id)
         client = await self._client()
-        payload = {'model': model_id}
+        from hermes_cli.models import parse_model_input
+        # Picker IDs include the provider, as on the in-process ACP switch path.
+        provider, model = await asyncio.to_thread(parse_model_input, model_id, '')
+        payload = {'model': model, **({'provider': provider} if provider else {})}
         self._unacked.pop(session_id, None)  # a control between a lost submit and its repeat retires it
         result = await self._mutations.apply(client, session_id, 'model', payload,
                                              confirm=self._model_confirmer(session_id))

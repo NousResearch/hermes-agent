@@ -4026,7 +4026,7 @@ class GatewayRunner(
             session_id=context.session_id or "",
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
-            async_delivery=_async_delivery,
+            async_delivery=_async_delivery, cwd=context.cwd,
             cron_session="", session_history_delivery=_history_delivery, **_api_vars)
 
     def _clear_session_env(self, tokens: list) -> None:

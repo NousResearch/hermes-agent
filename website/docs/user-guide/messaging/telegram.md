@@ -869,6 +869,29 @@ Only authorized users (allowlist via `TELEGRAM_ALLOWED_USERS` / platform auth co
 
 Both features can coexist on the same bot — you'd run `/topic` from a user's DM, and `extra.dm_topics` continues to manage operator-declared topics for other chats.
 
+## Start a fresh session in a Desktop Project
+
+Use `/new -project` (or `/new --project`) in a Telegram chat or topic to pick an existing project from the **routed Hermes profile's** Desktop Projects registry. The picker shows active projects with registered workspace folders; duplicate project names include their slug. If a project has multiple folders, choose a folder in the second picker. **Back** returns to projects; **Cancel** leaves the current conversation unchanged.
+
+No session is reset or created while opening, paging, going back, cancelling, or leaving the picker open. The final workspace choice starts one fresh session for only that chat/topic. The previous transcript stays in its earlier session; the profile-wide active project and other chats are not changed. The fresh session's working directory is the selected registered folder, so tools and project instructions use that workspace and Desktop groups the session under the matching project. Later messages in the chat/topic continue in the new session.
+
+The workspace is stored on the new session's own record, so it survives context compression, `/resume` and a gateway restart. It is re-checked on every message: if the folder is deleted or becomes unreadable later, Hermes replies that the workspace is gone and does not run the turn in another directory (start a fresh session with `/new` or `/new -project`). Project workspaces are host paths, so the picker is available only when the profile's terminal backend is `local`; Docker, SSH and other backends get an explicit message instead of a silently remapped directory. A plain `/new` afterwards starts an ordinary session with no project directory.
+
+Opening the picker while a turn is running does not interrupt it. Choosing a workspace is the commit point: it follows `/new`'s existing busy-session reset policy. Invalid or unknown flags (for example `/new --proj`) are rejected rather than silently resetting the session or becoming its title; plain `/new` and `/new <title>` keep their existing behavior.
+
+### Telegram-to-Desktop smoke procedure
+
+This procedure is for an operator with a test Telegram bot and a running gateway. Do not use a production chat if you cannot risk starting a fresh session.
+
+1. In the profile that receives the test chat, create two Desktop Projects with real folders. Include one project with two registered folders and, if convenient, two projects with the same display name but different slugs.
+2. In a test Telegram chat/topic with an existing transcript, send `/new -project`. Confirm that the current transcript and session are still active while the picker is open. Page, choose a multi-folder project, press **Back**, and then **Cancel**; verify no session reset occurred.
+3. Reopen the picker and select a project/workspace. Confirm Telegram reports the project, then send a prompt that asks Hermes to report its working directory and inspect the workspace's `AGENTS.md`. Verify the reported path and instructions match the chosen folder.
+4. Open the same profile in Desktop. Verify the new Telegram session appears under the selected Project. Confirm the old transcript remains in its prior session and the profile's active-project selection did not move.
+5. Send another message in the same Telegram chat/topic; confirm it continues in the selected workspace. Restart the gateway normally, send another message, and verify the workspace and Desktop grouping remain.
+6. Repeat with a second Telegram chat/topic and, where available, a second routed profile. Verify neither chat changes the other's session or project, and that an archived/deleted project or removed folder returns an error without switching sessions.
+
+Automated regression coverage exercises command parsing, the real Telegram adapter callback path, identity/message binding, replay and concurrent-tap rejection, routed registry reads, the SessionStore fresh-session transition and its rollback, the persisted workspace across compression and cold resume, git metadata for non-git folders, per-turn workspace revalidation, terminal and file-tool anchoring, serialization against a concurrent plain `/new`, and the production Desktop project-tree resolver. Live Telegram transport and a desktop GUI smoke were not run by the automated suite.
+
 ### Prerequisites
 
 In **@BotFather**, open your bot → **Bot Settings → Threads Settings**:

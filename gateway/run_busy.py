@@ -1035,15 +1035,20 @@ class GatewayBusySessionMixin:
         return EphemeralReply(t("gateway.stop.stopped"))
 
     async def _busy_new_command(self, event: MessageEvent, quick_key: str, source):
+        from gateway.project_picker import new_request_for_event
+        if new_request_for_event(event).kind != "plain":
+            return await self._handle_project_picker_command(event)  # non-destructive: the turn keeps running
         # /reset and /new bypass the running-agent guard (else they'd queue as user text and replay
         # into the same broken history); clear pending messages so the old text doesn't replay.
         from gateway.run import _INTERRUPT_REASON_RESET
         # Interrupt the agent first, then clear the adapter's pending queue so the stale "/reset" text
         # doesn't get re-processed as a user message after the interrupt completes. See #2170.
-        await self._interrupt_and_clear_session(
-            quick_key, source, interrupt_reason=_INTERRUPT_REASON_RESET, invalidation_reason="new_command",
-        )
-        return await self._handle_reset_command(event)
+        from gateway.project_session import route_transition_lock
+        async with route_transition_lock(self, quick_key):  # vs a concurrent project-picker commit
+            await self._interrupt_and_clear_session(
+                quick_key, source, interrupt_reason=_INTERRUPT_REASON_RESET, invalidation_reason="new_command",
+            )
+            return await self._handle_reset_command(event)
 
     async def _busy_queue_command(self, event: MessageEvent, quick_key: str, source):
         # Each /queue is its own full agent turn, run FIFO after the current run; never merged.

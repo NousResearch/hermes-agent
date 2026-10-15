@@ -58,6 +58,84 @@ def auto_continue_freshness_window() -> float:
 class SessionLifecycleMixin:
     """SessionStore explicit boundaries and crash-recovery markers."""
 
+    def reset_session_for_project(
+        self, session_key: str, source: SessionSource, *, expected_session_id: str | None,
+        cwd: str, project_id: str, git_branch: str = "", git_repo_root: str = "",
+    ) -> Optional[SessionEntry]:
+        """CAS a fresh project session into one route; durable first, published last.
+
+        Returns ``None`` when the route no longer points at *expected_session_id*. Raises (and leaves
+        the previous route and rows untouched) when there is no session database or any durable write
+        fails: a project session without its persisted workspace must never become active.
+        """
+        from gateway.project_session import PROJECT_MARKER_KEY, project_marker
+        from gateway.session import SessionEntry, transport_profile_of
+
+        with self._lock:  # CAS pre-check only; SQLite work below runs OUTSIDE the routing lock
+            old = self._entry_locked(session_key)
+            if (old.session_id if old else None) != expected_session_id:
+                return None
+        db = self._db_for_key(session_key)
+        if db is None:
+            raise RuntimeError("no session database; refusing to start a project session")
+        now = _now()
+        sid = _new_session_id(now)
+        entry = SessionEntry(
+            session_key=session_key, session_id=sid, created_at=now, updated_at=now,
+            origin=source, display_name=source.chat_name, platform=source.platform,
+            chat_type=source.chat_type, transport_profile=transport_profile_of(source),
+            prev_session_id=expected_session_id, is_fresh_reset=True,
+            metadata={"project_id": project_id},
+        )
+        kwargs = self._session_create_kwargs(
+            session_id=sid, session_key=session_key, origin=source,
+            source_value=source.platform.value if source.platform else "unknown",
+            display_name=source.chat_name, parent_session_id=expected_session_id,
+        )
+        kwargs["cwd"] = cwd
+        kwargs["model_config"] = {
+            **(kwargs["model_config"] or {}), PROJECT_MARKER_KEY: project_marker(project_id, cwd),
+        }
+        try:
+            db.create_session(**kwargs)
+            # The new row inherited the PARENT's git branch/root at insert; the selected folder owns them.
+            db.update_session_cwd(sid, cwd, git_branch, git_repo_root, replace_git_meta=True)
+            with self._lock:
+                current = self._entry_locked(session_key)
+                if (current.session_id if current else None) != expected_session_id:
+                    published = False  # a concurrent transition won while we wrote the row
+                else:
+                    data, generation = self._snapshot_routing_locked()
+                    data[session_key] = entry.to_dict()
+                    self._persist_routing_data(data, generation)
+                    self._entries[session_key] = entry
+                    published = True
+        except Exception:
+            self._discard_unpublished_row(db, sid)
+            raise
+        if not published:
+            self._discard_unpublished_row(db, sid)
+            return None
+        if expected_session_id:
+            from hermes_cli.observability.relay_shared_metrics import close_session_run
+
+            close_session_run(expected_session_id)
+            self._promote_session_reset(
+                session_key, expected_session_id, "session_reset",
+                log=lambda exc: logger.warning("Failed to end predecessor session: %s", exc),
+            )
+        self._record_gateway_session_peer(sid, session_key, source, display_name=source.chat_name)
+        return entry
+
+    @staticmethod
+    def _discard_unpublished_row(db, session_id: str) -> None:
+        """Roll back a row that never became routable; a failed rollback is reported, not hidden."""
+        try:
+            if not db.delete_session(session_id):
+                logger.error("Unpublished project session row %s could not be removed", session_id)
+        except Exception:
+            logger.error("Unpublished project session row %s could not be removed", session_id, exc_info=True)
+
     def _is_session_ended_in_db(self, session_id: str, session_key: Optional[str] = None) -> bool:
         """True iff state.db says the session is gone: ended (non-null end_reason) or hard-deleted
         (no row in a readable owning DB). No DB or a DB error -> False (same failure mode as

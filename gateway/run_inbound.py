@@ -573,7 +573,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
             _denied = self._check_slash_access(source, _cmd_def_inner.name)
             if _denied is not None:
                 return True, _denied
-            if _cmd_def_inner.name in ("stop", "new"):
+            from gateway.project_picker import is_nondestructive_new
+            if _cmd_def_inner.name == "stop" or (
+                _cmd_def_inner.name == "new" and not is_nondestructive_new(event)
+            ):
                 await self._hm_stop_owner_turn(_quick_key)
             # Any recognized slash command dispatches per its declared busy_policy (dispatch /
             # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
@@ -819,11 +822,14 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayPluginInjectionMixin)
         )
 
     async def _hm_cmd_new(self, event, source, _quick_key):
+        from gateway.project_picker import new_request_for_event
         if await asyncio.to_thread(self._is_telegram_topic_root_lobby, source):
             return True, self._telegram_topic_root_new_message()
+        if new_request_for_event(event).kind != "plain":
+            return True, await self._handle_project_picker_command(event)
         return await self._hm_confirm_destructive(
             event, "new", t("gateway.confirm.detail_new"),
-            self._handle_reset_command,
+            self._handle_reset_command_serialized,
         )
 
     async def _hm_cmd_start(self, event, source, _quick_key):

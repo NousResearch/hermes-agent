@@ -256,6 +256,13 @@ def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
     with _session_cwd_lock:
         if _session_cwd.get(key) != cwd:
             _session_cwd[key] = cwd
+        override = _task_env_overrides.get(key)
+        if override and override.get("cwd_source") == "session":
+            override["cwd"] = cwd
+            # File tools are keyed by the session id, terminal calls by the route: a `cd` moves both.
+            sibling = _task_env_overrides.get(_qualify_task_key(str(override.get("cwd_session_id") or "")))
+            if sibling and sibling.get("cwd_source") == "session":
+                sibling["cwd"] = cwd
 
 
 def get_session_cwd(session_key: Optional[str]) -> Optional[str]:
@@ -263,6 +270,17 @@ def get_session_cwd(session_key: Optional[str]) -> Optional[str]:
     callers decide what an absent record means. None/empty keys read ``"default"``."""
     with _session_cwd_lock:
         return _session_cwd.get(_qualify_task_key(str(session_key or "default")))
+
+
+def get_task_session_cwd(task_id: str, session_id: str) -> Optional[str]:
+    """CWD pin owned by this exact gateway session, not a previous conversation on its route."""
+    overrides = resolve_task_overrides(task_id)
+    if (
+        overrides.get("cwd_source") != "session"
+        or overrides.get("cwd_session_id") != session_id
+    ):
+        return None
+    return get_session_cwd(task_id) or overrides.get("cwd")
 
 
 def clear_session_cwd(session_key: str) -> None:
@@ -346,6 +364,24 @@ def clear_task_env_overrides(task_id: str):
     clear_session_cwd(task_id)
     with _container_alias_lock:
         _container_aliases.pop(task_id, None)
+
+
+def clear_task_session_cwd(task_id: str) -> None:
+    """Drop a gateway session's workspace PIN (override + recorded cwd), keeping unrelated overrides.
+
+    A no-op for a task with no pin: an ordinary session's own ``cd`` record is not ours to clear.
+    """
+    key = _qualify_task_key(task_id)
+    override = _task_env_overrides.get(key)
+    if not override or override.get("cwd_source") != "session":
+        return
+    with _session_cwd_lock:
+        _session_cwd.pop(key, None)
+    remaining = {n: v for n, v in override.items() if n not in {"cwd", "cwd_source", "cwd_session_id"}}
+    if remaining:
+        _task_env_overrides[key] = remaining
+    else:
+        _task_env_overrides.pop(key, None)
 
 
 def register_container_alias(child_task_id: str, parent_task_id: Optional[str]) -> None:

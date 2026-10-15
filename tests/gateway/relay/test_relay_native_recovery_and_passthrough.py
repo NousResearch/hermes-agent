@@ -247,3 +247,69 @@ async def test_forwarded_discord_component_is_admitted_like_relayed_text(tmp_pat
                 assert 'permission_denied' not in caplog.text
     finally:
         authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_for_a_restored_relay_session_admits_with_warm_egress_routing(tmp_path, monkeypatch):
+    """A session whose last input already settled has nothing to recover at boot, so the heartbeat
+    is the first thing to reply after a restart: it must not admit with cold egress caches."""
+    from gateway.session_authority import initialize_session_authority
+    import gateway.run_heartbeat_acceptance as acceptance
+
+    connector = _Connector('discord')
+    raw = {'text': 'settled before restart', 'message_id': 'm-h', 'source': {
+        'platform': 'discord', 'chat_id': 'chan-h', 'chat_type': 'group', 'user_id': 'owner-h',
+        'scope_id': 'guild-h'}}
+    turns = []
+    async with websockets.serve(connector, '127.0.0.1', 0) as server:
+        url = f'ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/relay'
+        runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
+        _stub_turns(runner, monkeypatch, turns)
+        authority = await initialize_session_authority(runner, profile_id='default', instance_id='hb-1')
+        async with _wired_relay(runner, connector, url) as (_adapter, ws):
+            await ws.send(json.dumps({'type': 'inbound', 'event': raw, 'bufferId': 'b-h'}) + '\n')
+            await async_wait_until(lambda: connector.replies('chan-h'), timeout=20, what='the first turn answered')
+        authority.db.close()
+
+        runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
+        authority = await initialize_session_authority(runner, profile_id='default', instance_id='hb-2')
+        seen = []
+
+        async def _admit(_runner, adapter, source, session_id, route):
+            seen.append(adapter._with_scope(source.chat_id, None))
+        monkeypatch.setattr(acceptance, 'admit_heartbeat', _admit)
+        try:
+            async with _wired_relay(runner, connector, url):
+                entry = next(e for e in runner.session_store.list_sessions() if e.origin.chat_id == 'chan-h')
+                source = runner._restored_source(entry)
+                watch = {entry.session_key: (source, entry.session_id)}
+                await runner._heartbeat_poll_watch(watch, entry.session_key, source, entry.session_id)
+                assert seen, 'the heartbeat never reached admission'
+                assert (seen[0].get('scope_id'), seen[0].get('user_id')) == ('guild-h', 'owner-h')
+        finally:
+            authority.db.close()
+
+
+def test_priming_from_a_restored_event_never_replaces_live_routing():
+    """Priming is fill-only: a newer live inbound's routing for the chat survives a revived event."""
+    from gateway.platforms.event import MessageEvent
+    from gateway.relay.adapter import RelayAdapter
+    from gateway.session import SessionSource
+
+    adapter = RelayAdapter(PlatformConfig(enabled=True), _Connector('slack').descriptor)
+
+    def event(user, profile, ts):
+        return MessageEvent(text='', message_id=ts, source=SessionSource(
+            platform=Platform.SLACK, chat_id='C1', chat_type='group', user_id=user,
+            scope_id='T1', profile=profile))
+
+    adapter._capture_scope(event('Unew', 'new', '200.0'))  # live inbound
+    adapter.prime_routing_cache(event('Uold', 'old', '100.0'))  # older restored origin
+    meta = adapter._with_scope('C1', None)
+    assert (meta.get('user_id'), meta.get('profile')) == ('Unew', 'new')
+    assert adapter._last_inbound_ts_by_chat['C1'] == '200.0'
+    # A chat nothing captured yet is filled.
+    cold = event('Uc', 'p', '1.0')
+    cold.source.chat_id = 'C2'
+    adapter.prime_routing_cache(cold)
+    assert adapter._with_scope('C2', None).get('user_id') == 'Uc'

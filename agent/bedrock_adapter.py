@@ -670,12 +670,53 @@ def is_anthropic_bedrock_model(model_id: str) -> bool:
 
 # --- Message format conversion: OpenAI → Bedrock Converse ---
 
+# Converse's validator rejects these at the TOP level of ``input_schema``; nested occurrences
+# (inside ``properties`` / ``items``) are accepted, so the repair is top-level only.
+_CONVERSE_BANNED_SCHEMA_KEYS = frozenset(("allOf", "anyOf", "oneOf"))
+
+
+def _converse_input_schema(params: Any) -> dict[str, Any]:
+    """Repair a tool's ``parameters`` for Converse's validator, ``{}`` when nothing to repair.
+
+    Converse rejects a TOP-LEVEL combinator in ``input_schema`` with a ``ValidationException``
+    naming the tool index — one plugin-authored schema takes down the whole request, on every
+    model (the check is Converse's, not the model's), and ConverseStream fails the same way.
+    Top-level combinators are conditional-required hints, so dropping them changes no validity:
+    the handler re-validates at call time. Nested combinators (inside ``properties`` / ``items``)
+    are accepted and left untouched. Mirrors the Anthropic adapter's ``_normalize_tool_input_schema``.
+    Refs #139065.
+    """
+    from tools.schema_sanitizer import _strip_top_level_combinators
+    if not isinstance(params, dict) or not (_CONVERSE_BANNED_SCHEMA_KEYS & params.keys()):
+        return params if isinstance(params, dict) else {}
+    schema = _strip_top_level_combinators(params)
+    # Dropping the last key can leave a bare {} or a combinator-only schema: Converse requires
+    # ``type: object`` with a ``properties`` object, so guarantee both.
+    schema.setdefault("type", "object")
+    if not isinstance(schema.get("properties"), dict):
+        schema["properties"] = {}
+    if not isinstance(schema.get("required"), list):
+        schema["required"] = []
+    logger.debug("bedrock: stripped top-level %s from tool input_schema (Converse rejects them)",
+                 sorted(_CONVERSE_BANNED_SCHEMA_KEYS & params.keys()))
+    return schema
+
+
 def convert_tools_to_converse(tools: list[dict]) -> list[dict]:
     """OpenAI ``{"function": {...}}`` tool defs → Converse ``{"toolSpec": {...}}``."""
-    return [{"toolSpec": {
-        "name": fn.get("name", ""), "description": fn.get("description", ""),
-        "inputSchema": {"json": fn.get("parameters", {"type": "object", "properties": {}})},
-    }} for fn in (t.get("function", {}) for t in tools or [])]
+    out = []
+    for t in tools or []:
+        fn = t.get("function", {})
+        if not isinstance(fn, dict):
+            continue
+        params = fn.get("parameters", {"type": "object", "properties": {}})
+        repaired = _converse_input_schema(params)
+        tool_fn = {**fn, "parameters": repaired} if repaired is not params else fn
+        out.append({"toolSpec": {
+            "name": fn.get("name", ""), "description": fn.get("description", ""),
+            "inputSchema": {"json": repaired},
+        }})
+    return out
 
 
 # Converse rejects empty OR whitespace-only text blocks, so the placeholder must be non-whitespace.

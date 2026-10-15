@@ -25,6 +25,8 @@ import logging
 import os
 import ssl
 import threading
+import warnings
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Optional
 
@@ -51,6 +53,7 @@ def install_truststore() -> bool:
 
         truststore.inject_into_ssl()
         _installed = True
+        _mute_truststore_handshake_race()
         logger.debug("TLS trust: platform store (truststore)")
     except Exception as exc:
         _installed = False
@@ -61,6 +64,40 @@ def install_truststore() -> bool:
             exc,
         )
     return _installed
+
+
+_AMAZONAWS_INSECURE_WARNING = (
+    r"Unverified HTTPS request is being made to host '[^']+\.amazonaws\.com(\.cn)?'"
+)
+
+
+def _mute_truststore_handshake_race() -> None:
+    """Keep truststore's handshake window from crying wolf on AWS endpoints.
+
+    truststore's macOS and Windows backends flip the shared SSLContext to
+    ``check_hostname=False`` / ``verify_mode=CERT_NONE`` for the duration of
+    each ``wrap_socket`` and restore it after — the lock guards entry, not
+    other readers. urllib3 decides ``is_verified`` by reading
+    ``context.verify_mode`` right after the handshake, so with one shared
+    context (exactly what botocore keeps per Bedrock client) a concurrent
+    handshake makes it read the transient ``CERT_NONE`` and warn about a
+    request truststore itself verified through the OS store.
+
+    Hermes never disables verification on its boto3 clients, so under the
+    platform verifier this warning for ``*.amazonaws.com`` is always that
+    false positive. Scope the filter to it: other hosts and every other
+    warning keep their default disposition. (A later plain
+    ``warnings.simplefilter()``/``resetwarnings()`` call in-process would
+    drop the filter — acceptable for a cosmetic fix.)
+    """
+    with suppress(ImportError):  # no urllib3 -> the warning cannot originate here
+        from urllib3.exceptions import InsecureRequestWarning
+
+        warnings.filterwarnings(
+            "ignore",
+            message=_AMAZONAWS_INSECURE_WARNING,
+            category=InsecureRequestWarning,
+        )
 
 
 def _coerce_insecure(ssl_verify: Any) -> bool:

@@ -325,6 +325,55 @@ def test_stream_observer_system_exit_does_not_strand_queued_text(monkeypatch):
         shutdown_plugin_observer_dispatcher(timeout=5.0)
 
 
+def test_observer_custom_base_exception_and_reporter_failure_do_not_strand_text(monkeypatch):
+    import agent.plugin_stream_hooks as stream_hooks
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    monkeypatch.setattr("agent.plugin_stream_hooks._MAX_OBSERVER_EVENT_BYTES", 512)
+    monkeypatch.setattr("agent.plugin_stream_hooks._MAX_OBSERVER_RETAINED_BYTES", 4096)
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_delivered = threading.Event()
+
+    class PluginAbort(BaseException):
+        pass
+
+    class ReporterAbort(BaseException):
+        pass
+
+    def abort_then_recover(**payload):
+        if payload["final_text"] == "a" * 1000:
+            first_started.set()
+            release_first.wait(timeout=5.0)
+            raise PluginAbort("custom plugin abort")
+        second_delivered.set()
+
+    manager = _patch_test_callback_manager(monkeypatch, {"on_stream_end": [abort_then_recover]})
+
+    def broken_reporter(*_args, **_kwargs):
+        raise ReporterAbort("failure reporter abort")
+
+    manager._report_hook_failure = broken_reporter
+    try:
+        assert enqueue_plugin_observer_hook(
+            "on_stream_end", final_text="a" * 1000, finished=True
+        ) is True
+        assert first_started.wait(timeout=5.0)
+        assert enqueue_plugin_observer_hook(
+            "on_stream_end", final_text="b" * 1000, finished=True
+        ) is True
+        release_first.set()
+        assert second_delivered.wait(timeout=5.0)
+        _wait_for(lambda: stream_hooks._observer_retained_bytes == 0)
+    finally:
+        release_first.set()
+        shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+
 def test_stream_hook_queue_isolated_per_consumer(monkeypatch):
     from agent.plugin_stream_hooks import enqueue_plugin_stream_hook, shutdown_plugin_stream_hook_dispatcher
 

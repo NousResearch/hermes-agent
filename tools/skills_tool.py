@@ -20,7 +20,8 @@ from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
 from tools.skills_tool_setup import (
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
-    _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
+    _collect_declared_prerequisites, _get_required_commands, _get_required_environment_variables,
+    _is_env_var_persisted, _is_remote_env_backend)
 from tools.skills_tool_plugin import (
     MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH, _INJECTION_PATTERNS, _fail, _json,
     _mark_background_review_read, _preprocess_skill, _read_skill_text, _safe_frontmatter,
@@ -426,16 +427,22 @@ def _skill_linked_files(skill_dir: Optional[Path]) -> dict:
 
 
 def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict, dict]:
-    """Resolve required env vars / credential files (prompting for secrets where the surface
-    allows) and register what's available for sandboxes. Returns ``(fields, extras)``: fields go
-    before ``_source_path`` in the skill_view result, extras after — key order is tool output."""
-    required_env_vars = _get_required_environment_variables(frontmatter)
+    """Resolve required env vars / credential files / declared commands (prompting for secrets
+    where the surface allows) and register what's available for sandboxes. Returns
+    ``(fields, extras)``: fields go before ``_source_path`` in the skill_view result, extras
+    after — key order is tool output."""
+    # Declared prerequisites (env vars, credential files and the CLI ``prerequisites.commands``)
+    # are evaluated by the shared readiness helper — the same one the plugin-skill path uses,
+    # so both serve paths agree on the readiness contract.
+    declared_prereqs = _collect_declared_prerequisites(frontmatter, skill_name=skill_name)
+    required_env_vars = declared_prereqs["required_environment_variables"]
+    required_commands = declared_prereqs["required_commands"]
+    missing_required_commands = declared_prereqs["missing_required_commands"]
+    missing_cred_files = declared_prereqs["missing_credential_files"]
     from tools.terminal_scope import terminal_env
     backend = str(terminal_env("TERMINAL_ENV", "local")).strip().lower() or "local"
     env_snapshot = load_env()
-    missing_required_env_vars = [
-        e for e in required_env_vars
-        if not e.get("optional") and not _is_env_var_persisted(e["name"], env_snapshot)]
+    missing_required_env_vars = declared_prereqs["_missing_env_entries"]
     capture_result = _capture_required_environment_variables(skill_name, missing_required_env_vars)
     if missing_required_env_vars:  # re-read: a successful capture persisted into .env
         env_snapshot = load_env()
@@ -443,7 +450,6 @@ def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict
     remaining = [
         e["name"] for e in required_env_vars if not e.get("optional")
         and (e["name"] in still_missing or not _is_env_var_persisted(e["name"], env_snapshot))]
-    setup_needed = bool(remaining)
     # Only vars actually set pass through to sandboxed execution (execute_code, terminal).
     if available_env_names := [e["name"] for e in required_env_vars if e["name"] not in remaining]:
         try:
@@ -451,22 +457,19 @@ def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict
             register_env_passthrough(available_env_names)
         except Exception:
             logger.debug("Could not register env passthrough for skill %s", skill_name, exc_info=True)
-    # Credential files for remote sandboxes: existing host files are registered,
-    # missing ones flag setup_needed.
-    required_cred_files_raw = frontmatter.get("required_credential_files", [])
-    missing_cred_files: list = []
-    if isinstance(required_cred_files_raw, list) and required_cred_files_raw:
-        try:
-            from tools.credential_files import register_credential_files
-            missing_cred_files = register_credential_files(required_cred_files_raw)
-            setup_needed = setup_needed or bool(missing_cred_files)
-        except Exception:
-            logger.debug("Could not register credential files for skill %s", skill_name, exc_info=True)
+    # Commands and credential files were resolved by _collect_declared_prerequisites above:
+    # host credential files are registered for remote-sandbox mounting, and a declared command
+    # absent from PATH is part of the readiness contract — report it (required_commands /
+    # missing_required_commands) and mark the skill setup_needed, like a missing env var or
+    # credential file. ``cron/scheduler_preflight.py`` reads missing_required_commands inside
+    # its setup_needed guard to refuse a job whose attached skill cannot run. The "advisory"
+    # wording governs DISCOVERY only — a missing binary never hides the skill.
+    setup_needed = bool(remaining) or bool(missing_required_commands) or bool(missing_cred_files)
     status = SkillReadinessStatus.SETUP_NEEDED if setup_needed else SkillReadinessStatus.AVAILABLE
     fields = {
-        "required_environment_variables": required_env_vars, "required_commands": [],
+        "required_environment_variables": required_env_vars, "required_commands": required_commands,
         "missing_required_environment_variables": remaining,
-        "missing_credential_files": missing_cred_files, "missing_required_commands": [],
+        "missing_credential_files": missing_cred_files, "missing_required_commands": missing_required_commands,
         "setup_needed": setup_needed, "setup_skipped": capture_result["setup_skipped"],
         "readiness_status": status.value}
     extras: dict = {}
@@ -474,7 +477,9 @@ def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict
         extras["setup_help"] = setup_help
     if capture_result["gateway_setup_hint"]:
         extras["gateway_setup_hint"] = capture_result["gateway_setup_hint"]
-    missing_items = [f"env ${n}" for n in remaining] + [f"file {p}" for p in missing_cred_files]
+    missing_items = ([f"env ${n}" for n in remaining]
+                     + [f"command {c}" for c in missing_required_commands]
+                     + [f"file {p}" for p in missing_cred_files])
     if setup_needed and (setup_note := _build_setup_note(status, missing_items, setup_help)):
         if _is_remote_env_backend(backend):
             setup_note = f"{setup_note} {backend.upper()}-backed skills need these requirements available inside the remote environment as well."

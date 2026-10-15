@@ -206,7 +206,7 @@ def test_hardlink_staging_is_not_wrapped(tmp_path, monkeypatch, caplog):
     assert caught.value.field == 'attachments.staging'
     assert not isinstance(caught.value.__cause__, RuntimeStoreError)
     assert caplog.records == []
-    from hermes_state_runtime import named_turn_error
+    from gateway.session_controls import named_turn_error
     with caplog.at_level(logging.WARNING, logger='gateway.session_controls'):
         named_turn_error(caught.value, 'no details')
     warnings = [rec for rec in caplog.records if rec.levelno >= logging.WARNING]
@@ -323,7 +323,7 @@ def test_native_refusal_names_its_clause(clause):
 
 def test_messaging_refusal_names_the_clause_not_the_class(caplog):
     from agent.i18n import t
-    from hermes_state_runtime import named_turn_error
+    from gateway.session_controls import named_turn_error
 
     exc = RuntimeStoreError('invalid_params', field='native.provenance_missing(multiplex)',
                             detail='a multiplex gateway message needs provenance')
@@ -339,7 +339,7 @@ def test_messaging_refusal_names_the_clause_not_the_class(caplog):
 
 
 def test_a_bare_turn_error_stays_at_debug(caplog):
-    from hermes_state_runtime import named_turn_error
+    from gateway.session_controls import named_turn_error
 
     with caplog.at_level(logging.DEBUG, logger='gateway.session_controls'):
         error_type, _detail = named_turn_error(RuntimeStoreError('permission_denied'), 'no details')

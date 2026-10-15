@@ -148,6 +148,77 @@ def test_observer_dispatch_drops_an_oversized_event_without_truncating(monkeypat
     assert delivered == []
 
 
+def test_memory_prefetch_observer_accepts_full_64k_observation_batch(monkeypatch):
+    from agent.memory_provider import MAX_MEMORY_OBSERVATIONS, MemoryObservation
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    observations = tuple(
+        MemoryObservation(
+            source_kind="recall",
+            schema="fixture.recall",
+            version=1,
+            payload={"text": "x" * (3900 + index)},
+        )
+        for index in range(MAX_MEMORY_OBSERVATIONS)
+    )
+    delivered = threading.Event()
+    payloads = []
+
+    def capture(**payload):
+        payloads.append(payload)
+        delivered.set()
+
+    _patch_test_callback_manager(monkeypatch, {"memory_prefetch": [capture]})
+    try:
+        assert enqueue_plugin_observer_hook(
+            "memory_prefetch",
+            query="question",
+            context_sha256="digest",
+            turn_id="turn",
+            observations=observations,
+        ) is True
+        assert delivered.wait(timeout=5.0)
+    finally:
+        shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+    assert len(payloads[0]["observations"]) == MAX_MEMORY_OBSERVATIONS
+    assert payloads[0]["observations"][0].payload["text"] == "x" * 3900
+
+
+def test_stream_end_observer_restores_full_oversized_response_text(monkeypatch, tmp_path):
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_stream_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    home = tmp_path / "observer-spill-home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    delivered = threading.Event()
+    payloads = []
+
+    def capture(**payload):
+        payloads.append(payload)
+        delivered.set()
+
+    _patch_test_callback_manager(monkeypatch, {"on_stream_end": [capture]})
+    response = "complete response text " * 20_000
+    try:
+        assert enqueue_plugin_stream_hook(
+            "on_stream_end", final_text=response, finished=True, error=None
+        ) is True
+        assert delivered.wait(timeout=5.0)
+    finally:
+        shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+    assert payloads[0]["final_text"] == response
+    assert not list((home / "cache" / "plugin-observer-spill").glob("*.txt"))
+
+
 def test_stream_hook_queue_isolated_per_consumer(monkeypatch):
     from agent.plugin_stream_hooks import enqueue_plugin_stream_hook, shutdown_plugin_stream_hook_dispatcher
 
@@ -717,6 +788,7 @@ def test_manager_unload_retires_only_its_observers_across_reload(monkeypatch, tm
         plugins.PluginContext(plugins.PluginManifest(name="observer-a"), manager_a).register_hook(
             "memory_prefetch", on_a
         )
+        manager_a._discovered = True
 
         # B is an active cached profile, not dead state to reap just because A is now active.
         assert emit(home_b, "b-still-active")
@@ -821,6 +893,7 @@ def test_stale_enqueue_racing_manager_unload_cannot_enter_new_generation(monkeyp
             plugins.PluginContext(plugins.PluginManifest(name="race-observer"), manager).register_hook(
                 "memory_prefetch", observer
             )
+            manager._discovered = True
         finally:
             reset_hermes_home_override(token)
 
@@ -841,7 +914,7 @@ def test_stale_enqueue_racing_manager_unload_cannot_enter_new_generation(monkeyp
 
 
 def test_lazy_discovery_snapshots_callbacks_from_captured_manager(monkeypatch, tmp_path):
-    """Observer lookup still discovers lazily, without resolving a second manager."""
+    """First observer enqueue starts lazy discovery off the producer thread."""
     from agent import plugin_stream_hooks as psh
     from hermes_cli import plugins
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -854,28 +927,54 @@ def test_lazy_discovery_snapshots_callbacks_from_captured_manager(monkeypatch, t
     monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
     manifest = plugins.PluginManifest(name="lazy-discovery-observer")
     delivered = threading.Event()
+    discovery_started = threading.Event()
+    release_discovery = threading.Event()
     discovered = threading.Event()
+    enqueue_returned = threading.Event()
+    enqueue_result = []
 
     def observer(**_kwargs):
         delivered.set()
 
     def discover_on_manager():
         with manager._discovery_lock:
+            discovery_started.set()
+            release_discovery.wait(timeout=5.0)
             plugins.PluginContext(manifest, manager).register_hook("memory_prefetch", observer)
             manager._discovered = True
             discovered.set()
 
     monkeypatch.setattr(manager, "discover_and_load", discover_on_manager)
     token = set_hermes_home_override(home)
+    producer = threading.Thread(
+        target=lambda: (
+            enqueue_result.append(
+                psh.enqueue_plugin_observer_hook(
+                    "memory_prefetch", event_id="discovered-on-captured-manager"
+                )
+            ),
+            enqueue_returned.set(),
+        )
+    )
+    producer.start()
     try:
+        assert discovery_started.wait(timeout=5.0)
+        assert enqueue_returned.wait(timeout=0.5)
+        assert enqueue_result == [False]
+        assert not delivered.is_set()
+        release_discovery.set()
+        assert discovered.wait(timeout=5.0)
         assert psh.enqueue_plugin_observer_hook(
             "memory_prefetch", event_id="discovered-on-captured-manager"
         ) is True
-        assert discovered.is_set()
         assert delivered.wait(timeout=5.0)
     finally:
+        release_discovery.set()
+        producer.join(timeout=5.0)
         reset_hermes_home_override(token)
         psh.shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+    assert not producer.is_alive()
 
 
 def test_stream_capability_lookup_does_not_discover(monkeypatch, tmp_path):

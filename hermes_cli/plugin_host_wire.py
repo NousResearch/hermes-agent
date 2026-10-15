@@ -179,6 +179,7 @@ def decode(value: Any, resolve: Optional[Callable[[dict], Any]] = None) -> Any:
             return MemoryPrefetchResult(
                 context=fields.get("context", ""),
                 observations=fields.get("observations", ()),
+                _wire_truncated=fields.get("observations_truncated") is True,
             )
         if record_name == "MemoryObservationTuple":
             return tuple(fields.get("items", ()))

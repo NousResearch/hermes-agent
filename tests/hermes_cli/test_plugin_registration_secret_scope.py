@@ -35,21 +35,33 @@ def register(ctx):
 '''
 
 
-def _load(home):
+def _load(home, *, deferred=False):
     directory = home / "plugins" / "registration-probe"
     directory.mkdir(parents=True)
-    (directory / "__init__.py").write_text(_PLUGIN, encoding="utf-8")
+    (directory / "__init__.py").write_text(_PLUGIN if not deferred else "", encoding="utf-8")
     manager = PluginManager(scope_key=hermes_home_key(home))
     manifest = PluginManifest(name="registration-probe", key="registration-probe",
                               source="user", path=str(directory))
+    if deferred:
+        import sys
+        from hermes_cli.plugins import LoadedPlugin
+        from hermes_cli.plugins_loader import _plugin_home_scope
+
+        (directory / "tools.py").write_text(_PLUGIN.replace("def register(ctx):", "def register_tools(ctx):"), encoding="utf-8")
+        manifest.provides_tools = ["scope-probe"]
+        loaded = LoadedPlugin(manifest=manifest, enabled=True, deferred=True)
+        with _plugin_home_scope(manager.home_path):
+            manager._register_deferred_platform_tools(manifest, loaded)
+        return manager, sys.modules[f"{loaded.module.__name__}.tools"]
     manager._load_plugin(manifest)
     loaded = manager._plugins[manifest.key]
     assert loaded.enabled, loaded.error
     return manager, loaded.module
 
 
+@pytest.mark.parametrize("deferred", [False, True])
 @pytest.mark.parametrize("activate_before", [False, True])
-def test_registration_worker_resolves_own_profile_across_activation(tmp_path, monkeypatch, activate_before):
+def test_registration_worker_resolves_own_profile_across_activation(tmp_path, monkeypatch, activate_before, deferred):
     launch, secondary = tmp_path / "launch", tmp_path / "secondary"
     launch.mkdir()
     secondary.mkdir()
@@ -63,7 +75,7 @@ def test_registration_worker_resolves_own_profile_across_activation(tmp_path, mo
     loaded = []
     try:
         secret_scope.set_multiplex_active(activate_before)
-        loaded = [_load(launch), _load(secondary)]
+        loaded = [_load(launch, deferred=deferred), _load(secondary, deferred=deferred)]
         assert secret_scope.current_secret_scope() is None
         assert get_hermes_home() == launch
         secret_scope.set_multiplex_active(True)
@@ -203,4 +215,40 @@ def test_launch_worker_does_not_capture_post_activation_ambient_values(tmp_path,
             module.worker.join(5)
             manager.unload()
         secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(prior_mode)
+
+
+@pytest.mark.parametrize("phase", ["construct", "read"])
+def test_registration_mapping_discards_capture_when_activation_intervenes(tmp_path, monkeypatch, phase):
+    from hermes_cli.plugins_loader import _PluginSecretScope
+    from tui_gateway import launch_profile_policy
+
+    home = tmp_path / "launch"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("PLUGIN_SCOPE_PROBE", "safe-launch")
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    prior_mode = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(False)
+    scope = _PluginSecretScope(home) if phase == "read" else None
+    original = secret_scope.is_multiplex_active
+    intercepted = False
+
+    def activate_after_check():
+        nonlocal intercepted
+        if not intercepted:
+            intercepted = True
+            launch_profile_policy.activate_multi_profile_hosting()
+            monkeypatch.setenv("PLUGIN_SCOPE_PROBE", "foreign-after-check")
+            return False  # the caller observed inactive immediately before activation
+        return original()
+
+    monkeypatch.setattr(secret_scope, "is_multiplex_active", activate_after_check)
+    try:
+        if scope is None:
+            scope = _PluginSecretScope(home)
+            assert scope.launch_env == {}
+        assert scope.get("PLUGIN_SCOPE_PROBE") == "safe-launch"
+    finally:
         secret_scope.set_multiplex_active(prior_mode)

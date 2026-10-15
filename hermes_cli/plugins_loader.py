@@ -190,7 +190,11 @@ class _PluginSecretScope(Mapping[str, str]):
         from agent.secret_scope import _is_process_home, is_multiplex_active
 
         self.home = home
-        self.launch_env = dict(os.environ) if _is_process_home(home) and not is_multiplex_active() else {}
+        self.launch_env = {}
+        if _is_process_home(home) and not is_multiplex_active():
+            captured = dict(os.environ)
+            if not is_multiplex_active():
+                self.launch_env = captured
 
     def _mapping(self) -> dict[str, str]:
         from agent.secret_scope import _is_process_home, build_profile_secret_scope, is_multiplex_active
@@ -199,7 +203,9 @@ class _PluginSecretScope(Mapping[str, str]):
         if _is_process_home(self.home):
             if not is_multiplex_active():
                 import os
-                return dict(os.environ)  # preserve the pre-multiplex launch precedence
+                captured = dict(os.environ)
+                if not is_multiplex_active():
+                    return captured  # preserve the pre-multiplex launch precedence
             return launch_secret_scope(self.home, registration_env=self.launch_env)
         return build_profile_secret_scope(self.home)
 
@@ -384,6 +390,10 @@ class PluginLoaderMixin:
         return True
 
     def _register_deferred_platform_tools(self, manifest: PluginManifest, loaded: LoadedPlugin) -> None:
+        with _plugin_registration_scope(self.home_path):
+            self._register_deferred_platform_tools_scoped(manifest, loaded)
+
+    def _register_deferred_platform_tools_scoped(self, manifest: PluginManifest, loaded: LoadedPlugin) -> None:
         """Register a deferred platform's *client* tools without its adapter. Deferring the plugin would
         otherwise defer its outbound tools too, so CLI/TUI processes (which never materialize platforms)
         would miss them in ``hermes tools`` / ``platform_toolsets``. Opt-in is explicit via ``provides_tools``;

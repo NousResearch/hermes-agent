@@ -151,7 +151,7 @@ model:
 
 - Relative paths resolve from the file that declares them; `~` and environment variables in the path are expanded.
 - Files merge in declaration order (a later include overrides an earlier one), and the declaring file wins over everything it includes. Included files can include others; cycles are skipped with a warning.
-- A missing include is skipped with a warning. An include that exists but cannot be parsed is an error: Hermes keeps the last config it loaded in this process, and with none the load fails, rather than running with a partial policy.
+- A missing include is skipped with a warning, and an empty one declares nothing. An include that cannot be read (for example a permission error), cannot be parsed, or whose top level is not a mapping is an error: Hermes keeps the last config it loaded in this process, and with none the load fails, rather than running with a partial policy.
 - Editing an included file takes effect like editing `config.yaml` itself.
 - When Hermes saves `config.yaml` (for example `hermes config set`), the `include:` list is kept and included values are written only where you changed them, so a `${VAR}` reference declared in an include is never expanded into `config.yaml`.
 

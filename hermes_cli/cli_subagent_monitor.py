@@ -65,17 +65,27 @@ class SubagentMonitor:
         row = self.selected
         return row if row and row.get('kind') == 'process' else None
 
-    def refresh(self, now=None):
+    def _subagent_rows(self):
+        """``(rows, activity)``: the session's live children and their lifecycle records. Rewired, the
+        children run in the gateway, so both come from its ``subagent.list`` (CLI-12)."""
+        from hermes_cli.gateway_tools import process_view
+        view = process_view()
+        if view is not None:
+            rows = view.subagent_rows(busy=bool(getattr(self.cli, '_agent_running', False)))
+            return rows, {r['subagent_id']: r for r in rows}
         from tools.delegate_tool_registry import _list_payload, list_active_subagents
-        now = time.time() if now is None else now
         parent = getattr(self.cli, 'agent', None)
         entries = _list_payload(parent)['subagents'] if parent is not None else []
         # The scoped control-plane snapshot supplies authority and transcript paths;
         # its matching public lifecycle record supplies the latest observed tool.
-        activity = {r['subagent_id']: r for r in list_active_subagents()} if entries else {}
+        return entries, ({r['subagent_id']: r for r in list_active_subagents()} if entries else {})
+
+    def refresh(self, now=None):
+        now = time.time() if now is None else now
+        entries, activity = self._subagent_rows()
         for row in entries:
             live = activity.get(row['subagent_id'], {})
-            row['elapsed'] = max(0, int(now - live.get('started_at', now)))
+            row['elapsed'] = max(0, int(now - (live.get('started_at') or now)))
             row['last_tool'] = live.get('last_tool') or ''
             row['key'] = row['subagent_id']
             row.pop('running_seconds', None)
@@ -130,6 +140,10 @@ class SubagentMonitor:
             if action != 'stop':
                 return {'error': t('cli.subagents.cannot_steer_process')}
             return procs.kill(target)
+        from hermes_cli.gateway_tools import process_view
+        view = process_view()
+        if view is not None:
+            return view.subagent_control(action, target, message)
         from tools.delegate_tool_registry import _handle_control_action
         return json.loads(_handle_control_action(action, target, message, getattr(self.cli, 'agent', None)))
 
@@ -259,6 +273,19 @@ def read_tail(path):
         return t('cli.subagents.transcript_unavailable')
 
 
+def subagent_tail(row):
+    """The child's transcript tail: the gateway's ``subagent.tail`` when it runs the child, else the
+    transcript file this process wrote."""
+    from hermes_cli.gateway_tools import process_view
+    view = process_view()
+    if view is None:
+        return read_tail(row.get('live_transcript'))
+    text = view.subagent_tail(row['subagent_id'])
+    if text is None:
+        return t('cli.subagents.transcript_unavailable')
+    return ''.join(c for c in text if c.isprintable() or c in '\n\t')
+
+
 def modal_prompt_active(cli):
     return any(getattr(cli, name, None) for name in (
         '_clarify_state', '_approval_state', '_slash_confirm_state', '_sudo_state',
@@ -311,7 +338,7 @@ def build_monitor_application(monitor, **kwargs):
         elif row.get('kind') == 'process':
             text = procs.process_tail(row['id'])
         else:
-            text = read_tail(row.get('live_transcript'))
+            text = subagent_tail(row)
         if text != tail.text:
             following = tail.buffer.cursor_position == len(tail.text)
             position = tail.buffer.cursor_position

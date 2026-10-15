@@ -11,7 +11,7 @@ import {
   splitCronList,
   type CronJobFormState,
 } from "./cron-job";
-import type { CronJob } from "./api";
+import type { CronJob } from "./api-types";
 
 function form(overrides: Partial<CronJobFormState> = {}): CronJobFormState {
   return {

@@ -109,7 +109,7 @@ import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { latchChatActivation } from "@/lib/chat-activation";
 import { sharedGatewayProfiles, sharedGatewayRestartDescription } from "@/lib/shared-gateway";
 import { api } from "@/lib/api";
-import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
+import type { StatusResponse, UpdateCheckResponse } from "@/lib/api-types";
 
 function RouteFallback({ label = "Loading…" }: { label?: string }) {
   return (

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { MemoryProviderSetupInfo } from "@/lib/api";
+import type { MemoryProviderSetupInfo } from "@/lib/api-types";
 import { setupHasDetails, setupHasInstallableSteps } from "@/lib/memory-provider-setup";
 
 describe("memory provider preparation", (): void => {

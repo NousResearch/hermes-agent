@@ -69,7 +69,7 @@ import type {
   PortalStatus,
   DebugShareResponse,
   GatewayMigratePlan,
-} from "@/lib/api";
+} from "@/lib/api-types";
 import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
 
 function formatBytes(n: number): string {

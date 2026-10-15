@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { updateDebt, type UpdateDebtReceipt } from "@hermes/shared";
 import { api } from "@/lib/api";
-import type { ActionStatusResponse } from "@/lib/api";
+import type { ActionStatusResponse } from "@/lib/api-types";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { sharedGatewayProfiles, sharedGatewayRestartedMessage } from "@/lib/shared-gateway";
 import { useI18n } from "@/i18n";

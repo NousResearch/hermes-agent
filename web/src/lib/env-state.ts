@@ -1,4 +1,4 @@
-import type { EnvVarInfo } from "./api";
+import type { EnvVarInfo } from "./api-types";
 
 /** Reconcile a successful DELETE /api/env response with the Keys page state. */
 export function removeDeletedEnvVarFromState(

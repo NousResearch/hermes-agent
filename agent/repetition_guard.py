@@ -9,8 +9,12 @@ conservative: only LONG verbatim repeats (60+ chars) covering a majority of the 
 
 from __future__ import annotations
 
+import logging
 import math
+import re
 from collections import Counter
+
+logger = logging.getLogger(__name__)
 
 # Below this length the check doesn't run: short truncations trivially
 # contain repeated tokens and are legitimately continued.
@@ -192,3 +196,356 @@ class RunawayStreamWatch:
         tail = "".join(self._parts)[-_STREAM_TAIL_CHARS:]
         self._parts = [tail]
         return is_runaway_repetition(tail)
+
+
+# ---- thinking-channel loop guard ----------------------------------------------------------
+# The checks above watch the VISIBLE reply on truncation/interrupt paths. A thinking channel
+# can degenerate on its own while the visible reply stays fine: one char (usually a quoting
+# bracket) grows run over run — 「「「「「「実行」」」」」」「「「「「「「「「「やる」」... — with no exact
+# long-window repeat, so ``is_repetition_dominated`` misses it (17 of 21 messages in one real
+# incident corpus). The looped bytes must be cut BEFORE storage: a DeepSeek-style
+# ``reasoning_content`` echo replays them into the next request and re-seeds the loop
+# (#112764 family). Thresholds calibrated against a real-world corpus of ~175k
+# reasoning messages: 「」『』 runs >= 12 and runs of >= 160 identical non-formatting chars
+# never fired on any message without a degenerate segment.
+#
+# A second shape escaped those run rules and is covered below too: QUOTE LITTER — openers
+# inserted between tokens and mostly never closed (「の「diff「全体「像), net unmatched
+# openers climbing steadily with no long run at all. It goes chronic in long-lived sessions
+# once seeded (1143 rows across 4 sessions in the corpus scan; the litter rule fires on ~93%
+# of them and on none of the healthy rows — analysis sessions that QUOTE degenerate excerpts
+# peak at a 1.4% unmatched-opener rate and a 0.27 dense-bin fraction, under the thresholds).
+#
+# A third shape is word-level, not character-level: one short word (nearly always the English
+# article) swells until it fills the channel — "the move: the the the crossing: the the ..." —
+# sometimes into pure runs of thousands ("the " x 65k in the corpus). Runs of one character
+# never form, so the char rules and the quote-litter rule all stay silent. The word rule
+# below trips only when ONE word both repeats and dominates the message; on a 149k-message
+# scan that combination fired on 284 degenerate rows across 4 chronic sessions and on ZERO
+# healthy rows — and stayed silent on the shapes that must never trip: ``xx xx`` hex dumps,
+# ``Down Down Down`` command sequences, ``[False, False]`` code arrays, code discussions
+# around repeated variable names (``pc``), and HTML ``div`` listings.
+#
+# A fourth shape is symbol-level: one symbol token ("=") gets wedged between phrases until
+# it floods the channel, escalating into pure "= = =" runs (a live session, October 2026:
+# the "=" share climbed 0.45 -> 0.75 over ten minutes, then a 5,338-token paste of nothing
+# but "= "). An escalated variant drops the runs and wedges "=" between nearly every phrase
+# pair instead — "= the = classic = kwallet = unlock" — so there are NO adjacent "=" pairs
+# at all and only the sandwich rate betrays it (a word directly between two "=" tokens,
+# 65%+ of the "="s while streaming). No character run forms and the word rules skip symbols
+# entirely. The symbol rules below trip only when the "=" share and a repeat signal rise
+# together — markdown tables ("|" dominated, up to ~48% of tokens), bullet lists ("-"),
+# equation dumps (never adjacent "=", never sandwiched), and analysis quoting dense
+# samples all stay silent on the same 165k-message corpus.
+THINKING_LOOP_TRUNCATED = "[thinking truncated: repetition loop detected]"
+
+_BRACKET_RUN_CHARS = frozenset("「」『』")
+_BRACKET_RUN_MIN = 12
+_RUN_MIN = 160
+
+# Quote-litter thresholds: the length floor gives the rate/bin statistics runway; a "dense
+# bin" is a 200-char window holding >= _LITTER_BIN_QUOTES openers; the rule needs the net
+# unmatched-opener rate to hold across a majority of bins.
+_LITTER_MIN_CHARS = 600
+_LITTER_MIN_NET = 20
+_LITTER_RATE_PERMILLE = 15
+_LITTER_BIN_CHARS = 200
+_LITTER_BIN_QUOTES = 5
+_LITTER_START_NET = 10
+_RUN_EXCLUDED = frozenset("-=*_|+#~` \t\r\n")
+
+# Word-level loop thresholds (shape 3). Two gates together, because either alone is noisy:
+# a repeat signal (run length / adjacent-pair count) and a dominance signal (the word's share
+# of all words in the message). Cue words (articles and fillers — what a degenerating model
+# actually swallows) get the lower run bar; other words must run away far longer, which keeps
+# command-style repetition (``Down Down`` x12) and code identifiers safe.
+_WORD_RUN_MIN = 10
+_WORD_RUN_MIN_ANY = 25
+_WORD_FRAC_MIN = 0.30
+_WORD_MIN_TOKENS = 50
+_WORD_PAIRS_MIN = 8
+_WORD_FRAC_MIN_B = 0.40
+_WORD_MIN_TOKENS_B = 60
+_WORD_CUE_TOKENS = frozenset({"the", "a", "an", "hmm"})
+_WORD_EXCLUDED = frozenset({"true", "false", "none", "null"})
+_WORD_TAIL_CAP = 64
+_WORD_STRIP = ".,;:!?()[]{}<>\"'`*_-—…「」『』+=#~^|/\\"
+_WORD_RE = re.compile(r"\S+")
+
+
+def _word_token(raw: str):
+    """Normalized loop-unit for one whitespace token, or None when it cannot be one."""
+    word = raw.strip(_WORD_STRIP).lower()
+    if len(word) < 2 or not any(c.isalpha() for c in word):
+        return None
+    if word in _WORD_EXCLUDED or word == "x" * len(word):
+        return None
+    return word
+
+
+# Symbol-token loop thresholds (shape 4). The dominance rule keys on "=" specifically —
+# the observed degenerate symbol — because structural symbols legitimately dominate:
+# markdown tables are mostly "|" and bullet lists mostly "-", while legitimate "=" usage
+# (equations, config dumps) tops out at ~29% of tokens in the corpus and never sits
+# adjacent to another "=". The share is measured as it streams, so it must clear the bar
+# even at its peak: degenerating rows peak at 0.39-0.73 while analysis messages that QUOTE
+# degenerate samples peak at 0.26 and healthy "=" usage lower still. The run rule catches
+# the end state (pure "= " runs of any symbol token, far beyond the longest healthy run of
+# 14 seen in the corpus).
+_SYM_LITTER_TOKEN = "="
+_SYM_FRAC_MIN = 0.35
+_SYM_PAIRS_MIN = 5
+_SYM_MIN_TOKENS = 50
+_SYM_RUN_MIN = 30
+_SYM_START_COUNT = 10
+
+# The "= word =" sandwich (the escalated variant): "=" wedged between nearly every phrase pair
+# — "= the = classic = kwallet = unlock" — with NO adjacent "=" pairs at all, so the pair
+# gate above stays silent. What separates it from legitimate "=" text (templates, config
+# dumps, equation chains — none of which place a word directly between two "=" tokens) is the
+# sandwich rate measured AS IT STREAMS: on the full corpus, 69 degenerate rows reach >= 0.65
+# while the highest any healthy row (or an analysis message quoting a dense sample) reaches
+# at the same conditions is 0.625. 245 rows corpus-wide can even reach 10 sandwiches; the
+# ratio gate is what keeps every non-degenerate one silent.
+_SYM_SANDWICH_MIN = 10
+_SYM_SANDWICH_RATIO = 0.65
+_SYM_FRAC_MIN_SANDWICH = 0.10
+
+
+def _sym_token(raw: str):
+    """The raw token when it is a short symbol-only token (never a word), else None."""
+    if not raw or len(raw) > 20 or any(c.isalnum() for c in raw):
+        return None
+    return raw
+
+
+class ReasoningLoopGuard:
+    """Incremental degeneration detector for a streamed reasoning channel.
+
+    Detects four shapes as deltas arrive: repeated character runs (「「「…), quote litter
+    (openers wedged between tokens), word-level loops ("the the the …"), and symbol loops
+    ("= = =" or "= word =" flooding a channel). Feed each reasoning delta in order (stop once ``tripped``
+    is True). ``trip_index`` is the offset — in the concatenation of everything fed — where
+    the degenerate region starts; callers cut accumulators there so display, storage and
+    reasoning echo all stop replaying the loop. O(chars + tokens), no rescans.
+    """
+
+    __slots__ = (
+        "tripped", "trip_index", "_seen", "_run_char", "_run_len", "_run_start",
+        "_opens", "_closes", "_litter_start", "_bins", "_dense_bins", "_bin_quotes",
+        "_word_tail", "_word_last", "_word_run", "_word_run_start", "_word_pairs",
+        "_word_count", "_word_max", "_word_counts",
+        "_sym_total", "_sym_last", "_sym_run", "_sym_run_start", "_sym_eq",
+        "_sym_eq_pairs", "_sym_eq_first", "_sym_eq_pile", "_sym_sandwich",
+        "_tk_p1", "_tk_p2",
+    )
+
+    def __init__(self) -> None:
+        self.tripped = False
+        self.trip_index = -1
+        self._seen = 0
+        self._run_char = ""
+        self._run_len = 0
+        self._run_start = 0
+        self._opens = 0
+        self._closes = 0
+        self._litter_start = -1
+        self._bins = 0
+        self._dense_bins = 0
+        self._bin_quotes = 0
+        self._word_tail = ""
+        self._word_last = ""
+        self._word_run = 0
+        self._word_run_start = 0
+        self._word_pairs = 0
+        self._word_count = 0
+        self._word_max = 0
+        self._word_counts = {}
+        self._sym_total = 0
+        self._sym_last = ""
+        self._sym_run = 0
+        self._sym_run_start = 0
+        self._sym_eq = 0
+        self._sym_eq_pairs = 0
+        self._sym_eq_first = -1
+        self._sym_eq_pile = -1
+        self._sym_sandwich = 0
+        self._tk_p1 = ""
+        self._tk_p2 = ""
+
+    def feed(self, text: str) -> bool:
+        if self.tripped or not isinstance(text, str) or not text:
+            return self.tripped
+        old_seen = self._seen
+        run_char, run_len, run_start = self._run_char, self._run_len, self._run_start
+        i = self._seen
+        for ch in text:
+            if ch == run_char:
+                run_len += 1
+            else:
+                run_char, run_len, run_start = ch, 1, i
+            i += 1
+            if ch in _BRACKET_RUN_CHARS and run_len >= _BRACKET_RUN_MIN:
+                self._trip(run_start, ch, run_len)
+                return True
+            if run_len >= _RUN_MIN and ch not in _RUN_EXCLUDED and not ch.isspace():
+                self._trip(run_start, ch, run_len)
+                return True
+            if ch == "「":
+                self._opens += 1
+                self._bin_quotes += 1
+                if self._litter_start < 0 and self._opens - self._closes >= _LITTER_START_NET:
+                    self._litter_start = i
+            elif ch == "」":
+                self._closes += 1
+            if i % _LITTER_BIN_CHARS == 0:
+                self._bins += 1
+                if self._bin_quotes >= _LITTER_BIN_QUOTES:
+                    self._dense_bins += 1
+                self._bin_quotes = 0
+        self._seen = i
+        self._run_char, self._run_len, self._run_start = run_char, run_len, run_start
+        if self._token_feed(old_seen, text):
+            return True
+        if self._litter_trips(i):
+            return True
+        return self.tripped
+
+    def _token_feed(self, old_seen: int, text: str) -> bool:
+        """Shapes 3 and 4: token-level loops over whitespace-split tokens.
+
+        Shape 3 — words: one word both dominates the message (>= _WORD_FRAC_MIN of all
+        words, on >= _WORD_MIN_TOKENS words seen) and repeats: a >= _WORD_RUN_MIN run of an
+        article/filler cue word (>= _WORD_RUN_MIN_ANY for any other word), or
+        >= _WORD_PAIRS_MIN adjacent pairs of a cue word at the stricter bar.
+
+        Shape 4 — symbols: the litter token ("=") floods the message (>= _SYM_FRAC_MIN of
+        all tokens, with >= _SYM_PAIRS_MIN adjacent pairs — legitimate "=" never sits
+        adjacent to another "="), or any symbol token runs away into a >= _SYM_RUN_MIN
+        pure run (the end state).
+
+        A short pending tail is carried across deltas so runs stay continuous across chunk
+        boundaries.
+        """
+        data = self._word_tail + text
+        base = old_seen - len(self._word_tail)
+        tokens = [(m.start(), m.group()) for m in _WORD_RE.finditer(data)]
+        self._word_tail = ""
+        if tokens and not data[-1:].isspace():
+            last_start = tokens[-1][0]
+            if len(data) - last_start <= _WORD_TAIL_CAP:
+                self._word_tail = data[last_start:]
+                tokens = tokens[:-1]
+        for start, raw in tokens:
+            word = _word_token(raw)
+            if word is not None:
+                self._sym_last, self._sym_run = "", 0
+                self._tk_p2, self._tk_p1 = self._tk_p1, "w"
+                self._word_count += 1
+                seen = self._word_counts.get(word, 0) + 1
+                self._word_counts[word] = seen
+                if seen > self._word_max:
+                    self._word_max = seen
+                if word == self._word_last:
+                    self._word_run += 1
+                    self._word_pairs += 1
+                else:
+                    self._word_last = word
+                    self._word_run = 1
+                    self._word_run_start = base + start
+                run_min = _WORD_RUN_MIN if word in _WORD_CUE_TOKENS else _WORD_RUN_MIN_ANY
+                if (
+                    self._word_run >= run_min
+                    and self._word_count >= _WORD_MIN_TOKENS
+                    and self._word_max >= _WORD_FRAC_MIN * self._word_count
+                ):
+                    self._trip(self._word_run_start, word, self._word_run)
+                    return True
+                if (
+                    self._word_pairs >= _WORD_PAIRS_MIN
+                    and self._word_count >= _WORD_MIN_TOKENS_B
+                    and self._word_last in _WORD_CUE_TOKENS
+                    and self._word_max >= _WORD_FRAC_MIN_B * self._word_count
+                ):
+                    self._trip(self._word_run_start, word, self._word_pairs)
+                    return True
+                continue
+            sym = _sym_token(raw)
+            if sym is None:
+                self._word_last, self._word_run = "", 0
+                self._sym_last, self._sym_run = "", 0
+                self._tk_p2, self._tk_p1 = self._tk_p1, "x"
+                continue
+            self._word_last, self._word_run = "", 0
+            prev_sym = self._sym_last
+            if sym == prev_sym:
+                self._sym_run += 1
+            else:
+                self._sym_last, self._sym_run, self._sym_run_start = sym, 1, base + start
+            self._sym_total += 1
+            if sym == _SYM_LITTER_TOKEN:
+                self._sym_eq += 1
+                if self._tk_p1 == "w" and self._tk_p2 == "=":
+                    self._sym_sandwich += 1
+                if self._sym_eq == 1:
+                    self._sym_eq_first = base + start
+                if self._sym_eq == _SYM_START_COUNT:
+                    self._sym_eq_pile = base + start
+                if prev_sym == _SYM_LITTER_TOKEN:
+                    self._sym_eq_pairs += 1
+            self._tk_p2, self._tk_p1 = self._tk_p1, ("=" if sym == _SYM_LITTER_TOKEN else "x")
+            if self._sym_run >= _SYM_RUN_MIN:
+                self._trip(self._sym_run_start, sym, self._sym_run)
+                return True
+            tokens_seen = self._word_count + self._sym_total
+            if (
+                self._sym_eq_pairs >= _SYM_PAIRS_MIN
+                and tokens_seen >= _SYM_MIN_TOKENS
+                and self._sym_eq >= _SYM_FRAC_MIN * tokens_seen
+            ):
+                at = self._sym_eq_pile if self._sym_eq_pile >= 0 else self._sym_eq_first
+                self._trip(max(0, at), sym, self._sym_eq)
+                return True
+            if (
+                self._sym_sandwich >= _SYM_SANDWICH_MIN
+                and self._sym_sandwich >= _SYM_SANDWICH_RATIO * self._sym_eq
+                and tokens_seen >= _SYM_MIN_TOKENS
+                and self._sym_eq >= _SYM_FRAC_MIN_SANDWICH * tokens_seen
+            ):
+                at = self._sym_eq_pile if self._sym_eq_pile >= 0 else self._sym_eq_first
+                self._trip(max(0, at), "sandwich", self._sym_sandwich)
+                return True
+        return False
+
+    def _litter_trips(self, length: int) -> bool:
+        """Shape 2: net-unclosed quote litter dense across a majority of 200-char bins."""
+        net = self._opens - self._closes
+        if length < _LITTER_MIN_CHARS or net < _LITTER_MIN_NET:
+            return False
+        if net * 1000 < length * _LITTER_RATE_PERMILLE:
+            return False
+        if self._bins == 0 or self._dense_bins * 2 < self._bins:
+            return False
+        self._trip(max(0, self._litter_start), "litter", net)
+        return True
+
+    def _trip(self, at: int, ch: str, length: int) -> None:
+        self.tripped = True
+        self.trip_index = at
+        logger.debug("reasoning loop guard tripped: %r x%d at offset %d", ch, length, at)
+
+
+def sanitize_degenerate_reasoning(text, *, marker: str = THINKING_LOOP_TRUNCATED):
+    """Full-text pass for non-streaming intakes / storage boundaries.
+
+    Returns ``text`` unchanged (same object) unless a degenerate shape (char loop, litter, word loop or symbol loop) is
+    found; then the
+    degenerate tail is dropped and ``marker`` appended. Fail-open for non-strings.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    guard = ReasoningLoopGuard()
+    if not guard.feed(text):
+        return text
+    prefix = text[: max(0, guard.trip_index)].rstrip()
+    return f"{prefix}\n\n{marker}" if prefix else marker

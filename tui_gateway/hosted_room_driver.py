@@ -608,7 +608,7 @@ class HostedRoomRuntime:
                 transport.submit(
                     **_session_kw(profile, session_id), prompt=task["payload"]["prompt"],
                     task=attempt.identity, execution_generation=attempt.execution_generation,
-                    **({"attachments": attachments} if attachments else {}),
+                    attachments=attachments,
                     member_id=_member_id(task),
                     on_terminal=lambda receipt: self._on_terminal(binding, attempt, receipt))
                 self._unavailable_route_retries.pop(

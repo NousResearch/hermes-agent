@@ -61,6 +61,7 @@ class MemberIdRequiringRPC(FakeSessionRPC):
         execution_generation: int,
         on_terminal,
         member_id: str,
+        attachments=None,
     ):
         self.member_ids.append(member_id)
         return super().submit(

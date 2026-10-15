@@ -562,7 +562,46 @@ google-chrome \
   --no-default-browser-check &
 ```
 
+# Android — Termux (no root; native bionic Chromium from the Termux repo)
+pkg install x11-repo && pkg install chromium       # binary: chromium-browser
+chromium-browser \
+  --headless=new \
+  --remote-debugging-port=9222 \
+  --user-data-dir=$HOME/.hermes/chrome-debug \
+  --no-first-run \
+  --no-default-browser-check &
+```
+
 Then launch the Hermes CLI and run `/browser connect`.
+
+**On Android (Termux), use the Termux Chromium build.** A Chromium from anywhere else will
+not start here: the browser Playwright downloads and the Chrome-for-Testing builds are glibc,
+Android is bionic — the failure is a `SIGTRAP` (`Trace/breakpoint trap`) or a silent
+`Target crashed`, and it also does not get better inside a container, because `proot`
+intercepts syscalls through ptrace and Chromium's crashpad depends on the same thing. There
+is also no Python wheel for `aarch64-linux-android`, so `pip install playwright` fails with
+`No matching distribution found`. The Termux package (`pkg install chromium`, 155.x at the
+time of writing) is a native bionic build: start it as above — `--headless=new` included,
+since a phone terminal has no display — and point `browser.cdp_url` (or `/browser connect`)
+at it exactly like the other platforms.
+
+**If you want the Playwright API rather than raw CDP, it does work on Android — through Node,
+not Python.** Install `playwright-core` with `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` (there is no
+point downloading a browser that cannot run) and pass the Termux binary as `executablePath`.
+Two details are mandatory: Playwright refuses to start with `Unsupported platform: android`
+unless **`PLAYWRIGHT_BROWSERS_PATH=0`** is set, and **`executablePath`** points at
+`$PREFIX/bin/chromium-browser`. Measured on a Galaxy S24 Ultra (Android 16, arm64, no root):
+browser up in **0.5 s**, `react.dev` rendered in **1.4 s** (6,583 characters of text), a valid
+1280×720 screenshot, `locator()` with auto-wait in 0.2-0.4 s, ~830 MB peak — the same memory
+profile as any native Chromium, so keep it to one browser at a time.
+
+```js
+const { chromium } = require("playwright-core");
+const b = await chromium.launch({
+  executablePath: "/data/data/com.termux/files/usr/bin/chromium-browser",
+  args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+});
+```
 
 **Why `--user-data-dir`?** Without it, launching a Chromium-family browser while a regular instance is already running typically opens a new window on the existing process — and that existing process was not started with `--remote-debugging-port`, so port 9222 never opens. A dedicated user-data-dir forces a fresh browser process where the debug port actually listens. `--no-first-run --no-default-browser-check` skips the first-launch wizard for the fresh profile.
 

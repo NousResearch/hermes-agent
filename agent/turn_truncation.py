@@ -673,7 +673,7 @@ def continue_codex_incomplete(
                 # Repeated public progress needs an action/continue instruction, not the
                 # reasoning-only nudge that tells the model to produce a final answer now.
                 _continuation_nudge = (
-                    _CODEX_ACK_CONTINUATION_NUDGE if interim_has_commentary else _CODEX_INCOMPLETE_NUDGE
+                    _CODEX_INCOMPLETE_NUDGE if reasoning_only else _CODEX_ACK_CONTINUATION_NUDGE
                 )
                 _already_nudged = (
                     _last_msg.get("role") == "user" and _last_msg.get("content") == _continuation_nudge

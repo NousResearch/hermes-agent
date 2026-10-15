@@ -248,6 +248,34 @@ def test_genuine_reasoning_only_still_uses_internal_reasoning_nudge():
     assert not any(m.get("content") == _CODEX_ACK_CONTINUATION_NUDGE for m in messages)
 
 
+def test_repeated_visible_partials_use_truthful_nudge_and_stop_at_aggregate_cap():
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    for texts in (("First partial.", "Another partial."), ("Same partial.", "Same partial.")):
+        agent = _direct_incomplete_agent()
+        messages = [{"role": "user", "content": "finish the task"}]
+
+        for api_call_count, text in enumerate((*texts, "Still partial."), start=1):
+            response = _codex_incomplete_message_response(text)
+            assistant_message, finish_reason = _normalize_codex_response(response)
+            result = continue_codex_incomplete(
+                agent, assistant_message, finish_reason, messages=messages,
+                conversation_history=[], api_call_count=api_call_count, response=response,
+            )
+            assert agent._codex_reasoning_only_streak == 0
+            if api_call_count < 3:
+                assert result is None
+            if api_call_count == 2:
+                assert messages[-1]["role"] == "user"
+                assert messages[-1]["content"] == _CODEX_ACK_CONTINUATION_NUDGE
+
+        assert result["completed"] is False
+        assert result["api_calls"] == 3
+        assert not any(m.get("content") == _CODEX_INCOMPLETE_NUDGE for m in messages)
+        agent._try_activate_fallback.assert_not_called()
+        agent._persist_session.assert_called_once()
+
+
 def test_cross_protocol_fallback_wire_drops_codex_nudge_and_replay_state(monkeypatch):
     """The nudge and encrypted reasoning are Codex-only: once the stall falls over to a
     Chat Completions provider the assembled request must carry neither, with roles alternating."""

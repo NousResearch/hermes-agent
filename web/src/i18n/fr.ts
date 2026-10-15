@@ -783,5 +783,29 @@ export const fr: Translations = {
       "chemin du workspace (facultatif, dérivé de l'assigné si vide)",
     logTruncated: "(affichage des derniers 100 KB — log complet à ",
     logAt: ")",
+    newTaskTitle: "Nouvelle tâche — {column}",
+    taskTitleLabel: "Titre",
+    assigneeLabel: "Assigné à",
+    assigneeLabelHint: "(vide = le dispatcher choisit)",
+    skillsLabel: "Compétences",
+    skillsLabelHint: "(facultatif, séparé par des virgules)",
+    parentLabel: "Tâche parente",
+    parentLabelHint: "(l'enfant reste bloqué jusqu'à ce que le parent soit terminé)",
+    create: "Créer",
+    boardSettings: "Paramètres",
+    boardSettingsTitle:
+      "Paramètres du tableau — nom, description, et le répertoire de projet par défaut que les nouvelles tâches héritent",
+    boardSettingsTitleFor: "Paramètres du tableau — {name}",
+    projectDirectoryOverrideHint:
+      "Les nouvelles tâches héritent de ce chemin comme leur espace de travail par défaut ; chaque tâche peut toujours l'override dans la boîte de dialogue de création.",
+    saving: "Enregistrement…",
+    commentHint:
+      "Les commentaires atteignent le worker lors de son prochain exécution ou lors de kanban_show() — il n'est pas nécessaire de bloquer la tâche au préalable.",
+    commentHintTitle:
+      "Les commentaires sont le canal pour parler au worker de la tâche. Ils arrivent sur le fil immédiatement — il n'est pas nécessaire de bloquer la tâche au préalable. Un worker en cours d'exécution relève le fil lors de son prochain kanban_show() ou lors d'un respawn ; le blocage n'est utilisé que lorsque vous voulez que le worker s'arrête et attende votre saisie.",
+    trash: {
+      confirmTitle: "Supprimer la tâche ?",
+      confirmManyTitle: "Supprimer {n} tâches ?",
+    }
   },
 };

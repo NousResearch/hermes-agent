@@ -55,6 +55,9 @@ export const frBoot = {
       back: 'Retour',
       openLogs: 'Ouvrir les journaux',
       repairHint: "La réparation relance l'installateur et peut prendre quelques minutes sur une machine neuve.",
+      reinstallApp: "Réinstaller l'application",
+      bundledReinstallHint:
+        "Cette installation groupée ne peut pas se réparer depuis l’application — réinstallez l’application pour restaurer son backend.",
       remoteSignInHint: signInLabel =>
         `Déconnecte la session navigateur distante enregistrée, puis ouvre ${signInLabel}. Utilisez le gateway local pour passer au backend intégré.`,
       signOutAndSignIn: 'Se déconnecter et se reconnecter',

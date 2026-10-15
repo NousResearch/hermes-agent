@@ -2213,6 +2213,10 @@ export interface Translations extends NoticeTranslations {
       referenceImageInvalid: string
       adopt: string
       startOver: string
+      unavailableTitle: string
+      unavailableBody: string
+      setUpImageGeneration: string
+      grabKeyFrom: string
     }
     installTheme: {
       title: string

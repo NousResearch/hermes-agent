@@ -16,6 +16,8 @@ _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".m2a", ".wav", ".m4a", ".flac"}
 _VOICE_EXTS = {".ogg", ".opus"}
+_UPLOAD_FEEDBACK_THRESHOLD_BYTES = 1 * 1024 * 1024
+_UPLOAD_FAILURE_NOTICE_MAX_CHARS = 300
 _TELEGRAM_SEND_AUDIO_EXTS = {".mp3", ".m4a"}  # sendAudio accepts only these; other audio -> sendVoice / document
 # Captionable on the media bubble; voice/audio notes excluded (a caption there reads as a separate label).
 _CAPTIONABLE_EXTS = _IMAGE_EXTS | _VIDEO_EXTS | {".pdf", ".doc", ".docx", ".txt", ".md", ".csv", ".xlsx", ".zip"}
@@ -59,6 +61,84 @@ def _success(platform: str, chat_id, warnings=None, **fields) -> dict:
     """Standard success payload; ``warnings`` is only included when non-empty."""
     return {"success": True, "platform": platform, "chat_id": chat_id, **fields,
             **({"warnings": warnings} if warnings else {})}
+
+
+def _format_upload_size(size_bytes: int) -> str:
+    units = ("B", "KB", "MB", "GB")
+    value = float(max(size_bytes, 0))
+    unit = units[0]
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            break
+        value /= 1024
+    if unit == "B":
+        return f"{int(value)} {unit}"
+    return f"{value:.1f} {unit}"
+
+
+def _upload_notice_for_file(file_path: str) -> str | None:
+    try:
+        size_bytes = os.path.getsize(file_path)
+    except OSError:
+        return None
+    if size_bytes < _UPLOAD_FEEDBACK_THRESHOLD_BYTES:
+        return None
+    name = os.path.basename(file_path) or "attachment"
+    return f"Uploading attachment: {name} ({_format_upload_size(size_bytes)})..."
+
+
+def _upload_failure_notice(file_path: str, error) -> str:
+    name = os.path.basename(file_path) or "attachment"
+    detail = _sanitize_error_text(error or "unknown error")
+    if len(detail) > _UPLOAD_FAILURE_NOTICE_MAX_CHARS:
+        detail = detail[:_UPLOAD_FAILURE_NOTICE_MAX_CHARS].rstrip() + "..."
+    return f"Attachment upload failed: {name}: {detail}"
+
+
+async def _send_adapter_upload_notice(adapter, chat_id: str, file_path: str, metadata=None) -> None:
+    notice = _upload_notice_for_file(file_path)
+    if not notice:
+        return
+    try:
+        await adapter.send(chat_id, notice, metadata=metadata)
+    except Exception as e:
+        logger.debug("Could not send upload-start notice: %s", _sanitize_error_text(e))
+
+
+async def _send_adapter_upload_failure(adapter, chat_id: str, file_path: str, error, metadata=None) -> None:
+    try:
+        await adapter.send(chat_id, _upload_failure_notice(file_path, error), metadata=metadata)
+    except Exception as e:
+        logger.debug("Could not send upload-failure notice: %s", _sanitize_error_text(e))
+
+
+async def _send_telegram_upload_notice(bot, int_chat_id: int | str, file_path: str, thread_kwargs: dict) -> None:
+    notice = _upload_notice_for_file(file_path)
+    if not notice:
+        return
+    try:
+        await _send_telegram_message_with_retry(
+            bot,
+            chat_id=int_chat_id,
+            text=notice,
+            parse_mode=None,
+            **thread_kwargs,
+        )
+    except Exception as e:
+        logger.debug("Could not send Telegram upload-start notice: %s", _sanitize_error_text(e))
+
+
+async def _send_telegram_upload_failure(bot, int_chat_id: int | str, file_path: str, error, thread_kwargs: dict) -> None:
+    try:
+        await _send_telegram_message_with_retry(
+            bot,
+            chat_id=int_chat_id,
+            text=_upload_failure_notice(file_path, error),
+            parse_mode=None,
+            **thread_kwargs,
+        )
+    except Exception as e:
+        logger.debug("Could not send Telegram upload-failure notice: %s", _sanitize_error_text(e))
 
 
 _NO_DELIVERABLE = "No deliverable text or media remained after processing MEDIA tags"
@@ -294,12 +374,25 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                                        _sanitize_error_text(_cap_err))
                 continue
             try:
+                await _send_telegram_upload_notice(
+                    bot,
+                    int_chat_id,
+                    media_path,
+                    thread_kwargs,
+                )
                 last_msg = await _telegram_send_one_media(
                     bot, int_chat_id, media_path, is_voice, caption=_tg_caption, parse_mode=send_parse_mode,
                     has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document)
             except Exception as e:
                 warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}"))
                 logger.error(warnings[-1])
+                await _send_telegram_upload_failure(
+                    bot,
+                    int_chat_id,
+                    media_path,
+                    e,
+                    thread_kwargs,
+                )
         if last_msg is None:
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
         return _success("telegram", chat_id, warnings, message_id=str(last_msg.message_id))
@@ -565,9 +658,22 @@ async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):
         if not os.path.exists(media_path):
             return _error(f"Media file not found: {media_path}")
         ext = os.path.splitext(media_path)[1].lower()
+        await _send_adapter_upload_notice(
+            adapter,
+            chat_id,
+            media_path,
+            metadata=metadata,
+        )
         method, _ = _adapter_media_method(ext, (ext in _VOICE_EXTS and is_voice) or ext in _AUDIO_EXTS)
         last_result = await getattr(adapter, method)(chat_id, media_path, metadata=metadata)
         if not last_result.success:
+            await _send_adapter_upload_failure(
+                adapter,
+                chat_id,
+                media_path,
+                last_result.error,
+                metadata=metadata,
+            )
             return _error(f"Matrix media send failed: {last_result.error}")
     return {"error": _NO_DELIVERABLE} if last_result is None else _success("matrix", chat_id, message_id=last_result.message_id)
 

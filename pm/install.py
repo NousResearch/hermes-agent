@@ -134,6 +134,23 @@ def installed_package(name: str, *, allow_outdated: bool = False) -> InstalledPa
                             Path(native(binary)) if binary is not None else None)
 
 
+def staged_package(name: str, target: str) -> InstalledPackage | None:
+    """Read a current cross-target stage without acquisition or native-facts mutation."""
+    package, lockfile = get_package(name), _lockfile()
+    version, artifacts = lockfile.version(name), lockfile.artifacts(name, target)
+    if version is None or not artifacts:
+        return None
+    pin = json.dumps({"target": target, "sha256": [a["sha256"] for a in artifacts]})
+    for root in dict.fromkeys((paths.store_root(), paths.writable_store_root())):
+        store = Store(root)
+        entry = store.entry(package.store_entry(version, target))
+        if _entry_current(package, lockfile, None, store, entry, None, version, pin, target):
+            binary = package.binary(entry, target)
+            return InstalledPackage(Path(native(entry)), version,
+                                    Path(native(binary)) if binary is not None else None)
+    return None
+
+
 def uv_launcher(name: str) -> Path | None:
     """PM's installed ``uv``/``uvx`` for a user-declared MCP stdio ``command:``, so a bare
     ``uvx`` server runs the packaged uv, never the user's. Read-only; Hermes's own Python

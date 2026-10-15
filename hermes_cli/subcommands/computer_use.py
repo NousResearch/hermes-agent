@@ -35,8 +35,12 @@ def _cu_status(args) -> int:
     _exit_if_plugin_backend()
     import os as _os
     from hermes_cli.tools_config_cua import _cua_driver_contract_status, _cua_version_summary
-    from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
+    from tools.computer_use.cua_backend_driver import computer_use_selection_identity, resolve_cua_driver_cmd
 
+    target, driver_platform, _selected, target_error = computer_use_selection_identity()
+    print(f"Computer Use target: {target}; driver platform: {driver_platform or 'unresolved'}")
+    if target_error:
+        print(f"  {target_error}")
     path = resolve_cua_driver_cmd()
     override = _os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip()
     if not path:

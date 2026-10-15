@@ -266,24 +266,23 @@ def attach_editor_mcp(authority, policy, servers):
 
 
 def resume_editor_mcp(authority, ref, editor):
-    """Call after ordinary resume authorization, before attaching the viewer. An explicit empty list
-    is a selection too: on a session holding editor servers it conflicts, so the editor removes them
-    through the fenced ``editor_mcp`` change; an omitted list keeps them."""
+    """Call after ordinary resume authorization, before attaching the viewer. An empty or omitted
+    list keeps the session's servers: ACP load always carries one, so a second editor without MCP
+    config must not strip the first one's tools for every viewer. Removal is only the fenced
+    ``editor_mcp`` change with ``[]``."""
     if editor is None:
+        return
+    servers = editor.get('mcp_servers') if isinstance(editor, dict) else None
+    if servers == []:
         return
     from gateway.session_local_editor import validate_editor
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
-    servers = editor.get('mcp_servers') if isinstance(editor, dict) else None
-    if servers == [] and (policy is None or not policy.editor_mcp_json):
-        return  # nothing to remove, whichever surface created the session
     if policy is None:
         raise RuntimeStoreError('acp_mcp_policy_conflict')
     validate_editor(policy.source, editor)
     if servers:
         attach_editor_mcp(authority, policy, servers)
-    elif servers is not None:
-        raise RuntimeStoreError('acp_mcp_policy_conflict')
 
 
 def retire_editor_mcp(authority, sid):
@@ -344,32 +343,59 @@ def _live_tools_changed(scope, names):
     def dump(tools):
         return _json([tool.model_dump(mode='json') for tool in tools])
 
-    for name in names.values():
-        server = _servers.get(_server_key(name, scope))
-        if server is None:
-            continue
+    held = [server for server in (_servers.get(_server_key(name, scope)) for name in names.values())
+            if server is not None]
 
-        async def relist(server=server):
-            async with server._rpc_lock:
-                if server.session is None:
-                    return None
-                return await _paginate_full_list(server.session.list_tools, 'tools', server.name)
+    async def relist(server):
+        async with server._rpc_lock:
+            if server.session is None:
+                return None
+            return await _paginate_full_list(server.session.list_tools, 'tools', server.name)
+
+    async def relist_all():
+        # Every held server at once: one bound for the whole check, not one per server.
+        tasks = [asyncio.ensure_future(relist(server)) for server in held]
         try:
-            tools = mcp_tool_loop._run_on_mcp_loop(relist, timeout=_RELIST_TIMEOUT)
-        except Exception:
-            logger.warning('Editor MCP server %r: tools/list for the drift check failed', name, exc_info=True)
-            continue
-        if tools is not None and dump(tools) != dump(server._tools):
-            return True
-    return False
+            if tasks:
+                await asyncio.wait(tasks, timeout=_RELIST_TIMEOUT)
+        finally:
+            for task in tasks:
+                task.cancel()  # an unanswered list (bounded) counts as unchanged
+        answered = []
+        for server, task in zip(held, tasks):
+            settled = task.done() and not task.cancelled()
+            error = task.exception() if settled else None
+            if settled and error is None:
+                answered.append((server, task.result()))
+            else:
+                logger.warning('Editor MCP server %r: tools/list for the drift check failed', server.name,
+                               exc_info=error)
+        return answered
+    try:
+        # The loop's own bound is a backstop; relist_all settles within _RELIST_TIMEOUT.
+        answered = mcp_tool_loop._run_on_mcp_loop(relist_all, timeout=_RELIST_TIMEOUT + 1)
+    except (RuntimeError, TimeoutError, InterruptedError):
+        logger.warning('Editor MCP drift check of %s failed', scope, exc_info=True)
+        return False
+    return any(tools is not None and dump(tools) != dump(server._tools) for server, tools in answered)
 
 
 async def refreeze_editor_mcp(authority, ref, live):
-    """The drain, before it claims the FIFO head (claim gate and mutation lock held, nothing
-    executing), re-checks the editor schemas; a drifted manifest is re-frozen through the
-    ``editor_mcp`` writer path, so the turn runs on it instead of failing ``acp_mcp_schema_changed``."""
+    """The drain, once the FIFO head is authorized and before it is claimed (claim gate and mutation
+    lock held, nothing executing), re-checks the editor schemas; a drifted manifest is re-frozen through the
+    ``editor_mcp`` writer path, so the turn runs on it instead of failing ``acp_mcp_schema_changed``.
+    Best-effort: the FIFO must not pause on it, so a failed re-check only logs and the turn then
+    reports real drift as before."""
     if not getattr(authority, '_local_editor_mcp', None):
         return  # no session of this owner borrows editor servers: nothing to re-check
+    try:
+        await _refreeze(authority, ref)
+    except Exception:  # health: allow BLE001 -- the probe spawns arbitrary editor servers; nothing it raises may kill the drain
+        logger.warning('Editor MCP re-check of session %s failed; the turn runs on its frozen manifest',
+                       ref.session_id, exc_info=True)
+
+
+async def _refreeze(authority, ref):
     from gateway.session_policy import restore_policy
     from hermes_state_local import local_receipt
     # The committed policy the claim just restored (``restore_local_session``).
@@ -392,11 +418,7 @@ async def refreeze_editor_mcp(authority, ref, live):
     # A server that is down right now is the execution's discovery failure, never a narrowed manifest.
     if not complete or (schemas == data['schemas'] and not drifted):
         return
-    try:
-        await _commit_refreeze(authority, ref, servers)
-    except RuntimeStoreError:
-        # The FIFO must not pause on it: the turn then reports the drift as before.
-        logger.warning('Editor MCP schemas of session %s changed; re-freeze failed', ref.session_id, exc_info=True)
+    await _commit_refreeze(authority, ref, servers)
 
 
 async def _commit_refreeze(authority, ref, servers):

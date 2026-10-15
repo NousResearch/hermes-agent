@@ -30,7 +30,8 @@ def _agent(created):
 async def test_launch_env_rides_session_create(monkeypatch, tmp_path):
     for name in _ENV[:5]:
         monkeypatch.setenv(name, '1')
-    monkeypatch.setenv('HERMES_MODEL', 'explicit-model')  # a bypass session needs one (below)
+    monkeypatch.setenv('HERMES_MODEL', 'explicit-model')  # a bypass session needs a route (below)
+    monkeypatch.setenv('HERMES_INFERENCE_PROVIDER', 'openrouter')
     created = []
     await _agent(created).new_session(cwd=str(tmp_path))
     assert {k: created[0].get(k) for k in _FLAGS} == dict.fromkeys(_FLAGS, True)
@@ -66,6 +67,22 @@ async def test_bypass_without_a_model_names_the_missing_flag(monkeypatch, tmp_pa
     monkeypatch.setenv(flag, '1')
     created = []
     with pytest.raises(GatewayClientError, match='hermes -m <model>'):
+        await _agent(created).new_session(cwd=str(tmp_path))
+    assert created == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('flag', ['HERMES_SAFE_MODE', 'HERMES_IGNORE_USER_CONFIG'])
+async def test_bypass_with_a_model_but_no_provider_is_refused_at_session_new(monkeypatch, tmp_path, flag):
+    """`hermes -m <model> --safe-mode acp`: the owner would accept the session, then its first turn
+    could not build the agent. Refused before session.create, naming the missing flag."""
+    from hermes_cli.gateway_client import GatewayClientError
+    for name in _ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(flag, '1')
+    monkeypatch.setenv('HERMES_MODEL', 'gpt-4o-mini')
+    created = []
+    with pytest.raises(GatewayClientError, match='launch with --provider too'):
         await _agent(created).new_session(cwd=str(tmp_path))
     assert created == []
 

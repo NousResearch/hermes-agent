@@ -102,14 +102,18 @@ def _submit_fingerprint(session_id, text, attachments):
 
 
 def _bypass_route():
-    """--safe-mode / --ignore-user-config read no profile default model, so the session freezes the
-    launch's explicit one (``hermes -m <model> [--provider <name>] --safe-mode acp``), as the TUI does."""
+    """--safe-mode / --ignore-user-config read no profile default route, so the session freezes the
+    launch's explicit one (``hermes -m <model> --provider <name> --safe-mode acp``). Both, refused at
+    session/new: a model alone is accepted by the owner, then its first turn cannot build the agent."""
     model = (os.environ.get("HERMES_MODEL") or os.environ.get("HERMES_INFERENCE_MODEL") or "").strip()
     if not model:
         raise GatewayClientError("--safe-mode / --ignore-user-config read no profile default model: launch "
                                  "with one, e.g. hermes -m <model> --provider <provider> --safe-mode acp")
     provider = os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip()
-    return {"model": model, **({"provider": provider} if provider else {})}
+    if not provider:
+        raise GatewayClientError("--safe-mode / --ignore-user-config read no profile provider: launch with "
+                                 "--provider too, e.g. hermes -m <model> --provider <provider> --safe-mode acp")
+    return {"model": model, "provider": provider}
 
 
 def _tools_changed_notice(payload):
@@ -355,14 +359,14 @@ class GatewayACPAgent(acp.Agent):
             await self._conn.session_update(session_id=held_id, update=acp.update_agent_message_text(
                 "Attached to the gateway's existing session policy; editor cwd is not applied.\n"))
         resume_params = {}
-        if mcp_servers is not None:
-            # A list, empty included, is the editor's selection (load always carries one); a resume
-            # that omits it keeps the session's servers. An owner without editor MCP bound none.
+        if mcp_servers:
+            # A non-empty list is the editor's selection. An empty one (load always carries a list)
+            # keeps the session's servers, as fork does: a second editor without MCP config must not
+            # strip the first one's tools. An owner without editor MCP bound none.
             descriptor = await client.rpc("runtime.describe")
-            if "acp-session-mcp-v1" in descriptor.get("capabilities", []):
-                resume_params['editor'] = {'mcp_servers': [s.model_dump(by_alias=True) for s in mcp_servers]}
-            elif mcp_servers:
+            if "acp-session-mcp-v1" not in descriptor.get("capabilities", []):
                 raise GatewayClientError("acp_mcp_policy_unavailable")
+            resume_params['editor'] = {'mcp_servers': [s.model_dump(by_alias=True) for s in mcp_servers]}
         try:
             snapshot = await client.rpc("session.resume", session_id=session_id, **resume_params)
         except GatewayRPCError as exc:
@@ -373,10 +377,8 @@ class GatewayACPAgent(acp.Agent):
             await self._rebind_editor_mcp(client, session_id, resume_params['editor'])
             snapshot = await client.rpc("session.resume", session_id=session_id, **resume_params)
         self._snapshots[session_id] = snapshot
-        if resume_params.get('editor', {}).get('mcp_servers'):
+        if 'editor' in resume_params:
             self._editor_mcp[session_id] = resume_params['editor']
-        elif 'editor' in resume_params:
-            self._editor_mcp.pop(session_id, None)
         from acp_adapter.server import _history_replay_updates
         if self._conn:
             for update in _history_replay_updates(snapshot["messages"]):

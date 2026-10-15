@@ -86,10 +86,11 @@ async def test_empty_selection_closes_the_held_connections(daemon, spec, tmp_pat
 
 @pytest.mark.platforms("linux")
 @pytest.mark.asyncio
-async def test_acp_load_with_no_servers_removes_them_and_resume_without_a_list_keeps_them(daemon, spec, tmp_path):
-    """``session/load`` always carries ``mcpServers`` (the schema requires it), so ``[]`` there is the
-    editor's selection: the owner's ``editor_mcp`` removal. ``session/resume`` may omit the list,
-    which keeps the session's servers."""
+async def test_acp_load_with_no_servers_keeps_them_and_direct_editor_mcp_empty_removes_them(daemon, spec, tmp_path):
+    """``session/load`` always carries ``mcpServers`` (the schema requires it), so a second editor with
+    no MCP config loads with ``[]``: that keeps the session's servers for every viewer, as an omitted
+    list on ``session/resume`` and ``[]`` on ``session/fork`` do. Removal is only the owner's fenced
+    ``editor_mcp`` change with ``[]``, which also stops the held process."""
     async with editor(daemon, tmp_path) as acp:
         await initialize(acp)
         created = await acp.rpc('session/new', cwd=str(tmp_path), mcpServers=[spec])
@@ -100,10 +101,17 @@ async def test_acp_load_with_no_servers_removes_them_and_resume_without_a_list_k
         resumed = await acp.rpc('session/resume', sessionId=sid, cwd=str(tmp_path))
         assert 'result' in resumed, resumed
         assert _peers_running(daemon[1]['pid']), 'an omitted list keeps the servers'
-        assert _policies(daemon[0], sid) != [None]
+        frozen = _policies(daemon[0], sid)
+        assert frozen != [None]
         loaded = await acp.rpc('session/load', sessionId=sid, cwd=str(tmp_path), mcpServers=[])
         assert 'result' in loaded, loaded
-        # The editor is still attached: only the committed empty selection may close the process.
-        await async_wait_until(lambda: not _peers_running(daemon[1]['pid']), timeout=20,
-                               what='held editor server closed by the empty load')
+        assert _peers_running(daemon[1]['pid']), 'an empty load keeps the held server'
+        assert _policies(daemon[0], sid) == frozen
+        async with viewer(daemon) as ws:
+            idle = await ws.rpc('session.resume', session_id=sid)
+            await ws.rpc('session.mutate', request_id='remove', session_id=sid, operation='editor_mcp',
+                         payload={'mcp_servers': []}, expected_revision=idle['revision'],
+                         expected_generation=idle['execution_generation'])
+            await async_wait_until(lambda: not _peers_running(daemon[1]['pid']), timeout=20,
+                                   what='held editor server closed by the direct empty editor_mcp')
         assert _policies(daemon[0], sid) == [None]

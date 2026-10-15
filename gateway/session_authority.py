@@ -775,9 +775,6 @@ class SessionAuthority:
             if first is not None and live.source.platform == Platform.LOCAL:
                 from gateway.session_local_recovery import restore_local_session
                 restore_local_session(self, ref.session_id)
-                # Editor MCP schema drift re-freezes here, at this admission's start: a turn boundary.
-                from gateway.session_local_mcp import refreeze_editor_mcp
-                await refreeze_editor_mcp(self, ref, live)
                 if first['request_id'].startswith('hosted:'):
                     from gateway.session_hosted_transport import check_remote_hosted_admission
                     if not await asyncio.to_thread(check_remote_hosted_admission, self, ref, first):
@@ -796,6 +793,10 @@ class SessionAuthority:
                 else:
                     from gateway.session_operator import check_local_input
                     check_local_input(self, ref, first)
+                # Editor MCP schema drift re-freezes here, at this admission's start (a turn boundary),
+                # once the head is authorized: a refused head spawns no server and commits no change.
+                from gateway.session_local_mcp import refreeze_editor_mcp
+                await refreeze_editor_mcp(self, ref, live)
                 # The first real turn reopens a finalized row (#85303): mounts are reads, and
                 # SessionStore would route a stamped row as stale onto a FRESH session. A write: off-loop,
                 # tracked so retirement and the shutdown close gate count it.

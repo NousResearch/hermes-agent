@@ -24,7 +24,7 @@ Both are configured through a single backend selection. Providers are chosen via
 |----------|---------|--------|---------|-----------|
 | **Firecrawl** (default) | `FIRECRAWL_API_KEY` (optional — keyless when selected) | ✔ | ✔ | 500 credits/mo · keyless cloud when selected |
 | **SearXNG** | `SEARXNG_URL` | ✔ | — | ✔ Free (self-hosted) |
-| **Brave Search (free tier)** | `BRAVE_SEARCH_API_KEY` | ✔ | — | 2 000 queries/mo |
+| **Brave Search** | `BRAVE_SEARCH_API_KEY` | ✔ | — | $5 free credits/mo (≈1 000 queries) · card required · $5 per 1 000 beyond |
 | **DDGS (DuckDuckGo)** | — (no key) | ✔ | — | ✔ Free |
 | **Exa** | `EXA_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · 1 000 searches/mo with key |
 | **Parallel** | `PARALLEL_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |

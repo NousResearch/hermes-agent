@@ -1,5 +1,5 @@
 """Opt-in bundled plugins remain discoverable in Desktop's backend inventory."""
-from tui_gateway.methods_tools import _plugin_rows
+from tui_gateway import server
 
 
 def _bundled(root, name, kind):
@@ -14,7 +14,7 @@ def test_plugin_rows_publish_activation_default_separately_from_current_status(t
     _bundled(bundled, "sample-target", "standalone")
     _bundled(bundled, "sample-backend", "backend")
     monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
-    rows = {row["name"]: row for row in _plugin_rows()}
+    rows = {row["name"]: row for row in server._plugin_rows()}
     row = rows["sample-target"]
     assert row["source"] == "bundled"
     assert row.get("default_enabled") is False

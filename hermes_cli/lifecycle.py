@@ -9,6 +9,10 @@ logger = logging.getLogger(__name__)
 
 
 def _observe(hook_name: str, **kwargs: Any) -> None:
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return
     try:
         from hermes_cli.observability import observe_lifecycle
 
@@ -25,8 +29,11 @@ def _plugin_hooks(hook_name: str, **kwargs: Any) -> list[Any]:
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
     """Notify first-party observers, then invoke compatibility plugin hooks."""
+    from agent.safe_worker_policy import safe_worker_enabled
     from hermes_cli.session_hook_context import hook_profile_scope
 
+    if safe_worker_enabled():
+        return []
     with hook_profile_scope(kwargs.get("hermes_home")):
         _observe(hook_name, **kwargs)
         return _plugin_hooks(hook_name, **kwargs)
@@ -43,6 +50,10 @@ async def ainvoke_hook(hook_name: str, **kwargs: Any) -> list[Any]:
 
 def has_hook(hook_name: str) -> bool:
     """Return whether a first-party observer or plugin consumes a hook."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return False
     try:
         from hermes_cli.observability import handles_hook
 

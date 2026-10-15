@@ -182,10 +182,11 @@ print(response)
 如需并行运行大量 prompt，Hermes 提供了 `batch_runner.py`，它可管理并发的 `AIAgent` 实例并进行适当的资源隔离：
 
 ```bash
-python batch_runner.py --input prompts.jsonl --output results.jsonl
+python batch_runner.py --dataset_file=prompts.jsonl --batch_size=10 --run_name=my_run
 ```
 
-每个 prompt 都有自己的 `task_id` 和隔离环境。如果需要自定义批处理逻辑，可以直接使用 `AIAgent` 构建：
+每个 prompt 都有自己的 `task_id` 和隔离环境。输出会先按批次写入
+`data/my_run/batch_N.jsonl`，再合并为 `data/my_run/trajectories.jsonl`。如果需要自定义批处理逻辑，可以直接使用 `AIAgent` 构建：
 
 ```python
 import concurrent.futures

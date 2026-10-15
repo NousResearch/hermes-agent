@@ -390,7 +390,8 @@ def _reap_orphaned_browser_sessions():
     socket_dirs = []
     # The shared real-profile attach daemon is named, not ``<prefix>_<hex>``; list it explicitly.
     for prefix in ("agent-browser-h_*", "agent-browser-cdp_*", "agent-browser-hermes_*",
-                   f"agent-browser-{_bt._REAL_PROFILE_SESSION}"):
+                   f"agent-browser-{_bt._REAL_PROFILE_SESSION}",
+                   *(f"agent-browser-{name}" for name in _bt._LEGACY_REAL_PROFILE_SESSIONS)):
         socket_dirs += glob.glob(os.path.join(tmpdir, prefix))
     if not socket_dirs:
         return

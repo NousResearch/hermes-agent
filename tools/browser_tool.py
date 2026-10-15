@@ -264,7 +264,14 @@ from tools import browser_tool_lightpanda_fallback as _lp
 
 # Single shared real-profile copy-browser session: concurrent tasks reuse it
 # instead of each launching a rival Chromium on the same copied user-data-dir.
-_REAL_PROFILE_SESSION = "hermes-real-profile"
+# Kept short: agent-browser binds ``<socket_dir>/<session>.sock`` with socket_dir =
+# ``<root>/agent-browser-<session>`` and refuses paths over 103 bytes, i.e. the name counts
+# twice (root + 2*len + 21). ``socket_safe_tmpdir`` only bounds the root at 50, so the old
+# 19-char "hermes-real-profile" overflowed under any named profile's scratch dir
+# (``~/.hermes/profiles/<name>/cache/scratch`` >= 44 chars) — e.g. every profile cron worker.
+_REAL_PROFILE_SESSION = "hermes-rp"
+# Pre-rename name: still swept by the orphan reaper so daemons from older builds get reaped.
+_LEGACY_REAL_PROFILE_SESSIONS = ("hermes-real-profile",)
 # Keep lock contention well inside the agent's 420-second outer tool deadline.
 # The holder may be an abandoned daemon worker that Python cannot terminate.
 _REAL_PROFILE_CDP_LOCK_TIMEOUT_S = 30.0

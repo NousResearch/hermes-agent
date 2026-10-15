@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.gitlock as gitlock
+from hermes_cli import gitlock
 
 
 def git(repo, *args, check=True):

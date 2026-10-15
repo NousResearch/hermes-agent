@@ -109,7 +109,7 @@ def test_fallback_when_reconfigure_unavailable(monkeypatch, tmp_path):
     sys.stdout.write(_BANNER)
     sys.stdout.flush()
     fh.close()
-    assert "☤".encode("utf-8") in real_path.read_bytes()
+    assert "☤".encode() in real_path.read_bytes()
 
 
 

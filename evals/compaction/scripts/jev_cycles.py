@@ -13,8 +13,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from evals.compaction.fixtures import estimate_tokens, load_transcript  # noqa: E402
-from evals.compaction.jev_arm import JevCompactor, JevOptions, collect_tool_calls  # noqa: E402
+from evals.compaction.fixtures import estimate_tokens, load_transcript
+from evals.compaction.jev_arm import JevCompactor, JevOptions, collect_tool_calls
 
 path, threshold, max_cycles = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 name = Path(path).stem

@@ -66,6 +66,23 @@ test('read-only dependency preparation reuses complete receipts but refuses miss
   expect(readFileSync(join(source, 'node_modules/.hermes-node-deps'))).toEqual(receipt)
 }, 30000)
 
+test('reuse refuses a gutted package directory and repairs it with npm ci', async () => {
+  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
+  const source = fixture()
+  const options = { source, workspaces: ['web'], reuse: true,
+    env: { ...process.env, npm_config_offline: 'true', npm_config_cache: join(source, '.npm-cache') } }
+  prepareNodeDependencies(options)
+  // #128935: an external cleanup or snapshot restore can leave the directory
+  // while stripping its contents. npm trusts the hidden lockfile and would
+  // only "repair" entries it does not list, so the receipt must reject first.
+  rmSync(join(source, 'node_modules/web-only'), { recursive: true })
+  mkdirSync(join(source, 'node_modules/web-only'))
+  expect(existsSync(join(source, 'node_modules/web-only/package.json'))).toBe(false)
+  expect(() => prepareNodeDependencies({ ...options, install: false })).toThrow(/disabled/)
+  prepareNodeDependencies(options)
+  expect(createRequire(join(source, 'web/package.json'))('web-only')).toBe('web-only')
+}, 30000)
+
 test('native toolchain admission rejects a changed compiler without breaking ordinary builders', async () => {
   const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
   const source = fixture()

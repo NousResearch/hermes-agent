@@ -25,7 +25,7 @@ def _keyless_rescue_enabled() -> bool:
     try:
         from agent.web_search_registry import _keyless_tier_enabled
         return _keyless_tier_enabled()
-    except Exception as exc:  # noqa: BLE001 — registry optional
+    except Exception as exc:
         logger.debug("keyless rescue tier check failed: %s", exc)
         return False
 
@@ -59,7 +59,7 @@ def _managed_search_fallback(provider, original_error: str, query: str, limit: i
     try:
         from agent.web_search_registry import get_provider
         resp = get_provider("firecrawl").search(query, limit)
-    except Exception as exc:  # noqa: BLE001 — fallback is best-effort
+    except Exception as exc:
         resp = {"success": False, "error": str(exc)}
     if not resp.get("success"):
         logger.warning("managed Firecrawl fallback failed too: %s", str(resp.get("error", ""))[:200])
@@ -85,7 +85,7 @@ def _rescue_eligible(provider) -> bool:
         from plugins.web.keyless_mcp import _KEYLESS_RING
         name = getattr(provider, "name", "")
         return name not in _KEYLESS_RING or not _ring_vendor_keyless(name)
-    except Exception as exc:  # noqa: BLE001 — rescue is best-effort
+    except Exception as exc:
         logger.debug("rescue eligibility check failed: %s", exc)
         return False
 

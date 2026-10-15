@@ -74,7 +74,10 @@ def relay_plugin_payload_from_legacy_env(env: Mapping[str, Any]) -> dict[str, An
             mode="overwrite" if mode == "overwrite" else "append",
         )
         atof = obs.AtofConfig(enabled=True, sinks=[sink])
-    spec = obs.ComponentSpec(config=obs.ObservabilityConfig(atif=atif, atof=atof))
+    # Relay 0.10 auto-exports gen_ai traces (prompt/response content) to any OTEL_EXPORTER_OTLP_*
+    # endpoint in the process env; the legacy vars never exported OTLP, so keep that off.
+    otel_off = obs.OpenTelemetrySectionConfig(enabled=False)
+    spec = obs.ComponentSpec(config=obs.ObservabilityConfig(atif=atif, atof=atof, opentelemetry=otel_off))
     return {"version": 1, "components": [spec.to_dict()]}
 
 
@@ -231,9 +234,6 @@ def print_relay_migration_report(results: list[RelayMigrationResult]) -> None:
 def run_relay_migration_after_update() -> None:
     """`hermes update` hook: migrate every profile home, print the notice. Best-effort by contract."""
     print_relay_migration_report(migrate_all_profile_relay_envs())
-
-
-RELAY_MIGRATE_COMMAND = "hermes migrate relay"
 
 
 def cmd_migrate_relay(args) -> None:

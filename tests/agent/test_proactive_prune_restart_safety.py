@@ -113,7 +113,7 @@ def test_fresh_agent_rearms_after_durable_history_regrowth_once(tmp_path: Path) 
     db.append_messages_batch(session_id, _history())
     first_agent = _build_agent(db, session_id)
     _configure_pruning(first_agent)
-    first, first_count = first_agent.context_compressor.prune_tool_results_only(
+    _first, first_count = first_agent.context_compressor.prune_tool_results_only(
         db.get_messages_as_conversation(session_id), current_tokens=120_000,
     )
     assert first_count >= 1
@@ -133,7 +133,7 @@ def test_fresh_agent_rearms_after_durable_history_regrowth_once(tmp_path: Path) 
     _configure_pruning(resumed)
     grown = db.get_messages_as_conversation(session_id)
     assert sum(map(_estimate_msg_budget_tokens, grown)) >= first_runway
-    second, second_count = resumed.context_compressor.prune_tool_results_only(
+    _second, second_count = resumed.context_compressor.prune_tool_results_only(
         grown, current_tokens=1_000_000,
     )
 

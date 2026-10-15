@@ -13,6 +13,8 @@ from typing import Literal
 
 from pydantic import Field
 
+from hermes_cli.plugin_install_phase import InstallPhase
+
 from .base import Params, Payload, Result, WireEnum
 from .common import ConnectorOwner, ProfileParams
 from .registry import event, method
@@ -101,6 +103,22 @@ class CatalogScan(Payload):
     summary: str
 
 
+class CatalogApproved(Payload):
+    """The non-secret Advanced choices the user approved on a catalog row; a Try again after the
+    operation settled repeats them."""
+
+    force: bool
+    enable: bool
+    ref: str | None = None
+
+
+class CatalogServerError(Payload):
+    """An MCP server an installed plugin brought that did not connect, with the raw reason."""
+
+    name: str
+    error: str
+
+
 class ConnectionOperationTarget(Payload):
     """``Target.snapshot``: the link minted up front rides here, never in the model result. ``extra``
     keys a leg records (``tools``, ``hint``) are typed here as they appear."""
@@ -109,12 +127,16 @@ class ConnectionOperationTarget(Payload):
     kind: ConnectionTargetKind
     action: ConnectionTargetAction
     state: ConnectionTargetState
+    # ``Target.resolved``: the row needs nothing more from the user (a failed catalog row counts).
+    resolved: bool | None = None
     detail: str | None = None
     instructions: str | None = None
     discovery_error: str | None = None
     connect_url: str | None = None
     # The vendor account a managed mint created or observed; never the desktop transport's id.
     connection_id: str | None = None
+    # The name of the one hosted account this row connects or repairs.
+    alias: str | None = None
     attempt: str | None = None
     # Present only on an MCP install that is waiting for credentials.
     required_env: list[ConnectionTargetEnvField] | None = None
@@ -129,12 +151,27 @@ class ConnectionOperationTarget(Payload):
     sha: str | None = None
     subdir: str | None = None
     scan: CatalogScan | None = None
-    requirements: list[str] | None = None
+    # The Hermes version range the plugin needs; its env vars ride in ``required_env``.
+    requires_hermes: str | None = None
     has_desktop_half: bool | None = None
+    # The profile the row installs into; absent when the chat's home is no named profile.
     target_profile: str | None = None
     app_state: CatalogAppState | None = None
     # On an installed skill row: the qualified skill name the model can now load.
     skill: str | None = None
+    phase: InstallPhase | None = None
+    approved: CatalogApproved | None = None
+    # Facts on an installed row, drawn by the card (``detail`` words them for the model).
+    enabled: bool | None = None
+    missing_env: list[str] | None = None
+    server_errors: list[CatalogServerError] | None = None
+    already_installed: bool | None = None
+
+
+class ConnectionDisplay(Payload):
+    """``manage_connections`` action ``display``: the directory card, with these slugs pinned as Suggested."""
+
+    suggested: list[str]
 
 
 class ConnectionRequestPayload(Payload):
@@ -150,6 +187,8 @@ class ConnectionRequestPayload(Payload):
     targets: list[ConnectionOperationTarget]
     # The model's id for the call that opened the operation; the card binds to that tool row only.
     tool_call_id: str | None = None
+    # Present on a display operation, which has no targets.
+    display: ConnectionDisplay | None = None
 
 
 event("connection.request", ConnectionRequestPayload,
@@ -223,6 +262,8 @@ class ConnectionAnswer(Params):
 
     targets: list[ConnectionAnswerTarget] = Field(default_factory=list)
     settled_by: ConnectionSettleReason | None = None
+    # A display card answered by the user's words typed in the composer; it settles the card like Continue.
+    said: str | None = None
 
 
 class ConnectionRespondParams(ConnectionOperationParams):

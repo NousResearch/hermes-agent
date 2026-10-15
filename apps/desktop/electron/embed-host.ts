@@ -27,6 +27,12 @@ function wrapperHtml(playerUrl: string): string {
 
 /** The wrapper document for a request path, or null for anything we don't serve. */
 function youtubeWrapperFor(requestUrl: string, origin: string): null | string {
+  // `//` and similar targets don't parse; throwing here would escape the
+  // request handler as an uncaught main-process error and never answer.
+  if (!URL.canParse(requestUrl, origin)) {
+    return null
+  }
+
   const url = new URL(requestUrl, origin)
   const match = /^\/youtube\/([^/]+)$/.exec(url.pathname)
 

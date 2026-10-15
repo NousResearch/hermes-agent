@@ -25,6 +25,7 @@ from agent.vault_store import VaultItemMeta, normalize_origin
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30.0
+_VAULT_CACHE: dict[str, str] = {}
 
 
 class OnePasswordLoginBackend(LoginBackend):
@@ -97,6 +98,26 @@ class OnePasswordLoginBackend(LoginBackend):
             raise RuntimeError(f"op failed: {err[:200]}")
         return proc.stdout or ""
 
+    def _parse_handle(self, handle: str) -> tuple[str, Optional[str]]:
+        """Extract (item_id, vault_id) from an op: handle.
+
+        Handles carry 'op:<vault_id>/<item_id>' when the vault is known, or 'op:<item_id>'.
+        If vault is absent from handle, checks _VAULT_CACHE and config, lazily populating
+        from list_items() if needed.
+        """
+        raw = handle.removeprefix(self.prefix)
+        if "/" in raw:
+            vault_id, item_id = raw.split("/", 1)
+            return item_id, vault_id or None
+        vault_id = _VAULT_CACHE.get(raw) or (str(self.cfg.get("vault")) if self.cfg.get("vault") else None)
+        if not vault_id and self.is_unlocked():
+            try:
+                self.list_items()
+                vault_id = _VAULT_CACHE.get(raw) or (str(self.cfg.get("vault")) if self.cfg.get("vault") else None)
+            except Exception:
+                pass
+        return raw, vault_id
+
     # ── backend contract ───────────────────────────────────────────────────
     def list_items(self) -> list[VaultItemMeta]:
         if not self.is_unlocked():
@@ -108,25 +129,59 @@ class OnePasswordLoginBackend(LoginBackend):
             origins = _all_origins(urls)
             if not origins:
                 continue
+            item_id = str(item.get("id") or "")
+            if not item_id:
+                continue
+            vault = item.get("vault")
+            vault_id: Optional[str] = None
+            if isinstance(vault, dict) and vault.get("id"):
+                vault_id = str(vault["id"])
+            elif isinstance(vault, str) and vault:
+                vault_id = vault
+            elif self.cfg.get("vault"):
+                vault_id = str(self.cfg.get("vault"))
+
+            if vault_id:
+                _VAULT_CACHE[item_id] = vault_id
+                handle_id = f"{self.prefix}{vault_id}/{item_id}"
+            else:
+                handle_id = f"{self.prefix}{item_id}"
+
             username = str(item.get("additional_information") or "").strip() or None
             out.append(VaultItemMeta(
-                id=f"{self.prefix}{item.get('id')}", kind="login", label=str(item.get("title") or origins[0]),
+                id=handle_id, kind="login", label=str(item.get("title") or origins[0]),
                 origin=origins[0], created_at=str(item.get("created_at") or ""),
                 identifier_type="username" if username else None, identifier=username,
                 allowed_origins=_web_origins(origins)))
         return out
 
     def get_meta(self, handle: str) -> Optional[VaultItemMeta]:
-        return next((m for m in self.list_items() if m.id == handle), None)
+        item_id, vault_id = self._parse_handle(handle)
+        for m in self.list_items():
+            if m.id == handle:
+                return m
+            m_item_id, m_vault_id = self._parse_handle(m.id)
+            if m_item_id == item_id and (vault_id is None or m_vault_id == vault_id):
+                return m
+        return None
 
     def resolve_password(self, handle: str) -> str:
-        item_id = handle[len(self.prefix):]
-        return self._run("item", "get", item_id, "--fields", "label=password", "--reveal").rstrip("\r\n")
+        item_id, vault_id = self._parse_handle(handle)
+        cmd = ["item", "get", item_id]
+        if vault_id:
+            cmd.extend(["--vault", vault_id])
+        cmd.extend(["--fields", "label=password", "--reveal"])
+        return self._run(*cmd).rstrip("\r\n")
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.
+        item_id, vault_id = self._parse_handle(handle)
+        cmd = ["item", "get", item_id]
+        if vault_id:
+            cmd.extend(["--vault", vault_id])
+        cmd.append("--otp")
         try:
-            code = self._run("item", "get", handle[len(self.prefix):], "--otp").strip()
+            code = self._run(*cmd).strip()
         except Exception:
             return None
         return code if code.isdigit() else None
@@ -145,11 +200,15 @@ def _all_origins(urls: list[str]) -> list[str]:
 
     A 1Password Login item can carry several websites; each of them is a place the
     user told 1Password the credential belongs, so all of them are valid fill targets.
+    Websites entered without a scheme (e.g. 'example.com') default to https://.
     """
     out: list[str] = []
     for u in urls:
+        u_str = (u or "").strip()
+        if not u_str:
+            continue
         try:
-            origin = normalize_origin(u)
+            origin = normalize_origin(u_str if "://" in u_str else f"https://{u_str}")
         except Exception:
             continue
         if origin not in out:

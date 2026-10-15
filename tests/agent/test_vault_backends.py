@@ -220,6 +220,7 @@ def test_onepassword_multi_url_item_binds_every_saved_web_origin():
     assert list(metas["op:single"].allowed_origins) == ["https://shop.example.com"]
     # helpers: dedupe keeps first occurrence; app-only items keep their single origin
     assert _all_origins(["https://a.com/x", "https://a.com/y"]) == ["https://a.com"]
+    assert _all_origins(["example.com", "https://example.com"]) == ["https://example.com"]
     assert _web_origins(["androidapp://com.x"]) == ("androidapp://com.x",)
 
 
@@ -231,3 +232,97 @@ def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     backend = OnePasswordLoginBackend({"enabled": True})
 
     assert backend._env(None)["OP_CONFIG_DIR"] == "/tmp/op-config"
+
+
+def test_onepassword_vault_id_in_handle_and_item_get_with_vault():
+    """When 1Password items specify a vault, the handle encodes the vault ID,
+    and resolve_password / resolve_otp pass --vault <vault_id> to op item get."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    backend = OnePasswordLoginBackend({"enabled": True})
+    items_json = json.dumps([{
+        "id": "example123",
+        "title": "Example Service",
+        "created_at": "2026-10-10T00:00:00Z",
+        "additional_information": "user@example.com",
+        "vault": {"id": "v_hermes", "name": "Hermes"},
+        "urls": [{"href": "https://example.com"}],
+    }])
+
+    run_calls = []
+
+    def fake_run(*args):
+        run_calls.append(list(args))
+        if args[:3] == ("item", "list", "--categories"):
+            return items_json
+        if args[:2] == ("item", "get"):
+            if "--fields" in args:
+                return "secret-password\n"
+            if "--otp" in args:
+                return "123456\n"
+        return ""
+
+    with patch.object(OnePasswordLoginBackend, "is_unlocked", return_value=True), \
+         patch.object(backend, "_run", side_effect=fake_run):
+        metas = backend.list_items()
+        assert len(metas) == 1
+        meta = metas[0]
+        assert meta.id == "op:v_hermes/example123"
+        assert meta.origin == "https://example.com"
+        assert meta.identifier == "user@example.com"
+
+        # get_meta works with full handle and legacy id
+        assert backend.get_meta("op:v_hermes/example123") is not None
+        assert backend.get_meta("op:example123") is not None
+
+        # resolve_password passes --vault v_hermes
+        run_calls.clear()
+        pw = backend.resolve_password("op:v_hermes/example123")
+        assert pw == "secret-password"
+        assert run_calls[-1] == ["item", "get", "example123", "--vault", "v_hermes", "--fields", "label=password", "--reveal"]
+
+        # resolve_otp passes --vault v_hermes
+        run_calls.clear()
+        otp = backend.resolve_otp("op:v_hermes/example123")
+        assert otp == "123456"
+        assert run_calls[-1] == ["item", "get", "example123", "--vault", "v_hermes", "--otp"]
+
+        # resolve_password with legacy handle op:example123 looks up cached vault
+        run_calls.clear()
+        pw_legacy = backend.resolve_password("op:example123")
+        assert pw_legacy == "secret-password"
+        assert run_calls[-1] == ["item", "get", "example123", "--vault", "v_hermes", "--fields", "label=password", "--reveal"]
+
+
+def test_onepassword_service_account_rejects_missing_vault_accepts_with_vault():
+    """Simulates real 1Password service-account behavior: op item get fails without
+    --vault, but succeeds with --vault."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    backend = OnePasswordLoginBackend({"enabled": True})
+    items_json = json.dumps([{
+        "id": "sa_item",
+        "title": "ServiceAccountApp",
+        "created_at": "2026-10-10T00:00:00Z",
+        "vault": {"id": "sa_vault_id", "name": "Hermes"},
+        "urls": [{"href": "https://app.example.com"}],
+    }])
+
+    def fake_run(*args):
+        if args[:3] == ("item", "list", "--categories"):
+            return items_json
+        if args[:2] == ("item", "get"):
+            if "--vault" not in args:
+                raise RuntimeError("op failed: [ERROR] a vault query must be provided when this command is called by a service account.")
+            if "--fields" in args:
+                return "sa-secret-pw\n"
+        return ""
+
+    with patch.object(OnePasswordLoginBackend, "is_unlocked", return_value=True), \
+         patch.object(backend, "_run", side_effect=fake_run):
+        metas = backend.list_items()
+        handle = metas[0].id
+        assert handle == "op:sa_vault_id/sa_item"
+        # Should succeed because --vault is passed
+        pw = backend.resolve_password(handle)
+        assert pw == "sa-secret-pw"

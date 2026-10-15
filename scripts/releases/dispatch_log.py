@@ -85,6 +85,7 @@ def describe(env: Mapping[str, str]) -> dict[str, object]:
         "disposable_receivers": _flag(env.get("DISPOSABLE_RECEIVERS")),
         "disposable_run": _text(env.get("R2_DISPOSABLE_RUN")),
         "bundle_env": bundle_env(env.get("BUNDLE_ENV_JSON")),
+        "branding": _text(env.get("BRANDING")) or "preview",
     }
 
 
@@ -112,7 +113,8 @@ def release_command(env: Mapping[str, str]) -> list[str] | None:
     if facts["kind"] == "channel":
         from scripts.releases.channel_build import dispatch_command
 
-        return dispatch_command(str(facts["channel"]), commit, str(repository), branch, baked or None)
+        return dispatch_command(str(facts["channel"]), commit, str(repository), branch, baked or None,
+                                str(facts["branding"]))
     from scripts.releases.commit_build import dispatch_command
 
     return dispatch_command(commit, str(repository), branch, baked or None)
@@ -165,6 +167,8 @@ def command_flags(facts: Mapping[str, object]) -> list[str]:
     flags = ["--build-commit", str(facts["build_commit"])]
     if facts["kind"] == "channel":
         flags += ["--channel", str(facts["channel"])]
+        if facts["branding"] != "preview":
+            flags += ["--branding", str(facts["branding"])]
     baked = facts["bundle_env"]
     if isinstance(baked, dict):
         for name in sorted(baked):

@@ -32,12 +32,11 @@ def _make_cli(quiet=False, session_id="20260524_111111_xyz", db=None):
     cli.agent = None
     # We need _init_agent to reach the resume block (line ~4757) but not
     # proceed into actual AIAgent construction. _ensure_runtime_credentials
-    # must return True (False returns early at line 4743). _install_tool_callbacks,
-    # _ensure_tirith_security are stubbed; the resume block will either return
+    # must return True (False returns early at line 4743). _install_tool_callbacks
+    # is stubbed; the resume block will either return
     # False (session-not-found) or reach the eventual AIAgent() call which
     # we'll let raise — we only check stdout/stderr printed BEFORE that.
     cli._install_tool_callbacks = lambda: None
-    cli._ensure_tirith_security = lambda: None
     cli._ensure_runtime_credentials = lambda: True
     return cli
 

@@ -11,15 +11,22 @@ class _FakeDB:
     def resolve_session_id(self, session_id):
         return "sess-123"
 
-    def export_session(self, session_id, include_compacted=False):
+    def export_session(self, session_id, **_projection):
         return {"id": "sess-123", "source": "cli", "messages": [{"role": "user", "content": "hi"}]}
+
+    def assert_exports_safe(self, session_ids, max_messages=None):
+        return None
 
     def close(self):
         pass
 
 
 def _export(monkeypatch, *argv):
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda *args, **kwargs: _FakeDB())
+    # Read-only observation commands short-circuit when state.db is absent; the fake DB
+    # stands in for the file that would otherwise be opened read-only.
+    from hermes_constants import get_hermes_home
+    (get_hermes_home() / "state.db").touch()
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda **_kw: _FakeDB())
     monkeypatch.setattr(sys, "argv", ["hermes", "sessions", "export", "--session-id", "sess", *argv])
     main_mod.main()
 

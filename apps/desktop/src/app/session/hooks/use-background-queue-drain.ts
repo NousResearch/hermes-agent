@@ -10,6 +10,7 @@ import {
   noteQueuedPromptDrainFailure,
   type QueuedPromptEntry,
   removeQueuedPrompt,
+  resolveQueuedPromptTransport,
   shouldAutoDrain,
   withQueueDrainClaim
 } from '@/store/composer-queue'
@@ -167,22 +168,38 @@ export function useBackgroundQueueDrain({
       void withQueueDrainClaim(sessionKey, async queue => {
         const liveEntry = queue.find(candidate => candidate.id === entry.id)
 
-        if (!liveEntry) {
+        // Server-owned rows are already admitted to the gateway FIFO.
+        if (!liveEntry || liveEntry.serverStatus) {
+          return true
+        }
+
+        const resolved = resolveQueuedPromptTransport(liveEntry)
+
+        if (!resolved.ok) {
+          notify({
+            kind: 'warning',
+            title: t.composer.terminalSelectionMissingTitle,
+            message: t.composer.queuedTerminalSelectionExpiredBody
+          })
+          drainFailuresRef.current.set(liveEntry.id, MAX_AUTO_DRAIN_ATTEMPTS)
+
           return true
         }
 
         const runtimeSessionId = runtimeIdByStoredSessionIdRef.current.get(sessionKey) ?? null
 
         const accepted = await Promise.resolve(
-          submitTextRef.current(liveEntry.text, {
+          submitTextRef.current(resolved.transportText, {
             attachments: liveEntry.attachments,
+            ...(resolved.displayText ? { displayText: resolved.displayText } : {}),
             fromQueue: true,
+            submission_id: liveEntry.id,
             sessionId: runtimeSessionId,
             storedSessionId: sessionKey
           })
         )
 
-        if (accepted === false) {
+        if (accepted !== true) {
           return false
         }
 
@@ -238,7 +255,7 @@ export function useBackgroundQueueDrain({
         continue
       }
 
-      const entry = entries[0]
+      const entry = entries.find(candidate => !candidate.serverStatus)
 
       if (!entry || (drainFailuresRef.current.get(entry.id) ?? entry.drainFailures ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
         continue

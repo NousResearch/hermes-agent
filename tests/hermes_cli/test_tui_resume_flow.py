@@ -173,6 +173,63 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     assert captured["prompt"] == "recall this"
 
 
+@pytest.mark.parametrize("run_fails", [False, True], ids=["success", "failure"])
+def test_oneshot_closes_its_relay_root_before_agent_teardown(monkeypatch, run_fails):
+    """hermes -z hard-exits past atexit, so _run_agent itself must finalize the Relay root it opened:
+    keyed to the id at turn entry (compression may rotate it), on failure too, before agent.close()."""
+    from hermes_cli import lifecycle
+    from hermes_cli.oneshot import _run_agent
+
+    events = []
+
+    class FakeAgent:
+        def __init__(self, **_kwargs):
+            self.session_id = "entry-id"
+            self.platform = "cli"
+            self.suppress_status_output = False
+            self.stream_delta_callback = self.tool_gen_callback = object()
+
+        def run_conversation(self, _prompt, **_kwargs):
+            self.session_id = "compressed-child-id"
+            if run_fails:
+                raise RuntimeError("agent failed")
+            return {"final_response": "ok", "failed": False, "partial": False}
+
+        def shutdown_memory_provider(self, *_args):
+            events.append("memory")
+
+        def close(self):
+            events.append("agent_close")
+
+    def mod(name, **attrs):
+        module = types.ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=FakeAgent))
+    monkeypatch.setitem(sys.modules, "hermes_state_registry", mod("hermes_state_registry", acquire=lambda db_path=None: None))
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}))
+    monkeypatch.setitem(sys.modules, "hermes_cli.models",
+                        mod("hermes_cli.models", detect_provider_for_model=lambda *_a, **_k: None))
+    monkeypatch.setitem(sys.modules, "hermes_cli.runtime_provider", mod(
+        "hermes_cli.runtime_provider",
+        resolve_runtime_with_fallback=lambda _cfg, **_k: ({"api_key": "k", "base_url": "u", "provider": "p",
+                                                           "api_mode": "chat_completions", "credential_pool": None}, None),
+    ))
+    monkeypatch.setitem(sys.modules, "hermes_cli.tools_config",
+                        mod("hermes_cli.tools_config", _get_platform_tools=lambda *_a, **_k: set()))
+    monkeypatch.setattr(lifecycle, "finalize_session", lambda **kw: events.append(("finalize", kw)))
+
+    if run_fails:
+        with pytest.raises(RuntimeError, match="agent failed"):
+            _run_agent("finish this")
+    else:
+        assert _run_agent("finish this")[0] == "ok"
+    assert events == [("finalize", {"session_id": "entry-id", "platform": "cli", "reason": "shutdown"}),
+                      "memory", "agent_close"]
+
+
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     monkeypatch.setenv("HERMES_PYTHON", sys.executable)
     captured = {}
@@ -304,3 +361,24 @@ def test_launch_tui_local_session_starts_in_launch_dir_not_terminal_cwd(monkeypa
     else:
         assert "HERMES_TUI_CWD" not in env
         assert Path(env["TERMINAL_CWD"]).resolve() == configured.resolve()
+
+
+@pytest.mark.parametrize("flag", ["HERMES_SAFE_MODE", "HERMES_IGNORE_USER_CONFIG"])
+def test_launch_tui_bypass_without_model_refuses_before_the_tui_starts(monkeypatch, main_mod, capsys, flag):
+    """`hermes --tui --safe-mode` (or an exported HERMES_IGNORE_USER_CONFIG=1) reads no profile
+    default model: the owner refuses session.create with bare invalid_params, so the launcher must
+    say "pass --model" before spawning the TUI, as classic chat does."""
+    monkeypatch.setenv(flag, "1")
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)  # never resolve a python over the real PATH
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
+                        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")))
+    spawned = []
+    monkeypatch.setattr(main_mod.subprocess, "call", lambda argv, cwd=None, env=None: spawned.append(env) or 0)
+    with pytest.raises(SystemExit) as exc:
+        main_mod._launch_tui()
+    assert exc.value.code == 1 and spawned == []
+    assert "pass --model explicitly" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(model="stub-model")
+    assert spawned and spawned[-1][flag] == "1" and spawned[-1]["HERMES_MODEL"] == "stub-model"

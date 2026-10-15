@@ -111,6 +111,13 @@ def _unnamed_label(arguments: Any) -> ToolLabel:
                      name="", preview=_arg_preview("", arguments))
 
 
+def _invalid_call_label() -> ToolLabel:
+    """Generic label for an envelope dispatch would reject: never advertise a proposed
+    target or raw arguments the model will not get a call for."""
+    return ToolLabel(kind="tool", app="Invalid tool call", action="",
+                     emoji=DEFAULT_TOOL_EMOJI, name="", preview="")
+
+
 def label_for_tool_name(name: str, arguments: Any = None) -> Optional[ToolLabel]:
     if not isinstance(name, str) or not name.strip():
         return None
@@ -152,12 +159,17 @@ def labels_for_call(function_name: str, function_args: Any) -> list[ToolLabel]:
     if function_name != "tool_call":
         label = label_for_tool_name(function_name, args)
         return [label] if label is not None and label.kind != "tool" else []
-    entries = args.get("calls")
-    entries = entries if isinstance(entries, list) else [args]
+    # Share the dispatch-side normalizer so labels agree with the envelopes
+    # handle_function_call actually accepts (arrays, objects, JSON-encoded, legacy).
+    # Local import: ordinary non-bridge labels must not pull in the catalog stack.
+    from tools.tool_search_validation import normalize_tool_call_entries
+    entries, error = normalize_tool_call_entries(args)
+    if error is not None:
+        return [_invalid_call_label()]
     labels = []
     for entry in entries:
-        entry = entry if isinstance(entry, dict) else {}
-        arguments = entry.get("arguments")
-        label = label_for_tool_name(entry.get("name"), arguments)
+        # normalize_tool_call_entries guarantees a non-empty name and a dict arguments.
+        arguments = entry["arguments"]
+        label = label_for_tool_name(entry["name"], arguments)
         labels.append(label if label is not None else _unnamed_label(arguments))
     return labels

@@ -137,6 +137,24 @@ processes currently holding the database (`<db> is held by PID <n> (<command>)`)
 so you know what to stop; when the holder scan is partial or unavailable it says
 `cannot prove the database is quiet` instead of giving an all-clear.
 
+## Include Files
+
+`config.yaml` can pull settings from other YAML files with `include:` (one path or a list; `includes:` is accepted too):
+
+```yaml
+include:
+  - providers/openrouter.yaml
+  - experiments/long-context.yaml
+model:
+  max_tokens: 8192
+```
+
+- Relative paths resolve from the file that declares them; `~` and environment variables in the path are expanded.
+- Files merge in declaration order (a later include overrides an earlier one), and the declaring file wins over everything it includes. Included files can include others; cycles are skipped with a warning.
+- A missing include is skipped with a warning. An include that exists but cannot be parsed is an error: Hermes keeps the last config it loaded in this process, and with none the load fails, rather than running with a partial policy.
+- Editing an included file takes effect like editing `config.yaml` itself.
+- When Hermes saves `config.yaml` (for example `hermes config set`), the `include:` list is kept and included values are written only where you changed them, so a `${VAR}` reference declared in an include is never expanded into `config.yaml`.
+
 ## Environment Variable Substitution
 
 You can reference environment variables in `config.yaml` using `${VAR_NAME}` syntax:

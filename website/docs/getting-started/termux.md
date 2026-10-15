@@ -12,6 +12,48 @@ ship soon. Until then, the steps below may fail or install a package that
 does not run.
 :::
 
+:::tip While the package is being fixed: a from-source path that works today
+Field-tested on a phone (Galaxy S24 Ultra, Android 16 / arm64, 12 GB RAM, Python 3.14 from the
+Termux main repository). Clone the repo, create a venv, install the `termux` extra — and fix these
+four things first. Each one is a failure we hit, not a precaution:
+
+```bash
+apt update && apt full-upgrade -y -o Dpkg::Options::=--force-confold          # 1
+pkg install -y clang rust make pkg-config libffi openssl openssl-tool binutils \
+                cmake ninja patchelf libxml2 libxslt nodejs ripgrep ffmpeg libheif   # 2
+
+git clone https://github.com/NousResearch/hermes-agent.git && cd hermes-agent
+python -m venv --system-site-packages venv && . venv/bin/activate
+export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)"                    # 3
+export CARGO_PROFILE_RELEASE_LTO=off CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 CARGO_BUILD_JOBS=8
+python -m pip install -U pip setuptools wheel
+python -m pip install -e '.[termux]'
+```
+
+1. **`apt` first, before any `pkg` call.** A fresh Termux can ship a `libcurl` newer than its
+   `libssl`, which kills the `curl` binary; `pkg` uses `curl` to pick a mirror, so every `pkg`
+   command then fails with *"No mirror or mirror group selected"*. Fix the skew with `apt` (which
+   does not need `curl`) and `pkg` works again.
+2. **`libheif` is required** by `pillow-heif`, pulled in by the Python 3.14 marker. Without it the
+   install stops with *"Package libheif was not found in the pkg-config search path"*.
+3. **The Rust build overrides are the difference between minutes and most of an hour.** `pydantic-core`
+   ships `[profile.release] lto = "fat", codegen-units = 1`; on a phone that is 20–40 minutes for a
+   single package. Cargo honours the environment overrides, and `ANDROID_API_LEVEL` is what
+   maturin-based packages such as `jiter` need.
+4. **On a phone, prefer the config deny-list over the plugin toggle.** `hermes plugins enable|disable`
+   resolves dependencies and compiles Rust **on the device** (measured: >7 minutes with no output,
+   ~1.6 GB under `~/.hermes/cache/uv`, free RAM down to ~240 MB). The equivalent config change needs
+   no toolchain:
+
+   ```bash
+   hermes config set plugins.disabled '["some-plugin"]'
+   hermes plugins list --plain
+   ```
+
+Full field report with the measurements and the scripts:
+[hermes-agent-android-phone-only](https://github.com/Padilha-BR/hermes-agent-android-phone-only).
+:::
+
 The Termux package runs Hermes on **aarch64 (arm64-v8a)** Android devices.
 Two APT channels are published under
 `https://hermes-assets.nousresearch.com/releases/termux/<channel>`:

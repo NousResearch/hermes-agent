@@ -1,19 +1,13 @@
-"""The very next command after the terminal cwd is deleted must still RUN.
+"""A deleted working directory must not wedge the terminal, and the model must be told.
 
-``LocalEnvironment._recover_cwd()`` exists so a command that ``rm -rf``'d its own
-working directory does not wedge every later call (#17558). It repairs
-``self.cwd`` so ``Popen(cwd=...)`` gets a real directory, but
-``BaseEnvironment.execute()`` builds the wrapped bash script — which embeds
-``builtin cd -- <cwd>`` — from ``self.cwd`` BEFORE ``_recover_cwd()`` runs inside
-``_run_bash()``. The recovery therefore lands one step too late: the script still
-``cd``s into the directory that no longer exists and exits 126, so the command the
-user asked for never runs even though the log says the cwd was repaired.
-
-The existing coverage in ``test_local_env_cwd_recovery.py`` patches ``Popen``
-out, so it only ever asserted the ``cwd=`` argument — never that the command ran.
-These tests drive a real bash so the script's own ``cd`` is the thing under test.
+``BaseEnvironment.execute()`` embeds ``builtin cd -- <cwd> || exit 126`` in the
+wrapper script. When the directory is gone — a previous call ``rm -rf``'d it
+(#17558), or the session's recorded ``cd`` state points at a removed path — the
+command never ran and every later call exited 126 the same way. These tests
+drive a real bash so the wrapper's own ``cd`` is the thing under test.
 """
 
+import json
 import os
 import shutil
 
@@ -22,98 +16,53 @@ import pytest
 from tools.environments.local import LocalEnvironment
 
 
-def _env(cwd: str) -> LocalEnvironment:
-    """A LocalEnvironment without the init shell snapshot (not under test here)."""
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(LocalEnvironment, "init_session", lambda self, *a, **k: None)
-        return LocalEnvironment(cwd=cwd, timeout=30)
-
-
-@pytest.fixture
-def deleted_cwd(tmp_path):
-    """Yield a LocalEnvironment whose working directory was removed after init."""
+def test_dead_cwd_runs_in_fallback_and_reports_it_once(tmp_path):
+    """Both the env's own cwd and an explicit (session-recorded) cwd recover."""
     doomed = tmp_path / "doomed"
     doomed.mkdir()
-    env = _env(str(doomed))
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(LocalEnvironment, "init_session", lambda self, *a, **k: None)
+        env = LocalEnvironment(cwd=str(doomed), timeout=30)
     try:
-        # The previous tool call deleted the session's working directory.
         shutil.rmtree(doomed)
-        assert env.cwd == str(doomed) and not os.path.isdir(env.cwd)
-        yield env
+
+        first = env.execute("pwd", timeout=30)
+        assert first["returncode"] == 0, first["output"]
+        assert first["output"].strip() == str(tmp_path)
+        assert first["cwd_fallback"] == {"requested": str(doomed), "used": str(tmp_path)}
+
+        explicit = env.execute("pwd", cwd=str(doomed), timeout=30)
+        assert explicit["returncode"] == 0, explicit["output"]
+        assert explicit["cwd_fallback"]["requested"] == str(doomed)
+
+        env.cwd = str(doomed)  # a stale env cwd must not taint a command given a live one
+        healthy = env.execute("pwd", cwd=str(tmp_path), timeout=30)
+        assert healthy["returncode"] == 0 and "cwd_fallback" not in healthy
     finally:
-        try:
-            env.cleanup()
-        except Exception:
-            pass
+        env.cleanup()
 
 
-def test_command_runs_after_cwd_deletion(deleted_cwd):
-    """The next command executes instead of dying on the wrapper's ``cd``."""
-    result = deleted_cwd.execute("echo alive", timeout=30)
+def test_terminal_tool_recovers_a_dead_session_cwd_with_a_model_notice(tmp_path, monkeypatch):
+    """The session record carries the dead path on every call; the tool must run, warn, then heal."""
+    from tools.terminal_tool import terminal_tool
+    from tools.terminal_tool_lifecycle import cleanup_vm
 
-    # Recovery ran, so self.cwd is a directory that exists.
-    assert os.path.isdir(deleted_cwd.cwd)
-    # The command actually ran rather than being refused by the wrapper's cd.
-    assert result["returncode"] == 0, result["output"]
-    assert "alive" in result["output"]
-
-
-def test_repeated_commands_after_recovery_keep_working(deleted_cwd):
-    """Recovery is not one-shot: later commands run too, not just the first."""
-    first = deleted_cwd.execute("echo one", timeout=30)
-    second = deleted_cwd.execute("echo two", timeout=30)
-
-    assert first["returncode"] == 0, first["output"]
-    assert second["returncode"] == 0, second["output"]
-    assert "one" in first["output"] and "two" in second["output"]
-
-
-def test_no_cwd_recovery_when_cwd_is_intact(tmp_path):
-    """The common path is untouched: a live cwd runs the command in place."""
-    env = _env(str(tmp_path))
+    sub = tmp_path / "proj" / "sub"
+    sub.mkdir(parents=True)
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(sub))
+    task = "dead-cwd-notice"
     try:
-        result = env.execute("echo alive", timeout=30)
+        assert json.loads(terminal_tool(command="pwd", task_id=task))["output"].strip() == str(sub)
+        shutil.rmtree(sub)
 
-        assert result["returncode"] == 0, result["output"]
-        assert "alive" in result["output"]
-        assert env.cwd == str(tmp_path)
+        recovered = json.loads(terminal_tool(command="pwd", task_id=task))
+        assert recovered["exit_code"] == 0, recovered
+        assert recovered["output"].strip() == str(sub.parent)
+        assert str(sub) in recovered["cwd_fallback"] and str(sub.parent) in recovered["cwd_fallback"]
+
+        healed = json.loads(terminal_tool(command="pwd", task_id=task))
+        assert healed["exit_code"] == 0 and "cwd_fallback" not in healed
+        assert os.path.isdir(healed["output"].strip())
     finally:
-        try:
-            env.cleanup()
-        except Exception:
-            pass
-
-
-def test_file_operations_command_runs_after_cwd_deletion(deleted_cwd):
-    """The file tool's own exec path recovers too.
-
-    ``ShellFileOperations._exec`` used to read ``env.cwd`` and pass it back as an
-    explicit ``cwd=``, which outranks the recovery inside ``execute`` and left the
-    file tool's commands dying on the wrapper's ``cd`` with exit 126.
-    """
-    from tools.file_operations import ShellFileOperations
-
-    fops = ShellFileOperations(deleted_cwd)
-
-    result = fops._exec("echo alive")
-
-    assert result.cwd_error == ""
-    assert result.exit_code == 0, result.stdout
-    assert "alive" in result.stdout
-
-
-def test_file_operations_honours_an_explicit_cwd(deleted_cwd, tmp_path):
-    """An explicit caller cwd still wins — the recovery must not hijack it."""
-    from tools.file_operations import ShellFileOperations
-
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    fops = ShellFileOperations(deleted_cwd)
-
-    result = fops._exec("pwd", cwd=str(elsewhere))
-
-    assert result.exit_code == 0, result.stdout
-    # ``pwd`` prints one path (Git Bash may render it MSYS-style), and the wrapper can
-    # append terminal control sequences after it, so compare the path component.
-    printed = result.stdout.strip().splitlines()[0]
-    assert printed.replace("\\", "/").endswith("/elsewhere"), result.stdout
+        cleanup_vm(task)

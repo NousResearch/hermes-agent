@@ -10,8 +10,8 @@ from gateway.session_envelope import restore_native
 from gateway.session_ingress_review import (adopt_review_completion, complete_review_delivery,
                                             complete_settled_review, forget_review_waiter,
                                             hand_over_review_completion,
-                                            hand_review_completion_to_waiter, release_failed_review,
-                                            take_review_completion)
+                                            hand_review_completion_to_waiter, note_review_waiter,
+                                            release_failed_review, take_review_completion)
 from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,7 @@ async def admit_message(authority, event):
         return None
     # Only the delivery waiter is process-local; execution reads the committed snapshot.
     authority.native_waiters.add(receipt.admission_id)
+    note_review_waiter(authority, receipt.admission_id)
     waiter = authority.waiters.setdefault(receipt.admission_id, asyncio.get_running_loop().create_future())
     adopters = _marker_adopters(authority)
     if getattr(event, '_turn_marker_handoff', False):

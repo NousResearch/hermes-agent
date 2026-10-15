@@ -304,3 +304,145 @@ async def test_turn_whose_handler_raised_releases_its_token_without_a_review(
     )
     await asyncio.sleep(0)
     assert ("spawn", sid) not in timeline
+
+
+async def _late_waiter(tmp_path, monkeypatch, timeline, turns):
+    """Upstream's late-waiter recipe (``test_native_reply_delivered_once``): the admitting
+    adapter task resumes only after the drain claimed and started the turn, so
+    ``execute_admission`` computed ``native=False`` and the drain owes the reply itself until
+    that waiter registers on the already-started row."""
+    adapter = _TimelineAdapter(timeline)
+    runner, authority = await _owner(tmp_path, monkeypatch, adapter)
+    source = adapter.build_source(
+        chat_id="busy-chat", chat_type="dm", user_id="fixture-user"
+    )
+    entered, gate = asyncio.Event(), asyncio.Event()
+    _install_turn(
+        runner, monkeypatch, timeline, turns, gate_text="one", gate=gate, entered=entered
+    )
+    real_admit_native = authority.admit_native
+
+    async def late_admit_native(event):
+        receipt = await real_admit_native(event)
+        await entered.wait()
+        return receipt
+
+    monkeypatch.setattr(authority, "admit_native", late_admit_native)
+    await adapter.handle_message(MessageEvent(text="one", source=source, message_id="m1"))
+    await asyncio.wait_for(entered.wait(), 10)
+    await async_wait_until(lambda: bool(authority.native_waiters), timeout=10)
+    assert _statuses(authority) == {"one": "started"}
+    return authority, adapter, gate
+
+
+@pytest.mark.asyncio
+async def test_late_waiter_kept_alive_completes_the_drained_turn_once_after_its_send(
+    tmp_path, monkeypatch
+):
+    """``deliver_settled`` hands the reply to the late waiter; its adapter task sends it and
+    completes the token once, after that send."""
+    timeline, turns = [], {}
+    authority, adapter, gate = await _late_waiter(tmp_path, monkeypatch, timeline, turns)
+    sid, profile_key = turns["one"]
+    gate.set()
+    await async_wait_until(
+        lambda: _statuses(authority) == {"one": "terminal"} and not adapter._session_tasks,
+        timeout=20,
+    )
+    await async_wait_until(lambda: ("spawn", sid) in timeline, timeout=10)
+
+    assert timeline.count(("sent", "reply to one")) == 1
+    assert timeline.count(("spawn", sid)) == 1
+    assert timeline.index(("sent", "reply to one")) < timeline.index(("spawn", sid))
+    assert review_admission.live_turn_block_reason(sid, None, profile_key) is None
+    assert getattr(authority, "review_completions", {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_late_waiter_cancelled_while_the_drain_runs_releases_the_token_unconfirmed(
+    tmp_path, monkeypatch
+):
+    """``/stop`` cancels the adapter task parked on a waiter that registered after the drain
+    claimed the turn. The drain's handover must honour the 'waiter gone' mark although it
+    computed ``native=False``: the token is released unconfirmed (nothing confirmed a delivery,
+    so nothing is reviewed) instead of being left for a waiter nobody resumes — which would
+    refuse every later automatic review on the session for the process lifetime."""
+    timeline, turns = [], {}
+    authority, adapter, gate = await _late_waiter(tmp_path, monkeypatch, timeline, turns)
+    sid, profile_key = turns["one"]
+    (session_key,) = list(adapter._session_tasks)
+    await adapter.cancel_session_processing(
+        session_key, release_guard=False, discard_pending=False
+    )
+    gate.set()
+    # ``_resolve_settled_waiter`` pops the waiter after ``deliver_settled`` ran the drain's own
+    # completion step, so an empty waiter map means every completion path has been through.
+    await async_wait_until(
+        lambda: _statuses(authority) == {"one": "terminal"} and not authority.waiters,
+        timeout=20,
+    )
+
+    assert review_admission.live_turn_block_reason(sid, None, profile_key) is None, (
+        f"token outlived its turn: review_completions="
+        f"{getattr(authority, 'review_completions', {})}"
+    )
+    assert ("spawn", sid) not in timeline
+    assert getattr(authority, "review_completions", {}) == {}
+
+
+class _Completion:
+    """``_GatewayReviewAdmission.finish``'s shape: a bound method whose owner has a tag."""
+
+    def __init__(self):
+        self.calls = []
+        self.__self__ = types.SimpleNamespace(owner_tag="owner")
+
+    def __call__(self, *, delivery_succeeded, cause=None, outer=None):
+        self.calls.append((delivery_succeeded, cause))
+
+
+def _waiting_authority(admission_id):
+    return types.SimpleNamespace(
+        waiters={admission_id: object()}, native_waiters={admission_id}
+    )
+
+
+def _event_with(completion):
+    event = types.SimpleNamespace()
+    event._gateway_review_delivery_complete = completion
+    return event
+
+
+def test_waiter_gone_mark_outlives_a_handover_the_drain_computed_as_not_native():
+    """The helper sequence of the test above: cancel during execution, handover with
+    ``native=False``, ``deliver_settled`` finding the dead waiter still registered."""
+    from gateway import session_ingress_review as sir
+
+    authority, done = _waiting_authority("a"), _Completion()
+    sir.forget_review_waiter(authority, "a")
+    sir.hand_over_review_completion(authority, "a", _event_with(done), native=False)
+    sir.hand_review_completion_to_waiter(authority, "a")
+    sir.complete_settled_review(authority, "a", delivery_succeeded=True)
+
+    assert done.calls == [(False, review_admission.REASON_DELIVERY_UNCONFIRMED)]
+    assert authority.review_completions == {}
+
+
+def test_a_waiter_registered_again_for_the_same_admission_drops_the_stale_gone_mark():
+    """A redelivered message deduped onto the executing row registers a live waiter after an
+    earlier one was cancelled: that waiter adopts and completes the turn with its send; the
+    stale mark must not release the token unconfirmed under it."""
+    from gateway import session_ingress_review as sir
+
+    authority, done = _waiting_authority("a"), _Completion()
+    sir.forget_review_waiter(authority, "a")
+    sir.note_review_waiter(authority, "a")
+    sir.hand_over_review_completion(authority, "a", _event_with(done), native=False)
+    sir.hand_review_completion_to_waiter(authority, "a")
+    sir.complete_settled_review(authority, "a", delivery_succeeded=True)
+    assert done.calls == []  # left for the live waiter
+    event = types.SimpleNamespace()
+    sir.adopt_review_completion(authority, "a", event)
+    assert authority.review_completions == {}
+    sir.complete_review_delivery(sir.take_review_completion(event), delivery_succeeded=True)
+    assert done.calls == [(True, None)]

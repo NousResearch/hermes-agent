@@ -48,16 +48,28 @@ def take_review_completion(event):
 
 def hand_over_review_completion(authority, admission_id, event, *, native):
     """``execute_admission``: hold the executed turn's completion for its delivery owner —
-    ``native`` names a live ``admit_message`` waiter whose lifecycle sends the reply."""
+    ``native`` names a live ``admit_message`` waiter whose lifecycle sends the reply. A waiter
+    that went away while the turn ran is gone whatever ``native`` says: one that registered
+    after the claim (``native`` False) is still registered when ``deliver_settled`` hands it
+    the reply, so the completion must not be left for it."""
     completion = take_review_completion(event)
     if completion is None:
         return
     held = _held(authority)
-    if native and held.get(admission_id) is _WAITER_GONE:
+    if held.get(admission_id) is _WAITER_GONE:
         held.pop(admission_id)
         _release(completion, _slugs().REASON_DELIVERY_UNCONFIRMED)
         return
     held[admission_id] = (completion, native)
+
+
+def note_review_waiter(authority, admission_id):
+    """``admit_message`` registered a live delivery waiter: a 'waiter gone' mark an earlier
+    waiter of this admission left (a redelivered message deduped onto the executing row) no
+    longer describes it, so the drain leaves the completion for this one."""
+    held = _held(authority)
+    if held.get(admission_id) is _WAITER_GONE:
+        held.pop(admission_id)
 
 
 def adopt_review_completion(authority, admission_id, event):

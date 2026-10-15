@@ -3,15 +3,22 @@ the card to whoever owns it next (``kanban_complete``, ``kanban_block``,
 ``kanban_request_review``, ``kanban_request_changes``). Some models narrate the next step
 and stop with no tool calls; Hermes treats that as a clean exit → ``rc=0`` → dispatcher
 ``protocol_violation``. Policy-only: return a bounded synthetic nudge so the loop continues
-instead of exiting.
+instead of exiting. A card the board has already taken away from this run (blocked or
+archived by a supervisor) gets no nudge: the worker ends its turn instead of being told to
+keep working.
 """
 
 from __future__ import annotations
 
+import logging
 import os
+import sqlite3
+from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from agent.delegation_context import owned_kanban_task
+
+logger = logging.getLogger(__name__)
 
 
 # Every tool that ends this worker's responsibility for the card, not just the two that
@@ -61,6 +68,32 @@ def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
     return False
 
 
+def board_released_task(task_id: str) -> bool:
+    """True when the dispatcher-pinned board says this worker no longer holds a live run on
+    ``task_id``: the card left ``running`` (blocked, archived, done, ...), is gone, or its
+    current run is not ``HERMES_KANBAN_RUN_ID`` (ended or replaced). A block filed by a human
+    or an integration (a Linear Stop) never reaches the transcript, so this is the only way
+    the nudge can see it. No pinned board, or an unreadable one, answers False: the nudge
+    keeps its transcript-only behaviour rather than guess."""
+    db = (os.environ.get("HERMES_KANBAN_DB") or "").strip()
+    if not task_id or not db or not Path(db).is_file():
+        return False
+    try:
+        conn = sqlite3.connect(f"{Path(db).absolute().as_uri()}?mode=ro", uri=True)
+        try:
+            row = conn.execute("SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        logger.debug("kanban stop nudge: board read failed for %s", task_id, exc_info=True)
+        return False
+    if row is None:
+        return True
+    status, current_run_id = row
+    run_id = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    return status != "running" or (bool(run_id) and str(current_run_id) != run_id)
+
+
 def build_kanban_stop_nudge(
     *,
     messages: Iterable[dict] | None = None,
@@ -69,17 +102,19 @@ def build_kanban_stop_nudge(
     task_id: Optional[str] = None,
 ) -> Optional[str]:
     """Synthetic follow-up when a kanban worker exits without a terminal tool; ``None`` when
-    the guard should not fire (not a kanban worker, already completed/blocked, budget exhausted)."""
+    the guard should not fire (not a kanban worker, already completed/blocked by itself or by
+    someone else, budget exhausted)."""
     if (
         not kanban_stop_nudge_enabled()
         or attempts >= max_attempts
         or session_called_kanban_terminal(messages)
+        or board_released_task(owned_kanban_task())
     ):
         return None
 
     tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or "this task"
-    # The transcript is the status source: this text is only reached when the session made no
-    # handoff call, so it never tells a worker to close a card it already sent to review.
+    # Reached only when the session made no handoff call and the board still shows this run
+    # live, so it never tells a worker to close a card it sent to review or that was stopped.
     return (
         "[System: You are a Hermes kanban worker. A plain-text reply is NOT a "
         "terminal state for the board.\n\n"
@@ -98,4 +133,7 @@ def build_kanban_stop_nudge(
     )
 
 
-__all__ = ["build_kanban_stop_nudge", "kanban_stop_nudge_enabled", "session_called_kanban_terminal"]
+__all__ = [
+    "board_released_task", "build_kanban_stop_nudge", "kanban_stop_nudge_enabled",
+    "session_called_kanban_terminal",
+]

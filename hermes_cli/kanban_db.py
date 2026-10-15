@@ -3165,6 +3165,13 @@ def block_task(
     audit event is appended, while status, failure evidence and the terminal
     runs stay exactly as the breaker left them. A typed block, a card with a
     live run, or a kind-less call on a blocked card are still refused.
+
+    ``expected_run_id`` is the worker's proof that it is blocking its own run.
+    A block without it comes from a supervisor (dashboard, CLI, an integration
+    such as a Linear Stop), so the run's live, fingerprint-verified host-local
+    worker is ended once the txn commits and the hook has fired
+    (:func:`halt_blocked_worker`, which never raises) instead of running on
+    until the reaper's grace expires.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
@@ -3239,39 +3246,11 @@ def block_task(
             # Historical ordering: the dependency lane fires inside the txn.
             _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
     _release_kanban_admission(task_id, run_id)
-    if dependency_block:
-        return True
-    _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
+    if not dependency_block:
+        _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
+    if expected_run_id is None:  # filed by a supervisor, not the worker: halt it now, no reap grace
+        halt_blocked_worker(conn, run_id)
     return True
-
-
-def _route_block(
-    kind: Optional[str], reason: Optional[str], source_status: str, *,
-    prev_kind: Optional[str], prev_recurrences: int,
-) -> tuple[str, str, str, tuple, dict]:
-    """``(new_status, event_kind, set_sql, params, payload)`` for :func:`block_task`.
-
-    ``dependency`` never enters the human ``blocked`` bucket: it waits in
-    ``todo`` for ``recompute_ready``, so a cron never sees a dependency-wait
-    as something to "unblock". Callers that pass ``dependency`` with no
-    incomplete parent are re-kinded to ``needs_input`` before this runs
-    (see :func:`block_task`). Every other kind counts unblock-loop
-    recurrences: block_task only fires from running/ready (AFTER an unblock
-    returned the task to the pool), so a stored ``block_kind`` equal to the
-    incoming one means blocked -> unblocked -> re-block for the same cause
-    (un-typed None compares equal to a prior un-typed block). At
-    ``BLOCK_RECURRENCE_LIMIT`` the task routes to ``triage`` for a human.
-    """
-    payload = {"reason": reason, "kind": kind, "source_status": source_status}
-    if kind == "dependency":
-        return "todo", "dependency_wait", "block_kind    = ?", (kind,), payload
-    recurrences = prev_recurrences + 1 if prev_kind == kind else 1
-    set_sql = "block_kind    = ?,\n                       block_recurrences = ?"
-    payload = {"reason": reason, "kind": kind, "recurrences": recurrences, "source_status": source_status}
-    if recurrences >= BLOCK_RECURRENCE_LIMIT:
-        payload["limit"] = BLOCK_RECURRENCE_LIMIT
-        return "triage", "block_loop_detected", set_sql, (kind, recurrences), payload
-    return "blocked", "blocked", set_sql, (kind, recurrences), payload
 
 
 def redact_review_value(value: Any) -> Any:
@@ -4405,6 +4384,7 @@ def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
 
 # --- Split modules (imported at the tail: they import this module as ``_kb``) ---
 from hermes_cli.kanban_db_run_queries import current_run_started_ats, latest_summaries
+from hermes_cli.kanban_db_block import _route_block, halt_blocked_worker
 from hermes_cli.kanban_db_boards import (
     _default_board_display_name,
     _dir_holds_board,

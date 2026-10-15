@@ -825,6 +825,19 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
+def _block_run_id_for(task_id: str) -> Optional[int]:
+    """:func:`_worker_run_id_for` for ``block``. A worker (``HERMES_KANBAN_TASK`` set) that
+    cannot name its run is refused, as the ``kanban_block`` tool's ``_worker_guard`` does: a
+    block without run proof is a supervisor's, and ``block_task`` would halt the worker whose
+    terminal ran this command (it is this process's parent, so the self-pid check misses it)."""
+    run_id = _worker_run_id_for(task_id)
+    if run_id is None and os.environ.get("HERMES_KANBAN_TASK"):
+        raise ValueError(
+            f"block refused: this worker cannot resolve HERMES_KANBAN_RUN_ID, so it cannot prove "
+            f"it owns {task_id}'s current run; use the kanban_block tool")
+    return run_id
+
+
 def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
     """Goal judge for every terminal worker handoff (including review).
 
@@ -985,6 +998,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
     author = _profile_author()
     ids = _bulk_ids(args)
     suffix = f": {reason}" if reason else ""
+    run_ids = {tid: _block_run_id_for(tid) for tid in ids}  # refuse before any comment lands
     with kbc.connect_closing() as conn:
         def ok_msg(tid):
             # Report where it landed: dependency blocks -> todo, tripped unblock-loop breaker -> triage.
@@ -1002,7 +1016,7 @@ def _cmd_block(args: argparse.Namespace) -> int:
             return f"Blocked {tid}{suffix}"
 
         op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
-            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid)))
+            conn, tid, reason=reason, kind=kind, expected_run_id=run_ids[tid]))
         return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot block {tid}")
 
 

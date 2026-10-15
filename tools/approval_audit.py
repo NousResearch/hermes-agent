@@ -17,8 +17,21 @@ logger = logging.getLogger(__name__)
 _write_lock = threading.Lock()
 
 
+def _audit_enabled() -> bool:
+    """Opt-in via ``approvals.audit_log: true``; absent, false or malformed stays off.
+
+    Redaction cannot guarantee that no personal data reaches the record, so the
+    log is never written unless the user asked for it.
+    """
+    from tools.approval_context import _get_approval_config
+    approvals = _get_approval_config()
+    return isinstance(approvals, dict) and approvals.get("audit_log") is True
+
+
 def log_approval_event(pattern_key, description, command, result, surface=""):
     """Append one private JSONL record. Redaction or disk failure never leaks raw text."""
+    if not _audit_enabled():
+        return
     try:
         from agent.redact import redact_sensitive_text
         from tools.approval_context import get_current_session_key
@@ -78,7 +91,7 @@ def audited(surface, *, always=False):
         @functools.wraps(fn)
         def wrapped(*args, **kwargs):
             result = fn(*args, **kwargs)
-            if always or result != {"approved": True, "message": None}:
+            if (always or result != {"approved": True, "message": None}) and _audit_enabled():
                 values = signature.bind(*args, **kwargs).arguments
                 log_approval_event(
                     result.get("pattern_key", values.get("rule_key", "")),

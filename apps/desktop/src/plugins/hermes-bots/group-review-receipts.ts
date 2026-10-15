@@ -10,7 +10,8 @@ import { botConnectionRoute } from './routing'
 import type { GroupMember, GroupReviewReceipt, ProfileRoute } from './types'
 
 export function mergeGroupReviewReceipts(
-  previous: GroupReviewReceipt[], incoming: GroupReviewReceipt[]
+  previous: GroupReviewReceipt[],
+  incoming: GroupReviewReceipt[]
 ): GroupReviewReceipt[] {
   const byId = new Map(previous.map(receipt => [receipt.id, receipt]))
 
@@ -35,8 +36,15 @@ export function readGroupReviewReceipts(rows: unknown, member: GroupMember, owne
     const text = typeof row.content === 'string' ? row.content : row.text
     const at = row.timestamp
 
-    if (typeof id !== 'string' || !id || typeof text !== 'string' || !text.trim() ||
-        typeof at !== 'number' || !Number.isFinite(at) || at <= 0) {
+    if (
+      typeof id !== 'string' ||
+      !id ||
+      typeof text !== 'string' ||
+      !text.trim() ||
+      typeof at !== 'number' ||
+      !Number.isFinite(at) ||
+      at <= 0
+    ) {
       return []
     }
 
@@ -56,8 +64,12 @@ function captureRoute(member: GroupMember): ProfileRoute | null {
     // foreground switch must never retarget an already-started read.
     const connectionId = host.activeConnectionId?.() || 'local'
 
-    return { connectionId, mode: connectionId === 'local' ? 'local' : 'remote',
-      profile: member.name, targetProfile: member.name }
+    return {
+      connectionId,
+      mode: connectionId === 'local' ? 'local' : 'remote',
+      profile: member.name,
+      targetProfile: member.name
+    }
   } catch {
     return null
   }
@@ -70,7 +82,9 @@ export function watchGroupReviewReceipts(group: string, members: GroupMember[]):
 
   let disposed = false
   const releases: Array<() => void> = []
-  const binding = followGroupChat(group, name => { group = name })
+  const binding = followGroupChat(group, name => {
+    group = name
+  })
 
   const owners = members.flatMap(member => {
     const route = captureRoute(member)
@@ -93,34 +107,39 @@ export function watchGroupReviewReceipts(group: string, members: GroupMember[]):
     try {
       while (dirty && !disposed && binding.isLive()) {
         dirty = false
-        await Promise.all(owners.map(async ({ member, route, key }) => {
-          const stored = $groupChats.get()[group]?.sessions?.[key]
+        await Promise.all(
+          owners.map(async ({ member, route, key }) => {
+            const stored = $groupChats.get()[group]?.sessions?.[key]
 
-          if (typeof stored !== 'string' || !stored) {
-            return
-          }
-
-          try {
-            const result = await host.listReviewSummaries(route, stored)
-
-            if (disposed || !binding.isLive() || $groupChats.get()[group]?.sessions?.[key] !== stored) {
+            if (typeof stored !== 'string' || !stored) {
               return
             }
 
-            const receipts = readGroupReviewReceipts(result.messages, member,
-              `${route.connectionId}:${route.targetProfile}:${key}`)
+            try {
+              const result = await host.listReviewSummaries(route, stored)
 
-            const previous = $groupChats.get()[group]?.reviewReceipts || []
-            const merged = mergeGroupReviewReceipts(previous, receipts)
+              if (disposed || !binding.isLive() || $groupChats.get()[group]?.sessions?.[key] !== stored) {
+                return
+              }
 
-            if (JSON.stringify(merged) !== JSON.stringify(previous)) {
-              updateGroupChat(group, room => ({ ...room, reviewReceipts: merged }), { sync: false })
+              const receipts = readGroupReviewReceipts(
+                result.messages,
+                member,
+                `${route.connectionId}:${route.targetProfile}:${key}`
+              )
+
+              const previous = $groupChats.get()[group]?.reviewReceipts || []
+              const merged = mergeGroupReviewReceipts(previous, receipts)
+
+              if (JSON.stringify(merged) !== JSON.stringify(previous)) {
+                updateGroupChat(group, room => ({ ...room, reviewReceipts: merged }), { sync: false })
+              }
+            } catch {
+              // Old backend, missing/removed profile or transient connection:
+              // preserve the cache; next summary/reconnect/open retries it.
             }
-          } catch {
-            // Old backend, missing/removed profile or transient connection:
-            // preserve the cache; next summary/reconnect/open retries it.
-          }
-        }))
+          })
+        )
       }
     } finally {
       running = false
@@ -129,11 +148,13 @@ export function watchGroupReviewReceipts(group: string, members: GroupMember[]):
 
   if (typeof host.onEvent === 'function') {
     for (const type of ['review.summary', 'gateway.ready', 'message.complete']) {
-      releases.push(host.onEvent(type, event => {
-        if (!event.connectionId || owners.some(owner => owner.route.connectionId === event.connectionId)) {
-          void refresh()
-        }
-      }))
+      releases.push(
+        host.onEvent(type, event => {
+          if (!event.connectionId || owners.some(owner => owner.route.connectionId === event.connectionId)) {
+            void refresh()
+          }
+        })
+      )
     }
   }
 
@@ -141,14 +162,17 @@ export function watchGroupReviewReceipts(group: string, members: GroupMember[]):
   // of agent work: the backend independently protects reviews after close.
   if (typeof host.retainProfile === 'function') {
     for (const { route } of owners) {
-      void host.retainProfile(route).then(release => {
-        if (disposed) {
-          release()
-        } else {
-          releases.push(release)
-          void refresh() // a newly-connected route may have missed the first read
-        }
-      }).catch(() => undefined)
+      void host
+        .retainProfile(route)
+        .then(release => {
+          if (disposed) {
+            release()
+          } else {
+            releases.push(release)
+            void refresh() // a newly-connected route may have missed the first read
+          }
+        })
+        .catch(() => undefined)
     }
   }
 

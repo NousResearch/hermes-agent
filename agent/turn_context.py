@@ -1066,6 +1066,22 @@ def build_turn_context(
 
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
+    try:
+        from agent.decision_provider import record_specialist
+
+        record_specialist(
+            agent,
+            original_user_message,
+            context={
+                "platform": getattr(agent, "platform", ""),
+                "provider": getattr(agent, "provider", ""),
+                "model": getattr(agent, "model", ""),
+                "current_profile": getattr(agent, "profile", "") or getattr(agent, "profile_name", ""),
+            },
+            private_content=not isinstance(original_user_message, str),
+        )
+    except Exception:
+        logger.debug("specialist decision observation failed", exc_info=True)
     should_review_memory = _tick_memory_nudge(agent)
     _emit_reaction(agent, original_user_message)
 

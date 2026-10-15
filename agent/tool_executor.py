@@ -695,6 +695,18 @@ def _dispatch_authorized_once(
         block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
         state.args = ref.args
 
+    # Jev/decision observation is deliberately before Hermes' existing guardrail
+    # decision, but it can never authorize or block the call. The deterministic
+    # approval/scope/guardrail owners below remain the only execution boundary.
+    try:
+        from agent.decision_provider import record_pre_action
+
+        record_pre_action(
+            agent, ref.name, ref.args, ref.task_id, existing_block=block_message
+        )
+    except Exception:
+        logger.debug("pre-action decision observation failed", exc_info=True)
+
     guardrail_decision = None
     if block_message is None:
         guardrail_decision = agent._tool_guardrails.before_call(ref.name, ref.args)
@@ -1070,6 +1082,20 @@ def _commit_tool_result(
     agent._current_tool = None
     _status_suffix = " (error)" if is_error else ""
     agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
+
+    # Feed the shared post-result seam once, before spillover/context persistence.
+    # The observer only records shadow metadata; the current incident compressor and
+    # tool-result storage still own the actual transcript and evidence retention.
+    if observed and not blocked:
+        try:
+            from agent.decision_provider import record_tool_result
+
+            record_tool_result(
+                agent, function_name, function_args, function_result,
+                is_error=is_error, observed=observed,
+            )
+        except Exception:
+            logger.debug("tool-result decision observation failed", exc_info=True)
 
     persisted_result = function_result
     if _is_multimodal_tool_result(persisted_result):

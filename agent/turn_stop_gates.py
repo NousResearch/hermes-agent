@@ -143,6 +143,17 @@ def apply_stop_gates(
         )
         return _continue(_outcome_nudge, "_verification_stop_synthetic")
 
+    try:
+        from agent.decision_provider import record_completion
+
+        record_completion(
+            agent,
+            final_response,
+            changed_paths=getattr(agent, "_turn_file_mutation_paths", set()),
+        )
+    except Exception:
+        logger.debug("completion decision observation failed", exc_info=True)
+
     _verify_nudge = _verify_on_stop_nudge(agent)
     if _verify_nudge:
         agent._verification_stop_nudges = getattr(agent, "_verification_stop_nudges", 0) + 1

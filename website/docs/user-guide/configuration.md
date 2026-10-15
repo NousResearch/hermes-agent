@@ -2075,6 +2075,47 @@ A single `delegate_task` batch counts each task toward `max_subagents` (a batch 
 
 This mirrors Claude Code's per-session WebSearch and subagent caps (v2.1.212), which also default to 200 and reset on `/clear`.
 
+## Decision provider / Jev shadow layer
+
+Hermes can observe eight decision consumers — `pre_action`, `completion`, `loop`,
+`context_sieve`, `failure_classification`, `retry`, `specialist`, and
+`notification` — through a provider-neutral local seam. It is shadow-only by
+default and does not replace approvals, checkpoints, destructive-command guards,
+permission/financial gates, or tool-loop guardrails. No third-party Jev package
+is installed automatically.
+
+```yaml
+decision_provider:
+  mode: shadow
+  provider: hermes-bridge-jev
+  adapter_path: ~/.hermes/workspaces/hermes-bridge/scripts/hermes_jev_adapter.cjs
+  model: typesafe/jev-1.13
+  adapter_command: []       # optional explicit argv; overrides adapter_path
+  thresholds:
+    pre_action: 0.95
+    completion: 0.80
+    loop: 0.85
+    context_sieve: 0.90
+    failure_classification: 0.80
+    retry: 0.85
+    specialist: 0.80
+    notification: 0.80
+  policies:
+    pre_action: {timeout_seconds: 1.5, fail_mode: closed}
+    completion: {timeout_seconds: 2.0, fail_mode: open}
+    loop: {timeout_seconds: 1.0, fail_mode: open}
+    context_sieve: {timeout_seconds: 2.0, fail_mode: open}
+    failure_classification: {timeout_seconds: 2.0, fail_mode: open}
+    retry: {timeout_seconds: 2.0, fail_mode: open}
+    specialist: {timeout_seconds: 2.0, fail_mode: open}
+    notification: {timeout_seconds: 2.0, fail_mode: open}
+```
+
+Secret-bearing content is screened before adapter egress and fails closed. Shadow
+records contain hashes and metadata only and are written to
+`$HERMES_HOME/decision_logs/replay.jsonl`; see the [developer guide](../developer-guide/decision-provider.md)
+for the adapter contract, context-preservation markers, and offline calibration.
+
 ### Runtime anti-stall guards
 
 Complementing the failure-based guardrails above, `agent.stall_guards` (default `true`) enables two conservative runtime guards against wasted turns. First, an **identical-call loop breaker**: when the same tool is called 3+ consecutive times with identical arguments *and* returns an identical result, a short one-line notice is appended to that tool result telling the model not to repeat the call — in warning-only sessions it never blocks the call, and legitimately-repeatable pollers (`process_manage`, `*_get_result`, `*_poll`) are exempt. When hard stops are active (explicit `hard_stop_enabled`, or an unattended gateway/cron platform), the same streak also becomes a hard stop once it reaches `hard_stop_after.idempotent_no_progress` consecutive identical calls — for **any** tool, not just the read-only ones the `idempotent_no_progress` guardrail tracks — so a model replaying the same successful `terminal` or `skill_view` call is halted instead of running out the iteration budget (`identical_call_streak_halt`). Second, a **continue-intent recovery**: when the model ends a turn with no tool calls but its short reply trails off announcing an action ("Let me now update the file…"), Hermes re-prompts it to act via the same bounded continuation mechanism used for intent-ack recovery (max 2 re-prompts per turn). Both are cache-safe (notices are added at result construction, never retroactively) and can be disabled together:

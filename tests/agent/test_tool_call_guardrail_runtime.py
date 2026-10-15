@@ -375,7 +375,7 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     assert agent._tool_guardrails.before_call("web_search", args).action == "allow"
 
 
-def test_default_run_conversation_warns_without_guardrail_halt():
+def test_default_run_conversation_recovers_after_repeated_search_errors():
     agent = _make_agent("web_search", max_iterations=10)
     same_args = {"query": "same"}
     responses = [
@@ -386,18 +386,26 @@ def test_default_run_conversation_warns_without_guardrail_halt():
         )
         for i in range(1, 4)
     ]
+    responses.append(_mock_response(
+        content="",
+        finish_reason="tool_calls",
+        tool_calls=[_mock_tool_call("web_search", json.dumps({"query": "alternate"}), "c4")],
+    ))
     responses.append(_mock_response(content="done", finish_reason="stop", tool_calls=None))
     agent.client.chat.completions.create.side_effect = responses
 
     with (
-        patch("model_tools.handle_function_call", return_value=json.dumps({"error": "boom"})) as mock_hfc,
+        patch("model_tools.handle_function_call", side_effect=[
+            json.dumps({"error": "boom"}), json.dumps({"error": "boom"}),
+            json.dumps({"error": "boom"}), json.dumps({"results": ["alternate evidence"]}),
+        ]) as mock_hfc,
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):
         result = agent.run_conversation("search repeatedly")
 
-    assert mock_hfc.call_count == 3
+    assert mock_hfc.call_count == 4
     assert result["turn_exit_reason"].startswith("text_response")
     assert "guardrail" not in result
     assert result["final_response"] == "done"
@@ -443,7 +451,10 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     ):
         result = agent.run_conversation("search repeatedly")
 
-    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["turn_exit_reason"] == "outcome_ownership_unresolved"
+    assert result["failed"] is True
+    assert result["completed"] is False
+    assert result["failure_reason"] == "outcome_ownership_unresolved"
     halt_text = result["final_response"]
     assert "stopped retrying" in halt_text
 

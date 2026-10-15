@@ -2642,7 +2642,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
-        custom_providers: list | None = None,
+        custom_providers: list | None = None, incident_summary_token_cap: int = 1500,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
@@ -2675,6 +2675,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # distinct reason + rearm snapshot instead of every iteration.
         self._last_reclaim_block_warn: "tuple[str, int] | None" = None
         self.min_tail_user_messages = min_tail_user_messages
+        try:
+            self.incident_summary_token_cap = max(1000, min(2000, int(incident_summary_token_cap)))
+        except (TypeError, ValueError):
+            self.incident_summary_token_cap = 1500
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
         # Usable input = context_length - max_tokens; only a positive int counts as a reservation.
@@ -5180,6 +5184,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _finalize_compressed(
         self, compressed: List[Dict[str, Any]], messages: List[Dict[str, Any]], n_messages: int,
+        *, preserve_inflight_user: bool = True,
     ) -> List[Dict[str, Any]]:
         """Post-assembly cleanup: orphan pairs, media, savings, markers, replay prune, mem trim."""
         # Single-prompt cron shape: the only live instruction sits in the protected head, BEFORE the
@@ -5187,7 +5192,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         # (#100818). Sanitize FIRST: the trailing-in-flight exemption (#79278) walks back from the list
         # end, and a replay user row there would strip a genuinely pending assistant(tool_calls).
         compressed = self._sanitize_tool_pairs(compressed)
-        compressed = self._reappend_inflight_user_task(compressed, self._find_inflight_user_task(messages))
+        if preserve_inflight_user:
+            compressed = self._reappend_inflight_user_task(compressed, self._find_inflight_user_task(messages))
         self.compression_count += 1
         # Replace historical image payloads with placeholders; multi-MB base64 blobs otherwise
         # exceed body limits.
@@ -5238,6 +5244,7 @@ Write only the summary body. Do not include any preamble or prefix."""
     def compress(
         self, messages: List[Dict[str, Any]], current_tokens: Optional[int] = None, focus_topic: Optional[str] = None,
         force: bool = False, memory_context: str = "", bypass_cooldown: bool = False,
+        incident_state: Any = None, hard_reset: bool = False,
     ) -> List[Dict[str, Any]]:
         """Summarize the middle turns: prune tool results and blank echoes (survives an abort), protect head and a
         token-budget tail, summarize, clean orphaned tool pairs. ``force`` clears the failure cooldown and bypasses
@@ -5261,6 +5268,19 @@ Write only the summary body. Do not include any preamble or prefix."""
         _raise_if_stale_attempt(self)
         telemetry = self._begin_compress_attempt(current_tokens, force)
         n_messages = len(messages)
+        if incident_state is not None or hard_reset:
+            # Incident context is deterministic and contains no raw transcript tail. The host selects
+            # rotation for hard_reset; ordinary incident compaction stays in the configured session.
+            from agent.incident_state import incident_state_message
+            compressed = [
+                incident_state_message(
+                    incident_state, token_cap=self.incident_summary_token_cap, hard_reset=hard_reset,
+                )
+            ]
+            self._summary_has_user_turn = True
+            return self._finalize_compressed(
+                compressed, messages, n_messages, preserve_inflight_user=False,
+            )
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
         if n_messages <= _min_for_compress:

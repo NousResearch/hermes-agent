@@ -570,6 +570,10 @@ def finalize_turn(
     with suppress(Exception):
         agent._session_messages = messages
 
+    if final_response and not interrupted and not failed:
+        agent._incident_state = None
+        agent._incident_failed_repair_attempts = 0
+
     _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_reason, interrupted, logger)
 
     # Response transforms apply only to real, uninterrupted responses.
@@ -612,6 +616,19 @@ def finalize_turn(
     # the conversation loop, so every delivery surface receives valid Unicode.
     if isinstance(final_response, str):
         final_response = _sanitize_surrogates(final_response)
+
+    try:
+        from agent.decision_provider import record_notification
+
+        record_notification(
+            agent,
+            final_response,
+            changed_paths=getattr(agent, "_turn_file_mutation_paths", set()),
+            interrupted=interrupted,
+            failed=failed,
+        )
+    except Exception:
+        logger.debug("notification decision observation failed", exc_info=True)
 
     result = {
         "final_response": final_response,

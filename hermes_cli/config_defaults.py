@@ -550,6 +550,43 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Provider-neutral Jev/decision seam. It observes existing Hermes policy points in
+    # shadow mode; approvals, checkpoints, and tool-loop guardrails remain authoritative.
+    # The default path is the existing local hermes-bridge gateway; no Jev package is
+    # installed by Hermes. Override adapter_path/adapter_command when the bridge lives elsewhere.
+    "decision_provider": {
+        "mode": "shadow",
+        "provider": "hermes-bridge-jev",
+        "adapter_path": "~/.hermes/workspaces/hermes-bridge/scripts/hermes_jev_adapter.cjs",
+        "adapter_command": [],
+        "model": "typesafe/jev-1.13",
+        "service_version": "",
+        "adapter_timeout_ms": 10000,
+        "max_retries": 2,
+        "logging": {"enabled": True, "path": ""},
+        "thresholds": {
+            "pre_action": 0.95,
+            "completion": 0.80,
+            "loop": 0.85,
+            "context_sieve": 0.90,
+            "failure_classification": 0.80,
+            "retry": 0.85,
+            "specialist": 0.80,
+            "notification": 0.80,
+        },
+        "policies": {
+            "pre_action": {"timeout_seconds": 1.5, "fail_mode": "closed"},
+            "completion": {"timeout_seconds": 2.0, "fail_mode": "open"},
+            "loop": {"timeout_seconds": 1.0, "fail_mode": "open"},
+            "context_sieve": {"timeout_seconds": 2.0, "fail_mode": "open"},
+            "failure_classification": {"timeout_seconds": 2.0, "fail_mode": "open"},
+            "retry": {"timeout_seconds": 2.0, "fail_mode": "open"},
+            "specialist": {"timeout_seconds": 2.0, "fail_mode": "open"},
+            "notification": {"timeout_seconds": 2.0, "fail_mode": "open"},
+        },
+        "context_sieve": {"enabled": True, "min_chars": 8000},
+    },
+
     "compression": {
         "enabled": True,
         # checkpoint_required: fail closed before lossy compaction unless an active memory provider
@@ -615,6 +652,13 @@ DEFAULT_CONFIG = {
         # Clamped >= hygiene_timeout_seconds.
         "hygiene_total_ceiling_seconds": 600,
         "hygiene_failure_cooldown_seconds": 300,  # skip repeated failed hygiene attempts
+        # Repair incidents use a deterministic six-field checkpoint; the second failed mutation rotates
+        # to a fresh child session so stale diagnostic narrative is no longer active context.
+        "incident_state": {
+            "enabled": True,
+            "summary_token_cap": 1500,
+            "reset_after_failed_repairs": 2,
+        },
         # Max seconds an ARRIVING user turn is held while a streaming hygiene summary finishes;
         # bounds user-visible latency (keep under chat idle timeouts, Telegram ~30s). On expiry the
         # turn proceeds uncompressed; the detached worker keeps its watermark-fenced commit, so the

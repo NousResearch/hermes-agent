@@ -361,6 +361,20 @@ def _cfg_dict(cfg: Dict[str, Any], key: str) -> Dict[str, Any]:
     return section if isinstance(section, dict) else {}
 
 
+def _init_decision_provider(agent, _agent_cfg: Dict[str, Any]) -> None:
+    """Install the optional provider-neutral decision runtime once per agent."""
+    try:
+        from agent.decision_provider import DecisionRuntime
+
+        agent._decision_runtime = DecisionRuntime.from_mapping(
+            _cfg_dict(_agent_cfg, "decision_provider")
+        )
+    except Exception:
+        # A shadow observer must never prevent Hermes from starting; the execution
+        # path will lazily recover with a null provider if initialization failed.
+        logger.debug("decision runtime initialization failed", exc_info=True)
+
+
 class CompressionSettings(SimpleNamespace):
     """Parsed ``compression`` config section (see ``_parse_compression_config``)."""
 
@@ -586,6 +600,9 @@ _TURN_STATE: Dict[str, Any] = {
 # Session persistence state.
 _SESSION_STATE: Dict[str, Any] = {
     "_session_messages": list,
+    "_incident_state": None,
+    "_incident_failed_repair_attempts": 0,
+    "_incident_reset_count": 0,
     # Responses encrypted-reasoning replay: routes that 400 with ``invalid_encrypted_content``
     # make the loop disable it for the session (stateless continuity).
     "_codex_reasoning_replay_enabled": True,
@@ -1495,6 +1512,8 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         checkpoint_required, getattr(agent, "api_mode", None)
     )
     app_server_auto, responses_native, compact_threshold = _compression_codex_settings(cfg)
+    incident_cfg = _cfg_dict(cfg, "incident_state")
+    incident_cap = max(1000, min(2000, _parse_config_int(incident_cfg.get("summary_token_cap", 1500), 1500)))
     # Opt-in idle compaction: compact up front when a session resumes after this many
     # seconds idle (0 = disabled). Consumed by build_turn_context().
     idle_compact_after_seconds = max(0, int(cfg.get("idle_compact_after_seconds", 0)))
@@ -1545,6 +1564,11 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         codex_responses_native=responses_native,
         codex_responses_compact_threshold=compact_threshold,
         idle_compact_after_seconds=idle_compact_after_seconds,
+        incident_enabled=_cfg_flag(incident_cfg, "enabled", True),
+        incident_summary_token_cap=incident_cap,
+        incident_reset_after_failed_repairs=max(
+            1, _parse_config_int(incident_cfg.get("reset_after_failed_repairs", 2), 2)
+        ),
     )
 
 
@@ -1956,7 +1980,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
-            custom_providers=_custom_providers,
+            custom_providers=_custom_providers, incident_summary_token_cap=cs.incident_summary_token_cap,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)
     if callable(_bind_session_state):
@@ -1964,6 +1988,9 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             _bind_session_state(session_db=session_db, session_id=agent.session_id)
     agent.compression_enabled = cs.enabled
     agent.compression_in_place = cs.in_place
+    agent.incident_context_enabled = cs.incident_enabled
+    agent.incident_summary_token_cap = cs.incident_summary_token_cap
+    agent.incident_reset_after_failed_repairs = cs.incident_reset_after_failed_repairs
     _cc = agent.context_compressor
     # Micro-compaction has no pre-compress checkpoint hook; suppress it while the gate is
     # armed (mirrors native_compaction.py).
@@ -2425,6 +2452,7 @@ def init_agent(
     _apply_display_config(agent, _agent_cfg, platform)
     _init_memory(agent, _agent_cfg, skip_memory, platform)
     _apply_agent_section(agent, _agent_cfg)
+    _init_decision_provider(agent, _agent_cfg)
     cs = _parse_compression_config(agent, _agent_cfg)
     _config_context_length, _custom_providers, _effective_context_length, _model_cfg = _resolve_context_length(
         agent, _agent_cfg, base_url

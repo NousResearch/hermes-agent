@@ -430,6 +430,10 @@ class AIAgent(
         self._turn_author = None
         # Copilot x-initiator: True for the first API call of a user turn, False for tool-loop follow-ups.
         self._is_user_initiated_turn = False
+        # Incident context is disposable: explicit /new, /resume, and /branch start without stale repair state.
+        self._incident_state = None
+        self._incident_failed_repair_attempts = 0
+        self._incident_reset_count = 0
 
         self._transition_context_engine_session(
             old_session_id=old_session_id, new_session_id=getattr(self, "session_id", None),

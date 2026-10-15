@@ -1742,7 +1742,8 @@ def _compression_lock_holder(agent: Any) -> str:
 
 def _supported_compression_kwargs(
     compress_fn: Any, *, current_tokens: Optional[int], focus_topic: Optional[str], force: bool,
-    memory_context: str, bypass_cooldown: bool = False,
+    memory_context: str, bypass_cooldown: bool = False, incident_state: Any = None,
+    hard_reset: bool = False,
 ) -> dict:
     """Return only compression kwargs accepted by an engine callable.
     Inspecting first keeps older plugin signatures compatible without catching ``TypeError`` and running a
@@ -1752,6 +1753,10 @@ def _supported_compression_kwargs(
         candidates["bypass_cooldown"] = True
     if memory_context:
         candidates["memory_context"] = memory_context
+    if incident_state is not None:
+        candidates["incident_state"] = incident_state
+    if hard_reset:
+        candidates["hard_reset"] = True
     try:
         parameters = inspect.signature(compress_fn).parameters
     except (TypeError, ValueError):
@@ -2428,7 +2433,11 @@ def _insert_real_user_anchor(messages: list, anchor: dict) -> CompressedUserTurn
 
 def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) -> CompressedUserTurnOutcome:
     """Preserve human intent, not merely a synthetic user-role placeholder."""
-    if any(_is_real_user_message(message) for message in compressed) or _compressed_has_busy_steer(compressed):
+    if any(
+        _is_real_user_message(message)
+        or (isinstance(message, dict) and message.get("_incident_state"))
+        for message in compressed
+    ) or _compressed_has_busy_steer(compressed):
         return "already_present"
     # Post-commit contract (#98450, mirrors _sync_micro_compact_to_db): archive_and_compact just durably
     # wrote every dict in `compressed` as the new active set, but compress() returned marker-swept COPIES
@@ -2955,13 +2964,13 @@ def _pre_compress_memory_context(agent: Any, messages: list, checkpoint_required
 
 def _resolve_compress_call(
     agent: Any, *, approx_tokens: Optional[int], focus_topic: Optional[str], force: bool, memory_context: str,
-    bypass_cooldown: bool,
+    bypass_cooldown: bool, incident_state: Any = None, hard_reset: bool = False,
 ) -> Tuple[Callable[..., Any], dict[str, Any]]:
     """Bind ``compress()`` and only the kwargs its signature accepts."""
     compress_fn = agent.context_compressor.compress
     compress_kwargs = _supported_compression_kwargs(
         compress_fn, current_tokens=approx_tokens, focus_topic=focus_topic, force=force, memory_context=memory_context,
-        bypass_cooldown=bypass_cooldown,
+        bypass_cooldown=bypass_cooldown, incident_state=incident_state, hard_reset=hard_reset,
     )
     if memory_context.strip() and "memory_context" not in compress_kwargs:
         engine_name = getattr(agent.context_compressor, "name", type(agent.context_compressor).__name__)
@@ -3734,7 +3743,7 @@ def _run_summary_phase(
     agent: Any, messages: list, *, lease: _CompressionLease, in_place: bool, checkpoint_required: bool,
     approx_tokens: Optional[int], focus_topic: Optional[str], force: bool, bypass_cooldown: bool,
     commit_fence: Optional[CompressionCommitFence], hard_cancel_event: Any, system_message: str,
-    attempt: _Attempt,
+    attempt: _Attempt, incident_state: Any = None, hard_reset: bool = False,
 ) -> _SummaryPhase:
     """Adopt a grown durable parent, gather memory context and run the summarizer.
     A hard cancel restores the compressor snapshot + live list, records a stall backoff while the lease is
@@ -3764,7 +3773,7 @@ def _run_summary_phase(
         memory_context = _pre_compress_memory_context(agent, messages, checkpoint_required)
         compress_fn, compress_kwargs = _resolve_compress_call(
             agent, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, memory_context=memory_context,
-            bypass_cooldown=bypass_cooldown,
+            bypass_cooldown=bypass_cooldown, incident_state=incident_state, hard_reset=hard_reset,
         )
         messages_before_compression = copy.deepcopy(messages)
         _activity_heartbeat = _CompressionActivityHeartbeat(
@@ -3903,7 +3912,8 @@ def compress_context(
     agent: Any, messages: list, system_message: str, *, approx_tokens: Optional[int] = None,
     task_id: str = "default", focus_topic: Optional[str] = None, force: bool = False,
     bypass_cooldown: bool = False, defer_context_engine_notification: bool = False,
-    commit_fence: Optional[CompressionCommitFence] = None,
+    commit_fence: Optional[CompressionCommitFence] = None, incident_state: Any = None,
+    hard_reset: bool = False,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
     ``force`` (manual /compress) clears the summary-failure cooldown; ``bypass_cooldown`` (provider-proven
@@ -3926,6 +3936,8 @@ def compress_context(
     cooperative fence for executor callers that may time out. It prevents a late worker from mutating
     session state after its caller has moved on.
     """
+    if incident_state is None and getattr(agent, "incident_context_enabled", False):
+        incident_state = getattr(agent, "_incident_state", None)
     attempt = _begin_compression_attempt(agent, force=force, defer_notification=defer_context_engine_notification)
 
     # Codex owns the real thread; route compaction to its own compact (config
@@ -3950,7 +3962,7 @@ def compress_context(
     _pre_msg_count = len(messages)
     # In-place keeps the SAME session_id (no rotation/child/renumber/re-sync). A
     # missing attribute must default True, not rotation, which can wedge sessions.
-    in_place = bool(getattr(agent, "compression_in_place", True))
+    in_place = bool(getattr(agent, "compression_in_place", True)) and not hard_reset
     # Announce BEFORE the lazy feasibility probe: its live catalog / provider lookups are
     # network-bound (connect timeouts stack up through proxies), and until this status lands
     # the Desktop working row is a bare spinner with no "Summarizing thread" label (#111294).
@@ -4011,6 +4023,7 @@ def compress_context(
         agent, messages, lease=lease, in_place=in_place, checkpoint_required=checkpoint_required,
         approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, bypass_cooldown=bypass_cooldown,
         commit_fence=commit_fence, hard_cancel_event=_hard_cancel_event, system_message=system_message, attempt=attempt,
+        incident_state=incident_state, hard_reset=hard_reset,
     )
     if phase.abort_prompt is not None:
         return phase.messages, phase.abort_prompt

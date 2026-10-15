@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from agent.message_metadata import append_message
 from agent.message_sanitization import coalesce_tool_call_id
+from agent.conversation_compression import conversation_history_after_compression
 from agent.turn_preflight import compress_after_tool_results
 from agent.turn_tool_validation import validate_tool_calls
 
@@ -100,6 +101,7 @@ def run_tool_round(
     assistant_msg, duplicate_previous_interim = stage_tool_call_message(
         agent, assistant_message=assistant_message, finish_reason=finish_reason, messages=messages
     )
+    _incident_result_start = len(messages)
     append_message(messages, assistant_msg)
 
     # Mixed batch: error-result invalid calls and drop them from execution.
@@ -224,6 +226,37 @@ def run_tool_round(
                     agent.stream_delta_callback(final_response)
                     agent.stream_delta_callback(None)
         return _verdict("break")
+
+    from agent.incident_state import update_after_tool_round
+
+    _incident_update = update_after_tool_round(
+        agent, assistant_message, messages, _incident_result_start,
+    )
+    if _incident_update.compact and _incident_update.state is not None:
+        _incident_input = messages
+        try:
+            messages, active_system_prompt = agent._compress_context(
+                messages, system_message, approx_tokens=0, task_id=effective_task_id, force=True,
+                incident_state=_incident_update.state.as_dict(), hard_reset=_incident_update.hard_reset,
+            )
+        except Exception:
+            logger.warning("Incident context compaction failed; retaining the current transcript", exc_info=True)
+            messages = _incident_input
+        if messages is not _incident_input and messages != _incident_input:
+            conversation_history = conversation_history_after_compression(
+                agent, messages, conversation_history,
+            )
+            if _incident_update.hard_reset:
+                agent._incident_failed_repair_attempts = 0
+                agent._incident_reset_count = int(getattr(agent, "_incident_reset_count", 0) or 0) + 1
+                agent._emit_status(
+                    "↻ Incident context reset after two failed repairs; rereading current machine state."
+                )
+            else:
+                logger.info(
+                    "Incident context compacted after repair attempt %d (session=%s)",
+                    _incident_update.failed_attempts, getattr(agent, "session_id", "") or "none",
+                )
 
     # Reset per-turn retry counters so one truncation can't poison the turn.
     truncated_tool_call_retries = 0

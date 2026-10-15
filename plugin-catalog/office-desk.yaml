@@ -1,6 +1,6 @@
 name: office-desk
 repo: https://github.com/DECRUX9812/hermes-office
-sha: be026217c57afba6e51444c731d87bcabfb63399
+sha: b53630cd0f0edc10645d63899a5a2515f8015fc5
 subdir: ""
 version: "0.1.1"
 title: Office Desk
@@ -18,10 +18,11 @@ maintainer: DECRUX9812
 tier: community
 category: tools
 docs_url: https://github.com/DECRUX9812/hermes-office#readme
+image: https://raw.githubusercontent.com/DECRUX9812/hermes-office/b53630cd0f0edc10645d63899a5a2515f8015fc5/docs/media/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/DECRUX9812/hermes-office/be026217c57afba6e51444c731d87bcabfb63399/docs/screenshots/desk-home.png
-  - https://raw.githubusercontent.com/DECRUX9812/hermes-office/be026217c57afba6e51444c731d87bcabfb63399/docs/screenshots/workstream-docx.png
-  - https://raw.githubusercontent.com/DECRUX9812/hermes-office/be026217c57afba6e51444c731d87bcabfb63399/docs/screenshots/workstream-xlsx.png
+  - https://raw.githubusercontent.com/DECRUX9812/hermes-office/b53630cd0f0edc10645d63899a5a2515f8015fc5/docs/screenshots/workstream-docx.png
+  - https://raw.githubusercontent.com/DECRUX9812/hermes-office/b53630cd0f0edc10645d63899a5a2515f8015fc5/docs/screenshots/workstream-xlsx.png
+  - https://raw.githubusercontent.com/DECRUX9812/hermes-office/b53630cd0f0edc10645d63899a5a2515f8015fc5/docs/screenshots/desk-home.png
 platforms: []
 capabilities:
   provides_tools:

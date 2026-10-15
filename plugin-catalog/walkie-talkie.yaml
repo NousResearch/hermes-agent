@@ -1,0 +1,19 @@
+name: walkie-talkie
+repo: https://github.com/barronlroth/hermes-walkie-talkie
+sha: 8e0d3b1a57f1445ec39e19e60996c935168b5f3b
+description: Let one session message another existing session (Telegram topic, group thread or DM), waking it like a user turn so the reply lands in that chat
+maintainer: barronlroth
+tier: community
+category: automation
+requires_hermes: ">=0.21.7"
+docs_url: https://github.com/barronlroth/hermes-walkie-talkie#readme
+version: "0.1.1"
+title: Walkie-Talkie
+capabilities:
+  provides_tools:
+  - list_topics
+  - message_topic
+  provides_hooks:
+  - pre_llm_call
+  provides_middleware: []
+  requires_env: []

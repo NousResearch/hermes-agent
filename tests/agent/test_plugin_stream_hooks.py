@@ -190,6 +190,7 @@ def test_memory_prefetch_observer_accepts_full_64k_observation_batch(monkeypatch
 
 
 def test_stream_end_observer_restores_full_oversized_response_text(monkeypatch, tmp_path):
+    import tools.spill_safety
     from agent.plugin_stream_hooks import (
         enqueue_plugin_stream_hook,
         shutdown_plugin_observer_dispatcher,
@@ -200,6 +201,13 @@ def test_stream_end_observer_restores_full_oversized_response_text(monkeypatch, 
     monkeypatch.setenv("HERMES_HOME", str(home))
     delivered = threading.Event()
     payloads = []
+    spill_calls = []
+
+    def forbid_spill(*args, **kwargs):
+        spill_calls.append((args, kwargs))
+        raise AssertionError("stream completion must not write spill files")
+
+    monkeypatch.setattr(tools.spill_safety, "write_text_exclusive", forbid_spill)
 
     def capture(**payload):
         payloads.append(payload)
@@ -216,7 +224,105 @@ def test_stream_end_observer_restores_full_oversized_response_text(monkeypatch, 
         shutdown_plugin_observer_dispatcher(timeout=5.0)
 
     assert payloads[0]["final_text"] == response
-    assert not list((home / "cache" / "plugin-observer-spill").glob("*.txt"))
+    assert spill_calls == []
+    assert not (home / "cache" / "plugin-observer-spill").exists()
+
+
+def test_oversized_stream_end_observer_uses_one_bounded_shared_text_holder(monkeypatch):
+    import agent.plugin_stream_hooks as stream_hooks
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    monkeypatch.setattr("agent.plugin_stream_hooks._MAX_OBSERVER_EVENT_BYTES", 512)
+    monkeypatch.setattr(
+        "agent.plugin_stream_hooks._MAX_OBSERVER_RETAINED_BYTES", 4096, raising=False
+    )
+    slow_started = threading.Event()
+    release_slow = threading.Event()
+    delivered = []
+
+    def slow(**payload):
+        delivered.append(("slow", payload["final_text"]))
+        if payload["final_text"] == "a" * 3000:
+            slow_started.set()
+            release_slow.wait(timeout=5.0)
+
+    def fast(**payload):
+        delivered.append(("fast", payload["final_text"]))
+
+    _patch_test_callback_manager(
+        monkeypatch, {"on_stream_end": [slow, fast]}
+    )
+
+    try:
+        assert enqueue_plugin_observer_hook(
+            "on_stream_end", final_text="a" * 3000, finished=True
+        ) is True
+        assert slow_started.wait(timeout=5.0)
+        # The fast callback returned, but the blocked slow consumer still holds
+        # the shared holder, so another large event exceeds the retained budget.
+        assert enqueue_plugin_observer_hook(
+            "on_stream_end", final_text="b" * 3000, finished=True
+        ) is False
+        release_slow.set()
+        _wait_for(lambda: stream_hooks._observer_retained_bytes == 0)
+        assert enqueue_plugin_observer_hook(
+            "on_stream_end", final_text="c" * 3000, finished=True
+        ) is True
+        _wait_for(lambda: len(delivered) == 4)
+    finally:
+        release_slow.set()
+        shutdown_plugin_observer_dispatcher(timeout=5.0)
+
+    assert sorted(delivered) == sorted(
+        [
+            ("slow", "a" * 3000),
+            ("fast", "a" * 3000),
+            ("slow", "c" * 3000),
+            ("fast", "c" * 3000),
+        ]
+    )
+
+
+def test_stream_observer_system_exit_does_not_strand_queued_text(monkeypatch):
+    import agent.plugin_stream_hooks as stream_hooks
+    from agent.plugin_stream_hooks import (
+        enqueue_plugin_observer_hook,
+        shutdown_plugin_observer_dispatcher,
+    )
+
+    shutdown_plugin_observer_dispatcher()
+    monkeypatch.setattr("agent.plugin_stream_hooks._MAX_OBSERVER_EVENT_BYTES", 512)
+    monkeypatch.setattr("agent.plugin_stream_hooks._MAX_OBSERVER_RETAINED_BYTES", 4096)
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_delivered = threading.Event()
+
+    def exits_then_recovers(**payload):
+        if payload["final_text"] == "a" * 1000:
+            first_started.set()
+            release_first.wait(timeout=5.0)
+            raise SystemExit("plugin callback exit")
+        second_delivered.set()
+
+    _patch_test_callback_manager(monkeypatch, {"on_stream_end": [exits_then_recovers]})
+    try:
+        assert enqueue_plugin_observer_hook(
+            "on_stream_end", final_text="a" * 1000, finished=True
+        ) is True
+        assert first_started.wait(timeout=5.0)
+        assert enqueue_plugin_observer_hook(
+            "on_stream_end", final_text="b" * 1000, finished=True
+        ) is True
+        release_first.set()
+        assert second_delivered.wait(timeout=5.0)
+        _wait_for(lambda: stream_hooks._observer_retained_bytes == 0)
+    finally:
+        release_first.set()
+        shutdown_plugin_observer_dispatcher(timeout=5.0)
 
 
 def test_stream_hook_queue_isolated_per_consumer(monkeypatch):

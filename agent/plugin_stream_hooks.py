@@ -144,25 +144,32 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
                     dispatcher.callback,
                     payload,
                 )
-            # Plugin SystemExit is isolated like other callback failures, rather than
-            # terminating this worker and stranding later retained payloads.
-            except (Exception, SystemExit) as exc:
-                if isinstance(exc, SystemExit):
-                    logger.debug(
-                        "plugin observer callback exited; continuing dispatcher",
-                        exc_info=True,
-                    )
-                # Fires once per streaming delta: a mis-declared callback fails identically every
-                # time, so it goes through the manager's warn-once reporter (#111922).
-                from hermes_cli.plugins import get_plugin_manager
+            except BaseException as exc:  # health: allow BLE001 -- isolate all failures from observer plugins
+                try:
+                    if isinstance(exc, SystemExit):
+                        logger.debug(
+                            "plugin observer callback exited; continuing dispatcher",
+                            exc_info=True,
+                        )
+                    # Fires once per streaming delta: a mis-declared callback fails identically every
+                    # time, so it goes through the manager's warn-once reporter (#111922).
+                    from hermes_cli.plugins import get_plugin_manager
 
-                # Context.run restores the worker's context when the callback raises.
-                # Resolve the reporter inside the event's owning profile as well.
-                manager = item.context.run(get_plugin_manager)
-                item.context.run(
-                    manager._report_hook_failure,
-                    dispatcher.hook_name, dispatcher.callback, payload, exc,
-                )
+                    # Context.run restores the worker's context when the callback raises.
+                    # Resolve the reporter inside the event's owning profile as well.
+                    manager = item.context.run(get_plugin_manager)
+                    item.context.run(
+                        manager._report_hook_failure,
+                        dispatcher.hook_name, dispatcher.callback, payload, exc,
+                    )
+                except BaseException:  # health: allow BLE001 -- reporter failures must not kill the worker
+                    try:
+                        logger.debug(
+                            "plugin observer failure reporting failed; continuing dispatcher",
+                            exc_info=True,
+                        )
+                    except BaseException:  # health: allow BLE001 -- logging failure must not kill the worker
+                        continue
         finally:
             if payload is not None:
                 payload.clear()

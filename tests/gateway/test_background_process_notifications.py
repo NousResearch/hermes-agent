@@ -496,14 +496,17 @@ class TestConciseFormatter:
 
 
 @pytest.mark.asyncio
-async def test_agent_notify_refused_completion_backs_off_then_sends_plain_notice(monkeypatch, tmp_path):
+@pytest.mark.parametrize("committed", [False, True, "recheck_fails"])
+async def test_agent_notify_refused_completion_backs_off_then_sends_plain_notice(monkeypatch, tmp_path, committed):
     """A refused completion injection must not poll an exited process forever, and must not be
-    dropped either: bounded backoff, then the plain completion notice (#138940)."""
+    dropped either: bounded backoff, then the plain completion notice (#138940). A last refusal
+    whose admission actually committed (lost ACK) must not add a second notice."""
     import tools.process_registry as pr_module
+    from gateway import session_automation
     from gateway import run_notifications as rn
 
     exited = SimpleNamespace(
-        output_buffer="done\n", exited=True, exit_code=0, command="echo done", started_at=None,
+        output_buffer="done\n", exited=True, exit_code=0, command="echo done", started_at=1.0,
     )
     monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([exited] * 20, consumed=False))
     sleeps = []
@@ -514,14 +517,23 @@ async def test_agent_notify_refused_completion_backs_off_then_sends_plain_notice
 
     runner = _build_runner(monkeypatch, tmp_path, "concise")
     runner._enqueue_process_completion_notification = AsyncMock(return_value=False)
+    runner.session_authority = object()
+    def _admission(_runner, _evt):
+        if committed == "recheck_fails":
+            raise RuntimeError("store closed")
+        return {"admission_id": "committed"} if committed else None
+    monkeypatch.setattr(session_automation, "completion_admission", _admission)
 
     await runner._run_process_watcher({**_watcher_dict(), "check_interval": 5, "notify_on_complete": True})
 
     assert runner._enqueue_process_completion_notification.await_count == rn._MAX_COMPLETION_INJECTION_ATTEMPTS
     assert sleeps == [5, 10, 20, 40, 60, 60, 60, 60]
     adapter = runner.adapters[Platform.TELEGRAM]
-    adapter.send.assert_awaited_once()
-    assert adapter.send.await_args.args[1].startswith("✅ Background task finished")
+    if committed is True:
+        adapter.send.assert_not_awaited()
+    else:
+        adapter.send.assert_awaited_once()
+        assert adapter.send.await_args.args[1].startswith("✅ Background task finished")
 
 
 @pytest.mark.asyncio

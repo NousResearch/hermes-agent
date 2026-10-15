@@ -4625,7 +4625,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             config_overrides = _resolve_config_gates()
             for cmd_def in COMMAND_REGISTRY:
                 if _is_gateway_available(cmd_def, config_overrides):
-                    _auto_register(cmd_def.name, cmd_def.description, cmd_def.args_hint)
+                    # describe() resolves ``slash.<name>.description`` for the active display.language
+                    # (falling back to the English source); Telegram/Slack already do this via
+                    # hermes_cli.commands_platforms. Passing the raw ``description`` left every
+                    # registry command's picker text in English under a non-English locale.
+                    _auto_register(cmd_def.name, cmd_def.describe(), cmd_def.args_hint)
             logger.debug("Discord auto-registered %d commands from COMMAND_REGISTRY", len(already_registered))
         except Exception as e:
             logger.warning("Discord auto-register from COMMAND_REGISTRY failed: %s", e)

@@ -325,9 +325,14 @@ event("reaction", ReactionPayload, doc="Affection reaction detected in the user'
 
 
 class ReviewSummaryPayload(Payload):
-    """``server`` background_review_callback."""
+    """Display-only durable receipt or a legacy text-only review notification."""
 
     text: str
+    review_id: str | None = None
+    timestamp: float | None = None
+    row_id: int | None = None
+    stored_session_id: str | None = None
+    persisted: bool | None = None
 
 
 event("review.summary", ReviewSummaryPayload, doc="Background review of the last turn finished.")

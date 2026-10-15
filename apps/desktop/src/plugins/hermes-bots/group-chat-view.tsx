@@ -107,6 +107,8 @@ import {
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-rounds'
+import { watchGroupReviewReceipts } from './group-review-receipts'
+import { GroupReviewRow } from './group-review-row'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugifyProfileName } from './labels'
@@ -653,6 +655,9 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     running: false
   }
 
+  // eslint-disable-next-line no-restricted-syntax -- owns external gateway subscriptions/route leases while this room is visible
+  useEffect(() => (visible ? watchGroupReviewReceipts(group, members) : undefined), [group, members, visible])
+
   const composerKey = groupComposerDraftKey(group, room)
   const composerKeyRef = useRef(composerKey)
   const [composerDraft, setComposerDraft] = useState(() => groupComposerDraftSnapshot(composerKey))
@@ -862,7 +867,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
         block: 'end'
       })
     }
-  }, [room.log.length, room.running])
+  }, [room.log.length, room.reviewReceipts?.length, room.running])
 
   // Retained-pane reopen (#89835 follow-up): a hot-mounted room pane stays
   // mounted while another workspace tab is active, so returning to it never
@@ -1447,7 +1452,16 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   const threadEnds = new Map<string, number>()
   room.log.forEach((entry, index) => threadEnds.set(groupThreadOf(entry), index))
   const logChildren: ReactNode[] = []
+  const receipts = [...(room.reviewReceipts || [])].sort((a, b) => a.at - b.at)
+  let receiptIndex = 0
+  const appendReceiptsBefore = (at: number) => {
+    while (receiptIndex < receipts.length && receipts[receiptIndex].at <= at) {
+      const receipt = receipts[receiptIndex++]
+      logChildren.push(<GroupReviewRow key={`review:${receipt.id}`} receipt={receipt} />)
+    }
+  }
   room.log.forEach((entry, index) => {
+    appendReceiptsBefore(entry.at)
     logChildren.push(renderEntry(entry, index))
     const id = groupThreadOf(entry)
 
@@ -1503,6 +1517,8 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
       )
     )
   })
+
+  appendReceiptsBefore(Infinity)
 
   return (
     <div

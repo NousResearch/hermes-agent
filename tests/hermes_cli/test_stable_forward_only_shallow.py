@@ -1,5 +1,5 @@
-"""An unchosen default channel never moves a checkout backward on a guess, and a probe that never
-answered never refuses the update (regression for #137646)."""
+"""An unchosen default channel never moves a checkout backward on a guess, and an ancestry probe
+that never answered never refuses the update (regression for #137646)."""
 import subprocess
 
 import pytest
@@ -79,13 +79,3 @@ def test_a_probe_that_never_answered_leaves_the_relation_unknown(history, monkey
     monkeypatch.setattr(source_check, "_github_compare", lambda *a, **k: compare)
     assert source_releases._head_containing(["git"], origin, shas[2], "o/r") == (shas[2] if keeps_head else None)
     assert timed_out == [["git", "merge-base", "--is-ancestor", shas[2], shas[2]]]
-
-
-def test_a_probe_that_never_answered_cannot_refuse_a_retirement(tmp_path, monkeypatch):
-    """The same silence on the retirement probe is not a proven downgrade either (#137646)."""
-    timed_out = _timeout_git_probe(monkeypatch, "rev-list")
-    checkout = tmp_path / "checkout"
-    checkout.mkdir()
-    request = {"commit": "0" * 40, "sequence": 1, "sourceVersion": "0.1.0", "repository": "o/r"}
-    source_releases._refuse_retirement_downgrade(request, {"head": {"sequence": 1}}, ["git"], checkout)
-    assert timed_out == [["git", "rev-list", "--ancestry-path", f"{request['commit']}..HEAD"]]

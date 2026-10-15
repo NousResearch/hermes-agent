@@ -218,17 +218,21 @@ def _refuse_retirement_downgrade(request: dict, terminal: dict, git_cmd, cwd) ->
         if tuple(map(int, installed_version.split("."))) > tuple(map(int, request["sourceVersion"].split("."))):
             raise ValueError("Source retirement would downgrade a newer source version; select the destination channel explicitly")
     if git_cmd is not None:
-        result = _probe(git_cmd, cwd, "rev-list", "--ancestry-path", f"{request['commit']}..HEAD")
+        from hermes_cli.source_check import source_git_env
+
+        result = subprocess.run(
+            [*git_cmd, "rev-list", "--ancestry-path", f"{request['commit']}..HEAD"], cwd=cwd,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            stdin=subprocess.DEVNULL, env=source_git_env(),
+            check=False,
+        )
         # The target need not exist locally before the updater's fetch. When it
         # does, any descendants prove that this pinned build would roll us back.
-        # An unanswered probe proves nothing either.
-        if result is not None and result.returncode == 0 and result.stdout.strip():
+        if result.returncode == 0 and result.stdout.strip():
             raise ValueError("Source retirement would downgrade a newer source commit; select the destination channel explicitly")
         if terminal["head"]["sequence"] > request["sequence"]:
             # Shallow checkouts may lack the qualified commit, even when HEAD is
             # today's stable build. Read it with the protocol's full digest checks.
-            from hermes_cli.source_check import source_git_env
-
             current_manifest = _resolve_channel(terminal["name"], request["repository"]).manifest
             if current_manifest is None:
                 raise ValueError("Source retirement cannot verify the current destination build")

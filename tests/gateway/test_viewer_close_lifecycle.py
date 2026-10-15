@@ -132,8 +132,30 @@ async def test_a_viewer_reattaching_during_the_idle_check_cancels_the_close(tmp_
     release.set()
     await closing
 
-    # The conversation is being watched again: its agent stays cached and nothing is finalized.
-    assert calls == []
+    # The conversation is being watched again: its agent stays cached, nothing is finalized and
+    # the row is not left ended under the attached viewer.
+    assert calls == [] and authority.pending_closes == {}
+    row = db.get_session('chat')
+    assert row['ended_at'] is None and row['end_reason'] is None
+
+
+@pytest.mark.asyncio
+async def test_a_close_stamps_the_row_only_once_it_is_claimed(tmp_path, monkeypatch):
+    db, authority, calls = await _owner(tmp_path, monkeypatch)
+    viewer, subscription = await _open(db, authority, tmp_path)
+    entered, release = _gate_busy_check(monkeypatch)
+
+    closing = asyncio.create_task(_call(viewer, 'session.detach', session_id='chat',
+                                        subscription_id=subscription, end_reason='cli_close'))
+    await async_wait_until(lambda: len(entered) == 1)
+    # Still cancellable: a viewer may yet reattach, so nothing is stamped.
+    assert db.get_session('chat')['ended_at'] is None
+    release.set()
+    await closing
+
+    row = db.get_session('chat')
+    assert row['ended_at'] is not None and row['end_reason'] == 'cli_close'
+    assert [name for name, _ in calls] == ['commit', 'finalize']
 
 
 @pytest.mark.asyncio

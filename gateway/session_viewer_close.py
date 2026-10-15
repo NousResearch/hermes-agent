@@ -56,22 +56,21 @@ async def settle_viewer_close(authority, session_id):
     if close is None or live is None or live.subscribers:
         authority.pending_closes.pop(session_id, None)
         return
-    from gateway.session_acp_lifecycle import end_idle_viewer_session, reopen_if_reattached
-    from gateway.session_runtime_workers import tracked_write
-    await tracked_write(authority, partial(end_idle_viewer_session, authority, session_id, close.reason),
-                        then=partial(reopen_if_reattached, authority, session_id))
     target = _physical_target(authority, session_id)
     # Every await below can let a viewer reattach (attach drops the pending close) or another
     # settler run, so the close is re-checked after each one.
-    if not _still_pending(authority, session_id, live, close):
-        return
     if await asyncio.to_thread(_busy, authority, session_id, target):
         return  # the drain's next idle point completes it
     row = await asyncio.to_thread(authority.db.get_session, target)
     if not _still_pending(authority, session_id, live, close):
         return
-    # Claimed with no await since the check: exactly one settler runs the lifecycle.
+    # Claimed with no await since the check: exactly one settler stamps the row and runs the
+    # lifecycle, and a close cancelled before its claim never wrote ``ended_at``.
     del authority.pending_closes[session_id]
+    from gateway.session_acp_lifecycle import end_idle_viewer_session, reopen_if_reattached
+    from gateway.session_runtime_workers import tracked_write
+    await tracked_write(authority, partial(end_idle_viewer_session, authority, session_id, close.reason),
+                        then=partial(reopen_if_reattached, authority, session_id))
     platform = (row or {}).get('source') or (live.source.platform.value if live.source else '')
     await _run_close_lifecycle(authority, live, target, platform, close.reason)
 

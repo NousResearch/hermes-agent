@@ -34,6 +34,7 @@ assert Path(server._completion_cwd({})) == launch, (
 )
 """],
         cwd=launch, env=env, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 

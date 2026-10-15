@@ -22,16 +22,22 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         help="Bare plugin catalog entry name (see `hermes plugins search`), Git URL, or owner/repo "
             "shorthand (e.g. anpicasso/hermes-plugin-chrome-profiles)")
     plugins_install.add_argument(
-        "--force", "-f", action="store_true", help="Remove existing plugin and reinstall")
+        "--force", "-f", action="store_true",
+        help="Reinstall over an existing plugin (from the same source, your untracked files are kept)")
     plugins_install.add_argument(
         "--ref", metavar="COMMIT_SHA",
         help="Install exactly one immutable 40-character Git commit SHA")
     plugins_install.add_argument(
         "--allow-removed", action="store_true",
         help="DANGEROUS: bypass the catalog removed-plugin blocklist check")
-    plugins_install.add_argument(
+    _install_deps_group = plugins_install.add_mutually_exclusive_group()
+    _install_deps_group.add_argument(
         "--no-deps", action="store_true",
         help="Download without dependency consent and leave disabled; cannot replace an active plugin")
+    _install_deps_group.add_argument(
+        "--yes-deps", action="store_true",
+        help="Answer the Python dependency consent question yourself, so non-interactive installs "
+             "(SSH automation, CI, Docker entrypoints) finish in one run instead of being refused")
     _install_enable_group = plugins_install.add_mutually_exclusive_group()
     _install_enable_group.add_argument(
         "--enable", action="store_true",

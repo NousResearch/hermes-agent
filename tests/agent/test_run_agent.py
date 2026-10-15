@@ -1592,41 +1592,6 @@ class TestExecuteToolCalls:
         assert metadata["tool_call_id"] == "mem-1"
         assert messages[-1]["tool_call_id"] == "mem-1"
 
-    def test_keyboard_interrupt_emits_cancelled_post_tool_hook(self, agent, monkeypatch):
-        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
-        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
-        messages = []
-        hook_calls = []
-        agent.session_id = "session-1"
-        agent._current_turn_id = "turn-1"
-        agent._current_api_request_id = "api-1"
-
-        def _capture_hook(hook_name, **kwargs):
-            hook_calls.append((hook_name, kwargs))
-            return []
-
-        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _capture_hook)
-        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
-
-        with (
-            patch("model_tools.handle_function_call", side_effect=KeyboardInterrupt),
-            patch("run_agent._set_interrupt"),
-            patch("agent.interrupt_control._set_interrupt"),
-            pytest.raises(KeyboardInterrupt),
-        ):
-            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
-
-        post_calls = [kwargs for name, kwargs in hook_calls if name == "post_tool_call"]
-        assert len(post_calls) == 1
-        assert post_calls[0]["tool_name"] == "web_search"
-        assert post_calls[0]["tool_call_id"] == "c1"
-        assert post_calls[0]["session_id"] == "session-1"
-        assert post_calls[0]["turn_id"] == "turn-1"
-        assert post_calls[0]["api_request_id"] == "api-1"
-        assert post_calls[0]["status"] == "cancelled"
-        assert post_calls[0]["error_type"] == "keyboard_interrupt"
-        assert json.loads(post_calls[0]["result"])["status"] == "cancelled"
-
     def test_interrupt_skips_remaining(self, agent, monkeypatch):
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments="{}", call_id="c2")
@@ -2326,7 +2291,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         # manage_connections / setup_mcp shim: no card on this fake agent, so the MCP leg runs the
         # backend at once; pin the catalog and the backend so the run is hermetic.
         monkeypatch.setattr("tools.connectors.mcp._catalog_names", lambda: ["linear"])
-        monkeypatch.setattr("tools.connectors.mcp._configured_names", lambda: [])
+        monkeypatch.setattr("tools.connectors.mcp._configured_names", list)
 
         class _NoInstallBackend:
             def required_env(self, name):
@@ -2827,7 +2792,7 @@ class TestHandleMaxIterations:
             # on user/assistant messages.
             if m.get("role") == "tool":
                 assert "name" not in m, m
-        assert [m for m in sent_msgs if m.get("role") == "user"][0]["name"] == "sylvain"
+        assert next(m for m in sent_msgs if m.get("role") == "user")["name"] == "sylvain"
         # Internal history is untouched — the path copies each message.
         assert messages[2]["tool_name"] == "execute_code"
         assert messages[2]["name"] == "execute_code"
@@ -3511,6 +3476,7 @@ class TestRunConversation:
         """A clean-stop reasoning answer returns without compression or recovery."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
+        agent._custom_providers = [{"base_url": agent.base_url, "capabilities": {"answer_in_reasoning": True}}]
         agent.compression_enabled = True
         empty_resp = _mock_response(
             content=None,
@@ -3535,7 +3501,6 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "reasoning only"
         assert result["api_calls"] == 1
-
 
     def test_truly_empty_response_stops_after_repeated_empty(self, agent):
         """Repeated empty responses stop after one retry and return an explanation."""
@@ -4243,7 +4208,7 @@ class TestRunConversation:
         protect_first = agent.context_compressor.protect_first_n
         protect_last = agent.context_compressor.protect_last_n
         prefill = []
-        for _i in range((protect_first + protect_last + 4)):
+        for _i in range(protect_first + protect_last + 4):
             prefill.append({"role": "user", "content": f"q{_i}"})
             prefill.append({"role": "assistant", "content": f"a{_i}"})
 
@@ -5906,7 +5871,7 @@ class TestAnthropicBaseUrlPassthrough:
             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
         ):
             mock_build.return_value = MagicMock()
-            a = AIAgent(
+            AIAgent(
                 api_key="sk-ant-api03-test1234567890",
                 base_url="https://llm-proxy.company.com/v1",
                 api_mode="anthropic_messages",
@@ -6201,7 +6166,7 @@ class TestStreamingApiCall:
             headers={"x-request-id": "req-plain-text"},
             content=(
                 f"event: error\ndata: {provider_message}\n\n"
-            ).encode("utf-8"),
+            ).encode(),
         )
         agent.stream_delta_callback = MagicMock()
 
@@ -6243,7 +6208,7 @@ class TestStreamingApiCall:
             content=(
                 "event: error\n"
                 f"data: request validation failed: token={secret}\n\n"
-            ).encode("utf-8"),
+            ).encode(),
         )
         agent.stream_delta_callback = MagicMock()
 

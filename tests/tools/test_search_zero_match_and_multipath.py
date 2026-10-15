@@ -297,7 +297,7 @@ class TestSymlinkedRootOnTheFilesLane:
 
     def test_a_symlinked_root_pointing_at_home_is_still_refused(self, tmp_path, monkeypatch):
         """The no-rg breadth guard must classify the link's target (#116270)."""
-        import tools.file_operations as file_operations
+        from tools import file_operations
         from tools.environments.local import LocalEnvironment
         from tools.file_operations import ShellFileOperations
 

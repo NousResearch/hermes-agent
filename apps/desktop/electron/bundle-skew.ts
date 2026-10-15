@@ -82,17 +82,21 @@ export const RUNTIME_PATHS = [
 
 const NOT_STALE: BundleSkewResult = { desktopCommitsBehind: null, outOfSync: false }
 
-/** About/version polls share one check per checkout, including failed checks. */
+/**
+ * About/version polls share one check per checkout, including failed checks.
+ * `isUpdating` may answer asynchronously (the marker's owner liveness is an
+ * async judgement); a sync answer keeps the check synchronous.
+ */
 export function createBundleSkewChecker(
   stamp: BundleSkewStamp | null,
   runGit: RunGit,
-  { isUpdating, now = Date.now }: { isUpdating: () => boolean; now?: () => number }
+  { isUpdating, now = Date.now }: { isUpdating: () => boolean | Promise<boolean>; now?: () => number }
 ): (repoRoot: string) => Promise<BundleSkewResult> {
   const pending = new Map<string, Promise<BundleSkewResult>>()
   const cached = new Map<string, { result: BundleSkewResult; at: number }>()
 
-  return repoRoot => {
-    if (isUpdating()) {
+  const checkUnlessUpdating = (repoRoot: string, updating: boolean): Promise<BundleSkewResult> => {
+    if (updating) {
       cached.clear()
 
       return Promise.resolve(NOT_STALE)
@@ -111,8 +115,8 @@ export function createBundleSkewChecker(
     }
 
     const check = detectBundleSkew(stamp, runGit, repoRoot)
-      .then(result => {
-        if (isUpdating()) {
+      .then(async result => {
+        if (await isUpdating()) {
           return NOT_STALE
         }
 
@@ -125,6 +129,14 @@ export function createBundleSkewChecker(
     pending.set(repoRoot, check)
 
     return check
+  }
+
+  return repoRoot => {
+    const updating = isUpdating()
+
+    return typeof updating === 'boolean'
+      ? checkUnlessUpdating(repoRoot, updating)
+      : updating.then(answer => checkUnlessUpdating(repoRoot, answer))
   }
 }
 

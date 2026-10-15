@@ -43,12 +43,17 @@ class StreamJsonEmitter:
         self._tool_started: dict[str, float] = {}
         self._emit({"type": "system", "subtype": "init", "model": model, "session_id": session_id})
 
-    def attach(self, agent) -> "StreamJsonEmitter":
+    def attach(self, agent) -> StreamJsonEmitter:
         """Route the agent's streaming/tool callbacks into this emitter (``init`` was already written at
         construction, before credentials/agent init, so a failed start still yields init + result)."""
         agent.stream_delta_callback = self.on_text_delta
         agent.tool_progress_callback = self.on_tool_progress
         return self
+
+    def bind_session(self, session_id: str) -> None:
+        """Record the id the gateway assigned after ``init`` was written, so an interrupted or failed
+        run still reports which session holds the accepted work."""
+        self._session_id = session_id or self._session_id
 
     def on_text_delta(self, text: str | None) -> None:
         # Only None/"" (the turn-end sentinel) is dropped: whitespace deltas are part of the text, and

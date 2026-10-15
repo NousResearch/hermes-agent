@@ -19,7 +19,9 @@ so the retry actually reconnects. Descriptor release stays on the worker:
 ``_call``'s ``except``/``finally`` closes the managed stream and the request
 client on the owner thread.
 """
+import contextlib
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -54,6 +56,14 @@ def _recv_shutdown_proof(reader, writer):
     its default timeout and the peer recv would time out instead."""
     writer.settimeout(5)
     assert writer.recv(1) == b"", "the killed attempt's socket was not shut down"
+
+
+def test_configured_request_budget_does_not_disable_idle_stream_timeout(monkeypatch):
+    """A long provider request budget must not make a silent SSE read wait for minutes."""
+    monkeypatch.setattr(helpers, "get_provider_request_timeout", lambda *_args: 600.0)
+    monkeypatch.setenv("HERMES_STREAM_READ_TIMEOUT", "15")
+    call = _call(_agent())
+    assert call._stream_timeouts() == (600.0, 15.0, 60.0)
 
 
 def test_shutdown_reaches_socket_through_real_httpx_wrapper_shape():
@@ -92,6 +102,34 @@ def test_shutdown_reaches_socket_through_real_httpx_wrapper_shape():
 # ── end to end: a reader parked on a silent provider must reconnect ──
 
 
+def _hold_until_client_gone(handler, release, timeout):
+    """Block until the client disconnects (FIN/RST seen), teardown, or the bound.
+
+    A live server cancels the request and closes its side once the client goes —
+    that close is what wakes the client's parked reader on Windows (``shutdown()``
+    alone does not; measured on the target box). ``close_connection`` makes the
+    socketserver close deterministically when the handler returns.
+    """
+    conn = handler.connection
+    deadline = time.time() + timeout
+    try:
+        conn.settimeout(0.1)
+        while time.time() < deadline and not release.is_set():
+            try:
+                if conn.recv(1) == b"":
+                    break
+            except TimeoutError:
+                continue
+            except OSError:
+                break  # RST also means the client is gone.
+    except OSError:
+        pass
+    finally:
+        handler.close_connection = True
+        with contextlib.suppress(OSError):
+            conn.settimeout(5.0)
+
+
 class _SilentFirstRequest:
     """Request #1: 200 + SSE headers, then NOTHING (a provider that accepted the
     connection and never produced a byte). Later requests: a normal completion."""
@@ -121,9 +159,13 @@ class _SilentFirstRequest:
                 self.send_header("content-type", "text/event-stream")
                 self.end_headers()
                 if first:
-                    # Hold the body open with no bytes at all: the client parks in
-                    # its body read. Bounded wait so teardown can never hang.
-                    hits.release.wait(timeout=30.0)
+                    # Hold the body open with no bytes at all: the client parks in its
+                    # body read until the stale kill. A live provider reacts to the
+                    # client's disconnect (the kill's FIN) by cancelling and closing;
+                    # model that, because the peer's close — not shutdown() alone — is
+                    # what wakes a parked reader on Windows (measured on the target
+                    # box). Bounded so teardown can never hang.
+                    _hold_until_client_gone(self, hits.release, timeout=30.0)
                     return
                 try:
                     chunk = {"id": "c1", "object": "chat.completion.chunk", "created": 1, "model": "m",
@@ -153,6 +195,19 @@ def silent_wire():
     wire = _SilentFirstRequest()
     yield wire
     wire.close()
+
+
+def test_cloud_stream_read_timeout_does_not_inherit_long_stale_budget(monkeypatch):
+    """A long reasoning liveness budget must not make a dead body read wait for it."""
+    monkeypatch.delenv("HERMES_STREAM_READ_TIMEOUT", raising=False)
+    monkeypatch.setattr(helpers, "get_provider_request_timeout", lambda *_args: None)
+    call = _call(_agent())
+    call.agent.base_url = "https://api.example.com/v1"
+    call._stream_stale_timeout = 609.0
+
+    _write, read, _connect = call._stream_timeouts()
+
+    assert read == 300.0
 
 
 def test_wedged_stream_unwinds_within_its_stale_budget_and_reconnects(silent_wire, monkeypatch):

@@ -12,6 +12,8 @@ from agent.sleep_clock import SleepWatch
 
 logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+
 
 class StreamingWaitMonitor:
     def _poll_local_load_notice(self, now: float) -> bool:
@@ -84,14 +86,41 @@ class StreamingWaitMonitor:
         logger.info("Computer slept for %.0fs during a model request; the stall timer skips that time.", slept)
         self.agent._touch_activity(f"resumed after the computer slept for {int(slept)}s")
 
+    def _idle_kill_threshold(self) -> float:
+        """Idle bound before the stale kill fires (phase-aware).
+
+        Until the first chunk arrives the stream keeps the full stale budget: local
+        engines legitimately stay silent for minutes before byte one (weight load,
+        long-context prefill, slot-queue waits). Once chunks have flowed, a silent
+        stream is dead or half-read — and it holds the provider connection, plus
+        every request queued behind it on a serialized local server, hostage. The
+        kill's FIN is what lets the server cancel and release the queue; on Windows
+        the peer's close (not the local shutdown) is what wakes a parked reader, so
+        this bound is where recovery starts. See ``_stream_post_chunk_idle_bound``.
+        """
+        stale = self._stream_stale_timeout
+        if stale is None:
+            stale = float("inf")
+        diag = getattr(getattr(self, "clients", None), "diag", None)
+        if not (isinstance(diag, dict) and diag.get("first_chunk_at")):
+            return stale  # prefill grace: unchanged
+        try:
+            from agent.chat_completion_helpers import _stream_post_chunk_idle_bound
+            bound = _stream_post_chunk_idle_bound(self.agent)
+        except Exception:
+            bound = None
+        if bound is None:
+            return stale
+        return min(stale, bound)
+
     def _heartbeat(self, waiting_secs: int) -> None:
         """Gateway inactivity heartbeat: the start-to-first-chunk gap (thinking,
         local prefill) can exceed the gateway timeout."""
         if waiting_secs >= 60.0:
             # No chunks for 60s+: say WHAT the wait is and WHEN recovery kicks in —
             # once per silence, not every heartbeat (#92550).
-            stale = self._stream_stale_timeout
-            watchdog = ("stream stale", stale - waiting_secs) if stale is not None and stale != float("inf") else None
+            stale = self._idle_kill_threshold()
+            watchdog = ("stream stale", stale - waiting_secs) if stale != float("inf") else None
             diag = getattr(getattr(self, "clients", None), "diag", None)
             phase = "post_chunk" if isinstance(diag, dict) and diag.get("first_chunk_at") else "first_chunk"
             if not self._mon.wait_notice.should_emit(phase, watchdog):
@@ -120,23 +149,37 @@ class StreamingWaitMonitor:
             if sleep_watch is not None:
                 self._skip_sleep(sleep_watch.slept())
             _hb_now = time.time()
-            if _is_local_base and self._poll_local_load_notice(_hb_now):
-                continue
-            # Reasoning callbacks do not clear the classic CLI spinner. The empty
-            # protocol payload resets status without adding synthetic reasoning.
-            if (self._mon.wait_notice_started_ts is not None
-                    and self.last_chunk_time["t"] > self._mon.wait_notice_started_ts):
-                self.agent._emit_wait_notice("")
-                self._mon.wait_notice_started_ts = None
-                self._mon.wait_notice.reset()
-            if _hb_now - self._mon.last_heartbeat >= _HEARTBEAT_INTERVAL:
-                self._mon.last_heartbeat = _hb_now
-                self._heartbeat(int(_hb_now - self.last_chunk_time["t"]))
+            try:
+                if _is_local_base and self._poll_local_load_notice(_hb_now):
+                    continue
+                # Reasoning callbacks do not clear the classic CLI spinner. The empty
+                # protocol payload resets status without adding synthetic reasoning.
+                if (self._mon.wait_notice_started_ts is not None
+                        and self.last_chunk_time["t"] > self._mon.wait_notice_started_ts):
+                    self.agent._emit_wait_notice("")
+                    self._mon.wait_notice_started_ts = None
+                    self._mon.wait_notice.reset()
+                if _hb_now - self._mon.last_heartbeat >= _HEARTBEAT_INTERVAL:
+                    self._mon.last_heartbeat = _hb_now
+                    self._heartbeat(int(_hb_now - self.last_chunk_time["t"]))
+            except Exception:
+                # Display and heartbeat must never preempt the safety kill below. A failing
+                # helper used to take the whole watcher down silently while the worker stayed
+                # parked in its socket read, leaving a dead stream in receiving status until
+                # the turn liveness watchdog fired minutes later. Log loudly and keep watching;
+                # the stale check below still runs.
+                logger.exception('Streaming monitor heartbeat failed; the stale watchdog stays armed')
             _stale_elapsed = time.time() - self.last_chunk_time["t"]
-            if _stale_elapsed > self._stream_stale_timeout:
-                self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.
-                self._mon.wait_notice.reset()
-                self._kill_stale_stream(_stale_elapsed)
+            try:
+                _idle_threshold = self._idle_kill_threshold()
+                if _stale_elapsed > _idle_threshold:
+                    self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.
+                    self._mon.wait_notice.reset()
+                    self._kill_stale_stream(_stale_elapsed, _idle_threshold)
+            except Exception:
+                # Never let one failed tick disarm the monitor: the kill is this
+                # thread's whole point, and the next tick re-arms and retries.
+                logger.exception("Stale stream check/kill failed; the watchdog stays armed for the next tick")
             if self.agent._interrupt_requested:
                 self._abort_for_interrupt(_stale_elapsed)
                 return

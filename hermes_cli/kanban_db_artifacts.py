@@ -138,6 +138,11 @@ def _merge_completion_prose_artifacts(
     if not row or row["workspace_kind"] != "scratch" or not row["workspace_path"]:
         return metadata
     workspace = Path(row["workspace_path"]).expanduser()
+    # Same guard as scratch cleanup (#28818): a board default_workdir on a
+    # real source tree can still be paired with workspace_kind='scratch'.
+    from hermes_cli.kanban_db_workspace import _is_managed_scratch_path
+    if not _is_managed_scratch_path(workspace):
+        return metadata
     try:
         workspace_root = workspace.resolve(strict=True)
     except (OSError, RuntimeError):

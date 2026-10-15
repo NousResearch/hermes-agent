@@ -1022,6 +1022,70 @@ def test_sync_pipeline_stop_skips_queued_playback(monkeypatch):
     assert stop.is_set() and done.is_set()
 
 
+def test_sync_pipeline_barge_in_does_not_wait_for_hung_synthesis(monkeypatch):
+    """Regression (#139106): barge-in while a sync synthesis call is in flight must
+    set tts_done_event promptly instead of waiting for a provider that never returns.
+
+    The old player waited on future.result() with no timeout, and close() then joined
+    the player and shut the executor down with wait=True — so a hung provider kept
+    tts_done_event unset and continuous voice mode never re-armed the microphone."""
+    from pathlib import Path
+
+    from tools import tts_tool
+    from tools import tts_tool_speaker
+    from tools.tts_tool_speaker import stream_tts_to_speaker
+
+    release, started = threading.Event(), threading.Event()
+    stop, done = threading.Event(), threading.Event()
+    requested, unlinked = [], []
+    real_unlink = tts_tool_speaker._unlink_quietly
+
+    def tracking_unlink(path):
+        if path:
+            unlinked.append(path)
+        real_unlink(path)
+
+    def hung_synth(text, output_path):
+        requested.append(output_path)
+        started.set()
+        release.wait(timeout=10.0)  # hold the sentence's synthesis open past the barge-in
+        Path(output_path).write_bytes(b"x" * 100)
+        return output_path
+
+    monkeypatch.setattr(tts_tool, "text_to_speech_tool", hung_synth)
+    monkeypatch.setattr(tts_tool_speaker, "_unlink_quietly", tracking_unlink)
+    fake_vm = MagicMock()
+    monkeypatch.setitem(__import__("sys").modules, "tools.voice_mode", fake_vm)
+
+    q = _drain_queue(["First full sentence here. "])
+
+    def _run():
+        with patch("tools.tts_streaming.resolve_streaming_provider", return_value=None):
+            stream_tts_to_speaker(q, stop, done)
+
+    t = threading.Thread(target=_run)
+    t.start()
+    assert started.wait(timeout=5.0), "the synthesis call never started"
+    stop.set()
+    assert done.wait(timeout=2.0), (
+        "tts_done_event never fired: close() is still waiting on the hung provider call"
+    )
+    assert not fake_vm.play_audio_file.called, "no playback may start after barge-in"
+
+    release.set()  # the provider finally returns…
+    t.join(timeout=5.0)
+    assert not t.is_alive()
+    # The abandoned synthesis delivers its file out-of-band; the discard callback must
+    # unlink it (poll: the worker thread finishes asynchronously to the pipeline thread).
+    deadline = time.monotonic() + 5.0
+    while requested and requested[0] not in unlinked and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert requested and requested[0] in unlinked, (
+        "audio delivered after barge-in should be discarded, not left on disk"
+    )
+    assert not os.path.exists(requested[0])
+
+
 def test_sync_pipeline_cleans_temp_files(monkeypatch):
     from tools import tts_tool_speaker
 

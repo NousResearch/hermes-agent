@@ -20,6 +20,7 @@ import queue
 import tempfile
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Callable, Iterable, Iterator, List, Optional
 
 from tools.tts_text_normalize import _strip_markdown_for_tts
@@ -121,7 +122,10 @@ class _SyncSentencePipeline:
         """Flush queued sentences in order (skipped if stopped), then join."""
         self._queue.put(None)
         self._player.join()
-        self._executor.shutdown(wait=True)
+        # After barge-in the player abandons the in-flight synthesis (#139106): waiting for
+        # a hung provider here would keep tts_done_event unset and never re-arm the mic.
+        stopped = self._stop.is_set()
+        self._executor.shutdown(wait=not stopped, cancel_futures=stopped)
 
     def _synthesize_to_tmp(self, cleaned: str) -> Optional[str]:
         if self._stop.is_set():
@@ -140,11 +144,34 @@ class _SyncSentencePipeline:
             _unlink_quietly(tmp_path)
             return None
 
+    def _wait_for_synthesis(self, future: Future) -> Optional[str]:
+        """Wait out one sentence's synthesis, giving up as soon as barge-in stops playback.
+
+        A stopped run must not block on a provider call that may never return; synthesis
+        failures still raise (logged by the caller) as before."""
+        while not self._stop.is_set():
+            try:
+                return future.result(timeout=0.05)
+            except FutureTimeout:
+                continue
+        self._discard_later(future)
+        return None
+
+    def _discard_later(self, future: Future) -> None:
+        """Delete a sentence's audio file if its abandoned synthesis delivers one after all."""
+        def _unlink_when_done(done: Future) -> None:
+            if not done.cancelled() and done.exception() is None:
+                _unlink_quietly(done.result())
+        future.add_done_callback(_unlink_when_done)
+
     def _drain(self) -> None:
         for _sentence, future in iter(self._queue.get, None):
+            if self._stop.is_set():
+                self._discard_later(future)
+                continue
             tmp_path = None
             try:
-                tmp_path = future.result()
+                tmp_path = self._wait_for_synthesis(future)
                 if tmp_path and not self._stop.is_set() and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 0:
                     from tools.voice_mode import play_audio_file
                     play_audio_file(tmp_path)

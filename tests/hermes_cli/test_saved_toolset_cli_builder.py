@@ -15,9 +15,10 @@ def _build(monkeypatch, config, explicit=None, coding=None):
     store.connection = None
     resolved = []
 
-    def open_session(self, host, launch):
-        resolved.append(_resolve_toolsets(launch, deepcopy(config), 'cli', False))
-        return host.session_id
+    def call(self, method, **params):
+        assert method == 'session.create'
+        resolved.append(_resolve_toolsets(params, deepcopy(config), 'cli', False))
+        return {'stored_session_id': 'gateway-session'}
 
     def construct(**kwargs):
         return SimpleNamespace(_session_db=store, model='fixture',
@@ -27,7 +28,8 @@ def _build(monkeypatch, config, explicit=None, coding=None):
     monkeypatch.setattr(cli, 'CLI_CONFIG', config)
     monkeypatch.setattr(cli, 'HermesCLI', construct)
     monkeypatch.setattr('agent.coding_context.coding_selection', lambda **kw: coding)
-    monkeypatch.setattr(GatewaySessionStore, 'open_session', open_session)
+    monkeypatch.setattr(GatewaySessionStore, 'call', call)
+    monkeypatch.setattr(GatewaySessionStore, '_adopt', lambda self, snapshot: snapshot['stored_session_id'])
     monkeypatch.setattr('hermes_cli.gateway_tools.bind_session', lambda *args: None)
     host = cli._build_cli_from_args(
         model=None, toolsets=explicit, provider=None, reasoning=None, api_key=None,
@@ -54,6 +56,9 @@ def test_empty_saved_selection_never_expands(monkeypatch, saved):
     mixin._ensure_gateway_session(host)
     assert host.enabled_toolsets == []
     assert resolved == [set()]
+    from datetime import datetime
+    mixin._new_session_id(host, datetime.now())
+    assert resolved == [set(), set()]
 
 
 def test_explicit_unknown_toolset_still_refused(monkeypatch):
@@ -77,18 +82,11 @@ def test_coding_posture_is_unchanged(monkeypatch):
 
 def test_new_uses_sanitized_selection(monkeypatch):
     from datetime import datetime
-    from hermes_cli.gateway_session_store import GatewaySessionStore
-    from gateway.session_policy import _resolve_toolsets
     config = {'platform_toolsets': {'cli': ['terminal', 'mcp-deleted-fixture']}}
-    host, _, mixin = _build(monkeypatch, config)
+    host, resolved, mixin = _build(monkeypatch, config)
     mixin._ensure_gateway_session(host)
-    received = []
-    def create(self, launch, **kwargs):
-        received.append(_resolve_toolsets(launch, deepcopy(config), 'cli', False))
-        return 'new-session'
-    monkeypatch.setattr(GatewaySessionStore, 'create', create)
-    assert mixin._new_session_id(host, datetime.now()) == 'new-session'
-    assert received == [{'terminal'}]
+    assert mixin._new_session_id(host, datetime.now()) == 'gateway-session'
+    assert resolved == [{'terminal'}, {'terminal'}]
 
 
 def test_plugin_and_portable_mcp_names_are_preserved(monkeypatch):
@@ -114,4 +112,3 @@ def test_validation_failure_is_not_silently_treated_as_stale(monkeypatch):
     monkeypatch.setattr('hermes_cli.toolset_validation.saved_toolset_resolver', broken)
     with pytest.raises(RuntimeError, match='fixture discovery failure'):
         _build(monkeypatch, {'platform_toolsets': {'cli': ['terminal']}})
-

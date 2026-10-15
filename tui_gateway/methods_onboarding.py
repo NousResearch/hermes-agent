@@ -1,5 +1,7 @@
 import threading
 
+from pathlib import Path
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()

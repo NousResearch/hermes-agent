@@ -29,10 +29,14 @@ _log = logging.getLogger(__name__)
 _DASHBOARD_CLIENT_TOUCH_MIN_INTERVAL_S = 5.0
 _dashboard_client_touched_at = 0.0
 _dashboard_client_touch_lock = threading.Lock()
+# The touch is file I/O and every caller sits on the event loop, where a slow disk stalls every
+# connection (#139011). Its own single worker, so it never ties up the pool asyncio.to_thread shares.
+_dashboard_client_touch_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="dashboard-client-touch")
 
 
 def _note_dashboard_client_activity(*, force: bool = False) -> None:
-    """Refresh the dashboard-client liveness marker (throttled, best-effort)."""
+    """Refresh the dashboard-client liveness marker (throttled, best-effort, never blocks the caller)."""
     global _dashboard_client_touched_at
     now = time.monotonic()
     with _dashboard_client_touch_lock:
@@ -40,8 +44,9 @@ def _note_dashboard_client_activity(*, force: bool = False) -> None:
             return
         _dashboard_client_touched_at = now
     try:
-        from gateway.scale_to_zero import touch_dashboard_client_heartbeat
-        touch_dashboard_client_heartbeat()
+        from gateway.scale_to_zero import dashboard_client_heartbeat_path, touch_dashboard_client_heartbeat
+        # Resolved here: the worker thread does not carry the caller's profile scope.
+        _dashboard_client_touch_pool.submit(touch_dashboard_client_heartbeat, dashboard_client_heartbeat_path())
     except Exception:
         _log.debug("dashboard client heartbeat touch failed", exc_info=True)
 

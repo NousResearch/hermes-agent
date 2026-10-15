@@ -315,7 +315,7 @@ UA** — Cloudflare will 403 you even though Hermes (which uses httpx) will succ
 ### 11. Tell the user to run `/reload-mcp`
 
 On reload, Hermes sees `auth: oauth`, calls `HermesTokenStorage.get_tokens()`,
-finds your cached tokens, skips the browser flow, and registers `mcp_<name>_*`
+finds your cached tokens, skips the browser flow, and registers `mcp__<name>__*`
 tools. Refresh happens automatically before `expires_in` elapses.
 
 ## Pitfalls & Lessons Learned

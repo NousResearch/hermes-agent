@@ -496,6 +496,28 @@ class TestConciseFormatter:
 
 
 @pytest.mark.asyncio
+async def test_agent_notify_stops_after_bounded_failed_completion_admissions(monkeypatch, tmp_path):
+    """A refused completion injection must not poll an exited process forever (#138940)."""
+    import tools.process_registry as pr_module
+
+    exited = SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="echo done", started_at=None,
+    )
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([exited] * 4, consumed=False))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    runner._enqueue_process_completion_notification = AsyncMock(return_value=False)
+
+    await runner._run_process_watcher({**_watcher_dict(), "notify_on_complete": True})
+
+    assert runner._enqueue_process_completion_notification.await_count == 3
+
+
+@pytest.mark.asyncio
 async def test_concise_mode_no_interim_output_updates(monkeypatch, tmp_path):
     """concise never pushes 'is still running~ New output' interim updates."""
     import tools.process_registry as pr_module

@@ -63,6 +63,8 @@ _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 # Storage causes that clear on their own (one session's lease/compression, not the store): the
 # home-channel notice appends the operator restart tail for every OTHER cause.
 _SELF_CLEARING_STORAGE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease"})
+_MAX_COMPLETION_INJECTION_ATTEMPTS = 3
+_MAX_COMPLETION_INJECTION_RETRY_SECONDS = 60
 
 # Durable async-delegation claim transitions: kind -> (tools.async_delegation function, failure log).
 _DURABLE_CLAIM_OPS = {
@@ -1688,8 +1690,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                       session_id, interval, notify_mode, agent_notify)
         silent = notify_mode == "off" and not agent_notify
         last_output_len = 0
+        completion_attempts = 0
+        retry_interval = interval
         while True:
-            await asyncio.sleep(interval)
+            await asyncio.sleep(retry_interval)
             session = process_registry.get(session_id)
             if session is None:
                 break
@@ -1724,8 +1728,18 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     turn_busy = await self._launching_turn_active(platform_name, watcher)
                     delivered = await self._enqueue_process_completion_notification(synth_text, completion_evt)
                     if delivered is False:
-                        # The process remains terminal; retry after failed adapter injection instead
-                        # of suppressing the result.
+                        completion_attempts += 1
+                        if completion_attempts >= _MAX_COMPLETION_INJECTION_ATTEMPTS:
+                            logger.warning(
+                                "Process watcher: completion for %s was refused after %d injection attempts; "
+                                "stopping retries",
+                                session_id, completion_attempts,
+                            )
+                            break
+                        # The process remains terminal. Retry a refused admission with bounded
+                        # exponential backoff so a disconnected adapter cannot spin the gateway loop.
+                        retry_interval = min(
+                            max(retry_interval, 1) * 2, _MAX_COMPLETION_INJECTION_RETRY_SECONDS)
                         continue
                     # The agent normally reports the result itself, so the chat gets no separate receipt.
                     # While the launching turn is still running the injection only queues a follow-up, and

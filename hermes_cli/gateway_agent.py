@@ -238,9 +238,15 @@ class GatewayAgent:
             if result.get("status") == "confirmation_required":
                 raise GatewayClientError(model_refusal_text(result, confirmed=True))
         state = self._state()
-        state.adopt_snapshot(self.connection.call("session.resume", session_id=self.session_id))
+        try:
+            state.adopt_snapshot(self.connection.call("session.resume", session_id=self.session_id))
+        except (GatewayClientError, KeyError, TypeError) as exc:
+            # Committed: the next turn runs on the new model, so main must not roll its fields back.
+            logger.warning("session.resume after the committed model switch failed: %s", exc)
         # A rebuilt stand-in reads the session's info: it must show the committed model.
-        state.info.update(model=result.get("model") or new_model, **({"provider": new_provider} if new_provider else {}))
+        provider = result.get("provider") or new_provider
+        state.info = {**(state.info or {}), "model": result.get("model") or new_model,
+                      **({"provider": provider} if provider else {})}
         self._apply_info(state.info)
 
     # -- session identity ----------------------------------------------------------------------
@@ -518,8 +524,10 @@ class GatewayAgent:
         if self.clarify_callback is not None:
             # Main's batch panel answers the clarify tool's whole question set (one ``clarify`` request).
             params["clarify_batch"] = True
-        if self._moa_preset and (self._state().info or {}).get("provider") != "moa":
-            # /moa one-shot: this admission alone runs the preset; the session's route is untouched.
+        info = self._state().info or {}
+        if self._moa_preset and (info.get("provider"), info.get("model")) != ("moa", self._moa_preset):
+            # /moa one-shot: this admission alone runs the preset (unless it is the session's own
+            # route); the session's route is untouched.
             params["model_override"] = {"model": self._moa_preset, "provider": "moa"}
         return params
 

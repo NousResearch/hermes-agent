@@ -764,3 +764,36 @@ def test_moa_one_shot_preset_rides_this_turns_submit_as_its_model_override(make_
     regular = GatewayAgent(connection=agent.connection, session_id=SID, model="claude-sonnet", provider="anthropic")
     regular.run_conversation("next")
     assert "model_override" not in dict(client.calls)["prompt.submit"]
+
+
+def test_moa_one_shot_overrides_a_moa_session_running_another_preset(make_agent):
+    """A session already on the MoA provider runs ITS preset; ``/moa`` with another preset must still
+    send that preset as the turn's override. Only the same preset is the session's own route."""
+    done = [frame("message.complete", {"text": "ok", "outcome": "completed"})]
+    agent, client = make_agent(done)
+    agent.connection.state(SID).info.update(model="fast", provider="moa")
+    GatewayAgent(connection=agent.connection, session_id=SID, model="deep", provider="moa").run_conversation("go")
+    assert dict(client.calls)["prompt.submit"]["model_override"] == {"model": "deep", "provider": "moa"}
+    client.calls.clear()
+    GatewayAgent(connection=agent.connection, session_id=SID, model="fast", provider="moa").run_conversation("again")
+    assert "model_override" not in dict(client.calls)["prompt.submit"]
+
+
+def test_a_committed_model_switch_stands_when_the_refresh_after_it_fails(make_agent):
+    """Once ``session.mutate`` commits, the gateway runs the next turn on the new model. A failed
+    ``session.resume`` refresh after that must not raise: main's caller would roll its fields back to
+    a model the session no longer has. The agent shows the model and provider the gateway committed."""
+    agent, client = make_agent([], model="old-model", provider="openrouter")
+    client.mutate_replies = [{"status": "committed", "model": "claude-sonnet-4", "provider": "anthropic"}]
+    rpc = client.rpc
+
+    async def refresh_fails(method, **params):
+        if method == "session.resume" and any(m == "session.mutate" for m, _ in client.calls):
+            raise GatewayClientError(DISCONNECTED)
+        return await rpc(method, **params)
+    client.rpc = refresh_fails
+    agent.switch_model(new_model="sonnet")
+    assert len([m for m, _ in client.calls if m == "session.mutate"]) == 1
+    assert (agent.model, agent.provider) == ("claude-sonnet-4", "anthropic")
+    rebuilt = GatewayAgent(connection=agent.connection, session_id=SID, model="old-model", provider="openrouter")
+    assert (rebuilt.model, rebuilt.provider) == ("claude-sonnet-4", "anthropic")

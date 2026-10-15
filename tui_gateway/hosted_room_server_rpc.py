@@ -27,6 +27,8 @@ class HostedRoomSessionError(RuntimeError):
 class HostedRoomServerRPC:
     """Normalize the installed server handlers for :class:`HostedRoomRuntime`."""
 
+    accepts_attachments = False  # prompt.submit here has no event-bound file resolution
+
     def __init__(self, server: ModuleType) -> None:
         self.server = server
         self._ids = itertools.count(1)

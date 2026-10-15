@@ -136,6 +136,8 @@ def build_member_dispatch(
 class PeerHostedRoomTransport(InternalSessionRPC):
     """Translate runtime session operations into recipient-validated peer RPC."""
 
+    accepts_attachments = False  # a member dispatch has no field for files
+
     def __init__(
         self, *, binding: HostedRoomBinding, route: PeerMemberRoute,
         client: HostedRoomPeerClient, source_event_seq: int = 1, task_id: str | None = None,

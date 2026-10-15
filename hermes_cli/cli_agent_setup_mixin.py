@@ -248,9 +248,7 @@ class CLIAgentSetupMixin:
                 # api_mode) must see the model this CLI will actually send, not config's `default`,
                 # or `hermes -m mimo-v2.5 --provider opencode-go` resolves an api_mode/base_url the
                 # sent model cannot use (#112600).
-                runtime = resolve_runtime_provider(
-                    requested=self.requested_provider, explicit_api_key=self._explicit_api_key,
-                    explicit_base_url=self._explicit_base_url, target_model=self.model or None)
+                runtime = resolve_runtime_provider(**self._runtime_provider_kwargs())
             except Exception as exc:
                 _primary_exc = exc
             if _primary_exc is not None:
@@ -346,6 +344,18 @@ class CLIAgentSetupMixin:
             self._active_agent_route_signature = None
         return True
 
+    def _runtime_provider_kwargs(self):
+        """Keep a selected fallback's route, not its resolved (possibly rotating) credential."""
+        from hermes_cli.fallback_config import entry_runtime_kwargs
+        entry = getattr(self, "_startup_fallback_entry", None)
+        model = getattr(self, "model", None)
+        if entry and self.requested_provider == entry["provider"]:
+            return entry_runtime_kwargs({**entry, "model": model})
+        return {
+            "requested": self.requested_provider, "target_model": model or None,
+            "explicit_api_key": self._explicit_api_key, "explicit_base_url": self._explicit_base_url,
+        }
+
     def _resolve_fallback_runtime(self, primary_exc):
         """Primary provider resolution failed: on an AuthError try each fallback entry in
         order and switch the CLI's requested_provider/model to the first that resolves.
@@ -362,16 +372,10 @@ class CLIAgentSetupMixin:
             if not _fb_provider or not _fb_model:
                 continue
             try:
-                from hermes_cli.fallback_config import resolve_entry_api_key
+                from hermes_cli.fallback_config import entry_runtime_kwargs
                 # target_model: the fallback entry names the model that will be sent; without it the
                 # ladder keys off config `default` (see _ensure_runtime_credentials, #112600).
-                _fb_kwargs = {"requested": _fb_provider, "target_model": _fb_model}
-                if _fb.get("base_url"):
-                    _fb_kwargs["explicit_base_url"] = _fb["base_url"]
-                _fb_api_key = resolve_entry_api_key(_fb)
-                if _fb_api_key:
-                    _fb_kwargs["explicit_api_key"] = _fb_api_key
-                runtime = resolve_runtime_provider(**_fb_kwargs)
+                runtime = resolve_runtime_provider(**entry_runtime_kwargs(_fb))
                 _why_log, _why = primary_failure_wording(primary_exc)  # #117482: quota is not auth
                 logger.warning(
                     "Primary provider %s (%s). Falling through to fallback: %s/%s",
@@ -382,6 +386,7 @@ class CLIAgentSetupMixin:
                     platform="cli")
                 self.requested_provider = _fb_provider
                 self.model = _fb_model
+                self._startup_fallback_entry = {**_fb, "provider": _fb_provider, "model": _fb_model}
                 # reasoning_config follows the swap in _ensure_runtime_credentials (the only caller).
                 return runtime
             except Exception:
@@ -405,9 +410,7 @@ class CLIAgentSetupMixin:
         from hermes_cli.runtime_provider import deferred_token_mint, resolve_runtime_provider
         try:
             with deferred_token_mint():  # a readiness probe never needs a live token
-                runtime = resolve_runtime_provider(
-                    requested=self.requested_provider, explicit_api_key=self._explicit_api_key,
-                    explicit_base_url=self._explicit_base_url)
+                runtime = resolve_runtime_provider(**self._runtime_provider_kwargs())
         except Exception as exc:
             return False, exc
         if not isinstance(runtime, dict):

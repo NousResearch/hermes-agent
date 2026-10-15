@@ -621,7 +621,8 @@ def _opencode_family_for_custom(requested_provider: str, base_url: str) -> Optio
 
 def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: Optional[str] = None,
                                   explicit_base_url: Optional[str] = None,
-                                  target_model: Optional[str] = None, config=None) -> Optional[dict[str, Any]]:
+                                  target_model: Optional[str] = None, config=None,
+                                  explicit_api_mode: Optional[str] = None) -> Optional[dict[str, Any]]:
     """Runtime for a llamacpp alias, a bare-custom direct alias, or a configured custom entry.
     Aliases resolving to "custom" (ollama, vllm, llamacpp, …) are treated like bare ``custom``. A
     llamacpp alias with no explicit base_url resolves to the managed server first; an explicit
@@ -647,6 +648,8 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
                            else _get_named_custom_provider(requested_provider, config=config))
     if not custom_provider:
         return None
+    if explicit_api_mode:
+        custom_provider = {**custom_provider, "api_mode": explicit_api_mode}
     base_url = ((explicit_base_url or "").strip() or custom_provider.get("base_url", "")).rstrip("/")
     if not base_url:
         return None

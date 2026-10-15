@@ -25,7 +25,7 @@ from hermes_cli.cli_agent_setup_mixin import _retire_agent
 # new model's effort behind with the old route.
 _RUNTIME_FIELDS = (
     "model", "provider", "requested_provider", "_explicit_api_key", "_explicit_base_url",
-    "api_key", "base_url", "api_mode", "reasoning_config")
+    "api_key", "base_url", "api_mode", "reasoning_config", "_startup_fallback_entry")
 
 
 def _runtime_fields(cli) -> dict:
@@ -362,7 +362,11 @@ class CLIModelSwitchMixin:
             nonlocal changed
             try:
                 _adopt(normalize(current_model), notice)
-                resolved_mode = api_mode_of(current_model)
+                from hermes_cli.runtime_provider import _parse_api_mode
+                entry = getattr(self, "_startup_fallback_entry", None) or {}
+                explicit_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport")) if (
+                    entry.get("provider") == getattr(self, "requested_provider", None)) else None
+                resolved_mode = explicit_mode or api_mode_of(current_model)
                 if resolved_mode != self.api_mode:
                     self.api_mode = resolved_mode
                     changed = True
@@ -478,6 +482,7 @@ class CLIModelSwitchMixin:
         if route is None:
             return
         stored_model, stored_provider, stored_base_url, stored_api_mode, provider_changed = route
+        self._startup_fallback_entry = None
         from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
         managed = str(stored_provider or "").strip().lower() in LLAMACPP_ALIASES
         self.model = stored_model
@@ -720,6 +725,7 @@ class CLIModelSwitchMixin:
             self._confirmed_switch_warning = None
             return False
         _cli_snapshot = _runtime_fields(self)
+        self._startup_fallback_entry = None
         self.model = result.new_model
         self.provider = result.target_provider
         self.requested_provider = result.target_provider

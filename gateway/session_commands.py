@@ -38,6 +38,8 @@ _APPROVAL_COMMANDS = frozenset({'approve', 'deny'})
 # Reports with no messaging handler: the classic CLI's own text, built by the owner for this
 # session (gateway/session_info_reads.py).
 _INFO_READS = frozenset({'toolsets', 'platforms'})
+# Commands that move the session's goal/loop/heartbeat state: every viewer's cards repaint after them.
+_AUTOMATION_COMMANDS = frozenset({'goal', 'subgoal', 'loop', 'heartbeat'})
 
 # Kanban verbs that only read the board. ``create`` would also subscribe the LOCAL chat to
 # messaging notifications, and every other verb mutates the board.
@@ -284,6 +286,9 @@ async def execute_command(connection, ref, params, *, dispatch=False):
         handle = authority._handle(ref)
         live.controls.snapshot(ref.session_id, handle.execution_generation
                                if handle.execution_state == 'running' else None)
+    if canonical in _AUTOMATION_COMMANDS:
+        from gateway.session_control_actions import publish
+        publish(authority, ref.session_id)
     prompt = prompt if prompt is not None else sink.prompt
     if prompt:
         # The client submits the turn with its own durable input id; the gateway never does.

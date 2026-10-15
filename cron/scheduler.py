@@ -3022,14 +3022,14 @@ def _pre_result_delivery_directive(
         from hermes_cli.lifecycle import has_hook
         if not has_hook("pre_result_delivery"):
             return None
-    except Exception:
+    except Exception:  # health: allow BLE001 -- fail-open hook gate: a broken gate must not break delivery
         logger.debug("Job '%s': pre_result_delivery gate failed open", d.job.get("id"), exc_info=True)
         return None
     job = d.job
     try:
         from cron.scheduler_delivery import _redact_cron_payload
         content = _redact_cron_payload(deliver_content, "delivery content")
-    except Exception:
+    except Exception:  # health: allow BLE001 -- best-effort redaction: any failure falls back to the unredacted content
         logger.debug("Job '%s': pre_result_delivery redaction failed open", job.get("id"), exc_info=True)
         content = deliver_content
     try:
@@ -3038,7 +3038,7 @@ def _pre_result_delivery_directive(
              "thread_id": t.get("thread_id")}
             for t in (_resolve_delivery_targets(job, for_failure=not d.success) or [])
         ]
-    except Exception:
+    except Exception:  # health: allow BLE001 -- best-effort target list: any failure falls back to no targets
         logger.debug("Job '%s': pre_result_delivery targets failed open", job.get("id"), exc_info=True)
         targets = []
     payload = {
@@ -3054,7 +3054,7 @@ def _pre_result_delivery_directive(
             results = _invoke_pre_result_delivery(payload)
     except _FireClaimLostDuringSideEffect:
         raise
-    except Exception:
+    except Exception:  # health: allow BLE001 -- fail-open fire site: any plugin failure degrades to a normal send
         logger.debug("Job '%s': pre_result_delivery failed open", job.get("id"), exc_info=True)
         return None
     for plugin, result in results:
@@ -3084,16 +3084,16 @@ def _invoke_pre_result_delivery(payload: dict) -> list[tuple[str, Any]]:
     from hermes_cli.plugins_dispatch import _HOOK_SKIPPED, _hook_uses_callback_timeout
     try:
         _observe("pre_result_delivery", **payload)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- observer must not break the fan-out
         logger.debug("pre_result_delivery observer failed", exc_info=True)
     try:
         manager = _plugins_mod.get_plugin_manager()
-    except Exception:
+    except Exception:  # health: allow BLE001 -- no plugin manager degrades to a normal send
         logger.debug("pre_result_delivery: no plugin manager, failed open", exc_info=True)
         return []
     try:
         timeout = _plugins_mod._resolve_hook_callback_timeout()
-    except Exception:
+    except Exception:  # health: allow BLE001 -- timeout resolution failure falls back to the default
         logger.debug("pre_result_delivery: hook timeout unresolved, using default", exc_info=True)
         timeout = 30.0
     use_timeout = _hook_uses_callback_timeout("pre_result_delivery", timeout)
@@ -3107,10 +3107,10 @@ def _invoke_pre_result_delivery(payload: dict) -> list[tuple[str, Any]]:
                     continue
             else:
                 ret = manager._invoke_hook_callback(cb, payload)
-        except (Exception, SystemExit) as exc:
+        except (Exception, SystemExit) as exc:  # health: allow BLE001 -- executes third-party plugin code: any failure degrades to a normal send, never a veto
             try:
                 manager._report_hook_failure("pre_result_delivery", cb, payload, exc)
-            except Exception:
+            except Exception:  # health: allow BLE001 -- failure reporting must not break the fail-open path
                 logger.debug("pre_result_delivery: failure report failed for %s", plugin, exc_info=True)
             continue
         if ret is not None:

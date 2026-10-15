@@ -354,7 +354,7 @@ class _Collector:
                 f"SELECT id, summary, metadata FROM task_runs WHERE task_id = ? AND id IN ({','.join('?' * len(run_ids))})",
                 (task_id, *sorted(run_ids)),
             ).fetchall()
-        except Exception as exc:
+        except Exception:  # health: allow BLE001 -- best-effort run-row lookup: any failure degrades to no run context
             logger.debug("kanban notifier: run-row lookup failed for %s", task_id, exc_info=True)
             return {}
         out = {}
@@ -363,7 +363,7 @@ class _Collector:
                 meta = row["metadata"]
                 import json as _json
                 metadata = _json.loads(meta) if meta else {}
-            except Exception:
+            except Exception:  # health: allow BLE001 -- best-effort metadata parse: any failure degrades to empty metadata
                 logger.debug("kanban notifier: run-row metadata parse failed", exc_info=True)
                 metadata = {}
             out[row["id"]] = {"summary": row["summary"], "metadata": metadata,
@@ -440,16 +440,16 @@ def _invoke_kanban_result_delivery(payload: dict) -> list[tuple[str, Any]]:
     from hermes_cli.plugins_dispatch import _HOOK_SKIPPED, _hook_uses_callback_timeout
     try:
         _observe("pre_result_delivery", **payload)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- observer must not break the fan-out
         logger.debug("pre_result_delivery observer failed", exc_info=True)
     try:
         manager = _plugins_mod.get_plugin_manager()
-    except Exception:
+    except Exception:  # health: allow BLE001 -- no plugin manager degrades to a normal send
         logger.debug("pre_result_delivery: no plugin manager, failed open", exc_info=True)
         return []
     try:
         timeout = _plugins_mod._resolve_hook_callback_timeout()
-    except Exception:
+    except Exception:  # health: allow BLE001 -- timeout resolution failure falls back to the default
         logger.debug("pre_result_delivery: hook timeout unresolved, using default", exc_info=True)
         timeout = 30.0
     use_timeout = _hook_uses_callback_timeout("pre_result_delivery", timeout)
@@ -463,10 +463,10 @@ def _invoke_kanban_result_delivery(payload: dict) -> list[tuple[str, Any]]:
                     continue
             else:
                 ret = manager._invoke_hook_callback(cb, payload)
-        except (Exception, SystemExit) as exc:
+        except (Exception, SystemExit) as exc:  # health: allow BLE001 -- executes third-party plugin code: any failure degrades to a normal send, never a veto
             try:
                 manager._report_hook_failure("pre_result_delivery", cb, payload, exc)
-            except Exception:
+            except Exception:  # health: allow BLE001 -- failure reporting must not break the fail-open path
                 logger.debug("pre_result_delivery: failure report failed for %s", plugin, exc_info=True)
             continue
         if ret is not None:
@@ -813,14 +813,14 @@ class _KanbanNotification:
             from hermes_cli.lifecycle import has_hook
             if not has_hook("pre_result_delivery"):
                 return False
-        except Exception:
+        except Exception:  # health: allow BLE001 -- fail-open hook gate: a broken gate must not break the ping
             logger.debug("kanban notifier: pre_result_delivery gate failed open", exc_info=True)
             return False
         task = self.task
         payload_summary = None
         try:
             payload_summary = _payload(ev, "summary")
-        except Exception:
+        except Exception:  # health: allow BLE001 -- best-effort summary read: any failure falls back to run/task summary
             logger.debug("kanban notifier: event summary read failed", exc_info=True)
             payload_summary = None
         run_id = getattr(ev, "run_id", None)
@@ -841,7 +841,7 @@ class _KanbanNotification:
         try:
             results = await _to_thread_process_service(
                 partial(_invoke_kanban_result_delivery, payload))
-        except Exception as exc:
+        except Exception:  # health: allow BLE001 -- fail-open fire site: any plugin failure degrades to a normal send
             logger.debug("kanban notifier: pre_result_delivery failed open for %s", self.task_id, exc_info=True)
             return False
         for _plugin, result in results:

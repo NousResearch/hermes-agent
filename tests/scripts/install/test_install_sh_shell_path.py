@@ -107,11 +107,11 @@ def test_bash_login_only_user_gets_local_bin(tmp_path):
 
 
 @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores file permissions")
-@pytest.mark.parametrize("shell, rc, line", [
-    ("/usr/bin/fish", ".config/fish/config.fish", 'fish_add_path "$HOME/.local/bin"'),
-    ("/bin/zsh", ".zshrc", "export PATH="),
+@pytest.mark.parametrize("shell, rc, line, sibling", [
+    ("/usr/bin/fish", ".config/fish/config.fish", 'fish_add_path "$HOME/.local/bin"', None),
+    ("/bin/zsh", ".zshrc", "export PATH=", ".zprofile"),
 ])
-def test_read_only_managed_rc_is_left_alone_and_install_continues(tmp_path, shell, rc, line):
+def test_read_only_managed_rc_is_left_alone_and_install_continues(tmp_path, shell, rc, line, sibling):
     """Regression for #15016: home-manager/nix-darwin link the rc to a read-only store file."""
     store = tmp_path / "store"
     store.mkdir()
@@ -127,4 +127,9 @@ def test_read_only_managed_rc_is_left_alone_and_install_continues(tmp_path, shel
     finally:
         store.chmod(0o755)
     assert managed.read_text(encoding="utf-8") == "# managed by home-manager\n"
-    assert line in out
+    # The user is told which file to fix and the line to put in it.
+    _, _, instruction = out.partition(f"cannot write {home / rc}")
+    assert line in instruction, out
+    # A writable startup file the same shell reads is still wired.
+    if sibling:
+        assert MARKER in (home / sibling).read_text(encoding="utf-8")

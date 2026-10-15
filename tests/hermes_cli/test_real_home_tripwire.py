@@ -190,14 +190,68 @@ def test_checkout_inside_a_guarded_root_is_not_hermes_state():
     """The default install checks the repo out INSIDE the home (install.sh:
     INSTALL_DIR=$HERMES_HOME/hermes-agent): the checkout, its .venv and test
     data are exempt even when the guarded root contains them; siblings under
-    that root are still refused."""
+    that root are still refused.
+
+    The install-layout markers beside the checkout are the one exception: PM
+    probes ``<parent>/manifest.json`` to detect a sealed payload and
+    ``<parent>/install-stamp.json`` to find the store for the tree it serves.
+    Those reads ask about the installation, not user state, so they are exempt
+    too — writing them is not."""
     from tests.home_io_guard import HomeIOGuard
 
     guard = HomeIOGuard(lambda: [PROJECT_ROOT.parent])
     guard.check(PROJECT_ROOT / "tests" / "home_io_guard.py")
     guard.check(PROJECT_ROOT / ".venv" / "bin" / "python", metadata=True)
+    guard.check(PROJECT_ROOT.parent / "manifest.json", metadata=True)  # payload detection
+    guard.check(PROJECT_ROOT.parent / "install-stamp.json")  # install-stamp walk-up
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(PROJECT_ROOT.parent / "manifest.json", destructive=True)
     with pytest.raises(AssertionError, match="REAL hermes home"):
         guard.check(PROJECT_ROOT.parent / "config.yaml")
+
+
+def test_borrowing_launch_install_layout_is_readable_but_never_changed(tmp_path):
+    """A temp-HERMES_HOME launch borrows the owning root's dependency store, so its probes
+    (``installs/<key>/facts.json``, the PM tool store, the managed node runtime, the package
+    caches) and the ``.pkg`` stat a namespace import makes beside them must not fail the run —
+    while the same root's USER state stays refused, and nothing in the layout may be changed."""
+    from tests.home_io_guard import HomeIOGuard
+
+    root = tmp_path / "home"
+    (root / "installs" / "abc123").mkdir(parents=True)
+    (root / "installs" / "abc123" / "facts.json").write_text("{}", encoding="utf-8")
+    (root / "tools" / "ripgrep" / "bin").mkdir(parents=True)
+    (root / "node" / "bin").mkdir(parents=True)
+    (root / "node" / "bin" / "node").write_text("", encoding="utf-8")
+    (root / "uv-cache").mkdir()
+    (root / "config.yaml").write_text("model: real", encoding="utf-8")
+    (root / "memories").mkdir()
+    (root / "memories" / "MEMORY.md").write_text("real", encoding="utf-8")
+    linked = tmp_path / "linked-node"
+    try:
+        linked.symlink_to(root / "node" / "bin" / "node")
+    except OSError:
+        linked = None
+
+    guard = HomeIOGuard(lambda: [root])
+    guard.check(root / "installs" / "abc123" / "facts.json")  # borrow read
+    guard.check(root / "tools" / "ripgrep" / "bin", metadata=True)
+    guard.check(root / "node" / "bin" / "node", metadata=True)
+    guard.check(root / "uv-cache", metadata=True)
+    guard.check(root / "discord.pkg", metadata=True)  # pkgutil.extend_path probe
+    if linked is not None:
+        guard.check(linked)  # fixture symlink resolving into the managed runtime
+    for refused in (
+        lambda: guard.check(root / "installs" / "abc123" / "facts.json", destructive=True),
+        lambda: guard.check(root / "node" / "bin" / "node", destructive=True),
+        lambda: guard.check(root / "discord.pkg", destructive=True),
+        lambda: guard.check(root / "discord.pkg"),  # a real read of the marker is not a probe
+        lambda: guard.check(root / "config.yaml"),
+        lambda: guard.check(root / "memories" / "MEMORY.md"),
+        lambda: guard.check(root / "memories", metadata=True),
+    ):
+        with pytest.raises(AssertionError, match="REAL hermes home"):
+            refused()
 
 
 def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):

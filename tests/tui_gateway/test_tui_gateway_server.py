@@ -7482,6 +7482,10 @@ def test_notification_poller_live_loop_requeues_foreign_completion_for_owner(
     }
     isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
     isolated_queue.put(event)
+    # The poller restores durable completions before draining its queue. This test
+    # owns an explicit in-memory queue and must not import unrelated events from
+    # the test home's persisted process registry.
+    monkeypatch.setattr(process_registry, "restore_completions", lambda: None)
     monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **_kwargs: emitted.append(args))
@@ -7505,7 +7509,9 @@ def test_notification_poller_live_loop_requeues_foreign_completion_for_owner(
         )
 
         assert delivered["b"] == []
-        assert emitted == []
+        # Other pollers may emit for their own sessions while this one runs; this
+        # poller must not deliver the foreign completion to session B.
+        assert not any(call[1] == "sid-b-live-handoff" for call in emitted)
         assert isolated_queue.qsize() == 1
         assert isolated_queue.queue[0] is event
 
@@ -12307,6 +12313,12 @@ def test_snapshot_restore_is_blocked_from_tui_worker():
 
 
 def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
+    from tools.environments import local as local_env
+
+    # This test checks the command's non-zero error response; launcher discovery
+    # would inspect the host install manifest because the checkout is installed
+    # under ~/.hermes on this machine.
+    monkeypatch.setattr(local_env, "_resolve_hermes_bin_dir", lambda: None)
     monkeypatch.setattr(
         server,
         "_load_cfg",

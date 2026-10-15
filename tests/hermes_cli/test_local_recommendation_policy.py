@@ -34,11 +34,15 @@ def test_small_discrete_cards_have_no_automatic_recommendation():
         assert recommended_entry(_discrete(size_gb)) is None
 
 
-def test_24gb_discrete_card_recommends_resident_qwen_27b():
-    picked = recommended_entry(_discrete(24))
+def test_24gb_discrete_card_does_not_recommend_spilled_qwen_27b():
+    assert recommended_entry(_discrete(24)) is None
+
+
+def test_32gb_discrete_card_recommends_resident_qwen_27b():
+    picked = recommended_entry(_discrete(32))
     assert picked is not None
     assert picked[1] == "best-quality-resident"
-    choice = select_variant(picked[0], _discrete(24))
+    choice = select_variant(picked[0], _discrete(32))
     assert choice is not None and choice.zero_spill
 
 

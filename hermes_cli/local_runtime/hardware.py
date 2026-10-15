@@ -324,9 +324,13 @@ def _nvidia_device_selected() -> bool:
     engine's device probe is authoritative and selects its largest discrete GPU.
     """
     with suppress(Exception):
-        engine = _configured_engine()
+        from hermes_cli.local_runtime.bootstrap import serving_engine
+
+        engine = serving_engine()
         if engine is not None:
             return engine.backend == "cuda"
+
+    with suppress(Exception):
         from hermes_cli.config import load_config_readonly
         from hermes_cli.local_runtime.binaries import resolve_backend
 

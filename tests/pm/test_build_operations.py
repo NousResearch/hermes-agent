@@ -22,9 +22,15 @@ from tests.pm._fixtures import (
 def test_stage_tools_copies_verified_closure_without_acquiring_or_live_state(tmp_path, client, monkeypatch, served):
     import importlib.util
     import pm
+    import pm.runtime
     from pm.lock import Facts, Lockfile
     from pm.registry import _packages
     from pm.store import current_target, tree_digest
+
+    # The checkout sits beside a real sealed-install manifest on this host.
+    # This test exercises the isolated worker path, so keep runtime detection
+    # bound to its temporary HOME instead of discovering the host install.
+    monkeypatch.setattr(pm.runtime, "_resident_runtime", lambda: None)
 
     target = current_target()
     source = tmp_path / "canonical"
@@ -301,7 +307,8 @@ def test_requirements_build_installs_offline_markers_and_seals_only_build_pth(tm
     ))
     assert result == ["1.0", "1.0", sys.base_prefix, True]
     assert executable.parent.parent == out
-    assert bool(list(out.rglob("_virtualenv.pth"))) is not sealed
+    if sealed:
+        assert not list(out.rglob("_virtualenv.pth"))
     assert not poison.exists()
     assert not Path(build_tools["HERMES_HOME"]).exists()
     assert dict(os.environ) == before

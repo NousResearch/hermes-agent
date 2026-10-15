@@ -78,7 +78,9 @@ class TestCliPrompt:
     def test_dangerous_command_deny(self):
         os.environ["HERMES_INTERACTIVE"] = "1"
         cb = MagicMock(return_value="deny")
-        result = check_all_command_guards("rm -rf /tmp", "local", approval_callback=cb)
+        # Keep the target below /tmp: the test runtime may itself live under /tmp,
+        # in which case deleting /tmp must hit the runtime self-delete floor.
+        result = check_all_command_guards("rm -rf /tmp/hermes-approval-test-target", "local", approval_callback=cb)
         assert result["approved"] is False
         cb.assert_called_once()
         assert cb.call_args[1]["allow_permanent"] is True

@@ -10,8 +10,10 @@ import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
+from pathlib import Path
 
 import pytest
 
@@ -51,36 +53,43 @@ def test_holder_skipped_by_one_proc_locks_pass_is_still_named(tmp_path, monkeypa
 
 
 @pytest.mark.platforms("linux")
-def test_live_writer_in_another_process_is_named_by_pid(tmp_path):
-    db = tmp_path / "state.db"
-    conn = sqlite3.connect(db)
-    conn.execute("PRAGMA journal_mode=wal")
-    conn.execute("CREATE TABLE t(x)")
-    conn.commit()
-    conn.close()
+def test_live_writer_in_another_process_is_named_by_pid():
+    # This host's /var/tmp is Btrfs, where SQLite's byte-range locks do not
+    # appear in /proc/locks. Use the small tmpfs so the test checks PID
+    # attribution rather than the backing filesystem's lock-reporting policy.
+    tmpfs = Path("/dev/shm")
+    if not tmpfs.is_dir():
+        pytest.skip("/dev/shm is unavailable for the /proc/locks integration test")
+    with tempfile.TemporaryDirectory(prefix="hermes-lock-owner-", dir=tmpfs) as directory:
+        db = Path(directory) / "state.db"
+        conn = sqlite3.connect(db)
+        conn.execute("PRAGMA journal_mode=wal")
+        conn.execute("CREATE TABLE t(x)")
+        conn.commit()
+        conn.close()
 
-    holder = subprocess.Popen(
-        [sys.executable, "-c", textwrap.dedent(f"""
-            import sqlite3, sys, time
-            c = sqlite3.connect({str(db)!r}, isolation_level=None)
-            c.execute("BEGIN IMMEDIATE")
-            c.execute("INSERT INTO t VALUES (1)")
-            print("held", flush=True)
-            time.sleep(30)
-        """)],
-        stdout=subprocess.PIPE, text=True,
-    )
-    try:
-        assert holder.stdout.readline().strip() == "held"
-        deadline = time.monotonic() + 5
-        lines = []
-        while time.monotonic() < deadline:
-            lines = state_db_write_lock_holders(db)
-            if lines:
-                break
-            time.sleep(0.05)
-        assert any(f"PID {holder.pid} " in line and "WAL write" in line for line in lines), lines
-    finally:
-        holder.kill()
-        holder.wait()
-    assert state_db_write_lock_holders(db) == []
+        holder = subprocess.Popen(
+            [sys.executable, "-c", textwrap.dedent(f"""
+                import sqlite3, sys, time
+                c = sqlite3.connect({str(db)!r}, isolation_level=None)
+                c.execute("BEGIN IMMEDIATE")
+                c.execute("INSERT INTO t VALUES (1)")
+                print("held", flush=True)
+                time.sleep(30)
+            """)],
+            stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            assert holder.stdout.readline().strip() == "held"
+            deadline = time.monotonic() + 5
+            lines = []
+            while time.monotonic() < deadline:
+                lines = state_db_write_lock_holders(db)
+                if lines:
+                    break
+                time.sleep(0.05)
+            assert any(f"PID {holder.pid} " in line and "WAL write" in line for line in lines), lines
+        finally:
+            holder.kill()
+            holder.wait()
+        assert state_db_write_lock_holders(db) == []

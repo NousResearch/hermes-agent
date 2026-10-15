@@ -57,7 +57,7 @@ def _unified(size_gb: float) -> HardwareBudget:
 #   -----+-------------------------+------------------------
 #     8  | (no recommendation)      | (none fits)
 #    16  | (no recommendation)      | (none fits)
-#    24  | qwen3.8-27b             | (none fits)
+#    24  | (no recommendation)      | (none fits)
 #    32  | qwen3.8-27b             | qwen3.6-35b-a3b
 #    48  | qwen3.8-27b             | qwen3.6-35b-a3b
 #    96  | qwen3.8-flash-next      | qwen3.8-flash-next
@@ -68,8 +68,9 @@ def _unified(size_gb: float) -> HardwareBudget:
 # Reading guide for reviewers:
 # - Discrete <=16 GB: nothing runs resident; no automatic recommendation.
 #   Browse remains available for explicit spill choices.
-# - Discrete 24-48 GB: the 27B is the flagship experience — dense reads
-#   at ~1 TB/s clear the floor easily, so quality decides.
+# - Discrete 24 GB: the XL build spills slightly even at the 64K floor, so
+#   it is not auto-recommended. At 32-48 GB it is the flagship experience:
+#   dense reads at ~1 TB/s GDDR clear the floor easily, so quality decides.
 # - 96 GB and up, discrete or unified: Flash Next fits resident. Its
 #   IQ4_XS build loads ~60 GiB — the engine reads the 26.8 GiB per-layer
 #   embedding table from disk on demand — so with its MTP head and
@@ -77,7 +78,7 @@ def _unified(size_gb: float) -> HardwareBudget:
 #   144K on 96 GB. It is the
 #   pick: highest quality, and its sparse decode clears the floor even at
 #   UMA bandwidth (~28 tok/s predicted at 210 GB/s).
-# - Unified 32-48 GB: the dense 27B predicts ~13 tok/s at UMA bandwidth
+# - Unified 32-48 GB: the dense 27B XL predicts ~12 tok/s at UMA bandwidth
 #   (below the pleasant floor), so the 35B-A3B (~60 tok/s) wins.
 # - Unified <=24 GB: no entry passes the physics check inside the UMA
 #   budget (spilling is impossible on UMA by construction — the pool IS
@@ -88,7 +89,7 @@ DECISION_TABLE = [
     (8, "unified", None, None),
     (16, "discrete", None, None),
     (16, "unified", None, None),
-    (24, "discrete", "qwen3.8-27b", "best-quality-resident"),
+    (24, "discrete", None, None),
     (24, "unified", None, None),
     (32, "discrete", "qwen3.8-27b", "best-quality-resident"),
     (32, "unified", "qwen3.6-35b-a3b", "speed-gated-quality"),
@@ -128,7 +129,7 @@ def test_recommendation_decision_table(size_gb, kind, expected, expected_reason)
     "NVIDIA RTX Spark N1X (updated device description)",
 ])
 @pytest.mark.parametrize("capacity", [24, 48, 256])
-def test_measured_n1x_profile_changes_speed_eligibility_not_fit_or_quality(monkeypatch, capacity, gpu_name):
+def test_unmeasured_n1x_q4_xl_uses_bandwidth_estimate(monkeypatch, capacity, gpu_name):
     import subprocess
     import urllib.request
 
@@ -145,9 +146,9 @@ def test_measured_n1x_profile_changes_speed_eligibility_not_fit_or_quality(monke
     budget.gpu_name = gpu_name
     budget.platform = "win32"
     entry = next(e for e in CATALOG if e.id == "qwen3.8-27b")
-    assert predicted_decode_tok_s(entry, entry.variants[0], budget) >= PLEASANT_FLOOR_TOK_S
+    assert predicted_decode_tok_s(entry, entry.variants[0], budget) < PLEASANT_FLOOR_TOK_S
     picked = recommended_entry(budget)
-    expected = {24: None, 48: "qwen3.8-27b", 256: "qwen3.8-flash-next"}[capacity]
+    expected = {24: None, 48: "qwen3.6-35b-a3b", 256: "qwen3.8-flash-next"}[capacity]
     assert (picked[0].id if picked else None) == expected
 
 

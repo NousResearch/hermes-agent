@@ -8,15 +8,6 @@
       "repo": "unsloth/Qwen3.8-27B-GGUF",
       "variants": [
         {
-          "quant": "UD-Q4_K_M",
-          "files": [
-            {
-              "path": "Qwen3.8-27B-UD-Q4_K_M.gguf",
-              "size_bytes": 16464440224
-            }
-          ]
-        },
-        {
           "quant": "UD-Q4_K_XL",
           "files": [
             {

@@ -48,7 +48,11 @@ def _killed_mid_write(tmp_path: Path, rel: str, committed: dict[str, str] | None
     for f, text in (committed or {}).items():
         (root / f).write_text(text, encoding="utf-8")
     (root / "hermes_cli/main.py").write_text("def main():\n    print('APP_REACHED')\n    return 0\n", encoding="utf-8")
-    env = {"HOME": str(home), "HERMES_HOME": str(home / ".hermes"), "PATH": os.environ.get("PATH", ""),
+    # This child deliberately uses its temporary HOME as the platform state root. The
+    # test-only DB guard therefore needs the explicit child-process bypass: without it,
+    # the guard correctly interprets <temp HOME>/.hermes/state.db as the real platform DB.
+    env = {"HOME": str(home), "HERMES_HOME": str(home / ".hermes"),
+           "HERMES_STATE_DB_GUARD_BYPASS": "1", "PATH": os.environ.get("PATH", ""),
            "LANG": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
     git_exe = shutil.which("git") or "git"
 
@@ -98,7 +102,11 @@ def _killed_mid_write(tmp_path: Path, rel: str, committed: dict[str, str] | None
     (root / ".git/info/attributes").unlink()
 
     (tmp_path / "bin").mkdir()
-    launcher = _launchers._mint_shell_launcher("hermes", tmp_path / "bin", Path(sys.executable),
+    # The developer test venv may have an editable Hermes install whose import finder
+    # resolves a missing bootstrap back to the live checkout. Use the base interpreter
+    # so recovery is exercised using only the copied tree and Python's standard library.
+    launcher_python = Path(getattr(sys, "_base_executable", sys.executable))
+    launcher = _launchers._mint_shell_launcher("hermes", tmp_path / "bin", launcher_python,
                                                _launchers._launcher_script("hermes", root, None))
     assert launcher is not None
     return root, env, original, launcher

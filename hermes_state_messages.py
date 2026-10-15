@@ -1035,75 +1035,74 @@ class SessionMessagesMixin:
             lock_holder: Optional[str] = None, tail_count: int = 0,
             carried_messages: Optional[list[dict[str, Any]]] = None,
             covered_ids: Optional[list[int]] = None,
-            unresolved_held: Optional[list[dict[str, Any]]] = None) -> int:
+            unresolved_held: Optional[list[dict[str, Any]]] = None,
+            held_for_cas: Optional[list[dict[str, Any]]] = None) -> int:
         """:meth:`archive_and_compact` on the caller's write transaction (never commits). The owner
         and the worker/canonical-mutation verbs share this one body so they cannot drift."""
         from hermes_state import SessionCompressionInProgressError
-        def _do(conn):
-            if lock_holder is not None:
-                lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
-                if lock_row is None or lock_row["holder"] != lock_holder or float(lock_row["expires_at"]) <= time.time():
-                    raise SessionCompressionInProgressError(
-                        f"Compression lease for {session_id!r} lost before commit; refusing to publish a stale compaction")
-            patch = model_config_patch is not None
-            # on_missing="raise": never commit against a vanished session row (caller keeps the original).
-            patched_model_config = self._merge_model_config_json(
-                conn, session_id, model_config_patch, on_missing="raise") if patch else None
-            # The in-transaction half of the lease-less staleness gate (#124102): the caller's
-            # rewritten_held_row_ids precheck runs outside the write lock, so a concurrent in-place
-            # rewrite landing between precheck and BEGIN IMMEDIATE was archived and its stale held
-            # body republished. Re-verify on the connection this commit holds, before any row moves.
-            if held_for_cas:
-                mismatches = getattr(self, "held_row_mismatches", None)
-                if callable(mismatches) and mismatches(conn, session_id, held_for_cas):
-                    from hermes_state_errors import HeldRowRewrittenError
-                    raise HeldRowRewrittenError(
-                        f"a held row of session {session_id} was rewritten in place before the commit")
-            proved = self._proved_coverage(conn, session_id, covered_ids, unresolved_held, watermark)
-            if proved is not None:
-                return self._archive_named_rows(
-                    conn, session_id, compacted_messages, proved[0], tail_count=tail_count,
-                    carried_messages=carried_messages, patched_model_config=patched_model_config, patch=patch,
-                    merged_away=proved[1])
-            tail_ids, tail_tool_calls = ([], 0) if watermark is None else self._tail_rows_after_watermark(
-                conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
-                (session_id, int(watermark)))
-            # Rewind targets sit AT/BELOW the watermark (all the compressor saw); unbounded, a
-            # concurrent append would steal a LIMIT slot.
-            rewind_ids: list[int] = self._resolve_carried_row_ids(
-                conn, session_id, carried_messages or [])
-            if tail_count > 0:
-                bound = watermark is not None
-                rewind_ids += [int(row["id"]) for row in conn.execute(
-                    f"SELECT id FROM messages WHERE session_id = ? AND active = 1{' AND id <= ?' if bound else ''} "
-                    "ORDER BY id DESC LIMIT ?",
-                    (session_id, *((int(watermark),) if bound else ()),
-                     int(tail_count) + self._uncounted_merged_rows(compacted_messages[-int(tail_count):]))).fetchall()]
-            rewind_ids += tail_ids
-            rewind_ids = list(dict.fromkeys(rewind_ids))
-            if rewind_ids:
-                placeholders = _placeholders(rewind_ids)
-                conn.execute("UPDATE messages SET active = 0, compacted = 0 "
-                    f"WHERE session_id = ? AND id IN ({placeholders})", [session_id, *rewind_ids])
-                conn.execute(f"{_ARCHIVE_ACTIVE_SQL} AND id NOT IN ({placeholders})", [session_id, *rewind_ids])
-            else:
-                conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
-            # Same identity carry as publish_compression_child (#59661): carried tail copies keep the
-            # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
-            # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
-            self._carry_parent_timestamps(conn, session_id, compacted_messages)
-            inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
-            if tail_ids:
-                self._clone_message_rows(conn, tail_ids)
-                inserted += len(tail_ids)
-                tool_calls_total += tail_tool_calls
-            # A carried copy whose stored identity was computed differently lands in its own
-            # display_order group and would project twice; re-fold before publishing (#122167).
-            self._reconcile_display_orders(conn, session_id)
-            conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
-                (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
-            return inserted
-        return self._execute_transcript_write(_do, compacted_messages)
+        if lock_holder is not None:
+            lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
+            if lock_row is None or lock_row["holder"] != lock_holder or float(lock_row["expires_at"]) <= time.time():
+                raise SessionCompressionInProgressError(
+                    f"Compression lease for {session_id!r} lost before commit; refusing to publish a stale compaction")
+        patch = model_config_patch is not None
+        # on_missing="raise": never commit against a vanished session row (caller keeps the original).
+        patched_model_config = self._merge_model_config_json(
+            conn, session_id, model_config_patch, on_missing="raise") if patch else None
+        # The in-transaction half of the lease-less staleness gate (#124102): the caller's
+        # rewritten_held_row_ids precheck runs outside the write lock, so a concurrent in-place
+        # rewrite landing between precheck and BEGIN IMMEDIATE was archived and its stale held
+        # body republished. Re-verify on the connection this commit holds, before any row moves.
+        if held_for_cas:
+            mismatches = getattr(self, "held_row_mismatches", None)
+            if callable(mismatches) and mismatches(conn, session_id, held_for_cas):
+                from hermes_state_errors import HeldRowRewrittenError
+                raise HeldRowRewrittenError(
+                    f"a held row of session {session_id} was rewritten in place before the commit")
+        proved = self._proved_coverage(conn, session_id, covered_ids, unresolved_held, watermark)
+        if proved is not None:
+            return self._archive_named_rows(
+                conn, session_id, compacted_messages, proved[0], tail_count=tail_count,
+                carried_messages=carried_messages, patched_model_config=patched_model_config, patch=patch,
+                merged_away=proved[1])
+        tail_ids, tail_tool_calls = ([], 0) if watermark is None else self._tail_rows_after_watermark(
+            conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
+            (session_id, int(watermark)))
+        # Rewind targets sit AT/BELOW the watermark (all the compressor saw); unbounded, a
+        # concurrent append would steal a LIMIT slot.
+        rewind_ids: list[int] = self._resolve_carried_row_ids(
+            conn, session_id, carried_messages or [])
+        if tail_count > 0:
+            bound = watermark is not None
+            rewind_ids += [int(row["id"]) for row in conn.execute(
+                f"SELECT id FROM messages WHERE session_id = ? AND active = 1{' AND id <= ?' if bound else ''} "
+                "ORDER BY id DESC LIMIT ?",
+                (session_id, *((int(watermark),) if bound else ()),
+                 int(tail_count) + self._uncounted_merged_rows(compacted_messages[-int(tail_count):]))).fetchall()]
+        rewind_ids += tail_ids
+        rewind_ids = list(dict.fromkeys(rewind_ids))
+        if rewind_ids:
+            placeholders = _placeholders(rewind_ids)
+            conn.execute("UPDATE messages SET active = 0, compacted = 0 "
+                f"WHERE session_id = ? AND id IN ({placeholders})", [session_id, *rewind_ids])
+            conn.execute(f"{_ARCHIVE_ACTIVE_SQL} AND id NOT IN ({placeholders})", [session_id, *rewind_ids])
+        else:
+            conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
+        # Same identity carry as publish_compression_child (#59661): carried tail copies keep the
+        # durable row's timestamp so display dedupe still collapses generations. Donors are active-only;
+        # the rewound/archived originals above never donate, so this is a no-op for a clean compaction.
+        self._carry_parent_timestamps(conn, session_id, compacted_messages)
+        inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
+        if tail_ids:
+            self._clone_message_rows(conn, tail_ids)
+            inserted += len(tail_ids)
+            tool_calls_total += tail_tool_calls
+        # A carried copy whose stored identity was computed differently lands in its own
+        # display_order group and would project twice; re-fold before publishing (#122167).
+        self._reconcile_display_orders(conn, session_id)
+        conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
+            (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
+        return inserted
 
     def _message_column_names(self, conn) -> list[str]:
         """Column names of the messages table, cached per-connection era."""

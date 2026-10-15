@@ -14,7 +14,29 @@ from tools.skills_hub_official import OptionalSkillSource
 from tools.skills_tool import skill_view
 
 # Cover each proposed catalog entry through its real public install identifier.
-RENDER_SKILLS = [("mcp", "render-mcp"), ("devops", "render-deploy"), ("devops", "render-debug")]
+RENDER_SKILLS = [
+    ("devops", "render-background-workers"),
+    ("devops", "render-blueprints"),
+    ("devops", "render-cli"),
+    ("devops", "render-cron-jobs"),
+    ("devops", "render-debug"),
+    ("devops", "render-deploy"),
+    ("devops", "render-disks"),
+    ("devops", "render-docker"),
+    ("devops", "render-domains"),
+    ("devops", "render-env-vars"),
+    ("devops", "render-keyvalue"),
+    ("mcp", "render-mcp"),
+    ("migration", "render-migrate-from-heroku"),
+    ("devops", "render-monitor"),
+    ("devops", "render-networking"),
+    ("devops", "render-postgres"),
+    ("devops", "render-private-services"),
+    ("devops", "render-scaling"),
+    ("devops", "render-static-sites"),
+    ("devops", "render-web-services"),
+    ("devops", "render-workflows"),
+]
 
 
 @pytest.mark.parametrize(("category", "name"), RENDER_SKILLS)

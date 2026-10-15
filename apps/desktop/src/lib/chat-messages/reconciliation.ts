@@ -1,5 +1,6 @@
 import { attachmentTolerantUserText, sameAttachmentTurn } from './attachment-turn'
 import { chatMessageText } from './parts'
+import { preserveNewerReviewSummaries } from './review-summary'
 import type { ChatMessage, ChatMessagePart } from './types'
 
 const validTimelineBoundary = (value: unknown): value is number =>
@@ -531,8 +532,13 @@ function insertPreservedErrorRuns(
 
 export function preserveLocalAssistantErrors(
   nextMessages: ChatMessage[],
-  currentMessages: ChatMessage[]
+  currentMessages: ChatMessage[],
+  reviewSnapshot?: ChatMessage[]
 ): ChatMessage[] {
+  if (reviewSnapshot) {
+    nextMessages = preserveNewerReviewSummaries(nextMessages, currentMessages, reviewSnapshot)
+  }
+
   const reconciled: ChatMessage[] = reconcileLocalAssistantTimeline(nextMessages, currentMessages)
   const merged: ChatMessage[] = mergeStoredAssistantErrors(reconciled, currentMessages)
   const preserveIds: Set<string> = localAssistantErrorIdsToPreserve(merged, currentMessages)

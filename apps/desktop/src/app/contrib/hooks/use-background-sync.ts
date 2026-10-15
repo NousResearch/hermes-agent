@@ -395,7 +395,8 @@ export async function reconcileTileTranscripts({
                 graftRefreshedTailOntoBackfill(messages, state.messages),
                 state.messages
               ),
-              state.messages
+              state.messages,
+              messagesAtRequest ?? []
             ),
             state.messages
           )
@@ -485,7 +486,8 @@ export async function hydrateStoredSessionTranscript({
                 graftRefreshedTailOntoBackfill(messages, state.messages),
                 state.messages
               ),
-              state.messages
+              state.messages,
+              messagesAtRequest ?? []
             ),
             state.messages
           )
@@ -594,6 +596,7 @@ export async function reconcileActiveTranscript({
   try {
     const profileScope: ProfileScope = profileScopeForTranscriptSession(stored)
 
+    const messagesBeforeRead = $sessionStates.get()[runtimeSessionId]?.messages ?? []
     const latest = await getLatestSessionMessages(storedSessionId, profileScope)
     const replayAtReturn = pendingSessionReplay(runtimeSessionId)
 
@@ -656,7 +659,8 @@ export async function reconcileActiveTranscript({
         messages: preserveLocalSystemNotices(
           preserveLocalAssistantErrors(
             preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
-            state.messages
+            state.messages,
+            messagesAtRequest ?? []
           ),
           state.messages
         )

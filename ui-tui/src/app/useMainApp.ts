@@ -62,6 +62,7 @@ import { applyProcessSnapshot, type ProcessEntry } from './processRoster.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { respondToServerRequest } from './serverRequestStore.js'
 import { mutateCanonicalSession } from './slash/canonicalSessionControls.js'
+import { loadSlashCatalog } from './slashCatalog.js'
 import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
@@ -678,6 +679,12 @@ export function useMainApp(gw: GatewayClient) {
 
   useConfigSync({ gw, setBellOnComplete, setBellOnPrompt, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
   useBatteryPoll(gw)
+
+  useEffect(() => {
+    if (ui.sid && ui.gatewayConnected !== false) {
+      void loadSlashCatalog(rpc, ui.sid, setCatalog)
+    }
+  }, [rpc, ui.sid, ui.gatewayConnected])
 
   useEffect(() => {
     if (!ui.sid) {

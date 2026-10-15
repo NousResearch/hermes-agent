@@ -379,9 +379,16 @@ def test_task_discovery_reads_localized_schtasks_output(tmp_path, monkeypatch):
     # The console code page this host would report; the bytes below are what such a console writes.
     monkeypatch.setattr(gateway_windows, "_windows_console_encodings", lambda: ["cp936"])
 
-    def run(argv, *_args, encoding=None, **_kwargs):  # subprocess semantics: bytes, or decoded with encoding
+    def run(argv, *_args, encoding=None, **_kwargs):
+        # Windows subprocess decodes text in a reader thread: a decode error there leaves stdout None
+        # (main then read an empty task list and fell through to an unmanaged spawn), it does not raise.
         data = next(text for key, text in out.items() if key in argv).encode("cp936")
-        return SimpleNamespace(returncode=0, stdout=data.decode(encoding) if encoding else data)
+        if encoding:
+            try:
+                data = data.decode(encoding)
+            except UnicodeDecodeError:
+                data = None
+        return SimpleNamespace(returncode=0, stdout=data)
 
     monkeypatch.setattr(service, "_run", run)
     found = service.discover_existing_gateway_service(home, deadline=time.monotonic() + 5)

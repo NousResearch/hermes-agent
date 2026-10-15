@@ -61,6 +61,16 @@ export async function canonicalGroupRequest<T>(
     throw new Error('Canonical group profile does not match its authority')
   }
 
+  // Older gateways reject the attachment field even when there are no files.
+  // Normalize only the wire copy so restored sends keep their event identity.
+  const payload = params.payload as Record<string, unknown> | undefined
+
+  if (method === 'groups.send' && Array.isArray(payload?.attachments) && payload.attachments.length === 0) {
+    const textPayload = { ...payload }
+    delete textPayload.attachments
+    params = { ...params, payload: textPayload }
+  }
+
   // The descriptor overload never falls back to the foreground gateway.
   return host.requestProfile<T>({
     connectionId: route.connectionId,

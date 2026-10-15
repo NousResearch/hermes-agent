@@ -154,7 +154,8 @@ it('a Send that converges on another window\'s pending intent keeps this window\
   fireEvent.change(screen.getByRole('textbox'), { target: { value: 'typed here' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   await waitFor(async () => expect(await readCanonicalGroupSend(binding)).toBeUndefined())
-  expect(request.mock.calls.filter(c => c[1] === 'groups.send').map(c => c[2])).toEqual([{ ...other.params, profile: 'team' }])
+  const { attachments: _emptyAttachments, ...wirePayload } = other.params.payload
+  expect(request.mock.calls.filter(c => c[1] === 'groups.send').map(c => c[2])).toEqual([{ ...other.params, payload: wirePayload, profile: 'team' }])
   await waitFor(() => expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('typed here'))
   expect((screen.getByRole('textbox') as HTMLTextAreaElement).disabled).toBe(false)
 })

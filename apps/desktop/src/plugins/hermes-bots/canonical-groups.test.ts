@@ -94,3 +94,25 @@ it('creates only same-authority rosters and dispatches exact advertised attempt 
   expect(host.requestProfile).toHaveBeenCalledTimes(count)
   expect(host.request).not.toHaveBeenCalled()
 })
+
+it('sends text-only messages to gateways without attachment support, including restored retries', async () => {
+  const route = captureCanonicalGroupRoute()
+  host.requestProfile.mockImplementation(async (_route, method, params) => {
+    if (method === 'groups.send' && 'attachments' in params.payload) {
+      throw new Error('user payload has unknown fields: attachments')
+    }
+
+    return { accepted: true }
+  })
+  const params = { room_id: 'room', event_id: 'same-retry-id', payload: { text: 'Salut la compagnie', thread_id: 'thread', attachments: [] } }
+  await expect(canonicalGroupRequest(route, 'groups.send', params)).resolves.toEqual({ accepted: true })
+  expect(host.requestProfile.mock.lastCall?.[2]).toEqual({
+    room_id: 'room', event_id: 'same-retry-id', profile: 'default',
+    payload: { text: 'Salut la compagnie', thread_id: 'thread' }
+  })
+  expect(params.payload.attachments).toEqual([])
+  await expect(canonicalGroupRequest(route, 'groups.send', {
+    ...params, payload: { text: 'Photo', attachments: [{ attachment_id: 'image' }] }
+  })).rejects.toThrow('unknown fields: attachments')
+  expect(host.requestProfile.mock.lastCall?.[2].payload.attachments).toEqual([{ attachment_id: 'image' }])
+})

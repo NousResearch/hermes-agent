@@ -1,7 +1,9 @@
 """Launch windows are sized beside what other programs hold on the card, not from capacity alone.
 
-On a 32 GiB card, the catalog's Qwen3.8 27B profile fits smaller windows as other programs claim
-VRAM. Launch-time planning must follow that live budget and keep model weights on the GPU.
+On a 32 GiB card, the capacity plan booted Qwen3.8 27B at 216K. That fit only while other
+programs held about 3.4 GiB or less. With 4.5-6.3 GiB held, Windows paged part of the model to
+host memory without an error, and decode fell from ~90 to ~24 tok/s. The window must shrink to
+what fits now, and the weights must stay on the GPU.
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ CARD_TOTAL = int(31.84 * GIB)
 CARD_CAPACITY = HardwareBudget(
     usable_vram_bytes=CARD_TOTAL - max(hardware._MARGIN_FLOOR, int(CARD_TOTAL * hardware._MARGIN_FRACTION)),
     total_device_bytes=CARD_TOTAL, ram_available_bytes=256 * GIB, uma=False)
-MODEL_ID = "Qwen3.8-27B-UD-Q4_K_XL"
+MODEL_ID = "Qwen3.8-27B-UD-Q4_K_M"
 
 
 @pytest.fixture
@@ -29,9 +31,6 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 def _card(monkeypatch, others_gib: float, *, total: int = CARD_TOTAL):
-    # The fixture is specifically an NVIDIA launch budget. Backend discovery can
-    # observe the host's installed engine and choose a different adapter.
-    monkeypatch.setattr(hardware, "_nvidia_device_selected", lambda: True)
     monkeypatch.setattr(hardware, "_nvidia_vram",
                         lambda: (total, total - int(others_gib * GIB), "NVIDIA GeForce RTX 5090", None))
 
@@ -133,11 +132,11 @@ def _stage_27b(hermes_home, monkeypatch):
 
 @pytest.mark.parametrize("others_gib,window_k", [
     (0.0, 216),   # quiet card: capacity plan unchanged
-    (3.0, 144),
-    (3.6, 144),
-    (4.5, 144),
-    (5.4, 96),
-    (6.5, 96),
+    (3.0, 216),
+    (3.6, 144),   # measured: 216K ran with 0.7 GiB spare here — too close to keep
+    (4.5, 144),   # measured: 216K demoted to ~24 tok/s here
+    (5.4, 144),
+    (6.5, 96),    # measured smoke run held 6.3 GiB at peak
     (8.5, 64),
 ])
 def test_27b_window_follows_other_programs(hermes_home, monkeypatch, others_gib, window_k):
@@ -199,7 +198,7 @@ def test_boot_writes_the_launch_window(hermes_home, monkeypatch, capacity_probe)
     _card(monkeypatch, 5.4)
     path = hermes_home / "presets.ini"
     assert bootstrap._generate_presets(mdir, path) == path
-    assert presets.read_preset_decisions(path)[MODEL_ID].window == 96 * 1024
+    assert presets.read_preset_decisions(path)[MODEL_ID].window == 144 * 1024
 
 
 def test_boot_keeps_capacity_when_the_probe_fails(hermes_home, monkeypatch, capacity_probe):

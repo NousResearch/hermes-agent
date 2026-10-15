@@ -98,10 +98,7 @@ def test_cold_cli_builds_own_runtime_discovers_plugins_and_repairs_app(tmp_path,
     source = Path(__file__).resolve().parents[2]
     repo = tmp_path / "source"
     repo.mkdir()
-    # Source-update completion runs config migrations from the checked-out app too.
-    # Keep the fixture lean, but include agent: migration hooks import it even when
-    # this tiny home has no configured memory provider or legacy plugin to migrate.
-    for name in ("pm", "hermes_cli", "agent", "hermes_platform"):
+    for name in ("pm", "hermes_cli"):
         shutil.copytree(source / name, repo / name,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     for name in ("utils.py", "hermes_constants.py", "hermes_yaml.py",
@@ -114,7 +111,7 @@ def test_cold_cli_builds_own_runtime_discovers_plugins_and_repairs_app(tmp_path,
     (repo / "pyproject.toml").write_text(
         '[project]\nname="cold-pm-app"\nversion="0.0.0"\n'
         'requires-python=">=3.14,<3.15"\n'
-        f'dependencies=[{json.dumps(yaml_requirement)}, "python-dotenv==1.2.2"]\n'
+        f'dependencies=[{json.dumps(yaml_requirement)}]\n'
         '[project.optional-dependencies]\nall=[]\n'
         '[tool.uv]\npackage=false\n', encoding="utf-8",
     )
@@ -210,7 +207,7 @@ assert importlib.util.find_spec('idna') is None
             )
             launched = _run([str(bootstrap_python), "-B", str(entry)], cwd=repo, env=env)
             launch_report = json.loads(launched.stdout)
-            assert Path(launch_report["python"]).is_relative_to(store), launched.stderr
+            assert Path(launch_report["python"]).is_relative_to(store)
             assert launch_report["version"] == list(sys.version_info[:2])
             assert Path(launch_report["idna"]).is_relative_to(hermes_home / "installs")
             assert launched.stderr.count("completing source-update dependencies") == 1

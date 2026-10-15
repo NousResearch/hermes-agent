@@ -200,9 +200,10 @@ _HOST_BANDWIDTH_GB_S = 80.0         # spilled weights stream over host DRAM
 PLEASANT_FLOOR_TOK_S = 20.0
 
 # Shipped short-context reference rates, not benchmarks run during recommendation.
-# Windows N1X / b10964 CUDA: MTP2 Q4_K_M measured 21.76–21.96 tok/s over four
-# 512-token prose probes; a four-slot smoke measured 21.89. Measurements are
-# keyed by exact quant and draft depth; Q4_K_XL uses the bandwidth estimate.
+# Windows N1X / b10964 CUDA: MTP2 measured 21.76–21.96 tok/s over four 512-token
+# prose probes; a four-slot smoke measured 21.89. At 32K input the reference was
+# 18.82 tok/s: this is a baseline estimate, not a context-independent guarantee.
+# Unmatched hardware, backend, quant or draft depth retains the bandwidth estimate.
 _MEASURED_DECODE_TOK_S = {
     ("win32", "cuda", "NVIDIA RTX Spark N1X",
      "qwen3.8-27b", "UD-Q4_K_M", 2): 21.9,

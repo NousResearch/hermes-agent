@@ -46,9 +46,7 @@ def _rpc(method, transport=None, **params):
     reply = server.dispatch({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, transport)
     if reply is not None:
         return reply
-    # The full suite runs many per-file workers at once; under that CPU contention
-    # this handler can be delayed even though the RPC is healthy.
-    assert transport.arrived.wait(15), "no reply"
+    assert transport.arrived.wait(5), "no reply"
     return next(frame for frame in transport.frames if frame.get("id") == 1)
 
 

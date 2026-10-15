@@ -675,7 +675,7 @@ def _migrate_to_48(results: dict[str, Any], quiet: bool) -> None:
             )(results, quiet)
 
 
-def _migrate_to_54(results: Dict[str, Any], quiet: bool) -> None:
+def _migrate_to_54(results: dict[str, Any], quiet: bool) -> None:
     # 53 → 54: move custom-endpoint secrets out of config.yaml.
     if not _local_files_allowed():
         return

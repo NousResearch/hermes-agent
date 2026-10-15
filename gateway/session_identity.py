@@ -189,6 +189,19 @@ def restore_identity(
     return identity
 
 
+def pin_admitted_transport(source: SessionSource, *, runner: Any, provenance: Any) -> None:
+    """Pin the receiving bot a native admission's verified provenance names onto *source* (rebuilt
+    from the envelope, so it carries no identity) before its routing entry is written. Without it a
+    natively admitted session persists no ``transport_profile``, and every later revival (startup
+    recovery, auto-resume, notifications) falls back to the runtime profile's adapters: a routed
+    profile behind the primary's shared Relay then has no adapter at all. Provenance carries
+    ``transport_profile`` only under multiplexing (``None`` = the primary's bot)."""
+    if not isinstance(provenance, dict) or "transport_profile" not in provenance:
+        return
+    primary = _name(getattr(runner, "_primary_profile_name", None)) or "default"
+    restore_identity(source, runner=runner, transport_profile=_name(provenance["transport_profile"]) or primary)
+
+
 def resolve_identity(
     source: SessionSource, *, runner: Any, adapter: Any = None,
     transport_profile: Optional[str] = None, primary_home: Optional[Path] = None,

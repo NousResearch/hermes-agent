@@ -373,6 +373,17 @@ async def start_gateway_runtime_api(runner):
             await recover_bot_deliveries(authority)
 
 
+def _prime_recovered_egress(bindings):
+    """Warm a Relay's per-chat egress routing for every session recovery may run. Those caches fill
+    only on live inbound, so after a restart a recovered turn's reply would leave without the
+    scope/user discriminators the connector requires (or on the primary's platform) and be declined."""
+    from gateway.delivery import prime_revived_egress
+    from gateway.platforms.event import MessageEvent
+    for _sid, origin, adapter in bindings:
+        if adapter is not None:
+            prime_revived_egress(adapter, MessageEvent(text='', source=origin))
+
+
 async def recover_gateway_native_sessions(runner):
     """Recover against the published routing index and currently connected adapters.
 
@@ -396,9 +407,14 @@ async def recover_gateway_native_sessions(runner):
             await recover_webhook_finalizations(authority)
             pending = {row['target_session_id'] for row in authority.db._read_all(
                 "SELECT DISTINCT target_session_id FROM session_admissions WHERE status IN ('queued','unknown')")}
-            bindings = [(owner, entry.origin, runner._adapter_for_source(entry.origin))
+            # Revived from durable state: read the origin through _restored_source (identity re-pinned
+            # from the persisted transport_profile), as every other revival path does, so a routed
+            # profile's lane finds the bot that received it (a shared Relay) rather than none.
+            bindings = [(owner, origin, runner._adapter_for_source(origin))
                         for entry in runner.session_store.list_sessions() if entry.origin is not None
-                        for owner in [authority.logical_owner(entry.session_id)] if owner in pending]
+                        for owner in [authority.logical_owner(entry.session_id)] if owner in pending
+                        for origin in [runner._restored_source(entry)]]
+            _prime_recovered_egress(bindings)
             outcome = await authority.recover_native_sessions(bindings)
         for sid, verdict in outcome.items():
             logger.info('Native session startup recovery %s (%s): %s', sid, authority.profile_id, verdict)

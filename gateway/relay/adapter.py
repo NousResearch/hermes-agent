@@ -1135,7 +1135,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
                     # A prompt-token component press is consumed (same gate as _on_inbound).
                     if await self._consume_prompt_response(event):
                         return
-                    await self.handle_message(event)
+                    from gateway.relay.adapter_native import dispatch_passthrough_event
+                    await dispatch_passthrough_event(self, event)
                     return
             logger.info(
                 "relay passthrough_forward dropped (no handler): platform=%s method=%s path=%s",

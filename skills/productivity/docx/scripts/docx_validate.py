@@ -51,6 +51,23 @@ def _rel_target(base_part: str, target: str) -> str:
     return posixpath.normpath(posixpath.join(base_dir, target)).lstrip("/")
 
 
+def _rels_owner(rels_name: str) -> str:
+    """Return the exact source part that owns a relationships part.
+
+    OPC names each relationship part "<owner-dir>/_rels/<owner-name>.rels"
+    (the package root is "_rels/.rels"). Relationship IDs are scoped to that
+    owner part alone, so each owner gets its own bucket. Empty string is
+    returned for the package root.
+    """
+    rels_dir = posixpath.dirname(rels_name)
+    stem = posixpath.basename(rels_name)
+    if stem.endswith(".rels"):
+        stem = stem[: -len(".rels")]
+    base_dir = rels_dir[: -len("_rels")] if rels_dir.endswith("_rels") else rels_dir
+    owner = posixpath.join(base_dir, stem)
+    return posixpath.normpath(owner) if owner else ""
+
+
 def validate(path: str) -> dict:
     issues: list[dict] = []
 
@@ -80,9 +97,7 @@ def validate(path: str) -> dict:
         except etree.XMLSyntaxError as exc:
             _issue(issues, "error", "bad-rels-xml", f"{rels_name}: {exc}")
             continue
-        source_part = posixpath.normpath(
-            posixpath.join(posixpath.dirname(rels_name), ".."))
-        source_part = "" if source_part == "." else source_part
+        owner = _rels_owner(rels_name)
         ids = {}
         for rel in root.iter(f"{{{PR}}}Relationship"):
             rid, target = rel.get("Id"), rel.get("Target", "")
@@ -90,16 +105,15 @@ def validate(path: str) -> dict:
             ids[rid] = target
             if mode == "External":
                 continue
-            resolved = _rel_target(source_part + "/x" if source_part
-                                   else "x", target)
+            resolved = _rel_target(owner, target)
             if resolved not in names:
                 _issue(issues, "error", "dangling-rel",
                        f"{rels_name}: {rid} -> {target} (missing part)")
-        rel_ids_by_source[source_part or "_package"] = ids
+        rel_ids_by_source[owner or "_package"] = ids
 
     # --- r:id / r:embed references in document.xml -----------------------
     doc_root = etree.fromstring(zf.read("word/document.xml"))
-    doc_rels = rel_ids_by_source.get("word", {})
+    doc_rels = rel_ids_by_source.get("word/document.xml", {})
     for el in doc_root.iter():
         for attr in (f"{{{R}}}id", f"{{{R}}}embed", f"{{{R}}}link"):
             rid = el.get(attr)

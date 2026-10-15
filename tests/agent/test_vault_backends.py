@@ -270,10 +270,13 @@ def test_onepassword_service_account_reads_name_the_items_own_vault(fake_op_serv
     """#108335: a service account can list logins but every fill/OTP read failed because
     `op item get` never named a vault. Each read now carries the vault its listing reported."""
     new_backend, log = fake_op_service_account
-    assert new_backend().resolve_password("op:item-b") == "dummy-password"
-    assert new_backend().resolve_otp("op:item-a") == "123456"
-    gets = [a for a in map(json.loads, log.read_text(encoding="utf-8-sig").splitlines()) if a[:2] == ["item", "get"]]
-    assert [a[a.index("--vault") + 1] for a in gets] == ["vault-b", "vault-a"]
+    fill = new_backend()  # a fill: get_meta proves handle + origin, then the read reuses that listing
+    assert fill.get_meta("op:item-b") is not None
+    assert fill.resolve_password("op:item-b") == "dummy-password"
+    assert new_backend().resolve_otp("op:item-a") == "123456"  # a code read on a fresh backend lists once
+    calls = [a[:2] if a[:2] == ["item", "list"] else a for a in map(json.loads, log.read_text(encoding="utf-8-sig").splitlines())]
+    assert calls == [["item", "list"], ["item", "get", "item-b", "--vault", "vault-b", "--fields", "label=password", "--reveal"],
+                     ["item", "list"], ["item", "get", "item-a", "--vault", "vault-a", "--otp"]]
 
 
 def test_onepassword_service_account_refusals_name_the_real_cause(fake_op_service_account):

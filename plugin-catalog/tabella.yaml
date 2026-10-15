@@ -1,23 +1,26 @@
 name: tabella
 repo: https://github.com/dyiapanis/tabella
-sha: ab95c7806e969bf88127edf083228e49b3700ac4
+sha: 847cd6436a08a2bcc7412602572ad29357f9cda6
 description: >-
   Document lifecycle for agents in one package: create .docx/.xlsx/.pptx/.pdf/.odt/.ods/.odp
   from structured JSON or raw HTML/CSS, convert between formats via pandoc + LaTeX, and read
   any document — anydoc (Rust, office formats and text PDFs to Markdown, in-process) with
   LiteParse + Tesseract OCR fallback for scanned PDFs and images, plus PDF text editing with
-  strict output containment and output-directory guards. Ships as an Agent Plugins v1 package
-  (auto-discovered plugin.json + mcp.json declaring a stdio MCP server — the client spawns it
-  per the v1 lifecycle, PLUGIN_ROOT/PLUGIN_DATA injected — plus an optional self-host
-  streamable-HTTP server on loopback for clients that prefer a URL; first run of either
-  bootstraps the dependency venv), a pip package, and a Hermes plugin. Disclosure — Python deps
-  (python-docx, openpyxl, python-pptx, weasyprint, odfpy, nano-pdf, firecrawl-anydoc, liteparse)
-  are pinned and installed by scripts/setup.sh into a venv under PLUGIN_DATA or ~/.venvs/docs;
-  system packages pandoc and texlive-xetex are required for PDF conversion (weasyprint for
-  HTML->PDF); OCR needs the tesseract binary; all conversion, reading, OCR and PDF editing run
-  locally with no network or telemetry; nothing is uploaded; documents are read/written only at
-  paths you pass (absolute output paths are containment-checked against the configured output
-  directory). Linux is the tested platform.
+  output-directory guards. Ships as an Agent Plugins v1 package (auto-discovered plugin.json +
+  mcp.json declaring a stdio MCP server — the client spawns it per the v1 lifecycle,
+  PLUGIN_ROOT/PLUGIN_DATA injected — plus an optional self-host streamable-HTTP server;
+  first run of either bootstraps the dependency venv). The HTTP lane binds to 127.0.0.1 only
+  and is keyless by default; set TABELLA_TOKEN to require Bearer auth. Disclosure — Python
+  deps (python-docx, openpyxl, python-pptx, weasyprint, odfpy, Pillow, lxml, PyMuPDF,
+  firecrawl-anydoc, liteparse — 10 direct packages, transitives included in a 25-package
+  closure) are pinned to exact versions with sha256 hashes in requirements-pinned.txt and
+  installed by scripts/setup.sh with --require-hashes into a venv under PLUGIN_DATA or
+  ~/.venvs/docs; system packages pandoc and texlive-xetex are required for PDF conversion
+  (weasyprint for HTML->PDF); OCR needs the tesseract binary; all conversion, reading, OCR
+  and PDF editing run locally with no network or telemetry; nothing is uploaded; read,
+  convert, and PDF-edit tools access exactly the filesystem paths you pass; doc_create_document
+  additionally containment-checks its output paths against the configured output directory
+  (escape warns). Linux is the tested platform.
 maintainer: dyiapanis
 tier: community
 category: tools

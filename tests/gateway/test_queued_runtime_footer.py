@@ -10,6 +10,7 @@ from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
+from gateway.turn_context import TurnContext
 
 
 SESSION_KEY = "agent:main:discord:dm:room-1"
@@ -62,15 +63,17 @@ def _turn_context(streamed=False):
     consumer = SimpleNamespace(
         final_response_sent=True, delivered_final_matches=lambda text: text == FIRST_TEXT,
     )
-    return source, SimpleNamespace(
+    turn_ctx = TurnContext(
         source=source, session_id="session", session_key=SESSION_KEY, history=[],
-        _interrupt_depth=0, context_prompt=None, result_holder=[],
+        _interrupt_depth=0, context_prompt=None,
         stream_consumer_holder=[consumer if streamed else None],
         mute_notification_reply=False, persist_user_display_kind=None, reply_expected=True,
         _status_thread_metadata={"thread_id": source.thread_id},
         event_message_id="input-1", inbound_message_id="input-1", run_generation=1,
         turn_seconds=22.0, runtime_footer_already_delivered=False,
     )
+    turn_ctx.result_holder = [None]
+    return source, turn_ctx
 
 
 def _queued_chain(runner, turn_ctx, transport, response, result, *, followup_result):

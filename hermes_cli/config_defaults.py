@@ -2017,11 +2017,11 @@ DEFAULT_CONFIG = {
             # tool eager. The runtime fallback in tools/tool_search.py derives from this value.
             "defer": [
                 "computer_use", "session_search", "image_generate",
-                "todo_list", "process_manage", "cronjob_manage",
+                "todo_list", "process_manage", "cronjob_manage", "browser_vault",
                 # Desktop GUI surface (desktop_ui, project and catalog toolsets)
                 "drive_preview", "gui_tour", "desktop_preview", "annotate_preview", "manage_catalog",
                 "show_tip", "desktop_project", "close_terminal",
-                "apply_layout", "read_terminal", "read_window_below", "focus_pane",
+                "set_theme", "read_terminal", "read_window_below", "focus_pane",
             ],
         },
         # Remote connector discovery/lifecycle through the Nous tool gateway.
@@ -2098,10 +2098,10 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
-
-        # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
-        # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.
+        "unmanaged_idle_exit_seconds": 600,  # client-auto-started gateway only; 0 disables
+        # Seconds a SIGTERM-interrupted agent unwinds before teardown (short: service stop budgets).
         "signal_interrupt_grace_timeout": 1,
+        "service_install_choice": None,  # null | install | decline; never authorizes ordinary launch installation.
         # Durable delivery-obligation ledger: final responses are recorded in state.db around the
         # platform send; a gateway that died between finalize and platform ACK redelivers on next
         # boot (ambiguous cases carry a "recovered reply — may be a duplicate" marker;
@@ -2319,12 +2319,12 @@ DEFAULT_CONFIG = {
         # per session, so full-DB backups of small sessions work.
         "max_export_messages": 20000,
     },
-    # First-touch onboarding hints (agent/onboarding.py). Each hint shows once and is latched under
-    # `seen`; wipe the section to re-see all hints.
+    # First-touch onboarding hints (agent/onboarding.py), each latched under `seen` once shown.
     "onboarding": {
         "seen": {},
-        # First-ever message: ask = offer; off = plain intro only.
-        "profile_build": "ask",
+        "profile_build": "ask",  # first-ever message: ask = offer; off = plain intro only
+        # Desktop first run, root profile only (onboarding_run.py): None = fresh install; true = next launch; false = done
+        "run": None,
     },
     # Privacy-safe aggregate metrics in this profile's local telemetry dir. Collection (`enabled`)
     # and transmission to Nous (`send`) are SEPARATE opt-ins; see
@@ -2445,7 +2445,7 @@ DEFAULT_CONFIG = {
     },
     # External secret sources — pull credentials from secret managers at startup instead of storing
     # them in ~/.hermes/.env.
-    # Browser credential vault: which login sources browser_vault_list/fill may draw from. The local
+    # Browser credential vault: which login sources browser_vault may draw from. The local
     # encrypted vault (`hermes vault add`, Desktop → Settings → Credential Vault) is always on.
     # External password managers are unlocked per session with a masked master-password prompt;
     # headless sessions (cron, webhook, API) never prompt and see them as locked.
@@ -2718,7 +2718,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 50,  # Config schema version - bump this when adding new required fields
+    "_config_version": 51,  # Config schema version - bump this when adding new required fields
 }
 
 
@@ -3018,14 +3018,6 @@ OPTIONAL_ENV_VARS = {
         "OpenViking API key", tools=["viking_search"]),
     "OPENVIKING_ENDPOINT": _tool("OpenViking server URL (default: http://127.0.0.1:1933)",
         "OpenViking endpoint", password=None, advanced=True),
-    # ── Langfuse observability ──
-    "HERMES_LANGFUSE_PUBLIC_KEY": _tool("Langfuse project public key (pk-lf-...)",
-        "Langfuse public key", "https://cloud.langfuse.com", password=False),
-    "HERMES_LANGFUSE_SECRET_KEY": _tool("Langfuse project secret key (sk-lf-...)",
-        "Langfuse secret key", "https://cloud.langfuse.com"),
-    "HERMES_LANGFUSE_BASE_URL": _tool("Langfuse server URL (default: https://cloud.langfuse.com)",
-        "Langfuse server URL (leave empty for cloud.langfuse.com)", None, password=False,
-        advanced=True),
     # ── Messaging platforms ──
     "TELEGRAM_BOT_TOKEN": _msg(
         "Complete Telegram bot token created by @BotFather (numeric bot ID followed by a colon "

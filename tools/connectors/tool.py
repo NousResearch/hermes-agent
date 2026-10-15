@@ -21,8 +21,10 @@ def manage_connections(
     mcp_backend: Optional[Any] = None,
     session_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
+    turn_id: Optional[str] = None,
     connection_callback: Optional[Callable[[dict[str, Any]], Optional[str]]] = None,
     connectors_available: Optional[Callable[[], bool]] = None,
+    card_surface: bool = False,
 ) -> str:
     action = str(args.get("action") or "status").strip().lower()
     managed, mcp_targets, target_error = normalize_targets(args.get("connectors"))
@@ -40,8 +42,9 @@ def manage_connections(
 
     return run_managed_action(
         action, managed, args,
-        client_factory=client_factory, session_id=session_id, tool_call_id=tool_call_id,
+        client_factory=client_factory, session_id=session_id, tool_call_id=tool_call_id, turn_id=turn_id,
         connection_callback=connection_callback, connectors_available=connectors_available,
+        card_surface=card_surface,
     )
 
 
@@ -57,7 +60,10 @@ MANAGE_CONNECTIONS_SCHEMA = {
         "catalog entry; otherwise the target is hosted. 'connect' and 'reconnect' are hosted "
         "actions; 'install', 'enable' and 'authorize' are MCP actions. A target the other side "
         "owns is refused with the call that does work. "
-        "Hosted actions: 'status' lists connectors and whether each is connected; 'connect' "
+        "Hosted actions: 'display' (desktop only; elsewhere returns status) shows every connector and "
+        "waits for Continue (300 s); put slugs to suggest in 'connectors'. Returns connected/newly_connected "
+        "(+timed_out); the user saw the list, so do not repeat it. 'connect' is for an app the user names. "
+        "'status' lists connectors and whether each is connected; 'connect' "
         "starts an authorization for the given connectors; 'reconnect' checks each one and "
         "repairs only what is not connected ('force': true restarts even a working one, for an "
         "account switch). A second account of one app is 'connect' with a new 'alias': pick a short "
@@ -128,7 +134,7 @@ MANAGE_CONNECTIONS_SCHEMA = {
                     ]
                 },
                 "description": (
-                    "Targets. REQUIRED for every action but status "
+                    "Targets. REQUIRED for every action but status and display "
                     "(e.g. [\"gmail\", {\"name\": \"linear\", \"mcp\": true}]); optional filter for "
                     "status. A bare slug is a hosted connector, so an MCP server needs the object "
                     "form with \"mcp\": true."
@@ -154,7 +160,8 @@ registry.register(
     # a cached schema agree. Read as a module attribute so tests patch
     # ``gateway.config.connectors_available`` at one seam.
     handler=lambda args, **kw: manage_connections(
-        args, session_id=kw.get("session_id"), connectors_available=gateway_config.connectors_available,
+        args, session_id=kw.get("session_id"), tool_call_id=kw.get("tool_call_id"),
+        connectors_available=gateway_config.connectors_available,
     ),
     check_fn=lambda: gateway_config.connectors_available(),
     emoji="🔗",

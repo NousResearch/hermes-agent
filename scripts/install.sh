@@ -524,6 +524,18 @@ emit_manifest() {
 
 stage_prerequisites() {
     command -v git >/dev/null 2>&1 || fail "git is required. Install it with your system package manager." git_missing
+    # macOS ships /usr/bin/git as a stub until Apple's Command Line Tools are
+    # installed: it is on PATH, but every call fails ("see man xcode-select").
+    local _git_err
+    if ! _git_err="$(git --version 2>&1)"; then
+        _git_err="$(printf '%s\n' "$_git_err" | error_line)"
+        if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+            # Opens Apple's install dialog; harmless if it is already open or done.
+            xcode-select --install >/dev/null 2>&1 || true
+            fail "git cannot run ($_git_err). Install Apple's Command Line Tools (run: xcode-select --install), then re-run this installer." git_missing
+        fi
+        fail "git is installed but cannot run: $_git_err" git_missing
+    fi
     command -v curl >/dev/null 2>&1 || fail "curl is required. Install it with your system package manager." curl_missing
     # PM's Node on musl is the unofficial-builds musl archive, which links the
     # system libstdc++; without it every node/npm stage fails verification.

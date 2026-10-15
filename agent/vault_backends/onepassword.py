@@ -1,8 +1,11 @@
 """1Password Login items as a vault backend (``op`` CLI).
 
-Unlock: ``op signin --raw`` with the master password on stdin (desktop-app
-integration or account-level auth) mints an ``OP_SESSION_<account>`` token.
-A configured service-account token skips the prompt entirely (headless).
+Unlock: ``op signin --raw`` with the master password on stdin (account-level
+auth) mints an ``OP_SESSION_<account>`` token. With the desktop-app
+integration enabled, ``op signin`` delegates to the unlocked desktop app and
+emits no token — the sentinel ``_DESKTOP_SESSION`` marks that mode and calls
+run without ``OP_SESSION``. A configured service-account token skips the
+prompt entirely (headless).
 List: ``op item list --categories Login --format json`` → title, urls,
 username, vault. Resolve: ``op item get <id> --vault <vault-id> ...`` (service
 accounts reject an item read without a vault query).
@@ -26,6 +29,12 @@ from agent.vault_store import VaultItemMeta, normalize_origin
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30.0
+
+# Sentinel session for the desktop-app integration mode: when "Connect with 1Password CLI" is
+# enabled, `op signin --raw` delegates authentication to the unlocked desktop app and emits no
+# classic session token. The sentinel marks "unlocked via the app" so `_env` omits OP_SESSION
+# (a bogus token there would make every call fail) while the unlock bookkeeping stays identical.
+_DESKTOP_SESSION = "desktop-app-integration"
 
 
 class OnePasswordLoginBackend(LoginBackend):
@@ -63,11 +72,17 @@ class OnePasswordLoginBackend(LoginBackend):
             env["OP_ACCOUNT"] = account
         if self._service_token:
             env["OP_SERVICE_ACCOUNT_TOKEN"] = self._service_token
-        elif session_token:
+        elif session_token and session_token != _DESKTOP_SESSION:
             # op signin --raw prints the bare token; the env var name carries the account shorthand,
             # which op also accepts as plain OP_SESSION for the default account.
             env[f"OP_SESSION_{account}" if account else "OP_SESSION"] = session_token
         return env
+
+    def _integration_alive(self) -> bool:
+        """True when the unlocked desktop app answers `op` without any session token."""
+        proc = run_cli([str(self._op()), "account", "list"], env=self._env(None), timeout=_TIMEOUT,
+                       label="op", timeout_message="op timed out", stdin=subprocess.DEVNULL)
+        return proc.returncode == 0
 
     def is_unlocked(self) -> bool:
         return bool(self._service_token) or _unlock.is_unlocked(self.name)
@@ -80,8 +95,15 @@ class OnePasswordLoginBackend(LoginBackend):
             cmd += ["--account", account]
         proc = run_with_stdin_secret(cmd, env=self._env(None), secret=master_password, timeout=_TIMEOUT, label="op")
         token = (proc.stdout or "").strip()
-        if proc.returncode != 0 or not token:
+        if proc.returncode != 0:
             raise RuntimeError(f"1Password unlock failed: {_scrub(proc.stderr or '')[:200] or 'no session token'}")
+        if not token:
+            # Desktop-app integration mode: op delegated authentication to the unlocked app and
+            # emits no classic session token. Confirm the app actually answers, then remember the
+            # mode with the sentinel session — calls below run without OP_SESSION.
+            if not self._integration_alive():
+                raise RuntimeError("1Password unlock failed: no session token")
+            token = _DESKTOP_SESSION
         if not _unlock.store_session_token(self.name, token, generation):
             raise RuntimeError("1Password was locked while unlocking; try again")
 

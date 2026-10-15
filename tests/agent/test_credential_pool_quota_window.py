@@ -62,7 +62,7 @@ def _seed_pool(tmp_path, monkeypatch, *, twin=False):
     """``twin`` adds a second entry backed by the spent entry's token (one account, two rows)."""
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)
-    entry = lambda cid, prio, token=None: {  # noqa: E731
+    entry = lambda cid, prio, token=None: {
         "id": cid, "label": cid, "auth_type": "oauth", "priority": prio,
         "source": "manual:hermes_pkce", "access_token": token or f"tok-{cid}",
         "refresh_token": f"ref-{cid}", "expires_at_ms": int((time.time() + 86400) * 1000),

@@ -2,7 +2,10 @@ import { QueryClient } from '@tanstack/react-query'
 import { act, cleanup, render, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
+import type { ClientSessionState } from '@/app/types'
 import { getGlobalModelInfo } from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -16,7 +19,14 @@ import {
   setCurrentProvider,
   setCurrentReasoningEffortWire
 } from '@/store/session'
-import * as SessionStates from '@/store/session-states'
+import {
+  $sessionStates,
+  publishSessionState,
+  sessionTileDelegate,
+  type SessionTileDelegate,
+  setSessionTileDelegate
+} from '@/store/session-states'
+import type * as SessionStates from '@/store/session-states'
 
 import { deferred } from '../../../test/deferred'
 
@@ -40,7 +50,9 @@ vi.mock('@/store/session-states', async importOriginal => {
 
   return {
     ...actual,
-    sessionTileDelegate: () => tile.delegate
+    // Prefer an explicitly-assigned per-test delegate (wire-stamp tests), else
+    // fall through to the delegate installSessionDelegate() registered.
+    sessionTileDelegate: () => (tile.delegate as unknown) ?? actual.sessionTileDelegate()
   }
 })
 
@@ -86,16 +98,67 @@ function Harness({
   return null
 }
 
+const sessionStateCache = new Map<string, ClientSessionState>()
+
+function installSessionDelegate() {
+  setSessionTileDelegate({
+    archiveSession: vi.fn(async () => undefined),
+    branchSession: vi.fn(async () => undefined),
+    branchSessionAtMessage: vi.fn(async () => false),
+    deleteSession: vi.fn(async () => undefined),
+    executeSlash: vi.fn(async () => undefined),
+    interruptSession: vi.fn(async () => undefined),
+    resumeTile: vi.fn(async () => ''),
+    submitToSession: vi.fn(async () => ({ runtimeSessionId: 'runtime-submit', storedSessionId: null })),
+    updateSession: (runtimeId, updater) => {
+      const previous =
+        sessionStateCache.get(runtimeId) ?? $sessionStates.get()[runtimeId] ?? createClientSessionState()
+
+      const next = updater(previous)
+
+      if (next === previous) {
+        return previous
+      }
+
+      sessionStateCache.set(runtimeId, next)
+      publishSessionState(runtimeId, next)
+
+      // Same contract as updateSessionState → syncRuntimeMetadataToView for
+      // the focused session: composer atoms follow the slice write.
+      if (runtimeId === $activeSessionId.get()) {
+        setCurrentModel(next.model ?? '')
+        setCurrentProvider(next.provider ?? '')
+      }
+
+      return next
+    }
+  } as SessionTileDelegate)
+}
+
+function seedRuntimeSlice(runtimeId: string, model: string, provider: string) {
+  const state = {
+    ...createClientSessionState(`stored-${runtimeId}`),
+    model,
+    provider
+  }
+
+  sessionStateCache.set(runtimeId, state)
+  publishSessionState(runtimeId, state)
+}
+
 describe('useModelControls', () => {
   beforeEach(() => {
     confirmMock.mockReset()
     notifyError.mockReset()
     $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
+    $sessionStates.set({})
+    sessionStateCache.clear()
     setCurrentModel('')
     setCurrentModelSource('')
     setCurrentProvider('')
-    SessionStates.$sessionStates.set({})
+    $sessionStates.set({})
+    installSessionDelegate()
   })
 
   afterEach(() => {
@@ -103,10 +166,14 @@ describe('useModelControls', () => {
     vi.restoreAllMocks()
     $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
+    $sessionStates.set({})
+    sessionStateCache.clear()
     setCurrentModel('')
     setCurrentModelSource('')
     setCurrentProvider('')
-    SessionStates.$sessionStates.set({})
+    $sessionStates.set({})
+    tile.delegate = null
+    installSessionDelegate()
   })
 
   it('writes optimistic selections only to the owning connection cache', async () => {
@@ -675,7 +742,205 @@ describe('useModelControls', () => {
     expect(getCurrentModelSource()).toBe('default')
   })
 
+  it('updates the primary session slice so the selector matches an acknowledged switch', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('gpt-5.6-sol')
+    setCurrentProvider('openai-codex')
+    seedRuntimeSlice('session-1', 'gpt-5.6-sol', 'openai-codex')
+
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'grok-4.5' }) as never)
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'grok-4.5', provider: 'xai' })).resolves.toBe(true)
+
+    expect($currentModel.get()).toBe('grok-4.5')
+    expect($currentProvider.get()).toBe('xai')
+    expect($sessionStates.get()['session-1']?.model).toBe('grok-4.5')
+    expect($sessionStates.get()['session-1']?.provider).toBe('xai')
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('grok-4.5')
+    expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('xai')
+  })
+
+  it('rolls the primary session slice back when the switch fails', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('gpt-5.6-sol')
+    setCurrentProvider('openai-codex')
+    seedRuntimeSlice('session-1', 'gpt-5.6-sol', 'openai-codex')
+
+    const requestGateway = vi.fn(async () => {
+      throw new Error('no such model')
+    })
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'bogus', provider: 'xai' })).resolves.toBe(false)
+
+    expect($currentModel.get()).toBe('gpt-5.6-sol')
+    expect($currentProvider.get()).toBe('openai-codex')
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('gpt-5.6-sol')
+    expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('openai-codex')
+  })
+
+  it('rolls the slice back to its own prior pair when composer atoms disagree', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('composer-stale')
+    setCurrentProvider('nous')
+    seedRuntimeSlice('session-1', 'gpt-5.6-sol', 'openai-codex')
+
+    const requestGateway = vi.fn(async () => {
+      throw new Error('no such model')
+    })
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'bogus', provider: 'xai' })).resolves.toBe(false)
+
+    expect($sessionStates.get()['session-1']?.model).toBe('gpt-5.6-sol')
+    expect($sessionStates.get()['session-1']?.provider).toBe('openai-codex')
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('gpt-5.6-sol')
+    expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('openai-codex')
+  })
+
+  it('rolls the primary session slice back when confirmation is required, then paints on confirm', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('gpt-5.6-sol')
+    setCurrentProvider('openai-codex')
+    seedRuntimeSlice('session-1', 'gpt-5.6-sol', 'openai-codex')
+
+    const requestGateway = vi
+      .fn()
+      .mockResolvedValueOnce({
+        confirm_message: 'This contributor model trains on your data.',
+        confirm_required: true,
+        key: 'model',
+        value: 'muse-spark-1.2-contributor'
+      })
+      .mockResolvedValueOnce({ key: 'model', scope: 'global', value: 'muse-spark-1.2-contributor' })
+
+    // Hold the answer open: the slice must stay rolled back until the user
+    // actually answers the confirm dialog.
+    const answer = deferred<boolean>()
+
+    confirmMock.mockReturnValueOnce(answer.promise)
+
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(
+      controls.selectModel({ model: 'muse-spark-1.2-contributor', provider: 'opencode-go' })
+    ).resolves.toBe(false)
+
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('gpt-5.6-sol')
+    expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('openai-codex')
+
+    await act(async () => {
+      answer.resolve(true)
+    })
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(2))
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('muse-spark-1.2-contributor')
+    expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('opencode-go')
+  })
+
+  it('keeps PRIMARY_SESSION_VIEW on the live slice when composer atoms change', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('gpt-5.6-sol')
+    setCurrentProvider('openai-codex')
+    seedRuntimeSlice('session-1', 'gpt-5.6-sol', 'openai-codex')
+
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'grok-4.5' }) as never)
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await controls.selectModel({ model: 'grok-4.5', provider: 'xai' })
+
+    setCurrentModel('profile-default')
+    setCurrentProvider('nous')
+
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('grok-4.5')
+    expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('xai')
+    expect($currentModel.get()).toBe('profile-default')
+  })
+
   it('keeps an active-A focused-B selection cache and request on B', async () => {
+    const queryClient = new QueryClient()
+    const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries')
+    $activeGatewayProfile.set('profile-a')
+    $activeSessionId.set('runtime-a')
+    setCurrentModel('primary/model')
+    setCurrentProvider('openai')
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'tile-model' }) as never)
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        cacheOwnerConnectionId: 'connection-b',
+        cacheProfile: 'profile-b',
+        queryClient,
+        requestGateway
+      })
+    )
+
+    await expect(
+      result.current.selectModel({
+        model: 'tile-model',
+        provider: 'anthropic',
+        sessionId: 'runtime-b'
+      })
+    ).resolves.toBe(true)
+
+    expect(requestGateway).toHaveBeenCalledWith('config.set', {
+      session_id: 'runtime-b',
+      key: 'model',
+      value: 'tile-model --provider anthropic --session'
+    })
+    // Primary footer untouched — the busy primary must not absorb a tile pick.
+    expect($currentModel.get()).toBe('primary/model')
+    expect($currentProvider.get()).toBe('openai')
+    expect(queryClient.getQueryData(modelOptionsQueryKey('profile-b', 'runtime-b', 'connection-b'))).toMatchObject({
+      model: 'tile-model',
+      provider: 'anthropic'
+    })
+    expect(queryClient.getQueryData(modelOptionsQueryKey('profile-a', 'runtime-b'))).toBeUndefined()
+    expect(queryClient.getQueryData(modelOptionsQueryKey('profile-b', 'runtime-b', 'connection-a'))).toBeUndefined()
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: modelOptionsQueryKey('profile-b', 'runtime-b', 'connection-b')
+    })
+  })
+
+  it('applies a session.info-shaped slice patch through the same updateSession path', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('gpt-5.6-sol')
+    setCurrentProvider('openai-codex')
+    seedRuntimeSlice('session-1', 'gpt-5.6-sol', 'openai-codex')
+
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'grok-4.5' }) as never)
+    let controls!: Controls
+
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await controls.selectModel({ model: 'grok-4.5', provider: 'xai' })
+
+    sessionTileDelegate()!.updateSession('session-1', state => ({
+      ...state,
+      model: 'heartbeat-model',
+      provider: 'heartbeat-provider'
+    }))
+
+    expect($sessionStates.get()['session-1']?.model).toBe('heartbeat-model')
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('heartbeat-model')
+    expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('heartbeat-provider')
+    expect($currentModel.get()).toBe('heartbeat-model')
+  })
+
+  it('targets an explicit tile sessionId without clobbering the primary model', async () => {
     const queryClient = new QueryClient()
     const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries')
     $activeGatewayProfile.set('profile-a')
@@ -754,7 +1019,7 @@ describe('useModelControls', () => {
     queryClient.setQueryData(ambientAKey, { model: 'model-a', provider: 'provider-a', providers: [] })
     $activeGatewayProfile.set('profile-a')
     $activeSessionId.set('runtime-a')
-    SessionStates.$sessionStates.set({
+    $sessionStates.set({
       'runtime-b': { model: 'old-b', provider: 'provider-b' }
     } as never)
 
@@ -945,5 +1210,33 @@ describe('useModelControls', () => {
     // A provider-class pick can never be shadowed by a custom:<key> default, so
     // the sticky path must not pay for a /api/model/info round trip.
     expect(getGlobalModelInfo).not.toHaveBeenCalled()
+  })
+
+  it('paints a tile slice without rewriting the primary session selector', async () => {
+    $activeSessionId.set('primary-runtime')
+    setCurrentModel('primary/model')
+    setCurrentProvider('openai')
+    seedRuntimeSlice('primary-runtime', 'primary/model', 'openai')
+
+    seedRuntimeSlice('tile-runtime', 'old-tile', 'nous')
+
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'tile-model' }) as never)
+    const { result } = renderHook(() =>
+      useModelControls({ queryClient: new QueryClient(), requestGateway })
+    )
+
+    await expect(
+      result.current.selectModel({
+        model: 'tile-model',
+        provider: 'anthropic',
+        sessionId: 'tile-runtime'
+      })
+    ).resolves.toBe(true)
+
+    expect($sessionStates.get()['tile-runtime']?.model).toBe('tile-model')
+    expect($sessionStates.get()['tile-runtime']?.provider).toBe('anthropic')
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('primary/model')
+    expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('openai')
+    expect($currentModel.get()).toBe('primary/model')
   })
 })

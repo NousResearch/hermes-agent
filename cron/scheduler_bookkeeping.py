@@ -33,8 +33,9 @@ def _classify_delivery_outcome(
     normalized_deliver: str, incident_acked: bool, success: bool,
     delivery_queued=None, notification_suppressed: bool = False,
 ) -> str:
-    if delivery_error:
-        return "failed"
+    if isinstance(delivery_error, str) and delivery_error.startswith("held:"):
+        # Plugin-withheld send (pre_result_delivery "hold"): not a failure, no streak.
+        return "held"
     if should_deliver and delivery_queued:
         return "queued"
     if notification_suppressed:

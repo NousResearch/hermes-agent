@@ -337,9 +337,38 @@ class _Collector:
         if not events:
             return None
         task = self.kb.get_task(conn, sub["task_id"])
+        # Run rows for completed events (pre_result_delivery kwargs): run_id → {metadata, summary}.
+        run_ids = {getattr(ev, "run_id", None) for ev in events if getattr(ev, "kind", None) == "completed"}
+        runs = self._load_completed_runs(conn, sub["task_id"], {r for r in run_ids if r})
         logger.debug("kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                      len(events), sub["task_id"], slug, old_cursor, cursor)
-        return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task, "board": slug}
+        return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task,
+                "board": slug, "runs": runs}
+
+    def _load_completed_runs(self, conn: Any, task_id: str, run_ids: set) -> dict:
+        """Best-effort run rows for completed events; empty on any failure (hook degrades)."""
+        if not run_ids:
+            return {}
+        try:
+            rows = conn.execute(
+                "SELECT id, summary, metadata FROM task_runs WHERE task_id = ? AND id IN (%s)"
+                % ",".join("?" * len(run_ids)),
+                (task_id, *sorted(run_ids)),
+            ).fetchall()
+        except Exception as exc:
+            logger.debug("kanban notifier: run-row lookup failed for %s: %s", task_id, exc)
+            return {}
+        out = {}
+        for row in rows:
+            try:
+                meta = row["metadata"]
+                import json as _json
+                metadata = _json.loads(meta) if meta else {}
+            except Exception:
+                metadata = {}
+            out[row["id"]] = {"summary": row["summary"], "metadata": metadata,
+                              "artifacts": (metadata.get("artifacts") if isinstance(metadata, dict) else None)}
+        return out
 
     def collect_board(self, slug: str) -> None:
         """Claim events on one board, appending delivery dicts to ``deliveries``."""
@@ -398,6 +427,49 @@ def _clip(ev: Any, key: str, msg_key: str, limit: int) -> str:
     value, or ``""`` when absent."""
     value = _payload(ev, key)
     return t(msg_key, value=str(value)[:limit]) if value else ""
+
+
+def _invoke_kanban_result_delivery(payload: dict) -> list[tuple[str, Any]]:
+    """Sync ``pre_result_delivery`` fan-out for the kanban site (runs in a helper thread).
+
+    Same fail-open per-callback semantics as the cron site's ``_invoke_pre_result_delivery``;
+    kept separate so each fire site owns its import cycle (gateway vs cron).
+    """
+    from hermes_cli import plugins as _plugins_mod
+    from hermes_cli.lifecycle import _observe
+    from hermes_cli.plugins_dispatch import _HOOK_SKIPPED, _hook_uses_callback_timeout
+    try:
+        _observe("pre_result_delivery", **payload)
+    except Exception:
+        logger.debug("pre_result_delivery observer failed", exc_info=True)
+    try:
+        manager = _plugins_mod.get_plugin_manager()
+    except Exception:
+        return []
+    try:
+        timeout = _plugins_mod._resolve_hook_callback_timeout()
+    except Exception:
+        timeout = 30.0
+    use_timeout = _hook_uses_callback_timeout("pre_result_delivery", timeout)
+    out: list[tuple[str, Any]] = []
+    for cb in manager.iter_hook_callbacks("pre_result_delivery"):
+        plugin = getattr(cb, "__module__", None) or "unknown"
+        try:
+            if use_timeout:
+                ret = manager._run_hook_callback_bounded("pre_result_delivery", cb, payload, timeout)
+                if ret is _HOOK_SKIPPED:
+                    continue
+            else:
+                ret = manager._invoke_hook_callback(cb, payload)
+        except (Exception, SystemExit) as exc:
+            try:
+                manager._report_hook_failure("pre_result_delivery", cb, payload, exc)
+            except Exception:
+                pass
+            continue
+        if ret is not None:
+            out.append((plugin, ret))
+    return out
 
 
 _NL = "\n{}"
@@ -728,6 +800,52 @@ class _KanbanNotification:
                 logger.debug("kanban notifier: artifact delivery for %s failed: %s", self.task_id, art_exc)
         return True
 
+    async def _pre_result_delivery_handled(self, ev: Any) -> bool:
+        """Fire ``pre_result_delivery`` for a completed event; True when a plugin handled it.
+
+        Honours ``handled`` only (no consumer needs ``hold`` here). Any other directive, a raise
+        or a timeout falls back to a normal send. Runs off the event loop via
+        ``_to_thread_process_service`` like the other blocking notifier ops.
+        """
+        try:
+            from hermes_cli.lifecycle import has_hook
+            if not has_hook("pre_result_delivery"):
+                return False
+        except Exception:
+            return False
+        task = self.task
+        payload_summary = None
+        try:
+            payload_summary = _payload(ev, "summary")
+        except Exception:
+            payload_summary = None
+        run_id = getattr(ev, "run_id", None)
+        run = (self.d.get("runs") or {}).get(run_id, {}) if run_id is not None else {}
+        run_metadata = run.get("metadata") if isinstance(run, dict) else None
+        artifacts = run.get("artifacts") if isinstance(run, dict) else None
+        if artifacts is None and isinstance(getattr(ev, "payload", None), dict):
+            artifacts = ev.payload.get("artifacts")
+        summary = payload_summary or (run.get("summary") if isinstance(run, dict) else None) or (
+            task.result if task and getattr(task, "result", None) else None)
+        title = (task.title if task and getattr(task, "title", None) else None) or self.title
+        payload = {
+            "source": "kanban", "board": self.board_slug, "task_id": self.task_id,
+            "event_id": getattr(ev, "id", None), "run_id": run_id, "title": title,
+            "summary": summary, "run_metadata": run_metadata, "artifacts": artifacts,
+            "platform": self.platform_str, "chat_id": self.sub.get("chat_id"),
+        }
+        try:
+            results = await _to_thread_process_service(
+                partial(_invoke_kanban_result_delivery, payload))
+        except Exception as exc:
+            logger.debug("kanban notifier: pre_result_delivery failed open for %s: %s",
+                         self.task_id, exc)
+            return False
+        for _plugin, result in results:
+            if isinstance(result, dict) and result.get("action") == "handled":
+                return True
+        return False
+
     async def _send_pings(self) -> bool:
         """Send every text ping; False when a send failed (claim already rewound/dropped)."""
         for ev in self.d["events"]:
@@ -748,6 +866,15 @@ class _KanbanNotification:
                 # Wake-only: the wake path is the sole delivery and resolves the counter.
                 continue
             if ev.id <= self.sub.get("last_ping_event_id", 0):
+                continue
+            if getattr(ev, "kind", None) == "completed" and await self._pre_result_delivery_handled(ev):
+                # A plugin posted the result card itself: skip the text ping and this event's
+                # artifact uploads, then record the ping and clear failures like a normal send.
+                await _to_thread_process_service(partial(
+                    self.runner._kanban_sub_op, self.board_slug, "record_notify_ping", self.sub,
+                    event_id=ev.id,
+                ))
+                self.clear_failures()
                 continue
             try:
                 if await self._send_event(ev, msg) is False:

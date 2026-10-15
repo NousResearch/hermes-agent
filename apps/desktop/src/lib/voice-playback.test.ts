@@ -112,6 +112,10 @@ class FakeAudioContext {
     connect: vi.fn(),
     start: vi.fn()
   }))
+  createGain = vi.fn(() => ({
+    gain: { setValueAtTime: vi.fn() },
+    connect: vi.fn()
+  }))
 
   constructor() {
     FakeAudioContext.instances.push(this)

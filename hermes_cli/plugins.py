@@ -1723,7 +1723,6 @@ def get_plugin_manager(*, _attach_hosts: bool = True) -> PluginManager:
     global _plugin_manager
     current_home = _plugin_home_key()
     thread_id = threading.get_ident()
-    waited_for_teardown = False
     with _plugin_manager_teardown_condition:
         while current_home in _plugin_manager_teardown_owners:
             owner, tearing_down = _plugin_manager_teardown_owners[current_home]
@@ -1733,14 +1732,12 @@ def get_plugin_manager(*, _attach_hosts: bool = True) -> PluginManager:
                     from hermes_cli.plugins_lifecycle import _get_or_create_reentrant_manager
                     manager = _get_or_create_reentrant_manager(current_home, thread_id)
                 break
-            waited_for_teardown = True
             _plugin_manager_teardown_condition.wait()
         else:
-            if waited_for_teardown:
-                from hermes_constants import named_profile_is_live, profile_name_for_home
-                profile_name = profile_name_for_home(current_home)
-                if profile_name not in (None, "default") and not named_profile_is_live(current_home):
-                    raise FileNotFoundError(f"Profile home is no longer live: {current_home}")
+            from hermes_constants import named_profile_is_live, profile_name_for_home
+            profile_name = profile_name_for_home(current_home)
+            if profile_name not in (None, "default") and not named_profile_is_live(current_home):
+                raise FileNotFoundError(f"Profile home is no longer live: {current_home}")
             # Tests/embedders monkeypatch ``_plugin_manager`` directly: adopt a single-slot manager the
             # keyed cache doesn't know about at all.
             if _plugin_manager is not None and _plugin_manager not in _plugin_managers_by_home.values():

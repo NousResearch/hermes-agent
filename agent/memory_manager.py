@@ -645,17 +645,26 @@ class MemoryManager:
                         MAX_MEMORY_OBSERVATION_BATCH_BYTES,
                     )
                     observation_budget_exhausted = True
-                elif normalized.truncated_reason == "inspected":
-                    logger.warning(
-                        "Memory prefetch operation reached the observation "
-                        "inspected-candidate cap of %d; stopping tail traversal "
-                        "for this and every remaining provider (a provider is "
-                        "returning too many candidates or an unbounded "
-                        "malformed iterable — filter upstream or reduce the "
-                        "observation count)",
-                        MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
-                    )
-                    observation_budget_exhausted = True
+                elif normalized.truncated_reason in {"wire", "inspected"}:
+                    if normalized.truncated_reason == "wire":
+                        logger.warning(
+                            "Memory provider '%s' observations were truncated by the "
+                            "plugin-host wire batch bound of %d bytes; keeping the "
+                            "received prefix",
+                            provider.name,
+                            MAX_MEMORY_OBSERVATION_BATCH_BYTES,
+                        )
+                    else:
+                        logger.warning(
+                            "Memory prefetch operation reached the observation "
+                            "inspected-candidate cap of %d; stopping tail traversal "
+                            "for this and every remaining provider (a provider is "
+                            "returning too many candidates or an unbounded "
+                            "malformed iterable — filter upstream or reduce the "
+                            "observation count)",
+                            MAX_MEMORY_OBSERVATION_INSPECTED_CANDIDATES,
+                        )
+                        observation_budget_exhausted = True
             except Exception as e:  # health: allow BLE001 -- providers are isolated plugin boundaries
                 logger.debug(
                     "Memory provider '%s' prefetch failed (non-fatal): %s",

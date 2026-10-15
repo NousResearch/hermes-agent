@@ -583,7 +583,7 @@ dialectic model identity that Honcho does not expose.
 
 ### Streaming output hooks
 
-These observer-only hooks let plugins consume streaming LLM output for telemetry, live dashboards, or TTS pipelines without changing the response. They are delivered through host-owned bounded queues with one background worker per registered callback, so plugin callbacks never run inline on the token path. If one callback stalls, only that callback's queue can fill and drop its oldest pending observer event; other observers continue receiving events independently.
+These observer-only hooks let plugins consume streaming LLM output for telemetry, live dashboards, or TTS pipelines without changing the response. They are delivered through host-owned bounded queues with one background worker per registered callback, so plugin callbacks never run inline on the token path. If one callback stalls, only that callback's queue can fill and drop its oldest pending observer event; other observers continue receiving events independently. Event payloads are bounded at 128 KiB and otherwise dropped whole; oversized `on_stream_end.final_text` is privately spooled and restored exactly before callback delivery. Pending spills share a 16 MiB budget, and queue or spill-budget exhaustion remains best-effort and may drop an event.
 
 Register them like any other plugin hook:
 

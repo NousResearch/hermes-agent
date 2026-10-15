@@ -201,6 +201,38 @@ def _handle_react(args, remove=False):
     return json.dumps(result if isinstance(result, dict) else {"success": bool(result)})
 
 
+def _mattermost_dropped_only_receipt(native_mattermost, rejected_count, media_files, text,
+                                     chat_id, requested_count, dropped):
+    """A media-only request with no deliverable media must never report success."""
+    if native_mattermost and rejected_count and not media_files and not text:
+        from plugins.platforms.mattermost.adapter import _media_delivery_receipt
+        receipt = _media_delivery_receipt(chat_id, requested_count, 0, [])
+        receipt["media_dropped"] = dropped
+        return receipt
+    return None
+
+
+def _add_mattermost_request_count(handler_args, native_mattermost, count):
+    # Propagate the count, never the rejected paths, through text-only chunks too.
+    if native_mattermost and count:
+        handler_args["requested_media_count"] = count
+
+
+def _reconcile_mattermost_rejected_media(result, native_mattermost, rejected_count, chat_id, total):
+    """Merge pre-dispatch drops without losing acknowledged text or file IDs."""
+    if native_mattermost and rejected_count and isinstance(result, dict):
+        from plugins.platforms.mattermost.adapter import _media_delivery_receipt
+        ids = result.get("message_ids") or ([result["message_id"]] if result.get("message_id") else [])
+        result.update(_media_delivery_receipt(
+            chat_id, total, result.get("delivered_media", 0), ids,
+            result.get("error") or "Not all requested Mattermost media were accepted for delivery"))
+
+
+def _annotate_dropped_media(result, dropped):
+    if isinstance(result, dict) and dropped:
+        result["media_dropped"] = dropped
+
+
 def _handle_send(args):
     target, message = args.get("target", ""), args.get("message", "")
     if not target or not message:
@@ -228,18 +260,28 @@ def _handle_send(args):
     platform, pconfig, entry, err = _resolve_platform_config(platform_name, config)
     if err:
         return tool_error(err)
+    has_custom_handler = entry is not None and entry.send_message_handler is not None
+    native_mattermost = platform_name == "mattermost" and not has_custom_handler
     from gateway.platforms.base import BasePlatformAdapter
     # Capture [[as_document]] before extract_media strips it (images keep original bytes via send_document).
     force_document_attachments = "[[as_document]]" in message
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
+    requested_media_count = len(media_files)
     media_dropped: list = []
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files, dropped=media_dropped)
+    rejected_media_count = requested_media_count - len(media_files)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
     used_home_channel = not chat_id
     if used_home_channel:
         chat_id, err = _home_chat_id(config, platform, platform_name)
         if err:
             return tool_error(err)
+    dropped_only = _mattermost_dropped_only_receipt(
+        native_mattermost, rejected_media_count, media_files, cleaned_message,
+        chat_id, requested_media_count, media_dropped)
+    if dropped_only is not None:
+        return json.dumps(dropped_only)
+
     if duplicate_skip := _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id):
         return json.dumps(duplicate_skip)
     # Slack: resolve user targets to DM channel IDs before sending. _parse_target_ref emits internal
@@ -268,13 +310,16 @@ def _handle_send(args):
         from model_tools import _run_async
         # Only custom plugin handlers receive the complete typed request. ``mentions`` is a WhatsApp-only
         # contract (the CLI rejects it elsewhere); other platforms' standalone senders don't accept the kwarg.
-        handler_args = {"args": args} if entry is not None and entry.send_message_handler is not None else {}
+        handler_args = {"args": args} if has_custom_handler else {}
         mentions = args.get("mentions")
         if mentions and platform_name == "whatsapp":
             handler_args["mentions"] = [mentions] if isinstance(mentions, str) else list(mentions)
+        _add_mattermost_request_count(handler_args, native_mattermost, requested_media_count)
         result = _run_async(_send_to_platform(platform, pconfig, chat_id, cleaned_message, thread_id=thread_id,
                                               media_files=media_files, force_document=force_document_attachments,
                                               **handler_args))
+        _reconcile_mattermost_rejected_media(
+            result, native_mattermost, rejected_media_count, chat_id, requested_media_count)
         if isinstance(result, dict) and result.get("success"):
             if used_home_channel:
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
@@ -287,8 +332,7 @@ def _handle_send(args):
                 result["partial_success"] = True
                 result["error"] = (f"Delivery incomplete: {len(media_dropped)} requested MEDIA attachment(s) "
                                    "dropped before delivery (see media_dropped)")
-        if isinstance(result, dict) and media_dropped:
-            result["media_dropped"] = media_dropped
+        _annotate_dropped_media(result, media_dropped)
         if isinstance(result, dict) and "error" in result:
             result["error"] = _sanitize_error_text(result["error"])
         return json.dumps(result)
@@ -548,6 +592,8 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
         try:
             metadata = {**({"thread_id": thread_id} if thread_id else {}),
                         **({"publish_topic": chat_id} if platform_name == "ntfy" and chat_id else {})} or None
+            if platform_name == "mattermost" and thread_id:
+                metadata["mattermost_explicit_thread"] = True
             if media_files:  # always a dict result, returned as-is below
                 make_coro = lambda: _send_live_adapter_media(
                     adapter, chat_id, chunk, media_files, thread_id=thread_id, metadata=metadata,
@@ -562,6 +608,10 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
             return {"error": f"Plugin platform send failed: {_bounded_send_error(e)}"}
         if isinstance(result, dict):
             return result
+        if platform_name == "mattermost":
+            ids = [*result.continuation_message_ids, *([result.message_id] if result.message_id else [])]
+            return {"success": result.success, "message_id": result.message_id, "message_ids": ids,
+                    **({"error": _bounded_send_error(result.error)} if not result.success else {})}
         if result.success:
             return {"success": True, "message_id": result.message_id}
         return {"error": f"Adapter send failed: {_bounded_send_error(result.error)}"}
@@ -602,10 +652,13 @@ async def _send_chunks(chunks, send_one):
     return result
 
 
-def _platform_max_length(platform):
+def _platform_max_length(platform, pconfig=None):
     """Chunking limit: Signal's adapter constant (its raw JSON-RPC path bypasses the adapter's
     chunking), the registry's ``max_message_length`` for plugins, else None (no chunking)."""
     from gateway.config import Platform
+    if platform == Platform.MATTERMOST:
+        from plugins.platforms.mattermost.adapter import _resolve_max_post_length
+        return _resolve_max_post_length(getattr(pconfig, "extra", None))
     if platform == Platform.SIGNAL:
         try:
             from gateway.platforms.signal import MAX_MESSAGE_LENGTH
@@ -687,7 +740,7 @@ _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, fei
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
-                            force_document=False, mentions=None, args=None):
+                            force_document=False, mentions=None, args=None, *, requested_media_count=None):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
@@ -702,13 +755,40 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             pconfig.token, chat_id, message, media_files=media_files, thread_id=thread_id, force_document=force_document,
             disable_link_previews=bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews")))
     from gateway.platforms.base import BasePlatformAdapter
-    max_len = _platform_max_length(platform)
-    chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
+    max_len = _platform_max_length(platform, pconfig)
+    # Mattermost's live/standalone sender owns the full logical text and receipt.
+    chunks = ([message] if platform_name == "mattermost" else
+              BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message])
     if (platform_name == "discord" or (platform_name == "whatsapp" and mentions)
             or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA)):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
                                              thread_id=thread_id, max_len=max_len, force_document=force_document,
                                              mentions=mentions)
+    from gateway.platform_registry import platform_registry
+    entry = platform_registry.get(platform_name)
+    if (platform_name == "mattermost"
+            and not (entry is not None and entry.send_message_handler is not None)):
+        # Keep native live/standalone dispatch and every acknowledged text/batch post.
+        from plugins.platforms.mattermost.adapter import _media_delivery_receipt
+        sender, err = _plugin_standalone_sender(platform_name, label="Mattermost")
+        if err:
+            return err
+        total = len(media_files) if requested_media_count is None else requested_media_count
+        message_ids = []
+        delivered = 0
+        for i, chunk in enumerate(chunks or [message]):
+            result = await sender(
+                pconfig, chat_id, chunk, thread_id=thread_id,
+                media_files=media_files if i == len(chunks or [message]) - 1 else [],
+                force_document=force_document)
+            ids = result.get("message_ids") or ([result["message_id"]] if result.get("message_id") else [])
+            message_ids.extend(ids)
+            delivered += result.get("delivered_media", 0)
+            if result.get("error"):
+                break
+        result.update(_media_delivery_receipt(chat_id, total, delivered, message_ids, result.get("error")))
+        return result
+
     route = _CHUNKED_ROUTES.get(platform_name)
     if route is not None and (media_files or not route[0]):
         _, empty_media, sender = route
@@ -745,8 +825,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if text_sender is not None:
         send_one = lambda chunk, is_last: text_sender(pconfig, chat_id, chunk, thread_id)
     else:
-        from gateway.platform_registry import platform_registry
-        entry = platform_registry.get(platform_name)
         if entry is not None and entry.send_message_handler is not None:
             # Custom handler receives the full typed request once (not per chunk).
             try:

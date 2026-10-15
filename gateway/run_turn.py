@@ -49,32 +49,7 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
-_tool_call_logger_lock = threading.Lock()
-
-
-def _tool_call_logger() -> logging.Logger:
-    """Process-wide ``hermes.tool_calls`` Logger + one RotatingFileHandler on logs/tool_calls.log.
-    Named Loggers live in ``logging.Logger.manager.loggerDict`` forever, so the former per-turn name
-    (``hermes.tool_calls.<id(log_queue)>``) leaked one Logger per logged turn (#62950); a single
-    shared handler also keeps concurrent turns from double-writing lines."""
-    tool_logger = logging.getLogger("hermes.tool_calls")
-    with _tool_call_logger_lock:
-        if not tool_logger.handlers:
-            from logging.handlers import RotatingFileHandler
-            from agent.redact import RedactingFormatter
-            from gateway.run import _hermes_home
-
-            log_dir = _hermes_home / "logs"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            handler = RotatingFileHandler(
-                log_dir / "tool_calls.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8",
-            )
-            handler.setFormatter(RedactingFormatter("%(message)s"))
-            tool_logger.setLevel(logging.INFO)
-            tool_logger.propagate = False
-            tool_logger.addHandler(handler)
-    return tool_logger
-
+from gateway.run_turn_tool_log import _tool_call_logger
 
 
 _CONTEXT_OVERFLOW_ERROR_PHRASES = (
@@ -2132,6 +2107,17 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             return
         _final = response.get("final_response") or ""
         _is_empty_sentinel = not _final or _final == "(empty)"
+        # Source-aware uncertain receipts own only their frozen attempted spans.
+        # Reconcile before stale/split/transformed paths can replay the full body.
+        if (not _is_empty_sentinel and _sc is not None
+                and getattr(_sc, "source_delivery_pending", False) is True
+                and await _sc.reconcile_source_final(_final)):
+            response["already_sent"] = True
+            if getattr(_sc, "source_delivery_error", None):
+                # The confirmed head cannot be replayed, but an authoritative
+                # tail rejection must remain visible to the delivery caller.
+                response["delivery_error"] = _sc.source_delivery_error
+            return
         # response_previewed: only suppress if that EXACT text was delivered, not unrelated commentary.
         # Unrelated commentary/progress must not be mistaken for the final response (#14238).
         _previewed = bool(response.get("response_previewed"))

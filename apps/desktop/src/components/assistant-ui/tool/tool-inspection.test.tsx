@@ -44,7 +44,7 @@ afterEach(() => {
 
 describe('tool inspection in the normal transcript', () => {
   it('searches and copies past the inline limit independently of long arguments, with bounded painting', async () => {
-    const stdout = 'x'.repeat(25_000) + '\nneedle after the inline limit\n'
+    const stdout = 'x'.repeat(25_000) + '\nneedle after the inline limit\n' + 'y'.repeat(100) + '\nneedle again\n'
     render(<Harness value={message({ stdout, stderr: 'diagnostic' }, { command: 'c'.repeat(30_000) })} />)
     const trigger = await screen.findByRole('button', { name: 'Open tool details' })
     fireEvent.click(trigger)
@@ -57,7 +57,14 @@ describe('tool inspection in the normal transcript', () => {
       target: { value: 'needle' }
     })
     expect(ui.getByRole('region', { name: 'stdout' }).textContent).toContain('needle after the inline limit')
-    expect((ui.getByRole('button', { name: 'Previous match' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(ui.getByText('1/2')).toBeTruthy()
+    fireEvent.click(ui.getByRole('button', { name: 'Next match' }))
+    expect(ui.getByText('2/2')).toBeTruthy()
+    expect(ui.getByRole('region', { name: 'stdout' }).textContent).toContain('needle again')
+    fireEvent.click(ui.getByRole('button', { name: 'Next match' }))
+    expect(ui.getByText('1/2')).toBeTruthy()
+    fireEvent.click(ui.getByRole('button', { name: 'Previous match' }))
+    expect(ui.getByText('2/2')).toBeTruthy()
     expect(ui.getByRole('region', { name: 'stdout' }).textContent?.length).toBeLessThanOrEqual(16_002)
     fireEvent.click(ui.getByRole('button', { name: 'Wrap lines' }))
     expect(ui.getByRole('button', { name: 'Wrap lines' }).getAttribute('aria-pressed')).toBe('false')

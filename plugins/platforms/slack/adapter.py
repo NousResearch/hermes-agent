@@ -268,6 +268,14 @@ class _ThreadContextCache:
 
 
 _AGENT_SESSIONS_SUPPORTED: Optional[bool] = None
+# Workspaces whose agents.sessions.setStatus rejected a valid enum (not_authorized
+# / invalid_arguments / missing_scope). Heartbeats are ~2s; retrying a permanent
+# app-capability miss would just spam Slack. Transient errors are not stored.
+_AGENT_SESSIONS_STATUS_REJECTED: set[str] = set()
+_AGENT_SESSIONS_STATUS_WARNED = False
+_AGENT_SESSIONS_STATUS_HARD_FAILS = frozenset({
+    "not_authorized", "invalid_arguments", "missing_scope",
+})
 
 
 def _sdk_supports_agent_sessions() -> bool:
@@ -291,13 +299,39 @@ def _sdk_supports_agent_sessions() -> bool:
     return _AGENT_SESSIONS_SUPPORTED
 
 
-def _session_status_method(client: Any):
-    """Return the status setter: Agent Sessions API when available, else legacy."""
-    if _sdk_supports_agent_sessions():
-        method = getattr(client, "agents_sessions_setStatus", None)
-        if method is not None:
-            return method
-    return client.assistant_threads_setStatus
+def _agent_session_status_enum(status: str) -> str:
+    """Map the human status phrase (or empty clear) to the Agent Sessions enum.
+
+    ``agents.sessions.setStatus`` accepts only ``active|processing|suspended|closed``.
+    A non-empty working-state phrase becomes ``processing``; the empty clear
+    (``stop_typing``) becomes ``active``.
+    """
+    return "processing" if (status or "").strip() else "active"
+
+
+def _log_agent_sessions_status_failure(fail_label: str, err: BaseException) -> None:
+    """Surface the first Agent Sessions status rejection; later ones stay DEBUG."""
+    global _AGENT_SESSIONS_STATUS_WARNED
+    if _AGENT_SESSIONS_STATUS_WARNED:
+        logger.debug(
+            "[Slack] agents.sessions.setStatus %s: %s; retrying via assistant.threads",
+            fail_label, err)
+        return
+    _AGENT_SESSIONS_STATUS_WARNED = True
+    logger.warning(
+        "[Slack] agents.sessions.setStatus %s: %s; falling back to "
+        "assistant.threads.setStatus (that API is enum-only: "
+        "active|processing|suspended|closed; not_authorized means the app "
+        "is not on Agent Sessions). Later failures stay at DEBUG.",
+        fail_label, err)
+
+
+def _remember_agent_sessions_status_rejection(team_id: str, err: BaseException) -> None:
+    """Skip Agent Sessions status for this workspace after a permanent API refusal."""
+    for code in _AGENT_SESSIONS_STATUS_HARD_FAILS:
+        if _slack_error_is(err, code):
+            _AGENT_SESSIONS_STATUS_REJECTED.add(team_id or "")
+            return
 
 
 def _session_title_method(client: Any):
@@ -2766,10 +2800,31 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _set_thread_status(
         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
-        """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
+        """Set the thread status line.
+
+        Agent Sessions (slack-sdk ≥ 3.44) gets the lifecycle enum; a failure
+        there falls back to ``assistant.threads.setStatus`` with the human
+        phrase (empty string clears). Failures on the legacy path stay DEBUG.
+        """
+        client = self._get_client(chat_id, team_id=team_id)
+        workspace = team_id or ""
+        if (
+            _sdk_supports_agent_sessions()
+            and workspace not in _AGENT_SESSIONS_STATUS_REJECTED
+        ):
+            method = getattr(client, "agents_sessions_setStatus", None)
+            if method is not None:
+                try:
+                    await method(
+                        channel_id=chat_id, thread_ts=thread_ts,
+                        status=_agent_session_status_enum(status))
+                    return
+                except Exception as e:
+                    _log_agent_sessions_status_failure(fail_label, e)
+                    _remember_agent_sessions_status_rejection(workspace, e)
         try:
-            _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
-            await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
+            await client.assistant_threads_setStatus(
+                channel_id=chat_id, thread_ts=thread_ts, status=status)
         except Exception as e:
             logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
 

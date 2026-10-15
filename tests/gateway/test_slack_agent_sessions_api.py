@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
+from plugins.platforms.slack import adapter_sessions as _sessions
 from tests.gateway.test_slack import SlackAdapter, _slack_mod
 
 
@@ -27,12 +28,10 @@ def _pin_legacy_assistant_threads_api():
     restore it afterwards, so tests that flip the cached flag on don't leak."""
     prev = _slack_mod._AGENT_SESSIONS_SUPPORTED
     _slack_mod._AGENT_SESSIONS_SUPPORTED = False
-    _slack_mod._AGENT_SESSIONS_STATUS_REJECTED.clear()
-    _slack_mod._AGENT_SESSIONS_STATUS_WARNED = False
+    _sessions.reset_status_runtime_state()
     yield
     _slack_mod._AGENT_SESSIONS_SUPPORTED = prev
-    _slack_mod._AGENT_SESSIONS_STATUS_REJECTED.clear()
-    _slack_mod._AGENT_SESSIONS_STATUS_WARNED = False
+    _sessions.reset_status_runtime_state()
 
 
 class TestAgentSessionsApiRouting:
@@ -151,7 +150,7 @@ class TestAgentSessionsApiRouting:
             side_effect=RuntimeError("boom")
         )
         a._app.client.assistant_threads_setStatus = AsyncMock()
-        with caplog.at_level("WARNING", logger=_slack_mod.logger.name):
+        with caplog.at_level("WARNING", logger=_sessions.logger.name):
             await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
             await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
         warnings = [
@@ -187,4 +186,4 @@ class TestAgentSessionsApiRouting:
     ],
 )
 def test_agent_session_status_enum_mapping(phrase, expected):
-    assert _slack_mod._agent_session_status_enum(phrase) == expected
+    assert _sessions.agent_session_status_enum(phrase) == expected

@@ -54,8 +54,8 @@ _SLASH_COMPLETION_LIMIT = 30
 
 def _rank_slash_completions(items: list[dict], usage, origin_of, *, browsing: bool, score_of=None,
                             registry_command_names: frozenset[str] | None = None) -> list[dict]:
-    """Registry commands keep their order; only skills reorder: fuzzy ``score_of`` first, then most-used, then
-    A-Z. The limit is spent PER KIND (a flat cut on a large install offered no skill at all). ``browsing``
+    """Registry commands keep their order; skills reorder by fuzzy ``score_of`` first, then most-used, then
+    A-Z. With ``score_of`` both kinds then merge by score, commands first on ties. The limit is spent PER KIND (a flat cut on a large install offered no skill at all). ``browsing``
     (bare ``/``) drops never-used bundled skills as noise; a typed query is SEARCHING — nothing pruned, only reordered.
     While browsing, only names in ``registry_command_names`` (default ``GATEWAY_KNOWN_COMMANDS``) skip the cap:
     plugin-registered commands are also ``kind != "skill"`` but unbounded, so they stay capped like skills."""
@@ -76,7 +76,13 @@ def _rank_slash_completions(items: list[dict], usage, origin_of, *, browsing: bo
         ranked_commands = fixed + other[:_SLASH_COMPLETION_LIMIT]
     else:
         ranked_commands = commands[:_SLASH_COMPLETION_LIMIT]
-    return ranked_commands + skills[:_SLASH_COMPLETION_LIMIT]
+    ranked = ranked_commands + skills[:_SLASH_COMPLETION_LIMIT]
+    if score_of is not None:
+        # Searching: interleave the kinds by score so an exact skill name (`/pr`) is not buried under
+        # every command whose name or description merely contains the query. The sort is stable, so
+        # commands still lead on ties.
+        ranked.sort(key=score_of)
+    return ranked
 
 
 _DETAILS_SECTIONS = ("thinking", "tools", "subagents", "activity")

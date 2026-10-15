@@ -167,6 +167,25 @@ def test_rank_slash_completions_still_caps_commands_when_searching():
     assert len(ranked) == 30
 
 
+def test_rank_slash_completions_exact_skill_beats_weaker_commands_when_searching():
+    # `/pr`: a skill named exactly `pr` must not sit below every command that
+    # only prefix- or description-matches; equal scores keep commands first.
+    prompt = _item("/prompt")
+    compress = _item("/compress")
+    pr = _item("/pr", kind="skill")
+    tie = _item("/print")
+    scores = {id(prompt): 1.0, id(compress): 2.0, id(pr): 0.0, id(tie): 0.0}
+
+    ranked = _rank_slash_completions(
+        [tie, prompt, compress, pr],
+        lambda _name: 0,
+        lambda _name: "user",
+        browsing=False,
+        score_of=lambda item: scores.get(id(item), math.inf),
+    )
+    assert [item["text"] for item in ranked] == ["/print", "/pr", "/prompt", "/compress"]
+
+
 def test_rank_slash_completions_ties_break_on_usage_then_name():
     a = _item("/beta", kind="skill")
     b = _item("/alpha", kind="skill")

@@ -25,8 +25,13 @@ it('projects resumed runtime pending receipts under durable identity without mak
 
   applyRuntimeInfo(info)
   applyRuntimeInfo(info)
-  expect(getQueuedPrompts('durable').map(({ id, text, serverStatus }) => ({ id, text, serverStatus })))
-    .toEqual(info.pending_submissions.map(({ admission_id, user, status }) => ({ id: admission_id, text: user, serverStatus: status })))
+  expect(getQueuedPrompts('durable').map(({ id, text, serverStatus }) => ({ id, text, serverStatus }))).toEqual(
+    info.pending_submissions.map(({ admission_id, user, status }) => ({
+      id: admission_id,
+      text: user,
+      serverStatus: status
+    }))
+  )
   expect(getQueuedPrompts('durable').every(entry => !isSteerableEntry(entry))).toBe(true)
   expect(getQueuedPrompts('runtime')).toEqual([])
 })
@@ -55,8 +60,9 @@ it('recovers remote pending text into the queue and journal without a local subm
 
   reconcilePendingSubmissions('chat', snapshot)
   reconcilePendingSubmissions('chat', snapshot)
-  expect(getQueuedPrompts('chat').map(({ id, text, serverStatus }) => ({ id, text, serverStatus })))
-    .toEqual(snapshot.map(({ admission_id, user, status }) => ({ id: admission_id, text: user, serverStatus: status })))
+  expect(getQueuedPrompts('chat').map(({ id, text, serverStatus }) => ({ id, text, serverStatus }))).toEqual(
+    snapshot.map(({ admission_id, user, status }) => ({ id: admission_id, text: user, serverStatus: status }))
+  )
   const journal = readPendingSubmissions('chat')
 
   for (const receipt of snapshot) {
@@ -102,22 +108,58 @@ it('a delayed older empty snapshot never retires a receipt a newer frame still l
   const queued = { admission_id: 'q', input_id: 'in-q', status: 'queued', text: 'still waiting', sequence: 1 }
 
   // The owner's resume answer, through the production snapshot projection.
-  const snapshot = (lastSequence: number, pending: unknown[]) => applyRuntimeInfo(protocol.result('session.resume', { session_id: 'fenced' },
-    { session_id: 'fenced', stored_session_id: 'fenced', revision: 1, execution_generation: 1, replay_epoch: 'e1', last_sequence: lastSequence, pending, info: {} }).info,
-  { foreground: false })
+  const snapshot = (lastSequence: number, pending: unknown[]) =>
+    applyRuntimeInfo(
+      protocol.result(
+        'session.resume',
+        { session_id: 'fenced' },
+        {
+          session_id: 'fenced',
+          stored_session_id: 'fenced',
+          revision: 1,
+          execution_generation: 1,
+          replay_epoch: 'e1',
+          last_sequence: lastSequence,
+          pending,
+          info: {}
+        }
+      ).info,
+      { foreground: false }
+    )
 
   // The live pending fanout at seq 10, through the canonical normalizer and the session.info handler.
-  const live = { type: 'session.info', session_id: 'fenced', seq: 10, replay_epoch: 'e1', profile: 'default',
-    payload: { stored_session_id: 'fenced', pending: [queued], revision: 1 } as Record<string, unknown> }
+  const live = {
+    type: 'session.info',
+    session_id: 'fenced',
+    seq: 10,
+    replay_epoch: 'e1',
+    profile: 'default',
+    payload: { stored_session_id: 'fenced', pending: [queued], revision: 1 } as Record<string, unknown>
+  }
 
   protocol.event(live)
   handleSessionInfoEvent({
-    deps: { activeGatewayProfile: 'default', activeSessionIdRef: { current: null }, hydrateFromStoredSession: vi.fn(),
-      lastCwdInfoSessionRef: { current: null }, queryClient: { invalidateQueries: vi.fn() }, refreshHermesConfig: vi.fn(),
-      scheduleSessionsRefresh: vi.fn(), sessionInterrupted: () => false, sessionStateByRuntimeIdRef: { current: new Map() },
-      updateSessionState: vi.fn(state => state), upsertToolCall: vi.fn() },
-    event: live, explicitSid: 'fenced', fromActiveSource: () => true, isActiveEvent: false, occurredAt: Date.now() / 1000,
-    payload: live.payload, scheduleConfigRefresh: vi.fn(), sessionId: 'fenced'
+    deps: {
+      activeGatewayProfile: 'default',
+      activeSessionIdRef: { current: null },
+      hydrateFromStoredSession: vi.fn(),
+      lastCwdInfoSessionRef: { current: null },
+      queryClient: { invalidateQueries: vi.fn() },
+      refreshHermesConfig: vi.fn(),
+      scheduleSessionsRefresh: vi.fn(),
+      sessionInterrupted: () => false,
+      sessionStateByRuntimeIdRef: { current: new Map() },
+      updateSessionState: vi.fn(state => state),
+      upsertToolCall: vi.fn()
+    },
+    event: live,
+    explicitSid: 'fenced',
+    fromActiveSource: () => true,
+    isActiveEvent: false,
+    occurredAt: Date.now() / 1000,
+    payload: live.payload,
+    scheduleConfigRefresh: vi.fn(),
+    sessionId: 'fenced'
   } as unknown as GatewayEventContext)
   expect(getQueuedPrompts('fenced').map(entry => [entry.id, entry.serverStatus])).toEqual([['q', 'queued']])
 

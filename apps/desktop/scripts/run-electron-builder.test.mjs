@@ -16,7 +16,19 @@ test('validate-only admits real prepared inputs without launching tools and reje
     fs.writeFileSync(electron, 'fixture archive')
     const toolsets = { sevenZip: path.join(out, 'sevenZip'), icons: path.join(out, 'icons') }
     for (const dir of Object.values(toolsets)) fs.mkdirSync(dir)
-    const manifest = await publishPackagingInputs({ source, out, target: `${process.platform}-${process.arch}`, formats: ['dir'], electron, toolsets })
+    const windows = process.platform === 'win32' ? {
+      makeappx: path.join(out, 'winCodeSign', 'x64', 'makeappx.exe'),
+      signtool: path.join(out, 'winCodeSign', 'x64', 'signtool.exe'),
+      dlib: path.join(out, 'winCodeSign', 'x64', 'Azure.CodeSigning.Dlib.dll'),
+      dotnetRoot: path.join(out, 'dotnet'),
+    } : null
+    if (windows) {
+      toolsets.winCodeSign = path.join(out, 'winCodeSign')
+      fs.mkdirSync(path.dirname(windows.makeappx), { recursive: true })
+      for (const file of [windows.makeappx, windows.signtool, windows.dlib]) fs.writeFileSync(file, 'fixture')
+      fs.mkdirSync(windows.dotnetRoot)
+    }
+    const manifest = await publishPackagingInputs({ source, out, target: `${process.platform}-${process.arch}`, formats: ['dir'], electron, toolsets, windows })
     const nativeDeps = path.join(out, 'native')
     fs.mkdirSync(path.join(nativeDeps, 'node-pty'), { recursive: true })
     fs.writeFileSync(path.join(nativeDeps, 'node-pty/package.json'), '{}')
@@ -90,6 +102,8 @@ test('source builds hand every child the builder heap without rewriting inherite
   assert.ok(calls.length >= 2)
   const heap = /--max-old-space-size=16384$/
   for (const { options } of calls) assert.match(options.env.NODE_OPTIONS, heap)
+  if (process.platform === 'win32') assert.match(builderNodeOptions(''), /--use-system-ca/)
+  else assert.doesNotMatch(builderNodeOptions(''), /--use-system-ca/)
   assert.match(builderNodeOptions(''), heap)
   assert.match(builderNodeOptions('--max-old-space-size=4096'), heap)
   const quoted = '--require "/tmp/sp  ace/p.cjs"'

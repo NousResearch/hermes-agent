@@ -104,19 +104,24 @@ def _head_containing(git_cmd, cwd, commit: str, repository: str) -> str | None:
     """
     from hermes_cli.source_check import _github_compare, source_git_env
 
-    def run(*args):
+    def run(*args, strict=False):
         try:
             return subprocess.run(
                 [*git_cmd, *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=10, stdin=subprocess.DEVNULL, env=source_git_env(), check=False)
         except subprocess.TimeoutExpired:
+            if strict:
+                # Not knowing HEAD is not proof that HEAD lacks the release: a hung
+                # HEAD read must abort the update instead of letting the resolver
+                # pick the release target.
+                raise
             # git < 2.44 ignores GIT_NO_LAZY_FETCH, so a release commit missing from a
             # partial clone turns this probe into a history download that outlives the
             # timeout. No verdict: fall through to the GitHub comparison below (#138716).
             return None
 
-    head = run("rev-parse", "HEAD")
-    if head is None or not _SHA.fullmatch(head := head.stdout.strip()):
+    head = run("rev-parse", "HEAD", strict=True).stdout.strip()
+    if not _SHA.fullmatch(head):
         return None
     ancestry = run("merge-base", "--is-ancestor", commit, head)
     if ancestry is not None:

@@ -77,3 +77,23 @@ def test_hung_merge_base_falls_back_to_compare(history, tmp_path, monkeypatch):
     # GitHub unreachable too: the conservative unknown case keeps HEAD.
     monkeypatch.setattr(source_check, "_github_compare", compare(None))
     assert source_releases._head_containing(["git"], clone, shas[0], "o/r") == shas[2]
+
+
+def test_hung_head_read_stays_strict(history, tmp_path, monkeypatch):
+    # Not knowing HEAD is not proof that HEAD lacks the release: a hung HEAD read
+    # aborts the update (TimeoutExpired propagates, as on main) instead of letting
+    # the resolver fall back to the release target.
+    origin, shas = history
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", str(origin), str(clone))
+    real_run = subprocess.run
+
+    def hung_head(cmd, *args, **kwargs):
+        if isinstance(cmd, list) and cmd[1:3] == ["rev-parse", "HEAD"]:
+            raise subprocess.TimeoutExpired(cmd, 10)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(source_releases.subprocess, "run", hung_head)
+    monkeypatch.setattr(source_check, "_github_compare", lambda *a, **k: pytest.fail("no compare without a HEAD"))
+    with pytest.raises(subprocess.TimeoutExpired):
+        source_releases._head_containing(["git"], clone, shas[0], "o/r")

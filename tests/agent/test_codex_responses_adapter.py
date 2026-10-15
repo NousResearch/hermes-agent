@@ -1019,3 +1019,31 @@ def test_converter_role_items_are_typed_and_survive_preflight(issuer):
     assert role_items and all(i["type"] == "message" for i in role_items)
     assert {"type": "input_image", "image_url": "data:image/png;base64,AAAA"} in role_items[0]["content"]
     assert normalized == items
+
+
+@pytest.mark.parametrize("issuer", [None, "codex_backend"])
+@pytest.mark.parametrize("structured", [False, True])
+def test_role_message_phase_survives_conversion_and_preflight(issuer, structured):
+    """Assistant phase is resent through conversion and preflight, per OpenAI's replay guidance."""
+    content = [{"type": "text", "text": "Checking."}] if structured else "Checking."
+    history = [
+        {"role": "user", "content": "audit"},
+        {"role": "assistant", "content": content, "phase": " Commentary "},
+    ]
+    converted = _chat_messages_to_responses_input(history, current_issuer_kind=issuer)
+
+    normalized = _preflight_codex_api_kwargs({"model": "m", "instructions": "i", "input": converted, "store": False})
+
+    assert converted[-1]["phase"] == "commentary"
+    assert normalized["input"] == converted
+
+
+def test_role_message_phase_is_kept_only_for_assistant_values_the_api_accepts():
+    wire = _preflight_codex_input_items([
+        {"role": "assistant", "content": "a", "phase": "final_answer"},
+        {"role": "assistant", "content": "b", "phase": "analysis"},
+        {"role": "assistant", "content": "c", "phase": 42},
+        {"role": "user", "content": "d", "phase": "commentary"},
+    ])
+
+    assert [item.get("phase") for item in wire] == ["final_answer", None, None, None]

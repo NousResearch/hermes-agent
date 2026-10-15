@@ -202,29 +202,78 @@ _SHARED_ENV = (
     "GATEWAY_ALLOW_ALL_USERS=true\nGATEWAY_ALLOWED_USERS=1,2\n"
     "GATEWAY_RELAY_ID=gw-1\nGATEWAY_RELAY_SECRET=s\nGATEWAY_RELAY_DELIVERY_KEY=k\n"
     "WECOM_DM_POLICY=open\nSMS_WEBHOOK_PORT=8700\n"
-    "HASS_TOKEN=hass-tool-token\nHASS_URL=http://ha.local\n"
     "TWILIO_ACCOUNT_SID=AC1\nTWILIO_AUTH_TOKEN=tw\nTWILIO_PHONE_NUMBER=+1\n"
     "EMAIL_ADDRESS=a@b\nEMAIL_PASSWORD=p\nEMAIL_SMTP_HOST=smtp\nEMAIL_IMAP_HOST=imap\nEMAIL_ALLOWED_USERS=x@y\n"
 )
 
 
 def test_ownership_inventory_strips_policy_relay_and_aliases_but_keeps_tool_credentials(home):
-    """Gateway-wide policy, relay identity and alias-prefixed keys are channel settings. HASS/TWILIO/EMAIL
+    """Gateway-wide policy, relay identity and alias-prefixed keys are channel settings. TWILIO/EMAIL
     credentials are shared with tools: they leave with the channel only when the source's gateway would
     run that adapter (email here — complete creds, not disabled); an explicitly disabled channel means
     the key is a tool credential and stays. Its policy keys (allowlists, ports) go regardless."""
     (home / ".env").write_text(_SHARED_ENV, encoding="utf-8")
     (home / "config.yaml").write_text(
         yaml.safe_dump({"model": {"default": "gpt-5", "provider": "openai"},
-                        "platforms": {"homeassistant": {"enabled": False}, "sms": {"enabled": False}}}),
+                        "platforms": {"sms": {"enabled": False}}}),
         encoding="utf-8")
 
     profile_dir = create_profile("bot3", clone_config=True, no_alias=True)
 
     keys = {line.split("=", 1)[0] for line in (profile_dir / ".env").read_text(encoding="utf-8").splitlines()
             if "=" in line and not line.startswith("#")}
-    assert keys == {"OPENAI_API_KEY", "HASS_TOKEN", "HASS_URL",
-                    "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"}
+    assert keys == {"OPENAI_API_KEY", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"}
+
+
+@pytest.mark.parametrize(("config", "stripped"), [
+    ({"gateway": {"homeassistant": {"enabled": True, "token": "ha-short-token"}}}, True),
+    ({}, True),  # HASS_TOKEN in .env alone enabled core's adapter
+    ({"platforms": {"homeassistant": {"enabled": False}}}, False),  # tool-only: HASS_* is a tool key
+])
+def test_left_core_platform_keeps_channel_ownership_while_its_plugin_is_absent(home, config, stripped):
+    """Home Assistant left core; with its plugin not installed yet (migration pending, declined,
+    failed) a channel-less clone still leaves the source's HA identity behind, like core did."""
+    (home / ".env").write_text("OPENAI_API_KEY=sk\nHASS_TOKEN=ha-token\nHASS_URL=http://ha.local\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        yaml.safe_dump({"model": {"default": "gpt-5", "provider": "openai"}, **config}), encoding="utf-8")
+    assert not (home / "plugins" / "homeassistant").exists()
+
+    profile_dir = create_profile(f"ha{len(config)}{int(stripped)}", clone_config=True, no_alias=True)
+
+    keys = {line.split("=", 1)[0] for line in (profile_dir / ".env").read_text(encoding="utf-8").splitlines()
+            if "=" in line and not line.startswith("#")}
+    assert keys == ({"OPENAI_API_KEY"} if stripped else {"OPENAI_API_KEY", "HASS_TOKEN", "HASS_URL"})
+    assert "ha-short-token" not in (profile_dir / "config.yaml").read_text(encoding="utf-8")
+
+
+_SHARED_PLUGIN_MANIFEST = "name: sharedplat\nkind: platform\nversion: 1.0.0\nrequires_env:\n  - name: SHP_TOKEN\n    password: true\n"
+_SHARED_PLUGIN_INIT = (
+    "from gateway.platform_registry import PlatformEntry\n"
+    "def register(ctx):\n"
+    "    ctx.register_platform(name='sharedplat', label='Shared', adapter_factory=lambda cfg: None,\n"
+    "                          check_fn=lambda: True, required_env=['SHP_TOKEN'], shared_env_prefixes=('SHP_',))\n"
+)
+
+
+@pytest.mark.parametrize(("enabled", "stripped"), [(False, False), (True, True)])
+def test_plugin_platform_shared_env_prefixes_follow_the_ownership_rule(home, enabled, stripped):
+    """A plugin platform's ``shared_env_prefixes`` (Home Assistant's ``HASS_``) get the shared-with-tools
+    rule: the keys leave with the channel only when the source runs that adapter."""
+    plugin = home / "plugins" / "sharedplat"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text(_SHARED_PLUGIN_MANIFEST, encoding="utf-8")
+    (plugin / "__init__.py").write_text(_SHARED_PLUGIN_INIT, encoding="utf-8")
+    (home / ".env").write_text("OPENAI_API_KEY=sk\nSHP_TOKEN=tool-token\nSHP_URL=http://x\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        yaml.safe_dump({"model": {"default": "gpt-5", "provider": "openai"}, "plugins": {"enabled": ["sharedplat"]},
+                        "platforms": {"sharedplat": {"enabled": enabled}}}),
+        encoding="utf-8")
+
+    profile_dir = create_profile(f"shp{int(enabled)}", clone_config=True, no_alias=True)
+
+    keys = {line.split("=", 1)[0] for line in (profile_dir / ".env").read_text(encoding="utf-8").splitlines()
+            if "=" in line and not line.startswith("#")}
+    assert keys == ({"OPENAI_API_KEY"} if stripped else {"OPENAI_API_KEY", "SHP_TOKEN", "SHP_URL"})
 
 
 def test_clone_all_drops_directory_shaped_channel_state(home):

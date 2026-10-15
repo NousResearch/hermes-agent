@@ -26,8 +26,25 @@ def _queue_usage() -> str:
     return t("cli.queue.usage")
 
 
+def _parse_queue_index(token: str) -> int | None:
+    """1-based queue index from one whitespace-free token, or None when it isn't one.
+
+    ``str.isdigit()`` alone is not enough: it accepts characters ``int()`` rejects
+    (``²``, ``②``), and ``int()`` also refuses digit strings past Python's
+    conversion limit. A ValueError here would escape the slash handler and take
+    down the prompt_toolkit app, so every queue index goes through this.
+    """
+    if not token.isdigit():
+        return None
+    try:
+        return int(token)
+    except ValueError:
+        return None
+
+
 # management verb -> (handler, takes a leading item index). Verbs without an index are
-# only management when they stand alone; index verbs only when a number follows.
+# only management when they stand alone; index verbs when a number follows or when the
+# verb stands alone (the handler then prints its usage line).
 _QUEUE_VERBS: dict[str, tuple[str, bool]] = {
     "list": ("_queue_list", False), "ls": ("_queue_list", False), "show": ("_queue_list", False),
     "clear": ("_queue_clear", False),
@@ -45,6 +62,15 @@ def _print_decision_message(decision: dict) -> bool:
     if msg:
         _cprint(f"  {msg}")
     return bool(msg)
+
+
+def _goal_blocks_loop_tick(mgr) -> bool:
+    """``loops.goal_blocks_loop_tick`` for this loop's session: asked of the gateway when the manager
+    is the gateway's (it reads the goal row and its barrier where they live)."""
+    if hasattr(mgr, "goal_blocks_tick"):
+        return mgr.goal_blocks_tick()
+    from hermes_cli.loops import goal_blocks_loop_tick
+    return goal_blocks_loop_tick(mgr.session_id)
 
 
 class CLILoopsMixin:
@@ -349,7 +375,11 @@ class CLILoopsMixin:
 
     def _queue_remove(self, rest: str) -> None:
         from cli import _cprint
-        idx = int(rest)
+        bits = rest.split()
+        idx = _parse_queue_index(bits[0]) if len(bits) == 1 else None
+        if idx is None:
+            _cprint(f"  {t('cli.queue.usage_remove')}")
+            return
         removed: list = []
         before, _ = self._mutate_pending_input(
             lambda items: (removed.append(items.pop(idx - 1)) or items) if 1 <= idx <= len(items) else items)
@@ -360,11 +390,14 @@ class CLILoopsMixin:
 
     def _queue_edit(self, rest: str) -> None:
         from cli import _VoiceInputMessage, _cprint
-        idx_text, _, new_prompt = rest.partition(" ")
-        if not new_prompt.strip():
+        # Split on any whitespace, like ``_cmd_queue``'s routing check, so
+        # ``edit 1<TAB>text`` doesn't leave "1\ttext" as the index token.
+        bits = rest.split(None, 1)
+        idx = _parse_queue_index(bits[0]) if len(bits) == 2 else None
+        if idx is None:
             _cprint(f"  {t('cli.queue.usage_edit')}")
             return
-        idx = int(idx_text)
+        new_prompt = bits[1]
         new_text = self._expand_paste_references(new_prompt.strip())
 
         def _edit(items: list) -> list:
@@ -384,10 +417,10 @@ class CLILoopsMixin:
     def _queue_move(self, rest: str) -> None:
         from cli import _cprint
         bits = rest.split()
-        if len(bits) != 2 or not bits[1].isdigit():
+        src, dst = (_parse_queue_index(b) for b in bits) if len(bits) == 2 else (None, None)
+        if src is None or dst is None:
             _cprint(f"  {t('cli.queue.usage_move')}")
             return
-        src, dst = int(bits[0]), int(bits[1])
 
         def _move(items: list) -> list:
             if 1 <= src <= len(items) and 1 <= dst <= len(items):
@@ -474,35 +507,64 @@ class CLILoopsMixin:
         setattr(self, attr, mgr)
         return mgr
 
+    def _automation_connection(self):
+        """``(gateway, connection)``: on a gateway session store the managers are the gateway's
+        (``hermes_cli.gateway_automation``), and none exists until the gateway session is open, so this
+        process never opens state.db read-write nor calls the goal judge. Off the gateway (tests, the
+        TUI slash worker's shadow CLI) main's in-process managers apply."""
+        from hermes_cli.gateway_session_store import GatewaySessionStore
+        store = getattr(self, "_session_db", None)
+        if not isinstance(store, GatewaySessionStore):
+            return False, None
+        return True, store.connection if getattr(self, "_gateway_session_open", False) else None
+
+    def _automation_manager(self, attr, label, local, remote):
+        gateway, connection = self._automation_connection()
+        if gateway and connection is None:
+            return None
+        return self._session_bound_manager(
+            attr, label, (lambda: lambda sid: remote(sid, connection)) if gateway else local)
+
     def _get_goal_manager(self):
         """GoalManager bound to the current session_id (see ``_session_bound_manager``)."""
+        def max_turns():
+            from hermes_cli.config import load_config
+            try:
+                goals_cfg = (load_config() or {}).get("goals") or {}
+                return int(goals_cfg.get("max_turns", 20) or 20)
+            except Exception:  # health: allow BLE001 -- main's fallback: an unreadable goals config is the 20-turn default
+                return 20
+
         def load():
             from hermes_cli.goals import GoalManager
-            from hermes_cli.config import load_config
+            return lambda sid: GoalManager(session_id=sid, default_max_turns=max_turns())
 
-            def make(sid):
-                try:
-                    goals_cfg = (load_config() or {}).get("goals") or {}
-                    max_turns = int(goals_cfg.get("max_turns", 20) or 20)
-                except Exception:
-                    max_turns = 20
-                return GoalManager(session_id=sid, default_max_turns=max_turns)
-            return make
-        return self._session_bound_manager("_goal_manager", "goal manager", load)
+        def remote(sid, connection):
+            from hermes_cli.gateway_automation import GatewayGoalManager
+            return GatewayGoalManager(sid, connection)
+        return self._automation_manager("_goal_manager", "goal manager", load, remote)
 
     def _get_heartbeat_manager(self):
         """HeartbeatManager bound to the current session_id (see ``_session_bound_manager``)."""
         def load():
             from hermes_cli.heartbeat import HeartbeatManager
             return lambda sid: HeartbeatManager(session_id=sid)
-        return self._session_bound_manager("_heartbeat_manager", "heartbeat manager", load)
+
+        def remote(sid, connection):
+            from hermes_cli.gateway_automation import GatewayHeartbeatManager
+            return GatewayHeartbeatManager(sid, connection)
+        return self._automation_manager("_heartbeat_manager", "heartbeat manager", load, remote)
 
     def _get_loop_manager(self):
         """LoopManager bound to the current session_id (see ``_session_bound_manager``)."""
         def load():
             from hermes_cli.loops import LoopManager
             return lambda sid: LoopManager(session_id=sid)
-        return self._session_bound_manager("_loop_manager", "loop manager", load)
+
+        def remote(sid, connection):
+            from hermes_cli.gateway_automation import GatewayLoopManager
+            return GatewayLoopManager(sid, connection)
+        return self._automation_manager("_loop_manager", "loop manager", load, remote)
 
     def _start_heartbeat_watchdog(self):
         """Start the idle-poll daemon that injects a due heartbeat prompt into
@@ -590,8 +652,7 @@ class CLILoopsMixin:
         except Exception:
             return
         try:
-            from hermes_cli.loops import goal_blocks_loop_tick
-            if goal_blocks_loop_tick(mgr.session_id):
+            if _goal_blocks_loop_tick(mgr):
                 return
         except Exception:
             pass
@@ -662,8 +723,9 @@ class CLILoopsMixin:
             _cprint(f"  {_DIM}{t('cli.loop.paused_interrupted')}{_RST}")
             return
         decision = mgr.complete_tick(self._last_assistant_response_text())
+        # With the live-work dock up its loop row carries the countdown; the one-shot line would go stale.
         if (not _print_decision_message(decision) and decision.get("status") == "active"
-                and mgr.state is not None):
+                and mgr.state is not None and getattr(self, "_subagent_monitor", None) is None):
             _cprint(f"  {_DIM}{t('cli.loop.remaining', label=mgr.state.remaining_label())}{_RST}")
 
     def _maybe_continue_goal_after_turn(self) -> None:

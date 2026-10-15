@@ -235,23 +235,12 @@ Notes:
 `warn`, `destructive`, `outline`, `solid` (primary fill — icon-corner counts).
 Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
-Badges are inert. A metadata chip that does something (filter by category or
-tag, search a platform or tool) is a `Button` `size="xs"`: `chip` for facet
-values (soft fill + a 0.5px inset shadow ring on hover, so no reflow), `ghost`
-for quieter search values. Don't style a Badge to look clickable or add a
-separate chip component.
-
-## Reel
+## Profile rail
 
 The profile rail keeps its create/import actions outside the scrolling squares.
 Clipped horizontal edges reuse `edgeMask(edges, 'x')` from `fade-scroll.tsx`;
 the default axis remains vertical for `FadeScroll`. Fitting content is unmasked,
 and profile drag gestures temporarily remove the mask so the dragged square stays legible.
-
-`src/components/ui/reel.tsx`: one horizontal, snap-scrolling row (catalog
-category shelves, screenshot strips). Children keep their width and snap to
-the start; set it once from the parent (`className="*:w-68"`). Use it instead of
-hand-rolling `flex overflow-x-auto snap-x`.
 
 ## Context-sensitive dialogs
 
@@ -261,25 +250,16 @@ password field. Long commands wrap and scroll; missing backend context is
 explicit, never inferred from another tool row. Other dialogs retain the shared
 blurred backdrop.
 
-A dialog opened from inside another (an image lightbox over a catalog detail)
-stacks above it automatically, so its backdrop dims the parent too. Media
-viewers use a heavier scrim through `overlayClassName`. Controls that belong to
-the dialog but mustn't scroll with its body (prev/next pagers) go in `chrome`,
-which may sit past the dialog's edges.
-
 ## Form controls
 
 - **`controlVariants`** (`src/components/ui/control.ts`) is the shared shape for
   `Input` / `Textarea` / `SelectTrigger`. New text-entry controls compose it.
 - **`SearchField`** — borderless, underline-on-focus, auto-width. The only
   search input. Don't build boxed search bars; don't wrap it in a bordered tile.
-  `variant="box"` is the one bordered form: a full-width rounded field for
-  pages where search is the primary affordance (the Skills/Plugins catalogs).
   Empty lists hide their search field.
 - **`SegmentedControl`** — the choice control for small mutually-exclusive sets
   (color mode, tool-call display, usage period). Replaces radio piles and
-  pill rows. A two-state view switch (list/cards, list/tree) is not a segmented
-  control: it's one ghost `icon-xs` `Button` showing the mode it switches to.
+  pill rows.
 - **`Switch`** (`size="xs"`) — bare, with `aria-label`. No bordered text wrapper.
 - **`FanMenu`** (`src/components/ui/fan-menu.tsx`) — one hub control that
   fans sibling toggles out on hover: `direction` `vertical` | `horizontal`
@@ -295,13 +275,6 @@ which may sit past the dialog's edges.
 - **Master/detail overlays:** `OverlaySplitLayout` + `OverlaySidebar` /
   `OverlayMain`. Cron, profiles, etc. ride this — don't rebuild a titlebar
   shell.
-- **Filter rails** reuse the same pieces: `SidebarPanelLabel` (its `meta` slot
-  carries the result count), `SidebarDateDivider` group headings, and `nested`
-  `OverlayNavItem` rows. Facets are multi-select: each row is `pressed`, with a
-  `CheckboxMark` in `leading` (the row is the control; a real `Checkbox` would
-  nest a button), and an "All" row clears the group. No radio glyphs. A text
-  "Clear" sits on the label row while anything is filtered. Cap long facets
-  (tags) to the top values plus the selection; search covers the tail.
 - **Settings subpages:** `OverlayNav` keeps navigation and disclosure separate:
   labels navigate; the shared `DisclosureCaret` button opens a branch without
   changing the page. Active paths reveal automatically, inactive paths stay
@@ -373,7 +346,7 @@ so glass and message-bubble transparency do not reveal scrolling text.
 
 ## Chat typography
 
-Appearance → Typography keeps **UI Scale** as whole-window zoom (90% by
+Appearance → Typography keeps **UI Scale** as whole-window zoom (100% by
 default). **Chat Text Size** is a separate desktop-local multiplier (110% by
 default) on conversation text and the composer editor, including floating and
 inline-edit composers.
@@ -503,14 +476,6 @@ from their root base tokens; do not multiply the global tokens or nest CSS zoom.
   remove animation before masking a performance problem.
 
 ## Direct manipulation & performance
-
-`Masonry` (`components/ui/masonry.tsx`) packs natural-height cards into responsive
-lanes, using CSS `display: grid-lanes` where supported. Older Electron versions
-use one ResizeObserver and frame-batched placement; child DOM/source order stays
-intact through resizing, media loading, and disclosure. It owns the shared gap;
-`--masonry-min-width` optionally changes the minimum lane width. It knows nothing
-about what it holds: catalog results and discovery shelves opt into their hover
-treatment (sibling dimming, the pointer-following glow) from the catalog's own CSS.
 
 The app should feel instant under real load — long transcripts, several panes,
 live streams. Design toward that:

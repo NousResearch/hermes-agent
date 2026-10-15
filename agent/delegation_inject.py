@@ -169,6 +169,42 @@ def _claim_status(entry: dict[str, Any]) -> tuple[str | None, bool]:
     return get_event_delivery_claim_status(entry["event"], entry["claim_id"])
 
 
+def _emit_injected_delivery_notice(agent: Any, entries: list[dict[str, Any]]) -> None:
+    """Tell interactive surfaces that durable same-turn delivery completed.
+
+    The completion payload is already inside an ordinary tool result.  This is
+    display-only: it must never add another conversation message or trigger a
+    model turn.  Unknown progress-event consumers simply ignore the event.
+    """
+    callback = getattr(agent, "tool_progress_callback", None)
+    if not callable(callback) or not entries:
+        return
+    events = [entry.get("event") for entry in entries if isinstance(entry.get("event"), dict)]
+    if not events:
+        return
+    task_count = 0
+    delegation_ids: list[str] = []
+    for event in events:
+        results = event.get("results")
+        task_count += len(results) if isinstance(results, list) and results else 1
+        delegation_id = str(event.get("delegation_id") or "")
+        if delegation_id and delegation_id not in delegation_ids:
+            delegation_ids.append(delegation_id)
+    try:
+        callback(
+            "delegation.injected",
+            "_delegation",
+            None,
+            None,
+            task_count=max(1, task_count),
+            unit_count=len(events),
+            delegation_ids=delegation_ids,
+        )
+    except Exception:
+        # Delivery is already durable; display failure must never roll it back.
+        logger.debug("Failed to render same-turn delegation delivery notice", exc_info=True)
+
+
 def _stop_claim_heartbeat_if_idle(agent: Any) -> None:
     pending = list(getattr(agent, _PENDING_CLAIMS_ATTR, []) or [])
     if any(_entry_is_renewable(agent, entry) for entry in pending):
@@ -261,6 +297,7 @@ def acknowledge_pending_injects(agent: Any, *, turn_id: str | None = None) -> in
     pending = list(getattr(agent, _PENDING_CLAIMS_ATTR, []) or [])
     keep: list[dict[str, Any]] = []
     settled_messages: list[dict[str, Any]] = []
+    acknowledged_entries: list[dict[str, Any]] = []
     acknowledged = 0
     for entry in pending:
         if turn_id is not None and str(entry.get("turn_id") or "") != str(turn_id):
@@ -278,6 +315,7 @@ def acknowledge_pending_injects(agent: Any, *, turn_id: str | None = None) -> in
             committed = False
         if committed:
             acknowledged += 1
+            acknowledged_entries.append(entry)
             settled_messages.append(message)
             continue
         try:
@@ -312,6 +350,7 @@ def acknowledge_pending_injects(agent: Any, *, turn_id: str | None = None) -> in
         if not (_message_event_ids(message) & still_pending_ids):
             _clear_carrier_metadata(message)
     _stop_claim_heartbeat_if_idle(agent)
+    _emit_injected_delivery_notice(agent, acknowledged_entries)
     return acknowledged
 
 

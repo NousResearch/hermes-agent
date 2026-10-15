@@ -74,6 +74,12 @@ class GatewaySessionStore:
     def __bool__(self):
         return not self.connection.final
 
+    def close_reader(self):
+        """Release this viewer's SQLite handles before offline maintenance; keep its RPC store."""
+        if self._reader is not None:
+            self._reader.close()
+            self._reader = None
+
     # -- reads -----------------------------------------------------------------------------
     def _db(self):
         """The read-only reader, opened on first use. No state.db yet (the gateway creates it on its

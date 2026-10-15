@@ -54,6 +54,34 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
         build_policy({'source': 'kanban', 'cwd': str(workspace)}, config)
 
 
+def test_owner_model_fixture_defaults_to_public_output(monkeypatch):
+    from http.client import HTTPConnection
+    from http.server import ThreadingHTTPServer
+    from threading import Thread
+
+    monkeypatch.syspath_prepend(str(Path(__file__).parent / 'fixtures'))
+    from kanban_owner_probe import Model
+
+    with ThreadingHTTPServer(('127.0.0.1', 0), Model) as peer:
+        peer.requests, peer.mode = [], 'complete'
+        peer.timeout = 5
+        assert not hasattr(peer, 'log_secret')
+        thread = Thread(target=peer.handle_request, daemon=True)
+        connection = HTTPConnection('127.0.0.1', peer.server_port, timeout=5)
+        thread.start()
+        try:
+            connection.request('POST', '/v1/chat/completions', body='{"messages": []}',
+                               headers={'Content-Type': 'application/json'})
+            response = connection.getresponse()
+            assert response.status == 200
+            payload = json.loads(response.read())
+        finally:
+            connection.close()
+            thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert payload['choices'][0]['message']['content'].strip() == 'OWNED_COMPLETE'
+
+
 @pytest.mark.parametrize('mode', ['complete', 'redacted_complete', 'timeout', 'rate_limit', 'billing', 'crash'])
 def test_real_dispatcher_lifecycle(tmp_path, mode):
     import os

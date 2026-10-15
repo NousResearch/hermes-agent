@@ -37,7 +37,7 @@ class Model(BaseHTTPRequestHandler):
             return
         has_result = any(m['role'] == 'tool' for m in messages)
         secrets = 'sk-' + 'R' * 80 + '\npostgres://user:' + 'aB8x' * 75 + '@host/db'
-        content = 'OWNED_COMPLETE ' + (secrets if self.server.log_secret else '')
+        content = 'OWNED_COMPLETE ' + (secrets if getattr(self.server, 'log_secret', False) else '')
         message = {'role': 'assistant', 'content': content}
         finish = 'stop'
         if messages and not body.get('tools'):

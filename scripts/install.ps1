@@ -1199,10 +1199,9 @@ function Invoke-SourceCompletion([bool]$Desktop) {
 }
 
 function Publish-UserCommand {
-    # PATH exposure stays installer-owned on Windows: expose_cli() answers
-    # "windows-installer-owned" rather than creating the user-facing command,
-    # so the install-scoped launchers the completion publishes are not the ones
-    # the user's PATH points at.
+    # Stage the user-facing commands into $HermesHome\bin and put that folder on
+    # the User PATH. Updates repair this entry through expose_cli(), which edits
+    # the User PATH only for the home that new consoles use.
     $binDir = Join-Path $HermesHome "bin"
     $bootPy = Get-BootstrapPython
     Push-Location $InstallDir

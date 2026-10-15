@@ -17,7 +17,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email.parser import BytesHeaderParser
-from email.utils import formatdate, parseaddr
+from email.utils import formataddr, formatdate, parseaddr
 from email import encoders
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -45,6 +45,11 @@ _AUTOMATED_HEADERS = {"Auto-Submitted": lambda v: v.lower() != "no",
                       "X-Auto-Response-Suppress": lambda v: bool(v), "List-Unsubscribe": lambda v: bool(v)}
 MAX_MESSAGE_LENGTH = 50_000  # Gmail-safe max length per email body
 SMTP_CONNECT_TIMEOUT = 30
+
+# Single source of truth for the sender display name: the reply skeleton, the standalone
+# sender and the notification path previously hardcoded "Hermes Agent" in several places
+# and would drift (review #91746, item 3).
+EMAIL_DISPLAY_NAME = "Hermes Agent"
 _TRUTHY = {"true", "1", "yes"}
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 # Charset labels seen in the wild that Python's codec registry doesn't know: "unknown-8bit"/"x-unknown" are
@@ -861,13 +866,13 @@ class EmailAdapter(BasePlatformAdapter):
                    attach_empty_body: bool = False) -> tuple[MIMEMultipart, str, str]:
         """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
         msg, ctx = MIMEMultipart(), self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
+        subject = ctx.get("subject", EMAIL_DISPLAY_NAME)
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         original_msg_id = reply_to_msg_id or ctx.get("message_id")
         threading = (("In-Reply-To", original_msg_id), ("References", original_msg_id)) if original_msg_id else ()
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
-        for key, value in (("From", self._address), ("To", to_addr), ("Subject", subject), *threading,
+        for key, value in (("From", formataddr((EMAIL_DISPLAY_NAME, self._address))), ("To", to_addr), ("Subject", subject), *threading,
                            ("Date", formatdate(localtime=True)), ("Message-ID", msg_id)):
             msg[key] = value
         if body or attach_empty_body:
@@ -973,7 +978,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return send_error("Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)")
     try:
         msg = MIMEText(message, "plain", "utf-8")
-        for key, value in (("From", address), ("To", chat_id), ("Subject", t("platform.email.standalone_subject")), ("Date", formatdate(localtime=True))):
+        for key, value in (("From", formataddr((EMAIL_DISPLAY_NAME, address))), ("To", chat_id), ("Subject", t("platform.email.standalone_subject")), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
         server.login(address, password)

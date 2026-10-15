@@ -110,6 +110,8 @@ export function ConnectorRowCard({
 
           {showsCatalogMark(card) ? <CatalogMark /> : null}
 
+          <AccountSummary card={card} />
+
           {twin ? (
             <Badge className="shrink-0" size="xs" variant="muted">
               {twin === 'hostedTwin' ? copy.hostedTwin : copy.alsoLocal}
@@ -187,6 +189,22 @@ function CardLane({
       ) : null}
     </div>
   )
+}
+
+/** The connected account's name, or how many accounts the app has when there are several. */
+function AccountSummary({ card }: { card: ConnectorCardModel }) {
+  const { t } = useI18n()
+  const accounts = card.ways.hosted?.accounts ?? []
+  const summary = accounts.length > 1 ? t.connectorsPage.accounts.count(accounts.length) : accounts[0]?.alias
+
+  return summary ? (
+    <span
+      className="min-w-0 truncate text-[0.6875rem] text-(--ui-text-secondary)"
+      data-slot="connector-account-summary"
+    >
+      {summary}
+    </span>
+  ) : null
 }
 
 function SecondLine({ card, reason }: { card: ConnectorCardModel; reason?: string }) {

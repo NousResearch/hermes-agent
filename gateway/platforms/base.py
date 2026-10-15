@@ -159,6 +159,11 @@ def _reply_anchor_for_event(event) -> str | None:
     override = getattr(event, "reply_anchor_override", None)
     if override is not None:
         return override  # the turn was redirected onto another message (#115001)
+    if getattr(event, "internal", False):
+        # A synthetic wake's message_id is its producer identity (an admitted automation restores
+        # the JSON completion identity there), not a platform reply id: anchoring on it breaks the
+        # adapter's send (Telegram int()s it). Synthetic events never reply-anchor (#52694).
+        return None
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)

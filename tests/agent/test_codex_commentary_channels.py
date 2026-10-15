@@ -120,8 +120,11 @@ def test_normalized_commentary_and_encrypted_state_replay_without_reclassificati
             "encrypted_content": "opaque-replay-state",
             "summary": [{"type": "summary_text", "text": "Reasoning summary."}],
         },
-        *message.codex_message_items,
+        *[{k: v for k, v in item.items() if k != "id"} for item in message.codex_message_items],
     ]
+    # Existing store=False replay drops message IDs bound to encrypted reasoning;
+    # persisted phases/IDs remain exact and are not rewritten by normalization.
+    assert [item["id"] for item in message.codex_message_items] == ["msg_progress", "msg_final"]
     assert history == original
 
 

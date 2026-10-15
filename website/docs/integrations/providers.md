@@ -585,7 +585,9 @@ Then start a chat:
 hermes chat --provider nvidia --model nvidia/nemotron-3.5-super-vl-120b-a12b
 ```
 
+:::info BILLING
 Hermes automatically includes the NIM billing-origin header in requests to `build.nvidia.com`, ensuring consumption is attributed to the correct origin in NVIDIA’s billing dashboard. No additional configuration is required.
+:::
 
 #### Local NIM
 
@@ -606,7 +608,9 @@ hermes chat --provider nvidia --model nvidia/nemotron-3.5-super-vl-120b-a12b
 
 Local NIM endpoints expose the same OpenAI-compatible chat completions API as NVIDIA’s hosted service. To switch endpoints, update `NVIDIA_BASE_URL` and adjust the API key and model name as needed.
 
+:::info VISION
 If your local NIM model isn't in models.dev catalog and supports vision, set `model.supports_vision: true` for native image support — see [Native vision for custom-provider models](#named-custom-providers).
+:::
 
 #### Set the default model
 
@@ -618,7 +622,9 @@ model:
   default: "nvidia/nemotron-3.5-super-vl-120b-a12b"
 ```
 
+:::info CONTACT
 For issues with the Nemotron models themselves, see the [NVIDIA Nemotron developer forum](https://forums.developer.nvidia.com/c/ai-data-science/nvidia-nemotron/669).
+:::
 
 ### GMI Cloud
 

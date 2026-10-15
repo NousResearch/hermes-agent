@@ -171,6 +171,46 @@ class SessionRecoveryMixin:
             chat_type=source.chat_type if allow_peer_fallback else None,
             thread_id=source.thread_id, raise_on_lookup_error=raise_on_lookup_error)
 
+    def _local_route_row(self, *, session_key: str, source: SessionSource) -> Optional[dict[str, Any]]:
+        """The durable row a LOCAL route heals to: the one its creation receipt names.
+
+        A local session's id is minted from its identity (``hermes_state_keys.local_identity``), so a
+        route for it can never be re-created under a fresh id: the authority re-mounts and reopens
+        exactly the row the receipt points at, and a stamped row reads as resumable, not as a
+        boundary (``gateway/session_local_close.py``; the viewer's ``session.detach`` reason is what
+        ``reopen_local_session`` clears on the next turn). The generic peer lookup cannot see that: it
+        fences a stamped row out by end_reason and will happily adopt a *different* un-ended row
+        sitting on the same key, which strands the routing index on an id no receipt owns (#54878's
+        stale-route heal answers a local route with a fresh session id — the mount then refuses with
+        ``admission_conflict``, and the conversation stays dark). Only a row at a deliberate
+        conversation boundary is left to the normal paths.
+        """
+        if source.platform != Platform.LOCAL or not getattr(source, "chat_id", None):
+            return None
+        db = self._db_for_key(session_key)
+        if db is None:
+            return None
+        from hermes_state_common import _BOUNDARY_END_REASONS
+        from hermes_state_local import local_receipt
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            receipt = local_receipt(db, str(source.chat_id))
+        except (RuntimeStoreError, KeyError, TypeError):
+            return None  # not a local session (API binding, malformed receipt): nothing to heal to
+        if receipt.get("route") != session_key:
+            return None  # another route's receipt must never be adopted here
+        target = (receipt.get("entry") or {}).get("session_id")
+        if not target:
+            return None
+        try:
+            row = db.get_session(target)
+        except Exception as exc:
+            logger.debug("Local route row lookup failed for %s: %s", target, exc, exc_info=True)
+            return None  # DB errors are non-fatal: never block routing on a failed lookup
+        if row is None or row.get("end_reason") in _BOUNDARY_END_REASONS:
+            return None
+        return row
+
     @staticmethod
     def _peer_row(db, *, source: str, session_key: str, raise_on_lookup_error: bool = False,
                   **peer: Any) -> Optional[dict[str, Any]]:
@@ -265,10 +305,16 @@ class SessionRecoveryMixin:
         (pre-workspace) Slack key fallback lives here: exact-key lookup, claimed once per process;
         ``migrated_legacy`` tells the caller to rewrite the peer row to the scoped key."""
         legacy_key = self._legacy_slack_session_key(source)
-        recovered = self._find_gateway_session_row(
-            session_key=session_key, source=source, allow_peer_fallback=legacy_key is None,
-            raise_on_lookup_error=raise_on_lookup_error)
+        # A LOCAL route's target is fixed by its creation receipt, so the receipt outranks the peer
+        # lookup for it: the lookup fences the route's own stamped row out by end_reason and would
+        # adopt a foreign row on the same key, or answer nothing and let the caller mint a fresh id
+        # (see _local_route_row).
+        recovered = self._local_route_row(session_key=session_key, source=source)
         migrated_legacy = False
+        if recovered is None:
+            recovered = self._find_gateway_session_row(
+                session_key=session_key, source=source, allow_peer_fallback=legacy_key is None,
+                raise_on_lookup_error=raise_on_lookup_error)
         if not recovered and legacy_key and self._claim_legacy_slack_key(legacy_key):
             recovered = self._find_gateway_session_row(
                 session_key=legacy_key, source=source, allow_peer_fallback=False,
@@ -336,9 +382,18 @@ class SessionRecoveryMixin:
         from gateway.session_api import api_storage_source
         from gateway.session_a2a import storage_source
         from gateway.session_identity import transport_profile_of
-        peer = dict(
-            source=storage_source(db, source, session_id, api_storage_source(db, session_id, source.platform.value)), user_id=source.user_id, session_key=session_key,
-            chat_id=source.chat_id, chat_type=source.chat_type, thread_id=source.thread_id)
+        try:
+            # Resolving the stored label is part of the recorder's best-effort contract: for a LOCAL
+            # route ``storage_source`` refuses a session its creation receipt does not own
+            # (``admission_conflict``). Letting that escape turned a routing hazard into a *failed*
+            # route transition ("Failed to create session row ... admission_conflict") and aborted the
+            # turn on the per-turn refresh; the peer row simply keeps what an earlier writer set.
+            peer = dict(
+                source=storage_source(db, source, session_id, api_storage_source(db, session_id, source.platform.value)), user_id=source.user_id, session_key=session_key,
+                chat_id=source.chat_id, chat_type=source.chat_type, thread_id=source.thread_id)
+        except Exception as exc:
+            logger.debug("Gateway session peer label refused for %s: %s", session_key, exc, exc_info=True)
+            return
         try:
             recorder(
                 session_id, **peer, display_name=display_name or source.chat_name,

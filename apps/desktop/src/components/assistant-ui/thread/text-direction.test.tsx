@@ -6,6 +6,7 @@
 // attribute contract; the stylesheet half is checked in real Chromium.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
 import type { ThreadMessageLike } from '@assistant-ui/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -21,12 +22,14 @@ import { stubThreadEnvironment, stubThreadViewportSize } from '../test-utils'
 import { Thread } from '.'
 
 const createdAt = new Date('2026-06-01T00:00:00.000Z')
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 stubThreadEnvironment()
 stubThreadViewportSize()
 
 afterEach(() => {
   cleanup()
   setTextDirection('auto')
+  queryClient.clear()
 })
 
 // #100280's Latin-majority Arabic quote: first-strong resolves it LTR, which
@@ -97,20 +100,22 @@ function ComposerHarness() {
   })
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <MemoryRouter>
-        <I18nProvider configClient={null} initialLocale="en">
-          <ChatBar
-            busy={false}
-            disabled={false}
-            gateway={null}
-            onCancel={vi.fn()}
-            onSubmit={vi.fn(async () => true)}
-            state={chatBarState}
-          />
-        </I18nProvider>
-      </MemoryRouter>
-    </AssistantRuntimeProvider>
+    <QueryClientProvider client={queryClient}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <MemoryRouter>
+          <I18nProvider configClient={null} initialLocale="en">
+            <ChatBar
+              busy={false}
+              disabled={false}
+              gateway={null}
+              onCancel={vi.fn()}
+              onSubmit={vi.fn(async () => true)}
+              state={chatBarState}
+            />
+          </I18nProvider>
+        </MemoryRouter>
+      </AssistantRuntimeProvider>
+    </QueryClientProvider>
   )
 }
 

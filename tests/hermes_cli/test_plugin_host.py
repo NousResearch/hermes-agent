@@ -45,6 +45,13 @@ def register(ctx):
     ctx.register_platform("x", "X", adapter_factory=lambda cfg: None, check_fn=lambda: True)
 '''
 
+BLOCKING_UNLOAD_PLUGIN = '''
+import threading
+
+def register(ctx):
+    ctx.on_unload(lambda: threading.Event().wait())
+'''
+
 
 def _home_with_plugins(tmp_path, monkeypatch, plugins: dict, isolation="host"):
     home = tmp_path / ".hermes"
@@ -437,6 +444,56 @@ def test_plugin_host_wire_bounds_memory_observations_before_encoding():
     assert len(json.dumps(wire, separators=(",", ":"))) < 100_000
 
 
+def test_plugin_host_wire_preserves_full_manager_accepted_observation_tuple():
+    from agent.memory_manager_prefetch import normalize_prefetch_result
+    from agent.memory_provider import (
+        MAX_MEMORY_OBSERVATION_BATCH_BYTES,
+        MAX_MEMORY_OBSERVATIONS,
+        MemoryObservation,
+        MemoryPrefetchResult,
+    )
+    from hermes_cli.plugin_host_wire import decode, encode
+    from tests.agent.test_memory_provider import FakeMemoryProvider
+
+    raw = MemoryPrefetchResult(
+        observations=tuple(
+            MemoryObservation(
+                "recall", "wireprobe.recall", 1, {"text": "x" * 3910}
+            )
+            for _ in range(MAX_MEMORY_OBSERVATIONS)
+        )
+    )
+    accepted = normalize_prefetch_result(
+        FakeMemoryProvider(name="wireprobe"),
+        raw,
+        remaining_bytes=MAX_MEMORY_OBSERVATION_BATCH_BYTES,
+    ).result.observations
+    assert len(accepted) == MAX_MEMORY_OBSERVATIONS
+
+    decoded = decode(encode(accepted))
+
+    assert decoded == accepted
+    assert len(decoded) == MAX_MEMORY_OBSERVATIONS
+    assert all(item.payload["text"] == "x" * 3910 for item in decoded)
+
+    unicode_raw = MemoryPrefetchResult(
+        observations=tuple(
+            MemoryObservation("recall", "wireprobe.recall", 1, {"text": "🚀" * 3800})
+            for _ in range(MAX_MEMORY_OBSERVATIONS)
+        )
+    )
+    unicode_accepted = normalize_prefetch_result(
+        FakeMemoryProvider(name="wireprobe"),
+        unicode_raw,
+        remaining_bytes=MAX_MEMORY_OBSERVATION_BATCH_BYTES,
+    ).result.observations
+    unicode_wire = encode(unicode_accepted)
+    assert decode(unicode_wire) == unicode_accepted
+    assert len(json.dumps(unicode_wire, separators=(",", ":")).encode("utf-8")) <= (
+        MAX_MEMORY_OBSERVATION_BATCH_BYTES * 3 + MAX_MEMORY_OBSERVATIONS * 1024
+    )
+
+
 def test_plugin_host_wire_bounds_raw_dict_prefetch_before_generic_encoding():
     from agent.memory_provider import (
         MAX_MEMORY_OBSERVATION_BATCH_BYTES,
@@ -718,6 +775,50 @@ def test_unload_profile_manager_stops_live_plugin_host_process(tmp_path, monkeyp
     finally:
         if process.poll() is None:
             host.shutdown()
+
+
+@pytest.mark.platforms("any")
+def test_profile_teardown_kills_host_when_remote_on_unload_blocks(tmp_path, monkeypatch):
+    import threading
+    from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
+
+    home = _home_with_plugins(
+        tmp_path, monkeypatch, {"blocking-unload": BLOCKING_UNLOAD_PLUGIN}
+    )
+    manager = PluginManager()
+    manager.discover_and_load()
+    host = manager._plugin_host_instance
+    process = host._proc
+    assert process is not None and process.poll() is None
+
+    monkeypatch.setattr("hermes_cli.plugin_host._SHUTDOWN_GRACE_SECS", 0.1)
+    monkeypatch.setattr(
+        plugins_mod, "_plugin_managers_by_home", {home.resolve(): manager}
+    )
+    monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+    completed = threading.Event()
+    errors = []
+
+    def teardown():
+        try:
+            unload_plugin_manager_for_home(home)
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            completed.set()
+
+    thread = threading.Thread(target=teardown)
+    thread.start()
+    try:
+        assert completed.wait(timeout=2.0)
+        assert not errors
+        assert process.poll() is not None
+        assert home.resolve() not in plugins_mod._plugin_manager_teardown_owners
+    finally:
+        host.shutdown()
+        thread.join(timeout=5.0)
+
+    assert not thread.is_alive()
 
 
 def test_profile_manager_retires_observers_before_clearing_plugin_modules(

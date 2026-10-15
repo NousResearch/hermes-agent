@@ -181,4 +181,49 @@ describe('external writes into a member session', () => {
     ])
     expect(room.gateway.calls).toHaveLength(2)
   })
+
+  it('treat the batched background-completion digests and the iteration-cap row as plumbing (#126286)', async () => {
+    const gateway = createGroupGateway(options)
+    const room = await loadRoom(gateway)
+    const view = await import('./group-chat-view')
+
+    const thread = await drive(room, 'hello room')
+    await drive(room, 'second', thread)
+
+    // Between rounds the member's session accumulates the batched forms of the
+    // process plumbing: a count follows "[IMPORTANT: ", so the fixed prefix
+    // list missed them and the room mirrored the digest as the member
+    // speaking. The iteration-cap row has no bracket tag at all.
+    const key = room.membership.groupSessionKey(thread, MEMBER)
+    const session = gateway.sessions.get(String(room.chat.$groupChats.get().Room.sessions?.[key]))!
+    session.messages.push(
+      { content: '[IMPORTANT: 3 background processes completed for this session.\nTreat these results as one completion batch.]', role: 'user' },
+      { content: 'batch absorbed silently', role: 'assistant' },
+      { content: '[IMPORTANT: 2 background subagent delegations completed while the turn was in flight.]', role: 'user' },
+      { content: 'delegations noted', role: 'assistant' },
+      { content: '[IMPORTANT: Background process s-1 completed (exit code 0).', role: 'user' },
+      { content: 'single completion noted', role: 'assistant' },
+      { content: "You've reached the maximum number of tool-calling iterations allowed. Please provide a final response.", role: 'user' },
+      { content: 'final wrap-up', role: 'assistant' },
+      { content: 'peer: real question', role: 'user' },
+      { content: 'real answer', role: 'assistant' }
+    )
+
+    const data = await import('./data')
+    data.$lastRoster.set([{ name: 'research' }] as never)
+    data.$botMeta.set({ research: { groups: ['Room'] } } as never)
+
+    view.openGroupChat('Room')
+    await drain(() => texts(room).length < 6)
+
+    expect(texts(room)).toEqual([
+      'hello room',
+      'room reply 1',
+      'second',
+      'room reply 2',
+      'peer: real question',
+      'real answer'
+    ])
+    expect(room.gateway.calls).toHaveLength(2)
+  })
 })

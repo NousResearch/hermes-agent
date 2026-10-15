@@ -192,7 +192,10 @@ def session_is_messaging_surface() -> bool:
     """Whether this turn is delivered over a human messaging channel (checks
     ``HERMES_PLATFORM``, then the session platform, then the session source)."""
     platform = os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM", "")
-    idents = (platform, get_session_env("HERMES_SESSION_SOURCE", ""))
+    # `hermes chat --source <tag>` is a filtering label on an interactive session, not a channel.
+    explicit = get_session_env("HERMES_SESSION_SOURCE_EXPLICIT", "") == "1"
+    source = "" if explicit else get_session_env("HERMES_SESSION_SOURCE", "")
+    idents = (platform, source)
     idents = (str(v or "").strip().lower() for v in idents)
     return any(ident and ident not in NON_MESSAGING_SESSION_SURFACES for ident in idents)
 

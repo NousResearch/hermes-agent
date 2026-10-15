@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import logging
 import os
 import signal
@@ -91,7 +90,9 @@ class GatewayInboundHooksMixin:
             if _action == "rewrite":
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
-                    event = dataclasses.replace(event, text=_new_text)
+                    # Native admission binds the callback to this event's identity. A text-only
+                    # rewrite must retain that identity and the adapter's lifecycle markers.
+                    event.text = _new_text
                 break
             if _action == "allow":
                 break

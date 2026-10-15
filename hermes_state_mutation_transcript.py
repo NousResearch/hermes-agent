@@ -4,7 +4,7 @@ from hermes_state_messages import _ACTIVE_IDS_SQL, _SET_COUNTERS_SQL, _placehold
 
 def rewind_in_transaction(self, conn, session_id, target_message_id, *,
                           preserve_compaction_handoff=False, expected_active_ids=None,
-                          expected_target_content=None):
+                          expected_target_content=None, prepared_media=None):
     self._check_transcript_write_guards(
         conn, session_id, None, reject_active_turn_lease=True, reject_active_compression_lock=True)
     if expected_active_ids is not None:
@@ -16,6 +16,12 @@ def rewind_in_transaction(self, conn, session_id, target_message_id, *,
     if row is None:
         raise ValueError(f"message {target_message_id} not found in session {session_id}")
     target_row = dict(row)
+    if prepared_media is not None:
+        sidecar, content = prepared_media
+        if target_row.get("media_content") != sidecar:
+            raise RuntimeError("rewind target changed before it could be persisted")
+        if sidecar:
+            target_row["content"] = content
     if target_row.get("role") != "user":
         raise ValueError(
             f"rewind target must be a 'user' message (got role={target_row.get('role')!r}, id={target_message_id})")
@@ -35,4 +41,6 @@ def rewind_in_transaction(self, conn, session_id, target_message_id, *,
     conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (message_count, tool_call_count, session_id))
     head_id = conn.execute(
         "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1", (session_id,)).fetchone()[0]
+    from hermes_state_media import clear_inactive_media
+    clear_inactive_media(conn)
     return target_row, ids, head_id, replacement_message_id

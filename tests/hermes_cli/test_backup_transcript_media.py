@@ -12,10 +12,10 @@ from hermes_state import SessionDB
 
 @pytest.mark.parametrize("kind", ["full", "pre_update", "pre_migration", "quick"])
 def test_backup_restores_transcript_image(tmp_path, monkeypatch, kind):
-    from hermes_cli import gateway
+    from hermes_cli import gateway, gateway_setup_service
 
     # Import may install a gateway service; only that host side effect is stubbed.
-    monkeypatch.setattr(gateway, "ensure_gateway_service", lambda **kw: False)
+    monkeypatch.setattr(gateway_setup_service, "ensure_gateway_service", lambda **kw: False)
     monkeypatch.setattr(gateway, "_is_service_running", lambda: False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     source = tmp_path / "source"

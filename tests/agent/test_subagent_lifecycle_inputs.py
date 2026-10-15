@@ -150,14 +150,33 @@ def test_output_schema_validates_with_one_repair_and_returns_receipt(harness, wi
     {"output_schema": "not json"},
     {"output_schema": {"type": "no-such-type"}},
     {"output_schema": {"enum": [{1, 2}]}},  # not JSON-serializable
-    {"output_schema": {"description": "x" * 20_000}},  # schema too large
-    {"output_schema": {"description": "x" * 9_000}, "context": "c" * 25_000},  # contract would overflow context budget
+    {"output_schema": ADDRESS_SCHEMA, "context": "c" * 32_001},  # existing caller-context limit remains
 ])
 def test_malformed_inputs_are_rejected_before_any_child_is_built(harness, bad):
     before = dict(_REGISTRY.records)
     with pytest.raises(SubagentLifecycleError):
         harness.launch(SubagentLaunchRequest(goal="g", **bad), "unused")
     assert harness.builds == [] and _REGISTRY.records == before
+
+
+@pytest.mark.parametrize("wire", [False, True])
+@pytest.mark.parametrize("schema,context", [
+    ({"description": "x" * 20_000}, "caller facts"),
+    ({"type": "object", "description": "x" * 9_000}, "c" * 25_000),
+    ({"type": "object", "$defs": {"unused": {"const": [{}] * 2600}}}, "facts " * 1000),
+], ids=["large-schema", "large-contract", "expanded-schema"])
+def test_native_accepted_schemas_do_not_gain_lifecycle_size_limits(harness, wire, schema, context):
+    from tools.delegate_tool_tasks import _coerce_task_schemas
+    from tools.delegation_output_schema import append_output_contract
+
+    native, error = _coerce_task_schemas([{"goal": "g", "context": context, "output_schema": schema}], None)
+    assert error is None and native == [schema]
+    harness.wire = wire
+    service, child, build, handle = harness.launch(
+        SubagentLaunchRequest(goal="g", context=context, output_schema=schema), "{}")
+    assert child._delegate_output_schema == schema
+    assert build["context"] == append_output_contract(context, child._delegate_output_schema)
+    assert _finish(service, handle).structured_payload == {"schema_valid": True}
 
 
 def test_schema_is_snapshotted_at_launch(harness):

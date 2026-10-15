@@ -25,7 +25,6 @@ PUBLIC_CONTRACT_VERSION = 1
 _MAX_GOAL_CHARS = 16_000
 _MAX_CONTEXT_CHARS = 32_000
 _MAX_METADATA_BYTES = 8_192
-_MAX_OUTPUT_SCHEMA_BYTES = 16_384
 _MAX_SCHEMA_ERRORS = 10
 _MAX_SCHEMA_TEXT_CHARS = 1_000
 _MAX_RESULT_CHARS = 32_000
@@ -268,7 +267,7 @@ def _prepare_native_inputs(request: SubagentLaunchRequest) -> tuple[Optional[lis
     Returns ``(images, schema)`` where the schema is a JSON snapshot (later caller mutation cannot reach the child).
     """
     from tools.delegate_tool_tasks import _normalize_task_images
-    from tools.delegation_output_schema import append_output_contract, coerce_output_schema
+    from tools.delegation_output_schema import coerce_output_schema
     raw_images = list(request.images) if isinstance(request.images, (tuple, list)) else request.images
     images, error = _normalize_task_images({"images": raw_images}, 0)
     if error:
@@ -283,12 +282,9 @@ def _prepare_native_inputs(request: SubagentLaunchRequest) -> tuple[Optional[lis
         text = json.dumps(schema, sort_keys=True)
     except (TypeError, ValueError) as exc:
         raise SubagentLifecycleError("output_schema must be JSON-serializable.") from exc
-    if len(text.encode()) > _MAX_OUTPUT_SCHEMA_BYTES:
-        raise SubagentLifecycleError(f"output_schema exceeds {_MAX_OUTPUT_SCHEMA_BYTES} bytes.")
-    schema = json.loads(text)
-    if len(append_output_contract(request.context, schema)) > _MAX_CONTEXT_CHARS:
-        raise SubagentLifecycleError("context plus the output_schema contract exceeds 32000 characters.")
-    return images, schema
+    # Native delegation appends the contract after caller-context validation. Do not impose
+    # schema-only or combined-size caps that native delegate_task does not have.
+    return images, json.loads(text)
 
 
 def _schema_receipt(raw: Mapping[str, Any]) -> Optional[dict[str, Any]]:

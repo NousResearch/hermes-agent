@@ -93,11 +93,13 @@ without them behave exactly as before.
   one-entry list). They ride on the child's **first user turn** through the native image routing: a
   vision-capable child receives image content parts, any other child receives `[Image attached …]` hints for
   `vision_analyze`. Unreadable sources degrade to the text-only goal with a logged warning, as in `delegate_task`.
-- `output_schema`: a JSON Schema object (a JSON-encoded string is also accepted, as in `delegate_task`), at most
-  16 KB serialized. Hermes appends the `OUTPUT CONTRACT` block to the child's `context`, so context plus contract
-  must still fit the 32000-character context limit. The schema is copied at launch; later mutation by the caller
-  does not affect the child. Hermes validates the child's final answer and, on a miss, gives that same child
-  exactly one correction turn carrying the validation errors; no second child is launched.
+- `output_schema`: a JSON Schema object (a JSON-encoded string is also accepted, as in `delegate_task`).
+  Hermes validates it with the native schema helper and appends the `OUTPUT CONTRACT` block after the caller's
+  `context`. The existing 32000-character limit applies to the caller's `context`, not the appended contract;
+  no additional schema-specific or combined-size cap is imposed. The child still uses its normal model/context
+  handling. The schema is copied at launch; later mutation by the caller does not affect the child. Hermes
+  validates the child's final answer and, on a miss, gives that same child exactly one correction turn carrying
+  the validation errors; no second child is launched.
 
 When an `output_schema` was supplied, `SubagentResult.structured_payload` is the validation receipt, and only
 these keys ever appear (bounded to 10 errors, 1000 characters each):

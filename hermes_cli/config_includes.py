@@ -3,8 +3,8 @@
 A config file may name other YAML files (paths relative to the declaring file) whose values sit
 under its own: the declaring file wins, nested includes recurse, cycles are skipped. Loaders cache
 on the root file's signature, so each include's stat signature is recorded and re-checked without
-reparsing YAML. An include that exists but cannot be read raises ``ConfigIncludeError``: a partial
-policy is not a safe fallback.
+reparsing YAML. A missing include is skipped with a warning; one that cannot be resolved, stat'ed or
+read raises ``ConfigIncludeError``: a partial policy is not a safe fallback.
 """
 
 from __future__ import annotations
@@ -67,7 +67,10 @@ def merge_config_includes(
     merged: dict[str, Any] = {}
     signatures: list[tuple[Any, ...]] = []
     for raw_include in iter_include_values(config):
-        include_path = resolve_include_path(config_path, raw_include)
+        try:
+            include_path = resolve_include_path(config_path, raw_include)
+        except (OSError, RuntimeError) as e:
+            raise ConfigIncludeError(f"Unresolvable config include {raw_include!r} in {config_path}") from e
         if include_path is None:
             continue
         if include_path in seen:
@@ -79,6 +82,9 @@ def merge_config_includes(
             logger.warning("Config include %s referenced by %s does not exist", include_path, config_path)
             signatures.append((str(config_path), raw_include, str(include_path), -1, -1, -1, -1))
             continue
+        except OSError as e:
+            # Only absence is the documented skip; an include we cannot inspect may hold policy.
+            raise ConfigIncludeError(f"Unreadable config include {include_path}") from e
         signatures.append((str(config_path), raw_include, str(include_path), *file_signature(st)))
         try:
             include_config = read_config_yaml(include_path)
@@ -101,7 +107,10 @@ def config_includes_unchanged(path_key: str, signatures=None) -> bool:
     if signatures is None:
         signatures = INCLUDE_SIGNATURES.get(path_key, ())
     for parent, raw, previous_path, *previous_signature in signatures:
-        path = resolve_include_path(Path(parent), raw)
+        try:
+            path = resolve_include_path(Path(parent), raw)
+        except (OSError, RuntimeError):
+            return False  # reparse, so the loader's include boundary decides
         if path is None or str(path) != previous_path:
             return False
         try:

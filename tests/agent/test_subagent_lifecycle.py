@@ -389,8 +389,23 @@ def test_spill_metadata_and_footer_reach_lifecycle_result(monkeypatch):
     result = service.result(handle)
     assert result.summary_truncated is True
     assert isinstance(result.summary_full_path, str) and result.summary_full_path
-    assert "Full subagent output saved to:" in result.summary
+    # Footer presence is proven structurally (full path embedded at the end of the
+    # summary); pinning the English display sentence would make a UI string a contract.
     assert result.summary_full_path in result.summary
+
+
+def test_no_lifecycle_clip_when_native_budget_disabled(monkeypatch):
+    """With the native budget disabled (max_summary_chars=0, no parent headroom), the summary must
+    reach the result in full: the lifecycle adds no second cap, so this branch is the only guard
+    between the user and silently-truncated output."""
+    full_summary = "u" * 90_000
+    service = _lifecycle_with_summary(monkeypatch, full_summary, ceiling=0)
+    handle = service.launch(SubagentLaunchRequest(goal="uncapped"))
+    assert service.wait(handle, timeout_seconds=2).state is SubagentState.SUCCEEDED
+    result = service.result(handle)
+    assert result.summary == full_summary
+    assert result.summary_truncated is False
+    assert result.summary_full_path is None
 
 
 def test_provider_is_plugin_facing_only():

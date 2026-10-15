@@ -244,7 +244,7 @@ def format_peer_message(entry: Dict[str, Any]) -> str:
 
 def inject_peer_messages(agent: Any) -> bool:
     """Drain this session's inbox and steer the messages into ``agent``; True iff a
-    steer was injected. Rate-limited per agent; exits immediately when no inbox exists
+    steer was accepted. Rate-limited per agent; exits immediately when no inbox exists
     (the common case — nothing was ever sent to this session); never raises."""
     session_id = getattr(agent, "session_id", None)
     if not session_id or agent is None or not hasattr(agent, "steer"):
@@ -269,27 +269,43 @@ def inject_peer_messages(agent: Any) -> bool:
         return False
 
     entries: List[Dict[str, Any]] = []
+    pending_paths: List[Path] = []
     for path in files:
         try:
             entry = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(entry, dict) and str(entry.get("message") or "").strip():
-                entries.append(entry)
+        except (json.JSONDecodeError, UnicodeError):
+            logger.debug("peer inbox: invalid message %s", path.name, exc_info=True)
+            entry = None
         except Exception:
+            # An unreadable file is not necessarily malformed; retry it later.
             logger.debug("peer inbox: unreadable message %s", path.name, exc_info=True)
-        finally:
-            # Consume even unreadable files so a poison message can't wedge the inbox.
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            continue
+        if isinstance(entry, dict) and str(entry.get("message") or "").strip():
+            entries.append(entry)
+            pending_paths.append(path)
+            continue
+        # Discard only known-invalid payloads so poison files cannot wedge the inbox.
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
     if not entries:
         return False
     note = "\n\n".join(format_peer_message(e) for e in entries)
     try:
-        return bool(agent.steer(note))
+        if not agent.steer(note):
+            return False
     except Exception:
         logger.debug("peer inbox: steer failed", exc_info=True)
         return False
+    # Acceptance must precede consumption. This is not a durable delivery receipt:
+    # a crash or unlink failure after acceptance can still cause redelivery.
+    for path in pending_paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("peer inbox: could not consume %s", path.name, exc_info=True)
+    return True
 
 
 # ---------------------------------------------------------------------------

@@ -22,12 +22,21 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
     return handler(args)
 
 
+def _board_db_path_for_listing(slug: str):
+    """Board-specific DB path for inventory reads, ignoring worker env pins."""
+    normed = kb._normalize_board_slug(slug) or kb.DEFAULT_BOARD
+    if normed == kb.DEFAULT_BOARD:
+        return kb.kanban_home() / "kanban.db"
+    return kb.board_dir(normed) / "kanban.db"
+
+
 def _board_task_counts(slug: str) -> dict[str, int]:
     """``{status: count}`` for a board. Safe to call on an empty DB."""
     try:
-        if not kb.kanban_db_path(board=slug).exists():
+        db_path = _board_db_path_for_listing(slug)
+        if not db_path.exists():
             return {}
-        with kbc.connect_closing(board=slug) as conn:
+        with kbc.connect_closing(db_path=db_path) as conn:
             rows = conn.execute("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status").fetchall()
         return {r["status"]: int(r["n"]) for r in rows}
     except Exception:
@@ -53,6 +62,7 @@ def _cmd_boards_list(args: argparse.Namespace) -> int:
     current = kb.get_current_board()
     for b in boards:
         b["is_current"] = (b["slug"] == current)
+        b["db_path"] = str(_board_db_path_for_listing(b["slug"]))
         b["counts"] = _board_task_counts(b["slug"])
         b["total"] = sum(b["counts"].values())
     if _json_out(args, boards):

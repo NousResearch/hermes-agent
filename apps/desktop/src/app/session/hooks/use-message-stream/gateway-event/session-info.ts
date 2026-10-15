@@ -1,6 +1,7 @@
 import { finalizeInterruptedMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
+import { usageFromTick } from '@/lib/session-usage'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting } from '@/store/compaction'
@@ -504,19 +505,19 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (event.type === 'session.usage') {
-    // Live usage tick emitted while a turn is mid-flight (see tui_gateway
-    // _start_usage_ticker) so the status-bar context window tracks growth
-    // during the turn instead of only jumping at message.complete.
-    if (payload?.usage && sessionId) {
+    // Canonical owners publish top-level counters; legacy sidecars wrap usage.
+    const usage = usageFromTick(payload)
+
+    if (usage && sessionId) {
       // Per-session twin first: a focused secondary tile reads this cache,
       // while the primary-only global mirrors the active session.
       updateSessionState(sessionId, state => ({
         ...state,
-        usage: { calls: 0, input: 0, output: 0, total: 0, ...state.usage, ...payload.usage }
+        usage: { calls: 0, input: 0, output: 0, total: 0, ...state.usage, ...usage }
       }))
 
       if (isActiveEvent) {
-        setCurrentUsage(current => ({ ...current, ...payload.usage }))
+        setCurrentUsage(current => ({ ...current, ...usage }))
       }
     }
 

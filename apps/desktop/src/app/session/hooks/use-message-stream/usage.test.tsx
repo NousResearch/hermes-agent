@@ -52,6 +52,51 @@ describe('useMessageStream status-bar usage scoping', () => {
     })
   })
 
+  it.each([SID, 'background-session'])('projects canonical usage counters for %s into status-bar metrics', sessionId => {
+    mountStream()
+
+    act(() =>
+      stream.handleEvent({
+        payload: {
+          api_calls: 3,
+          cache_read_tokens: 900,
+          completion_tokens: 80,
+          compression_count: 2,
+          context_length: 10000,
+          input_tokens: 1000,
+          last_prompt_tokens: 1000,
+          output_tokens: 80,
+          prompt_tokens: 1000,
+          tokens_per_s: 42.4,
+          total_tokens: 1080
+        },
+        session_id: sessionId,
+        type: 'session.usage'
+      })
+    )
+
+    const expected = {
+      avg_tps: 42.4,
+      cache_hit_pct: 90,
+      calls: 3,
+      compressions: 2,
+      context_max: 10000,
+      context_percent: 10,
+      context_used: 1000,
+      input: 1000,
+      output: 80,
+      total: 1080
+    }
+
+    expect(sessionStates.get(sessionId)?.usage).toEqual(expect.objectContaining(expected))
+
+    if (sessionId === SID) {
+      expect($currentUsage.get()).toEqual(expect.objectContaining(expected))
+    } else {
+      expect($currentUsage.get()).toEqual(BASELINE)
+    }
+  })
+
   it('caches a background session.usage tick without overwriting the primary status bar', () => {
     mountStream()
 

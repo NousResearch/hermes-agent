@@ -83,6 +83,7 @@ import { useComposerVoice } from './hooks/use-composer-voice'
 import { useEmojiCompletions } from './hooks/use-emoji-completions'
 import { useComposerMicroActions } from './hooks/use-micro-actions'
 import { useMiddlewareSubmit } from './hooks/use-middleware-submit'
+import { useRestorePastedText } from './hooks/use-restore-pasted-text'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
@@ -299,6 +300,14 @@ export function ChatBar({
     syncDraftFromEditor,
     takeDraftRetry
   } = useComposerDraft({ activeQueueSessionKey, focusKey, inputDisabled, queueEditRef, sessionId })
+
+  const restorePastedText = useRestorePastedText({
+    activeQueueSessionKeyRef,
+    editorRef,
+    inputDisabled,
+    loadIntoComposer,
+    focusInput
+  })
 
   useComposerScreenshot({ sessionKey: activeQueueSessionKey, focusKey, onAttachImageBlob })
 
@@ -1495,7 +1504,13 @@ export function ChatBar({
                   <VoiceActivity state={voiceActivityState} />
                   <VoicePlaybackActivity />
                   {queueEdit && editingQueuedPrompt && <QueuedEditBanner onExit={exitQueuedEdit} />}
-                  {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
+                  {attachments.length > 0 && (
+                    <AttachmentList
+                      attachments={attachments}
+                      onRemove={onRemoveAttachment}
+                      onRestorePastedText={inputDisabled ? undefined : restorePastedText}
+                    />
+                  )}
                   <div
                     className={cn(
                       'grid w-full',

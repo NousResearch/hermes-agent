@@ -55,6 +55,45 @@ def identity_key(principal_id, session_id, request_id):
         payload={'principal': principal_id, 'request': request_id})
 
 
+# One consumed API request id (the Idempotency-Key's admission id). It outlives the session
+# row: ``session_admissions`` is deleted with the chat, and ``_one_target`` only reads that
+# table. The runs store's 24h ``RETENTION_SECONDS`` is a different namespace
+# (``runs_idempotency.db``) and does not hold this result. This key is pruned with the
+# exact-retry tombstones (``RETRY_HORIZON_S``).
+API_REQUEST_PREFIX = 'gateway.api_request.v1.'
+
+
+def api_request_key(request_id):
+    return API_REQUEST_PREFIX + admission_fingerprint(
+        canonical_target='api', payload={'request': request_id})
+
+
+def consumed_api_request(conn, request_id):
+    saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                         (api_request_key(request_id),)).fetchone()
+    return json.loads(saved[0]) if saved else None
+
+
+def replay_consumed_api_request(conn, *, principal_id, session_id, request_id, digest):
+    """The original admission when this API request id was already consumed, else None.
+
+    The same target replays that admission when the digest matches. Any other target, or a
+    changed payload, is ``admission_conflict`` and must not execute again. Other principals
+    are not in this namespace.
+    """
+    if principal_id != 'api':
+        return None
+    consumed = consumed_api_request(conn, request_id)
+    if consumed is None:
+        return None
+    if consumed.get('target_session_id') != session_id:
+        raise RuntimeStoreError('admission_conflict')
+    row = terminal_admission(conn, consumed.get('admission_id'))
+    if row is None or row.get('payload_digest') != digest:
+        raise RuntimeStoreError('admission_conflict')
+    return _row(row)
+
+
 def terminal_admission(conn, admission_id):
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                          (ADMISSION_PREFIX + admission_id,)).fetchone()
@@ -62,10 +101,12 @@ def terminal_admission(conn, admission_id):
 
 
 def retry_terminal_admission(db, *, epoch, principal_id, session_id, request_id, payload, intent='queue'):
-    """None means a live target; a retired miss/conflict is a definitive refusal.
+    """None means a live target that has not consumed this API request id.
 
-    This is a read-only identity lookup, not authorization to attach, restore a
-    route, or write. HTTP authentication/grant checks must precede this query.
+    A retired miss/conflict is a definitive refusal. A consumed API request id still
+    resolves after its session is deleted: the original target replays, any other
+    target conflicts. This is a read-only identity lookup, not authorization to
+    attach, restore a route, or write. HTTP authentication/grant checks must precede it.
     """
     for value in (principal_id, session_id, request_id):
         _text(value)
@@ -74,12 +115,21 @@ def retry_terminal_admission(db, *, epoch, principal_id, session_id, request_id,
     with db._read_ctx() as conn:
         _epoch(conn, epoch)
         from hermes_state_mutation_retirement import RETIRED_PREFIX
-        if not conn.execute('SELECT 1 FROM state_meta WHERE key=?', (RETIRED_PREFIX + session_id,)).fetchone():
-            return None
+        retired = conn.execute('SELECT 1 FROM state_meta WHERE key=?',
+                               (RETIRED_PREFIX + session_id,)).fetchone()
+        if not retired:
+            return replay_consumed_api_request(
+                conn, principal_id=principal_id, session_id=session_id,
+                request_id=request_id, digest=digest)
         saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                              (identity_key(principal_id, session_id, request_id),)).fetchone()
         if saved is None:
-            raise RuntimeStoreError('not_found')
+            replay = replay_consumed_api_request(
+                conn, principal_id=principal_id, session_id=session_id,
+                request_id=request_id, digest=digest)
+            if replay is None:
+                raise RuntimeStoreError('not_found')
+            return replay
         row = terminal_admission(conn, json.loads(saved[0]))
         if row['payload_digest'] != digest:
             raise RuntimeStoreError('admission_conflict')

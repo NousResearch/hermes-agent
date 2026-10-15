@@ -3200,7 +3200,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             logger.debug("sessions dir unavailable for delete of %s", session_id, exc_info=True)
         try:
             deleted = await asyncio.to_thread(
-                db.delete_session, session_id, sessions_dir=sessions_dir, exclude_active_write_guards=True)
+                db.delete_session, session_id, sessions_dir=sessions_dir,
+                exclude_active_write_guards=True, release_api_images=True)
         except SessionActiveWriteGuardError as exc:
             return _error_response(str(exc), 409, code="session_active_turn")
         if deleted:
@@ -3211,10 +3212,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             store = getattr(runner, "session_store", None)
             if store is not None:
                 await asyncio.to_thread(store.remove_by_session_id, session_id)
-            # Retirement erased the chat's image references; bytes nothing else holds go too. Off the
-            # loop like every other media release: its holder check and unlink are one write txn.
-            from gateway.session_ingress_media import collect_unheld_api_images
-            await asyncio.to_thread(collect_unheld_api_images, db)
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
     @_require_auth

@@ -276,9 +276,14 @@ def _admit_target(session_id, request_id, settings, conn):
 
 def _one_target(session_id, request_id, conn):
     """One API request id (an Idempotency-Key) names one admission. The ledger keys identity by
-    target too, so the same key aimed at another session would otherwise run the work again."""
+    target too, so the same key aimed at another session would otherwise run the work again.
+    Deleting the session removes the admission row; the consumed-request tombstone, written in
+    that same transaction, keeps the refusal for the exact-retry horizon."""
     if conn.execute("SELECT 1 FROM session_admissions WHERE principal_id='api' AND request_id=? "
                     'AND target_session_id!=? LIMIT 1', (request_id, session_id)).fetchone():
+        raise RuntimeStoreError('admission_conflict')
+    from hermes_state_terminal import consumed_api_request
+    if consumed_api_request(conn, request_id) is not None:
         raise RuntimeStoreError('admission_conflict')
 
 

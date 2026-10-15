@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sqlite3
 import re
 import stat
 import tempfile
@@ -426,16 +427,69 @@ def collect_unheld_api_images(db):
         logging.getLogger(__name__).warning(
             'Skipped retained API image collection: %s is not the active profile store', db.db_path)
         return 0
+    try:
+        return release_unheld_media(db, _api_image_candidates())
+    except sqlite3.OperationalError:
+        import logging
+        logging.getLogger(__name__).exception(
+            'API image collection failed; retained files stay until the next sweep')
+        return 0
+
+
+def _api_image_candidates():
     root = _media_root()
-    return release_unheld_media(db, [
-        {'path': str(path), 'sha256': path.parent.name} for path in (root.glob('*/api_*') if root.is_dir() else ())
-        if _API_IMAGE_NAME.fullmatch(path.name) and path.name[4:36] == path.parent.name[:32]])
+    if not root.is_dir():
+        return []
+    return [
+        {'path': str(path), 'sha256': path.parent.name} for path in root.glob('*/api_*')
+        if _API_IMAGE_NAME.fullmatch(path.name) and path.name[4:36] == path.parent.name[:32]]
+
+
+def preflight_media_release(db):
+    """Run the media history scan before a session delete commits.
+
+    ``DELETE /api/sessions/{id}`` used to commit the row and only then build one ``instr``
+    term per retained image. Past SQLite's expression-depth limit that raised 500 after the
+    row was already gone. Failing here leaves the session in place. The scan itself is batched
+    (:func:`_history_mentions`).
+    """
+    from hermes_constants import get_hermes_home
+    if Path(db.db_path).resolve().parent != get_hermes_home().resolve():
+        return
+    from hermes_state_media import PREFIX
+    with db._read_ctx() as conn:
+        rows = conn.execute(
+            'SELECT value FROM state_meta WHERE key>=? AND key<?',
+            (PREFIX, PREFIX[:-1] + chr(ord(PREFIX[-1]) + 1))).fetchall()
+        references = [json.loads(row[0]) for row in rows]
+        references.extend(_api_image_candidates())
+        if references:
+            _history_mentions(conn, references)
+
+
+def _history_batch_size(conn):
+    """How many ``instr`` terms one query may OR together on this SQLite build."""
+    variable_limit = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    depth_limit = conn.getlimit(sqlite3.SQLITE_LIMIT_EXPR_DEPTH)
+    # 200 stays under the default expression depth (1000 terms already fail) and under
+    # SQLITE_MAX_VARIABLE_NUMBER, including the optional ``id>?`` bound.
+    room = 200
+    if variable_limit > 0:
+        room = min(room, variable_limit - 1)
+    if depth_limit > 0:
+        room = min(room, max(1, depth_limit // 2))
+    return max(1, room)
 
 
 def _history_mentions(conn, references, after_id=0):
-    """Candidate paths any transcript row (id > after_id) mentions raw or JSON-escaped, in ONE
-    messages pass. Rows are prefiltered in SQL on the literal text before each candidate's digest
-    directory, so only rows that could name a candidate reach Python's exact substring test."""
+    """Candidate paths any transcript row (id > after_id) mentions raw or JSON-escaped.
+
+    Rows are prefiltered in SQL on each candidate's digest, so only rows that could name a
+    candidate reach Python's exact substring test. Digests are queried in batches and the
+    matches are unioned: one ``OR`` per digest exceeds SQLite's expression-tree limit once a
+    profile holds about a thousand images, and a single statement would also blow
+    ``SQLITE_MAX_VARIABLE_NUMBER`` on older builds.
+    """
     # Matched by the content-addressed tail ``<sha256>/<name>`` with either separator, so every
     # spelling a note can carry (the host path, a sandbox backend's ``to_agent_visible_cache_path``)
     # counts as a mention.
@@ -445,12 +499,19 @@ def _history_mentions(conn, references, after_id=0):
         for tail in (reference['sha256'] + sep + Path(raw).name for sep in ('/', '\\')):
             needles[tail] = needles[json.dumps(tail)[1:-1]] = raw
     prefixes = sorted({reference['sha256'] for reference in references})
-    match = ' OR '.join(['instr(content,?)'] * len(prefixes))
-    query = f'SELECT content FROM messages WHERE ({match})' + (' AND id>?' if after_id else '')
+    if not prefixes:
+        return set()
     mentioned = set()
-    for (content,) in conn.execute(query, (*prefixes, *((after_id,) if after_id else ()))):
-        text = content.decode('utf-8', 'replace') if isinstance(content, bytes) else str(content)
-        mentioned.update(raw for needle, raw in needles.items() if needle in text)
+    batch = _history_batch_size(conn)
+    extra = (after_id,) if after_id else ()
+    id_clause = ' AND id>?' if after_id else ''
+    for start in range(0, len(prefixes), batch):
+        chunk = prefixes[start:start + batch]
+        match = ' OR '.join(['instr(content,?)'] * len(chunk))
+        query = f'SELECT content FROM messages WHERE ({match}){id_clause}'
+        for (content,) in conn.execute(query, (*chunk, *extra)):
+            text = content.decode('utf-8', 'replace') if isinstance(content, bytes) else str(content)
+            mentioned.update(raw for needle, raw in needles.items() if needle in text)
     return mentioned
 
 

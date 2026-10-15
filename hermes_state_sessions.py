@@ -1690,6 +1690,7 @@ class SessionSessionsMixin:
         expected_display_messages: Optional[dict[str, list[dict[str, Any]]]] = None,
         exclude_active_write_guards: bool = False,
         include_compression_chain: bool = False,
+        release_api_images: bool = False,
     ) -> bool:
         """Delete a session and its messages; delegate children cascade, branch/compression children
         are orphaned. Optional expected ids fence delegate drift; expected display snapshots fence
@@ -1713,6 +1714,12 @@ class SessionSessionsMixin:
             ) > 0
         removed_ids: list[str] = []
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
+        if release_api_images:
+            # The image scan used to run after this commit. A failure then returned 500 for a
+            # session row that was already gone. Failing first leaves the row in place.
+            from gateway.session_ingress_media import preflight_media_release
+            preflight_media_release(self)
+
         def _do(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 return False
@@ -1749,6 +1756,9 @@ class SessionSessionsMixin:
         deleted = self._execute_write(_do)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
+        if deleted and release_api_images:
+            from gateway.session_ingress_media import collect_unheld_api_images
+            collect_unheld_api_images(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return bool(deleted)

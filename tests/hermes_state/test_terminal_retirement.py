@@ -342,7 +342,7 @@ def test_tombstones_past_the_retry_horizon_are_reclaimed_by_the_prune_pass(tmp_p
 
         def settle_and_delete(sid, at):
             db.create_session(sid, source='api_server')
-            args = dict(principal_id='api', session_id=sid, request_id='r', payload={'text': 'ask ' + sid})
+            args = dict(principal_id='api', session_id=sid, request_id='r-' + sid, payload={'text': 'ask ' + sid})
             rt.admit_session_input(db, epoch=epoch, **args)
             row = rt.claim_session_input(db, epoch=epoch, session_id=sid)
             retain_result(db, epoch=epoch, row=row, result={'result': {'final_response': 'reply ' + sid, 'messages': []}})
@@ -358,13 +358,14 @@ def test_tombstones_past_the_retry_horizon_are_reclaimed_by_the_prune_pass(tmp_p
         young, young_id = settle_and_delete('young', now - 6 * 86400)
 
         def rows_naming(sid, admission_id):
-            from hermes_state_terminal import ADMISSION_PREFIX, RESULT_PREFIX, identity_key
+            from hermes_state_terminal import ADMISSION_PREFIX, RESULT_PREFIX, api_request_key, identity_key
             keys = (ADMISSION_PREFIX + admission_id, RESULT_PREFIX + admission_id,
-                    identity_key('api', sid, 'r'), retirement.RETIRED_PREFIX + sid)
+                    identity_key('api', sid, 'r-' + sid), api_request_key('r-' + sid),
+                    retirement.RETIRED_PREFIX + sid)
             return [k for k in keys if db.get_meta(k) is not None]
-        assert len(rows_naming('old', old_id)) == 4
+        assert len(rows_naming('old', old_id)) == 5
         db.prune_sessions(older_than_days=90)
-        assert len(rows_naming('young', young_id)) == 4
+        assert len(rows_naming('young', young_id)) == 5
         assert rows_naming('old', old_id) == [], 'tombstones past the horizon were not reclaimed'
         with pytest.raises(rt.RuntimeStoreError, match='not_found'):
             rt.admit_session_input(db, epoch=epoch, **old)

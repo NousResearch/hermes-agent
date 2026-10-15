@@ -1,6 +1,7 @@
 """Durable media retirement candidates survive transcript deletion and failed cleanup."""
 import hashlib
 import json
+import sqlite3
 
 PREFIX = 'gateway.media.retired.v1.'
 
@@ -17,7 +18,19 @@ def retire_media(conn, payload, request_id=''):
 
 def collect_retired_media(db):
     """Release retired candidates no admission or retained transcript row owns; drop collected keys.
-    Synchronous SQLite plus one messages pass: async callers must run it off the event loop."""
+    Synchronous SQLite plus one messages pass: async callers must run it off the event loop.
+    A history-index failure leaves the keys for the next sweep. Callers have often already
+    committed the session delete, so the error must not escape and report that delete as failed."""
+    try:
+        return _collect_retired_media(db)
+    except sqlite3.OperationalError:
+        import logging
+        logging.getLogger(__name__).exception(
+            'retired media release failed; candidates stay until the next sweep')
+        return 0
+
+
+def _collect_retired_media(db):
     from gateway.session_ingress_media import release_unheld_media
     with db._read_ctx() as conn:
         # Primary-key range, not LIKE: the common no-candidate case costs one index probe.

@@ -27,7 +27,7 @@ _ROUTE_FLAGS = ("model", "provider", "api_key", "base_url")
 def _gateway_launch(cli):
     """This run's explicit launch flags as gateway ``session.create`` policy (main handed them to AIAgent)."""
     explicit_model = getattr(cli, "_explicit_model_override", False)
-    provider = getattr(cli, "requested_provider", None)
+    provider = getattr(cli, "_explicit_provider", None)
     return {"model": cli.model if explicit_model else None,
             "provider": provider if explicit_model and provider not in {None, "", "auto"} else None,
             "api_key": getattr(cli, "_explicit_api_key", None),
@@ -194,6 +194,9 @@ class CLIInitMixin:
             _moa_provider_override or provider or _startup_provider_override or _nested_provider
             or _cfg_provider or "auto"
         )
+        # Only a provider the command line chose is gateway launch policy: the config default is the
+        # gateway's to resolve, and a resume compares launch policy against the session's frozen route.
+        self._explicit_provider = _moa_provider_override or provider or _startup_provider_override or None
         # `--provider <custom>` without `-m` uses that entry's default_model, else the global
         # default goes to the custom endpoint and the compressor gets the wrong context length.
         # Explicit `-m` still wins. See #86978.

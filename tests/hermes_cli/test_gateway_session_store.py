@@ -544,6 +544,36 @@ def test_explicit_toolsets_on_resume_are_checked_against_the_frozen_route(store)
     assert GatewaySessionStore(db.connection).open_session(host, {"toolsets": ["web"]}) == "local-old"
 
 
+def test_unchanged_model_flag_on_resume_ignores_the_configured_provider(store, monkeypatch):
+    """CLI-2: `--resume <id> -m my-model` repeats the session's frozen `-m` while the CLI resolved the
+    profile's provider; only a `--provider` the user typed is launch policy, so the repeat is accepted
+    (as the thin client accepts it) and a different `--provider` is still refused."""
+    import cli as cli_module
+    from hermes_cli.cli_init_mixin import CLIInitMixin
+    monkeypatch.setitem(cli_module.CLI_CONFIG, "model", {"default": "cfg-model", "provider": "openrouter"})
+    db, client = store
+    _frozen_launch(client, {"model": "my-model"})
+
+    def host(provider=None, resumed=True):
+        h = types.SimpleNamespace(session_id="local-old", _resumed=resumed, enabled_toolsets=["file"],
+                                  _session_db=GatewaySessionStore(db.connection))
+        CLIInitMixin._init_model_and_provider(h, "my-model", provider, None, None)
+        return h
+
+    repeat = host()
+    assert repeat.requested_provider == "openrouter"
+    CLIInitMixin._ensure_gateway_session(repeat)
+    assert repeat.session_id == "local-old"
+    with pytest.raises(GatewayClientError, match="Resume retains gateway session policy"):
+        CLIInitMixin._ensure_gateway_session(host("anthropic"))
+    # Creation sends a typed --provider with -m, and leaves the configured one to the gateway.
+    CLIInitMixin._ensure_gateway_session(host("anthropic", resumed=False))
+    assert [p for m, p in client.calls if m == "session.create"][-1]["provider"] == "anthropic"
+    CLIInitMixin._ensure_gateway_session(host(resumed=False))
+    created = [p for m, p in client.calls if m == "session.create"][-1]
+    assert created["model"] == "my-model" and "provider" not in created, created
+
+
 def test_new_session_keeps_the_runs_launch_policy(store, monkeypatch):
     """CLI-3: `/new` keeps `--max-turns`, `--checkpoints`, `--run-budget`, `-v` and `-s` (main kept one
     AIAgent across /new); only the explicit model route is left to the profile default."""

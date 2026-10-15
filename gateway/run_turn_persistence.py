@@ -305,6 +305,30 @@ class GatewayTurnPersistenceMixin:
     async def _hmwa_compression_exhaustion_reset(
         self, agent_result, response, session_entry, session_key, source,
     ):
+        from gateway.relay.egress import declined_send
+
+        complete = agent_result.pop("_complete_lifecycle_progress", None)
+        try:
+            response, session_entry = await self._hmwa_apply_compression_exhaustion_reset(
+                agent_result, response, session_entry, session_key, source,
+            )
+            if (callable(complete) and agent_result.get("compression_exhausted")
+                    and not agent_result.get("compression_deferred")):
+                try:
+                    delivery = await complete(response)
+                    if delivery is True or declined_send(delivery):
+                        # A destination refusal forbids the ordinary-send retry
+                        # too; it is not an acknowledgement of terminal content.
+                        response = ""
+                except Exception:
+                    logger.warning("Terminal lifecycle delivery failed; retaining final notice", exc_info=True)
+            return response, session_entry
+        finally:
+            if callable(complete):
+                await complete()
+    async def _hmwa_apply_compression_exhaustion_reset(
+        self, agent_result, response, session_entry, session_key, source,
+    ):
         """Auto-reset a permanently oversized session so the next message starts fresh instead of
         replaying the oversized context forever. Never on a lock-contended defer — that is the
         OPPOSITE case (a concurrent path holds the lock and is shrinking it). Returns

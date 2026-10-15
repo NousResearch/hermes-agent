@@ -111,7 +111,7 @@ class _ExecApprovalDeclined(RuntimeError):
     """
 
 
-from gateway.run_turn_progress import GatewayTurnProgressMixin
+from gateway.run_turn_progress import GatewayTurnProgressMixin, _await_exact_task_through_cancellation
 from gateway.session_execution import GatewaySessionAgentMixin
 
 
@@ -142,6 +142,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     def __init__(self, runner: GatewayRunner, ctx: TurnContext) -> None:
         self._runner = runner
         self._ctx = ctx
+        self._progress_ingress_lock = threading.RLock()
+        self._progress_ingress_open = True
+        self._progress_started = asyncio.Event()
+        self._progress_task = None
+        self._progress_close_task = None
         from gateway.session_authorities import active_authority
         authority = active_authority(runner)
         if authority is not None:

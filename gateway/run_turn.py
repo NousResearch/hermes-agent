@@ -166,12 +166,13 @@ def hygiene_no_commit_reason(agent) -> str:
     return "in-place commit did not complete"
 
 
+from gateway.run_turn_display import GatewayTurnDisplayMixin
 from gateway.run_turn_prepare import GatewayTurnPrepareMixin
 from gateway.run_turn_hygiene import GatewayTurnHygieneMixin
 from gateway.run_turn_persistence import GatewayTurnPersistenceMixin
 
 
-class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
+class GatewayTurnMixin(GatewayTurnDisplayMixin, GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, GatewayTurnPersistenceMixin):
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
 
@@ -234,6 +235,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         if not isinstance(prepared, self._PreparedTurn):
             return prepared
         history, message_text = prepared.history, prepared.message_text
+        _complete_lifecycle_progress = None
 
         try:
             hook_ctx = {
@@ -281,7 +283,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+                defer_terminal_lifecycle_progress=True,
             )
+            _complete_lifecycle_progress = agent_result.get("_complete_lifecycle_progress")
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
@@ -339,8 +343,11 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         except Exception as e:
             return await self._hmwa_agent_error_reply(e, event, source, session_entry, session_key, prepared)
         finally:
-            # Restore session context variables to their pre-handler state
-            self._clear_session_env(_session_env_tokens)
+            try:
+                if callable(_complete_lifecycle_progress):
+                    await _complete_lifecycle_progress()
+            finally:
+                self._clear_session_env(_session_env_tokens)
 
     def _profile_scope_for_source(self, source: SessionSource):
         """``_profile_runtime_scope`` for ``source``'s profile when a secret scope is required.
@@ -1002,127 +1009,6 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         with self._profile_scope_for_source(source):
             return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
 
-    def _run_agent_display_settings(self, source: SessionSource) -> GatewayRunner._RunAgentDisplay:
-        """Resolve per-platform display, progress, status and streaming-surface settings for a turn."""
-        from gateway.run import (
-            _gateway_platform_value, _has_platform_display_override, _load_gateway_config,
-            _platform_config_key,
-        )
-        from agent.secret_scope import get_secret
-        from gateway.display_config import resolve_display_setting, resolve_tool_progress
-        from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
-        from gateway.session_policy import policy_for_source
-        policy = policy_for_source(self, source)
-        from gateway.session_authorities import active_authority
-        user_config = policy.config(active_authority(self)) if policy else _load_gateway_config()
-        platform_key = policy.platform if policy else _platform_config_key(source.platform)
-        enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
-        if policy:
-            enabled_toolsets = list(policy.current_toolsets(user_config))
-        adapter = self._delivery_adapter_for(source)
-        # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.
-        for _setter, _setting, _default, _cast in (
-            ("set_tool_preview_max_len", "tool_preview_length", 0, lambda v: int(v) if v else 0),
-            ("set_friendly_tool_labels", "friendly_tool_labels", True, bool),
-        ):
-            with suppress(Exception):
-                from agent import display as _agent_display
-                _val = resolve_display_setting(user_config, platform_key, _setting, _default)
-                getattr(_agent_display, _setter)(_cast(_val))
-
-        # Resolve the mode and its provenance together: null inherits, tier off is not intent.
-        # A raw os.getenv here reads whichever profile's env loaded last under multiplexing
-        # (#116898); get_secret resolves through the active profile's scope instead.
-        progress_mode, _tool_progress_explicit = resolve_tool_progress(
-            user_config, platform_key, get_secret("HERMES_TOOL_PROGRESS_MODE"),
-        )
-        # "accumulate" (edit one bubble) or "separate" (one msg per tool)
-        progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
-        _generic_status_recent: list[str] = []
-        _generic_status_catalog = resolve_status_phrase_catalog(user_config, platform_key)
-
-        def _display_surface_mode(
-            setting: str, *, default: bool = False,
-            require_platform_override_for: set[Any] | None = None, allow_generic: bool = False,
-        ) -> str:
-            """Return off|raw|generic for a gateway visibility surface."""
-            if require_platform_override_for:
-                current_platform = _gateway_platform_value(source.platform)
-                platform_only = {_gateway_platform_value(item) for item in require_platform_override_for}
-                if (
-                    current_platform in platform_only
-                    and not _has_platform_display_override(user_config, platform_key, setting)
-                ):
-                    return "off"
-            value = resolve_display_setting(user_config, platform_key, setting, default)
-            if isinstance(value, str) and value.strip().lower() == "generic":
-                return "generic" if allow_generic else "off"
-            return "raw" if bool(value) else "off"
-
-        def _generic_status_phrase(kind: str, *, tool_name: str | None = None, preview: str | None = None, args: Any = None) -> str:
-            try:
-                return choose_status_phrase(
-                    kind, tool_name=tool_name, preview=preview, args=args,
-                    recent=_generic_status_recent, catalog=_generic_status_catalog,
-                )
-            except Exception as _phrase_err:
-                logger.debug("generic status phrase selection failed: %s", _phrase_err)
-                return (t("gateway.progress.status_fallback_long")
-                        if kind in {"heartbeat", "waiting", "long_running", "status"}
-                        else t("gateway.progress.status_fallback_short"))
-
-        # Webhooks can't edit messages, so tool progress / log mode are off there.
-        is_webhook = source.platform == Platform.WEBHOOK
-        tool_progress_enabled = progress_mode not in {"off", "log"} and not is_webhook
-        # Live status for text-rendering typing indicators (Slack); independent of tool_progress.
-        _live_status_mode = resolve_display_setting(user_config, platform_key, "live_status", "full")
-        _live_status_adapter = (
-            adapter if getattr(adapter, "supports_status_text", False) and _live_status_mode != "off" else None
-        )
-        # "log" mode: tool calls go to ~/.hermes/logs/tool_calls.log instead of the chat. Gateway-only.
-        log_mode_enabled = progress_mode == "log" and not is_webhook
-        # Interim assistant messages and thinking_progress are independent of tool progress (same
-        # queue). Mattermost requires a per-platform opt-in: scratch text leaks into public threads.
-        interim_assistant_messages_mode = _display_surface_mode(
-            "interim_assistant_messages", default=True, require_platform_override_for={Platform.MATTERMOST},
-        )
-        interim_assistant_messages_enabled = not is_webhook and interim_assistant_messages_mode != "off"
-        _thinking_enabled = _display_surface_mode(
-            "thinking_progress", default=False, require_platform_override_for={Platform.MATTERMOST},
-        ) != "off"
-        # Slack-native task cards need the progress queue even with text tool_progress off.
-        # Slack-native task cards (#29483): when the Slack adapter's opt-in is set, tool progress renders as
-        # native plan/task cards via chat.startStream — the progress queue is needed even though Slack keeps
-        # ordinary text tool_progress off by default (requiring both flags would silently leave the native
-        # feature inactive).
-        # Cards are still tool progress. Slack's TIER default (``off``) only quiets the text lane so
-        # cards stay on for unconfigured installs, but an operator who WRITES ``tool_progress: off``
-        # (global, platform override, or legacy overrides) has asked for no tool progress at all and
-        # gets no cards either. Every other explicit mode keeps the card lane.
-        _native_slack_task_cards = False
-        if (
-            source.platform == Platform.SLACK
-            and hasattr(adapter, "native_task_cards_enabled")
-            and not (_tool_progress_explicit and progress_mode == "off")
-        ):
-            try:
-                _native_slack_task_cards = bool(adapter.native_task_cards_enabled())
-            except Exception:
-                logger.debug("Slack native task-card config check failed", exc_info=True)
-        return self._RunAgentDisplay(
-            user_config=user_config, platform_key=platform_key, enabled_toolsets=enabled_toolsets,
-            disabled_toolsets=disabled_toolsets, resolve_display_setting=resolve_display_setting,
-            progress_mode=progress_mode, progress_grouping=progress_grouping,
-            _display_surface_mode=_display_surface_mode,
-            tool_progress_enabled=tool_progress_enabled, _live_status_mode=_live_status_mode,
-            _live_status_adapter=_live_status_adapter, log_mode_enabled=log_mode_enabled,
-            log_queue=queue.Queue() if log_mode_enabled else None,
-            interim_assistant_messages_enabled=interim_assistant_messages_enabled,
-            _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
-            needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
-            _generic_status_phrase=_generic_status_phrase,
-        )
-
     # _RunAgentDisplay fields copied verbatim onto the TurnContext.
     _DISPLAY_TO_TURN_CTX = (
         "_live_status_adapter", "_live_status_mode", "_thinking_enabled", "progress_mode",
@@ -1163,18 +1049,38 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             _cleanup_progress = False
             _cleanup_adapter = None
 
+        from gateway.run import _float_env, _gateway_compression_progress_notices_enabled
+        mute_notification_reply = diagnostic_turn_muted(
+            turn_params.get("persist_user_display_metadata"), source.platform, disp.user_config,
+        )
+        lifecycle_enabled = (
+            not (turn_params.get("scheduled_heartbeat", False) or mute_notification_reply)
+            and TurnRunner.lifecycle_progress_enabled(
+                self._delivery_adapter_for(source), source, disp.progress_grouping, disp._native_slack_task_cards,
+            )
+        )
+        lifecycle_producer = (
+            _gateway_compression_progress_notices_enabled()
+            or turn_params.get("defer_terminal_lifecycle_progress", False)
+            or (_float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180) > 0
+                and disp._display_surface_mode("long_running_notifications", default=True, allow_generic=True) != "off")
+        )
+        needs_progress_queue = disp.needs_progress_queue or (lifecycle_enabled and lifecycle_producer)
         # The one-slot progress/holder containers shared with the callbacks are TurnContext defaults.
         turn_ctx = TurnContext(
             source=source, message=message, AIAgent=AIAgent, session_key=session_key,
             run_generation=run_generation, _cleanup_progress=_cleanup_progress,
             _run_still_current=self._run_still_current_fn(session_key, run_generation),
-            progress_queue=queue.Queue() if disp.needs_progress_queue else None,
+            progress_queue=queue.Queue() if needs_progress_queue else None,
             _voice_ack_guild=_voice_ack_guild, _voice_ack_loop=asyncio.get_running_loop(),
             **{name: getattr(disp, name) for name in self._DISPLAY_TO_TURN_CTX}, **turn_params,
         )
+        turn_ctx.needs_progress_queue = needs_progress_queue
         turn_runner = TurnRunner(self, turn_ctx)
-        turn_ctx.mute_notification_reply = diagnostic_turn_muted(
-            turn_ctx.persist_user_display_metadata, source.platform, turn_ctx.user_config)
+        turn_ctx.mute_notification_reply = mute_notification_reply
+        turn_ctx._close_progress_ingress = turn_runner.close_progress_ingress
+        turn_ctx._complete_lifecycle_progress = turn_runner.complete_lifecycle_progress
+        turn_ctx._enqueue_lifecycle_progress = turn_runner.enqueue_lifecycle_progress
         # Agent tool-lifecycle callbacks live on the runner (bound methods, same signatures).
         turn_ctx.progress_callback = turn_runner.progress_callback
         turn_ctx.voice_ack_callback = turn_runner.voice_ack_callback
@@ -2025,6 +1931,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 persist_user_display_metadata={
                     **display_metadata_for_event(pending_event),
                     **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+                defer_terminal_lifecycle_progress=turn_ctx.defer_terminal_lifecycle_progress,
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
@@ -2034,6 +1941,11 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             await _run_followup_processing_hook(
                 _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
             raise
+        if isinstance(followup_result, dict):
+            complete = followup_result.get("_complete_lifecycle_progress")
+            if callable(complete):
+                # Own the child before any hook await or this ancestor's finally.
+                turn_ctx._descendant_progress_completion = complete
         await _run_followup_processing_hook(
             _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
         merged = _preserve_queued_followup_history_offset(result, followup_result)
@@ -2057,10 +1969,57 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
     async def _run_agent_cleanup_turn_tasks(
         self, turn_ctx: TurnContext, *, progress_task: Any, log_task: Any, interrupt_monitor: asyncio.Task,
+        _notify_task: asyncio.Task, tracking_task: asyncio.Task, stream_task: Any, aborted: bool = False,
+    ) -> None:
+        """Keep ownership through the ingress fence and task settlement before propagating cancellation."""
+        from gateway.run_turn_runner import _await_exact_task_through_cancellation
+
+        cleanup = asyncio.create_task(self._run_agent_settle_turn_tasks(
+            turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
+            _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,
+        ))
+        cancelled = False
+        try:
+            _, cancelled = await _await_exact_task_through_cancellation(cleanup)
+        except BaseException:
+            aborted = True
+            raise
+        finally:
+            if aborted or cancelled:
+                # No callback can be handed off on an abnormal return. Both
+                # completions cache and shield their exact close task; a further
+                # cancellation of the local waiter must still close the child.
+                try:
+                    if turn_ctx._complete_lifecycle_progress is not None:
+                        await turn_ctx._complete_lifecycle_progress()
+                finally:
+                    if turn_ctx._descendant_progress_completion is not None:
+                        await turn_ctx._descendant_progress_completion()
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _run_agent_settle_turn_tasks(
+        self, turn_ctx: TurnContext, *, progress_task: Any, log_task: Any, interrupt_monitor: asyncio.Task,
         _notify_task: asyncio.Task, tracking_task: asyncio.Task, stream_task: Any,
     ) -> None:
         """``finally`` half of a turn: cancel background tasks, flush stream, release the session slot."""
         stream_consumer_holder, session_key = turn_ctx.stream_consumer_holder, turn_ctx.session_key
+        if turn_ctx._close_progress_ingress is not None:
+            await asyncio.to_thread(turn_ctx._close_progress_ingress)
+        if _notify_task is not None:
+            _notify_task.cancel()
+            from gateway.run_turn_runner import _await_exact_task_through_cancellation
+            with suppress(asyncio.CancelledError, Exception):
+                await _await_exact_task_through_cancellation(_notify_task)
+        completion_error = None
+        if turn_ctx._complete_lifecycle_progress is not None:
+            if not turn_ctx._defer_progress_completion:
+                try:
+                    await turn_ctx._complete_lifecycle_progress()
+                except BaseException as exc:  # health: allow BLE001 -- cleanup must release the slot before propagating sender failure or cancellation
+                    completion_error = exc
+            if completion_error is None:
+                progress_task = None
         for task in (progress_task, log_task, interrupt_monitor, _notify_task):
             if task:
                 task.cancel()
@@ -2076,7 +2035,6 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
         # Abort + bounded wait for streaming TTS: covers paths where normal finalisation was skipped.
         _stts_finally = turn_ctx.streaming_tts_consumer_holder[0]
-        # See #60671.
         if _stts_finally is not None and not _stts_finally.done:
             _stts_finally.abort("cleanup")
             with suppress(Exception):
@@ -2084,8 +2042,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
         tracking_task.cancel()
         if session_key:
-            # Release the slot only if this run's generation still owns it (/stop or /new may have
-            # installed its own state).
+            # Release only this generation's session slot; /stop or /new may now own it.
             self._release_running_agent_state(session_key, run_generation=turn_ctx.run_generation)
         if self._draining:
             self._update_runtime_status("draining")
@@ -2099,7 +2056,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 except Exception:
                     # A background task that died of a real error must not abort the cleanup path.
                     logger.debug("background turn task failed during cleanup", exc_info=True)
-
+        if completion_error is not None:
+            raise completion_error
     async def _run_agent_edit_streamed_message(
         self, _sc, source, response, content, *, _sk, ok, fail_result: str, fail_exc: str,
     ) -> None:
@@ -2223,7 +2181,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             and hasattr(_cleanup_adapter, "register_post_delivery_callback")
         ):
             return
-        _ids_snapshot = list(_cleanup_msg_ids)
+        _ids_snapshot = [mid for mid in _cleanup_msg_ids if mid not in turn_ctx._terminal_progress_msg_ids]
         _chat_id_snapshot = turn_ctx.source.chat_id
         _loop_snapshot = asyncio.get_running_loop()
 
@@ -2276,6 +2234,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         Interval: agent.gateway_notify_interval / HERMES_AGENT_NOTIFY_INTERVAL (default 180s; 0 or
         long_running_notifications=off disables)."""
         from gateway.run import _float_env, _interim_metadata, _non_conversational_metadata
+        from gateway.run_turn_runner import TurnRunner
         _notify_start = time.time()
         _NOTIFY_INTERVAL = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _long_running_mode = disp._display_surface_mode("long_running_notifications", default=True, allow_generic=True)
@@ -2315,6 +2274,14 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 if _long_running_mode == "generic"
                 else t("gateway.progress.working_heartbeat", minutes=_elapsed_mins, detail=_status_detail)
             )
+            if (turn_ctx._enqueue_lifecycle_progress is not None
+                    and TurnRunner.lifecycle_progress_enabled(
+                        _notify_adapter, source, turn_ctx.progress_grouping, turn_ctx._native_slack_task_cards)):
+                from gateway.run import _redact_gateway_user_facing_secrets
+                turn_ctx._enqueue_lifecycle_progress((
+                    "__upsert__", "long_running_heartbeat", _redact_gateway_user_facing_secrets(_heartbeat_text),
+                ))
+                continue
             try:
                 _notify_res = None
                 if _heartbeat_msg_id:
@@ -2353,6 +2320,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
         title_user_message: Optional[str] = None,
+        defer_terminal_lifecycle_progress: bool = False,
     ) -> dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
@@ -2399,6 +2367,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             reply_expected=reply_expected,
             persist_user_display_metadata=persist_user_display_metadata, scheduled_heartbeat=scheduled_heartbeat,
             voice_turn=str(getattr(message_type, "value", message_type) or "").lower() == "voice",
+            defer_terminal_lifecycle_progress=defer_terminal_lifecycle_progress,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
@@ -2411,7 +2380,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
 
         # Progress sender drains BOTH tool-progress lines and thinking bubbles (needs_progress_queue).
         spawn = asyncio.create_task
-        progress_task = spawn(turn_runner.send_progress_messages()) if disp.needs_progress_queue else None
+        progress_task = spawn(turn_runner.send_progress_messages()) if turn_ctx.needs_progress_queue else None
+        turn_runner._progress_task = progress_task
         log_task = spawn(self._run_agent_write_tool_log(disp.log_queue)) if disp.log_mode_enabled else None
         # The stream consumer is created inside run_sync; this task polls for it.
         stream_task = spawn(self._run_agent_stream_consumer_task(turn_ctx.stream_consumer_holder))
@@ -2425,6 +2395,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             else spawn(self._run_agent_notify_long_running(disp, turn_ctx, _executor_task_holder))
         )
 
+        _turn_body_completed = False
         try:
             # run_sync is TurnRunner.run_sync (bound method; executor call unchanged).
             worker = self._run_agent_start_turn_worker(turn_ctx, turn_runner.run_sync)
@@ -2440,15 +2411,44 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
             if pending_event or pending:
-                return await self._run_agent_queued_followup(
+                response = await self._run_agent_queued_followup(
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,
                 )
+                _turn_body_completed = True
+                return response
+            turn_ctx._defer_progress_completion = bool(
+                defer_terminal_lifecycle_progress and isinstance(response, dict)
+                and not (scheduled_heartbeat or turn_ctx.mute_notification_reply)
+                and response.get("compression_exhausted") and not response.get("compression_deferred")
+                and progress_task is not None and not progress_task.done()
+                and turn_runner.lifecycle_progress_enabled(adapter, source, turn_ctx.progress_grouping, turn_ctx._native_slack_task_cards)
+            )
+            _turn_body_completed = True
         finally:
             await self._run_agent_cleanup_turn_tasks(
                 turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
                 _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,
+                aborted=not _turn_body_completed,
             )
+            turn_ctx._descendant_progress_completion = None
 
-        await self._run_agent_mark_streamed_delivery(response, turn_ctx)
-        self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)
-        return response
+        try:
+            await self._run_agent_mark_streamed_delivery(response, turn_ctx)
+            if turn_ctx._defer_progress_completion:
+                cleanup_scheduled = False
+
+                async def complete(terminal_text=None):
+                    nonlocal cleanup_scheduled
+                    try:
+                        return await turn_runner.complete_lifecycle_progress(terminal_text)
+                    finally:
+                        if not cleanup_scheduled:
+                            cleanup_scheduled = True
+                            self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)
+                response["_complete_lifecycle_progress"] = complete
+            else:
+                self._run_agent_schedule_bubble_cleanup(response, _cleanup_adapter, turn_ctx)
+            return response
+        except BaseException:
+            await turn_runner.complete_lifecycle_progress()
+            raise

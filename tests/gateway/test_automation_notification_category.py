@@ -152,3 +152,76 @@ async def test_native_automation_category_roundtrip(tmp_path, monkeypatch, categ
             assert (await authority.admit_automation(adapter, event, 'notice')).admission_id == receipt.admission_id
     finally:
         authority.db.close()
+
+
+_SOURCE = dict(chat_id='42', chat_type='dm', user_id='42', user_name='human')
+
+
+async def _native_owner(tmp_path, monkeypatch, human_message_id):
+    from gateway.session_ingress_context import native_callback, register_transport_home
+    from plugins.platforms.discord.adapter import DiscordAdapter
+    runner, authority = await _authority(tmp_path, monkeypatch)
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token='***', typing_indicator=False))
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner._wire_adapter_handlers(adapter)
+    register_transport_home(runner, None, tmp_path)
+    monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
+    source = adapter.build_source(**_SOURCE)
+    # The committed human turn keeps its platform reply anchor on the source.
+    human = MessageEvent(text='human', source=adapter.build_source(**_SOURCE, message_id=human_message_id),
+                         message_id=human_message_id)
+    with native_callback(runner, human, tmp_path):
+        await authority.admit_native(human)
+    route = runner.session_store._generate_session_key(source)
+    metadata = {'gateway_session_key': route, 'gateway_session_id': runner.session_store.peek_session_id(route)}
+    return runner, authority, adapter, source, metadata
+
+
+@pytest.mark.asyncio
+async def test_native_completion_wake_admits_when_source_differs_only_by_message_id(tmp_path, monkeypatch):
+    """A synthetic wake clears ``message_id`` (#52694/#123097) while the committed human
+    envelope keeps it; the admission must still match the route and drop the stale anchor."""
+    from gateway.session_envelope import restore_native
+    runner, authority, adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        assert source.message_id is None
+        event = MessageEvent(text='notice', source=source, internal=True, metadata=dict(metadata))
+        receipt = await authority.admit_automation(adapter, event, 'notice')
+        row = get_session_admission(authority.db, admission_id=receipt.admission_id)
+        assert row is not None
+        envelope = row['payload']['native_text_v1']
+        assert 'message_id' not in envelope['source']
+        assert restore_native(row['payload'], runner).source.message_id is None
+        assert (await authority.admit_automation(adapter, event, 'notice')).admission_id == receipt.admission_id
+        owner = authority.logical_owner(metadata['gateway_session_id'])
+        automation = [r for r in list_session_admissions(authority.db, session_id=owner, pending_only=False)
+                      if (r['payload'].get('native_text_v1') or {}).get('automation')]
+        assert len(automation) == 1
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('field', ['user_name', 'user_id', 'thread_id'])
+async def test_native_completion_wake_refuses_other_source_drift(tmp_path, monkeypatch, field):
+    _runner, authority, adapter, _source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        drifted = adapter.build_source(**{**_SOURCE, field: '7'})
+        event = MessageEvent(text='notice', source=drifted, internal=True, metadata=dict(metadata))
+        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+            await authority.admit_automation(adapter, event, 'notice')
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_native_completion_wake_refuses_another_adapter(tmp_path, monkeypatch):
+    from plugins.platforms.discord.adapter import DiscordAdapter
+    _runner, authority, _adapter, source, metadata = await _native_owner(tmp_path, monkeypatch, 'human-1')
+    try:
+        stranger = DiscordAdapter(PlatformConfig(enabled=True, token='***', typing_indicator=False))
+        event = MessageEvent(text='notice', source=source, internal=True, metadata=dict(metadata))
+        with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+            await authority.admit_automation(stranger, event, 'notice')
+    finally:
+        authority.db.close()

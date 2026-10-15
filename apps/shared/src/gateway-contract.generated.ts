@@ -618,6 +618,8 @@ export interface SetupRuntimeCheckResult {
   profile?: string | null
 }
 export interface DiagnosticsShareNousParams {
+  profile?: string | null
+  session_id?: string | null
   error_context?: string | null
   extra_files?: Record<string, string> | null
   log_lines?: number | null

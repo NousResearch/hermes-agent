@@ -1056,7 +1056,13 @@ class GatewayAdapterLifecycleMixin:
                     self.pairing_stores[name] = (
                         self.pairing_store if name == active else PairingStore(profile=name)
                     )
-            publish_runtime_status(served_profiles=served)
+            # ``prune_foreign_flat_platforms``: the multiplexer inherits the launch profile's old
+            # record, and flat keys its standalone gateway wrote (dead writer) would otherwise
+            # outlive it forever — the Desktop Messaging card reads them as the host profile's
+            # state while the live adapters answer under ``<profile>:<platform>`` (#136734).
+            publish_runtime_status(
+                served_profiles=served, prune_foreign_flat_platforms=True
+            )
             # The host record is what a second `gateway run` reads to decide attach-vs-start; keep
             # its served set in step with the live one (it is republished, never re-claimed).
             from gateway.host_rendezvous import ROLE_GATEWAY, owns_host_lock, publish_record

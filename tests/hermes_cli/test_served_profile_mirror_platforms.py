@@ -187,3 +187,74 @@ def test_messaging_card_keeps_a_live_own_gateway_record_over_the_multiplexer(ser
     [payload] = messaging._platform_payloads(alpha, [entry])
     assert payload["gateway_running"] is True
     assert payload["state"] == "retrying", payload
+
+
+def test_host_profile_card_rekeys_the_multiplexer_record_it_launched(
+    tmp_path, monkeypatch
+):
+    """#136734: a multiplexer launched as ``hermes --profile host gateway run`` keeps its record in
+    the HOST home, so the own-record rung wins for that profile and the card used to read the flat
+    keys — a stale ``telegram`` left by the profile's pre-multiplex standalone gateway (dead
+    writer_pid) — while the live adapters answer under ``host:telegram``. The own record must fold
+    on the host profile name exactly like the multiplexer rung does."""
+    from gateway import status
+    from hermes_cli.web_routers import messaging
+    root = tmp_path / "hermes"
+    host = root / "profiles" / "host"
+    host.mkdir(parents=True)
+    (root / "config.yaml").write_text("gateway: {multiplex_profiles: true}\n", encoding="utf-8")
+    dead_writer = 2 ** 22 - 1
+    (host / "gateway_state.json").write_text(json.dumps({
+        "pid": os.getpid(), "hermes_home": str(host), "gateway_state": "running",
+        "served_profiles": ["default", "host"],
+        "platforms": {
+            # Standalone-era leftover: dead writer, state frozen at "disconnected".
+            "telegram": {"state": "disconnected", "writer_pid": dead_writer, "writer_start_time": 1},
+            "host:telegram": {"state": "connected"},
+            # The default listener the host profile is served through.
+            "api_server": {"state": "connected", "listener_base": "http://127.0.0.1:45719"},
+        }}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+    monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes -p host gateway run")
+    monkeypatch.setattr(messaging, "_platform_enablement", lambda *a, **k: (True, True, None))
+    telegram = {"id": "telegram", "name": "Telegram", "description": "", "docs_url": "", "env_vars": [],
+                "required_env": []}
+    [payload] = messaging._platform_payloads(host, [telegram])
+    assert payload["gateway_running"] is True
+    assert payload["state"] == "connected", payload
+    # The shared-listener mirror still points at the host profile's own prefix.
+    [api_payload] = messaging._platform_payloads(
+        host, [{**telegram, "id": "api_server", "name": "API server"}])
+    assert api_payload["state"] == "connected", api_payload
+    assert api_payload["ingress_url"] == "http://127.0.0.1:45719/p/host/v1", api_payload
+
+
+def test_default_home_card_keeps_flat_adapters_of_its_own_multiplexer_record(
+    tmp_path, monkeypatch
+):
+    """The own-record re-key must not touch ``default``: its adapters ARE the record's flat keys,
+    even when the record also carries ``served_profiles`` and secondary ``<profile>:`` keys. The
+    default's card keeps reading its live flat state; no secondary's entry leaks onto it."""
+    from gateway import status
+    from hermes_cli.web_routers import messaging
+    root = tmp_path / "hermes"
+    root.mkdir()
+    (root / "gateway_state.json").write_text(json.dumps({
+        "pid": os.getpid(), "hermes_home": str(root), "gateway_state": "running",
+        "served_profiles": ["default", "host"],
+        "platforms": {
+            "telegram": {"state": "connected"},
+            "host:telegram": {"state": "retrying"},
+        }}), encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
+    monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
+    monkeypatch.setattr(messaging, "_platform_enablement", lambda *a, **k: (True, True, None))
+    entry = {"id": "telegram", "name": "Telegram", "description": "", "docs_url": "", "env_vars": [],
+             "required_env": []}
+    [payload] = messaging._platform_payloads(None, [entry])  # unscoped: the dashboard's own home
+    assert payload["gateway_running"] is True
+    assert payload["state"] == "connected", payload

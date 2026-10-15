@@ -1,6 +1,5 @@
 manifest_version: 1
 name: payagentic
-connector_slug: payagentic
 description: >-
   Read-only PayAgentic wallets, balances, transactions, policies, agents and approval status.
 source: https://payagentic.ai/platform/developers

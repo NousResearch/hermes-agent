@@ -284,6 +284,81 @@ async function flushAsync() {
   })
 }
 
+it('does not reconnect after a superseded local retry finishes minting its URL', async () => {
+  const pendingMint = deferred<string>()
+  const desktop = fakeDesktop()
+  desktop.getConnection.mockResolvedValue({ ...primaryConn, mode: 'local' } as typeof primaryConn)
+  desktop.getGatewayWsUrl
+    .mockImplementationOnce(async () => primaryConn.wsUrl)
+    .mockImplementationOnce(() => pendingMint.promise)
+    .mockResolvedValue(primaryConn.wsUrl)
+  Object.assign(window, { hermesDesktop: desktop })
+  FakeWebSocket.mode = 'fail'
+  render(<Harness />)
+  await flushAsync()
+  expect(FakeWebSocket.instances).toHaveLength(1)
+
+  await act(async () => vi.advanceTimersByTimeAsync(3_000))
+  expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(2)
+  FakeWebSocket.mode = 'open'
+  act(() => connectionApplied?.())
+  await flushAsync()
+  expect($gatewayState.get()).toBe('open')
+  const gateway = activeGateway()!
+  const connect = vi.spyOn(gateway, 'connect')
+
+  await act(async () => {
+    pendingMint.resolve(primaryConn.wsUrl)
+    await vi.advanceTimersByTimeAsync(0)
+  })
+  // Even an already-open connect clears attachment/profile bookkeeping.
+  expect(connect).not.toHaveBeenCalled()
+  expect($gatewayState.get()).toBe('open')
+  expect(FakeWebSocket.instances).toHaveLength(2)
+  connect.mockRestore()
+})
+
+it.each(['settings', 'sanitize'] as const)(
+  'does not publish a superseded pre-connect workspace %s response',
+  async boundary => {
+    const desktop = fakeDesktop()
+    const pendingSettings = deferred<{ dir: string }>()
+    const pendingSanitize = deferred<{ cwd: string }>()
+    const settings = vi.fn(async () => ({ dir: '/recovered' }))
+    const sanitize = vi.fn(async (cwd: string) => ({ cwd }))
+
+    if (boundary === 'settings') {
+      settings.mockImplementationOnce(() => pendingSettings.promise)
+    } else {
+      sanitize.mockImplementationOnce(() => pendingSanitize.promise)
+    }
+
+    Object.assign(desktop, {
+      settings: { getDefaultProjectDir: settings },
+      sanitizeWorkspaceCwd: sanitize
+    })
+    Object.assign(window, { hermesDesktop: desktop })
+    render(<Harness />)
+    await flushAsync()
+    expect(FakeWebSocket.instances).toHaveLength(0)
+
+    act(() => connectionApplied?.())
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    expect($currentCwd.get()).toBe('/recovered')
+    expect(getConfiguredDefaultProjectDir()).toBe('/recovered')
+
+    await act(async () => {
+      pendingSettings.resolve({ dir: '/stale' })
+      pendingSanitize.resolve({ cwd: '/stale' })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect($currentCwd.get()).toBe('/recovered')
+    expect(getConfiguredDefaultProjectDir()).toBe('/recovered')
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  }
+)
+
 it('loads and tracks saved gateways without mounting the statusbar or Settings', async () => {
   const desktop = fakeDesktop()
   const bootFetch = deferred<void>()
@@ -1197,8 +1272,8 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     let switchRefresh = 0
 
     const refreshSessions = vi.fn(async (shouldPublish?: () => boolean) => {
-      // Initial boot remains a compatible zero-argument caller.
-      if (!shouldPublish) {
+      // Only Settings refreshes participate in this delayed-switch fixture.
+      if (!shouldPublish || !$gatewaySwitching.get()) {
         return
       }
 
@@ -1288,7 +1363,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
 
     const refreshHermesConfig = async (_force = false, shouldPublish?: () => boolean) => {
-      if (!shouldPublish) {
+      if (!shouldPublish || !$gatewaySwitching.get()) {
         return
       }
 

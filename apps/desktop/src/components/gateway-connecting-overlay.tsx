@@ -11,6 +11,7 @@ import { $desktopBoot, type DesktopBootState } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $decideExit, $introStartExit, $introView } from '@/store/onboarding-intro'
 import { $onboardingDecided } from '@/store/onboarding-presence'
+import { requestRoute } from '@/store/recovery-requests'
 import { $gatewayState } from '@/store/session'
 import { isMainWindow } from '@/store/windows'
 
@@ -61,6 +62,7 @@ function isInitialConnect(
 interface ConnectingOverlayViewProps {
   decoding: boolean
   onExit: (() => void) | null
+  onRecover: (() => void) | null
   phase: Phase
 }
 
@@ -79,7 +81,8 @@ function SlowSetupStart({ onExit }: { onExit: () => void }) {
   )
 }
 
-function ConnectingOverlayView({ decoding, onExit, phase }: ConnectingOverlayViewProps) {
+function ConnectingOverlayView({ decoding, onExit, onRecover, phase }: ConnectingOverlayViewProps) {
+  const { t } = useI18n()
   const leaving = phase !== 'live'
   const overlayHidden = phase === 'overlay-out' || phase === 'gone'
 
@@ -109,6 +112,11 @@ function ConnectingOverlayView({ decoding, onExit, phase }: ConnectingOverlayVie
           text={TEXT}
         />
       )}
+      {onRecover && !leaving ? (
+        <Button className="absolute bottom-12" onClick={onRecover} size="sm" type="button" variant="ghost">
+          {t.boot.failure.gatewaySettings}
+        </Button>
+      ) : null}
     </div>
   )
 }
@@ -233,7 +241,19 @@ export function GatewayConnectingOverlay() {
     return null
   }
 
+  // A saved remote may never answer. Recovery must not depend on its readiness
+  // deadline (or onboarding's due check, which only starts after gateway.ready).
+  const recover = () => {
+    setPhase('gone')
+    requestRoute('/settings?tab=gateway')
+  }
+
   return (
-    <ConnectingOverlayView decoding={phase === 'live' && (previewing || connecting)} onExit={onExit} phase={phase} />
+    <ConnectingOverlayView
+      decoding={phase === 'live' && (previewing || connecting)}
+      onExit={onExit}
+      onRecover={!previewing && connecting && !introStarting ? recover : null}
+      phase={phase}
+    />
   )
 }

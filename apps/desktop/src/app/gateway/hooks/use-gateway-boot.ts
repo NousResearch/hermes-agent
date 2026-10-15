@@ -66,11 +66,7 @@ import {
 } from '@/store/gateway-switch'
 import { watchLocalRuntimeJobs } from '@/store/local-runtime-jobs'
 import { notify, notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
-import {
-  $activeGatewayProfile,
-  normalizeProfileKey,
-  refreshActiveProfile
-} from '@/store/profile'
+import { $activeGatewayProfile, normalizeProfileKey, refreshActiveProfile } from '@/store/profile'
 import { requestBackendRestart } from '@/store/recovery-requests'
 import {
   $activeSessionId,
@@ -301,7 +297,11 @@ export function useGatewayBoot({
     // reset — the same one a Settings apply (softSwitch below) runs. One owner,
     // one reset, so the two doors can't drift apart again (#93937).
     const offSwitchLifecycle = registerGatewaySwitchLifecycle({
-      beforeConnectionSwitch: () => callbacksRef.current.beforeConnectionSwitch(),
+      beforeConnectionSwitch: () => {
+        // Both Settings applies and registry selections supersede cold boot.
+        bootGeneration += 1
+        callbacksRef.current.beforeConnectionSwitch()
+      },
       refreshSessions: shouldPublish => callbacksRef.current.refreshSessions(shouldPublish)
     })
 
@@ -325,6 +325,8 @@ export function useGatewayBoot({
     }
 
     let bootCompleted = false
+    // An explicit connection apply supersedes every outstanding cold-boot await.
+    let bootGeneration = 0
     // The other way a cold boot concludes. Main keeps startHermes() available
     // after the renderer gave up, and every later getConnection() caller
     // re-enters it, replaying `backend.resolve` (running:true) then
@@ -1431,6 +1433,8 @@ export function useGatewayBoot({
     })
 
     async function boot() {
+      const generation = ++bootGeneration
+      const ownsBoot = () => !cancelled && generation === bootGeneration
       // Where this boot attempt got to — a historical fact, not a late read of
       // gateway.connectionState. A socket can close after a successful dial;
       // later initialization errors must not be reclassified as boot dials.
@@ -1450,7 +1454,7 @@ export function useGatewayBoot({
           'Timed out connecting to Hermes backend'
         )
 
-        if (cancelled) {
+        if (!ownsBoot()) {
           return
         }
 
@@ -1472,9 +1476,13 @@ export function useGatewayBoot({
         // arrives. Non-fatal: the remembered cwd is a fine fallback and the
         // post-connect pass retries the sync.
         try {
-          await ensureDefaultWorkspaceCwd()
+          await ensureDefaultWorkspaceCwd(ownsBoot)
         } catch (err) {
           console.warn('Failed to seed default workspace cwd pre-connect', err)
+        }
+
+        if (!ownsBoot()) {
+          return
         }
 
         // Mint a fresh WS URL right before connecting. For OAuth gateways the
@@ -1488,6 +1496,10 @@ export function useGatewayBoot({
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out minting the gateway WebSocket URL'
         )
+
+        if (!ownsBoot()) {
+          return
+        }
 
         // Only a valid WebSocket dial against a remote descriptor counts as a
         // transient renderer-side failure; URL and capability failures stay
@@ -1522,16 +1534,20 @@ export function useGatewayBoot({
                   'Timed out minting the gateway WebSocket URL'
                 ))
 
+              if (!ownsBoot()) {
+                return
+              }
+
               await gateway.connect(url)
             },
-            isCancelled: () => cancelled,
+            isCancelled: () => !ownsBoot(),
             initialUrl: wsUrl
           })
         }
 
         stage = 'connected'
 
-        if (cancelled) {
+        if (!ownsBoot()) {
           return
         }
 
@@ -1542,7 +1558,9 @@ export function useGatewayBoot({
         // (cwd seed, config, sessions) are independent REST calls — running
         // them serially added their sum to time-to-populated-sidebar when only
         // the max is needed.
-        await adoptPrimaryProfile(conn)
+        if (!(await adoptPrimaryProfile(conn, ownsBoot)) || !ownsBoot()) {
+          return
+        }
 
         setDesktopBootStep({
           phase: 'renderer.config',
@@ -1554,20 +1572,22 @@ export function useGatewayBoot({
           // The pre-connect seed already applied the configured default; this
           // post-connect pass covers the remote backend default. Non-fatal: a
           // failed sync must not abort boot (the remembered cwd remains).
-          seedDefaultCwd().catch(err => console.warn('Failed to sync default workspace cwd post-connect', err)),
-          callbacksRef.current.refreshHermesConfig(),
+          seedDefaultCwd(ownsBoot).catch(err => console.warn('Failed to sync default workspace cwd post-connect', err)),
+          callbacksRef.current.refreshHermesConfig(false, ownsBoot),
           // Session-list population is never boot-fatal. The gateway WS is
           // already open by this point — a failed sidebar fetch (transient
           // blip, or an endpoint the fallback couldn't cover) must leave the
           // app usable with an empty sidebar (the reconnect/turn refreshes
           // retry it), not brick boot behind the "Hermes couldn't start"
           // overlay. Matches the reconnect + softSwitch call sites.
-          callbacksRef.current.refreshSessions().catch(() => {
-            setSessionsLoading(false)
+          callbacksRef.current.refreshSessions(ownsBoot).catch(() => {
+            if (ownsBoot()) {
+              setSessionsLoading(false)
+            }
           })
         ])
 
-        if (cancelled) {
+        if (!ownsBoot()) {
           return
         }
 
@@ -1579,7 +1599,7 @@ export function useGatewayBoot({
         // launch is the common path, so it must warn too, not only softSwitch.
         void warnIfTerminalBackendUnavailable()
       } catch (err) {
-        if (!cancelled) {
+        if (ownsBoot()) {
           const message = err instanceof Error ? err.message : String(err)
 
           // Main's classification (#82679) still decides every failure it can
@@ -1591,7 +1611,11 @@ export function useGatewayBoot({
           const canRetry = bootRetryAttempt < BOOT_RETRY_MAX_ATTEMPTS
           const retryable = canRetry && (stage === 'dialing' || (await bootFailureIsRetryable()))
 
-          if (retryable && !cancelled) {
+          if (!ownsBoot()) {
+            return
+          }
+
+          if (retryable) {
             const delay = reconnectBackoffDelayMs(bootRetryAttempt, { baseDelayMs: BOOT_RETRY_BASE_DELAY_MS })
             bootRetryAttempt += 1
             bootFailed = false

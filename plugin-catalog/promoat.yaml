@@ -1,12 +1,12 @@
 name: promoat
 repo: https://github.com/TechHiveDev/promoat_partner_hermes_plugin
-sha: 8f50b57a589ed1e160ec05d66d8b41f6fc66d01a
+sha: 891407687e25e91aacbfc51c5f10333bf382d421
 description: Realistic AI presenter videos. Estimate, create, and edit videos with your own Promoat account.
 maintainer: Promoat
 tier: community
 category: tools
 version: "1.1.1"
-docs_url: https://platform.promoat.ai/docs
+docs_url: https://promoat-platform-plugins.vercel.app/docs
 capabilities:
   provides_tools:
     - estimate_video

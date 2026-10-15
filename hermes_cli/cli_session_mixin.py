@@ -284,13 +284,6 @@ class CLISessionMixin:
             ctx_label = None
 
         lines = [t("cli.session.status_title"), "", *status_lines(fields, "session_id", "path", "title", "model")]
-        try:
-            from hermes_cli.anon_auth import free_tier_route
-
-            if free_tier_route():
-                lines.append(t("gateway.status.free_tier"))
-        except Exception:
-            pass
         optional = ((t("cli.session.label_reasoning"), reasoning_label),
                     (t("cli.session.label_approvals"), approval_label),
                     (t("cli.session.label_context"), ctx_label))
@@ -430,7 +423,10 @@ class CLISessionMixin:
                 "platform": getattr(self, "platform", None) or "cli",
                 "reason": "new_session" if event_type == "on_session_reset" else "session_boundary"}
             if event_type == "on_session_finalize":
-                finalize_session(**context)
+                from cli import _cli_visible_print
+                from hermes_cli.lifecycle import session_end_messages
+                for message in session_end_messages(finalize_session(**context)):
+                    _cli_visible_print(message)
             else:
                 invoke_hook(event_type, **context)
 
@@ -515,7 +511,8 @@ class CLISessionMixin:
             self._discard_session_if_empty(old_session_id)
 
         self.session_start = datetime.now()
-        self.session_id = new_session_id(self.session_start)
+        # The gateway's new session; getattr: tests drive new_session unbound (main's mint then).
+        self.session_id = getattr(self, "_new_session_id", lambda now: new_session_id(now))(self.session_start)
         # getattr: tests drive new_session unbound against a SimpleNamespace stand-in.
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
         self.conversation_history = []
@@ -1103,6 +1100,11 @@ class CLISessionMixin:
             # Honors NO_COLOR/dumb terminals by skipping silently when there's no real console.
             self._clear_terminal_on_exit()
         print()
+        import cli as _cli_module
+        # Plugin on_session_finalize messages from _run_cleanup: printed after the clear so they survive.
+        for message in _cli_module._session_end_messages:
+            print(message)
+        _cli_module._session_end_messages.clear()
         msg_count = len(self.conversation_history)
         if not msg_count:
             try:

@@ -32,7 +32,7 @@ class TestAuxiliaryOpenrouterDefaultIsFree:
             "hermes_cli.config.load_config_readonly",
             lambda: {"auxiliary": {"openrouter_model": "google/gemini-3.6-flash"}},
         )
-        free_only, model = ac._aux_openrouter_settings()
+        _free_only, model = ac._aux_openrouter_settings()
         assert model == "google/gemini-3.6-flash"
 
 

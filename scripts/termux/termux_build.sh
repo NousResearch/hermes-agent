@@ -77,6 +77,11 @@ if [ "${1:-}" = "--in-container" ]; then
             libyaml openssl readline zlib liblzma libsqlite ncurses \
             || fail "apt install of the build toolchain failed"
     fi
+    # The payload's libc++ leads LD_LIBRARY_PATH, so it must be the one apt's cmake needs. If the
+    # pin table drifts from the pool, cmake cannot start and scikit-build-core compiles one from
+    # PyPI source, which takes 30 minutes to fail. Say so now.
+    cmake -E capabilities >/dev/null 2>&1 \
+        || fail "container cmake cannot start (payload libc++ older than apt's? run: hermes pm update --termux)"
     # BINARIES, not package names: the rust package provides rustc/cargo
     # (there is no `rust` binary).
     for tool in clang rustc cargo make git; do

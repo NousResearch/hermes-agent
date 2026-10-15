@@ -1,6 +1,20 @@
 name: Desktop bundle smoke
 
 on:
+  # Re-smoke an artifact that is already built, with the test scripts of any
+  # pushed ref (the ref this is dispatched on): `gh workflow run
+  # desktop-bundle-smoke.yml --ref <test-branch> -f platform=win32 -f arch=x64
+  # -f format=msix -f sha=<built commit> -f commit-build=true
+  # -f public-base=https://hermes-assets.nousresearch.com/`. No rebuild per test.
+  workflow_dispatch:
+    inputs:
+      platform: {required: true, type: string}
+      arch: {required: true, type: string}
+      format: {required: true, type: string}
+      sha: {description: Commit whose staged artifact is smoked, required: true, type: string}
+      tag: {default: '', type: string}
+      commit-build: {default: false, type: boolean}
+      public-base: {required: true, type: string}
   workflow_call:
     inputs:
       platform:
@@ -91,7 +105,8 @@ jobs:
 
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
-          ref: ${{ inputs.channel-build != '' && inputs.controller-sha || inputs.sha }}
+          # A dispatch tests the artifact of `sha` with the dispatched ref's scripts.
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || inputs.channel-build != '' && inputs.controller-sha || inputs.sha }}
           persist-credentials: false
 
       - name: Set up driver tools only

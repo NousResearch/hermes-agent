@@ -15,7 +15,7 @@ from agent.provider_base import ProviderBase
 
 _JPEG_SOF_MARKERS = frozenset({0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF})
 
-def image_dimensions_from_bytes(raw: bytes) -> Optional[Tuple[int, int]]:
+def image_dimensions_from_bytes(raw: bytes) -> Optional[tuple[int, int]]:
     """(width, height) for PNG / JPEG bytes, or None when unreadable. PNG: IHDR. JPEG: walk
     segments (skipping 0xFF fill bytes) to the first SOF marker; stop at SOS. Used by the
     tool layer's provider min-size guard."""
@@ -51,11 +51,11 @@ class UIElement:
     index: int                       # 1-based SOM index
     role: str                        # AX role (AXButton, AXTextField, ...)
     label: str = ""                  # AXTitle / AXDescription / AXValue snippet
-    bounds: Tuple[int, int, int, int] = (0, 0, 0, 0)  # x, y, w, h (logical px)
+    bounds: tuple[int, int, int, int] = (0, 0, 0, 0)  # x, y, w, h (logical px)
     app: str = ""                    # owning bundle ID or app name
     pid: int = 0                     # owning process PID
     window_id: int = 0               # SkyLight / CG window ID
-    attributes: Dict[str, Any] = field(default_factory=dict)
+    attributes: dict[str, Any] = field(default_factory=dict)
     # Opaque per-snapshot handle from cua-driver, passed alongside `index` for explicit stale-detection: a
     # stale token errors instead of silently re-resolving to a different element. None on older drivers.
     # None for pre-#1961 drivers that didn't carry the field.
@@ -72,7 +72,7 @@ class CaptureResult:
     width: int                      # screenshot width (logical px, pre-Anthropic-scale)
     height: int
     png_b64: Optional[str] = None
-    elements: List[UIElement] = field(default_factory=list)
+    elements: list[UIElement] = field(default_factory=list)
     app: str = ""                   # target app/window the elements were captured for
     window_title: str = ""
     png_bytes_len: int = 0          # raw bytes sent to Anthropic, for token estimation
@@ -104,11 +104,11 @@ class ActionResult:
     action: str
     message: str = ""                # human-readable summary
     capture: Optional[CaptureResult] = None  # trailing screenshot, when requested / always-on
-    meta: Dict[str, Any] = field(default_factory=dict)  # debugging / telemetry extras
+    meta: dict[str, Any] = field(default_factory=dict)  # debugging / telemetry extras
     verified: Optional[bool] = None  # AX read-back: True confirmed, False unconfirmed, None n/a
     effect: Optional[str] = None     # "confirmed" | "unverifiable" | "suspected_noop"
     # {"recommended": "px"|"foreground"|"page", "reason": str} — only when driver recommends climbing
-    escalation: Optional[Dict[str, Any]] = None
+    escalation: Optional[dict[str, Any]] = None
     path: Optional[str] = None       # delivery rung that ran (e.g. "ax", "x11_pixel", "cgevent_fg")
     degraded: Optional[bool] = None  # AX walk found no actionable elements (act by px instead)
     delivery_mode: Optional[str] = None  # the delivery_mode the caller requested, echoed back
@@ -137,18 +137,18 @@ class ComputerUseBackend(ABC):
 
     @abstractmethod
     def click(self, *, element: Optional[int] = None, x: Optional[int] = None, y: Optional[int] = None,
-              button: str = "left", click_count: int = 1, modifiers: Optional[List[str]] = None,
+              button: str = "left", click_count: int = 1, modifiers: Optional[list[str]] = None,
               delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult: ...
 
     @abstractmethod
     def drag(self, *, from_element: Optional[int] = None, to_element: Optional[int] = None,
-             from_xy: Optional[Tuple[int, int]] = None, to_xy: Optional[Tuple[int, int]] = None,
-             button: str = "left", modifiers: Optional[List[str]] = None,
+             from_xy: Optional[tuple[int, int]] = None, to_xy: Optional[tuple[int, int]] = None,
+             button: str = "left", modifiers: Optional[list[str]] = None,
              delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult: ...
 
     @abstractmethod
     def scroll(self, *, direction: str, amount: int = 3, element: Optional[int] = None,
-               x: Optional[int] = None, y: Optional[int] = None, modifiers: Optional[List[str]] = None,
+               x: Optional[int] = None, y: Optional[int] = None, modifiers: Optional[list[str]] = None,
                delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult: ...
 
     @abstractmethod
@@ -159,9 +159,9 @@ class ComputerUseBackend(ABC):
     def key(self, keys: str, *, delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult: ...
 
     @abstractmethod
-    def list_apps(self) -> List[Dict[str, Any]]: ...  # running apps with bundle IDs, PIDs, window counts
+    def list_apps(self) -> list[dict[str, Any]]: ...  # running apps with bundle IDs, PIDs, window counts
 
-    def list_windows(self) -> List[Dict[str, Any]]:
+    def list_windows(self) -> list[dict[str, Any]]:
         """Visible native windows with PID and window identifiers. Optional compatibility hook: backends that
         predate window discovery stay instantiable and report none."""
         return []

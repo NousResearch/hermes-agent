@@ -243,7 +243,7 @@ def _setup_backend_ssh(config: dict) -> None:
         import subprocess
         ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", *(["-i", ssh_key] if ssh_key else []),
                    *(["-p", port] if port and port != "22" else []), f"{user}@{host}" if user else host, "echo ok"]
-        result = subprocess.run(ssh_cmd, timeout=10, **_RUN_KW)
+        result = subprocess.run(ssh_cmd, timeout=10, **_RUN_KW, check=False)
         if result.returncode == 0:
             _setup.print_success("  SSH connection successful!")
         else:
@@ -325,4 +325,4 @@ def setup_terminal_backend(config: dict):
     _setup.print_success(f"Terminal backend set to: {selected_backend}")
 
 
-import hermes_cli.setup as _setup  # noqa: E402  (bottom: hermes_cli.setup imports this module)
+import hermes_cli.setup as _setup

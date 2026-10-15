@@ -52,6 +52,9 @@ _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
+# Session keys whose launch YOLO (`hermes chat --yolo` session policy) was already seeded by
+# ``tools.approval_yolo.apply_launch_yolo``: once per boundary, so a later `/yolo` off sticks.
+_launch_yolo_applied: set[str] = set()
 _permanent_approved: set = set()
 # Routed multiplex profiles: one permanent allowlist per profile home (see ``_permanent_set``).
 _permanent_approved_by_home: dict[str, set] = {}
@@ -290,6 +293,7 @@ def clear_session(session_key: str) -> None:
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
+        _launch_yolo_applied.discard(session_key)
         _pending.pop(session_key, None)
         for entry in _gateway_queues.pop(session_key, []):
             # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
@@ -323,7 +327,10 @@ def is_current_session_yolo_enabled() -> bool:
 def _yolo_active() -> bool:
     """CLI ``--yolo`` (process-scoped, frozen at import) or gateway ``/yolo``
     (session-scoped). Hardline / deny-rule floors run BEFORE this everywhere."""
-    return _YOLO_MODE_FROZEN or is_current_session_yolo_enabled()
+    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+        return True
+    from gateway.session_finite import unattended_turn
+    return unattended_turn()
 
 
 def _permanent_set() -> set:
@@ -914,13 +921,31 @@ def _presence(approval_callback=None) -> tuple:
     HERMES_INTERACTIVE=1 for sudo prompts, and a gateway sets HERMES_EXEC_ASK=1 at startup and
     passes its environ to every external cron worker (#110932) — in neither can a human answer
     the card, so the gate must resolve from ``approvals.<ctx>_mode`` instead of parking on a
-    pending approval. Unattended *platforms* keep ``is_ask``: api_server relies on it for the
-    ``/v1/runs`` approval bridge (``approval.request`` → ``POST /v1/runs/{id}/approval``)."""
+    pending approval. Unattended *platforms* keep ``is_ask`` only while a client on the session
+    could actually answer: ``/v1/runs`` and streaming chat completions bridge an approval
+    notifier (``approval.request`` → ``POST /v1/runs/{id}/approval``), so on api_server a
+    registered notifier is the discriminator. webhook/msgraph_webhook turns run through the
+    generic TurnRunner lane, which registers a notifier for *every* turn — but those adapters
+    render no approval surface and the inbound lane has no reader, so there ``is_ask`` drops
+    regardless and the unattended branch resolves from ``approvals.unattended_mode`` instead of
+    parking an unanswerable card (#100532)."""
     approval_callback = _resolve_cli_approval_callback(approval_callback)
     is_cli, is_gateway = _is_interactive_cli(), _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
     if _is_single_query_approval_context() or _is_cron_approval_context():
         is_cli = is_gateway = is_ask = False
+    elif is_ask and _is_unattended_platform_approval_context() \
+            and (_gateway_notify_cb(get_current_session_key()) is None
+                 or _get_session_platform() in approval_context._NOTIFIER_BLIND_APPROVAL_PLATFORMS):
+        # start_gateway() sets HERMES_EXEC_ASK process-wide, so an api_server/webhook turn
+        # inside that gateway still reads as "ask" here even though _is_gateway_approval_context()
+        # already excluded the platform. /v1/runs and streaming chat register their notify
+        # callback before the turn runs; a session with none has no surface that can resolve an
+        # approval. webhook/msgraph_webhook are notifier-blind: the generic TurnRunner lane
+        # registers one for every turn while the adapter has no ``send_exec_approval`` and the
+        # POST -> 202 lane has no reader, so a registered callback there answers nothing either
+        # — resolve from approvals.unattended_mode, never a pending no one can answer.
+        is_ask = False
     return approval_callback, is_cli, is_gateway, is_ask
 
 

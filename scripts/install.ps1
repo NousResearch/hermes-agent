@@ -664,6 +664,27 @@ function Write-StatusLine([string]$Text, [int]$Width) {
     Write-Host ("`r" + $line.PadRight($Width - 1)) -NoNewline -ForegroundColor DarkGray
 }
 
+# The error line of a failed command's output: the first fatal:/error: line (git's
+# cause; later ones are generic), else the last non-empty one. Fail reasons carry it, and Hermes-Setup shows the reason
+# as-is, so the screen names the cause (git's "fatal: ...") and not just the step.
+$script:NativeError = $null
+function Select-ErrorLine($Lines) {
+    $pick = $null; $last = $null
+    foreach ($raw in $Lines) {
+        $line = ("$raw" -split "`r")[-1].Trim()
+        if (-not $line) { continue }
+        $last = $line
+        if (-not $pick -and $line -match '(^|\s)(fatal|error): ') { $pick = $line }
+    }
+    if (-not $pick) { $pick = $last }
+    if ($pick -and $pick.Length -gt 240) { $pick = $pick.Substring(0, 240) }
+    return $pick
+}
+function Get-NativeDetail {
+    if ($script:NativeError) { return ": $($script:NativeError)" }
+    return ""
+}
+
 # Run a native command block like Invoke-Native: $LASTEXITCODE stays the
 # caller's to judge. Quiet mode shows $StatusLabel with the block's newest
 # output line rewritten in place, appends everything to the install log and,
@@ -674,6 +695,7 @@ function Write-StatusLine([string]$Text, [int]$Width) {
 # function's scope, so locals here avoid the names call sites use.
 function Invoke-Logged {
     param([string]$StatusLabel, [scriptblock]$NativeBlock, [switch]$MayFail)
+    $script:NativeError = $null
     $logWriter = $null
     if (Test-QuietOutput) {
         $logPath = Join-Path (Join-Path $HermesHome 'logs') 'install.log'
@@ -687,7 +709,19 @@ function Invoke-Logged {
     }
     if (-not $logWriter) {
         Log $StatusLabel
-        Invoke-Native $NativeBlock | Out-Host
+        # stderr stays on stderr (Hermes-Setup logs it); the lines are kept so a
+        # failure reason can name the cause.
+        # Named -TypeName: a positional New-Object binds to callers' New-Object shims.
+        $outputLines = New-Object -TypeName 'System.Collections.Generic.Queue[string]'
+        Invoke-Native { & $NativeBlock 2>&1 } | ForEach-Object {
+            $outputLines.Enqueue("$_")
+            if ($outputLines.Count -gt 20) { [void]$outputLines.Dequeue() }
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { [Console]::Error.WriteLine("$_") }
+            else { $_ | Out-Host }
+        }
+        $exitCode = $LASTEXITCODE
+        if ($exitCode) { $script:NativeError = Select-ErrorLine $outputLines }
+        $global:LASTEXITCODE = $exitCode
         return
     }
     $columns = 80
@@ -706,6 +740,7 @@ function Invoke-Logged {
             if ($newest) { Write-StatusLine "${StatusLabel}: $newest" $columns }
         }
         $exitCode = $LASTEXITCODE
+        if ($exitCode) { $script:NativeError = Select-ErrorLine $recentLines }
     } finally {
         $logWriter.Dispose()
         Write-Host ("`r" + (' ' * ($columns - 1)) + "`r") -NoNewline
@@ -809,7 +844,55 @@ function Disable-TreelessGraphWrites([string]$Dir) {
     }
 }
 
+# A YAML scalar as Hermes writes it: unquoted, or one pair of matching quotes; trailing comment dropped.
+function ConvertFrom-YamlScalar([string]$Text) {
+    $s = ($Text -replace '\s+#.*$', '').Trim()
+    if ($s.Length -gt 1 -and ($s[0] -eq '"' -or $s[0] -eq "'") -and $s[-1] -eq $s[0]) { $s = $s.Substring(1, $s.Length - 2) }
+    return $s
+}
+
+# The update channel this install chose (config.yaml update.installs.<id>.channel, id = sha16 of
+# the canonical install path, as hermes_cli.update_channel keys it; a record naming this path also
+# counts, since Windows paths can differ only in case). Pre-Python reader of the block YAML Hermes
+# writes; anything it cannot read returns '', which keeps the plain branch behaviour.
+function Get-ChosenChannel {
+    $config = Join-Path $HermesHome 'config.yaml'
+    if (-not (Test-Path -LiteralPath $config)) { return '' }
+    try {
+        $root = (Get-Item -LiteralPath $InstallDir -Force).FullName.TrimEnd('\')
+        $hash = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($root))
+        $id = (-join ($hash | ForEach-Object { $_.ToString('x2') })).Substring(0, 16)
+        $lines = [IO.File]::ReadAllLines($config)
+    } catch { return '' }
+    $keys = New-Object System.Collections.Generic.List[object]
+    $records = @{}
+    foreach ($line in $lines) {
+        if ($line -match '^\s*(#|$)') { continue }
+        if ($line -notmatch '^( *)([^:]+):(.*)$') { continue }
+        $indent = $Matches[1].Length
+        $key = ConvertFrom-YamlScalar $Matches[2]
+        $value = ConvertFrom-YamlScalar $Matches[3]
+        while ($keys.Count -and $keys[$keys.Count - 1].Indent -ge $indent) { $keys.RemoveAt($keys.Count - 1) }
+        $keys.Add([pscustomobject]@{ Indent = $indent; Key = $key })
+        if ($keys.Count -eq 4 -and $keys[0].Key -ceq 'update' -and $keys[1].Key -ceq 'installs') {
+            $record = $keys[2].Key
+            if (-not $records.ContainsKey($record)) { $records[$record] = @{} }
+            $records[$record][$key] = $value
+        }
+    }
+    foreach ($record in $records.GetEnumerator()) {
+        $path = "$($record.Value['path'])".TrimEnd('\')
+        if ($record.Key -ceq $id -or ($path -and $path -eq $root)) {
+            $channel = "$($record.Value['channel'])"
+            if ($channel -cmatch '^[a-z0-9]+(-[a-z0-9]+)*$') { return $channel }
+        }
+    }
+    return ''
+}
+
 function Stage-Repository {
+    $pinned = $false
+    $channel = ''
     # Refuse an occupied non-checkout before provisioning Git. This check
     # needs no tool download and must not overwrite a user's existing files.
     if (-not (Test-Path (Join-Path $InstallDir ".git")) -and (Test-Path -LiteralPath $InstallDir)) {
@@ -833,7 +916,15 @@ function Stage-Repository {
         }
     }
     if (Test-Path (Join-Path $InstallDir ".git")) {
-        Log "Updating $InstallDir ($Branch)"
+        # A chosen channel (stable, a preview) owns where this checkout sits: `hermes update`
+        # moves it. Switching it to the installer's branch would leave it on main while its
+        # channel still says otherwise, and the next check would offer the release as an update.
+        # Only an explicit -Commit pin outranks the choice.
+        if (-not $Commit) { $channel = Get-ChosenChannel }
+        if ($channel -ceq 'main') { $channel = '' }
+        if ($channel) { Log "Repairing $InstallDir on the $channel update channel it chose" } else { Log "Updating $InstallDir ($Branch)" }
+        # A checkout cloned before longpaths was set: a deep path past MAX_PATH fails checkout.
+        Invoke-Native { git -C $InstallDir config core.longpaths true } | Out-Null
         # An explicit HERMES_REPO_URL names the source for reruns too, not
         # just the first clone.
         if ($env:HERMES_REPO_URL) {
@@ -870,8 +961,12 @@ function Stage-Repository {
                 }
             }
         }
+        if ($channel) {
+            Log "Keeping its checkout: ``hermes update`` moves it (``hermes update --set-channel main`` follows main)"
+            return
+        }
         Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
-        if ($LASTEXITCODE) { Fail "git fetch failed" git_fetch_failed }
+        if ($LASTEXITCODE) { Fail "git fetch failed$(Get-NativeDetail)" git_fetch_failed }
         $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
         # Park local work BEFORE switching branches: checkout refuses a dirty
         # tree that conflicts, and the reset below would discard it. Work that
@@ -898,7 +993,7 @@ function Stage-Repository {
         } else {
             Invoke-Logged "Checking out $Branch" { git -C $InstallDir checkout $Branch }
         }
-        if ($LASTEXITCODE) { Fail "git checkout failed" git_checkout_failed }
+        if ($LASTEXITCODE) { Fail "git checkout failed$(Get-NativeDetail)" git_checkout_failed }
         # --no-stat: across a large gap (v2026.7.1 -> today is ~27k lines) the
         # diffstat arrives as one burst. Hermes-Setup.exe forwards every line
         # to its window as a separate event; the burst overflows the Windows
@@ -928,7 +1023,7 @@ function Stage-Repository {
                 Log "List them with: git -C `"$InstallDir`" log origin/$Branch..$rescue"
             }
             Invoke-Logged "Resetting to origin/$Branch" { git -C $InstallDir reset --hard "origin/$Branch" }
-            if ($LASTEXITCODE) { Fail "git reset failed" git_reset_failed }
+            if ($LASTEXITCODE) { Fail "git reset failed$(Get-NativeDetail)" git_reset_failed }
             Write-Warn "not fast-forwardable; reset to origin/$Branch"
         }
     } else {
@@ -949,8 +1044,17 @@ function Stage-Repository {
         # prints none to a pipe unless asked.
         $progress = @()
         if (Test-QuietOutput) { $progress = @('--progress') }
+        # A pinned install materializes only the pin (below): checking out the
+        # branch tip first fetches and rewrites every file the two differ in.
+        $checkout = @()
+        if ($Commit) { $checkout = @('--no-checkout') }
+        # Staging dir + deepest tracked path (~160) pass MAX_PATH (260) once LOCALAPPDATA
+        # is longer than ~55 characters (a ~33-character user name), and checkout dies with
+        # "Filename too long". --config lands before checkout and stays for `hermes update`.
+        $longPaths = @('--config', 'core.longpaths=true')
         try {
             $cloned = $false
+            $deferred = $false
             foreach ($attempt in 1..3) {
                 # Blobless: every commit, tree and release tag (runtime identity is
                 # the nearest reachable release; -Commit pins and branch switches
@@ -959,7 +1063,7 @@ function Stage-Repository {
                 # checkout and history walk (#129712).
                 $cloneLabel = "Cloning $RepoUrl ($Branch) into $InstallDir"
                 if ($attempt -gt 1) { $cloneLabel += " (attempt $attempt of 3)" }
-                Invoke-Logged $cloneLabel { git clone @progress --filter=blob:none --branch $Branch $RepoUrl $tree }
+                Invoke-Logged $cloneLabel { git clone @progress @longPaths --filter=blob:none @checkout --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) { $cloned = $true; break }
                 Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue
                 if ($attempt -lt 3) { Start-Sleep -Seconds ($attempt * 5) }
@@ -968,16 +1072,34 @@ function Stage-Repository {
                 # The checkout step is where throttled downloads die: clone the
                 # graph alone, then retry materializing the tree separately.
                 Write-Warn "direct clone failed; trying deferred checkout"
-                Invoke-Logged "Cloning history" { git clone @progress --filter=blob:none --no-checkout --branch $Branch $RepoUrl $tree }
-                if (-not $LASTEXITCODE) {
-                    foreach ($attempt in 1..2) {
-                        Invoke-Logged "Checking out files (attempt $attempt of 2)" { git -C $tree reset --hard HEAD }
-                        if (-not $LASTEXITCODE) { $cloned = $true; break }
-                        if ($attempt -lt 2) { Start-Sleep -Seconds 5 }
-                    }
-                }
+                Invoke-Logged "Cloning history" { git clone @progress @longPaths --filter=blob:none --no-checkout --branch $Branch $RepoUrl $tree }
+                if (-not $LASTEXITCODE) { $cloned = $true; $deferred = $true }
             }
-            if (-not $cloned) { Fail "git clone failed; no checkout published" git_clone_failed }
+            if (-not $cloned) { Fail "git clone failed; no checkout published$(Get-NativeDetail)" git_clone_failed }
+            if ($Commit) {
+                # Pin before publishing: a pinned or deferred clone has no files yet,
+                # and a failure here leaves only the staging dir, which finally removes.
+                Invoke-Native { git -C $tree merge-base --is-ancestor $Commit "origin/$Branch" 2>$null }
+                if ($LASTEXITCODE) { Fail "commit $Commit is not on branch $Branch" commit_not_on_branch }
+            }
+            if ($Commit -or $deferred) {
+                # The checkout step is where throttled downloads die: retry it alone.
+                # A pin detaches HEAD and leaves the branch at its tip, as the published pin did.
+                $what = if ($Commit) { $Commit } else { "files" }
+                $materialized = $false
+                foreach ($attempt in 1..2) {
+                    Invoke-Logged "Checking out $what (attempt $attempt of 2)" {
+                        if ($Commit) { git -C $tree checkout --force --detach $Commit } else { git -C $tree reset --hard HEAD }
+                    }
+                    if (-not $LASTEXITCODE) { $materialized = $true; break }
+                    if ($attempt -lt 2) { Start-Sleep -Seconds 5 }
+                }
+                if (-not $materialized) {
+                    $what = if ($Commit) { $Commit } else { "the cloned tree" }
+                    Fail "could not check out $what; no checkout published$(Get-NativeDetail)" git_checkout_failed
+                }
+                $pinned = [bool]$Commit
+            }
             Move-Item -LiteralPath $tree -Destination $InstallDir
             Disable-TreelessGraphWrites $InstallDir
             Write-Ok "Hermes Agent cloned"
@@ -985,14 +1107,15 @@ function Stage-Repository {
             Remove-Item -LiteralPath $staged -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
-    if ($Commit) {
-        # A pin must come from the branch being installed: the complete marker
-        # records both, and a commit off that branch would make the next plain
-        # rerun "update" onto a different line.
+    if ($Commit -and -not $pinned) {
+        # A rerun over an existing checkout pins here (a fresh clone pinned
+        # before publishing). A pin must come from the branch being installed:
+        # the complete marker records both, and a commit off that branch would
+        # make the next plain rerun "update" onto a different line.
         Invoke-Native { git -C $InstallDir merge-base --is-ancestor $Commit "origin/$Branch" 2>$null }
         if ($LASTEXITCODE) { Fail "commit $Commit is not on branch $Branch" commit_not_on_branch }
         Invoke-Logged "Pinning $Commit" { git -C $InstallDir checkout $Commit }
-        if ($LASTEXITCODE) { Fail "could not pin commit $Commit" git_checkout_failed }
+        if ($LASTEXITCODE) { Fail "could not pin commit $Commit$(Get-NativeDetail)" git_checkout_failed }
     }
 }
 

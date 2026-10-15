@@ -54,7 +54,7 @@ try:
 finally:
     print('AUDIT=' + json.dumps(attempts))
 """
-    result = subprocess.run([sys.executable, "-c", script], env=env, cwd=root, capture_output=True, text=True, timeout=45)
+    result = subprocess.run([sys.executable, "-c", script], env=env, cwd=root, capture_output=True, text=True, timeout=45, check=False)
     assert result.returncode == (0 if args == ["--version"] else 2), result.stdout + result.stderr
     assert "AUDIT=[]" in result.stdout, result.stdout + result.stderr
     if args == ["--version"]:

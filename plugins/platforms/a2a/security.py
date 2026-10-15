@@ -64,7 +64,7 @@ class A2ASecurityContext:
     push_secret: str
 
     @classmethod
-    def capture(cls) -> "A2ASecurityContext":
+    def capture(cls) -> A2ASecurityContext:
         bearer_token = _startup_env("A2A_BEARER_TOKEN")
         return cls(bearer_token=bearer_token, peer_tokens=tuple(_parse_peer_tokens(_startup_env("A2A_PEER_TOKENS")).items()),
                    trusted_peers=_configured_trusted_peers(),

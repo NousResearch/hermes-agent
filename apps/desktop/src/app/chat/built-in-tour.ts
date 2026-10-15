@@ -61,7 +61,7 @@ function onScreen(selector: string): boolean {
 }
 
 /** Whether the model stop says this computer can run a local model: the
- *  local-setup offer's answer (the backend's catalog `fits` check, on a local
+ *  local-setup eligibility answer (the backend's catalog `fits` check, on a local
  *  connection with Local Models on, with nothing set up yet). */
 async function canRunLocalModel(): Promise<boolean> {
   const read = readLocalSetupEligibility().then(

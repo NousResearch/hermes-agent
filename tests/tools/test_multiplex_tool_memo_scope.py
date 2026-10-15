@@ -70,7 +70,7 @@ def test_config_caches_are_keyed_by_profile(two_profiles):
 
 
 def test_skill_manage_schema_stable_but_creation_follows_active_profile(two_profiles):
-    import tools.skill_manager_tool  # noqa: F401  (registers skill_manage)
+    import tools.skill_manager_tool
     from tools.registry import registry
 
     prof_a, prof_b = two_profiles

@@ -73,7 +73,7 @@ def test_resolve_discovery_timeout_single_query_falls_back(monkeypatch):
     )
     assert mcp_startup._resolve_discovery_timeout(None, single_query=True) == default
 
-    monkeypatch.setattr(cfg, "load_config", lambda: {})
+    monkeypatch.setattr(cfg, "load_config", dict)
     assert mcp_startup._resolve_discovery_timeout(None, single_query=True) == default
 
 def test_resolve_discovery_timeout_explicit_overrides_single_query():
@@ -89,7 +89,7 @@ def _stub_mcp_modules(monkeypatch):
         "hermes_cli.config",
         types.SimpleNamespace(
             read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
-            load_config=lambda: {},
+            load_config=dict,
             DEFAULT_CONFIG={"mcp_discovery_timeout": 0.1, "mcp_single_query_discovery_timeout": 0.2},
         ),
     )
@@ -144,7 +144,7 @@ def test_ensure_helper_swallows_errors(monkeypatch):
         "hermes_cli.config",
         types.SimpleNamespace(
             read_raw_config=lambda: (_ for _ in ()).throw(RuntimeError("boom")),
-            load_config=lambda: {},
+            load_config=dict,
             DEFAULT_CONFIG={},
         ),
     )
@@ -153,64 +153,8 @@ def test_ensure_helper_swallows_errors(monkeypatch):
     # Should not raise
     mcp_startup.ensure_mcp_discovery_before_agent_build(logger=logger)
 
-# ── oneshot ordering: discovery before AIAgent ──────────────────────────────
-
-# ── _init_agent ordering: discovery before AIAgent (CLI path) ───────────────
-
-def test_init_agent_forwards_single_query_flag(monkeypatch):
-    """Single-query mode forwards single_query=True to the discovery wait."""
-    import cli as cli_mod
-
-    cli = cli_mod.HermesCLI(compact=True)
-    cli._session_db = object()
-    cli._resumed = False
-    cli.conversation_history = []
-    cli._install_tool_callbacks = lambda: None
-    cli._ensure_runtime_credentials = lambda: True
-    cli._single_query_mode = True
-
-    seen = {}
-
-    def _fake_ensure(*, logger, timeout=None, single_query=False, **_kw):
-        seen["single_query"] = single_query
-
-    monkeypatch.setattr(
-        mcp_startup,
-        "ensure_mcp_discovery_before_agent_build",
-        _fake_ensure,
-    )
-    import run_agent
-    monkeypatch.setattr(run_agent, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
-
-    assert cli._init_agent() is True
-    assert seen.get("single_query") is True
-
-def test_init_agent_defaults_to_interactive(monkeypatch):
-    """Without _single_query_mode, the helper uses interactive (short) bound."""
-    import cli as cli_mod
-
-    cli = cli_mod.HermesCLI(compact=True)
-    cli._session_db = object()
-    cli._resumed = False
-    cli.conversation_history = []
-    cli._install_tool_callbacks = lambda: None
-    cli._ensure_runtime_credentials = lambda: True
-
-    seen = {}
-
-    def _fake_ensure(*, logger, timeout=None, single_query=False, **_kw):
-        seen["single_query"] = single_query
-
-    monkeypatch.setattr(
-        mcp_startup,
-        "ensure_mcp_discovery_before_agent_build",
-        _fake_ensure,
-    )
-    import run_agent
-    monkeypatch.setattr(run_agent, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
-
-    assert cli._init_agent() is True
-    assert seen.get("single_query") is False
+# The classic CLI's _init_agent no longer waits on MCP discovery: the gateway session owns MCP
+# (tests/hermes_cli/test_cli_startup_trim.py).
 
 # ── bounded wait: slow server doesn't freeze startup ────────────────────────
 

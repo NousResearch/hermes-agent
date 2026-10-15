@@ -78,7 +78,7 @@ class ApiErrorSummaryMixin:
 
     @staticmethod
     def _is_entitlement_failure(
-        error_context: Optional[Dict[str, Any]], status_code: Optional[int]
+        error_context: Optional[dict[str, Any]], status_code: Optional[int]
     ) -> bool:
         """Detect subscription/entitlement 401/403s that masquerade as auth failures.
 

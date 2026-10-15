@@ -38,7 +38,7 @@ _disk_checked = False
 class _CacheState:
     """Efforts cache + once-only flags for one Hermes home (same names as the module slots)."""
 
-    __slots__ = ("_efforts_cache", "_warm_started", "_disk_checked")
+    __slots__ = ("_disk_checked", "_efforts_cache", "_warm_started")
 
     def __init__(self) -> None:
         self._efforts_cache: Optional[dict[str, list[str]]] = None

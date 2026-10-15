@@ -2988,6 +2988,35 @@ class TestThreadReplyHandling:
         # Watermark advanced to the trigger ts.
         assert metadata["slack_thread_watermark:C123:123.000"] == "123.456"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("channel_id", ["D123", "G123"])
+    async def test_dm_thread_watermark_lands_on_the_routed_session(self, channel_id, tmp_path):
+        """IM and MPIM threads key their session as ``dm``; the watermark must be written to and
+        read from THAT session, or an @mention re-injects the whole thread and a restart never
+        rehydrates the replies it missed."""
+        from gateway.session import SessionStore
+
+        store = SessionStore(tmp_path / "sessions", GatewayConfig())
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="***"))
+        adapter.set_session_store(store)
+        routed = store.get_or_create_session(adapter.build_source(
+            chat_id=channel_id, chat_type="dm", user_id="U1", thread_id="100.000", scope_id="T1"))
+        fetched_after = []
+
+        async def _fetch(**kw):
+            fetched_after.append(kw.get("after_ts", ""))
+            return "ctx"
+
+        adapter._fetch_thread_context = _fetch
+        for ts, mentioned in (("100.200", False), ("100.300", True)):
+            await adapter._hydrate_thread_context(
+                channel_id=channel_id, event_thread_ts="100.000", ts=ts, user_id="U1",
+                team_id="T1", is_thread_reply=True, is_mentioned=mentioned, is_dm=True)
+
+        assert fetched_after == ["100.200"]
+        assert store.get_session_metadata(
+            routed.session_key, f"slack_thread_watermark:{channel_id}:100.000") == "100.300"
+
 
 # ---------------------------------------------------------------------------
 # TestAssistantThreadLifecycle

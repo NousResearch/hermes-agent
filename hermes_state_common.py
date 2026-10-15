@@ -355,18 +355,13 @@ def _placeholders(items) -> str:
 
 
 def _source_match_clause(sources, local_created_sources=None) -> tuple[str, list]:
-    """``sessions s`` source predicate, applied before LIMIT/OFFSET.
-
-    With ``local_created_sources``, a ``source='local'`` row matches only when
-    ``created_source`` is one of those surfaces. Every other requested source
-    matches on its own label, whatever ``created_source`` says. A placeholder
-    ``created_source='unknown'`` is not a surface: it stays unmatched until an
-    upsert stamps the real creator (#138838, #139058).
-    """
+    """``sessions s`` source predicate. With ``local_created_sources``, a ``source='local'`` row
+    matches only when ``created_source`` is one of those surfaces; the placeholder ``'unknown'``
+    is not a surface and stays unmatched until an upsert stamps the real creator."""
     labels = list(sources or [])
     if not labels:
         return "", []
-    surfaces = [item for item in (local_created_sources or ()) if item]
+    surfaces = list(local_created_sources or ())
     if not surfaces:
         return f"s.source IN ({_placeholders(labels)})", labels
     non_local = [item for item in labels if item != "local"]

@@ -288,7 +288,8 @@ def release_pending_injects(
             if committed:
                 # At the attempt cap release transitions to dropped, not pending.
                 if state == "pending":
-                    process_registry.completion_queue.put(event)
+                    with process_registry.completion_routing_lock:
+                        process_registry.completion_queue.put(event)
                 settled += 1
             elif state == "delivered":
                 settled += 1
@@ -394,27 +395,38 @@ def attach_ready_injects_to_tool_results(
     completion_queue = process_registry.completion_queue
 
     def requeue(event):
-        completion_queue.put(event)
+        with process_registry.completion_routing_lock:
+            completion_queue.put(event)
 
     candidates = []
-    # Queue.get_nowait is already atomic. Take only a bounded snapshot; an idle
-    # consumer winning a race is a missed opportunity, not another delivery rail.
-    for _ in range(completion_queue.qsize()):
+    # Dequeue/classify/requeue is one bounded routing reservation shared with
+    # gateway and TUI consumers.  Whichever consumer gets here first must either
+    # keep the event or make it visible again before releasing the lock, so a
+    # ready same-turn dependency cannot disappear in another consumer's private
+    # list at the exact tool-result boundary.
+    with process_registry.completion_routing_lock:
         try:
-            event = completion_queue.get_nowait()
-        except queue.Empty:
-            break
-        delivery = str(event.get("result_delivery") or "after_turn").strip().lower()
-        if (
-            event.get("type") != "async_delegation"
-            or delivery != "inject"
-            or str(event.get("parent_turn_id") or "") != active_turn_id
-            or str(event.get("parent_session_id") or "") != str(getattr(agent, "session_id", "") or "")
-            or not event.get("parent_session_id")
-        ):
-            requeue(event)
-            continue
-        candidates.append(event)
+            scan_count = completion_queue.qsize()
+        except Exception:
+            return 0
+        for _ in range(max(0, scan_count)):
+            try:
+                event = completion_queue.get_nowait()
+            except queue.Empty:
+                break
+            except Exception:
+                break
+            delivery = str(event.get("result_delivery") or "after_turn").strip().lower()
+            if (
+                event.get("type") != "async_delegation"
+                or delivery != "inject"
+                or str(event.get("parent_turn_id") or "") != active_turn_id
+                or str(event.get("parent_session_id") or "") != str(getattr(agent, "session_id", "") or "")
+                or not event.get("parent_session_id")
+            ):
+                completion_queue.put(event)
+                continue
+            candidates.append(event)
 
     # Formatting / sandbox I/O holds neither a queue nor a database lock.
     # Dequeue gives this consumer the RAM item; the durable claim arbitrates a
@@ -493,7 +505,7 @@ def attach_ready_injects_to_tool_results(
                 logger.exception("Failed to release rolled-back delegation claim")
                 continue
             if released and get_event_delivery_state(event) == "pending":
-                completion_queue.put(event)
+                requeue(event)
         raise
 
     return len(accepted)

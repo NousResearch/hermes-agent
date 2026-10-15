@@ -25,8 +25,13 @@ import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { firstRunIntro } from '@/components/onboarding/first-run/kickoff'
 import { OnboardingEnd } from '@/components/onboarding/onboarding-end'
-import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
-import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
+import { $newSessionTabAction, activeMainStripPane, registerPaneCloser } from '@/components/pane-shell/tree/store'
+import {
+  $workspaceMode,
+  $workspaceNewSessionTarget,
+  $workspaceOwnerKey,
+  setWorkspaceScope
+} from '@/components/pane-shell/workspace-scope'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
@@ -92,7 +97,7 @@ import {
 import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
-import { noteViewChange } from '@/store/view-history'
+import { noteActiveViewPane, noteViewChange } from '@/store/view-history'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow, isMainWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -372,11 +377,19 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // on pages), and a page route fronts the pane so it can't stay stuck behind
   // a focused session tile.
   useEffect(() => {
+    // Stamp the tab the view being left had FRONTED, while the cursor still
+    // points at it: the route change below may front the workspace (a page
+    // renders there), which would erase the session tile the user was reading.
+    // Back restores the route AND the remembered tab (store/view-history.ts).
+    noteActiveViewPane(activeMainStripPane())
+
     syncWorkspaceRoute(location.pathname)
     // The app's own view history — what the back affordance walks. Recorded here
     // because this is the one effect that sees every navigation, whichever
     // entry point made it (sidebar, palette, a plugin's `to` target, restore).
     noteViewChange(location.pathname)
+    // The view just entered owns its own fronted tab — the workspace, on a page.
+    noteActiveViewPane(activeMainStripPane())
   }, [location.pathname])
 
   const {

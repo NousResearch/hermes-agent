@@ -1,6 +1,7 @@
 import { type RefObject, useCallback, useLayoutEffect, useState } from 'react'
 
 import { TITLEBAR_CHROME_CHANGED_EVENT } from '@/app/shell/titlebar'
+import { BACK_CONTROL_INSET } from '@/components/pane-shell/tree/main-zone-anchor'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { $connection } from '@/store/session'
 
@@ -50,7 +51,12 @@ export function usePanelTitlebar(ref: RefObject<HTMLElement | null>, enabled: bo
     // must keep their own band.
     const chromeRight = leftControls.right + 12
     const backControls = document.querySelector<HTMLElement>('[data-titlebar-back]')?.getBoundingClientRect()
-    const backStandsHere = Boolean(backControls && backControls.left <= Math.max(rect.left, chromeRight))
+
+    // The control is inset from the zone's own left edge (BACK_CONTROL_INSET), so
+    // the geometric test tolerates that much before it reads as another zone's.
+    const backStandsHere = Boolean(
+      backControls && backControls.left <= Math.max(rect.left, chromeRight) + BACK_CONTROL_INSET
+    )
 
     const backRight = backStandsHere && backControls ? backControls.right + 12 : 0
 

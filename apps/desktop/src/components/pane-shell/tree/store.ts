@@ -605,6 +605,18 @@ export const isMainStripPane = (paneId: string): boolean =>
   (registry.getArea('panes').find(c => c.id === paneId)?.data as { placement?: string } | undefined)?.placement ===
   'main'
 
+/** The tab fronted in the MAIN zone — the group holding the workspace pane, the
+ *  one a page route renders in. Opening a page fronts the workspace so the page
+ *  can show, displacing whatever tab the user was on; the app's view history
+ *  remembers this per view so Back can re-front it (`store/view-history.ts`).
+ *  Null when the workspace is not in the tree. */
+export function activeMainStripPane(): null | string {
+  const tree = $layoutTree.get()
+  const group = tree ? findGroupOfPane(tree, 'workspace') : null
+
+  return group?.active ?? null
+}
+
 /** Whether a zone may receive a SESSION drop — an existing session dragged
  *  from the sidebar, or a brand-new one dropped from a create-drag ("New
  *  session" row, project "+" buttons, "New project" +). Any zone hosting a

@@ -8,6 +8,13 @@ import { useResizeObserver } from '@/hooks/use-resize-observer'
  *  the same 12px `usePanelTitlebar` reserves inside a zone's own band. */
 const CLUSTER_GAP = 12
 
+/** How far main-view chrome is inset from the zone's own left edge, so the way
+ *  back out of a page does not sit flush against the sidebar — the app's chrome
+ *  gutter (0.75rem), the same one `usePanelTitlebar` reserves. `panel-titlebar.ts`
+ *  shares it: it has to tolerate the inset to still recognise the control as
+ *  standing on the zone whose band it reserves. */
+export const BACK_CONTROL_INSET = 12
+
 /**
  * Viewport-space left edge (px) where the MAIN zone's band starts, or null until
  * it is measured. Fixed titlebar chrome that belongs to the main VIEW — the way
@@ -31,7 +38,12 @@ export function setMainZoneLeft(left: number | null): void {
  * would otherwise leave main-view chrome riding under the sidebar toggle.
  */
 export function mainZoneAnchorLeft(zoneLeft: number, clusterRight: number | null): number {
-  return Math.round(clusterRight !== null && clusterRight > zoneLeft ? clusterRight + CLUSTER_GAP : zoneLeft)
+  // Clamped right of the controls when the zone starts under them (a collapsed
+  // or dragged-in sidebar) — no inset there, the sidebar is beneath the cluster.
+  // Otherwise the zone's own left edge, inset by the chrome gutter.
+  return clusterRight !== null && clusterRight > zoneLeft
+    ? Math.round(clusterRight + CLUSTER_GAP)
+    : Math.round(zoneLeft + BACK_CONTROL_INSET)
 }
 
 /**

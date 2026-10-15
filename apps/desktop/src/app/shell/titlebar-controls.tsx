@@ -8,7 +8,7 @@ import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
 import { $mainZoneLeft } from '@/components/pane-shell/tree/main-zone-anchor'
-import { $narrowViewport, resetLayoutTree } from '@/components/pane-shell/tree/store'
+import { $narrowViewport, resetLayoutTree, revealTreePane } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
@@ -473,7 +473,7 @@ export function BackViewButton() {
         id: 'back',
         label: t.titlebar.back,
         onSelect: () => {
-          if (goBackToPreviousView(navigate)) {
+          if (goBackToPreviousView(navigate, revealTreePane)) {
             triggerHaptic('tap')
           }
         }

@@ -52,9 +52,10 @@ one-off at the call site.
   unrelated page. A full page renders as a layer ABOVE the session view, not in
   its place: the chat stays mounted beneath it, so returning to a session is a
   route change, never a remount. The way back out of a page stands at the MAIN
-  view's top-left — the zone the page renders in — never over the sidebar; when
-  that zone starts under the window controls (a collapsed or dragged-in
-  sidebar), the control clamps to the right of them.
+  view's top-left — the zone the page renders in, inset from that zone's left
+  edge by the chrome gutter so it never touches the sidebar; when that zone
+  starts under the window controls (a collapsed or dragged-in sidebar), the
+  control clamps to the right of them.
 - **Route overlays are short tasks.** Settings, Command Center, Cron, Profiles,
   Agents, and Starmap render as `OverlayView` cards and return to the previous
   route on close. Model/session pickers and dialogs layer above the current
@@ -333,7 +334,10 @@ and the right-sidebar toggle sit on the right; haptics remain in settings.
 Back stands at the main view's top-left on every view that is not the session
 view, while a view is behind this one — the app's own view history
 (`store/view-history`), recorded per navigation by the wiring, never the
-router's query-string history. The zone it stands on reserves its width in its
+router's query-string history. Back restores the view as it was left, down to
+the main-strip tab it had fronted: a session tile is not in the route, so the
+history carries it (`noteActiveViewPane`) or Back lands on the workspace — the
+first session tab. The zone it stands on reserves its width in its
 own band (`panel-titlebar`), because that band's remaining space is a native
 drag region, and a drag region swallows a press. It is absent in the session
 view (where it could only point at another session) and when nothing is behind

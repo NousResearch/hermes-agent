@@ -1,9 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $canGoBack, $viewHistory, backVisible, goBackToPreviousView, noteViewChange } from './view-history'
+import {
+  $canGoBack,
+  $viewHistory,
+  backVisible,
+  goBackToPreviousView,
+  noteActiveViewPane,
+  noteViewChange,
+  resetViewPaneMemory,
+  viewPaneFor
+} from './view-history'
 
 /** The whole state is the atom — the cursor lives in it, not in a module var. */
-const reset = () => $viewHistory.set({ entries: [], index: -1 })
+const reset = () => {
+  $viewHistory.set({ entries: [], index: -1 })
+  resetViewPaneMemory()
+}
 
 describe('view history', () => {
   beforeEach(reset)
@@ -101,6 +113,58 @@ describe('view history', () => {
     expect(index).toBe(31)
     expect(entries.at(-1)).toBe('/session-39')
     expect(entries.at(0)).toBe('/session-8')
+  })
+})
+
+describe('the main-strip tab a view fronted', () => {
+  beforeEach(reset)
+
+  it('is restored alongside the route by Back, so a session tile is not abandoned', () => {
+    const navigate = vi.fn()
+    const restorePane = vi.fn()
+
+    noteViewChange('/session-1')
+    noteActiveViewPane('session-tile:other')
+    noteViewChange('/capabilities')
+    noteActiveViewPane('workspace')
+
+    expect(goBackToPreviousView(navigate, restorePane)).toBe(true)
+    expect(navigate).toHaveBeenCalledWith('/session-1')
+    expect(restorePane).toHaveBeenCalledWith('session-tile:other')
+  })
+
+  it('is remembered per view, not globally', () => {
+    noteViewChange('/session-1')
+    noteActiveViewPane('session-tile:a')
+
+    noteViewChange('/capabilities')
+    noteActiveViewPane('workspace')
+
+    expect(viewPaneFor('/session-1')).toBe('session-tile:a')
+    expect(viewPaneFor('/capabilities')).toBe('workspace')
+  })
+
+  it('leaves nothing to restore when the view never fronted a tab', () => {
+    const restorePane = vi.fn()
+
+    noteViewChange('/session-1')
+    noteViewChange('/capabilities')
+
+    goBackToPreviousView(vi.fn(), restorePane)
+
+    expect(restorePane).not.toHaveBeenCalled()
+  })
+
+  it('is forgotten once the capped history has dropped the view', () => {
+    noteViewChange('/old')
+    noteActiveViewPane('session-tile:old')
+
+    for (let index = 0; index < 40; index += 1) {
+      noteViewChange(`/session-${index}`)
+      noteActiveViewPane(`session-tile:${index}`)
+    }
+
+    expect(viewPaneFor('/old')).toBeNull()
   })
 })
 

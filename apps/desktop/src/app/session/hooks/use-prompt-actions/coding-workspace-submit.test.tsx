@@ -16,6 +16,9 @@ vi.mock('@/store/gateway', async original => ({
   requestGatewayForAgent: vi.fn()
 }))
 
+// Main's canonical admission contract: a submit is accepted only with its own receipt.
+const admitted = (params?: Record<string, unknown>) => ({ submission_id: params?.submission_id, status: 'started' }) as never
+
 afterEach(() => {
   cleanup()
   $codingWorkspaceDrafts.set({})
@@ -67,7 +70,14 @@ it.each([null, 'remote'])(
     let state = createClientSessionState()
     const calls: string[] = []
     let fail = true
-    vi.mocked(requestGatewayForAgent).mockImplementation(async (connection, profile, method, params) => {
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (connection, profile, method, params, timeoutMs) => {
+      // A fresh chat submits to the owner its create published.
+      if (method === 'prompt.submit') {
+        expect([connection, profile]).toEqual([owner.connectionId, owner.profile])
+
+        return request(method, params, timeoutMs)
+      }
+
       expect([connection, profile, method]).toEqual([owner.connectionId, owner.profile, 'session.workspace.references'])
       expect(params).toMatchObject({ session_id: 'runtime', paths: attachments.map(a => a.path) })
       calls.push('references')
@@ -122,10 +132,10 @@ it.each([null, 'remote'])(
       }
     })
 
-    const request = vi.fn(async (method: string) => {
+    const request = vi.fn(async (method: string, params?: Record<string, unknown>, _timeoutMs?: number) => {
       calls.push(method)
 
-      return {} as never
+      return method === 'prompt.submit' ? admitted(params) : ({} as never)
     })
 
     const remove = vi.fn()
@@ -233,8 +243,14 @@ it.each(
     let state = createClientSessionState()
     let error = retryError
     const calls: string[] = []
-    vi.mocked(requestGatewayForAgent).mockImplementation(async (connection, profile, method, params) => {
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (connection, profile, method, params, timeoutMs) => {
       expect([connection, profile]).toEqual([connectionId, owner.profile])
+
+      // The stored session's published owner carries its submit.
+      if (method === 'prompt.submit') {
+        return request(method, params, timeoutMs)
+      }
+
       calls.push(`${method}:${params?.session_id}`)
 
       if (method === 'session.resume') {
@@ -262,11 +278,11 @@ it.each(
     })
     const create = vi.fn()
 
-    const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    const request = vi.fn(async (method: string, params?: Record<string, unknown>, _timeoutMs?: number) => {
       expect(method).toBe('prompt.submit')
       expect(params).toMatchObject({ session_id: 'pending-live', text: `@file:/checkout/README.md\n\n${mapped}` })
 
-      return {} as never
+      return admitted(params)
     })
 
     const remove = vi.fn()
@@ -399,7 +415,10 @@ it.each([undefined, null, '/fixtures'])(
       return active.current
     })
 
-    const request = vi.fn(async (_method: string, _params?: Record<string, unknown>) => ({}) as never)
+    const request = vi.fn(async (method: string, params?: Record<string, unknown>, _timeoutMs?: number) =>
+      method === 'prompt.submit' ? admitted(params) : ({} as never)
+    )
+
     const remove = vi.fn()
     const sync = vi.fn(async (sessionId: string, attachments: ComposerAttachment[]) => ({ sessionId, attachments }))
 
@@ -429,8 +448,13 @@ it.each([undefined, null, '/fixtures'])(
     )
 
     let failReferences = true
-    vi.mocked(requestGatewayForAgent).mockImplementation(async (connection, profile, method, params) => {
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (connection, profile, method, params, timeoutMs) => {
       expect([connection, profile]).toEqual([owner.connectionId, owner.profile])
+
+      // A fresh chat submits to the owner its create published.
+      if (method === 'prompt.submit') {
+        return request(method, params, timeoutMs)
+      }
 
       if (method === 'complete.path') {
         expect(create).not.toHaveBeenCalled()
@@ -504,7 +528,12 @@ it.each([undefined, null, '/fixtures'])(
         tool_call_count: 0
       }
     ])
-    vi.mocked(requestGatewayForAgent).mockImplementation(async () => {
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (_connection, _profile, method, params, timeoutMs) => {
+      // Session-scoped RPCs ride the published owner; only reference remapping is forbidden here.
+      if (method === 'prompt.submit' || method === 'session.resume') {
+        return request(method, params, timeoutMs)
+      }
+
       throw new Error('Unexpected first-Send reference RPC after handoff')
     })
     request.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
@@ -522,7 +551,7 @@ it.each([undefined, null, '/fixtures'])(
 
       expect(params?.session_id).toBe('later-live')
 
-      return {} as never
+      return admitted(params)
     })
     await act(async () => {
       const sent = await result.current('ordinary later message')

@@ -71,7 +71,7 @@ def write_catalog_sidecar_record(target: Path, catalog: dict, sha: str) -> None:
     sidecar = {
         "catalog_name": catalog["name"], "repo": catalog["repo"], "sha": sha,
         "tier": catalog.get("tier") or "community",
-        "installed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        "installed_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
     }
     try:
@@ -139,6 +139,21 @@ def _adopt_legacy_sidecar(plugin_dir: Path, record: dict) -> Optional[dict]:
     return _write_catalog_block(plugin_dir, record, block)
 
 
+# Archived Nous handoff repos of providers that left core -> the catalog entry that superseded them: a URL
+# install of one is adopted as that entry, so `update` re-pins it instead of pulling the archive forever.
+_HANDOFF_REPOS = {"github.com/nousresearch/hermes-plugin-holographic": "holographic"}
+
+
+def _adopt_handoff_install(plugin_dir: Path, record: dict) -> Optional[dict]:
+    source = str(record.get("source") or "").split("#", 1)[0]
+    entry = get_live_catalog_entry(_HANDOFF_REPOS.get(_normalize_repo(source), ""))
+    if entry is None:
+        return None
+    sha = str(record.get("revision") or "").lower()
+    return _write_catalog_block(plugin_dir, record, {"name": entry.name, "repo": source, "tier": entry.tier,
+                                                     "pin": sha, "sha": sha})
+
+
 def read_catalog_sidecar(plugin_dir) -> Optional[dict]:
     """Catalog provenance of an installed plugin (``catalog_name``/``repo``/``sha``/``tier``/``pin``), or
     ``None`` for a non-catalog install. Read from the installer-owned metadata record, never from the
@@ -168,7 +183,7 @@ def read_catalog_sidecar(plugin_dir) -> Optional[dict]:
             }
             block = _write_catalog_block(plugin_dir, record, block)
         else:
-            block = _adopt_legacy_sidecar(plugin_dir, record)
+            block = _adopt_legacy_sidecar(plugin_dir, record) or _adopt_handoff_install(plugin_dir, record)
     if not block or not block.get("name"):
         return None
     return {"catalog_name": block["name"], "repo": block.get("repo", ""), "sha": block.get("sha", ""),
@@ -481,7 +496,8 @@ class RepinResult(NamedTuple):
 # Surfaces a re-pin can widen without the user seeing a diff: each is a list of identifiers the
 # new manifest adds (``desktop`` = a Desktop half appeared). Compared as sets — removals are not consent events.
 _SURFACE_LABELS = {"capabilities": "host capabilities", "tools": "tools", "hooks": "hooks",
-                   "python_dependencies": "Python dependencies", "desktop": "Desktop UI half"}
+                   "python_dependencies": "Python dependencies", "desktop": "Desktop UI half",
+                   "requires_auth": "your sign-in for"}
 
 
 def plugin_surface(manifest: dict, tree: Path) -> dict[str, set]:
@@ -499,7 +515,7 @@ def plugin_surface(manifest: dict, tree: Path) -> dict[str, set]:
     return {
         "capabilities": set(_declared_capabilities_from_manifest(manifest, str(manifest.get("name") or "?"))),
         "tools": _list("provides_tools"), "hooks": _list("provides_hooks", "hooks"),
-        "python_dependencies": _list("python_dependencies"),
+        "python_dependencies": _list("python_dependencies"), "requires_auth": _list("requires_auth"),
         "desktop": {"desktop/plugin.js"} if (tree / "desktop" / "plugin.js").is_file() else set(),
     }
 
@@ -834,7 +850,7 @@ def installed_catalog_state(installed: dict[str, dict[str, Any]]) -> dict[str, A
     return {
         "entries": entries,
         "removed": [{"name": r.name, "repo": r.repo, "reason": r.reason, "date": r.date} for r in resolved_removed_entries()],
-        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+        "generated_at": datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z"),
     }
 
 

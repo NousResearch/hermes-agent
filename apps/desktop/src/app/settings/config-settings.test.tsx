@@ -50,6 +50,7 @@ vi.mock('@/store/settings-scope', () => ({
 }))
 
 vi.mock('@/store/projects', () => ({
+  $worktreeRefreshToken: atom(0),
   repoDiscoveryPolicyFromConfig: () => ({ enabled: true, roots: [], exclude_paths: [] }),
   repoDiscoveryPolicySignature: (policy: unknown) => JSON.stringify(policy),
   scanAndRecordRepos: vi.fn().mockResolvedValue(undefined)

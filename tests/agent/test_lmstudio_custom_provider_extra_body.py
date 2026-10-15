@@ -52,23 +52,38 @@ def test_lmstudio_caller_extra_body_takes_precedence():
     assert agent.request_overrides == {"extra_body": {"temperature": 0.4, "caller": True}}
 
 
-@pytest.mark.parametrize("caller", [None, 0.4])
+@pytest.mark.parametrize("caller", [None, 0, 0.4])
 def test_switching_away_removes_only_model_contribution(caller):
-    eb = {"temperature": 0 if caller is None else caller, "caller": True}
-    agent = SimpleNamespace(provider="lmstudio", model="other-local", base_url=URL,
-                            _custom_providers=[ENTRY], request_overrides={"extra_body": eb})
+    eb = {"caller": True}
+    if caller is not None:
+        eb["temperature"] = caller
+    agent = SimpleNamespace(provider="lmstudio", model=MODEL, base_url=URL,
+                            _custom_providers=[ENTRY], request_overrides={})
+    _merge_custom_provider_extra_body(agent, [ENTRY])
+    # Set after the registration was merged and recorded: positively the caller's.
+    agent.request_overrides["extra_body"] = {**agent.request_overrides["extra_body"], **eb}
+    agent.model = "other-local"
     _rescope_fallback_extra_body(agent, MODEL, "lmstudio", URL)
     expected = {"caller": True}
-    if caller is not None:
+    # The registration's own 0 was recorded when merged; a caller 0 equals what the route being left
+    # sets (upstream's rule). Either way it is config-owned; only a differing caller value is kept.
+    if caller not in (None, ENTRY["extra_body"]["temperature"]):
         expected["temperature"] = caller
     assert agent.request_overrides == {"extra_body": expected}
 
 
-@pytest.mark.parametrize("caller", [None, 0.4])
-def test_full_agent_fallback_builder_loads_model_registration(tmp_path, monkeypatch, caller):
+@pytest.mark.parametrize("after_init", [False, True])
+@pytest.mark.parametrize("representation", ["legacy", "converted"])
+@pytest.mark.parametrize("destination", ["lmstudio", "openrouter"])
+@pytest.mark.parametrize("caller", [None, 0, 0.4])
+def test_full_agent_fallback_builder_loads_model_registration(
+        tmp_path, monkeypatch, caller, destination, representation, after_init):
     home = tmp_path / "home"
     home.mkdir()
-    (home / "config.yaml").write_text(yaml.safe_dump({"custom_providers": [ENTRY]}))
+    from hermes_cli.config_providers import _custom_provider_entry_to_provider_config
+    config = {"custom_providers": [ENTRY]} if representation == "legacy" else {
+        "providers": {"lan": _custom_provider_entry_to_provider_config(ENTRY)}}
+    (home / "config.yaml").write_text(yaml.safe_dump(config))
     monkeypatch.setenv("HERMES_HOME", str(home))
     overrides = {} if caller is None else {"extra_body": {"temperature": caller}}
     # No inference required: the real init/config/fallback/builder run; only client resolution
@@ -87,16 +102,23 @@ def test_full_agent_fallback_builder_loads_model_registration(tmp_path, monkeypa
         agent = AIAgent(model="primary", provider="custom", api_key="test",
                         base_url="http://primary.invalid/v1", enabled_toolsets=[], quiet_mode=True,
                         skip_context_files=True, skip_memory=True, skip_background_review=True,
-                        request_overrides=overrides,
+                        request_overrides={} if after_init else overrides,
                         fallback_model=[
                             {"provider": "lmstudio", "model": MODEL, "base_url": URL},
-                            {"provider": "lmstudio", "model": "other-local", "base_url": URL},
+                            {"provider": destination, "model": "other-local", "base_url": URL},
                         ])
+        if after_init:
+            agent.request_overrides = dict(overrides)
         assert agent._try_activate_fallback()
         kwargs = build_api_kwargs(agent, [{"role": "user", "content": "hello"}], [])
         assert agent._try_activate_fallback()
         switched = build_api_kwargs(agent, [{"role": "user", "content": "hello"}], [])
-    assert switched.get("extra_body", {}).get("temperature") == caller
-    assert kwargs["extra_body"]["temperature"] == (0 if caller is None else caller)
+    # A constructor body is config-owned while config defines extra_body (every Hermes path passes
+    # runtime-resolved config there), so it never reaches a fallback. A value set after construction
+    # is the caller's: it wins over the registration and moves on, unless it equals what the route
+    # being left sets (a caller 0 leaves with the pinned model, like the registration's own 0).
+    caller_owned = after_init and caller is not None
+    assert kwargs["extra_body"]["temperature"] == (caller if caller_owned else 0)
+    assert switched.get("extra_body", {}).get("temperature") == (caller if caller_owned and caller != 0 else None)
     assert "reasoning_effort" not in kwargs
     assert "reasoning_effort" not in kwargs.get("extra_body", {})

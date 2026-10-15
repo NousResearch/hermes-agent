@@ -2100,7 +2100,8 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
     """Re-derive the switched-to provider's ``request_overrides`` (custom_providers ``extra_body``).
     Matches by provider key, base_url AND model (same rule as
     ``agent_init._merge_custom_provider_extra_body``) so a different model at the same endpoint
-    never inherits another's ``extra_body``. Stale ``extra_body`` cleared; ``service_tier``/``speed`` kept."""
+    never inherits another's ``extra_body``. Stale ``extra_body`` cleared; ``service_tier``/``speed`` kept.
+    The whole previous ``extra_body`` goes, whatever its provenance; the new route's is config-owned."""
     from agent.agent_init import _custom_provider_extra_body_for_agent
     # Prefer the init-time cache (agent._custom_providers); reload only if absent.
     custom_providers = getattr(agent, "_custom_providers", None)
@@ -2119,6 +2120,7 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
     if new_extra_body:
         overrides["extra_body"] = dict(new_extra_body)
     agent.request_overrides = overrides
+    agent._custom_provider_injected_extra_body = copy.deepcopy(new_extra_body or {})
 
 
 # Pool reload is part of the switch and must be reversible on rollback, hence the pool fields.
@@ -2443,6 +2445,9 @@ def _finish_switch(agent, new_provider, old_norm, new_norm) -> None:
         _apply_switched_provider_request_overrides(agent, new_provider)
     except Exception:
         logger.debug("switch_model: request_overrides re-derivation failed", exc_info=True)
+        # Fail closed: the previous route's extra_body never reaches the new provider.
+        agent.request_overrides = {
+            key: value for key, value in (getattr(agent, "request_overrides", {}) or {}).items() if key != "extra_body"}
 
 
 def _persist_switch_billing_route(agent) -> None:

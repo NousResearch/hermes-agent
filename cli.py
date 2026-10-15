@@ -1499,7 +1499,6 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills):
     """Resolve the toolset list (explicit / coding posture / platform default), construct HermesCLI, and start the background skills preload."""
     toolsets_list = None
-    profile_default = False
     if isinstance(toolsets, str) and toolsets:
         toolsets_list = [t.strip() for t in toolsets.split(",")]
     elif isinstance(toolsets, (list, tuple)) and toolsets:
@@ -1510,7 +1509,6 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
     elif not toolsets:
         # Coding posture inside a code workspace, else the shared platform resolver. Neither is a
         # pick: the gateway resolves both from the session's cwd, so this list only feeds the display.
-        profile_default = True
         try:
             from agent.coding_context import coding_selection
             toolsets_list = coding_selection(platform="cli", config=CLI_CONFIG)
@@ -1546,7 +1544,7 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
         if emit_partial_update_hint(e):
             sys.exit(1)
         raise
-    if profile_default:
+    if not toolsets:
         cli._explicit_toolsets = False  # the gateway resolves the default and coding posture itself
     # Only a typed -t is checked against a resumed session's frozen toolsets.
     cli._typed_toolsets = toolsets_list if toolsets else None

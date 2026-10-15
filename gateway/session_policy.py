@@ -137,12 +137,9 @@ class LocalSessionPolicy:
             return self.toolsets
         # The workspace decision is the creation-time one: a project file the agent writes mid-session must
         # not switch this conversation's toolsets (prompt cache). Only a profile change (``focus`` off) does.
-        posture = None
-        if self.coding_posture:
-            from agent.coding_context import focus_toolsets
-            posture = focus_toolsets(config)
-        return tuple(sorted(_resolve_toolsets({}, config, self.source, self.safe_mode,
-                                              None if posture is None else set(posture))))
+        from agent.coding_context import focus_toolsets
+        posture = focus_toolsets(config) if self.coding_posture else None
+        return tuple(sorted(_resolve_toolsets({}, config, self.source, self.safe_mode, posture)))
 
     def current_reasoning_config(self, runner, session_key=None):
         """The next turn's reasoning: a typed session /reasoning (the messaging handler's override), else
@@ -296,7 +293,8 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
         config.setdefault('model', {})['selection_profile'] = list(profile_target(config))
     _apply_launch_overrides(params, config)
     # Only a folder the client named is a workspace: the daemon's own directory (the fallback above, used by
-    # hosted rooms) must not switch a session into the coding posture, nor may a caller that opts out.
+    # hosted rooms) must not switch a session into the coding posture, nor may a caller that opts out
+    # (Kanban workers, legacy-row adoption).
     # ``tool`` is a third-party integration, not a person's workspace.
     named = workspace_posture and source != 'tool' and 'cwd' in params and 'toolsets' not in params
     posture = _coding_posture(config, source, cwd) if named else None
@@ -400,8 +398,8 @@ def _apply_launch_overrides(params, config):
 
 def _resolve_toolsets(params, config, source, safe_mode, posture=None):
     """Validate explicit toolsets and return the session's enabled toolset set. Without a pick, the
-    coding *posture* (``_coding_posture``) replaces the profile default on every interactive surface;
-    the gateway decides it, never the client."""
+    coding *posture* (``_coding_posture``) replaces the profile default; the gateway decides it, never
+    the client."""
     from hermes_cli.tools_config import _get_platform_tools
     from toolsets import validate_toolset
     explicit = params.get('toolsets')
@@ -418,7 +416,7 @@ def _resolve_toolsets(params, config, source, safe_mode, posture=None):
         if not requested <= effective:
             raise RuntimeStoreError('invalid_params')
     elif posture is not None:
-        enabled = posture
+        enabled = set(posture)
     if explicit is None and source in {'tui', 'gui'}:
         # Same surface toolsets as the native TUI factory, without its env inference.
         # The fold-in lands after _get_platform_tools subtracted agent.disabled_toolsets, so
@@ -445,7 +443,7 @@ def _coding_posture(config, source, cwd):
     except Exception:
         logger.debug('coding posture detection failed for %s; keeping the profile default', cwd, exc_info=True)
         return None
-    return None if selection is None else set(selection)
+    return selection
 
 
 def _extract_config_secrets(value, private, path=()):

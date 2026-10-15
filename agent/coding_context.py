@@ -399,6 +399,8 @@ def is_coding_context(*, platform: Optional[str] = None, cwd: Optional[str | Pat
 
 def coding_selection(*, platform: Optional[str] = None, cwd: Optional[str | Path] = None, config: Optional[dict[str, Any]] = None) -> Optional[list[str]]:
     """Toolset selection for the coding posture (``None`` unless ``focus`` and active)."""
+    if _coding_mode(config) != "focus":  # only focus swaps toolsets: skip the workspace probe
+        return None
     return resolve_runtime_mode(platform=platform, cwd=cwd, config=config).toolset_selection(config)
 
 

@@ -575,6 +575,22 @@ async def _local_comment_prompt(client: Any, comment_id: str, reply_id: str, fro
 
 
 async def handle_drive_comment_event(client: Any, data: Any, *, self_open_id: str = "") -> None:
+    """``_handle_drive_comment_event`` entered under the launch profile's own scope when the calling
+    adapter carried none (#139232). The launch profile's adapter connects before multiplexing
+    activates, so its event context has no secret scope and a fail-closed ``get_secret`` raises
+    ``UnscopedSecretError`` on the comment agent's model/credential resolution. A routed
+    secondary's adapter connects inside its profile scope and passes it down the WS-thread/loop
+    hops — that scope is left untouched. Single-profile hosts are byte-identical (no-op before
+    multiplexing activates)."""
+    from agent.secret_scope import current_secret_scope
+    if current_secret_scope() is not None:
+        return await _handle_drive_comment_event(client, data, self_open_id=self_open_id)
+    from tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
+    with launch_profile_scope_if_multiplexed():
+        return await _handle_drive_comment_event(client, data, self_open_id=self_open_id)
+
+
+async def _handle_drive_comment_event(client: Any, data: Any, *, self_open_id: str = "") -> None:
     """Full orchestration for a drive comment event. Parse + filter (self-reply, receiver, notice_type) -> access rules -> OK reaction -> parallel fetch (doc meta +
     comment) -> build timeline/prompt by is_whole -> run agent -> deliver reply -> remove OK reaction."""
     logger.info("[Feishu-Comment] ========== handle_drive_comment_event START ==========")

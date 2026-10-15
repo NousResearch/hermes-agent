@@ -81,6 +81,52 @@ def test_drive_comment_agent_turn_runs_under_the_adapter_profile_scope(routed_sc
     assert seen["turn"] == ("routed", "routed-value")
 
 
+def test_drive_comment_turn_on_the_launch_profile_binds_the_launch_scope():
+    """#139232: the LAUNCH profile's own adapter connects before multiplexing activates, so its
+    event callbacks carry no secret scope at all; the turn must re-enter the launch profile's
+    scope (home override + secrets) instead of letting a fail-closed ``get_secret`` raise."""
+    from agent.secret_scope import invalidate_env_file_cache
+    from hermes_constants import get_process_hermes_home
+    from plugins.platforms.feishu import feishu_comment as fc
+    from plugins.platforms.feishu import feishu_comment_rules as rules
+
+    launch_home = get_process_hermes_home()
+    env_file = launch_home / ".env"
+    env_file.write_text("FEISHU_PROBE_TOKEN=launch-value\n", encoding="utf-8")
+    invalidate_env_file_cache(env_file)
+    seen = {}
+
+    def _fake_agent(prompt, client, session_key=""):
+        try:
+            secret = get_secret("FEISHU_PROBE_TOKEN")
+        except UnscopedSecretError:
+            secret = "<unscoped>"
+        seen["turn"] = (Path(get_hermes_home()) == launch_home, secret)
+        return "NO_REPLY"
+
+    event = SimpleNamespace(event={
+        "comment_id": "c1", "reply_id": "", "is_mentioned": True, "timestamp": "1",
+        "notice_meta": {"file_token": "docx_t", "file_type": "docx", "notice_type": "add_reply",
+                        "from_user_id": {"open_id": "ou_user"}, "to_user_id": {"open_id": "ou_bot"}},
+    })
+    set_multiplex_active(True)  # the launch adapter's callbacks still carry no scope
+    try:
+        with patch.object(rules, "load_config", return_value=object()), \
+             patch.object(rules, "resolve_rule", return_value=rules.ResolvedCommentRule(True, "allowlist", frozenset(), "top")), \
+             patch.object(rules, "has_wiki_keys", return_value=False), \
+             patch.object(rules, "is_user_allowed", return_value=True), \
+             patch.object(fc, "query_document_meta", AsyncMock(return_value={"title": "T", "url": "u"})), \
+             patch.object(fc, "batch_query_comment", AsyncMock(return_value={"is_whole": False, "quote": ""})), \
+             patch.object(fc, "_local_comment_prompt", AsyncMock(return_value="prompt")), \
+             patch.object(fc, "_run_comment_agent", _fake_agent):
+            asyncio.run(fc.handle_drive_comment_event(object(), event, self_open_id="ou_bot"))
+    finally:
+        set_multiplex_active(False)
+        env_file.unlink(missing_ok=True)
+        invalidate_env_file_cache(env_file)
+    assert seen["turn"] == (True, "launch-value")
+
+
 def test_ws_client_thread_and_its_loop_callbacks_carry_the_adapter_profile_scope(routed_scope, monkeypatch):
     """Lark SDK callbacks run on the WS thread and re-enter the adapter loop through
     run_coroutine_threadsafe (which copies the caller's context): both must see the profile that

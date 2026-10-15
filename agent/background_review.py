@@ -283,23 +283,61 @@ def _pending_primary_runtime(agent: Any) -> Optional[dict[str, Any]]:
         return None
 
 
+def _primary_pool_for_snapshot(snapshot: dict[str, Any]) -> Any:
+    """The primary provider's credential pool for a pending-primary fork (#138979).
+
+    The snapshot's api_key may be stale after a mid-window key rotation; without the
+    primary's pool the fork would hold that one key with nothing to rotate through and 401
+    the review. Mirrors restore's rebind (agent_runtime_helpers._rebind_primary_credential_pool):
+    resolve the pool by the snapshot provider/base_url and keep it only when it matches the
+    primary provider. Fail-open → None (the snapshot key carries, as before).
+    """
+    try:
+        from agent.credential_pool import (
+            credential_pool_matches_provider,
+            load_pool,
+            resolve_runtime_pool_key,
+        )
+        provider = str(snapshot.get("provider") or "").strip().lower()
+        base_url = str(snapshot.get("base_url") or "")
+        key = resolve_runtime_pool_key(provider, base_url)
+        pool = load_pool(key) if key else None
+        if pool is not None and credential_pool_matches_provider(pool, provider, base_url=base_url):
+            return pool
+    except Exception:
+        pass
+    return None
+
+
 def _snapshot_parent_runtime(agent: Any, snapshot: dict[str, Any]) -> dict[str, Any]:
     """Fork runtime taken from a pending-primary snapshot (#138979): identity AND request
     shaping travel together — the snapshot is complete (all-or-nothing is enforced by
     _pending_primary_runtime), so nothing is spliced from the live fallback. The live
-    credential pool is the fallback's and is dropped (the fork re-resolves the primary's
-    pool from the snapshot credentials); ``max_tokens`` is turn state that
-    restore_primary_runtime itself never touches, so the live value carries;
-    ``reasoning_config`` comes from the snapshot (or None) so the fallback's reasoning
-    vocabulary never crosses providers (codex_responses forwards effort vocabularies
-    unmapped; see _same_model_parity_kwargs).
+    credential pool is the fallback's and is dropped; the fork re-resolves the primary's
+    pool from the snapshot provider/base_url (mirroring restore's rebind) and prefers a
+    fresh pool entry key over the snapshot api_key, which may be stale after rotation —
+    without it a pool-backed primary + mid-window rotation 401s the review.
+    ``max_tokens`` is turn state that restore_primary_runtime itself never touches, so the
+    live value carries; ``reasoning_config`` comes from the snapshot (or None) so the
+    fallback's reasoning vocabulary never crosses providers (codex_responses forwards
+    effort vocabularies unmapped; see _same_model_parity_kwargs).
     """
     api_mode = snapshot.get("api_mode") or None
+    pool = _primary_pool_for_snapshot(snapshot)
+    api_key = snapshot["api_key"]
+    if pool is not None:
+        try:
+            entry = pool.select(model=snapshot.get("model") or None)
+        except Exception:
+            entry = None
+        fresh_key = (getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")) if entry else ""
+        if fresh_key:
+            api_key = fresh_key
     return {
         "provider": snapshot["provider"], "model": snapshot["model"],
-        "api_key": snapshot["api_key"], "base_url": snapshot["base_url"],
+        "api_key": api_key, "base_url": snapshot["base_url"],
         "api_mode": "codex_responses" if api_mode == "codex_app_server" else api_mode,
-        "credential_pool": None,
+        "credential_pool": pool,
         "request_overrides": dict(snapshot.get("request_overrides") or {}),
         "max_tokens": getattr(agent, "max_tokens", None), "command": getattr(agent, "acp_command", None),
         "args": list(getattr(agent, "acp_args", []) or []), "routed": False,

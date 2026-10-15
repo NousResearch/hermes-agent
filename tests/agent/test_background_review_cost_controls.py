@@ -9,6 +9,7 @@ Covers the two behaviors this change adds:
 Pure-function / config-driven; no live model calls.
 """
 import time
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -178,11 +179,23 @@ def _fallback_agent() -> _FakeAgent:
     return agent
 
 
+class _FakePool:
+    """Minimal provider-scoped pool stand-in for the pending-primary rebind tests."""
+
+    def __init__(self, provider: str, entry: Any):
+        self.provider = provider
+        self._entry = entry
+
+    def select(self, *, model=None):
+        return self._entry
+
+
 def _resolve(agent, cfg=None, reset_gate=(False, None, False), **kwargs):
     cfg = cfg or {}
     with patch("hermes_cli.config.load_config", return_value=cfg), \
          patch("hermes_cli.config.load_config_readonly", return_value=cfg), \
-         patch("agent.agent_runtime_helpers._primary_reset_gate_blocks", return_value=reset_gate):
+         patch("agent.agent_runtime_helpers._primary_reset_gate_blocks", return_value=reset_gate), \
+         patch("agent.credential_pool.load_pool", return_value=None):  # hermetic: no real auth.json read
         return br._resolve_review_runtime(agent, **kwargs)
 
 
@@ -247,6 +260,24 @@ def test_snapshot_overlay_carries_snapshot_request_shaping():
     assert rt["request_overrides"] == {"extra_body": {"store": False}}
     kwargs = br._fork_init_kwargs(agent, rt, bool(rt.get("routed")), 5)
     assert kwargs["reasoning_config"] == {"effort": "low"}
+
+
+def test_snapshot_overlay_re_resolves_primary_pool_after_rotation():
+    """#138979: the snapshot api_key may be stale after a mid-window key rotation. The fork
+    re-resolves the primary's pool by the snapshot provider/base_url (mirroring restore's
+    rebind) and prefers a fresh pool entry key — a pool-backed primary + rotation must not
+    leave the fork holding a dead key with nothing to rotate through (that review 401s)."""
+    agent = _fallback_agent()
+    entry = SimpleNamespace(id="e1", label="fresh", runtime_api_key="fresh-pool-key", access_token="")
+    pool = _FakePool("openai-codex", entry)
+    with patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.config.load_config_readonly", return_value={}), \
+         patch("agent.agent_runtime_helpers._primary_reset_gate_blocks", return_value=(False, None, False)), \
+         patch("agent.credential_pool.load_pool", return_value=pool) as mock_load:
+        rt = br._resolve_review_runtime(agent)
+    mock_load.assert_called_once_with("openai-codex")
+    assert rt["credential_pool"] is pool  # the primary's pool, not the fallback's live one
+    assert rt["api_key"] == "fresh-pool-key"  # fresh entry key wins over the stale snapshot key
 
 
 def test_explicit_pin_to_live_fallback_model_wins_over_pending_primary():

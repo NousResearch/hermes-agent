@@ -134,9 +134,14 @@ def _wire_session_agent(sid: str, key: str, agent) -> bool:
 
 
 def _start_session_services(sid: str, key: str, current: dict) -> None:
-    """Start the notification poller and fire the session-reset boundary hook."""
+    """Start the notification poller (exactly one live per session) and fire the session-reset boundary hook."""
     with _sessions_lock:
         if (rec := _sessions.get(sid)) is not None:
+            # An agent rebuild re-enters here for the SAME session: stop the previous poller before
+            # replacing its stop event, or the orphaned old loop keeps draining the process-global
+            # completion queue (and close can only signal the newest event) — #138806.
+            if (old_stop := rec.get("_notif_stop")) is not None:
+                old_stop.set()
             rec["_notif_stop"] = _start_notification_poller(sid, rec)
     _notify_session_boundary("on_session_reset", key, _session_source(current))
 

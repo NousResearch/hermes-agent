@@ -267,13 +267,18 @@ def test_new_session_id_is_a_fresh_gateway_session(store, monkeypatch):
     db, client = store
     host = types.SimpleNamespace(session_id="local-old", _resumed=True, _session_db=db, model="m-explicit",
                                  _explicit_model_override=True, requested_provider=None, enabled_toolsets=["file"],
-                                 _gateway_session_open=True)
+                                 _explicit_toolsets=True, _gateway_session_open=True)
     host._ensure_gateway_session = lambda: CLIInitMixin._ensure_gateway_session(host)
     db.open_session(cli("local-old", resumed=True))
     sid = CLIInitMixin._new_session_id(host, None)
     assert sid == "local-new" and host.session_id == "local-new"
     _method, params = [c for c in client.calls if c[0] == "session.create"][-1]
     assert "model" not in params and params["toolsets"] == ["file"]
+    # The profile default is not a pick: the gateway resolves it, so a stale name can't refuse /new (#138670).
+    host._explicit_toolsets = False
+    CLIInitMixin._new_session_id(host, None)
+    _method, params = [c for c in client.calls if c[0] == "session.create"][-1]
+    assert params.get("toolsets") is None
 
 
 def test_branch_session_id_is_the_gateway_branch_child(store):

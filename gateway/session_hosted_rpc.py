@@ -301,7 +301,11 @@ class HostedRoomAuthorityRPC:
     def resume(self, *, profile, session_id, source):
         return self._call('resume', profile=profile, session_id=session_id, source=source)
 
-    def submit(self, *, profile, session_id, prompt, source, task, execution_generation, on_terminal, attachments=None):
+    def submit(self, *, profile, session_id, prompt, source, task, execution_generation, on_terminal,
+               member_id=None, attachments=None):
+        # One producer per member binding: a task for another member reached the wrong producer.
+        if member_id is not None and member_id != self.member_id:
+            raise RuntimeStoreError('permission_denied')
         return self._call('submit', profile=profile, session_id=session_id, source=source,
                           prompt=prompt, task=task, execution_generation=execution_generation, on_terminal=on_terminal,
                           attachments=attachments)

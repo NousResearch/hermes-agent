@@ -15,7 +15,22 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.model_switch import ModelSwitchResult
+
+
+@pytest.fixture(autouse=True)
+def _isolate_dependency_boot(monkeypatch):
+    """Exercise real CLI methods without booting this checkout's installed PM runtime.
+
+    HERMES_HOME isolation does not relocate the source-adjacent payload manifest.
+    These tests own model-switch behavior, not dependency repair or activation.
+    Keep the real-home I/O guard enabled and leave imports on the test interpreter.
+    """
+    monkeypatch.setattr("hermes_cli.venv_sync.prepare_launch", lambda *_a, **_k: None)
+    monkeypatch.setattr("hermes_cli._early_recovery.recover_if_needed", lambda *_a, **_k: None)
+    monkeypatch.setattr("pm.environments.activate_dependencies", lambda *_a, **_k: None)
 
 
 class _FakeModelInfo:

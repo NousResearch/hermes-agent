@@ -28,6 +28,14 @@ function formatScalar(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function fieldIdFromKey(fieldKey: string): string {
+  const sanitized = fieldKey
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `config-field-${sanitized || "value"}`;
+}
+
 function NestedValueEditor({
   fieldKey,
   value,
@@ -37,12 +45,19 @@ function NestedValueEditor({
   value: unknown;
   onChange: (v: unknown) => void;
 }) {
+  const fieldId = fieldIdFromKey(fieldKey);
+
   if (isRecord(value)) {
     return (
       <div className="grid gap-2 border border-border p-2">
         {Object.entries(value).map(([subKey, subVal]) => (
           <div key={subKey} className="grid gap-1">
-            <Label className="text-xs text-muted-foreground">{subKey}</Label>
+            <Label
+              htmlFor={fieldIdFromKey(`${fieldKey}.${subKey}`)}
+              className="text-xs text-muted-foreground"
+            >
+              {subKey}
+            </Label>
             <NestedValueEditor
               fieldKey={`${fieldKey}.${subKey}`}
               value={subVal}
@@ -59,7 +74,12 @@ function NestedValueEditor({
       <div className="grid gap-2">
         {value.map((item, index) => (
           <div key={`${fieldKey}.${index}`} className="grid gap-1">
-            <Label className="text-xs text-muted-foreground">Item {index + 1}</Label>
+            <Label
+              htmlFor={fieldIdFromKey(`${fieldKey}.${index}`)}
+              className="text-xs text-muted-foreground"
+            >
+              Item {index + 1}
+            </Label>
             <NestedValueEditor
               fieldKey={`${fieldKey}.${index}`}
               value={item}
@@ -75,6 +95,8 @@ function NestedValueEditor({
 
   return (
     <Input
+      id={fieldId}
+      name={fieldKey}
       value={formatScalar(value)}
       onChange={(e) => onChange(e.target.value)}
       className="text-xs"
@@ -90,11 +112,15 @@ export function AutoField({
 }: AutoFieldProps) {
   const rawLabel = schemaKey.split(".").pop() ?? schemaKey;
   const label = rawLabel.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  const fieldId = fieldIdFromKey(schemaKey);
+  const labelId = `${fieldId}-label`;
 
   if (isRecord(value) || (Array.isArray(value) && value.some((item) => isRecord(item)))) {
     return (
       <div className="grid gap-3 border border-border p-3">
-        <Label className="text-xs font-medium">{label}</Label>
+        <Label id={labelId} className="text-xs font-medium">
+          {label}
+        </Label>
         <FieldHint schema={schema} schemaKey={schemaKey} />
         <NestedValueEditor fieldKey={schemaKey} value={value} onChange={onChange} />
       </div>
@@ -105,10 +131,17 @@ export function AutoField({
     return (
       <div className="flex items-center justify-between gap-4">
         <div className="flex flex-col gap-0.5">
-          <Label className="text-sm">{label}</Label>
+          <Label id={labelId} htmlFor={fieldId} className="text-sm">
+            {label}
+          </Label>
           <FieldHint schema={schema} schemaKey={schemaKey} />
         </div>
-        <Switch checked={!!value} onCheckedChange={onChange} />
+        <Switch
+          id={fieldId}
+          aria-labelledby={labelId}
+          checked={!!value}
+          onCheckedChange={onChange}
+        />
       </div>
     );
   }
@@ -117,9 +150,16 @@ export function AutoField({
     const options = (schema.options as string[]) ?? [];
     return (
       <div className="grid gap-1.5">
-        <Label className="text-sm">{label}</Label>
+        <Label id={labelId} htmlFor={fieldId} className="text-sm">
+          {label}
+        </Label>
         <FieldHint schema={schema} schemaKey={schemaKey} />
-        <Select value={String(value ?? "")} onValueChange={(v) => onChange(v)}>
+        <Select
+          id={fieldId}
+          aria-labelledby={labelId}
+          value={String(value ?? "")}
+          onValueChange={(v) => onChange(v)}
+        >
           {options.map((opt) => (
             <SelectOption key={opt} value={opt}>
               {opt || "(none)"}
@@ -133,9 +173,13 @@ export function AutoField({
   if (schema.type === "number") {
     return (
       <div className="grid gap-1.5">
-        <Label className="text-sm">{label}</Label>
+        <Label id={labelId} htmlFor={fieldId} className="text-sm">
+          {label}
+        </Label>
         <FieldHint schema={schema} schemaKey={schemaKey} />
         <Input
+          id={fieldId}
+          name={schemaKey}
           type="number"
           value={value === undefined || value === null ? "" : String(value)}
           onChange={(e) => {
@@ -157,9 +201,13 @@ export function AutoField({
   if (schema.type === "text") {
     return (
       <div className="grid gap-1.5">
-        <Label className="text-sm">{label}</Label>
+        <Label id={labelId} htmlFor={fieldId} className="text-sm">
+          {label}
+        </Label>
         <FieldHint schema={schema} schemaKey={schemaKey} />
         <textarea
+          id={fieldId}
+          name={schemaKey}
           className="flex min-h-[80px] w-full border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
@@ -171,9 +219,13 @@ export function AutoField({
   if (schema.type === "list") {
     return (
       <div className="grid gap-1.5">
-        <Label className="text-sm">{label}</Label>
+        <Label id={labelId} htmlFor={fieldId} className="text-sm">
+          {label}
+        </Label>
         <FieldHint schema={schema} schemaKey={schemaKey} />
         <Input
+          id={fieldId}
+          name={schemaKey}
           value={Array.isArray(value) ? value.join(", ") : String(value ?? "")}
           onChange={(e) =>
             onChange(
@@ -191,9 +243,16 @@ export function AutoField({
 
   return (
     <div className="grid gap-1.5">
-      <Label className="text-sm">{label}</Label>
+      <Label id={labelId} htmlFor={fieldId} className="text-sm">
+        {label}
+      </Label>
       <FieldHint schema={schema} schemaKey={schemaKey} />
-      <Input value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} />
+      <Input
+        id={fieldId}
+        name={schemaKey}
+        value={String(value ?? "")}
+        onChange={(e) => onChange(e.target.value)}
+      />
     </div>
   );
 }

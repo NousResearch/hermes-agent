@@ -97,6 +97,29 @@ async def _owned_mutation(authority, actor, ref, params):
     return result
 
 
+def _delete_coordination(store, db, session_key) -> bool:
+    """Kann der Runner-Store das Loeschen gegen *db* mitkoordinieren?
+
+    🔴 Multi-Profil (gemessen 2026-10-15): ``_routing_db`` ist AUSDRUECKLICH die
+    eine, von allen Profilen gemeinsam genutzte Routing-Index-Datei (#66887).
+    Der alte Vergleich ``_routing_db.db_path == db.db_path`` konnte damit ausserhalb
+    des Einzelprofil-Layouts NIEMALS zutreffen und verweigerte JEDES Loeschen einer
+    im Runner lebenden Sitzung eines Sekundaerprofils dauerhaft mit
+    ``runtime_coordination_required`` (Hermes-Desktop "Chat loeschen", HTTP 409).
+    Erreicht werden muss der Store, dem die Zeilen GEHOEREN - ``_db_for_key``
+    loest ihn aus dem Sitzungsschluessel auf (Profil ist im Schluessel kodiert).
+    """
+    resolver = getattr(store, '_db_for_key', None)
+    if callable(resolver):
+        try:
+            eigener = resolver(session_key)
+        except Exception:
+            return False
+        return eigener is not None and getattr(eigener, 'db_path', None) == getattr(db, 'db_path', None)
+    routing = getattr(store, '_routing_db', None)
+    return routing is not None and getattr(routing, 'db_path', None) == getattr(db, 'db_path', None)
+
+
 async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
     if (set(params) - {'expected_generation'} != _FIELDS
             or params['session_id'] != ref.session_id):
@@ -114,6 +137,12 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
         raise RuntimeStoreError('permission_denied')
     authority._require_admission_open()
     live = authority.sessions.get(ref.session_id)
+    # Besitzschluessel VOR der Transaktion lesen: live_guard laeuft im
+    # Schreib-Lock, in dem ein zweiter Leseblocker droht.
+    delete_key = None
+    if operation == 'delete':
+        zeile = authority.db.get_session(ref.session_id) or {}
+        delete_key = zeile.get('session_key')
 
     applied = False
 
@@ -127,8 +156,7 @@ async def _mutate_session(authority, actor, ref, params, *, commit_lock=None):
         # would refuse a session whose receipt the client already saw as terminal.
         if operation == 'delete':
             store = getattr(authority.runner, 'session_store', None)
-            if store is not None and (store._routing_db is None
-                    or store._routing_db.db_path != authority.db.db_path):
+            if store is not None and not _delete_coordination(store, authority.db, delete_key):
                 raise RuntimeStoreError('runtime_coordination_required')
         if operation in {'rewind', 'reset'} and not callable(getattr(authority.runner, '_evict_cached_agent', None)):
             raise RuntimeStoreError('runtime_coordination_required')

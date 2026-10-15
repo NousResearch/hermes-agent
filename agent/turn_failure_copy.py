@@ -170,8 +170,8 @@ _NEXT_STEPS_LOOP = (
 )
 
 # FailoverReasons whose scope invalidates the whole credential surface (account envelope),
-# not just one deployment: with a known usage-limit reset, every route sharing that surface
-# is equally dead for the window (#89401 family).
+# not just one deployment: every configured route sharing that surface is equally dead for
+# the window, named reset or not (#89401 family).
 _ACCOUNT_QUOTA_REASONS = frozenset({FailoverReason.rate_limit.value, FailoverReason.billing.value})
 
 # Lead sentence per classifier reason once retries and fallback are exhausted.
@@ -369,13 +369,17 @@ def site_copy(code: str, **fields: Any) -> str:
 def switch_advice_viable(agent: Any, provider: Any, model: Any, reason: str, *, base_url: str = "") -> bool:
     """Whether the exhausted-turn copy may advise "switch models with /model".
 
-    Default True (keep the hint) — it is withheld only on positive proof that a switch cannot
-    change the outcome: the failure is an ACCOUNT-scoped quota wall (rate_limit / billing —
-    the credential surface is exhausted for a long window) AND every fallback-providers entry
-    lives on that same credential surface, so the whole configured detour path serves the
-    quota that just failed. Backend identity comparison is delegated to
-    :mod:`agent.backend_identity` — labels never compared inline (#22548 lesson). An empty
-    chain proves nothing about the wider /model route set, so the hint stays."""
+    Default True (keep the hint) — it is withheld only on positive proof that the CONFIGURED
+    detour path cannot change the outcome: an account-scoped quota wall (rate_limit / billing
+    scope, regardless of whether the provider named a reset window — the chain's hops were
+    already walked by exhaustion time, so reset distance cannot revive them) AND every
+    fallback_providers entry lives on that same credential surface. Scope note: /model can
+    reach providers OUTSIDE fallback_providers too, so this withholds on chain-proof only —
+    deliberately conservative. Backend-identity comparison is delegated to
+    :mod:`agent.backend_identity` — labels never compared inline (#22548 lesson); note its
+    label rule treats two bare ``custom`` entries as one credential surface even with
+    distinct URLs/keys (pre-existing helper semantics the gate inherits). An empty or
+    malformed chain proves nothing, so the hint stays."""
     if reason not in _ACCOUNT_QUOTA_REASONS:
         return True
     chain = getattr(agent, "_fallback_chain", ()) or ()

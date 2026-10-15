@@ -239,9 +239,14 @@ def _cmd_subscribe(args):
     cron_job = (getattr(args, "cron_job", "") or "").strip()
     if cron_job:
         # Validate the reference up-front so a typo surfaces here, not on the first inbound event.
-        from cron.jobs import AmbiguousJobReference, resolve_job_ref
+        from contextlib import nullcontext
+        from cron.jobs import AmbiguousJobReference, resolve_job_ref, use_cron_store
+        from hermes_cli.profiles import get_profile_dir
+        # Named routes execute in that profile; bare/default routes keep the caller's home.
+        scope = use_cron_store(get_profile_dir(profile)) if profile != "default" else nullcontext()
         try:
-            job = resolve_job_ref(cron_job)
+            with scope:
+                job = resolve_job_ref(cron_job)
         except AmbiguousJobReference as e:
             print(f"Error: {e}")
             return

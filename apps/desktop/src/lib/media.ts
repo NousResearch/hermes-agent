@@ -140,7 +140,23 @@ export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): 
   }
 
   if (window.hermesDesktop && isRemoteGateway()) {
-    return gatewayMediaDataUrl(path)
+    // Keep the established preview path (including older gateways). Only a
+    // confirmed size rejection uses the bounded, authenticated file stream.
+    // Capture its owner before the read: the user may switch gateways while
+    // that request is in flight.
+    const connection = $connection.get()
+
+    try {
+      return await gatewayMediaDataUrl(path)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+
+      if (/\b413\s*:/.test(message) && /\.(?:bmp|gif|jpe?g|png|webp)$/i.test(filePathFromMediaPath(path))) {
+        return mediaGatewayStreamUrl(path, connection)
+      }
+
+      throw error
+    }
   }
 
   if (!window.hermesDesktop?.readFileDataUrl) {
@@ -266,14 +282,12 @@ export function mediaExternalUrl(path: string): string {
   return /^file:/i.test(path) ? path : pathToLocalFileUrl(path)
 }
 
-// Remote gateway audio/video is proxied by the Electron main process. OAuth
+// Remote gateway media is proxied by the Electron main process. OAuth
 // connections intentionally expose no static token to the renderer, so a bare
 // HTTPS source cannot authenticate reliably. The custom protocol keeps secrets
 // out of renderer URLs while forwarding Range requests to /api/files/stream.
-export function mediaGatewayStreamUrl(path: string): string {
-  const conn = $connection.get()
-
-  if (isRemoteGateway()) {
+export function mediaGatewayStreamUrl(path: string, conn: HermesConnection | null = $connection.get()): string {
+  if (conn?.mode === 'remote') {
     const file = encodeURIComponent(filePathFromMediaPath(path))
 
     const scope = [
@@ -287,6 +301,33 @@ export function mediaGatewayStreamUrl(path: string): string {
   }
 
   return mediaExternalUrl(path)
+}
+
+/** Recover the native download request from a stream URL without consulting
+ * the foreground connection. A displayed image can outlive a profile switch. */
+export function gatewayMediaDownloadRequest(src: string) {
+  try {
+    const url = new URL(src)
+
+    if (url.protocol !== 'hermes-media:' || url.hostname !== 'remote') {
+      return null
+    }
+
+    const path = decodeURIComponent(url.pathname.replace(/^\/+/, ''))
+
+    if (!path || url.username || url.password) {
+      return null
+    }
+
+    return {
+      connectionId: url.searchParams.get('connectionId') || undefined,
+      path,
+      profile: url.searchParams.get('profile') || undefined,
+      suggestedName: path.split(/[\\/]/).filter(Boolean).pop() || 'image'
+    }
+  } catch {
+    return null
+  }
 }
 
 // Custom Electron scheme (registered in electron/main.ts) that streams a local
@@ -395,15 +436,23 @@ export async function downloadGatewayMediaFile(
   }
 
   const conn = $connection.get()
-  const owner = origin.owner ?? { connectionId: conn?.connectionId, profile: origin.profile ?? conn?.profile }
+  // A displayed remote image can outlive a profile switch: a hermes-media
+  // stream URL still carries its own path and connection identity, so it wins
+  // over the window's current connection (but not an owner captured at read).
+  const streamRequest = gatewayMediaDownloadRequest(path)
+  const owner = origin.owner ?? {
+    connectionId: streamRequest?.connectionId ?? conn?.connectionId,
+    profile: origin.profile ?? streamRequest?.profile ?? conn?.profile
+  }
 
   return window.hermesDesktop.saveGatewayFile({
     ...(owner.connectionId ? { connectionId: owner.connectionId } : {}),
-    path,
+    path: streamRequest?.path ?? path,
     ...(owner.profile ? { profile: owner.profile } : {}),
     ...(origin.sessionId ? { sessionId: origin.sessionId } : {}),
     suggestedName:
       origin.suggestedName ||
+      streamRequest?.suggestedName ||
       mediaName(path).replace(/(?:%[0-9a-f]{2})+/gi, encoded => {
         try {
           return decodeURIComponent(encoded)

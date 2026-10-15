@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { gatewayMediaDownloadRequest } from '@/lib/media'
 import { notify, notifyError } from '@/store/notifications'
 
 const MIME_EXTENSIONS: Record<string, string> = {
@@ -17,6 +18,12 @@ const KNOWN_IMAGE_EXTENSION_RE = /\.(?:apng|avif|bmp|gif|ico|jpe?g|png|svg|tiff?
 export function imageFilename(src?: string): string {
   if (!src) {
     return 'image'
+  }
+
+  const remote = gatewayMediaDownloadRequest(src)
+
+  if (remote) {
+    return remote.suggestedName
   }
 
   try {
@@ -85,6 +92,22 @@ export function useImageDownload(src?: string) {
     setSaving(true)
 
     try {
+      const remote = gatewayMediaDownloadRequest(src)
+
+      if (remote) {
+        if (!window.hermesDesktop?.saveGatewayFile) {
+          throw new Error('Desktop file download bridge is unavailable')
+        }
+
+        const result = await window.hermesDesktop.saveGatewayFile(remote)
+
+        if (result.saved) {
+          notify({ kind: 'success', title: copy.imageSaved, message: remote.suggestedName })
+        }
+
+        return
+      }
+
       if (window.hermesDesktop?.saveImageFromUrl) {
         if (await window.hermesDesktop.saveImageFromUrl(src)) {
           notify({ kind: 'success', title: copy.imageSaved, message: imageFilename(src) })

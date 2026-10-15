@@ -30,6 +30,13 @@ def failure_message(receipt) -> str:
 
 
 def bootstrap(start: bool, recover: bool = False) -> dict:
+    from pm.environments import activate_dependencies
+
+    # Ink runs this on HERMES_PYTHON with PYTHONPATH=<root> only. On a source install that is PM's
+    # store Python, which owns no packages, and the no-owner discovery fallback already imports one
+    # (gateway.status -> utils -> hermes_yaml -> ruamel): boot the committed generation first, as
+    # hermes_bootstrap does for every other entry point.
+    activate_dependencies(Path(__file__).resolve().parents[2])
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_runtime import control_home_for, discover_gateway_endpoint, ensure_gateway_runtime
     from hermes_cli.gateway_runtime_discovery import connect_private

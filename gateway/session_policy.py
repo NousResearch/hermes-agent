@@ -286,7 +286,9 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
         # still targets this, and a later profile edit supersedes it.
         config.setdefault('model', {})['selection_profile'] = list(profile_target(config))
     _apply_launch_overrides(params, config)
-    enabled = _resolve_toolsets(params, config, source, safe_mode, cwd)
+    # Only a folder the client named is a workspace: the daemon's own directory (the fallback above, used by
+    # hosted rooms, Kanban and migrations) must not switch a session into the coding posture.
+    enabled = _resolve_toolsets(params, config, source, safe_mode, cwd if 'cwd' in params else None)
     terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
     # The client's launch folder is a path on THIS host: a remote or container backend keeps its own
     # configured cwd unless the user picked this folder for the session.

@@ -122,6 +122,7 @@ class MattermostAdapter(BasePlatformAdapter):
         self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
         self._last_post_error: str = ""
         self._dedup = MessageDeduplicator()
+        self._channel_types: dict[str, str] = {}
 
     # --- HTTP helpers ---
 
@@ -198,7 +199,8 @@ class MattermostAdapter(BasePlatformAdapter):
         if file_ids is not None:
             base["file_ids"] = file_ids
         payload = _with_mentions_disabled(base)
-        if self._reply_mode == "thread":
+        # Channels stay threaded. DMs are a flat chat: Mattermost renders root_id as a thread.
+        if self._reply_mode == "thread" and not await self._is_direct_message(chat_id):
             # root_id from reply_to, else metadata["thread_id"]/["root_id"], resolved to the true thread root.
             candidate = reply_to or (
                 isinstance(metadata, dict) and (metadata.get("thread_id") or metadata.get("root_id")))
@@ -268,6 +270,20 @@ class MattermostAdapter(BasePlatformAdapter):
             return post_id
         data = await self._api_get(f"posts/{post_id}")
         return data["root_id"] if data and data.get("root_id") else post_id
+
+    def _remember_channel_type(self, chat_id: str, channel_type: str) -> None:
+        if chat_id and channel_type:
+            self._channel_types[chat_id] = channel_type
+
+    async def _is_direct_message(self, chat_id: str) -> bool:
+        """True for a 1:1 DM. Cached from inbound events; unknown channels are looked up once."""
+        cached = self._channel_types.get(chat_id)
+        if cached is None and chat_id:
+            data = await self._api_get(f"channels/{chat_id}")
+            cached = (data or {}).get("type") or ""
+            if cached:
+                self._remember_channel_type(chat_id, cached)
+        return cached == "D"
 
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: _Metadata = None) -> SendResult:
@@ -559,7 +575,10 @@ class MattermostAdapter(BasePlatformAdapter):
         sender_id, post_id = post.get("user_id", ""), post.get("id", "")
         if sender_id == self._bot_user_id or post.get("type") or self._dedup.is_duplicate(post_id):
             return
-        channel_id, is_dm = post.get("channel_id", ""), data.get("channel_type", "O") == "D"
+        channel_id = post.get("channel_id", "")
+        channel_type = data.get("channel_type", "O")
+        self._remember_channel_type(channel_id, channel_type)
+        is_dm = channel_type == "D"
         message_text = post.get("message", "")
         if not is_dm:  # DMs need no gating; channels are mention-gated.
             message_text = self._apply_channel_gating(channel_id, message_text)
@@ -586,7 +605,7 @@ class MattermostAdapter(BasePlatformAdapter):
         from gateway.platforms.base import resolve_channel_prompt
         await self.handle_message(MessageEvent(
             text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,
-            media_urls=media_urls or None, media_types=media_types or None,
+            media_urls=media_urls, media_types=media_types,
             channel_prompt=resolve_channel_prompt(self.config.extra, channel_id, None)))
 
 
@@ -632,8 +651,16 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
                     upload_data = await upload_resp.json()
                     file_ids.extend(info["id"] for info in upload_data.get("file_infos", []) if info.get("id"))
             payload: dict[str, Any] = {"channel_id": chat_id, "message": message}
+            # Cron/home delivery stays threaded in channels. A DM stays a flat chat.
             if thread_id:
-                payload["root_id"] = thread_id
+                async with session.get(
+                    f"{base_url}/api/v4/channels/{chat_id}", headers=headers, **_req_kw
+                ) as channel_resp:
+                    channel_type = ""
+                    if channel_resp.status in {200, 201}:
+                        channel_type = (await channel_resp.json()).get("type") or ""
+                if channel_type != "D":
+                    payload["root_id"] = thread_id
             if file_ids:
                 payload["file_ids"] = file_ids
             async with session.post(f"{base_url}/api/v4/posts", headers=headers, json=payload, **_req_kw) as resp:

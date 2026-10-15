@@ -133,12 +133,11 @@ async def run_task(connection, params):
     # card (approvals.single_query_mode applies). Never unattended: that is `-z`'s auto-approval.
     # A retry of an attempt admitted before cards were finite resubmits its committed payload,
     # so the store returns the original receipt instead of admission_conflict.
-    from hermes_state_runtime import list_session_admissions
-    committed = None if not saved else next((row['payload'] for row in list_session_admissions(
-        authority.db, session_id=ref.session_id, pending_only=False)
-        if row['request_id'] == request_id and row['principal_id'] == connection.actor.subject), None)
+    from hermes_state_runtime import find_session_admission
+    committed = None if not saved else await asyncio.to_thread(find_session_admission, authority.db,
+        principal_id=connection.actor.subject, session_id=ref.session_id, request_id=request_id)
     payload: dict = {'text': f'work kanban task {params["task_id"]}'}
-    if committed is None or 'finite' in committed:
+    if committed is None or 'finite' in committed['payload']:
         payload['finite'] = True
     receipt = await authority.submit(connection.actor, Submission(request_id, ref, payload, 'queue'))
     return {'session_id': ref.session_id, 'receipt': asdict(receipt)}

@@ -151,6 +151,13 @@ def get_session_admission(db, *, admission_id: str) -> dict | None:
         return _row(row if row is not None else terminal_admission(conn, admission_id))
 
 
+def find_session_admission(db, *, principal_id: str, session_id: str, request_id: str) -> dict | None:
+    """The admission at its exact durable identity: the UNIQUE (principal, target, request) key."""
+    with db._read_ctx() as conn:
+        return _row(conn.execute('SELECT * FROM session_admissions WHERE principal_id=? AND target_session_id=? '
+                                 'AND request_id=?', (principal_id, session_id, request_id)).fetchone())
+
+
 def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -> list[dict]:
     with db._read_ctx() as conn:
         # Pending is an explicit index-range IN, not ``!='terminal'``: a negated status cannot

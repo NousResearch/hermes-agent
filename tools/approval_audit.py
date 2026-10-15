@@ -33,8 +33,15 @@ def log_approval_event(pattern_key, description, command, result, surface=""):
         result = result if isinstance(result, dict) else {}
         approved = bool(result.get("approved", False))
         outcome = result.get("outcome")
-        if outcome not in {"approved", "denied", "blocked", "timeout", "pending", "cancelled"}:
-            outcome = "approved" if approved else "unknown"
+        if outcome not in {"approved", "denied", "blocked", "timeout", "pending", "cancelled", "notify_failed"}:
+            # Only classify structured verdicts; messages may be localized and
+            # must not turn a missing decision into a claimed user refusal.
+            if approved:
+                outcome = "approved"
+            elif result.get("approval_pending") or result.get("status") in {"approval_required", "pending_approval"}:
+                outcome = "pending"
+            else:
+                outcome = "blocked" if result.get("approved") is False else "unknown"
         session = get_current_session_key(default="")
         record = {"ts": time.time(), **text, "approved": approved, "outcome": outcome,
                   "session_key": "sha256:" + hashlib.sha256(session.encode()).hexdigest()[:12] if session else ""}

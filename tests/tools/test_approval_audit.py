@@ -32,6 +32,42 @@ def test_command_entry_points_log_without_changing_decision(tmp_path, monkeypatc
     assert all(r["outcome"] == "denied" for r in rows)
 
 
+def test_real_user_deny_is_logged_as_blocked(tmp_path, monkeypatch):
+    monkeypatch.setattr(approval.approval_context, "_get_approval_config",
+                        lambda: {"deny": ["synthetic-forbidden"]})
+    result = approval.check_all_command_guards("synthetic-forbidden", "local")
+    assert result["approved"] is False
+    assert result["user_deny"] is True
+    assert "outcome" not in result  # Audit must not mutate the guard contract.
+    assert records(tmp_path)[0]["outcome"] == "blocked"
+
+
+@pytest.mark.parametrize("result, expected", [
+    ({"approved": False, "status": "approval_required"}, "pending"),
+    ({"approved": False, "status": "pending_approval", "approval_pending": True}, "pending"),
+    ({"approved": False, "outcome": "notify_failed"}, "notify_failed"),
+    ({"approved": False, "outcome": "denied"}, "denied"),
+    ({"approved": False, "outcome": "timeout"}, "timeout"),
+    ({"approved": False, "outcome": "cancelled"}, "cancelled"),
+    ({"approved": True}, "approved"),
+    ({}, "unknown"),
+])
+def test_audit_preserves_distinct_gate_states(tmp_path, result, expected):
+    from tools.approval_audit import log_approval_event
+    original = result.copy()
+    log_approval_event("test", "test", "test", result)
+    assert records(tmp_path)[0]["outcome"] == expected
+    assert result == original
+
+
+def test_real_hardline_result_is_blocked(tmp_path):
+    from tools.approval_audit import log_approval_event
+    from tools.approval_floors import _hardline_block_result
+    result = _hardline_block_result("synthetic hardline")
+    log_approval_event("test", "test", "test", result)
+    assert records(tmp_path)[0]["outcome"] == "blocked"
+
+
 def test_plugin_gate_is_audited_even_for_plain_approval(tmp_path, monkeypatch):
     decision = {"approved": True, "message": None}
     monkeypatch.setattr(approval, "_run_approval_gate", lambda **kw: decision)
@@ -48,6 +84,7 @@ def test_execute_code_denial_is_audited(tmp_path, monkeypatch):
     ])
     assert not approval.check_execute_code_guard("print('synthetic')", "local")["approved"]
     assert records(tmp_path)[0]["surface"] == "execute_code"
+    assert records(tmp_path)[0]["outcome"] == "blocked"
 
 
 def test_plain_approval_does_not_log_commands(tmp_path, monkeypatch):

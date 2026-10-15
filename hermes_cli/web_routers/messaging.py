@@ -26,6 +26,7 @@ from gateway.status import (
     resolve_gateway_liveness, retained_gateway_state)
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
+from hermes_cli.env_loader import get_secret_source_values
 from hermes_constants import get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
@@ -171,14 +172,18 @@ def _require_platform(platform_id: str) -> dict[str, Any]:
 
 
 def _platform_enablement(
-    platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool
+    platform_id: str, entry: dict[str, Any], env_on_disk: dict[str, str], scoped: bool,
+    secret_values: Optional[dict[str, str]] = None,
 ) -> tuple[bool, bool, dict | None]:
     """(enabled, configured, home_channel). Profile-scoped: derive from the profile's
     config.yaml + .env only — load_gateway_config()'s env-override layer reads
-    os.environ and would leak the root install's tokens into the profile's state."""
+    os.environ and would leak the root install's tokens into the profile's state.
+    External secret sources (op://-style refs) never write .env, so their per-home
+    snapshot joins the scoped view instead; os.environ itself stays out either way."""
     required = entry["required_env"]
     if scoped:
-        configured = bool(required) and all(env_on_disk.get(key) for key in required)
+        ext = secret_values or {}
+        configured = bool(required) and all(env_on_disk.get(key) or ext.get(key) for key in required)
         try:
             plat_cfg = (load_config().get("platforms") or {}).get(platform_id)
             plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
@@ -208,6 +213,7 @@ def _platform_enablement(
 def _messaging_platform_payload(
     entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None,
     scoped: bool = False, profile_home: Optional[Path] = None,
+    secret_values: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     rt = runtime if isinstance(runtime, dict) else {}
@@ -234,9 +240,12 @@ def _messaging_platform_payload(
         runtime_platform = {}
 
     def env_value(key: str) -> str:
-        # Profile-scoped: judge only the profile's own .env — the dashboard process's
-        # os.environ carries the ROOT install's .env and would report root credentials as the profile's.
-        return env_on_disk.get(key) or ("" if scoped else os.getenv(key, ""))
+        # Profile-scoped: judge the profile's own .env plus its external secret sources —
+        # the dashboard process's os.environ carries the ROOT install's .env and would
+        # report root credentials as the profile's (op:// refs resolve per-home, never into .env).
+        if scoped:
+            return env_on_disk.get(key) or (secret_values or {}).get(key, "")
+        return env_on_disk.get(key) or os.getenv(key, "")
 
     env_vars = []
     for key in entry["env_vars"]:
@@ -247,7 +256,8 @@ def _messaging_platform_payload(
             "value": value if info["is_list"] else None, **info,
         })
 
-    enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped)
+    enabled, configured, home_channel = _platform_enablement(
+        platform_id, entry, env_on_disk, scoped, secret_values)
     if gateway_running and runtime_platform.get("mirrored_from"):
         # Served secondary: the default's shared listener already answers this platform at
         # /p/<profile>/... (enabling it locally 409s), so the secondary's own empty config
@@ -295,6 +305,10 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     """Payloads for ``entries``; call inside ``_profile_scope`` (load_env honors the
     HERMES_HOME contextvar; the gateway status readers do not, hence the explicit path)."""
     env_on_disk = load_env()
+    # Scoped cards must also see op://-style credentials: _profile_scope hydrated this home's
+    # external sources on entry, so read the per-home snapshot — the same source get_secret
+    # resolves through, never the process-wide os.environ the isolation guard exists to keep out.
+    secret_values = get_secret_source_values(scoped_dir) if scoped_dir is not None else {}
     runtime = read_runtime_status(path=scoped_dir / "gateway_state.json") if scoped_dir is not None else read_runtime_status()
     # A profile served by the multiplexer writes no live record of its own; its adapters live in the
     # multiplexer's record under ``<profile>:<platform>``. A leftover ``gateway_state.json`` from the
@@ -313,7 +327,7 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
             # ``.hermes`` (or any custom HERMES_HOME), so its flat keys never matched (#123088).
             served_name = profile_name_for_home(own_home) or "default"
             runtime = {**served[1], "platforms": profile_platforms_from_multiplexer(served[1], served_name)}
-    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None, profile_home=scoped_dir)
+    return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None, profile_home=scoped_dir, secret_values=secret_values)
             for entry in entries]
 
 

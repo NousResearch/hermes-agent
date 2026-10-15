@@ -1569,7 +1569,7 @@ slash:
   profile:
     description: "Показать имя активного профиля и его домашний каталог"
   sessions:
-    description: "Просмотреть и возобновить предыдущие сеансы"
+    description: "Все беседы"
   config:
     description: "Показать текущую конфигурацию"
   model:

@@ -29,15 +29,31 @@ export function CanonicalGroupList({ onOpen }: { onOpen: (key: string) => void }
       const route = captureCanonicalGroupRoute()
       const result = await discoverCanonicalGroups(route)
 
-      if (!cancelled) {setRooms(result.rooms.map(room => ({ key: registerCanonicalGroup(route, room), name: room.name })))}
-    })().catch(e => { if (!cancelled) {setError(e instanceof Error ? e.message : String(e))} })
+      if (!cancelled) {
+        setRooms(result.rooms.map(room => ({ key: registerCanonicalGroup(route, room), name: room.name })))
+      }
+    })().catch(e => {
+      if (!cancelled) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
+    })
 
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [connectionId, profile, refresh])
 
-  return <div className="grid gap-1 px-2">
-    <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">{labels.refreshGroups}</Button>
-    {error && <p role="alert">{error}</p>}
-    {rooms.map(room => <Button key={room.key} onClick={() => onOpen(room.key)} variant="ghost">{room.name}</Button>)}
-  </div>
+  return (
+    <div className="grid gap-1 px-2">
+      <Button onClick={() => setRefresh(value => value + 1)} variant="ghost">
+        {labels.refreshGroups}
+      </Button>
+      {error && <p role="alert">{error}</p>}
+      {rooms.map(room => (
+        <Button key={room.key} onClick={() => onOpen(room.key)} variant="ghost">
+          {room.name}
+        </Button>
+      ))}
+    </div>
+  )
 }

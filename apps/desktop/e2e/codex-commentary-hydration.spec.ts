@@ -11,17 +11,11 @@
 
 import type { Locator } from '@playwright/test'
 
+import { writeEnvFile, writeMockProviderConfig } from '../../../tests-js/scripts/mock-provider-config'
 import { type MockServer, startMockServer } from '../../../tests-js/scripts/mock-server'
 
 import { commentaryAppEnv, seedCodexCommentarySession } from './codex-commentary-fixture'
-import {
-  createSandbox,
-  launchDesktop,
-  type Sandbox,
-  waitForAppReady,
-  writeEnvFile,
-  writeMockProviderConfig
-} from './fixtures'
+import { createSandbox, launchDesktop, type Sandbox, waitForAppReady } from './fixtures'
 import { RealSessionBuilder } from './real-session-builder'
 import { type ElectronApplication, expect, type Page, test } from './test'
 
@@ -48,7 +42,7 @@ async function setupSeededDesktop(): Promise<SeededFixture> {
 
   try {
     writeMockProviderConfig(sandbox.hermesHome, mock.url)
-    writeEnvFile(sandbox.hermesHome)
+    writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
 
     const builder = await RealSessionBuilder.start(sandbox.hermesHome)
     let sessionId: string

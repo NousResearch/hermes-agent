@@ -771,7 +771,7 @@ def test_consume_codex_stream_preserves_reasoning_summary_boundaries():
         ("start", "rs_first:summary:0", ""),
         ("delta", "rs_first:summary:0", "Inspecting"),
         ("end", "rs_first:summary:0", ""),
-        ("delta", "rs_first:summary:1", "Checking"),
+        ("delta", "rs_first:summary:1", "\n\nChecking"),
     ]
 
 

@@ -544,7 +544,7 @@ class TestSpillover:
         import hermes_cli.config
         import tools.tool_result_storage as trs
 
-        monkeypatch.setattr(hermes_cli.config, "load_config_readonly", lambda: {})
+        monkeypatch.setattr(hermes_cli.config, "load_config_readonly", dict)
         assert trs._spillover_retention_hours() == 90 * 24
 
         def _boom():

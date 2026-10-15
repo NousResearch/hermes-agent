@@ -84,7 +84,7 @@ export const SessionControlHeartbeatSection = memo(function SessionControlHeartb
 
   const nextRunLabel =
     heartbeat.status === 'active'
-      ? ` · ${isDue ? ctrl.heartbeatDueWaitingForIdle : ctrl.heartbeatNext(formatCountdown(nextDueTimestamp, now))}`
+      ? ` · ${isDue ? ctrl.dueWaitingForIdle : ctrl.heartbeatNext(formatCountdown(nextDueTimestamp, now))}`
       : ''
 
   const iconClass = heartbeat.status === 'paused' ? 'text-red-500' : isDue ? 'text-amber-500' : 'text-emerald-500'

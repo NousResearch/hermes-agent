@@ -274,7 +274,6 @@ export const arChat = {
       loopUntilLabel: 'شرط الانتهاء',
       loopDeferredNotice: 'الهدف النشط يتحكم بالجلسة حالياً.',
       loopAwaitingResponse: 'في انتظار الاستجابة',
-      loopDueWaitingForIdle: 'مستحق — في انتظار الخمول',
       heartbeatActive: 'النبض نشط',
       heartbeatPaused: 'النبض متوقف مؤقتاً',
       heartbeatEveryMinutes: minutes => `كل ${minutes} د`,

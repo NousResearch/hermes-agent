@@ -3181,14 +3181,13 @@ export interface Translations extends NoticeTranslations {
       loopUntilLabel: string
       loopDeferredNotice: string
       loopAwaitingResponse: string
-      loopDueWaitingForIdle: string
       heartbeatActive: string
       heartbeatPaused: string
       heartbeatEveryMinutes: (minutes: number) => string
       heartbeatEveryHours: (hours: number) => string
       heartbeatEverySeconds: (seconds: number) => string
       heartbeatNext: (time: string) => string
-      heartbeatDueWaitingForIdle: string
+      dueWaitingForIdle: string
       heartbeatActions: string
       pauseHeartbeat: string
       resumeHeartbeat: string

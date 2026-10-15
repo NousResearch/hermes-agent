@@ -358,6 +358,10 @@ The s6 container has four distinct log surfaces, and "why isn't my gateway showi
 | **Boot reconciler** (records which profile gateways were restored on each container start) | `${HERMES_HOME}/logs/container-boot.log` (append-only audit log) | `tail -F ~/.hermes/logs/container-boot.log` |
 | **Generic Hermes logs** (`agent.log`, `errors.log`) | `${HERMES_HOME}/logs/` (profile-aware) | `docker exec hermes hermes logs --follow [--level WARNING] [--session <id>]` |
 
+For an interactive container with terminal input and output (such as `docker run -it ... --tui` or `bash`), the foreground command owns the terminal. The entrypoint defaults to `S6_LOGGING=2` and `S6_CMD_USE_TERMINAL=1` so supervised gateway and dashboard output does not overwrite that screen. Their console output goes to s6's rotated catch-all log at `/run/uncaught-logs/current` inside the container. The per-profile gateway file logs and normal Hermes logs remain available at the paths above. The catch-all directory is runtime storage, so it does not survive a container restart or removal.
+
+Headless containers keep forwarding service output to `docker logs`. Explicit `S6_LOGGING` and `S6_CMD_USE_TERMINAL` settings take precedence over these interactive defaults.
+
 Two practical consequences worth knowing:
 
 - The file copy at `logs/gateways/<profile>/current` is what survives container restarts. `docker logs` only retains output from the current container's lifetime (and is wiped on `docker rm`); the rotated files persist on the bind-mounted volume.

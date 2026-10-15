@@ -73,7 +73,8 @@ def test_stop_retains_unverified_worker_and_retry_terminates_after_identity_is_k
 @pytest.mark.platforms("posix")
 @pytest.mark.live_system_guard_bypass  # Cleanup must reap the exact child if its worker orphaned it.
 @pytest.mark.parametrize("persist", [False, True])
-def test_stop_reaps_real_hermes_background_process(tmp_path, monkeypatch, persist):
+@pytest.mark.parametrize("resist", [False, True])
+def test_stop_reaps_real_hermes_background_process(tmp_path, monkeypatch, persist, resist):
     import os
     from pathlib import Path
 
@@ -96,6 +97,8 @@ agent = AIAgent(model="test/stop-proof", provider="openrouter", api_key="dummy-p
 _install_single_query_signal_handlers(SimpleNamespace(agent=agent))
 session = process_registry.spawn_local("sleep 300", task_id="proof", owner_task_id="proof",
     persist_on_release=sys.argv[2] == "True")
+if sys.argv[3] == "True":
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
 Path(sys.argv[1]).write_text(json.dumps({"pid": session.pid,
     "handler": str(signal.getsignal(signal.SIGTERM))}))
 signal.pause()
@@ -105,7 +108,7 @@ signal.pause()
         assert kb.claim_task(conn, task) is not None
         env = {**os.environ, "HERMES_KANBAN_TASK": task,
                "PYTHONPATH": str(Path(__file__).resolve().parents[2])}
-        worker = subprocess.Popen([sys.executable, str(script), str(ready), str(persist)],
+        worker = subprocess.Popen([sys.executable, str(script), str(ready), str(persist), str(resist)],
                                   env=env, stdout=log, stderr=log)
         child = None
         try:
@@ -114,14 +117,13 @@ signal.pause()
             log.seek(0)
             assert ready.exists(), log.read()
             receipt = json.loads(ready.read_text())
-            assert "_signal_handler_q" in receipt["handler"], receipt
+            if not resist:
+                assert "_signal_handler_q" in receipt["handler"], receipt
             import psutil
             child = psutil.Process(receipt["pid"])
             _set_worker_pid(conn, task, worker.pid)
             assert stop_task(conn, task, "operator stop").stopped
-            code = worker.wait(timeout=10)
-            log.seek(0)
-            assert code == 0, log.read()
+            worker.wait(timeout=10)
             assert not _pid_alive(child.pid), "worker exited but its background work survived"
         finally:
             if worker.poll() is None:

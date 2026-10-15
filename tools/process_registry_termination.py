@@ -30,8 +30,8 @@ class ProcessTerminationMixin:
             return False
 
     @classmethod
-    def _terminate_host_pid(cls, pid: int, expected_start: Optional[int] = None) -> None:
-        """Terminate a host-visible PID and its descendants.
+    def _terminate_host_pid(cls, pid: int, expected_start: Optional[int] = None) -> list[int]:
+        """Terminate a host-visible PID and its descendants; return PIDs sent SIGKILL.
         ``expected_start`` (kernel start time at spawn) is re-validated first: a mismatch
         or dead PID means the number was recycled onto a stranger and we refuse to touch
         it — a leaked orphan beats tree-killing someone's browser. POSIX: snapshot descendants,
@@ -46,29 +46,30 @@ class ProcessTerminationMixin:
             logger.warning(
                 "Refusing to terminate host pid %d: start-time mismatch — "
                 "PID was recycled onto an unrelated process.", pid)
-            return
+            return []
 
         def _sigterm_quietly():
             with suppress(OSError, ProcessLookupError, PermissionError):
                 os.kill(pid, signal.SIGTERM)
         if _IS_WINDOWS:
             try:
-                subprocess.run(
+                result = subprocess.run(
                     ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True,
                     encoding='utf-8', errors='replace', timeout=10, creationflags=windows_hide_flags(),
                     stdin=subprocess.DEVNULL, check=False)
+                return [pid] if result.returncode == 0 else []
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
                 _sigterm_quietly()
-            return
+            return []
         import psutil
         gone = (psutil.NoSuchProcess, psutil.AccessDenied, OSError)
         try:
             parent = psutil.Process(pid)
         except psutil.NoSuchProcess:
-            return
+            return []
         except (OSError, PermissionError):
             _sigterm_quietly()
-            return
+            return []
         # Snapshot before signalling: once the parent exits, psutil can no longer
         # reliably find children that it failed to reap.
         try:
@@ -113,7 +114,7 @@ class ProcessTerminationMixin:
         # parent/child tree, leaving survivors un-killed. Re-probing every target is
         # deterministic.
         if grace <= 0:
-            return
+            return []
         _wait_for_exit(targets)
         # A parent that ignored SIGTERM (the interactive ``bash -lic`` wrapper does) keeps
         # running its script through both grace windows and can spawn children the first
@@ -123,11 +124,14 @@ class ProcessTerminationMixin:
             if cls._proc_alive(parent):
                 known = {proc.pid for proc in targets}
                 targets.extend(p for p in parent.children(recursive=True) if p.pid not in known)
+        escalated = []
         for proc in targets:
             with suppress(gone):
                 if cls._proc_alive(proc):
                     proc.kill()  # SIGKILL on POSIX
+                    escalated.append(proc.pid)
                     logger.info("Escalated to SIGKILL for pid %d (ignored SIGTERM within %.1fs grace)", proc.pid, grace)
+        return escalated
 
     @staticmethod
     def _live_descendants(pid: int) -> list[int]:

@@ -28,6 +28,10 @@ class TestCoerceMode:
         assert _coerce_mode("NATIVE") == "native"
         assert _coerce_mode("Auto") == "auto"
 
+    def test_prefer_main_normalizes(self):
+        assert _coerce_mode("Prefer_Main") == "prefer_main"
+        assert _coerce_mode("PREFER_MAIN") == "prefer_main"
+
     def test_invalid_falls_back_to_auto(self):
         assert _coerce_mode("nonsense") == "auto"
         assert _coerce_mode("") == "auto"
@@ -85,6 +89,41 @@ class TestDecideImageInputMode:
     def test_none_config_is_auto(self):
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", None) == "native"
+
+    def test_prefer_main_routes_on_capability_not_aux_presence(self):
+        """`prefer_main` is the mode that makes "main model first, aux as fallback"
+        expressible: an explicit aux backend no longer pre-empts the capability probe,
+        so a vision-capable main model keeps its pixels and only a text-only (or
+        unknown) main model drops to the description path. #123536 — `auto` alone
+        could not express this and silently bypassed a capable main model."""
+        aux = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
+        cfg = {"agent": {"image_input_mode": "prefer_main"}, **aux}
+        # Capable main model: native, not the aux route `auto` would have taken.
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
+        # Text-only main model: still falls back to the aux describer.
+        with patch("agent.image_routing._lookup_supports_vision", return_value=False):
+            assert decide_image_input_mode("openrouter", "deepseek-v3", cfg) == "text"
+        # Unknown capability: the aux path is the safe direction, as in `auto`.
+        with patch("agent.image_routing._lookup_supports_vision", return_value=None):
+            assert decide_image_input_mode("openrouter", "brand-new-slug", cfg) == "text"
+
+    def test_prefer_main_is_opt_in_and_leaves_other_modes_untouched(self):
+        """The new mode changes nothing until it is named: the de-facto `auto` aux
+        route, the `native` escape hatch, and the no-aux default all keep their
+        documented behavior, and with no aux backend `prefer_main` is indistinguishable
+        from `auto`."""
+        aux = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            # auto still prefers the named aux backend; native still forces pixels.
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", aux) == "text"
+            assert decide_image_input_mode(
+                "anthropic", "claude-sonnet-4", {"agent": {"image_input_mode": "native"}, **aux}
+            ) == "native"
+            # With no aux backend, prefer_main and auto agree.
+            for mode in ({"agent": {"image_input_mode": "prefer_main"}},
+                         {"agent": {"image_input_mode": "auto"}}, {}):
+                assert decide_image_input_mode("anthropic", "claude-sonnet-4", mode) == "native"
 
 
 

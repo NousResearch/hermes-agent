@@ -210,6 +210,7 @@ To override the automatic choice, set `agent.image_input_mode` in `config.yaml`:
 | Value | Behavior |
 |-------|----------|
 | `auto` (default) | Native pixels when the model reports vision support, `vision_analyze` description otherwise. Configuring an explicit `auxiliary.vision` backend (a `provider` other than `auto`, or a `model` / `base_url`) also selects the description path, even for a vision-capable main model. |
+| `prefer_main` | Native pixels when the model reports vision support, `vision_analyze` description otherwise — and a configured `auxiliary.vision` backend does **not** pre-empt that check, so it acts as the fallback for a text-only or unrecognized main model. Use this when you want the main model's own vision whenever it has one. |
 | `native` | Always attach pixels, even when the catalog says the model is text-only. |
 | `text` | Always route images through the `vision_analyze` describer, never attach pixels to the main request. |
 

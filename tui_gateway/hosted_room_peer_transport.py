@@ -136,6 +136,8 @@ def build_member_dispatch(
 class PeerHostedRoomTransport(InternalSessionRPC):
     """Translate runtime session operations into recipient-validated peer RPC."""
 
+    accepts_attachments = False  # a member dispatch has no field for files
+
     def __init__(
         self, *, binding: HostedRoomBinding, route: PeerMemberRoute,
         client: HostedRoomPeerClient, source_event_seq: int = 1, task_id: str | None = None,
@@ -194,8 +196,10 @@ class PeerHostedRoomTransport(InternalSessionRPC):
     def submit(
         self, *, profile: str, session_id: str, prompt: str, source: str, task: TaskIdentity,
         execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
-        member_id: str | None = None,
+        member_id: str | None = None, attachments: Sequence[Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:
+        if attachments:  # the driver refuses files before submit on this route
+            raise ValueError("attachments_unsupported_on_route: peer route cannot carry files")
         # The signed route names one member: a task for another member reached the wrong route.
         if member_id is not None and member_id != self.route.member_id:
             raise ValueError("peer room transport member does not match its grant")

@@ -21,6 +21,8 @@ _RESULTS_BUDGET_BYTES = 384 * 1024
 
 
 class HostedRoomAuthorityRPC:
+    accepts_attachments = True  # submit resolves event-bound bytes per member
+
     def __init__(self, authority, loop, *, room_id, member_id, profile, principal,
                  authorize, authorize_write=None, timeout=30):
         self.authority, self.loop = authority, loop

@@ -299,7 +299,12 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
             _authorize_write(conn)
         if _prepare_only:
             from hermes_state_mutation_prepared import local_snapshot
-            return {'snapshot': local_snapshot(db, conn, session_id)}
+            snapshot = local_snapshot(db, conn, session_id)
+            if operation == 'branch':
+                # The branch commit's own idle rule (queued input too), before the owner starts servers.
+                from hermes_state_mutation_guards import require_idle
+                require_idle(db, conn, list({session_id, snapshot['target']}))
+            return {'snapshot': snapshot}
         affected, projection = apply_action(db, conn, session_id, operation, payload, prepared=_prepared)
         conn.executemany('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?',
                          [(target,) for target in affected])

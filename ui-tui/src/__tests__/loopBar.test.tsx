@@ -4,10 +4,11 @@ import { renderSync } from '@hermes/ink'
 import type { LoopSnapshot } from '@hermes/shared/gateway-events'
 import React from 'react'
 import stripAnsi from 'strip-ansi'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 
-import { loopLine } from '../app/loopStatus.js'
-import { LoopBarView } from '../components/loopBar.js'
+import { applyLoopSnapshot, loopLine } from '../app/loopStatus.js'
+import { patchUiState, resetUiState } from '../app/uiStore.js'
+import { LoopBar, LoopBarView } from '../components/loopBar.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 const NOW = 1_800_000_000
@@ -63,4 +64,46 @@ it('counts a standing loop down to its next wakeup and hides it once done or cle
 
   const painted = paint(<LoopBarView cols={78} line={loopLine(loop(), NOW * 1000)} t={DEFAULT_THEME} />)
   expect(painted).toContain('↻ loop · every 45m · 1 run · next in 45m · check the deploy')
+})
+
+it('counts down on its own clock between snapshots and stops once the wakeup runs', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime(NOW * 1000)
+
+  const stdout = Object.assign(new PassThrough(), { columns: 80, rows: 10 })
+  let output = ''
+  stdout.on('data', chunk => (output += chunk.toString()))
+
+  try {
+    patchUiState({ sid: 's1' })
+    applyLoopSnapshot('s1', loop({ next_due_at: NOW + 90 }))
+
+    const element = <LoopBar cols={78} />
+
+    const view = renderSync(element, {
+      stdin: new PassThrough() as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream
+    })
+
+    const last = () => stripAnsi(output).split('↻ loop').pop() ?? ''
+
+    expect(last()).toContain('next in 2m')
+
+    // No new snapshot arrives: the hook's own interval must move the label.
+    await vi.advanceTimersByTimeAsync(45_000)
+    view.rerender(element)
+    expect(last()).toContain('next in 45s')
+
+    applyLoopSnapshot('s1', loop({ awaiting_response: true, next_due_at: NOW + 90 }))
+    await vi.advanceTimersByTimeAsync(5_000)
+    view.rerender(element)
+    expect(last()).toContain('running now')
+
+    view.unmount()
+    view.cleanup()
+  } finally {
+    applyLoopSnapshot(null)
+    resetUiState()
+    vi.useRealTimers()
+  }
 })

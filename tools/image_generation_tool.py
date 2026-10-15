@@ -552,7 +552,7 @@ def check_image_generation_requirements() -> bool:
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from tools.registry import registry, tool_error, tool_result
 
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
@@ -909,6 +909,10 @@ _CREATIVE_CONTROL_PARAMS = {
         "type": "integer", "minimum": -100, "maximum": 100,
         "description": "Motion in the scene, -100 static to 100 dynamic. 0 neutral.",
     },
+    "style": {
+        "type": "string",
+        "description": "A Krea public library style trained for the active model, by name or id. Find one with image_style_search.",
+    },
 }
 
 _STYLE_PROMPT_PARAM = {
@@ -992,4 +996,61 @@ registry.register(
     handler=_handle_image_generate, check_fn=check_image_generation_requirements, requires_env=[],
     is_async=False,   # sync fal_client API to avoid "Event loop is closed" in gateway
     emoji="🎨", dynamic_schema_overrides=_build_dynamic_image_schema,
+)
+
+
+# --- Krea library style search (offered only while Krea serves image_generate) ---
+_STYLE_SEARCH_LIMIT = 10
+
+IMAGE_STYLE_SEARCH_SCHEMA = {
+    "name": "image_style_search",
+    "description": (
+        "Find styles in Krea's public library that run on the active Krea 2 model, for image_generate's "
+        "`style` parameter. "
+        f"Matches the query against style names; returns at most {_STYLE_SEARCH_LIMIT} matches "
+        "and the total count, so narrow the query when there are more."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Word or phrase to look for in style names, e.g. 'watercolor'."},
+        },
+        "required": ["query"],
+    },
+}
+
+
+def check_krea_style_search_requirements() -> bool:
+    """True while image_generate is served by the Krea plugin: a Krea model under the managed
+    selection with a reachable Krea gateway, or ``image_gen.provider: krea`` with a backend."""
+    managed = _managed_model_plugin()
+    if managed is not None:
+        from plugins.image_gen.krea import _resolve_managed_krea_gateway
+        return managed[0] == "krea" and _resolve_managed_krea_gateway() is not None
+    if _plugin_provider_name() != "krea":
+        return False
+    provider = _get_plugin_provider("krea")
+    return bool(provider and provider.is_available())
+
+
+def _handle_image_style_search(args, **kw):
+    query = (args.get("query") or "").strip().lower()
+    if not query:
+        return tool_error("query is required")
+    from plugins.image_gen.krea import list_styles
+    managed = _managed_model_plugin()
+    styles, error = list_styles(managed[1] if managed else None)
+    if error is not None:
+        return tool_error(f"Krea style library unavailable: {error}")
+    matches = [style for style in styles if query in style["name"].lower()]
+    result = {"styles": matches[:_STYLE_SEARCH_LIMIT], "total_matches": len(matches)}
+    if not styles:
+        result["note"] = "Krea's public library has no styles for the active Krea 2 model yet."
+    return tool_result(**result)
+
+
+registry.register(
+    name="image_style_search", toolset="image_gen", schema=IMAGE_STYLE_SEARCH_SCHEMA,
+    handler=_handle_image_style_search, check_fn=check_krea_style_search_requirements, requires_env=[],
+    is_async=False, emoji="🎨",
 )

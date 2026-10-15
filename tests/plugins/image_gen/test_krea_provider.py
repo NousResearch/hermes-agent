@@ -554,6 +554,108 @@ def _managed_cfg(
     )
 
 
+class TestLibraryStyles:
+    _CATALOG = [
+        {"id": "sty_film", "name": "Film Grain"},
+        {"id": "sty_noir", "name": "Film Noir"},
+        {"id": "sty_water", "name": "Watercolor"},
+        {"id": "sty_untitled", "name": ""},
+    ]
+
+    @pytest.fixture(autouse=True)
+    def _fresh_catalog(self):
+        import plugins.image_gen.krea as krea_mod
+
+        krea_mod._STYLE_CATALOG.clear()
+
+    @pytest.mark.parametrize("style, style_id, error", [
+        ("watercolor", "sty_water", None),
+        ("Film Grain", "sty_film", None),
+        ("wat", "sty_water", None),
+        ("sty_noir", "sty_noir", None),
+        ("film", None, "Film Grain (sty_film), Film Noir (sty_noir)"),
+        ("oil", None, "No Krea library style named 'oil'"),
+    ])
+    def test_resolves_a_style_by_id_exact_name_or_unique_prefix(self, monkeypatch, style, style_id, error):
+        import plugins.image_gen.krea as krea_mod
+
+        monkeypatch.setattr(krea_mod, "_load_styles", lambda base_url, token, style_base: (self._CATALOG, None))
+
+        resolved, err = krea_mod._resolve_style(
+            style, "https://k", "tok", "k2", lambda message, error_type: {"error": message, "error_type": error_type})
+
+        assert resolved == style_id
+        if error is None:
+            assert err is None
+        else:
+            assert error in err["error"]
+            assert err["error_type"] == "invalid_argument"
+
+    def test_managed_submit_sends_the_resolved_library_style(self, monkeypatch):
+        import plugins.image_gen.krea as krea_mod
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: _managed_cfg())
+        monkeypatch.setattr(krea_mod, "_load_styles", lambda base_url, token, style_base: (self._CATALOG, None))
+        with patch("plugins.image_gen.krea.requests.post", return_value=_submit_response()) as mock_post, \
+             patch("plugins.image_gen.krea.requests.get", return_value=_poll_response(_completed_job())), \
+             patch("plugins.image_gen.krea.save_url_image", return_value=Path("/tmp/x.png")), \
+             patch("plugins.image_gen.krea.time.sleep"):
+            result = KreaImageGenProvider().generate(prompt="a lamp", style="watercolor", upscale=False)
+
+        assert result["success"] is True
+        assert mock_post.call_args.kwargs["json"]["styles"] == [{"id": "sty_water", "strength": 1.0}]
+
+    def test_catalog_is_paged_once_per_endpoint_and_then_served_from_memory(self):
+        import plugins.image_gen.krea as krea_mod
+
+        pages = [
+            _poll_response({"items": [{"id": "sty_a", "title": "A"}], "next_cursor": "c2"}),
+            _poll_response({"items": [{"id": "sty_b", "title": None}], "next_cursor": None}),
+        ]
+        with patch("plugins.image_gen.krea.requests.get", side_effect=pages) as mock_get:
+            first, err = krea_mod._load_styles("https://krea-gateway.example.com", "tok", "k2")
+            second, _ = krea_mod._load_styles("https://krea-gateway.example.com", "tok", "k2")
+
+        assert err is None
+        assert first == [{"id": "sty_a", "name": "A"}, {"id": "sty_b", "name": ""}]
+        assert second is first
+        assert mock_get.call_count == 2
+        assert mock_get.call_args_list[0].args[0] == "https://krea-gateway.example.com/styles"
+        assert mock_get.call_args_list[0].kwargs["params"] == {"filter": "public", "model": "k2", "limit": 1000}
+        assert mock_get.call_args_list[1].kwargs["params"]["cursor"] == "c2"
+        assert mock_get.call_args_list[0].kwargs["headers"]["Authorization"] == "Bearer tok"
+
+    def test_catalog_failure_is_reported_and_not_cached(self):
+        import requests as req_lib
+        import plugins.image_gen.krea as krea_mod
+
+        resp = MagicMock(status_code=503, text="down")
+        resp.raise_for_status.side_effect = req_lib.HTTPError(response=resp)
+        resp.json.return_value = {"error": {"message": "down"}}
+        with patch("plugins.image_gen.krea.requests.get", return_value=resp):
+            styles, err = krea_mod._load_styles("https://k", "tok", "k2")
+
+        assert styles is None
+        assert err == "HTTP 503: down"
+        assert krea_mod._STYLE_CATALOG == {}
+
+    @pytest.mark.parametrize("model, style_base", [
+        ("krea-2-medium", "k2"),
+        ("krea-2-medium-turbo", "k2"),
+        ("krea-2-large", "k2-large"),
+    ])
+    def test_library_is_asked_for_the_styles_trained_for_the_model(self, monkeypatch, model, style_base):
+        import plugins.image_gen.krea as krea_mod
+
+        monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: _managed_cfg())
+        asked = []
+        monkeypatch.setattr(krea_mod, "_load_styles", lambda base_url, token, base: asked.append(base) or ([], None))
+
+        assert krea_mod.list_styles(model) == ([], None)
+        assert asked == [style_base]
+
+
 class TestManagedGateway:
     def test_managed_submit_uses_gateway_origin_and_nous_token(self, monkeypatch):
         """Managed mode submits to the gateway origin with the Nous token."""
@@ -609,6 +711,30 @@ class TestManagedGateway:
         assert result["success"] is False
         assert "429" in result["error"]
         assert "concurrency" in result["error"].lower()
+
+    @pytest.mark.parametrize("status, error_type, portal_hint", [
+        (400, "invalid_argument", False),
+        (409, "api_error", True),
+    ])
+    def test_kreas_own_refusal_passes_through_without_the_portal_hint(self, monkeypatch, status, error_type, portal_hint):
+        import requests as req_lib
+        import plugins.image_gen.krea as krea_mod
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: _managed_cfg())
+        resp = req_lib.Response()
+        resp.status_code = status
+        resp._content = b'{"error": {"message": "One or more selected LoRA styles are incompatible with the selected model."}}'
+        resp.headers["Content-Type"] = "application/json"
+        resp.raise_for_status = MagicMock(side_effect=req_lib.HTTPError(response=resp))
+
+        with patch("plugins.image_gen.krea.requests.post", return_value=resp):
+            result = KreaImageGenProvider().generate(prompt="test")
+
+        assert result["success"] is False
+        assert result["error_type"] == error_type
+        assert "incompatible with the selected model" in result["error"]
+        assert ("enabled/priced" in result["error"]) is portal_hint
 
 
 class TestExplicitModelOverride:

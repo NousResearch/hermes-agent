@@ -364,6 +364,11 @@ def _seed_cron_channel_session(
     text = (mirror_text or "").strip()
     if not text:
         return False
+    if not _inchannel_seed_allowed(is_dm=is_dm, user_id=user_id):
+        logger.warning(
+            "Job '%s': in_channel group seed skipped for %s:%s — missing origin user_id",
+            job.get("id", "?"), platform_name, chat_id)
+        return False
     try:
         chat_type = "dm" if is_dm else "group"
         ok = _seed_cron_session(
@@ -1416,7 +1421,7 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
         thread_seeded = True
     # in_channel: CREATE + seed the flat session (the mirror only APPENDS to an existing one). Same
     # `inchannel_continuable` gate as the flatten in _deliver_result (must not drift). Origin
-    # seed without mirror opt-in; others only via _inchannel_seed_allowed (user-less seed = orphan).
+    # seed without mirror opt-in; ALL targets require _inchannel_seed_allowed (user-less seed = orphan).
     if t.in_channel_surface and t.inchannel_continuable and not thread_seeded:
         inchannel_seeded = _seed_cron_channel_session(
             job, t.runtime_adapter, t.platform_name, t.chat_id, t.mirror_text,
@@ -1437,8 +1442,8 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
         logger.warning(
             "Job '%s': in_channel delivery to %s:%s is not a "
             "continuable target (origin=%s:%s thread=%s; not the "
-            "origin conversation, and not a mirror-eligible "
-            "fallback/opted-in target the seed can key) — seed "
+            "origin/mirror-eligible conversation or missing origin user_id "
+            "for a group target) — seed "
             "skipped; the plain mirror below may still apply",
             job["id"], t.platform_name, t.chat_id,
             origin.get("platform"), origin.get("chat_id"), origin.get("thread_id"))
@@ -1681,10 +1686,10 @@ def _prepare_target_delivery(
         not origin_chat_type and str(chat_id).startswith("D"))
 
     # in_channel gate shared by thread-flatten and flat seed — they MUST match or brief and
-    # session land in different places. Origin qualifies unconditionally; others only when the
-    # seed can create a resolvable session (_inchannel_seed_allowed).
-    inchannel_continuable = origin_target or (
-        mirror_this_target and _inchannel_seed_allowed(is_dm=is_dm_target, user_id=origin_user_id))
+    # session land in different places. Even an origin match needs a DM-shaped target or a real
+    # origin user: a partial CLI/API origin must not bypass the participant guard.
+    inchannel_continuable = (origin_target or mirror_this_target) and _inchannel_seed_allowed(
+        is_dm=is_dm_target, user_id=origin_user_id)
 
     # Plugin platform names create dynamic members via Platform._missing_().
     try:

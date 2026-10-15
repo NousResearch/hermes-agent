@@ -85,6 +85,8 @@ export interface BotMeta {
   /** Legacy single-group scalar, projected alongside `groups`. */
   group?: null | string
   pinned?: boolean
+  /** Short job label ("Deep Research") shown beside the name and in teammates' rosters (`bot-role.ts`). */
+  role?: string
   /** Raise this bot's Screen tab when it starts driving its desktop (`screen-autoraise.ts`). Opt-in per bot. */
   screenAutoOpen?: boolean
   shape?: string

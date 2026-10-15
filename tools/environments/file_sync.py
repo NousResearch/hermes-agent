@@ -22,7 +22,7 @@ try:
 except ImportError:
     fcntl = None  # Windows — file locking skipped
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 import psutil
 
@@ -47,6 +47,9 @@ BulkUploadFn = Callable[[list[tuple[str, str]]], None]  # [(host_path, remote_pa
 BulkDownloadFn = Callable[[Path], None]  # (dest_tar_path) -> writes tar archive, raises on failure
 DeleteFn = Callable[[list[str]], None]  # (remote_paths) -> raises on failure
 GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(host_path, remote_path), ...]
+
+_UPLOAD_BATCH_FILES = 500
+_UPLOAD_BATCH_BYTES = 64 * 1024 * 1024
 
 _SYNC_BACK_MAX_RETRIES = 3
 _SYNC_BACK_BACKOFF = (2, 4, 8)  # seconds between retries
@@ -176,6 +179,26 @@ def unique_parent_dirs(files: list[tuple[str, str]]) -> list[str]:
     return sorted({posixpath.dirname(remote) for _, remote in files})
 
 
+def _upload_batches(files: list[tuple[str, str]]) -> Iterator[list[tuple[str, str]]]:
+    """Split an upload so each transfer stays well inside the backend timeout (120 s over SSH):
+    a remote filesystem that takes ~20 ms per created file, such as CephFS through FUSE, still
+    writes a full batch in about ten seconds."""
+    batch: list[tuple[str, str]] = []
+    size = 0
+    for host_path, remote_path in files:
+        try:
+            length = os.path.getsize(host_path)
+        except OSError:
+            length = 0
+        if batch and (len(batch) >= _UPLOAD_BATCH_FILES or size + length > _UPLOAD_BATCH_BYTES):
+            yield batch
+            batch, size = [], 0
+        batch.append((host_path, remote_path))
+        size += length
+    if batch:
+        yield batch
+
+
 def _sha256_file(path: str) -> str:
     """Return hex SHA-256 digest of a file."""
     h = hashlib.sha256()
@@ -188,7 +211,7 @@ def _sha256_file(path: str) -> str:
 class FileSyncManager:
     """Tracks local file changes and syncs to a remote environment. Backends supply transport
     callbacks (upload, delete) and a file-source callable; the manager handles mtime-based
-    change detection, deletion tracking, rate limiting, and transactional state."""
+    change detection, deletion tracking, rate limiting, and per-batch committed state."""
 
     def __init__(
         self,
@@ -212,9 +235,9 @@ class FileSyncManager:
 
     def sync(self, *, force: bool = False) -> None:
         """Run a sync cycle: upload changed files, delete removed files. Rate-limited to once
-        per ``sync_interval`` unless *force* or ``HERMES_FORCE_FILE_SYNC=1``. Transactional:
-        state is committed only if ALL operations succeed; on failure it rolls back so the
-        next cycle retries everything."""
+        per ``sync_interval`` unless *force* or ``HERMES_FORCE_FILE_SYNC=1``. Uploads commit
+        per batch, deletions after every upload; on failure the uncommitted part is retried
+        by the next cycle."""
         with self._transaction_lock:
             self._sync_transaction(force=force)
 
@@ -234,33 +257,39 @@ class FileSyncManager:
             self._last_sync_time = _monotonic()
             return
 
-        prev_files = dict(self._synced_files)
-        prev_hashes = dict(self._pushed_hashes)
+        done = 0
         try:
-            # Hash and upload the same bytes: the original may be saved while
-            # the transport is reading it or waiting for remote acknowledgement.
-            with tempfile.TemporaryDirectory(prefix="hermes-sync-push-") as staging:
-                staged_files = []
-                pushed_hashes = {}
-                for index, (host_path, remote_path) in enumerate(to_upload):
-                    staged_path = os.path.join(staging, str(index))
-                    shutil.copy2(host_path, staged_path)
-                    pushed_hashes[remote_path] = _sha256_file(staged_path)
-                    staged_files.append((staged_path, remote_path))
-                self._push(staged_files, to_delete)
-            # Commit (all succeeded).
-            self._pushed_hashes.update(pushed_hashes)
-            for p in to_delete:
-                new_files.pop(p, None)
-                self._pushed_hashes.pop(p, None)
-            self._synced_files = new_files
+            for batch in _upload_batches(to_upload):
+                self._push_batch(batch, new_files)
+                done += len(batch)
+            if to_delete:
+                self._push([], to_delete)
+                for p in to_delete:
+                    self._synced_files.pop(p, None)
+                    self._pushed_hashes.pop(p, None)
             self._last_sync_time = _monotonic()
         except Exception as exc:
-            self._synced_files = prev_files
-            self._pushed_hashes = prev_hashes
             # Do NOT advance _last_sync_time: bumping the rate-limit clock on failure would
             # suppress the retry for up to _sync_interval, contradicting the retry contract.
-            logger.warning("file_sync: sync failed, rolled back state: %s", exc)
+            logger.warning("file_sync: sync failed after %d of %d file(s): %s", done, len(to_upload), exc,
+                           exc_info=True)
+
+    def _push_batch(self, batch: list[tuple[str, str]], new_files: dict[str, tuple[float, int]]) -> None:
+        """Upload one batch and commit it."""
+        # Hash and upload the same bytes: the original may be saved while
+        # the transport is reading it or waiting for remote acknowledgement.
+        with tempfile.TemporaryDirectory(prefix="hermes-sync-push-") as staging:
+            staged_files = []
+            pushed_hashes = {}
+            for index, (host_path, remote_path) in enumerate(batch):
+                staged_path = os.path.join(staging, str(index))
+                shutil.copy2(host_path, staged_path)
+                pushed_hashes[remote_path] = _sha256_file(staged_path)
+                staged_files.append((staged_path, remote_path))
+            self._push(staged_files, [])
+        self._pushed_hashes.update(pushed_hashes)
+        for remote_path in pushed_hashes:
+            self._synced_files[remote_path] = new_files[remote_path]
 
     def _plan_sync(
         self, current_files: list[tuple[str, str]]

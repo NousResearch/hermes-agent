@@ -50,7 +50,7 @@ def _refusal(params, cfg=None, **kwargs):
     ({'source': 'acp', 'editor': {'edit_approval_policy': 'always'}}, 'editor.edit_approval_policy'),
     ({'source': 'acp', 'editor': {'mcp_servers': 'terminal'}}, 'editor.mcp_servers'),
     ({'source': 'acp', 'editor': {'mcp_servers': [{'type': 'stdio'}]}}, 'editor.mcp_servers'),
-    ({'source': 'acp', 'editor': {'bad\nkey': 1}}, 'editor.bad key'),  # client text: one line, no forged log line
+    ({'source': 'acp', 'editor': {'bad\nkey': 1}}, 'editor.badkey'),   # client text: one line, no forged log line
     ({'source': 'cli', 'toolsets': [None]}, 'toolsets'),                # a literal None is the bad element
     ({'source': 'cli', 'toolsets': [False]}, 'toolsets'),
 ])

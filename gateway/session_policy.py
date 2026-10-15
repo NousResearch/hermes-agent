@@ -40,13 +40,23 @@ _TURN_PROFILE: ContextVar = ContextVar('follow_profile_read', default=None)  # (
 SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp', 'tool': 'cli', 'oneshot': 'cli'}
 
 
+def _client_repr(value):
+    from hermes_state_runtime import publish_client_repr
+    return publish_client_repr(value)
+
+
+def _client_value(value):
+    from hermes_state_runtime import publish_client_value
+    return publish_client_value(value)
+
+
 def _refuse(field, detail=None):
     """One named refusal: the launch field the check read, and why it failed.
 
     ``reason`` stays the bounded wire code every caller compares as a string; ``field`` and
     ``detail`` are what tells ~20 different create checks apart, in the client and in the
-    gateway log, without a second run to find out which one fired (``RuntimeStoreError`` bounds
-    and flattens both)."""
+    gateway log, without a second run to find out which one fired. ``RuntimeStoreError`` bounds,
+    flattens and seals both, so a client value the log redactor would mask is not what gets stored."""
     raise RuntimeStoreError('invalid_params', field=field, detail=detail)
 
 
@@ -320,8 +330,11 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
         return build_forward_policy(params, config, private_secrets=private_secrets)
     unknown = sorted(set(params) - CREATE_FIELDS)
     if unknown or not isinstance(source, str) or source not in SURFACES:
-        _refuse(f'params.{unknown[0]}' if unknown else 'source',
-                'unknown create field' if unknown else f'not a surface: {source!r}')
+        # The key and the surface word are client text. Publish them only when the
+        # log redactor would leave them alone; a newline cannot reach the log line.
+        from hermes_state_runtime import publish_client_repr, published_key
+        _refuse(published_key('params', unknown[0]) if unknown else 'source',
+                'unknown create field' if unknown else f'not a surface: {publish_client_repr(source)}')
     bad_bypass = next((name for name in BYPASS_FIELDS if name in params and type(params[name]) is not bool), None)
     if bad_bypass:
         _refuse(bad_bypass, 'must be a boolean')
@@ -491,7 +504,7 @@ def _apply_launch_overrides(params, config):
         except ValueError:
             tier = None
         if tier is None:
-            _refuse('service_tier', f"not a known tier: {params['service_tier']!r}")
+            _refuse('service_tier', f"not a known tier: {_client_repr(params['service_tier'])}")
         config.setdefault('agent', {})['service_tier'] = tier or 'normal'
     if 'run_budget' in params:
         # `--run-budget SECONDS`: the wall-clock budget per run (80% wrap-up notice, capped provider
@@ -510,11 +523,11 @@ def _apply_launch_overrides(params, config):
         value = params['max_turns']
         limit = resolve_turn_limit(value, default=0) if isinstance(value, (int, str)) else 0
         if not limit:
-            _refuse('max_turns', f'unreadable cap: {value!r}')
+            _refuse('max_turns', f'unreadable cap: {_client_repr(value)}')
         config.setdefault('agent', {})['max_turns'] = limit
     if 'reasoning' in params:
         if not isinstance(params['reasoning'], str) or parse_reasoning_effort(params['reasoning']) is None:
-            _refuse('reasoning', f"not a known effort level: {params['reasoning']!r}")
+            _refuse('reasoning', f"not a known effort level: {_client_repr(params['reasoning'])}")
         pin_reasoning_effort(config, params['reasoning'])
 
 
@@ -537,14 +550,15 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         enabled_servers = enabled_mcp_server_names(config) if configured else set()
         for name in explicit:
             if not isinstance(name, str) or not known(name):
-                _refuse('toolsets', f'unknown or invalid toolset name: {name!r}')
+                _refuse('toolsets', f'unknown or invalid toolset name: {_client_repr(name)}')
             server = name[4:] if name.startswith('mcp-') and name not in configured else name
             if server in configured and server not in enabled_servers:
                 # Picking a disabled server must not match nothing and fall through to every enabled one.
                 why = 'is disabled in config' if isinstance(configured[server], dict) else 'has no usable config entry'
                 _refuse('toolsets', f'MCP server {server!r} {why}')
         if 'desktop_ui' in explicit and source != 'gui':
-            _refuse('toolsets', f'desktop_ui is only available on the Desktop, not on {source}')
+            _refuse('toolsets', 'desktop_ui is only available on the Desktop, not on '
+                    + _client_value(source))
         config.setdefault('platform_toolsets', {})['acp' if source == 'acp' else 'cli'] = explicit
     posture = None
     if explicit is None and coding_posture:
@@ -556,7 +570,8 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         requested = {t for name in explicit for t in resolve_toolset(name)}
         effective = {t for name in enabled for t in resolve_toolset(name)}
         if not requested <= effective:
-            _refuse('toolsets', f"not available on this surface: {', '.join(sorted(requested - effective))}")
+            missing = ', '.join(_client_value(name) for name in sorted(requested - effective))
+            _refuse('toolsets', f'not available on this surface: {missing}')
     if explicit is None and source in {'tui', 'gui'}:
         # Same surface toolsets as the native TUI factory, without its env inference.
         # The fold-in lands after _get_platform_tools subtracted agent.disabled_toolsets, so

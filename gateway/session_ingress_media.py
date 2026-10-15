@@ -103,6 +103,30 @@ def sniff_image_mime(data):
     return None
 
 
+_ATTACHMENT_DETAIL = {
+    'attachments.shape': 'must be a short list of path and mime objects',
+    'attachments.mime': 'must be png, jpeg, gif, or webp',
+    'attachments.staging': 'the staging file is missing, linked, or outside the image cache',
+}
+
+
+def _attachment_clause(attachments):
+    """Shape vs mime. The mime value itself is not part of the clause."""
+    if not isinstance(attachments, list) or not attachments or len(attachments) > _ATTACHMENT_LIMIT:
+        return 'attachments.shape'
+    for item in attachments:
+        if (not isinstance(item, dict) or set(item) != {'path', 'mime'}
+                or not isinstance(item.get('path'), str)):
+            return 'attachments.shape'
+        if item.get('mime') not in _ATTACHMENT_MIMES:
+            return 'attachments.mime'
+    return None
+
+
+def _refuse_attachments(clause):
+    raise RuntimeStoreError('invalid_params', field=clause, detail=_ATTACHMENT_DETAIL[clause])
+
+
 def admit_attachments(attachments, *, admitted=None):
     """Wire ``attachments: [{path, mime}]`` -> committed payload fields (``{}`` when absent).
 
@@ -110,27 +134,29 @@ def admit_attachments(attachments, *, admitted=None):
     ``None``): a lost-ACK retry whose disposable staging file is gone reconciles against it."""
     if attachments is None:
         return {}
-    if (not isinstance(attachments, list) or not attachments or len(attachments) > _ATTACHMENT_LIMIT
-            or any(not isinstance(item, dict) or set(item) != {'path', 'mime'}
-                   or not isinstance(item['path'], str) or item['mime'] not in _ATTACHMENT_MIMES
-                   for item in attachments)):
-        raise RuntimeStoreError('invalid_params')
+    clause = _attachment_clause(attachments)
+    if clause:
+        _refuse_attachments(clause)
     from gateway.platforms.base import get_image_cache_dir
     staging = get_image_cache_dir().resolve()
     paths = [Path(item['path']) for item in attachments]
     if any(not path.is_absolute() or path.resolve().parent != staging for path in paths):
-        raise RuntimeStoreError('invalid_params')
+        _refuse_attachments('attachments.staging')
     mimes = [item['mime'] for item in attachments]
     row = admitted() if admitted is not None else None
     committed = row['payload'].get('attachments_v1') if row is not None else None
     try:
         hashes = _attachment_hashes(paths)
+    except RuntimeStoreError:
+        raise
     except (OSError, ValueError) as exc:
-        raise RuntimeStoreError('invalid_params') from exc
+        raise RuntimeStoreError(
+            'invalid_params', field='attachments.staging',
+            detail=_ATTACHMENT_DETAIL['attachments.staging']) from exc
     if None in hashes:
         if (committed is None or [Path(r['path']).name for r in committed['media']] != [p.name for p in paths]
                 or committed['media_types'] != mimes):
-            raise RuntimeStoreError('invalid_params')
+            _refuse_attachments('attachments.staging')
         if any(digest is not None and digest != reference['sha256']
                for digest, reference in zip(hashes, committed['media'])):
             raise RuntimeStoreError('admission_conflict')
@@ -206,7 +232,7 @@ def _attachment_hashes(paths):
         try:
             # Staging must not provide a second name for a file outside it.
             if path.lstat().st_nlink != 1:
-                raise RuntimeStoreError('invalid_params')
+                _refuse_attachments('attachments.staging')
             hashes.append(_sha256(path))
         except FileNotFoundError:
             # One pruned file cannot skip validation of the remaining batch.

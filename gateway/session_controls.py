@@ -46,6 +46,24 @@ def _profile_label(profile_id) -> str:
     return profile_name_for_home(text) or 'default'
 
 
+def _schema_refusal(owner, rid, method, problems):
+    """The canonical schema refused the frame before the handler ran.
+
+    ``field`` and ``detail`` are the create-path shape. ``fields`` is the loc list this
+    path already returned; each loc is sealed the same way, so a client key is not copied
+    raw into the frame, the log, or the CLI line. One warning, because the check is named.
+    """
+    from hermes_state_runtime import published_fields, refusal_clause
+    verb = method if isinstance(method, str) else None
+    exc = RuntimeStoreError('invalid_params', field=refusal_clause(problems, method=verb),
+                            detail='does not match the session contract')
+    _log_refusal(getattr(owner.actor, 'profile_id', None), verb or 'params', exc)
+    data = _refusal_data(exc)
+    data['fields'] = published_fields(problems, method=verb)
+    return {'jsonrpc': '2.0', 'id': rid, 'error': {
+        'code': 4001, 'message': 'invalid_params', 'data': data}}
+
+
 def _log_refusal(profile, method, exc: RuntimeStoreError) -> None:
     """One line per refusal, at the level its audience deserves.
 
@@ -238,6 +256,9 @@ class AuthorityConnection:
         params = request.get('params') or {}
         if not isinstance(params, dict):
             # Every handler indexes params as a mapping; refuse the frame before ``.get``.
+            # A bare code stays at debug: a retrying client must not flood the gateway log.
+            _log_refusal(getattr(self.actor, 'profile_id', None), method,
+                         RuntimeStoreError('invalid_params'))
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params'}}}
         from gateway.drain_control import ws_method_refused_while_draining
@@ -268,10 +289,9 @@ class AuthorityConnection:
         )
         contract = CANONICAL_METHODS.get(method)
         if contract is not None and (problems := canonical_param_problems(contract, params)):
-            # The declared wire contract (``tui_gateway/contracts/canonical.py``) is the closed
-            # key set: an unknown or missing key never reaches the handler.
-            return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                'code': 4001, 'message': 'invalid_params', 'data': {'reason': 'invalid_params', 'fields': problems}}}
+            # The declared wire contract is the closed key set: an unknown or mistyped
+            # value never reaches the handler. The frame names the loc, sealed.
+            return _schema_refusal(self, rid, method, problems)
         original_params = dict(params)
         contract = contract or METHODS.get(method)
         authority = self.authority

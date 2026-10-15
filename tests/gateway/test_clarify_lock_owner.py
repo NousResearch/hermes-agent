@@ -185,10 +185,14 @@ async def test_clarify_lock_params_are_checked_by_the_declared_canonical_contrac
     try:
         extra = await connection.dispatch({'id': 1, 'method': 'clarify.lock', 'params': {
             'request_id': 'srq-x', 'question_id': 'q0', 'answer': 'a', 'bogus': 1}})
-        assert extra['error']['data'] == {'reason': 'invalid_params', 'fields': ['bogus']}, extra
+        assert extra['error']['data'] == {
+            'reason': 'invalid_params', 'field': 'bogus', 'detail': 'does not match the session contract',
+            'fields': ['bogus']}, extra
         typed = await connection.dispatch({'id': 2, 'method': 'clarify.lock', 'params': {
             'request_id': 7, 'question_id': 'q0'}})
-        assert typed['error']['data'] == {'reason': 'invalid_params', 'fields': ['request_id']}, typed
+        assert typed['error']['data'] == {
+            'reason': 'invalid_params', 'field': 'request_id', 'detail': 'does not match the session contract',
+            'fields': ['request_id']}, typed
         # A well-formed lock for a request nobody waits on is still the handler's own ``expired``.
         late = await connection.dispatch({'id': 3, 'method': 'clarify.lock', 'params': {
             'request_id': 'srq-x', 'question_id': 'q0', 'answer': None}})

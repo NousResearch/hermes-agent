@@ -215,6 +215,9 @@ class CLIInitMixin:
     def _init_toolsets(self, toolsets):
         from cli import CLI_CONFIG, validate_toolset
         self.enabled_toolsets = toolsets
+        # Only a picked list rides session.create; _build_cli_from_args clears this for the profile default,
+        # which the gateway resolves itself (an explicit list with a stale name is refused, #138670).
+        self._explicit_toolsets = toolsets is not None
         from agent.skill_utils import parse_config_string_list
 
         self.disabled_toolsets = parse_config_string_list(CLI_CONFIG["agent"].get("disabled_toolsets"))
@@ -372,7 +375,7 @@ class CLIInitMixin:
                                and self.requested_provider not in {None, "", "auto"} else None),
                   "api_key": getattr(self, "_explicit_api_key", None),
                   "base_url": getattr(self, "_explicit_base_url", None),
-                  "toolsets": self.enabled_toolsets,
+                  "toolsets": self.enabled_toolsets if getattr(self, "_explicit_toolsets", False) else None,
                   # Main handed these to AIAgent; the gateway's agent gets them as creation policy.
                   "reasoning": getattr(self, "_explicit_reasoning", None),
                   "max_turns": getattr(self, "_explicit_max_turns", None),
@@ -411,7 +414,8 @@ class CLIInitMixin:
             return new_session_id(now)
         if branch_of:
             return store.branch(branch_of, title)
-        sid = store.create({"toolsets": getattr(self, "enabled_toolsets", None),
+        toolsets = getattr(self, "enabled_toolsets", None) if getattr(self, "_explicit_toolsets", False) else None
+        sid = store.create({"toolsets": toolsets,
                             "pass_session_id": getattr(self, "pass_session_id", False) or None,
                             "ignore_rules": getattr(self, "ignore_rules", False) or None}, record_cwd=False)
         self.session_id = sid

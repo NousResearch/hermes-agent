@@ -1499,6 +1499,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills):
     """Resolve the toolset list (explicit / coding posture / platform default), construct HermesCLI, and start the background skills preload."""
     toolsets_list = None
+    profile_default = False
     if isinstance(toolsets, str) and toolsets:
         toolsets_list = [t.strip() for t in toolsets.split(",")]
     elif isinstance(toolsets, (list, tuple)) and toolsets:
@@ -1516,6 +1517,7 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
         if toolsets_list is None:
             from hermes_cli.tools_config import _get_platform_tools
             toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
+            profile_default = True
 
     parsed_skills = _parse_skills_argument(skills)
 
@@ -1543,6 +1545,8 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
         if emit_partial_update_hint(e):
             sys.exit(1)
         raise
+    if profile_default:
+        cli._explicit_toolsets = False  # the gateway resolves the profile's toolsets itself
 
     # skills.auto_load rides the same background preload as -s; --ignore-rules skips it with
     # the rest of the auto-injected context. Resolved here (not lazily in the agent) so the

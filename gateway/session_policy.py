@@ -397,7 +397,6 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False):
     """Validate explicit toolsets and return the session's enabled toolset set. Without a pick, a
     *coding_posture* session runs ``focus_toolsets`` instead of the profile default while the profile
     stays on ``focus``; the gateway decides it, never the client."""
-    from agent.coding_context import focus_toolsets
     from hermes_cli.tools_config import _get_platform_tools
     from toolsets import validate_toolset
     explicit = params.get('toolsets')
@@ -406,7 +405,10 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False):
                 or ('desktop_ui' in explicit and source != 'gui')):
             raise RuntimeStoreError('invalid_params')
         config.setdefault('platform_toolsets', {})['acp' if source == 'acp' else 'cli'] = explicit
-    posture = focus_toolsets(config) if explicit is None and coding_posture else None
+    posture = None
+    if explicit is None and coding_posture:
+        from agent.coding_context import focus_toolsets
+        posture = focus_toolsets(config)
     enabled = set(posture) if posture is not None else _get_platform_tools(config, 'acp' if source == 'acp' else 'cli')
     if explicit is not None:
         from toolsets import resolve_toolset
@@ -434,9 +436,9 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False):
 def _in_coding_workspace(config, source, cwd):
     """Whether *cwd* selects the coding posture (``agent.coding_context: focus`` in a code workspace).
     A detection failure keeps the profile default rather than refusing the session."""
-    from agent.coding_context import coding_selection
+    from agent.coding_context import in_focus_workspace
     try:
-        return coding_selection(platform=SURFACES[source], cwd=cwd, config=config) is not None
+        return in_focus_workspace(platform=SURFACES[source], cwd=cwd, config=config)
     except Exception:
         logger.debug('coding posture detection failed for %s; keeping the profile default', cwd, exc_info=True)
         return False

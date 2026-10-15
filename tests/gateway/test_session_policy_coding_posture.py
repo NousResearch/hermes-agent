@@ -95,7 +95,6 @@ def test_only_session_create_opts_into_the_workspace_posture(project):
     assert build_policy({'source': 'cli', 'cwd': str(project)}, FOCUS).toolsets == ('terminal',)
 
 
-
 @pytest.mark.asyncio
 async def test_session_create_selects_the_posture_for_its_named_folder(project, tmp_path, monkeypatch):
     """The real ``session.create`` path (``create_local_session``), not a direct ``build_policy`` call."""
@@ -111,8 +110,11 @@ async def test_session_create_selects_the_posture_for_its_named_folder(project, 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {**FOCUS, 'model': {'default': 'm'}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False)
-    authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='posture')
-    actor = Principal('owner', str(tmp_path), frozenset({'session:create', 'session:read'}), 'socket')
-    ref = create_local_session(authority, actor, {'request_id': 'r', 'source': 'cli', 'cwd': str(project)})
-    policy = local_receipt(store._db, ref.session_id)['policy']
+    try:
+        authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='posture')
+        actor = Principal('owner', str(tmp_path), frozenset({'session:create', 'session:read'}), 'socket')
+        ref = create_local_session(authority, actor, {'request_id': 'r', 'source': 'cli', 'cwd': str(project)})
+        policy = local_receipt(store._db, ref.session_id)['policy']
+    finally:
+        store._db.close()
     assert policy['coding_posture'] is True and policy['toolsets'] == ['coding']

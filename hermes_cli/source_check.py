@@ -388,7 +388,10 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
                       cache_path: Path | None = None, branch_config_path: Path | None = None,
                       force: bool = False,
                       passive: bool = False, git: str = "git") -> dict:
-    """Return a presentation-ready status. Omitted branch follows the current checkout.
+    """Return a presentation-ready status, comparing official installs to their channel.
+
+    Explicit branch pins and non-official origins retain their branch selection.
+    Comparing a channel never switches the checkout or discards local commits.
 
     Only the default (running installation) may use HERMES_REVISION. An explicit
     target must never inherit the host process's embedded revision or stamp.
@@ -421,8 +424,8 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     else:
         result["branch"] = selected_branch
     identity = {"root": str(root), "home": str(home), "head": co.head, "origin": co.origin, "branch": selected_branch,
-                "channel": channel, "embedded": embedded, "branchOverride": branch is not None, "channelProtocol": 1,
-                "forwardOnly": forward_only}
+                "channel": channel, "embedded": embedded, "branchOverride": branch is not None,
+                "desktopBranch": configured_branch, "channelProtocol": 2, "forwardOnly": forward_only}
     cache_file = Path(cache_path) if cache_path is not None else home / "source-checks" / f"{install_id(root)}.json"
     now = time.time()
     cached = None if force else _cached_status(cache_file, identity, now)
@@ -435,8 +438,11 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     elif branch is None:
         source_target = _resolve_channel(result, channel, co, forward_only=forward_only)
         if source_target is not None and not source_target.commit:
-            # The record supplies a default, not permission to leave the user's branch.
-            selected_branch = configured_branch or _checked_out_branch(co.current_branch, source_target.branch)
+            # Match the apply target on official installs, without moving HEAD.
+            # Forks and explicit Desktop pins keep their own branch policy.
+            official = co.repository and co.repository.lower() == OFFICIAL_REPOSITORY.lower()
+            selected_branch = configured_branch or (source_target.branch if official else
+                                                     _checked_out_branch(co.current_branch, source_target.branch))
     if "error" not in result and (source_target is None or source_target.branch is not None):
         # Only a Desktop-configured branch the caller did not override is healed.
         heal = branch_config_path and not branch and configured_branch == selected_branch

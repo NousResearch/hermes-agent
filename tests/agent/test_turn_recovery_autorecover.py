@@ -34,6 +34,7 @@ class _Agent:
 
     def __init__(self, *, fallback_left=False, cycles=5, platform="cli"):
         self.statuses, self.waits, self.activated = [], [], []
+        self.sleep_waits = []
         self._fallback_left = fallback_left
         self._auto_recovery_cycles = cycles
         self.platform = platform
@@ -73,9 +74,14 @@ class _Agent:
 def _settle(agent, err, retry=None):
     retry = retry or TurnRetryState(primary_recovery_attempted=True)
     classified = classify_api_error(err, provider=agent.provider)
+
+    def _sleep(agent, wait, *args, **kwargs):
+        agent.sleep_waits.append((wait, agent.run_budget_seconds, agent._run_budget_started_at))
+        return agent.sleep_outcome
+
     with patch("agent.conversation_loop._is_copilot_provider", lambda a: False), \
             patch("agent.conversation_loop._arm_fallback_restart", lambda a, m, s, r: s), \
-            patch("agent.turn_recovery.interruptible_backoff_sleep", lambda agent, *a, **k: agent.sleep_outcome), \
+            patch("agent.turn_recovery.interruptible_backoff_sleep", _sleep), \
             patch("agent.turn_api_error.max_retries_exhausted_result", lambda *a, **k: {"failed": True}), \
             patch("agent.turn_api_error.nonretryable_client_error_result", lambda *a, **k: {"failed": True, "nonretryable": True}):
         return settle_unrecovered_error(
@@ -157,3 +163,35 @@ def test_interrupt_during_ladder_wait_returns_interrupted_result():
     verdict, retry = _settle(agent, _Err(503, "down"))
     assert verdict.action == "return" and verdict.result["interrupted"] is True
     assert retry.auto_recovery_cycles_used == 1
+
+
+def test_ladder_wait_is_capped_by_remaining_run_budget(monkeypatch):
+    from agent import run_budget
+    from agent import turn_recovery_autorecover
+
+    monkeypatch.setattr(run_budget, "remaining_run_budget_seconds", lambda _agent: 3.0)
+    monkeypatch.setattr(turn_recovery_autorecover, "ladder_wait_seconds", lambda *_args: 15.0)
+    agent = _Agent()
+    agent.run_budget_seconds = 10.0
+    agent._run_budget_started_at = 1000.0
+    verdict, retry = _settle(agent, _Err(503, "down"))
+
+    assert verdict.action == "continue"
+    assert retry.auto_recovery_cycles_used == 1
+    assert agent.sleep_waits == [(3.0, 10.0, 1000.0)]
+    assert "in 3s" in agent.statuses[0]
+
+
+def test_expired_run_budget_does_not_start_recovery_cycle(monkeypatch):
+    from agent import run_budget
+
+    monkeypatch.setattr(run_budget, "remaining_run_budget_seconds", lambda _agent: 0.0)
+    agent = _Agent()
+    agent.run_budget_seconds = 7.0
+    agent._run_budget_started_at = 1000.0
+    verdict, retry = _settle(agent, _Err(503, "down"))
+
+    assert verdict.action == "return"
+    assert retry.auto_recovery_cycles_used == 0
+    assert agent.sleep_waits == []
+    assert not any("retrying automatically" in status for status in agent.statuses)

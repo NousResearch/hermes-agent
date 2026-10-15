@@ -67,6 +67,10 @@ class StreamingWaitMonitor:
         while not self._call_done.is_set():
             self._call_done.wait(timeout=0.3)
             _hb_now = time.time()
+            from agent.run_budget import run_budget_expired
+            if run_budget_expired(self.agent):
+                self._kill_for_run_budget()
+                return
             if _is_local_base and self._poll_local_load_notice(_hb_now):
                 continue
             # Reasoning callbacks do not clear the classic CLI spinner. The empty

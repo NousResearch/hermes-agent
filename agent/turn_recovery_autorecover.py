@@ -91,8 +91,14 @@ def auto_recover_after_exhaustion(
         )
         return None
     cycle = used + 1
-    _retry.auto_recovery_cycles_used = cycle
     wait_s = ladder_wait_seconds(cycle, api_error)
+    from agent.run_budget import remaining_run_budget_seconds
+    remaining = remaining_run_budget_seconds(agent)
+    if remaining is not None:
+        if remaining <= 0.0:
+            return None
+        wait_s = min(wait_s, remaining)
+    _retry.auto_recovery_cycles_used = cycle
     notice = ladder_notice(agent, wait_s=wait_s, cycle=cycle, total=total)
     # Durable line on every surface (CLI print, TUI status.update, gateway bubble, api_server SSE)
     # plus the live wait line (spinner / thinking.delta / activity heartbeat).

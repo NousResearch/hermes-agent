@@ -4,8 +4,8 @@ Covers:
 
 1. Stale-timeout deadline scaling in
    ``run_agent.py:AIAgent._compute_non_stream_stale_timeout``:
-   - an active run budget CAPS an implicit stale timeout (default 90s and
-     reasoning floors like deepseek's 600s) at ``max(60, remaining * 0.5)``;
+    - an active run budget caps request watchdogs, including local and explicit
+      stale timeouts, at the remaining wall-clock deadline;
    - the cap never RAISES the timeout above what it would otherwise be;
    - explicit user configuration (provider ``stale_timeout_seconds`` or the
      ``HERMES_API_CALL_STALE_TIMEOUT`` env var) always wins untouched;
@@ -103,7 +103,7 @@ def test_no_budget_stale_timeout_unchanged(monkeypatch, tmp_path):
 def test_active_budget_caps_implicit_reasoning_floor(monkeypatch, tmp_path):
     """deepseek-v4-pro's 600s implicit floor yields to a tighter deadline cap.
 
-    900s budget, 800s elapsed -> remaining 100s -> cap = max(60, 50) = 60s.
+    900s budget, 800s elapsed -> remaining 100s, so the watchdog cannot outlive it.
     """
     import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
@@ -113,10 +113,10 @@ def test_active_budget_caps_implicit_reasoning_floor(monkeypatch, tmp_path):
         run_budget_seconds=900,
     )
     agent._run_budget_started_at = time.time() - 800
-    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 60.0
+    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) <= 100.0
 
-def test_active_budget_cap_half_remaining(monkeypatch, tmp_path):
-    """Cap is remaining * 0.5 when that exceeds the 60s floor."""
+def test_active_budget_cap_never_exceeds_remaining(monkeypatch, tmp_path):
+    """The stale detector cannot be configured beyond the remaining run deadline."""
     import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(
@@ -124,9 +124,9 @@ def test_active_budget_cap_half_remaining(monkeypatch, tmp_path):
         model="deepseek/deepseek-v4-pro",
         run_budget_seconds=900,
     )
-    agent._run_budget_started_at = time.time() - 100  # remaining ~800 -> cap ~400
+    agent._run_budget_started_at = time.time() - 100  # remaining ~800
     timeout = agent._compute_non_stream_stale_timeout({"input": "hi"})
-    assert 395.0 <= timeout <= 400.0
+    assert timeout <= 800.0
 
 def test_active_budget_never_raises_timeout(monkeypatch, tmp_path):
     """The deadline cap NEVER loosens an already-tighter implicit timeout.
@@ -140,22 +140,22 @@ def test_active_budget_never_raises_timeout(monkeypatch, tmp_path):
     agent._run_budget_started_at = time.time() - 10
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == base
 
-def test_explicit_provider_config_wins_over_budget_cap(monkeypatch, tmp_path):
-    """Explicit stale_timeout_seconds is never capped by the run budget."""
+def test_run_budget_caps_explicit_provider_timeout(monkeypatch, tmp_path):
+    """The outer run deadline also bounds a longer profile stale timeout."""
     import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: 1800.0)
     agent = _make_agent(tmp_path, monkeypatch, run_budget_seconds=900)
     agent._run_budget_started_at = time.time() - 800
-    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 1800.0
+    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) <= 100.0
 
-def test_explicit_env_var_wins_over_budget_cap(monkeypatch, tmp_path):
-    """HERMES_API_CALL_STALE_TIMEOUT is explicit config — never capped."""
+def test_run_budget_caps_explicit_env_timeout(monkeypatch, tmp_path):
+    """The outer run deadline also bounds an explicit API stale timeout."""
     import run_agent
     monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
     agent = _make_agent(tmp_path, monkeypatch, run_budget_seconds=900)
     monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "1200")
     agent._run_budget_started_at = time.time() - 800
-    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 1200.0
+    assert agent._compute_non_stream_stale_timeout({"input": "hi"}) <= 100.0
 
 def test_budget_without_started_clock_is_inert(monkeypatch, tmp_path):
     """A configured budget with no running turn clock changes nothing."""
@@ -174,9 +174,9 @@ def test_budget_without_started_clock_is_inert(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     "config_body,env_value,expected",
     [
-        ("", None, 60.0),
-        ("providers:\n  openai:\n    stale_timeout_seconds: 1200\n", None, 1200.0),
-        ("", "900", 900.0),
+        ("", None, 100.0),
+        ("providers:\n  openai:\n    stale_timeout_seconds: 1200\n", None, 100.0),
+        ("", "900", 100.0),
     ],
 )
 def test_cloud_stream_budget_preserves_explicit_deadlines(
@@ -202,8 +202,8 @@ def test_cloud_stream_budget_preserves_explicit_deadlines(
     assert call._stream_stale_timeout == expected
 
 
-def test_local_stream_patience_is_independent_of_run_budget(monkeypatch, tmp_path):
-    """A short remaining run budget does not shorten local model prefill grace."""
+def test_local_stream_stale_timeout_obeys_run_budget(monkeypatch, tmp_path):
+    """The local model prefill grace cannot outlive the run deadline."""
     from agent import chat_completion_helpers as helpers
 
     agent = _make_agent(
@@ -217,7 +217,96 @@ def test_local_stream_patience_is_independent_of_run_budget(monkeypatch, tmp_pat
     without_clock = call._stream_stale_timeout
     agent._run_budget_started_at = time.time() - 800
     call._resolve_stale_timeout()
-    assert call._stream_stale_timeout == without_clock == 900.0
+    assert without_clock == 900.0
+    assert call._stream_stale_timeout <= 100.0
+
+
+def test_interruptible_backoff_stops_at_run_deadline(monkeypatch):
+    """Provider backoff is cut at the same deadline while keeping the normal interrupt path."""
+    from types import SimpleNamespace
+    from agent import turn_recovery
+
+    class Clock:
+        now = 100.0
+
+        def time(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.now += seconds
+
+    clock = Clock()
+    monkeypatch.setattr(turn_recovery.time, "time", clock.time)
+    monkeypatch.setattr(turn_recovery.time, "sleep", clock.sleep)
+    agent = SimpleNamespace(
+        run_budget_seconds=3.0,
+        _run_budget_started_at=100.0,
+        _interrupt_requested=False,
+        _adopt_nous_key_before_expiry=lambda: None,
+    )
+    result = turn_recovery.interruptible_backoff_sleep(
+        agent, 120.0, None, messages=[], conversation_history=[], api_call_count=1,
+        abort_message="", interrupt_text="", activity_label="test",
+    )
+    assert result is None
+    assert 102.99 <= clock.now <= 103.000001
+
+
+def test_expired_budget_prevents_another_provider_attempt(monkeypatch):
+    from types import SimpleNamespace
+    from agent import conversation_loop, run_budget
+
+    monkeypatch.setattr(run_budget, "run_budget_expired", lambda _agent: True)
+    agent = SimpleNamespace(run_budget_seconds=3.0)
+    loop_state = SimpleNamespace(retry_count=0, max_retries=3, run_budget_exhausted=False)
+
+    assert conversation_loop._run_api_retry_loop(agent, loop_state) is None
+    assert loop_state.run_budget_exhausted is True
+
+
+def test_stream_monitor_cuts_off_at_absolute_run_deadline(monkeypatch):
+    from threading import Event
+    from types import SimpleNamespace
+    from agent import chat_completion_stream_monitor, run_budget
+    from agent.chat_completion_helpers import _StreamingCall
+
+    call = object.__new__(_StreamingCall)
+    call._call_done = Event()
+    call.agent = SimpleNamespace(base_url=None)
+    call.api_kwargs = {"model": "test"}
+    call.last_chunk_time = {"t": time.time()}  # activity is fresh; stale logic must not fire
+    call._stream_stale_timeout = 300.0
+    killed = []
+    call._kill_for_run_budget = lambda: killed.append(True)
+    monkeypatch.setattr(run_budget, "run_budget_expired", lambda _agent: True)
+
+    chat_completion_stream_monitor.StreamingWaitMonitor._monitor_loop(call)
+
+    assert killed == [True]
+
+
+def test_expired_run_budget_skips_iteration_summary(monkeypatch):
+    from types import SimpleNamespace
+    from agent import run_budget, turn_finalizer
+
+    monkeypatch.setattr(run_budget, "run_budget_expired", lambda _agent: True)
+    agent = SimpleNamespace(
+        max_iterations=2,
+        iteration_budget=SimpleNamespace(remaining=0),
+        run_budget_seconds=3.0,
+        quiet_mode=True,
+    )
+    agent._emit_diagnostic_status = lambda *_args: None
+    agent._handle_max_iterations = lambda *_args: pytest.fail("summary request exceeded the run budget")
+
+    final, reason, _preserved, interrupted = turn_finalizer._resolve_budget_fallback(
+        agent, final_response=None, api_call_count=2, interrupted=False, failed=False,
+        messages=[], _turn_exit_reason="unknown", _pending_verification_response=None,
+        _pending_verification_response_previewed=False, logger=None,
+    )
+    assert reason == "run_budget_exhausted"
+    assert "budget" in final.lower()
+    assert interrupted is False
 
 
 # ── wrap-up injection one-time-ness ────────────────────────────────────────

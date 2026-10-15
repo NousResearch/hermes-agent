@@ -18,7 +18,7 @@ from hermes_constants import display_hermes_home
 # Failure codes minted by loop sites that are not provider verdicts (see module docstring).
 SITE_FAILURE_CODES = frozenset({
     "context_overflow", "truncated", "invalid_response", "empty_response", "loop_error",
-    "interpreter_shutdown", "session_busy", "gateway_connection",
+    "interpreter_shutdown", "session_busy", "gateway_connection", "run_budget_exhausted",
 })
 
 
@@ -91,6 +91,7 @@ class ExitFailure(NamedTuple):
 # (exit-reason prefix, failure_reason, retryable, fails_turn). Prefix match: several reasons
 # carry a parenthesised detail (``local_processing_error(...)``).
 _EXIT_REASON_FAILURES: tuple[tuple[str, str, bool, bool], ...] = (
+    ("run_budget_exhausted", "run_budget_exhausted", True, True),
     # Advisory: the reasoning-only text may literally be the answer, and cron stays silent.
     ("empty_response_exhausted", "empty_response", True, False),
     ("all_retries_exhausted_no_response", FailoverReason.server_error.value, True, True),
@@ -270,6 +271,10 @@ def failure_cause_gloss(reason: Any, *, subject: str = "it", possessive: str = "
 # Chat copy for the codes in SITE_FAILURE_CODES that a loop site renders itself
 # (``empty_response`` is worded by agent/turn_explainers.py, ``session_busy`` by the lease).
 _FAILURE_CODE_COPY: dict[str, str] = {
+    "run_budget_exhausted": (
+        "Hermes stopped this turn when its configured run time budget expired. "
+        "Some actions may already have run; verify their effects before resending."
+    ),
     "context_overflow": (
         "This conversation has grown too long for {model} to read, and Hermes couldn't shrink "
         "it enough automatically. Start a new session with /new (your history is kept), or try "

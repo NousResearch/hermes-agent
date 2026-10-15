@@ -1356,6 +1356,13 @@ def interruptible_backoff_sleep(
     On interrupt with ``_retry`` given and a redirect pending: preserve the redirect, arm
     ``_retry.restart_with_redirected_messages`` and return ``None`` (caller rebuilds the
     turn). Otherwise return the ``interrupted`` result dict. ``None`` when the wait completed."""
+    from agent.run_budget import remaining_run_budget_seconds
+
+    remaining = remaining_run_budget_seconds(agent)
+    if remaining is not None:
+        if remaining <= 0.0:
+            return None
+        wait_time = min(wait_time, remaining)
     sleep_end = time.time() + wait_time
     _touch_counter = 0
     while time.time() < sleep_end:
@@ -1367,13 +1374,15 @@ def interruptible_backoff_sleep(
                 agent, messages, conversation_history, api_call_count,
                 abort_message=abort_message, interrupt_text=interrupt_text,
             )
-        time.sleep(0.2)
+        time.sleep(min(0.2, max(0.0, sleep_end - time.time())))
         _touch_counter += 1
         if _touch_counter % 150 == 0:  # 150 × 0.2s = 30s
             agent._touch_activity(f"{activity_label}, {int(sleep_end - time.time())}s remaining")
     # A long wait can outlive a short-lived credential (the free tier's JWT lives 15 minutes), and
     # the per-iteration pre-expiry adoption does not run between retries.
-    agent._adopt_nous_key_before_expiry()
+    remaining = remaining_run_budget_seconds(agent)
+    if remaining is None or remaining > 0.0:
+        agent._adopt_nous_key_before_expiry()
     return None
 
 

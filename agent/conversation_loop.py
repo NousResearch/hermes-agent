@@ -1437,6 +1437,7 @@ class _LoopState:
     # A compression host-timeout ended the turn; finalize reuses the gateway context-recovery
     # contract (error/partial/compression_exhausted) (#98722).
     _compression_timeout_exhausted: bool = False
+    run_budget_exhausted: bool = False
     _turn_exit_reason: str = "unknown"  # diagnostic: why the loop ended
     # Answer held back by a verification gate (best user-facing result if the continuation
     # exhausts the budget) and whether it was streamed as interim; ``_response_was_previewed``
@@ -1508,6 +1509,10 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
     Returns a turn result dict when a phase ends the turn, else None once the loop is left
     (success, a restart armed on ``s._retry``, interrupt, or retries exhausted)."""
     while s.retry_count < s.max_retries:
+        from agent.run_budget import run_budget_expired
+        if run_budget_expired(agent):
+            s.run_budget_exhausted = True
+            return None
         _ng = _run_phase(nous_rate_limit_guard, agent, s)
         if _ng.action == "return":
             return _ng.result
@@ -1515,7 +1520,13 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
             return None
         try:
             _run_phase(build_api_request, agent, s)
+            if run_budget_expired(agent):
+                s.run_budget_exhausted = True
+                return None
             if _run_phase(perform_api_call, agent, s).action == "break":
+                return None
+            if run_budget_expired(agent):
+                s.run_budget_exhausted = True
                 return None
             _rc = _run_phase(check_api_response, agent, s)
             if _rc.action == "return":
@@ -1531,6 +1542,9 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[dict[str, Any]]:
                 return _ae.result
             if _ae.action == "break":
                 return None
+    from agent.run_budget import run_budget_expired
+    if run_budget_expired(agent):
+        s.run_budget_exhausted = True
     return None
 
 
@@ -1656,6 +1670,17 @@ def _run_conversation_turn(
     while _prelude_action != "break" and (
         (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call
     ):
+        from agent.run_budget import run_budget_expired
+        if run_budget_expired(agent):
+            s.run_budget_exhausted = True
+        if s.run_budget_exhausted:
+            s.failed = True
+            s._turn_exit_reason = "run_budget_exhausted"
+            s.final_response = (
+                f"The configured run time budget ({agent.run_budget_seconds:g}s) expired. "
+                "Hermes stopped provider retries and automatic recovery."
+            )
+            break
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)
@@ -1676,6 +1701,14 @@ def _run_conversation_turn(
         early_result = _run_api_retry_loop(agent, s)
         if early_result is not None:
             return early_result
+        if s.run_budget_exhausted:
+            s.failed = True
+            s._turn_exit_reason = "run_budget_exhausted"
+            s.final_response = (
+                f"The configured run time budget ({agent.run_budget_seconds:g}s) expired. "
+                "Hermes stopped provider retries and automatic recovery."
+            )
+            break
 
         _rs = _run_phase(apply_retry_restarts, agent, s)
         if _rs.action == "break":

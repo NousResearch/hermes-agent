@@ -6,6 +6,7 @@ No existing cron/child/compute consumer is switched until its inventory is cover
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -59,16 +60,60 @@ class WorkerRPC:
 
     websockets.sync owns a dedicated frame receiver, independent of the caller.
     No owner-loop synchronous self-RPC or SQLite fallback is permitted.
+    One connection serves every call (serialized by ``lock``, correlated by id); it is
+    discovered, identified and ticketed on connect exactly as each call once was.
     """
     def __init__(self, home):
         self.home = Path(home).resolve()
         self.lock = threading.Lock()
         self.endpoint = None
+        self.ws = None
+        self.request_id = 0
 
-    def __call__(self, method, **params):
+    def _connection(self):
+        from websockets.exceptions import ConnectionClosed
+        if self.ws is not None:
+            try:
+                # Discard events broadcast between calls; a close the owner sent surfaces here, before any send.
+                while True:
+                    self.ws.recv(timeout=0)
+            except TimeoutError:
+                return self.ws
+            except ConnectionClosed:
+                self._drop()
         from hermes_cli.gateway_client import _session_ticket, gateway_ws_target
         from hermes_cli.gateway_runtime_discovery import query_identify
         from websockets.sync.client import connect
+        # A served secondary has no socket; its multiplexer's descriptor names it.
+        from hermes_cli.gateway_runtime import discover_gateway_endpoint
+        discovery = discover_gateway_endpoint(self.home, timeout=5)
+        if discovery.state == 'ready' and discovery.endpoint is not None:
+            self.endpoint = discovery.endpoint
+        elif discovery.state != 'draining' or self.endpoint is None:
+            raise WorkerPersistenceError('owner_unavailable')
+        from hermes_cli.gateway_runtime import control_home_for
+        endpoint = self.endpoint
+        descriptor = query_identify(control_home_for(self.home, endpoint), timeout=5)
+        if descriptor.get('pid') == os.getpid():
+            raise WorkerPersistenceError('synchronous_self_rpc')
+        ticket = _session_ticket(self.home, endpoint, purpose='worker-adoption')
+        url, protocols = gateway_ws_target(endpoint, ticket)
+        # The owner is loopback, like connect_gateway's peer: an inherited HTTPS_PROXY must not carry it.
+        self.ws = connect(url, subprotocols=protocols,
+                          open_timeout=5, close_timeout=1, max_size=8 * 1024 * 1024, proxy=None)
+        return self.ws
+
+    def _drop(self):
+        ws, self.ws = self.ws, None
+        if ws is not None:
+            with contextlib.suppress(OSError):  # a broken socket is already gone
+                ws.close()
+
+    def close(self):
+        with self.lock:
+            self._drop()
+
+    def __call__(self, method, **params):
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -78,24 +123,11 @@ class WorkerRPC:
                            method, threading.current_thread().name, _caller_summary())
             raise WorkerPersistenceError('synchronous_rpc_on_event_loop')
         with self.lock:
-            # A served secondary has no socket; its multiplexer's descriptor names it.
-            from hermes_cli.gateway_runtime import discover_gateway_endpoint
-            discovery = discover_gateway_endpoint(self.home, timeout=5)
-            if discovery.state == 'ready' and discovery.endpoint is not None:
-                self.endpoint = discovery.endpoint
-            elif discovery.state != 'draining' or self.endpoint is None:
-                raise WorkerPersistenceError('owner_unavailable')
-            from hermes_cli.gateway_runtime import control_home_for
-            endpoint = self.endpoint
-            descriptor = query_identify(control_home_for(self.home, endpoint), timeout=5)
-            if descriptor.get('pid') == os.getpid():
-                raise WorkerPersistenceError('synchronous_self_rpc')
-            ticket = _session_ticket(self.home, endpoint, purpose='worker-adoption')
-            url, protocols = gateway_ws_target(endpoint, ticket)
-            # The owner is loopback, like connect_gateway's peer: an inherited HTTPS_PROXY must not carry it.
-            with connect(url, subprotocols=protocols,
-                         open_timeout=5, close_timeout=1, max_size=8 * 1024 * 1024, proxy=None) as ws:
-                ws.send(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}))
+            self.request_id += 1
+            request_id = self.request_id
+            try:
+                ws = self._connection()
+                ws.send(json.dumps({'jsonrpc': '2.0', 'id': request_id, 'method': method, 'params': params}))
                 import time
                 deadline = time.monotonic() + 20
                 while True:
@@ -103,14 +135,18 @@ class WorkerRPC:
                     if remaining <= 0:
                         raise TimeoutError('worker_receipt_timeout')
                     response = json.loads(ws.recv(timeout=remaining))
-                    if response.get('id') == 1:
+                    if response.get('id') == request_id:
                         break
-                if 'error' in response:
-                    raise WorkerPersistenceError(response['error'].get('message', 'persistence_failed'))
-                if method in ('worker.register', 'worker.adopt') and params.get('pid') == os.getpid():
-                    global _worker_process
-                    _worker_process = True
-                return response['result']
+            except BaseException:
+                # Outcome unknown once sent: surface the error and never resend; the next call redials.
+                self._drop()
+                raise
+            if 'error' in response:
+                raise WorkerPersistenceError(response['error'].get('message', 'persistence_failed'))
+            if method in ('worker.register', 'worker.adopt') and params.get('pid') == os.getpid():
+                global _worker_process
+                _worker_process = True
+            return response['result']
 
 
 from agent.runtime_session_compression import RuntimeSessionCompressionMixin

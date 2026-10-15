@@ -278,17 +278,23 @@ def _detect_profile(mode: str, platform: str, cwd: Path) -> ContextProfile:
 
 
 def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
-    """Names of MCP servers the user has enabled — kept in the coding posture."""
+    """Names of MCP servers the user has enabled — kept in the coding posture. The profile default's
+    resolver, so plugin-provided servers stay too; *config* None reads the user's config."""
     try:
         from hermes_cli.config import read_raw_config
-        from tools.mcp_tool_common import mcp_server_enabled
-        servers = read_raw_config().get("mcp_servers") or {}
-        return [
-            str(name) for name, cfg in servers.items()
-            if isinstance(cfg, dict) and mcp_server_enabled(cfg)
-        ]
+        from hermes_cli.tools_config import enabled_mcp_server_names
+        return sorted(enabled_mcp_server_names(read_raw_config() if config is None else config))
     except Exception:
+        logger.debug("Could not list enabled MCP servers for the coding posture", exc_info=True)
         return []
+
+
+def focus_toolsets(config: Optional[dict[str, Any]]) -> Optional[list[str]]:
+    """The coding posture's toolsets when ``agent.coding_context`` is ``focus``, else None, for a
+    session whose workspace decision is already made (no cwd probe)."""
+    if _coding_mode(config) != "focus":
+        return None
+    return [CODING_TOOLSET, *_enabled_mcp_servers(config)]
 
 
 # ── RuntimeMode (the seam) ──────────────────────────────────────────────────
@@ -321,7 +327,7 @@ class RuntimeMode:
         apply it only when the user hasn't pinned a selection (``--toolsets``, ``HERMES_TUI_TOOLSETS``)."""
         if self.config_mode != "focus" or self.profile.toolset is None:
             return None
-        return [self.profile.toolset, *_enabled_mcp_servers(config)]
+        return focus_toolsets(config)  # the one builder of the posture's list
 
     def system_prompt_parts(self, valid_tool_names=None, workspace_block: Optional[str] = None) -> tuple[list[str], list[str], list[str]]:
         """Return (prefix, workspace, trailing) posture blocks in the historical flat order —
@@ -391,8 +397,16 @@ def is_coding_context(*, platform: Optional[str] = None, cwd: Optional[str | Pat
     return resolve_runtime_mode(platform=platform, cwd=cwd, config=config).is_coding
 
 
+def in_focus_workspace(*, platform: Optional[str] = None, cwd: Optional[str | Path] = None, config: Optional[dict[str, Any]] = None) -> bool:
+    """Whether *cwd* selects the coding posture's toolsets (``focus`` and a code workspace), without
+    building them; ``focus_toolsets`` builds them once the decision is made."""
+    return _coding_mode(config) == "focus" and is_coding_context(platform=platform, cwd=cwd, config=config)
+
+
 def coding_selection(*, platform: Optional[str] = None, cwd: Optional[str | Path] = None, config: Optional[dict[str, Any]] = None) -> Optional[list[str]]:
     """Toolset selection for the coding posture (``None`` unless ``focus`` and active)."""
+    if _coding_mode(config) != "focus":  # only focus swaps toolsets: skip the workspace probe
+        return None
     return resolve_runtime_mode(platform=platform, cwd=cwd, config=config).toolset_selection(config)
 
 

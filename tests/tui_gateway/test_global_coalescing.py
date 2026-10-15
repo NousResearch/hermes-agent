@@ -64,7 +64,7 @@ def test_global_full_state_invalidations_coalesce_before_backlog_limit():
         fanout.write({"method": "event", "params": {"type": "skin.changed"}})
         assert entered.wait(3)
         for tick in range(300):
-            assert fanout.write({"method": "event", "params": {"type": "sessions.changed", "payload": {"tick": tick}})
+            assert fanout.write({"method": "event", "params": {"type": "sessions.changed", "payload": {"tick": tick}}})
         release.set()
         assert done.wait(3)
         assert received[1]["params"]["payload"] == {"tick": 299}

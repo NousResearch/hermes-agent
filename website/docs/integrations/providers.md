@@ -616,6 +616,8 @@ model:
   default: "nvidia/nemotron-3.5-super-vl-120b-a12b"
 ```
 
+For issues with the Nemotron models themselves, see the [NVIDIA Nemotron developer forum](https://forums.developer.nvidia.com/c/ai-data-science/nvidia-nemotron/669).
+
 ### GMI Cloud
 
 Open and reasoning models via [GMI Cloud](https://www.gmicloud.ai/) — OpenAI-compatible API, API key authentication.

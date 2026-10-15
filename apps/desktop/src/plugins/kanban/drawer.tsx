@@ -22,6 +22,7 @@ import {
   DropdownMenuTrigger,
   ErrorState,
   host,
+  Input,
   isSubmitEnter,
   Loader,
   LogView,
@@ -77,7 +78,6 @@ import {
   isLockedTarget,
   type KanbanText,
   lockedReason,
-  PriorityGlyph,
   ScrollFade,
   Section,
   shortId,
@@ -202,6 +202,80 @@ function MetaRow({ children, label }: { children: ReactNode; label: string }) {
     <Section label={label}>
       <div className="min-w-0 text-[0.75rem] text-(--ui-text-secondary) [overflow-wrap:anywhere]">{children}</div>
     </Section>
+  )
+}
+
+// Priority edits in place: saves on blur or Enter, Esc restores the saved
+// value, empty or fractional input is rejected, and a failed save rolls back
+// to the authoritative value. A refetch never overwrites an in-progress edit.
+function PriorityField({
+  label,
+  onSave,
+  priority
+}: {
+  label: string
+  onSave: (priority: number) => Promise<unknown>
+  priority: number
+}) {
+  const [draft, setDraft] = useState(String(priority))
+  const [pending, setPending] = useState(false)
+  const focused = useRef(false)
+
+  useEffect(() => {
+    if (!focused.current && !pending) {
+      setDraft(String(priority))
+    }
+  }, [pending, priority])
+
+  const reset = () => setDraft(String(priority))
+
+  const save = async () => {
+    focused.current = false
+    const next = Number(draft)
+
+    if (!draft.trim() || !Number.isInteger(next) || next === priority) {
+      reset()
+
+      return
+    }
+
+    setPending(true)
+
+    try {
+      await onSave(next)
+    } catch (err) {
+      reset()
+      host.notify({ kind: 'error', message: errText(err) })
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <Input
+      aria-label={label}
+      className="w-20"
+      data-priority-draft={draft === String(priority) ? undefined : 'dirty'}
+      disabled={pending}
+      onBlur={() => void save()}
+      onChange={event => setDraft(event.target.value)}
+      onFocus={() => {
+        focused.current = true
+      }}
+      onKeyDown={event => {
+        if (event.key === 'Enter') {
+          event.preventDefault()
+          event.currentTarget.blur()
+        } else if (event.key === 'Escape') {
+          // The dialog leaves a dirty draft's Escape to us (see onEscapeKeyDown).
+          reset()
+        }
+      }}
+      size="sm"
+      step={1}
+      type="number"
+      value={draft}
+    />
   )
 }
 
@@ -870,6 +944,14 @@ export function TaskDrawer({
     void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
   }
 
+  const savePriority = async (priority: number) => {
+    await patchTask(id!, { priority })
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: taskKey(scope, slug, id!) }),
+      qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
+    ])
+  }
+
   // Optimistic status change against the task cache; rolls back + toasts on a
   // rejected transition (the backend enforces the workflow).
   const moveMut = useMutation({
@@ -971,6 +1053,13 @@ export function TaskDrawer({
         aria-describedby={undefined}
         bodyClassName="flex max-h-[min(84vh,54rem)] flex-col gap-0 overflow-hidden p-0"
         className="w-[min(62rem,94vw)] max-w-none"
+        onEscapeKeyDown={event => {
+          // One cancel gesture does one thing: Escape abandons an unsaved
+          // priority edit first; the next one closes the dialog.
+          if (event.target instanceof HTMLElement && event.target.dataset.priorityDraft === 'dirty') {
+            event.preventDefault()
+          }
+        }}
         showCloseButton={false}
       >
         <header className="flex flex-col gap-2 px-5 pt-4 pb-3">
@@ -1105,11 +1194,9 @@ export function TaskDrawer({
                     onReassign={profile => void mutate(() => reassignTask(task.id, profile))()}
                   />
                 </MetaRow>
-                {typeof task.priority === 'number' && (
-                  <MetaRow label={k.metaPriority}>
-                    <PriorityGlyph priority={task.priority} />
-                  </MetaRow>
-                )}
+                <MetaRow label={k.metaPriority}>
+                  <PriorityField label={k.metaPriority} onSave={savePriority} priority={task.priority ?? 0} />
+                </MetaRow>
                 {task.tenant && <MetaRow label={k.metaTenant}>{task.tenant}</MetaRow>}
                 {/* #124391 — block detail the API already returns. The kind is
                     retained across unblock, so present it as CURRENT only

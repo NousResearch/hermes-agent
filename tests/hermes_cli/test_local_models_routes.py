@@ -159,8 +159,33 @@ def test_hardware_plain_facts(client):
     assert isinstance(data["uma"], bool)
     assert data["ram_total_bytes"] > 0
     assert data["vram_total_bytes"] >= 0
-    # GPU fields are None-able (non-NVIDIA machines) but must exist.
+    # GPU identity and live utilization may be unavailable, but fields must exist.
     assert "gpu_name" in data and "gpu_util_percent" in data and "vram_used_bytes" in data
+
+
+def test_hardware_shows_hip_gpu_on_mixed_vendor_host(client, monkeypatch):
+    from hermes_cli.local_runtime import hardware
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_cli.web_routers import local_models
+
+    monkeypatch.setattr(hardware, "probe_budget", lambda: HardwareBudget(
+        usable_vram_bytes=30 << 30, total_device_bytes=32 << 30,
+        ram_available_bytes=32 << 30, gpu_name="AMD Radeon AI PRO R9700"))
+    monkeypatch.setattr(hardware, "_ram_bytes", lambda: (64 << 30, 32 << 30))
+    monkeypatch.setattr(hardware, "_nvidia_device_selected", lambda: False)
+    monkeypatch.setattr(local_models, "_nvidia_smi_facts", lambda: {
+        "gpu_name": "NVIDIA GeForce RTX 4060 Ti",
+        "gpu_util_percent": 42,
+        "vram_used_bytes": 8 << 30,
+    })
+
+    response = client.get("/api/local-models/hardware")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["gpu_name"] == "AMD Radeon AI PRO R9700"
+    assert data["vram_total_bytes"] == 32 << 30
+    assert data["gpu_util_percent"] is None
+    assert data["vram_used_bytes"] is None
 
 
 # ── catalog ──────────────────────────────────────────────────

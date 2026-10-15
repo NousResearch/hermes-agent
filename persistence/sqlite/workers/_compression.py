@@ -215,14 +215,14 @@ def worker_history(holder, conn, sid, payload):
         include_row_ids=payload['include_row_ids'])}
 
 
-def archive_on_connection(holder, conn, session_id: str, compacted_messages: list[dict[str, Any]], model_config_patch: Optional[dict[str, Any]]=None, watermark: Optional[int]=None, lock_holder: Optional[str]=None, tail_count: int=0, carried_messages: Optional[list[dict[str, Any]]]=None, covered_ids: Optional[list[int]]=None, unresolved_held: Optional[list[dict[str, Any]]]=None, held_for_cas: Optional[list[dict[str, Any]]]=None):
+def archive_on_connection(holder, conn, session_id: str, compacted_messages: list[dict[str, Any]], model_config_patch: Optional[dict[str, Any]]=None, watermark: Optional[int]=None, lock_holder: Optional[str]=None, tail_count: int=0, carried_messages: Optional[list[dict[str, Any]]]=None, covered_ids: Optional[list[int]]=None, unresolved_held: Optional[list[dict[str, Any]]]=None, held_for_cas: Optional[list[dict[str, Any]]]=None, system_prompt: Optional[str]=None):
     # The owner's in-place compaction body, on this receipt's connection: one implementation, so
     # main's coverage/merge/timestamp/display-order fixes reach worker and mutation verbs too.
     from ..conversation._store.messages import _archive_and_compact_on_conn
     return _archive_and_compact_on_conn(holder, conn, session_id, compacted_messages,
         model_config_patch=model_config_patch, watermark=watermark, lock_holder=lock_holder,
         tail_count=tail_count, carried_messages=carried_messages, covered_ids=covered_ids,
-        unresolved_held=unresolved_held, held_for_cas=held_for_cas)
+        unresolved_held=unresolved_held, held_for_cas=held_for_cas, system_prompt=system_prompt)
 
 
 def publish_on_connection(holder, conn, *, parent_session_id: str, child_session_id: str, source: str, messages: list[dict[str, Any]], model: str | None=None, model_config: dict[str, Any] | None=None, system_prompt: str | None=None, cwd: str | None=None, profile_name: str | None=None, compression_lock_holder: str | None=None, require_compression_lease: bool=True, require_lease_refresh: bool=False, lease_ttl_seconds: float=300.0, watermark: Optional[int]=None, watermark_ceiling: Optional[int]=None):
@@ -263,7 +263,10 @@ def _watermarks(payload):
 
 def worker_archive(holder, conn, sid, payload):
     _fields(payload, ('messages', 'model_config_patch', 'watermark', 'lock_holder', 'tail_count'),
-            optional=('carried_messages', 'covered_ids', 'unresolved_held', 'held_for_cas'))
+            optional=('carried_messages', 'covered_ids', 'unresolved_held', 'held_for_cas', 'system_prompt'))
+    system_prompt = payload.get('system_prompt')
+    if system_prompt is not None and not isinstance(system_prompt, str):
+        raise AuthorityRefusal('invalid_params')
     _handoff_messages(conn, sid, payload['messages'])
     carried = payload.get('carried_messages') or []
     if not isinstance(carried, list) or any(not isinstance(m, dict) for m in carried):
@@ -293,7 +296,7 @@ def worker_archive(holder, conn, sid, payload):
         raise AuthorityRefusal('invalid_params')
     value = archive_on_connection(holder, conn, sid, payload['messages'], model_config_patch=patch,
         watermark=payload['watermark'], lock_holder=payload['lock_holder'], tail_count=payload['tail_count'],
-        carried_messages=carried, covered_ids=covered, unresolved_held=unresolved, held_for_cas=cas)
+        carried_messages=carried, covered_ids=covered, unresolved_held=unresolved, held_for_cas=cas, system_prompt=system_prompt)
     return {'value': value, 'annotations': row_annotations(payload['messages'])}
 
 

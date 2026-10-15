@@ -134,12 +134,25 @@ def _bounded_carrier_text(
     return None
 
 
+def _is_persisted_tool_carrier(message: dict[str, Any], event_id: str) -> bool:
+    metadata = message.get("display_metadata")
+    if not isinstance(metadata, dict):
+        return False
+    identities = metadata.get("delegation_event_ids")
+    return (
+        message.get("_db_persisted") is True
+        and message.get("role") == "tool"
+        and metadata.get("delegation_delivery") == "tool_boundary"
+        and isinstance(identities, list)
+        and event_id in identities
+    )
+
+
 def _durable_event_is_in_history(
     messages: list[dict[str, Any]], event_id: str
 ) -> bool:
     return any(
-        message.get("_db_persisted") is True
-        and event_id in _message_event_ids(message)
+        _is_persisted_tool_carrier(message, event_id)
         for message in messages
         if isinstance(message, dict)
     )
@@ -304,8 +317,12 @@ def acknowledge_pending_injects(agent: Any, *, turn_id: str | None = None) -> in
             keep.append(entry)
             continue
         message = entry.get("message")
-        # A successful no-op flush (persistence-disabled agents) is NOT a receipt.
-        if not isinstance(message, dict) or message.get("_db_persisted") is not True:
+        # A successful no-op flush (persistence-disabled agents) is NOT a receipt,
+        # nor is a fallback write after this carrier was rolled back in RAM.
+        if (
+            not isinstance(message, dict)
+            or not _is_persisted_tool_carrier(message, str(entry.get("event_id") or ""))
+        ):
             keep.append(entry)
             continue
         try:

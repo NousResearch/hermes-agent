@@ -110,8 +110,11 @@ cache break — keep it the only one. Full detail:
 `agent/memory_provider.py` (ABC) + `agent/memory_manager.py` (orchestrator) drive memory-provider
 plugins; `agent/context_engine.py` drives context-engine plugins; `agent/image_gen_provider.py`
 image-gen plugins (all in `plugins/AGENTS.md`). `agent/curator.py` + `curator_backup.py` implement
-the skill curator (`skills/AGENTS.md`). Cron sessions pass `skip_memory=True` by default — memory
-providers intentionally do not run during cron.
+the skill curator (`skills/AGENTS.md`). Cron sessions pass `skip_memory=False`: built-in
+MEMORY.md/USER.md and configured external memory providers are available, while toolsets and
+writes remain subject to existing configuration and native approval/skill guards. Cron keeps
+`skip_background_review=True` to avoid the ~30K post-turn review fork; the prompt enables
+selective in-turn learning through the existing Memory and skill tools.
 
 - End-of-session memory extraction and provider `on_session_end` run wherever the session ends —
   turn, eviction, shutdown, `tui_gateway` teardown — and the CALLER binds the owning profile's scope

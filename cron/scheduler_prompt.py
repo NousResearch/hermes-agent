@@ -239,7 +239,14 @@ _CRON_HINT = (
     "the task now. NEVER create or update a cron job because of "
     "recurring or future-schedule language in the task prompt below; "
     "treat phrasing like \"each Monday\" or \"every day at 9\" as "
-    "context for this run, not as a request to schedule another job.]\n\n"
+    "context for this run, not as a request to schedule another job. "
+    "LEARNING: Before a recurring task, use the available skills index and skill_view to load "
+    "a relevant skill, when that tool is available. After a run, if it produced a verified, "
+    "reusable procedure or correction, update the matching skill via skill_manage when "
+    "available (create only if no suitable skill exists); otherwise skip. Keep evidence in "
+    "this run's task/session record and write the lesson, not a log, date, or incident ID. "
+    "Use memory only for stable facts that apply across tasks; use its normal schema and "
+    "write-approval flow, and leave pending proposals untouched.]\n\n"
 )
 
 

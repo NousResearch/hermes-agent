@@ -2405,7 +2405,7 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         skip_context_files=not bool(workdir),
         load_soul_identity=True,
         skip_memory=False,
-        skip_background_review=True,  # Cron has no human-in-the-loop need for skill/memory review forks (~30K tok/event)
+        skip_background_review=True,  # Selective learning stays in-turn; the review fork costs ~30K tokens/event.
         platform="cron",
         session_id=session_id,
         session_db=session_db,

@@ -1706,6 +1706,14 @@ class TestBuildJobPromptSilentHint:
         assert "[SILENT]" in result
         assert "Check for updates" in result
 
+    def test_selective_learning_uses_existing_skill_and_memory_paths(self):
+        result = _build_job_prompt({"prompt": "Check for updates"})
+        assert "LEARNING:" in result
+        assert "skill_view" in result and "skill_manage" in result
+        assert "task/session record" in result
+        assert "write-approval flow" in result
+        assert "pending proposals untouched" in result
+
 
 class TestBuildJobPromptRecursionGuard:
     """Verify _build_job_prompt tells the agent this is an execution, not a

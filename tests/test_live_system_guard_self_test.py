@@ -189,6 +189,33 @@ def test_subprocess_run_systemctl_read_only_or_foreign_unit_passes_guard(cmd):
         subprocess.run(cmd, env={"PATH": "/nonexistent"}, check=False)
 
 
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        ["bash", "-c", r"systemctl st\op hermes.service"],
+        ["bash", "-c", r"systemctl --user rest\art hermes-dashboard"],
+        r"systemctl --user re\start hermes-serve.service",
+        ["bash", "-c", "sh -c 'systemctl --user restart hermes-dashboard'"],
+    ],
+)
+def test_subprocess_run_shell_escaped_or_nested_verb_blocked(cmd):
+    """The shell runs ``rest\\art`` as ``restart``; the guard must read it the same way."""
+    with pytest.raises(RuntimeError, match="live-system guard"):
+        subprocess.run(cmd, shell=isinstance(cmd, str), check=False)
+
+
+def test_a_test_owned_unit_can_be_cleaned_up_but_no_other(request):
+    """A unit the test created under its own name may be stopped; every other Hermes unit stays refused."""
+    owned = "hermes-worker-kanban-t_selftest-run-1.scope"
+    request.node.live_system_guard_owned_units = {owned}
+    with pytest.raises(FileNotFoundError):
+        subprocess.run(["systemctl", "--user", "stop", owned], env={"PATH": "/nonexistent"}, check=False)
+    with pytest.raises(RuntimeError, match="live-system guard"):
+        subprocess.run(["systemctl", "--user", "stop", owned, "hermes-dashboard.service"], check=False)
+    with pytest.raises(RuntimeError, match="live-system guard"):
+        subprocess.run(["systemctl", "--user", "stop", "hermes-worker-kanban-other-run-1.scope"], check=False)
+
+
 def test_subprocess_run_setsid_systemctl_blocked():
     with pytest.raises(RuntimeError, match="live-system guard"):
         subprocess.run(["setsid", "systemctl", "kill", "hermes-gateway"], check=False)

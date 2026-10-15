@@ -223,10 +223,23 @@ def _live_system_guard(request, monkeypatch):
         low = cmd_str.lower()
         return any(tok in low for tok in _HERMES_TOKENS)
 
-    def _shell_words(cmd_str: str) -> list[str]:
+    def _shell_words(cmd_str: str, depth: int = 0) -> set[str]:
         # Split on whitespace AND quoting/shell punctuation so a unit or verb
-        # inside ``bash -c "systemctl restart hermes-dashboard"`` is still a word.
-        return [w for w in _re.split(r"[\s'\"`;&|()<>]+", cmd_str) if w]
+        # inside ``bash -c "systemctl restart hermes-dashboard"`` is still a word,
+        # and keep the shell's own reading too: ``rest\\art`` runs ``restart``.
+        words: set[str] = set()
+        for w in _re.split(r"[\s'\"`;&|()<>]+", cmd_str):
+            if w:
+                words.update((w, w.replace("\\", "")))
+        try:
+            tokens = _shlex.split(cmd_str)
+        except ValueError:
+            tokens = []
+        for token in tokens:
+            words.add(token)
+            if depth < 2 and token != cmd_str and _re.search(r"\s", token):
+                words |= _shell_words(token, depth + 1)  # a ``bash -c`` payload
+        return words
 
     def _is_hermes_unit(word: str) -> bool:
         # ``hermes`` / ``hermes-<anything>`` once any path and unit suffix are
@@ -242,7 +255,11 @@ def _live_system_guard(request, monkeypatch):
         if "systemctl" not in cmd_str:
             return False
         words = _shell_words(cmd_str)
-        if not (_matches_hermes_gateway(cmd_str) or any(_is_hermes_unit(w) for w in words)):
+        # A unit the test itself created under a unique name (``request.node.
+        # live_system_guard_owned_units``) may be cleaned up; nothing else is exempt.
+        owned = getattr(request.node, "live_system_guard_owned_units", ())
+        if not (_matches_hermes_gateway(cmd_str)
+                or any(_is_hermes_unit(w) and w not in owned for w in words)):
             return False
         return any(verb in words for verb in _MUTATING_VERBS)
 

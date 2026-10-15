@@ -16,6 +16,7 @@ import { deSharedMetrics } from './de_shared_metrics'
 import { deThemePicker } from './de_theme_picker'
 import { deUpdateChannel } from './de_update_channel'
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { foundryTranslations } from './foundry'
 import { introDe } from './intro-de'
 
 export const deOverrides = {
@@ -1487,6 +1488,7 @@ export const deOverrides = {
         }
       }
     },
+    foundry: foundryTranslations['de'],
     customEndpoints: deCustomEndpoints,
     computerUse: {
       accessibility: 'Bedienungshilfen',

@@ -1,6 +1,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { foundryTranslations } from './foundry'
 import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
@@ -1493,6 +1494,7 @@ export const frOverrides = {
         }
       }
     },
+    foundry: foundryTranslations['fr'],
     customEndpoints: frCustomEndpoints,
     computerUse: {
       accessibility: 'Accessibilité',

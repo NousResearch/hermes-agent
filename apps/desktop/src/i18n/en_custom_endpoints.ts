@@ -3,9 +3,6 @@ import type { CustomEndpointsTranslations } from './types_custom_endpoints'
 export const enCustomEndpoints: CustomEndpointsTranslations = {
   credentials: {
     authentication: 'Authentication',
-    azureCli: 'Azure CLI login',
-    azureCliHint:
-      'Uses your Azure CLI account on the machine running this profile. Install Azure CLI and run az login there first. Tokens refresh automatically. Responses API is selected for Foundry.',
     command: 'Credential command',
     commandLabel: 'Token command',
     commandHint:

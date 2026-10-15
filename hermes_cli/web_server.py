@@ -754,7 +754,6 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
         _dashboard_plugins_cache = _discover_dashboard_plugins()
     return _dashboard_plugins_cache
 
-
 # Router mounting. ORDER IS ROUTE-MATCHING ORDER: literal paths must land before
 # templated siblings (e.g. /api/sessions/bulk-delete before /api/sessions/{id}).
 from hermes_cli.web_routers import (
@@ -768,7 +767,7 @@ from hermes_cli.web_routers import (
     sessions as _sessions_routes,
     profiles as _profiles_routes,
     memory_providers as _memory_providers_routes,
-    config_env as _config_env_routes,
+    config_env as _config_env_routes, azure_foundry as _azure_foundry_routes,
     models as _models_routes,
     messaging as _messaging_routes,
     oauth as _oauth_routes,
@@ -799,6 +798,7 @@ app.include_router(_memory_providers_routes.router)
 app.include_router(_config_env_routes.config_router)
 app.include_router(_models_routes.router)
 app.include_router(_config_env_routes.router)
+app.include_router(_azure_foundry_routes.router)
 app.include_router(_messaging_routes.router)
 app.include_router(_oauth_routes.router)
 app.include_router(_sessions_routes.manage_router)

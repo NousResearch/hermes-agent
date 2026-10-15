@@ -262,34 +262,28 @@ describe('CustomEndpointsSettings', () => {
     // typed bare root would 404 every request even though the test looked green.
     expect(urlInput.value).toBe('http://h.test/v1')
   })
-  it('offers Azure CLI for the target profile and saves a Responses endpoint without copying a token', async () => {
-    $settingsScopeOverride.set('foundry-bot')
+  it('saves a generic credential command for the selected profile without changing API mode', async () => {
+    $settingsScopeOverride.set('command-bot')
     getCustomEndpoints.mockResolvedValue(emptyResponse)
     saveCustomEndpoint.mockResolvedValue(savedResponse)
-    validateCustomEndpoint.mockResolvedValue({ ok: true, reachable: true, models: ['deployment'], message: '' })
     render(<CustomEndpointsSettings />)
     await screen.findByText('No custom endpoints')
-    fireEvent.click(screen.getByRole('button', { name: 'Azure CLI login' }))
-    expect(screen.getByRole('textbox', { name: 'Provider ID' }).getAttribute('value')).toBe('foundry-local')
-    expect(screen.queryByLabelText('API Key')).toBeNull()
-    fireEvent.change(screen.getByRole('textbox', { name: 'Endpoint URL' }), {
-      target: { value: 'https://resource.openai.azure.com/openai/v1' }
-    })
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Test' })))
+    fireEvent.click(screen.getByRole('button', { name: 'Credential command' }))
+    fireEvent.change(screen.getByLabelText('Token command'), { target: { value: 'my-cli token' } })
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'My service' } })
+    fireEvent.change(screen.getByLabelText('Endpoint URL'), { target: { value: 'https://service.example/v1' } })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Default Model' }), { target: { value: 'deployment' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-
-    for (const action of [validateCustomEndpoint, saveCustomEndpoint]) {
-      expect(action).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: 'foundry-local',
-          credential_source: 'azure_cli',
-          api_mode: 'codex_responses'
-        }),
-        'foundry-bot'
-      )
-      expect(action.mock.calls[0]?.[0].api_key).toBeUndefined()
-      expect(action.mock.calls[0]?.[0].key_cmd).toBeUndefined()
-    }
+    expect(saveCustomEndpoint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        credential_source: 'command',
+        key_cmd: 'my-cli token',
+        api_mode: '',
+        name: 'My service'
+      }),
+      'command-bot'
+    )
+    expect(saveCustomEndpoint.mock.calls[0]?.[0].api_key).toBeUndefined()
   })
 
   it('preserves a saved command on edit and replaces it when API key authentication is selected', async () => {
@@ -321,41 +315,14 @@ describe('CustomEndpointsSettings', () => {
     )
     expect(saveCustomEndpoint.mock.calls[0]?.[0].key_cmd).toBeUndefined()
   })
-  it('suggests a new provider ID without replacing an existing Azure endpoint', async () => {
-    getCustomEndpoints.mockResolvedValue({
-      ...savedResponse,
-      endpoints: ['foundry-local', 'foundry-local-2'].map(id => ({ ...savedResponse.endpoints[0], id }))
-    })
-    saveCustomEndpoint.mockResolvedValue(savedResponse)
-    render(<CustomEndpointsSettings />)
-    await waitFor(() =>
-      expect(screen.getByRole('textbox', { name: 'Provider ID' }).getAttribute('value')).toBe('foundry-local')
-    )
-    fireEvent.click(screen.getByRole('button', { name: 'New endpoint' }))
-    fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value: 'Second Foundry' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Azure CLI login' }))
-    expect(screen.getByRole('textbox', { name: 'Provider ID' }).getAttribute('value')).toBe('foundry-local-3')
-    expect(screen.getByText('Add Endpoint')).toBeTruthy()
-    fireEvent.change(screen.getByRole('textbox', { name: 'Endpoint URL' }), {
-      target: { value: 'https://second.openai.azure.com/openai/v1' }
-    })
-    fireEvent.change(screen.getByRole('combobox', { name: 'Default Model' }), {
-      target: { value: 'second-deployment' }
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    expect(saveCustomEndpoint).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'foundry-local-3', name: 'Second Foundry' }),
-      'default'
-    )
-  })
-
   it('reports successful inference without claiming model discovery succeeded', async () => {
     const message = 'Deployment accepted; model discovery is unavailable.'
     getCustomEndpoints.mockResolvedValue(emptyResponse)
     validateCustomEndpoint.mockResolvedValue({ ok: true, reachable: true, models: ['deployment'], message })
     render(<CustomEndpointsSettings />)
     await screen.findByText('No custom endpoints')
-    fireEvent.click(screen.getByRole('button', { name: 'Azure CLI login' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Credential command' }))
+    fireEvent.change(screen.getByLabelText('Token command'), { target: { value: 'service-cli token' } })
     fireEvent.change(screen.getByRole('textbox', { name: 'Endpoint URL' }), {
       target: { value: 'https://resource.openai.azure.com/openai/v1' }
     })

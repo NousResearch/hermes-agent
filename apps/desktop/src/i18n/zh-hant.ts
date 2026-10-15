@@ -1,4 +1,5 @@
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { foundryTranslations } from './foundry'
 import { introZhHant } from './intro-zh-hant'
 import { zhHantArtifacts } from './zh-hant_artifacts'
 import { zhHantAssistant } from './zh-hant_assistant'
@@ -87,7 +88,7 @@ export const zhHantOverrides = {
   sendDiagnostics: zhHantDiagnostics.sendDiagnostics,
   titlebar: zhHantChrome.titlebar,
   language: zhHantSettings.language,
-  settings: zhHantSettings.settings,
+  settings: { ...zhHantSettings.settings, foundry: foundryTranslations['zh-hant'] },
   skills: zhHantCapabilities.skills,
   starmap: zhHantCapabilities.starmap,
   agents: zhHantCapabilities.agents,

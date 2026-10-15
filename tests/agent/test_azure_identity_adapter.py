@@ -198,6 +198,12 @@ class _FakeAzureIdentity:
             kwargs=kwargs,
         )
 
+    def AzureCliCredential(self, **kwargs):
+        self.scoped_calls.append(("azure_cli", kwargs))
+        def get_token(scope):
+            raise RuntimeError("CLI not signed in")
+        return SimpleNamespace(kind="azure_cli", kwargs=kwargs, get_token=get_token)
+
     def ClientSecretCredential(self, tenant_id, client_id, client_secret):
         self.scoped_calls.append(("client_secret", tenant_id, client_id, client_secret))
         return SimpleNamespace(kind="client_secret", tenant_id=tenant_id, client_id=client_id)
@@ -224,6 +230,7 @@ def fake_azure_identity(monkeypatch):
 
     fake_module = SimpleNamespace(
         DefaultAzureCredential=fake.DefaultAzureCredential,
+        AzureCliCredential=fake.AzureCliCredential,
         ClientSecretCredential=fake.ClientSecretCredential,
         WorkloadIdentityCredential=fake.WorkloadIdentityCredential,
         ManagedIdentityCredential=fake.ManagedIdentityCredential,
@@ -479,3 +486,30 @@ class TestDescribeActiveCredential:
 
 
 
+
+
+def test_explicit_cli_source_has_account_scoped_cache_and_no_fallback(fake_azure_identity, tmp_path, monkeypatch):
+    from agent import secret_scope
+    from agent.azure_identity_adapter import EntraIdentityConfig, _probe_token, build_credential
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    selected = EntraIdentityConfig(credential_source="azure_cli", tenant_id="tenant-a", subscription="sub-a")
+    assert EntraIdentityConfig.from_dict(selected.to_dict()) == selected
+    token = set_hermes_home_override(tmp_path / "bot")
+    try:
+        first = build_credential(selected)
+        assert first.kwargs == {"tenant_id": "tenant-a", "subscription": "sub-a"}
+        assert build_credential(selected) is first
+        second = build_credential(EntraIdentityConfig(credential_source="azure_cli", tenant_id="tenant-b", subscription="sub-b"))
+        assert second is not first
+        assert second.kwargs == {"tenant_id": "tenant-b", "subscription": "sub-b"}
+        assert "CLI not signed in" in _probe_token(selected, 5.0)["error"]
+        with pytest.raises(RuntimeError, match="refused for this profile"):
+            build_credential(EntraIdentityConfig())
+        assert fake_azure_identity.credential_count == 0
+    finally:
+        reset_hermes_home_override(token)
+    # A standalone process uses the same explicit CLI source, not DefaultAzureCredential.
+    assert build_credential(selected).kind == "azure_cli"
+    assert fake_azure_identity.credential_count == 0

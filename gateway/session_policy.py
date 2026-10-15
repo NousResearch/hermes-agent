@@ -3,9 +3,12 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 import json
+import logging
 from pathlib import Path
 
 from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger(__name__)
 
 CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
@@ -16,7 +19,7 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
 FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
                    'platform_toolsets')
-FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier', 'disabled_toolsets')
+FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier', 'disabled_toolsets', 'coding_context')
 # What a pick (create-time ``model`` / committed ``/model``) owns of the ``model:`` block.
 SELECTION_KEYS = ('default', 'provider', 'base_url', 'api_mode', 'selection_profile', 'api_key_from', 'key_env',
                   'api_key_env')
@@ -50,6 +53,10 @@ class LocalSessionPolicy:
     # `-s/--skills` blocks rendered once at creation (render_launch_skills): the session's
     # ephemeral prompt never re-reads the skill files, like the CLI's startup preload.
     skills_prompt: str | None = None
+    # Whether creation chose the coding posture (``agent.coding_context: focus`` in a client-named code
+    # workspace). A following session replays this decision rather than re-probing its folder each turn: it
+    # drops the posture when its profile leaves ``focus``, and one created outside it never gains it later.
+    coding_posture: bool = False
 
     def config(self, authority=None, *, secrets=True):
         return self.effective(authority, secrets=secrets)[0]
@@ -129,7 +136,9 @@ class LocalSessionPolicy:
         if (not self.follows_profile or self.source not in SURFACES or self.editor_mcp_json is not None
                 or 'toolsets' in json.loads(self.request_json)):
             return self.toolsets
-        return tuple(sorted(_resolve_toolsets({}, config, self.source, self.safe_mode)))
+        # The workspace decision is the creation-time one: a project file the agent writes mid-session must
+        # not switch this conversation's toolsets (prompt cache). Only a profile change (``focus`` off) does.
+        return tuple(sorted(_resolve_toolsets({}, config, self.source, self.safe_mode, self.coding_posture)))
 
     def current_reasoning_config(self, runner, session_key=None):
         """The next turn's reasoning: a typed session /reasoning (the messaging handler's override), else
@@ -245,7 +254,7 @@ def present_sections(config):
     return config
 
 
-def build_policy(params, config, *, private_secrets=None, profile_terminal=True):
+def build_policy(params, config, *, private_secrets=None, profile_terminal=True, workspace_posture=False):
     from agent.runtime_cwd import resolve_agent_cwd
     from tools.terminal_scope import build_profile_terminal_scope, default_terminal_scope
     from hermes_constants import get_hermes_home
@@ -282,7 +291,12 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
         # still targets this, and a later profile edit supersedes it.
         config.setdefault('model', {})['selection_profile'] = list(profile_target(config))
     _apply_launch_overrides(params, config)
-    enabled = _resolve_toolsets(params, config, source, safe_mode)
+    # The posture is opt-in (``session.create`` only) and needs a folder the client named: the daemon's own
+    # directory (the fallback above) is no workspace, and ``tool`` is a third-party integration. An explicit
+    # pick wins anyway; skipping it here also spares the probe.
+    named = workspace_posture and source != 'tool' and 'cwd' in params and 'toolsets' not in params
+    coding_posture = named and _in_coding_workspace(config, source, cwd)
+    enabled = _resolve_toolsets(params, config, source, safe_mode, coding_posture)
     terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
     # The client's launch folder is a path on THIS host: a remote or container backend keeps its own
     # configured cwd unless the user picked this folder for the session.
@@ -296,7 +310,8 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
     _extract_config_secrets(terminal, private_secrets, (None,))
     return LocalSessionPolicy(source, SURFACES[source], cwd, model, tuple(sorted(enabled)),
                               json.dumps(config), json.dumps(request, sort_keys=True), json.dumps(terminal),
-                              safe_mode=safe_mode, ignore_user_config=ignore_user_config)
+                              safe_mode=safe_mode, ignore_user_config=ignore_user_config,
+                              coding_posture=coding_posture)
 
 
 def terminal_uses_host_cwd(terminal):
@@ -379,8 +394,10 @@ def _apply_launch_overrides(params, config):
         config['agent'].pop('reasoning_overrides', None)
 
 
-def _resolve_toolsets(params, config, source, safe_mode):
-    """Validate explicit toolsets and return the session's enabled toolset set."""
+def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False):
+    """Validate explicit toolsets and return the session's enabled toolset set. Without a pick, a
+    *coding_posture* session runs ``focus_toolsets`` instead of the profile default while the profile
+    stays on ``focus``; the gateway decides it, never the client."""
     from hermes_cli.tools_config import _get_platform_tools
     from toolsets import validate_toolset
     explicit = params.get('toolsets')
@@ -389,14 +406,18 @@ def _resolve_toolsets(params, config, source, safe_mode):
                 or ('desktop_ui' in explicit and source != 'gui')):
             raise RuntimeStoreError('invalid_params')
         config.setdefault('platform_toolsets', {})['acp' if source == 'acp' else 'cli'] = explicit
-    enabled = _get_platform_tools(config, 'acp' if source == 'acp' else 'cli')
+    posture = None
+    if explicit is None and coding_posture:
+        from agent.coding_context import focus_toolsets
+        posture = focus_toolsets(config)
+    enabled = set(posture) if posture is not None else _get_platform_tools(config, 'acp' if source == 'acp' else 'cli')
     if explicit is not None:
         from toolsets import resolve_toolset
         requested = {t for name in explicit for t in resolve_toolset(name)}
         effective = {t for name in enabled for t in resolve_toolset(name)}
         if not requested <= effective:
             raise RuntimeStoreError('invalid_params')
-    elif source in {'tui', 'gui'}:
+    if explicit is None and source in {'tui', 'gui'}:
         # Same surface toolsets as the native TUI factory, without its env inference.
         # The fold-in lands after _get_platform_tools subtracted agent.disabled_toolsets, so
         # subtract again or `disabled_toolsets: [project]` is a no-op here (#54433).
@@ -411,6 +432,17 @@ def _resolve_toolsets(params, config, source, safe_mode):
         from hermes_cli.tools_config import _get_plugin_toolset_keys
         enabled -= _get_plugin_toolset_keys()
     return enabled
+
+
+def _in_coding_workspace(config, source, cwd):
+    """Whether *cwd* selects the coding posture (``agent.coding_context: focus`` in a code workspace).
+    A detection failure keeps the profile default rather than refusing the session."""
+    from agent.coding_context import in_focus_workspace
+    try:
+        return in_focus_workspace(platform=SURFACES[source], cwd=cwd, config=config)
+    except Exception:
+        logger.debug('coding posture detection failed for %s; keeping the profile default', cwd, exc_info=True)
+        return False
 
 
 def _extract_config_secrets(value, private, path=()):
@@ -625,6 +657,7 @@ def restore_policy(data):
                 or any(not isinstance(name, str) for name in policy.toolsets)
                 or type(policy.safe_mode) is not bool or type(policy.ignore_user_config) is not bool
                 or not isinstance(policy.skills_prompt, (str, type(None)))
+                or type(policy.coding_posture) is not bool
                 or (policy.safe_mode and not policy.ignore_user_config)):
             raise ValueError('invalid policy')
         from dataclasses import replace

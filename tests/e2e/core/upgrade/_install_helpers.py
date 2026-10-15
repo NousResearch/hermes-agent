@@ -161,8 +161,13 @@ def run_installer(sb: Sandbox, *, timeout: float = 1800) -> subprocess.Completed
     """HEAD's scripts/install.sh, non-interactive, as the documented `curl | bash` run does it."""
     script = sb.root / "install.sh"
     shutil.copy(H.WORKTREE / "scripts" / "install.sh", script)
-    return sb.run(["bash", str(script), "--non-interactive"],
-                  timeout=timeout, input="")
+    env = dict(sb.env)
+    if not sb.checkout.exists():
+        # The origin publishes commits on main and no release tags, so a fresh install follows
+        # main; the channel it saves carries the reruns.
+        env["HERMES_INSTALL_CHANNEL"] = "main"
+    return H.run(["bash", str(script), "--non-interactive"], env=env, cwd=sb.root, writable=[sb.root],
+                 timeout=timeout, input="")
 
 
 def pin_main_channel(sb: Sandbox) -> None:

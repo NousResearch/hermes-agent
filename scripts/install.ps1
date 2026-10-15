@@ -897,9 +897,10 @@ function Get-ChosenChannel {
 }
 
 # The latest published stable release (vX.Y.Z), the release `hermes update` resolves for the
-# stable channel. github.com's /releases/latest redirect answers when the API quota is spent.
-# Returns '' when neither answers.
-function Get-LatestStableRelease {
+# stable channel. github.com's /releases/latest redirect answers when the API quota is spent, and
+# origin's highest vX.Y.Z tag (final tags are pushed by the publication run) when github.com's web
+# endpoints are unreachable but git is not. Returns '' when none answers.
+function Get-LatestStableRelease([string]$Origin) {
     $pattern = '^v(0|[1-9]\d{0,2})\.(0|[1-9]\d*)\.(0|[1-9]\d*)$'  # update_channel.STABLE_TAG_RE
     $tag = ''
     try {
@@ -919,6 +920,11 @@ function Get-LatestStableRelease {
             finally { $response.Close() }
         } catch { }
     }
+    if ($tag -cnotmatch $pattern) {
+        $tags = @(Invoke-Native { git ls-remote --tags --refs $Origin 'refs/tags/v*' 2>$null } |
+            ForEach-Object { "$_" -replace '^.*refs/tags/', '' } | Where-Object { $_ -cmatch $pattern })
+        if ($tags) { $tag = $tags | Sort-Object { [version]$_.Substring(1) } | Select-Object -Last 1 }
+    }
     if ($tag -cmatch $pattern) { return $tag }
     return ''
 }
@@ -932,19 +938,26 @@ function Get-StableTarget([string]$Origin) {
         if ($Branch -cne 'main') { return '' }
         if ($Origin -notmatch '^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)NousResearch/hermes-agent(\.git)?/?$') { return '' }
     }
-    $release = Get-LatestStableRelease
+    $release = Get-LatestStableRelease $Origin
     if ($release) { return $release }
     return '-'
 }
 
 # Fetch tag $Release into checkout $Dir (releases can be cut off main, on release/* branches).
-# A mirror without the tag falls back to the branch unless stable was asked for by name.
 function Receive-StableRelease([string]$Dir, [string]$Release) {
     Invoke-Logged -MayFail "Fetching $Release" { git -C $Dir fetch origin "+refs/tags/${Release}:refs/tags/${Release}" }
-    if (-not $LASTEXITCODE) { return $true }
-    if ($Channel -ceq 'stable') { Fail "could not fetch $Release$(Get-NativeDetail)" git_fetch_failed }
-    Write-Warn "could not fetch $Release; installing the tip of $Branch instead"
-    return $false
+    return (-not $LASTEXITCODE)
+}
+
+# Stable applies but cannot be reached. A fresh install stops (installing main instead would be a
+# channel nobody chose); a rerun keeps its checkout for `hermes update`, unless stable was asked
+# for by name. $What says what failed.
+function Confirm-StableUnreachable([string]$What) {
+    if ((Test-Path (Join-Path $InstallDir '.git')) -and $Channel -cne 'stable') {
+        Write-Warn "$What; keeping the checkout where it is"
+        return
+    }
+    Fail "$What$(Get-NativeDetail). Rerun the installer to retry, or pass -Channel main to install main's tip" git_fetch_failed
 }
 
 function Stage-Repository {
@@ -1000,8 +1013,7 @@ function Stage-Repository {
         }
         if ($chosen -ceq 'main') { $chosen = '' }
         if ($release -ceq '-') {
-            # Moving a stable checkout onto main would be a channel switch nobody asked for.
-            Write-Warn "could not look up the latest stable release; keeping the checkout where it is"
+            Confirm-StableUnreachable "could not look up the latest stable release"
             $chosen = 'stable'
             $release = ''
         } elseif ($chosen) { Log "Repairing $InstallDir on the $chosen update channel it chose" }
@@ -1041,7 +1053,10 @@ function Stage-Repository {
             Log "Keeping its checkout: ``hermes update`` moves it (``hermes update --set-channel main`` follows main)"
             return
         }
-        if ($release -and -not (Receive-StableRelease $InstallDir $release)) { $release = '' }
+        if ($release -and -not (Receive-StableRelease $InstallDir $release)) {
+            Confirm-StableUnreachable "could not fetch $release"
+            return
+        }
         if ($release) {
             # Without a choice the default only moves forward, as `hermes update`'s does: a
             # checkout that already contains the release (one that followed main) stays. A
@@ -1146,10 +1161,7 @@ function Stage-Repository {
         # A pinned install materializes only the pin (below): checking out the
         # branch tip first fetches and rewrites every file the two differ in.
         $release = Get-StableTarget $RepoUrl
-        if ($release -ceq '-') {
-            Write-Warn "could not look up the latest stable release; installing the tip of $Branch instead"
-            $release = ''
-        }
+        if ($release -ceq '-') { Confirm-StableUnreachable "could not look up the latest stable release" }
         if ($release) { Log "Installing the latest stable release ($release); -Channel main follows every commit" }
         $checkout = @()
         if ($Commit -or $release) { $checkout = @('--no-checkout') }
@@ -1187,7 +1199,8 @@ function Stage-Repository {
                 Invoke-Native { git -C $tree merge-base --is-ancestor $Commit "origin/$Branch" 2>$null }
                 if ($LASTEXITCODE) { Fail "commit $Commit is not on branch $Branch" commit_not_on_branch }
             }
-            if ($release -and -not (Receive-StableRelease $tree $release)) { $release = '' }
+            # A failure here leaves only the staging dir, which finally removes.
+            if ($release -and -not (Receive-StableRelease $tree $release)) { Confirm-StableUnreachable "could not fetch $release" }
             if ($Commit -or $release -or $deferred) {
                 # The checkout step is where throttled downloads die: retry it alone.
                 # A pin detaches HEAD and leaves the branch at its tip, as the published pin did.

@@ -25,13 +25,15 @@ def _git(cwd, *args, env=None):
     ).stdout.strip()
 
 
-@pytest.mark.parametrize("start,channel,lands", [
-    (None, "", "release"),        # fresh install: the release, not main's tip
-    (None, "main", "tip"),        # explicit opt-out: main's tip
-    ("before", "", "release"),    # rerun behind the release: moves forward to it
-    ("tip", "", "tip"),           # rerun already containing it: never moves back
+@pytest.mark.parametrize("start,channel,tagged,lands", [
+    (None, "", True, "release"),        # fresh install: the release, not main's tip
+    (None, "main", True, "tip"),        # explicit opt-out: main's tip
+    ("before", "", True, "release"),    # rerun behind the release: moves forward to it
+    ("tip", "", True, "tip"),           # rerun already containing it: never moves back
+    (None, "", False, None),            # release tag unreachable: fail, publish nothing
+    ("before", "", False, "before"),    # ... a rerun keeps its checkout instead
 ])
-def test_install_ps1_lands_on_the_latest_stable_release(tmp_path, start, channel, lands):
+def test_install_ps1_lands_on_the_latest_stable_release(tmp_path, start, channel, tagged, lands):
     powershell = shutil.which("powershell")
     if not powershell:
         pytest.skip("Windows PowerShell is required")
@@ -42,7 +44,8 @@ def test_install_ps1_lands_on_the_latest_stable_release(tmp_path, start, channel
     _git(origin, "init", "-q", "-b", "main")
     for label in ("before", "release", "newer"):
         _git(origin, "commit", "-q", "--allow-empty", "-m", label)
-    _git(origin, "tag", "-a", "v1.2.3", "-m", "release", "HEAD~1")
+    if tagged:
+        _git(origin, "tag", "-a", "v1.2.3", "-m", "release", "HEAD~1")
     commits = {name: _git(origin, "rev-parse", ref)
                for name, ref in (("before", "HEAD~2"), ("release", "HEAD~1"), ("tip", "HEAD"))}
     gitconfig = tmp_path / "gitconfig"
@@ -65,5 +68,9 @@ def test_install_ps1_lands_on_the_latest_stable_release(tmp_path, start, channel
         stdin=subprocess.DEVNULL, timeout=300, env=env,
     )
 
+    if lands is None:
+        assert result.returncode != 0 and not install.exists(), result.stdout + result.stderr
+        return
     assert result.returncode == 0, result.stdout + result.stderr
     assert _git(install, "rev-parse", "HEAD", env=env) == commits[lands], result.stdout + result.stderr
+    assert _git(install, "status", "--porcelain", env=env) == "", result.stdout + result.stderr

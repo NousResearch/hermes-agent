@@ -24,13 +24,15 @@ def _git(cwd, *args, env=None):
     ).stdout.strip()
 
 
-@pytest.mark.parametrize("start,args,lands", [
-    (None, [], "release"),                     # fresh install: the release, not main's tip
-    (None, ["--channel", "main"], "tip"),      # explicit opt-out: main's tip
-    ("before", [], "release"),                 # rerun behind the release: moves forward to it
-    ("tip", [], "tip"),                        # rerun already containing it: never moves back
+@pytest.mark.parametrize("start,args,tagged,lands", [
+    (None, [], True, "release"),                 # fresh install: the release, not main's tip
+    (None, ["--channel", "main"], True, "tip"),  # explicit opt-out: main's tip
+    ("before", [], True, "release"),             # rerun behind the release: moves forward to it
+    ("tip", [], True, "tip"),                    # rerun already containing it: never moves back
+    (None, [], False, None),                     # release tag unreachable: fail, publish nothing
+    ("before", [], False, "before"),             # ... a rerun keeps its checkout instead
 ])
-def test_install_lands_on_the_latest_stable_release(tmp_path, start, args, lands):
+def test_install_lands_on_the_latest_stable_release(tmp_path, start, args, tagged, lands):
     origin, home, bin_dir = tmp_path / "origin", tmp_path / "home", tmp_path / "bin"
     install = home / ".hermes" / "hermes-agent"
     for d in (origin, home, bin_dir):
@@ -38,7 +40,8 @@ def test_install_lands_on_the_latest_stable_release(tmp_path, start, args, lands
     _git(origin, "init", "-q", "-b", "main")
     for label in ("before", "release", "newer"):
         _git(origin, "commit", "-q", "--allow-empty", "-m", label)
-    _git(origin, "tag", "-a", "v1.2.3", "-m", "release", "HEAD~1")
+    if tagged:
+        _git(origin, "tag", "-a", "v1.2.3", "-m", "release", "HEAD~1")
     commits = {name: _git(origin, "rev-parse", ref)
                for name, ref in (("before", "HEAD~2"), ("release", "HEAD~1"), ("tip", "HEAD"))}
     (home / ".gitconfig").write_text(f'[url "file://{origin}"]\n  insteadOf = {OFFICIAL}\n', encoding="utf-8")
@@ -59,5 +62,9 @@ def test_install_lands_on_the_latest_stable_release(tmp_path, start, args, lands
         check=False, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120, env=env,
     )
 
+    if lands is None:
+        assert result.returncode != 0 and not install.exists(), result.stdout + result.stderr
+        return
     assert result.returncode == 0, result.stdout + result.stderr
     assert _git(install, "rev-parse", "HEAD") == commits[lands], result.stdout + result.stderr
+    assert _git(install, "status", "--porcelain") == "", result.stdout + result.stderr

@@ -597,8 +597,9 @@ is_official_repo() {
 }
 
 # The latest published stable release (vX.Y.Z), the release `hermes update` resolves for the
-# stable channel. github.com's /releases/latest redirect answers when the API quota is spent.
-# Prints nothing when neither answers.
+# stable channel. github.com's /releases/latest redirect answers when the API quota is spent, and
+# origin's highest vX.Y.Z tag (final tags are pushed by the publication run) when github.com's web
+# endpoints are unreachable but git is not. $1 is the origin URL. Prints nothing when none answers.
 latest_stable_release() {
     local tag
     tag="$(curl -fsSL --connect-timeout 5 --max-time 20 -H 'Accept: application/vnd.github+json' \
@@ -608,6 +609,10 @@ latest_stable_release() {
         tag="$(curl -fsSI --connect-timeout 5 --max-time 20 \
             https://github.com/NousResearch/hermes-agent/releases/latest 2>/dev/null \
             | tr -d '\r' | sed -n 's#^[Ll]ocation:.*/releases/tag/\([^/]*\)$#\1#p' | tail -n 1)"
+    fi
+    if ! valid_stable_tag "$tag"; then
+        tag="$(git ls-remote --tags --refs "$1" 'refs/tags/v*' 2>/dev/null | sed 's#.*refs/tags/##' \
+            | grep -E '^v(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' | sort -V | tail -n 1)"
     fi
     if valid_stable_tag "$tag"; then printf '%s' "$tag"; fi
 }
@@ -627,17 +632,24 @@ stable_target() {
         *) [ "$BRANCH" = main ] && is_official_repo "$1" || return 0 ;;
     esac
     local release
-    release="$(latest_stable_release)"
+    release="$(latest_stable_release "$1")"
     printf '%s' "${release:--}"
 }
 
 # Fetch tag $release into checkout $1 (releases can be cut off main, on release/* branches).
-# A mirror without the tag falls back to the branch unless stable was asked for by name.
 fetch_release() {
-    run_logged --may-fail "Fetching $release" git -C "$1" fetch origin "+refs/tags/$release:refs/tags/$release" && return 0
-    [ "$CHANNEL" != stable ] || fail "could not fetch $release$(native_detail)" git_fetch_failed
-    log_warn "could not fetch $release; installing the tip of $BRANCH instead"
-    return 1
+    run_logged --may-fail "Fetching $release" git -C "$1" fetch origin "+refs/tags/$release:refs/tags/$release"
+}
+
+# Stable applies but cannot be reached. A fresh install stops (installing main instead would be
+# a channel nobody chose); a rerun keeps its checkout for `hermes update`, unless stable was
+# asked for by name. $1 says what failed.
+stable_unreachable() {
+    if [ -d "$INSTALL_DIR/.git" ] && [ "$CHANNEL" != stable ]; then
+        log_warn "$1; keeping the checkout where it is"
+        return 0
+    fi
+    fail "$1$(native_detail). Rerun the installer to retry, or pass --channel main to install main's tip" git_fetch_failed
 }
 
 stage_repository() {
@@ -673,8 +685,7 @@ stage_repository() {
         fi
         [ "$channel" != main ] || channel=""
         if [ "$release" = - ]; then
-            # Moving a stable checkout onto main would be a channel switch nobody asked for.
-            log_warn "could not look up the latest stable release; keeping the checkout where it is"
+            stable_unreachable "could not look up the latest stable release"
             channel=stable release=""
         elif [ -n "$channel" ]; then
             log "Repairing $INSTALL_DIR on the $channel update channel it chose"
@@ -721,7 +732,10 @@ stage_repository() {
             log "Keeping its checkout: \`hermes update\` moves it (\`hermes update --set-channel main\` follows main)"
             return 0
         fi
-        [ -z "$release" ] || fetch_release "$INSTALL_DIR" || release=""
+        if [ -n "$release" ] && ! fetch_release "$INSTALL_DIR"; then
+            stable_unreachable "could not fetch $release"
+            return 0
+        fi
         if [ -n "$release" ]; then
             # Without a choice the default only moves forward, as `hermes update`'s does: a
             # checkout that already contains the release (one that followed main) stays. A
@@ -812,10 +826,7 @@ stage_repository() {
         mkdir -p "$(dirname "$INSTALL_DIR")"
         local staged attempt label cloned=false progress=() materialize=(reset --hard HEAD) no_checkout=""
         release="$(stable_target "$REPO_URL")"
-        if [ "$release" = - ]; then
-            log_warn "could not look up the latest stable release; installing the tip of $BRANCH instead"
-            release=""
-        fi
+        [ "$release" != - ] || stable_unreachable "could not look up the latest stable release"
         [ -z "$INSTALL_COMMIT$release" ] || no_checkout=--no-checkout
         [ -z "$release" ] || log "Installing the latest stable release ($release); --channel main follows every commit"
         # Phase lines ("Receiving objects: 42%") feed the status line; git
@@ -859,8 +870,10 @@ stage_repository() {
             git -C "$staged/tree" merge-base --is-ancestor "$INSTALL_COMMIT" "origin/$BRANCH" 2>/dev/null \
                 || { rm -rf "$staged"; fail "commit $INSTALL_COMMIT is not on branch $BRANCH" commit_not_on_branch; }
         fi
-        [ -z "$release" ] || fetch_release "$staged/tree" || release=""
-        [ -z "$release" ] || materialize=(checkout --force --detach "$release")
+        if [ -n "$release" ]; then
+            fetch_release "$staged/tree" || { rm -rf "$staged"; stable_unreachable "could not fetch $release"; }
+            materialize=(checkout --force --detach "$release")
+        fi
         if [ -n "$INSTALL_COMMIT$release" ] || [ "$cloned" = deferred ]; then
             # The checkout step is where throttled downloads die: retry it alone.
             # A pin detaches HEAD and leaves the branch at its tip, as the published pin did.

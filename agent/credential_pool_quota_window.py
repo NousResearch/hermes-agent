@@ -12,6 +12,8 @@ import logging
 import time
 from typing import Any, Optional
 
+from agent.credential_pool_timestamps import _parse_absolute_timestamp
+
 logger = logging.getLogger(__name__)
 
 _UNIFIED_PREFIX = "anthropic-ratelimit-unified-"
@@ -29,7 +31,6 @@ def spent_quota_reset_at(headers: Any) -> Optional[float]:
     getter = getattr(headers, "get", None)
     if not callable(getter):
         return None
-    from agent.credential_pool import _parse_absolute_timestamp
 
     def _future(name: str) -> Optional[float]:
         reset_at = _parse_absolute_timestamp(getter(_UNIFIED_PREFIX + name))
@@ -56,7 +57,26 @@ def spent_quota_reset_at(headers: Any) -> Optional[float]:
     return max(resets) if resets else None
 
 
+def is_quota_spent(error_context: Any) -> bool:
+    return isinstance(error_context, dict) and error_context.get("reason") == QUOTA_EXHAUSTED_REASON
+
+
+def apply_spent_quota_window(context: dict[str, Any], headers: Any) -> None:
+    """The spent subscription window, not the request bucket, decides when this account works again."""
+    reset_at = spent_quota_reset_at(headers)
+    if reset_at is not None:
+        context["reset_at"] = reset_at
+        context["reason"] = QUOTA_EXHAUSTED_REASON
+
+
 class CredentialPoolQuotaWindowMixin:
+    def _benches_model_only(
+        self, status_code: Optional[int], model: Optional[str], failure_reason: Optional[str], error_context: Any,
+    ) -> bool:
+        """A spent subscription window is account-wide: benching only this model would hand the
+        same spent credential straight back for the next Claude model."""
+        return not is_quota_spent(error_context) and self._is_model_scoped_failure(status_code, model, failure_reason)
+
     def mark_quota_exhausted(
         self, *, reset_at: float, credential_id: Optional[str] = None, api_key_hint: Optional[str] = None,
     ) -> bool:
@@ -66,7 +86,7 @@ class CredentialPoolQuotaWindowMixin:
         selects past the bench, and a 429 on this entry meanwhile takes the pre-exhausted fast
         path. Returns True when the entry's state changed.
         """
-        from agent.credential_pool import STATUS_EXHAUSTED, _parse_absolute_timestamp
+        from agent.credential_pool import STATUS_EXHAUSTED
 
         with self._lock:
             entry = self._identify_failed_entry(credential_id, api_key_hint)

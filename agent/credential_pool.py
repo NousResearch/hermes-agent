@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
-from agent.credential_pool_quota_window import QUOTA_EXHAUSTED_REASON, CredentialPoolQuotaWindowMixin
+from agent.credential_pool_quota_window import CredentialPoolQuotaWindowMixin
 from agent.credential_pool_timestamps import _normalize_error_context, _parse_absolute_timestamp
 
 import logging
@@ -2268,10 +2268,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin,
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
-            # A spent subscription window is account-wide: benching only this model would hand the
-            # same spent credential straight back for the next Claude model.
-            quota_spent = isinstance(error_context, dict) and error_context.get("reason") == QUOTA_EXHAUSTED_REASON
-            if not quota_spent and self._is_model_scoped_failure(status_code, model, failure_reason):
+            if self._benches_model_only(status_code, model, failure_reason, error_context):
                 # A generic Anthropic 429 (per-model rate limit) or a Codex account model
                 # entitlement rejection: bench this model only, the credential stays
                 # available for its siblings.

@@ -439,10 +439,12 @@ class CLIInitMixin:
             child = store.branch(branch_of, title)
             # Main's with_session_yolo: a live /yolo carries onto the branch. The gateway's child starts
             # without the parent's toggle, so set it there too (/branch moves the CLI's own flag over).
-            from tools.approval import is_session_yolo_enabled
+            # Approvals run on the gateway, so this write is not toggle_session_yolo's best-effort persist:
+            # a failure raises before the child shows YOLO locally.
+            from tools.approval import enable_session_yolo, is_session_yolo_enabled
             if is_session_yolo_enabled(branch_of):
-                from tools.approval_yolo import toggle_session_yolo
-                toggle_session_yolo(child, True, persist=lambda on: store.set_session_yolo(child, on))
+                store.set_session_yolo(child, True)
+                enable_session_yolo(child)
             return child
         # The run's other launch flags hold for every session it opens, as main's one AIAgent did across /new.
         launch = {key: value for key, value in _gateway_launch(self).items() if key not in _ROUTE_FLAGS}

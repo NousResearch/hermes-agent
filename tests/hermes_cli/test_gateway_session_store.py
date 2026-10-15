@@ -589,3 +589,32 @@ def test_branch_carries_a_live_yolo_onto_the_gateway_child(store):
         for key in ("local-old", plain, "local-child"):
             approval.disable_session_yolo(key)
     assert [p for m, p in client.calls if m == "config.set"] == [{"session_id": child, "key": "yolo", "value": "1"}]
+
+
+def test_branch_never_shows_yolo_the_gateway_refused(store):
+    """CLI-20: approvals run on the gateway, so a failed ``config.set yolo`` on the child surfaces instead of
+    being logged as a best-effort persist, and the child's local flag stays off (no YOLO display while the
+    gateway still asks)."""
+    from hermes_cli.cli_init_mixin import CLIInitMixin
+    from tools import approval
+    db, client = store
+    base = client.rpc
+
+    async def rpc(method, *, _timeout=None, **params):
+        if method == "session.mutate" and params["operation"] == "branch":
+            client.known.add("local-child")
+            return {"branched_session_id": "local-child", "copied_messages": 0}
+        if method == "config.set":
+            raise GatewayClientError("Gateway did not answer config.set")
+        return await base(method, _timeout=_timeout, **params)
+    client.rpc = rpc
+    db.open_session(cli("local-old", resumed=True))
+    host = types.SimpleNamespace(session_id="local-old", _session_db=db, _gateway_session_open=True)
+    approval.enable_session_yolo("local-old")
+    try:
+        with pytest.raises(GatewayClientError, match="config.set"):
+            CLIInitMixin._new_session_id(host, None, branch_of="local-old")
+        assert not approval.is_session_yolo_enabled("local-child")
+    finally:
+        for key in ("local-old", "local-child"):
+            approval.disable_session_yolo(key)

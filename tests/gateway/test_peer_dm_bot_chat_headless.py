@@ -33,7 +33,7 @@ async def headless(tmp_path, monkeypatch):
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     store._db = SessionDB(db_path=tmp_path / 'state.db')
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
-                             _evict_cached_agent=lambda route: None)
+                             _evict_cached_agent=lambda route: None, _cached_agent_for=lambda route: None)
     # The gateway owns its home's session authority; no Desktop/CLI ever made a "Bot Chat".
     authority = await initialize_session_authority(runner, profile_id='default', instance_id='fixture')
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
@@ -99,3 +99,82 @@ async def test_peer_created_api_bot_chat_is_refused_by_name(headless):
     assert body['error']['code'] == 'bot_chat_not_local', body
     assert 'not_found' not in body['error']['message']
     assert headless.executed == [] and _api_admissions(headless.authority) == []
+
+
+async def _peer_minted(headless):
+    created = await headless.cli.post("/api/sessions", json={"title": "Bot Chat", "source": "bot_peer_dm"})
+    assert created.status == 201, await created.text()
+    session_id = (await created.json())["session"]["id"]
+    assert headless.authority.db.get_session(session_id)['user_id'] == 'api-peer'
+    return session_id
+
+
+def _local_owner(authority):
+    """The Desktop/CLI's own connection: an interactive ticket redeemed on the loopback socket
+    (``gateway/run_api.py``), the identity ``hermes chat``, the Desktop and ``bot_relay.deliver`` use."""
+    from gateway.runtime_bootstrap import _PURPOSE_CAPABILITIES
+    from gateway.session_controls import AuthorityConnection
+    return AuthorityConnection(authority, object(), {
+        'user_id': 'uid:1000', 'provider': 'local', 'profile_id': authority.profile_id,
+        'instance_id': authority.instance_id, 'capabilities': sorted(_PURPOSE_CAPABILITIES['interactive']),
+        'native_bootstrap': True, 'profile_scope': 'profile'}, operator=True)
+
+
+async def _rpc(connection, method, **params):
+    response = await connection.dispatch({'id': 1, 'method': method, 'params': params})
+    assert 'result' in response, (method, response)
+    return response['result']
+
+
+@pytest.mark.asyncio
+async def test_peer_minted_bot_chat_is_listed_for_the_local_owner(headless):
+    session_id = await _peer_minted(headless)
+    local = _local_owner(headless.authority)
+    # The Bots roster's forever-chat registry and the TUI/Desktop pickers.
+    by_title = await _rpc(local, 'session.list', title='Bot Chat')
+    assert [row['session_id'] for row in by_title['sessions']] == [session_id]
+    live = await _rpc(local, 'session.list')
+    assert session_id in {row['id'] for row in live['sessions']}, live
+
+
+@pytest.mark.asyncio
+async def test_peer_minted_bot_chat_resumes_by_title_and_admits_a_local_turn(headless, monkeypatch):
+    session_id = await _peer_minted(headless)
+    local = _local_owner(headless.authority)
+    # ``hermes chat -c "Bot Chat"``: the owner resolves the title.
+    resumed = await _rpc(local, 'session.resume', title='Bot Chat')
+    assert resumed['session_id'] == session_id
+    monkeypatch.setattr(headless.authority, '_schedule', lambda ref: None)  # admission only, no agent
+    await _rpc(local, 'prompt.submit', session_id=session_id, input_id='local-1', text='hello')
+    rows = headless.authority.db._read_all(
+        "SELECT principal_id, target_session_id FROM session_admissions WHERE principal_id='uid:1000'")
+    assert [tuple(row) for row in rows] == [('uid:1000', session_id)]
+
+
+@pytest.mark.asyncio
+async def test_local_bot_relay_delivery_lands_in_the_peer_minted_bot_chat(headless):
+    from pathlib import Path
+    from gateway.session_authorities import served_profile_name
+    from gateway.session_bot import deliver
+    from tests.waiting import async_wait_until
+    session_id = await _peer_minted(headless)
+    profile = served_profile_name(Path(headless.authority.db.db_path).parent.resolve())
+    # ``bot_relay.deliver``'s handler (``AuthorityConnection.bot_deliver``) on the local connection.
+    record = await deliver(_local_owner(headless.authority),
+                           dict(id='a' * 32, profile=profile, message='relayed', author=AUTHOR))
+    assert record['session_id'] == session_id, record
+    await async_wait_until(lambda: headless.executed, timeout=10, interval=.05)
+    assert [(sid, text) for sid, _, text in headless.executed] == [(session_id, 'relayed')]
+    titled = headless.authority.db._read_all("SELECT id FROM sessions WHERE title LIKE 'Bot Chat%'")
+    assert [row[0] for row in titled] == [session_id], 'a second Bot Chat was minted'
+
+
+@pytest.mark.asyncio
+async def test_peer_minted_bot_chat_is_the_local_rosters_canonical_session(headless):
+    from pathlib import Path
+    from gateway.session_group_controls import _profiles
+    session_id = await _peer_minted(headless)
+    # ``profiles.list``'s roster row (the Desktop Bots roster's canonical-session discovery).
+    home = Path(headless.authority.db.db_path).parent
+    roster = _profiles(headless.authority, _local_owner(headless.authority).actor, home, {})
+    assert (roster['profiles'][0]['canonical_session'] or {}).get('id') == session_id, roster['profiles'][0]

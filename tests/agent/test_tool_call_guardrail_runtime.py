@@ -246,6 +246,21 @@ def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_
     assert completed_events[0][1] == "web_search"
 
 
+def test_parallel_batch_of_failures_is_one_observation_and_does_not_halt_the_turn():
+    # One assistant message fans 8 calls out; all fail on the same prerequisite. The model
+    # saw none of those failures when it emitted the batch, so this is not 8 retries.
+    agent = _make_agent("web_search", config=_hard_stop_config())
+    calls = [_mock_tool_call("web_search", json.dumps({"query": f"q{i}"}), f"c{i}") for i in range(8)]
+    messages = []
+
+    with patch("model_tools.handle_function_call", return_value=json.dumps({"error": "backend unreachable"})):
+        agent._execute_tool_calls(SimpleNamespace(content="", tool_calls=calls), messages, "task-1")
+
+    assert [m["tool_call_id"] for m in messages] == [f"c{i}" for i in range(8)]
+    assert agent._tool_guardrail_halt_decision is None
+    assert not any("same_tool_failure_halt" in m["content"] for m in messages)
+
+
 def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispatch():
     agent = _make_agent("write_file")
     original_args = {"path": "/original/path", "content": "old"}

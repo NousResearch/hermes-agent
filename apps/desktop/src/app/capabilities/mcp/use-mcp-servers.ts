@@ -247,8 +247,15 @@ export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpSe
   }
 
   const onCatalogInstalled = async () => {
+    const epoch = profileEpoch.current
+
     void catalogQuery.refetch()
     const { data } = await refetchConfigQuery()
+
+    if (profileEpoch.current !== epoch) {
+      return
+    }
+
     const nextServers = getServers(data ?? null)
 
     mirror(nextServers, doc => ({ ...nextServers, ...doc }))

@@ -5569,6 +5569,7 @@ export interface PersistedTurn {
 export interface StatusUpdatePayload {
   kind: string
   text: string
+  timestamp?: number | null
 }
 /** ``server._start_usage_ticker`` (``usage``), or a canonical local viewer's session-cumulative counters (``gateway/session_usage.py::usage_stats``, the ``session.stats`` dict) at the top level: published after every API call and at turn end, what main's classic CLI read off its agent. */
 export interface SessionUsagePayload {

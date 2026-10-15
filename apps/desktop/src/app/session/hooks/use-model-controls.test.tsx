@@ -89,6 +89,7 @@ function Harness({
 describe('useModelControls', () => {
   beforeEach(() => {
     confirmMock.mockReset()
+    notify.mockReset()
     notifyError.mockReset()
     $activeGatewayProfile.set('default')
     $activeSessionId.set(null)
@@ -320,6 +321,46 @@ describe('useModelControls', () => {
     await controls.selectModel({ model: 'grok-4.5', provider: 'xai' })
 
     expect(invalidate).toHaveBeenCalled()
+  })
+
+  it('shows the gateway warning for an immediately applied picker switch without changing its state or scope', async () => {
+    $activeSessionId.set('session-1')
+    setCurrentModel('old-model')
+    setCurrentProvider('old-provider')
+    const warning = 'PROVIDER AUTOMATICALLY CHANGED: old-provider -> new-provider. Additional costs may apply.'
+    const requestGateway = vi.fn(async () => ({ key: 'model', scope: 'global', warning }) as never)
+    const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries')
+    let controls!: Controls
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'new-model', provider: 'new-provider' })).resolves.toBe(true)
+
+    expect(notify).toHaveBeenCalledExactlyOnceWith({ kind: 'warning', message: warning })
+    expect(notifyError).not.toHaveBeenCalled()
+    expect($currentModel.get()).toBe('new-model')
+    expect($currentProvider.get()).toBe('new-provider')
+    expect(requestGateway).toHaveBeenCalledExactlyOnceWith('config.set', {
+      session_id: 'session-1',
+      key: 'model',
+      value: 'new-model --provider new-provider'
+    })
+    expect(invalidate).toHaveBeenCalled()
+  })
+
+  it('leaves deferred warning delivery to the timeline and ignores empty immediate warnings', async () => {
+    $activeSessionId.set('session-1')
+    const requestGateway = vi
+      .fn()
+      .mockResolvedValueOnce({ deferred: true, warning: 'Queued warning from next turn.' })
+      .mockResolvedValueOnce({ warning: '   ' })
+    let controls!: Controls
+    render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+    await expect(controls.selectModel({ model: 'queued-model', provider: 'queued-provider' })).resolves.toBe(true)
+    await expect(controls.selectModel({ model: 'new-model', provider: 'new-provider' })).resolves.toBe(true)
+
+    expect(notify).not.toHaveBeenCalled()
+    expect(notifyError).not.toHaveBeenCalled()
   })
 
   it('asks in a dialog before retrying a guarded model switch, then applies the confirmed one', async () => {

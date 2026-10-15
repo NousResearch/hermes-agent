@@ -27,6 +27,7 @@ import type { Msg, PanelSection, SessionInfo } from '../types.js'
 
 import { applyConnectionRequest, clearConnectionOperation } from './connectionOperationStore.js'
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
+import { migrateModelSwitchWarnings, restoreModelSwitchWarnings } from './modelSwitchWarnings.js'
 import { patchOverlayState } from './overlayStore.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
 import { renameCanonicalSession } from './slash/canonicalSessionCommands.js'
@@ -175,7 +176,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   const closeSession = useCallback(
     async (targetSid?: null | string, deferMessages = false) => {
       const closed =
-        targetSid && !gw.isCanonical ? await rpc<SessionCloseResponse>('session.close', { session_id: targetSid }) : null
+        targetSid && !gw.isCanonical
+          ? await rpc<SessionCloseResponse>('session.close', { session_id: targetSid })
+          : null
 
       if (!deferMessages) {
         closed?.messages?.forEach(message => sys(message))
@@ -233,7 +236,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   const closeForExit = useCallback(async () => {
     const open = [...canonicalSubscriptions.current.entries()]
 
-    await Promise.all(open.map(([sessionId, subscriptionId]) => detachCanonical(sessionId, subscriptionId, 'tui_shutdown')))
+    await Promise.all(
+      open.map(([sessionId, subscriptionId]) => detachCanonical(sessionId, subscriptionId, 'tui_shutdown'))
+    )
   }, [detachCanonical])
 
   const disposeStaleAttachments = useCallback(() => {
@@ -293,7 +298,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         previousSubscription &&
         (previousSid !== result.session_id || previousSubscription !== result.subscription_id)
       ) {
-        detachCanonical(previousSid, previousSubscription, closePrevious && previousSid !== result.session_id ? 'tui_close' : undefined)
+        detachCanonical(
+          previousSid,
+          previousSubscription,
+          closePrevious && previousSid !== result.session_id ? 'tui_close' : undefined
+        )
       }
     },
     [detachCanonical, gw.isCanonical]
@@ -531,9 +540,15 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           const info = r.info ? { ...r.info, stored_session_id: storedSid } : null
           const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
 
+          migrateModelSwitchWarnings(id, storedSid)
           resetSession()
           setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
-          const transcript = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
+
+          const transcript = restoreModelSwitchWarnings(storedSid, [
+            ...toTranscriptMessages(r.messages),
+            ...liveSessionInflightMessages(r.inflight)
+          ])
+
           setHistoryItems(info ? [introMsg(info), ...transcript] : transcript)
           writeActiveSessionFile(storedSid)
           patchUiState({
@@ -647,11 +662,15 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
               // A successful resume authorizes the requested source → canonical
               // successor mapping; ordinary focus changes never migrate input.
+              migrateModelSwitchWarnings(id, storedSid)
               migratePendingInputs(destination, r.session_id, info?.stored_session_id)
               resetSession()
               setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
 
-              const resumed = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
+              const resumed = restoreModelSwitchWarnings(storedSid, [
+                ...toTranscriptMessages(r.messages),
+                ...liveSessionInflightMessages(r.inflight)
+              ])
 
               setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
               writeActiveSessionFile(storedSid)

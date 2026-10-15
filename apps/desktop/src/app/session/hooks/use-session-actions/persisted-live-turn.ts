@@ -5,6 +5,7 @@ import { parseErrorSurface } from '@/lib/error-surface'
 import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import { mergeLiveAssistantRun } from './live-turn-remainder'
+import { preserveLocalModelSwitchWarnings } from './model-switch-warning-reconciliation'
 import { reconcileDurableHistory } from './utils'
 
 const rowId = (row: SessionMessage) => row.row_id ?? row.id
@@ -326,5 +327,5 @@ export function reconcilePersistedLiveTurn(
     }
   }
 
-  return result
+  return preserveLocalModelSwitchWarnings(result, previous)
 }

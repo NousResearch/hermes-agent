@@ -381,7 +381,10 @@ def _apply_model_switch(
             to_provider=result.target_provider, surface=_session_source(session), from_model=current_model,
             session_id=getattr(agent, "session_id", None))
     return {
-        "value": result.new_model, "warning": result.warning_message or "",
+        "value": result.new_model,
+        "warning": "\n\n".join(w for w in (
+            getattr(result, "provider_switch_warning", ""), result.warning_message
+        ) if w),
         "confirm_required": False,
         "scope": "once" if one_turn else ("global" if persist_global else "session")}
 

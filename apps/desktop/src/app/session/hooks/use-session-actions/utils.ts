@@ -1,3 +1,4 @@
+// health: allow FILE_LINES -- keep the local warning carry at the existing transcript reconciliation boundary
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
@@ -69,6 +70,7 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRu
 
 import type { ClientSessionState } from '../../../types'
 
+import { preserveLocalModelSwitchWarnings } from './model-switch-warning-reconciliation'
 import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
@@ -1154,7 +1156,10 @@ export function preserveLocalPendingTurnMessages(
   // #120978: a kept run whose rowIds predate the whole hydrated page belongs
   // earlier — splice it in front of the first newer row instead of appending it
   // below the newest turn (non-qualifying runs keep the trailing behavior).
-  return preserved.length ? spliceOlderPreservedRows(withReplacements, preserved) : withReplacements
+  return preserveLocalModelSwitchWarnings(
+    preserved.length ? spliceOlderPreservedRows(withReplacements, preserved) : withReplacements,
+    previousMessages
+  )
 }
 
 /**

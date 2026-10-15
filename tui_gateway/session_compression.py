@@ -210,6 +210,8 @@ def _apply_pending_model_switch(sid: str, session: dict) -> None:
         # Honour the expensive-model confirm: drop the switch rather than spend on a model the user
         # never confirmed.
         if not result.get("confirm_required"):
+            if result.get("warning"):
+                _emit("status.update", sid, {"kind": "model-switch-warning", "text": result["warning"], "timestamp": time.time()})
             return
         detail = result.get("confirm_message") or result.get("warning") or ""
         logger.warning("Queued model switch to %s dropped for session %s: %s", model, sid, detail.split("\n", 1)[0])

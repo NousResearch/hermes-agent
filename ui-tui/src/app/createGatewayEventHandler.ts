@@ -42,6 +42,7 @@ import {
 } from './gatewayCanonicalEvents.js'
 import { applyGoalSnapshot } from './goalStatus.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
+import { rememberModelSwitchWarning } from './modelSwitchWarnings.js'
 import { getOverlayState, patchOverlayState, SENSITIVE_PROMPTS } from './overlayStore.js'
 import { markBubbleShown, newlyStartedRows } from './pendingBubbles.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
@@ -1007,6 +1008,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       })
   }
 
+  // health: allow CC,FUNC_LINES -- this single dispatcher preserves event ordering and shared prompt/lifecycle state; the warning adds one terminal branch
   return (ev: AnyGatewayEvent) => {
     const sid = getUiState().sid
 
@@ -1131,6 +1133,24 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const p = ev.payload
 
         if (!p?.text) {
+          return
+        }
+
+        if (p.kind === 'model-switch-warning') {
+          const session = getUiState().storedSid || sid || ev.session_id
+
+          if (
+            session &&
+            rememberModelSwitchWarning(
+              session,
+              p.text,
+              p.timestamp ?? undefined,
+              ev.replay_epoch && ev.seq !== undefined ? `${ev.replay_epoch}:${ev.seq}` : undefined
+            )
+          ) {
+            sys(`warning: ${p.text}`)
+          }
+
           return
         }
 

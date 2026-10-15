@@ -13,7 +13,7 @@ import {
   modelOptionsQueryKey,
   requestModelOptions
 } from '@/lib/model-options'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
@@ -41,6 +41,7 @@ interface ModelSwitchResponse {
   confirm_message?: string
   confirm_required?: boolean
   deferred?: boolean
+  warning?: string
 }
 
 export function useModelControls({
@@ -350,6 +351,9 @@ export function useModelControls({
         // the switch publishes session.info when it lands, and that is what
         // re-syncs every surface.
         if (!result?.deferred) {
+          if (result?.warning?.trim()) {
+            notify({ kind: 'warning', message: result.warning })
+          }
           void queryClient.invalidateQueries({
             queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId, cacheOwnerConnectionId)
           })

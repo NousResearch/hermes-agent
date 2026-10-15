@@ -20,6 +20,8 @@ import { clearActiveSessionTodos } from '@/store/todos'
 
 import type { GatewayEventContext } from './types'
 
+let modelSwitchWarningSequence = 0
+
 /** Lifecycle text that announces the session left its selected model for a fallback. */
 export function isFallbackSwitchStatus(kind: string | undefined, text: string): boolean {
   if (kind === 'fallback') {
@@ -31,6 +33,7 @@ export function isFallbackSwitchStatus(kind: string | undefined, text: string): 
 
 /** status.update / review.summary / notification.show / notification.clear /
  *  error — the status-and-notice tail of the dispatcher. */
+// health: allow CC -- this reducer centrally orders mutually exclusive gateway status transitions; splitting one warning branch would duplicate state ownership
 export function handleStatusEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, isActiveEvent, occurredAt } = ctx
 
@@ -45,12 +48,37 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
   } = deps
 
   if (event.type === 'status.update') {
-    // `compacting`/`compacted` is auto-compaction's pair. Manual /compress
-    // pins `compressing` and always clears it with `ready` (the `finally` in
-    // methods_session._compress_live). Both spellings drive the same phase —
-    // the TUI has matched the pair since createGatewayEventHandler.ts:904;
-    // without `compressing` the desktop showed no progress for /compress.
-    if (sessionId && (payload?.kind === 'compacting' || payload?.kind === 'compressing')) {
+    if (sessionId && payload?.kind === 'model-switch-warning') {
+      const text = coerceGatewayText(payload?.text)
+
+      if (text) {
+        flushQueuedDeltas(sessionId)
+        updateSessionState(sessionId, state => {
+          const epoch = event.replay_epoch ?? event.replayEpoch
+          const id =
+            epoch && event.seq !== undefined
+              ? `model-switch-warning-${epoch}-${event.seq}`
+              : `model-switch-warning-${Date.now()}-${++modelSwitchWarningSequence}`
+          return state.messages.some(message => message.id === id)
+            ? state
+            : {
+                ...state,
+                messages: [
+                  ...state.messages,
+                  {
+                    id,
+                    role: 'system',
+                    parts: [textPart(`warning: ${text}`, occurredAt)],
+                    timestamp: occurredAt
+                  }
+                ]
+              }
+        })
+      }
+    } else if (sessionId && (payload?.kind === 'compacting' || payload?.kind === 'compressing')) {
+      // `compacting`/`compacted` is auto-compaction's pair. Manual /compress
+      // pins `compressing` and always clears it with `ready` (the `finally` in
+      // methods_session._compress_live). Both spellings drive the same phase.
       setSessionCompacting(sessionId, true)
       compactedTurnRef.current.add(sessionId)
     } else if (sessionId && (payload?.kind === 'compacted' || payload?.kind === 'ready')) {

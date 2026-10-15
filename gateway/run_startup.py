@@ -13,6 +13,7 @@ import faulthandler
 import logging
 import os
 import signal
+import sys
 import time
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
@@ -35,6 +36,23 @@ from typing import Any, Dict, Optional, Tuple
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def _purge_legacy_venv_sys_path() -> None:
+    """Drop ``<install>/venv/Lib/site-packages`` from ``sys.path``: a legacy (e.g. cp311) venv left in
+    the tree must not shadow the running runtime's binary extensions (#139085). Best-effort: warn, never raise."""
+    try:
+        venv = Path(__file__).resolve().parents[1] / "venv"
+        if Path(sys.prefix).resolve() == venv.resolve():
+            return  # this IS the running interpreter's venv: its site-packages are live, not legacy
+        legacy = str(venv / "Lib" / "site-packages").lower()
+        dropped = [p for p in sys.path
+                   if str(p or "").lower() == legacy or str(p or "").lower().startswith(legacy + os.sep)]
+        if dropped:
+            sys.path[:] = [p for p in sys.path if p not in dropped]
+            logger.warning("Dropped legacy venv site-packages from sys.path: %s", dropped)
+    except Exception:
+        logger.warning("Could not filter legacy venv site-packages from sys.path; continuing", exc_info=True)
 
 
 def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> None:
@@ -816,6 +834,7 @@ class GatewayStartupMixin:
     @staticmethod
     def _start_hosted_room_worker_sync():
         """Start the local Group Chat worker without importing the dashboard."""
+        _purge_legacy_venv_sys_path()
         import tui_gateway.server
         from tui_gateway import methods_groups
         service = methods_groups.get_hosted_room_service()

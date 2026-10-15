@@ -536,12 +536,13 @@ class MemoryStore:
         working[idx:idx + 1] = [patched]
         return None, previous_content, "none", patched
 
-    def apply_batch(self, target: str, operations: list[dict[str, Any]]) -> dict[str, Any]:
+    def apply_batch(self, target: str, operations: list[dict[str, Any]], *,
+                    preserve_existing: bool = False) -> dict[str, Any]:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
         can free space and add entries. All-or-nothing: any malformed / unmatched op or
         an over-limit result writes NOTHING and returns the first failure. Aborts do not
         echo ``current_entries`` — the store is unchanged and the model already has it."""
-        return self._batch(target, operations, commit=True)
+        return self._batch(target, operations, commit=True, preserve_existing=preserve_existing)
 
     def resolve_batch_entries(self, target: str, operations: list[dict[str, Any]]) -> dict[str, Any]:
         """Dry-run ``apply_batch`` under the lock without persisting: the same content scan,
@@ -550,7 +551,8 @@ class MemoryStore:
         entry its replace/remove selects now (None for add), in batch order."""
         return self._batch(target, operations, commit=False)
 
-    def _batch(self, target: str, operations: list[dict[str, Any]], *, commit: bool) -> dict[str, Any]:
+    def _batch(self, target: str, operations: list[dict[str, Any]], *, commit: bool,
+               preserve_existing: bool = False) -> dict[str, Any]:
         from tools.memory_tool import _memory_target_error
         if target_error := _memory_target_error(self, target, operations):
             return target_error
@@ -580,6 +582,12 @@ class MemoryStore:
                 matched.append(previous_content)
                 if after is not None:
                     produced[i + 1] = after
+            if preserve_existing and any(
+                not any(new == old or new.startswith((old + " ", old + "\n")) for new in working)
+                for old in entries
+            ):
+                return _error("Background review cannot verify that every existing entry remains "
+                              "verbatim; stage this change for approval.", requires_approval=True)
             if entries and not working:
                 # #103419: a consolidation batch that removes the last entry would
                 # commit an empty file as a normal successful write. Refuse; single

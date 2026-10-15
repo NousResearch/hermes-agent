@@ -9,6 +9,7 @@ import { $freeTierStatus } from '@/store/free-tier'
 import { notifyError } from '@/store/notifications'
 
 import { installBundledEntry } from '../mcp/install-catalog-entry'
+import { McpDiscovery } from '../mcp/mcp-discovery'
 import { useMcpServers } from '../mcp/use-mcp-servers'
 
 import { AddServerDialog } from './add-dialog'
@@ -189,7 +190,17 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
         filter={filter}
         hostedFailed={hosted.phase === 'failed'}
         loading={(hosted.phase === 'loading' || mcp.configLoading || mcp.catalogLoading) && cards.length === 0}
-        notices={<HostedNotice hasGuest={freeTier?.has_guest === true} phase={hosted.phase} />}
+        notices={
+          <>
+            <HostedNotice hasGuest={freeTier?.has_guest === true} phase={hosted.phase} />
+            <McpDiscovery
+              configuredNames={mcp.names}
+              disabled={mcp.profilePending || mcp.saving || mcp.dirty}
+              onConnected={mcp.onCatalogInstalled}
+              profile={profile}
+            />
+          </>
+        }
         onFilterChange={setFilter}
         onOpen={card => setOpenKey(cardKey(card))}
         onPrefetch={card => prefetchConnectorTools(profile, card)}

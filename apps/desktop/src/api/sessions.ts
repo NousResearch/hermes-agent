@@ -10,7 +10,11 @@ import type {
   SessionSearchResponse
 } from '@/types/hermes'
 
-import { createSessionMutationClient, type SessionMutationIdentity, type SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
+import {
+  createSessionMutationClient,
+  type SessionMutationIdentity,
+  type SessionMutationSnapshot
+} from '../../../shared/src/session-http-mutations'
 
 import {
   ambientOwnerConnectionId,
@@ -381,21 +385,38 @@ class MissingMutationSnapshotRoute extends Error {}
  *  verdict on the read, before any write was attempted, selects it; a session/profile 404,
  *  refusal, conflict, timeout or failed write keeps the canonical CAS path and its retained
  *  identity. */
-export function mutateSessionFenced<T>(key: string, read: () => Promise<SessionMutationSnapshot>,
-  send: (identity: Partial<SessionMutationIdentity>) => Promise<T>): Promise<T> {
-  return runSessionMutation(key, () => read().catch(error => {
-    // The prepared read is shared by equal concurrent edits; its verdict must
-    // travel with that rejection, rather than one caller's local closure.
-    if (isUnroutedRestPath(error)) { throw new MissingMutationSnapshotRoute(String(error), { cause: error }) }
-    throw error
-  }), send).catch(error => {
-    if (!(error instanceof MissingMutationSnapshotRoute)) { throw error }
+export function mutateSessionFenced<T>(
+  key: string,
+  read: () => Promise<SessionMutationSnapshot>,
+  send: (identity: Partial<SessionMutationIdentity>) => Promise<T>
+): Promise<T> {
+  return runSessionMutation(
+    key,
+    () =>
+      read().catch(error => {
+        // The prepared read is shared by equal concurrent edits; its verdict must
+        // travel with that rejection, rather than one caller's local closure.
+        if (isUnroutedRestPath(error)) {
+          throw new MissingMutationSnapshotRoute(String(error), { cause: error })
+        }
+        throw error
+      }),
+    send
+  ).catch(error => {
+    if (!(error instanceof MissingMutationSnapshotRoute)) {
+      throw error
+    }
 
     return send({})
   })
 }
 
-function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: Record<string, unknown>, profile?: ProfileScope): Promise<T> {
+function mutateSessionHttp<T>(
+  id: string,
+  method: 'PATCH' | 'DELETE',
+  payload: Record<string, unknown>,
+  profile?: ProfileScope
+): Promise<T> {
   // Null is the window's v1 route (its primary, local or remote); defaulting it to
   // the registry's 'local' source would pin a remote primary's edits to this machine.
   const scope = { connectionId: getApiRequestConnection(), ...sessionScoped(profile) }
@@ -408,16 +429,26 @@ function mutateSessionHttp<T>(id: string, method: 'PATCH' | 'DELETE', payload: R
     if (method === 'DELETE') {
       const params = new URLSearchParams(query)
 
-      for (const [name, value] of Object.entries(identity)) { params.set(name, String(value)) }
+      for (const [name, value] of Object.entries(identity)) {
+        params.set(name, String(value))
+      }
 
       return hermesApi<T>({ ...scope, path: params.size ? `${path}?${params}` : path, method })
     }
 
-    return hermesApi<T>({ ...scope, path, method,
-      body: { ...payload, ...identity, ...(scope.profile ? { profile: scope.profile } : {}) } })
+    return hermesApi<T>({
+      ...scope,
+      path,
+      method,
+      body: { ...payload, ...identity, ...(scope.profile ? { profile: scope.profile } : {}) }
+    })
   }
 
-  return mutateSessionFenced(key, () => hermesApi<SessionMutationSnapshot>({ ...scope, path: `${path}/mutation-snapshot${suffix}` }), send)
+  return mutateSessionFenced(
+    key,
+    () => hermesApi<SessionMutationSnapshot>({ ...scope, path: `${path}/mutation-snapshot${suffix}` }),
+    send
+  )
 }
 
 export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
@@ -716,6 +747,10 @@ export function deleteSession(id: string, profile?: ProfileScope): Promise<{ ok:
   return mutateSessionHttp(id, 'DELETE', {}, profile)
 }
 
-export function renameSession(id: string, title: string, profile?: string | null): Promise<{ ok: boolean; title: string }> {
+export function renameSession(
+  id: string,
+  title: string,
+  profile?: string | null
+): Promise<{ ok: boolean; title: string }> {
   return mutateSessionHttp(id, 'PATCH', { title }, sessionWriteProfile(profile))
 }

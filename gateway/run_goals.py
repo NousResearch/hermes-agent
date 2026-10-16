@@ -8,7 +8,6 @@ so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import logging
 import time
 from contextlib import nullcontext, suppress
@@ -106,8 +105,11 @@ class GatewayGoalsMixin:
         The stored source's ``message_id`` is the message that registered the watch; a synthetic
         prompt is not a reply to it, so it is dropped or every progress bubble and final reply
         would quote that stale message (Telegram DM topics route anchorless via the topic id).
+        The copy keeps the transport provenance native admission requires.
         """
-        source = dataclasses.replace(source, message_id=None) if getattr(source, "message_id", None) else source
+        if getattr(source, "message_id", None):
+            from gateway.session_identity import replace_source
+            source = replace_source(source, message_id=None)
         return MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=internal)
 
     def _register_heartbeat_watch(self, quick_key: str, source: Any, session_id: str) -> None:

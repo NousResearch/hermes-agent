@@ -202,3 +202,36 @@ async def test_runner_goal_hook_enqueues_into_the_key_the_adapter_drains(hermes_
         f"drains: pending keys={list(adapter._pending_messages)} "
         f"expected={adapter_key}"
     )
+
+
+@pytest.mark.asyncio
+async def test_goal_continuation_keeps_transport_provenance_and_is_admitted(monkeypatch):
+    """The continuation drops the stale ``message_id`` by copying the stored source. Under a session
+    authority the adapter callback admits it natively, and ``capture_provenance`` refuses a source
+    that lost its transport-adapter binding (``RuntimeStoreError: not_found``), so every Discord
+    goal continuation failed. The copy must keep that binding and be admitted."""
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.session_authority import SessionAuthority, initialize_session_authority
+    from gateway.session_ingress_context import capture_provenance, native_callback
+    from hermes_constants import get_hermes_home
+    from hermes_state_runtime import list_session_admissions
+    from plugins.platforms.discord.adapter import DiscordAdapter
+
+    monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
+    monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42")
+    runner = GatewayRunner(GatewayConfig())
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fixture-token", typing_indicator=False))
+    runner.adapters = {Platform.DISCORD: adapter}
+    authority = await initialize_session_authority(runner, profile_id="default", instance_id="owner")
+    runner._wire_adapter_handlers(adapter)
+    source = adapter.build_source(chat_id="42", chat_type="dm", user_id="42", message_id="h")
+
+    event = runner._synthetic_prompt_event(source, "[Continuing toward your standing goal]")
+    with native_callback(runner, event, get_hermes_home()):
+        provenance = capture_provenance(runner, event)
+        receipt = await authority.admit_native(event)
+
+    payload = list_session_admissions(authority.db, session_id=receipt.ref.session_id, pending_only=False)[-1]["payload"]
+    assert event.source.message_id is None and source.message_id == "h"
+    assert provenance is not None and payload["native_text_v1"].get("provenance") == provenance

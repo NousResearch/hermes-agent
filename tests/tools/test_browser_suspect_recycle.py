@@ -208,20 +208,24 @@ class TestWedgedDaemonTreeKill:
         _install_command_stubs(monkeypatch, tmp_path, process)
 
         # Wedged: daemon PID exists but the control socket is unresponsive.
-        monkeypatch.setattr("tools.browser_tool_lifecycle._pid_exists", lambda _pid: True)
+        alive = {daemon_pid}
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: pid in alive)
+        monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: 777 if pid in alive else None)
         monkeypatch.setattr("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", lambda *_a: True)
         monkeypatch.setattr("tools.browser_tool_session._browser_daemon_responsive", lambda *_a, **_k: False)
 
         kills = []
-        monkeypatch.setattr(
-            "agent.deadline.kill_process_tree",
-            lambda pid, **_k: kills.append(pid) or True,
-        )
+
+        def terminate(pid, expected_start=None):
+            kills.append((pid, expected_start))
+            alive.discard(pid)
+
+        monkeypatch.setattr("tools.process_registry.ProcessRegistry._terminate_host_pid", terminate)
 
         result = bt_session._run_browser_command(TASK, "click", ["@e1"], timeout=1)
 
         assert result["success"] is False
-        assert kills == [daemon_pid]  # tree-kill hit the daemon PID
+        assert kills == [(daemon_pid, 777)]  # tree-kill hit the fingerprinted daemon PID
         assert TASK not in bt._active_sessions  # evicted now, not at next use
         assert TASK not in bt._session_last_activity
         assert TASK not in bt._last_active_session_key
@@ -235,10 +239,8 @@ class TestWedgedDaemonTreeKill:
         os.makedirs(socket_dir)
 
         kills = []
-        monkeypatch.setattr(
-            "agent.deadline.kill_process_tree",
-            lambda pid, **_k: kills.append(pid) or True,
-        )
+        monkeypatch.setattr("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                            lambda pid, expected_start=None: kills.append(pid))
         monkeypatch.setattr("tools.browser_tool_cdp._stop_cdp_supervisor", lambda _tid: None)
 
         bt_session._handle_browser_command_timeout(TASK, session_info, socket_dir)

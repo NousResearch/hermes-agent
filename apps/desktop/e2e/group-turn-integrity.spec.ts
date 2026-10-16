@@ -1,8 +1,12 @@
+import os from 'node:os'
+import path from 'node:path'
+
 import { MOCK_REPLY } from '../../../tests-js/scripts/mock-server'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 import { expect, test } from './test'
 
+const SHOTS = path.join(os.tmpdir(), 'botmode-campaign')
 const FIRST_REPLY = 'FIRST_REPLY: initial work completed'
 const FOLLOWUP_REPLY = 'FOLLOWUP_REPLY: subsequent work completed'
 let fixture: MockBackendFixture | null = null
@@ -83,7 +87,7 @@ test('group follow-up waits for its active member and retains the reply', async 
   await groupComposer.press('Enter')
   await fixture!.mock.waitForHeldCompletion()
   console.log('PRODUCTION CLOCK: first inference held; no second submit before provider release.')
-  await page.screenshot({ path: '/tmp/botmode-campaign/lane-a-held.png' })
+  await page.screenshot({ path: path.join(SHOTS, 'lane-a-held.png') })
   await page.getByRole('button', { name: 'Reply in thread', exact: true }).click()
   const replyComposer = page.getByRole('textbox', { name: 'Reply in thread', exact: true })
   await replyComposer.fill('@programmer LANE_A_FOLLOWUP')
@@ -110,7 +114,7 @@ test('group follow-up waits for its active member and retains the reply', async 
   expect(fixture!.mock.receivedPrompts.filter(p => p.includes('LANE_A_FIRST'))).toHaveLength(1)
   expect(fixture!.mock.receivedPrompts.filter(p => p.includes('LANE_A_FOLLOWUP'))).toHaveLength(1)
   console.log('PRODUCTION CLOCK: released; exact public log', JSON.stringify(log))
-  await page.screenshot({ path: '/tmp/botmode-campaign/lane-a-followup-after.png' })
+  await page.screenshot({ path: path.join(SHOTS, 'lane-a-followup-after.png') })
 })
 
 test('quiet group still harvests a late answer after sixty observation ticks', async () => {
@@ -150,7 +154,7 @@ test('quiet group still harvests a late answer after sixty observation ticks', a
   await page.waitForTimeout(1000)
   expect((await publicLog(page)).filter(entry => entry.from === 'programmer').map(entry => entry.text)).toEqual([FIRST_REPLY])
   console.log('ACCELERATED DEADLINE/OBSERVATION CLOCK ONLY: exact late public log', JSON.stringify(await publicLog(page)))
-  await page.screenshot({ path: '/tmp/botmode-campaign/lane-a-late-after.png' })
+  await page.screenshot({ path: path.join(SHOTS, 'lane-a-late-after.png') })
 })
 
 test('a rejected member turn stays visible when the room settles', async () => {
@@ -190,7 +194,7 @@ test('a rejected member turn stays visible when the room settles', async () => {
   expect(await page.evaluate(() => (window as any).__rejected)).toBe(1)
   expect((await publicLog(page)).filter(entry => entry.from !== 'You')).toEqual([])
   await expect(page.getByRole('button', { name: /^Activity/ })).toContainText('Programmer hit an error')
-  await page.screenshot({ path: '/tmp/botmode-campaign/lane-a-error-after.png' })
+  await page.screenshot({ path: path.join(SHOTS, 'lane-a-error-after.png') })
 
   // One epoch: A fails, B waits, the user retries A, then B and A fail.
   // The retry is explicit and after A's failure, unlike the prequeued sends above.
@@ -231,5 +235,5 @@ test('Stop clears a queued follow-up and a direct mention resumes the held membe
   await groupComposer.press('Enter')
   await expect.poll(() => fixture!.mock.receivedPrompts.some(p => p.includes('LANE_A_RESUME')), { timeout: 60000 }).toBe(true)
   await expect(page.getByText(MOCK_REPLY, { exact: true }).first()).toBeVisible()
-  await page.screenshot({ path: '/tmp/botmode-campaign/lane-a-stop-resume.png' })
+  await page.screenshot({ path: path.join(SHOTS, 'lane-a-stop-resume.png') })
 })

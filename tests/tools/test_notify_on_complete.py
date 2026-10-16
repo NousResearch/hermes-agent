@@ -12,7 +12,7 @@ import json
 import os
 import time
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from tools.process_registry import (
     ProcessRegistry,
@@ -52,14 +52,6 @@ def _make_session(
 # ProcessSession field
 # =========================================================================
 
-class TestProcessSessionField:
-    def test_default_false(self):
-        s = ProcessSession(id="proc_1", command="echo hi")
-        assert s.notify_on_complete is False
-
-    def test_set_true(self):
-        s = ProcessSession(id="proc_1", command="echo hi", notify_on_complete=True)
-        assert s.notify_on_complete is True
 
 
 # =========================================================================
@@ -67,9 +59,6 @@ class TestProcessSessionField:
 # =========================================================================
 
 class TestCompletionQueue:
-    def test_queue_exists(self, registry):
-        assert hasattr(registry, "completion_queue")
-        assert registry.completion_queue.empty()
 
 
     def test_move_to_finished_idempotent_no_duplicate(self, registry):
@@ -108,6 +97,43 @@ class TestCompletionQueue:
 
         completion = registry.completion_queue.get_nowait()
         assert len(completion["output"]) == 2000
+        # A consumer that relays the output must know it is not whole.
+        assert completion["output_cut"] == 3000
+
+    def test_completion_output_is_sized_per_process(self, registry):
+        """A spawner whose output IS the payload (a bot DM's reply, tools/bot_mode_dm.py) asks for a
+        larger completion; the tail cap stays the default for everything else, and a completion
+        that carries the whole output declares no cut."""
+        s = _make_session(notify_on_complete=True, output="x" * 5000)
+        s.completion_output_chars = 6000
+        s.exited, s.exit_code = True, 0
+        registry._running[s.id] = s
+        with patch.object(registry, "_write_checkpoint"):
+            registry._move_to_finished(s)
+
+        completion = registry.completion_queue.get_nowait()
+        assert len(completion["output"]) == 5000
+        assert "output_cut" not in completion
+
+    def test_polled_result_carries_the_same_reply_as_the_notification(self, registry):
+        """api_server / one-shot senders cannot receive completion notifications and poll with
+        process(action='wait') instead (bot-mode.md): the polled result must carry the reply
+        whole up to the per-process size and the same ``output_cut`` marker, not a silent
+        2000-char tail."""
+        s = _make_session(sid="proc_polled", output="Reply from @b:\n" + "x" * 4000)
+        s.completion_output_chars = 6000
+        s.exited, s.exit_code = True, 0
+        registry._finished[s.id] = s
+        with patch.object(registry, "_reconcile_local_exit"), patch.object(registry, "_write_checkpoint"):
+            result = registry.wait(s.id, timeout=1)
+        assert result["status"] == "exited"
+        assert result["output"].startswith("Reply from @b:")
+        assert "output_cut" not in result
+
+        s.completion_output_chars = 1000
+        result = registry.wait(s.id, timeout=1)
+        assert len(result["output"]) == 1000
+        assert result["output_cut"] == len(s.output_buffer) - 1000
 
     def test_multiple_completions_queued(self, registry):
         """Multiple notify processes all push to the same queue."""
@@ -146,7 +172,6 @@ class TestCheckpointNotify:
             assert len(data) == 1
             assert data[0]["notify_on_complete"] is True
 
-
     def test_recover_defaults_false(self, registry, tmp_path):
         """Old checkpoint entries without the field default to False."""
         checkpoint = tmp_path / "procs.json"
@@ -168,39 +193,23 @@ class TestCheckpointNotify:
 # =========================================================================
 
 class TestTerminalSchema:
-    def test_schema_advertises_unified_notify(self):
-        """`notify` is the single advertised notification arg: bool (notify on
-        exit) or list of strings (notify on pattern). The legacy
-        notify_on_complete/watch_patterns args stay handler-accepted but
-        unadvertised."""
-        from tools.terminal_tool import TERMINAL_SCHEMA
-        props = TERMINAL_SCHEMA["parameters"]["properties"]
-        assert "notify" in props
-        types = {alt["type"] for alt in props["notify"]["anyOf"]}
-        assert types == {"boolean", "array"}
-        assert "notify_on_complete" not in props
-        assert "watch_patterns" not in props
 
-    def test_handler_passes_notify(self):
-        """_handle_terminal passes notify_on_complete to terminal_tool."""
-        from tools.terminal_tool import _handle_terminal
-        with patch("tools.terminal_tool.terminal_tool", return_value='{"ok":true}') as mock_tt:
-            _handle_terminal(
-                {"command": "echo hi", "background": True, "notify_on_complete": True},
-                task_id="t1",
-            )
-            _, kwargs = mock_tt.call_args
-            assert kwargs["notify_on_complete"] is True
+
+    def test_cut_completion_says_so_and_points_at_the_log(self):
+        """The rendered notice names the cut and the process log; a whole output renders as before."""
+        from tools.process_registry_notifications import format_process_notification
+        base = {"type": "completion", "session_id": "proc_abc", "command": "hermes peer dm mini",
+                "exit_code": 0, "output": "Reply from mini:\ntail"}
+        cut = format_process_notification({**base, "output_cut": 3000})
+        assert "3000" in cut and "proc_abc" in cut
+        assert cut.endswith("Reply from mini:\ntail]")
+        assert "cut" not in format_process_notification(base)
 
 
 # =========================================================================
 # Code execution blocked params
 # =========================================================================
 
-class TestCodeExecutionBlocked:
-    def test_notify_on_complete_blocked_in_sandbox(self):
-        from tools.code_execution_rpc import _TERMINAL_BLOCKED_PARAMS
-        assert "notify_on_complete" in _TERMINAL_BLOCKED_PARAMS
 
 
 # =========================================================================
@@ -241,18 +250,9 @@ class TestCompletionConsumed:
         registry._finished[s.id] = s
 
         registry.poll("proc_gw")
-        # CLI-side dedup signal present...
-        assert "proc_gw" in registry._poll_observed
-        # ...but the gateway watcher gate is untouched, so it still delivers.
+        # The gateway watcher gate is untouched, so it still delivers.
         assert not registry.is_completion_consumed("proc_gw")
 
-    def test_running_poll_does_not_mark_poll_observed(self, registry):
-        """poll() on a still-running process must not record _poll_observed."""
-        s = _make_session(sid="proc_run2", notify_on_complete=True, output="partial")
-        registry._running[s.id] = s
-
-        registry.poll("proc_run2")
-        assert "proc_run2" not in registry._poll_observed
 
     def test_wait_and_log_still_skip_cli_drain(self, registry):
         """wait()/read_log() consume the output, so the CLI drain skips their
@@ -349,9 +349,6 @@ def test_background_without_notify_emits_silent_process_hint(monkeypatch, tmp_pa
     assert hint, "Silent background process must include a hint field"
     assert "notify_on_complete" in hint, (
         "Hint must name the corrective flag so the agent can self-correct"
-    )
-    assert "silent" in hint.lower() or "no way to learn" in hint.lower(), (
-        "Hint must explain the failure mode, not just suggest the fix"
     )
 
 

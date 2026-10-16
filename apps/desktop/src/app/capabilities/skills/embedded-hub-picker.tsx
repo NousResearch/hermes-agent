@@ -7,7 +7,13 @@ import { useI18n } from '@/i18n'
 import { Loader2 } from '@/lib/icons'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
-import { $hubActions, installHubSkill, notifyHubActionFailed, UPDATE_ALL_KEY, updateHubSkills } from '@/store/hub-actions'
+import {
+  $hubActions,
+  installHubSkill,
+  notifyHubActionFailed,
+  UPDATE_ALL_KEY,
+  updateHubSkills
+} from '@/store/hub-actions'
 import { notify, notifyError } from '@/store/notifications'
 import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 

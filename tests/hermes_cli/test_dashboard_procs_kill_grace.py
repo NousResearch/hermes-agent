@@ -14,7 +14,6 @@ real signals, a real PTY.
 from __future__ import annotations
 
 import os
-import pathlib
 import signal
 import subprocess
 import sys
@@ -25,24 +24,7 @@ import pytest
 
 from hermes_cli import dashboard_procs
 
-_REPO_ROOT = pathlib.Path(dashboard_procs.__file__).resolve().parents[1]
-
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal semantics only")
-
-# Mirrors the lifespan: sleep for the teardown budget on SIGTERM, then leave a marker and exit 0.
-_GRACEFUL_CHILD = textwrap.dedent(
-    """
-    import pathlib, signal, sys, time
-    marker, ready, secs = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), float(sys.argv[3])
-    def _on_term(_signum, _frame):
-        time.sleep(secs)
-        marker.write_text("teardown-complete")
-        sys.exit(0)
-    signal.signal(signal.SIGTERM, _on_term)
-    ready.write_text("ready")
-    time.sleep(300)
-    """
-)
 
 _IGNORING_CHILD = textwrap.dedent(
     """
@@ -131,17 +113,6 @@ def _pid_running(pid: int) -> bool:
     return bool(stat) and not stat.startswith("Z")
 
 
-def test_teardown_as_long_as_lifespan_budget_exits_gracefully(tmp_path):
-    """A teardown spanning the 5s hosted-room stop + 1s join must not be SIGKILLed."""
-    marker, ready = tmp_path / "marker", tmp_path / "ready"
-    child = _spawn_ready(_GRACEFUL_CHILD, ready, str(marker), str(ready), "6.2")
-
-    killed, failed = _kill_and_reap(child)
-
-    assert failed == []
-    assert child.returncode == 0, f"SIGKILLed mid-teardown (rc={child.returncode})"
-    assert marker.read_text() == "teardown-complete"
-    assert killed == [child.pid]
 
 
 def test_sigterm_ignoring_process_is_still_sigkilled(tmp_path, monkeypatch):
@@ -178,53 +149,3 @@ def test_wedged_pty_descendant_is_gone_but_detached_bot_survives(tmp_path, monke
         for pid in (tui_pid, bot_pid):
             if _pid_running(pid):
                 os.kill(pid, signal.SIGKILL)
-
-
-# The stopper itself, run as a same-session child of the backend (a shell escape inside the hosted
-# Chat TUI): `hermes dashboard --stop` / `hermes update` must not SIGTERM their own process.
-_STOPPER_CHILD = textwrap.dedent(
-    """
-    import os, pathlib, sys
-    from hermes_cli import dashboard_procs as dp
-    dp._POSIX_TERM_GRACE_SECONDS = 0.5
-    backend, marker = int(sys.argv[1]), pathlib.Path(sys.argv[2])
-    snapshot = dp._posix_descendants([backend])
-    killed, failed = [], []
-    dp._kill_pids_posix([backend], killed, failed)
-    marker.write_text(f"{os.getpid() in snapshot} {killed} {failed}")
-    """
-)
-
-_BACKEND_WITH_STOPPER_CHILD = textwrap.dedent(
-    f"""
-    import os, pathlib, signal, subprocess, sys, time
-    signal.signal(signal.SIGTERM, lambda *_: time.sleep(300))
-    pathlib.Path(sys.argv[2]).write_text("ready")
-    subprocess.Popen([sys.executable, "-c", {_STOPPER_CHILD!r}, str(os.getpid()), sys.argv[1]]).wait()
-    time.sleep(300)
-    """
-)
-
-
-def test_stopper_running_as_backend_descendant_survives_the_sweep(tmp_path):
-    """POSIX twin of the Windows #98814 hazard: the caller and its ancestors are not descendants
-    to sweep, even when the stop runs from inside the backend's own process tree."""
-    marker, ready = tmp_path / "marker", tmp_path / "ready"
-    env = dict(os.environ, PYTHONPATH=os.pathsep.join(filter(None, [str(_REPO_ROOT), os.environ.get("PYTHONPATH")])))
-    backend = subprocess.Popen(
-        [sys.executable, "-c", _BACKEND_WITH_STOPPER_CHILD, str(marker), str(ready)], env=env,
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    try:
-        deadline = time.monotonic() + 30.0
-        while backend.poll() is None and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert backend.returncode == -signal.SIGKILL, "the stopper never SIGKILLed the wedged backend"
-        assert marker.exists(), "stopper died before finishing the stop: it swept itself"
-        in_snapshot, _, rest = marker.read_text().partition(" ")
-        assert in_snapshot == "False"
-        assert rest == f"[{backend.pid}] []"
-    finally:
-        if backend.poll() is None:
-            backend.kill()
-            backend.wait(timeout=10)

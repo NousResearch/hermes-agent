@@ -14,7 +14,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import tools.browser_tool as browser_tool
+from tools import browser_tool
 from tools import browser_tool_cloud as bt_cloud
 
 
@@ -68,7 +68,7 @@ class TestCloudProviderCachePolicy:
         self, tmp_path, monkeypatch
     ):
         from agent.browser_provider import BrowserProvider
-        import agent.browser_registry as browser_registry
+        from agent import browser_registry
         from hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
@@ -125,7 +125,7 @@ class TestCloudProviderCachePolicy:
         from threading import Event
 
         from agent.browser_provider import BrowserProvider
-        import agent.browser_registry as browser_registry
+        from agent import browser_registry
         from hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
@@ -229,10 +229,10 @@ class TestCloudProviderCachePolicy:
         bb_unconfigured = Mock()
         bb_unconfigured.is_available.return_value = False
         monkeypatch.setattr(
-            "tools.browser_tool_cloud.BrowserUseBrowserProvider", lambda: bu_unconfigured
+            "plugins.browser.browser_use.provider.BrowserUseBrowserProvider", lambda: bu_unconfigured
         )
         monkeypatch.setattr(
-            "tools.browser_tool_cloud.BrowserbaseBrowserProvider", lambda: bb_unconfigured
+            "plugins.browser.browserbase.provider.BrowserbaseBrowserProvider", lambda: bb_unconfigured
         )
 
         assert bt_cloud._get_cloud_provider() is None
@@ -241,7 +241,7 @@ class TestCloudProviderCachePolicy:
         # Credentials self-heal — next call must retry and pick up the provider.
         healed = Mock(name="healed-provider")
         healed.is_available.return_value = True
-        monkeypatch.setattr("tools.browser_tool_cloud.BrowserUseBrowserProvider", lambda: healed)
+        monkeypatch.setattr("plugins.browser.browser_use.provider.BrowserUseBrowserProvider", lambda: healed)
 
         assert bt_cloud._get_cloud_provider() is healed
         assert browser_tool._cloud_provider_resolved is True

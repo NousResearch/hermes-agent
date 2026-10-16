@@ -15,13 +15,13 @@ Autonomously remove your info from data-broker sites.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/security/unbroker` |
-| Path | `optional-skills/security\unbroker` |
+| Path | `optional-skills/security/unbroker` |
 | Version | `1.0.0` |
 | Author | SHL0MS (github.com/SHL0MS) |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `privacy`, `data-broker`, `opt-out`, `ccpa`, `gdpr`, `security`, `doxxing` |
-| Related skills | [`google-workspace`](../../bundled/productivity/productivity-google-workspace.md), [`agentmail`](../email/email-agentmail.md), [`himalaya`](../../bundled/email/email-himalaya.md), [`scrapling`](../research/research-scrapling.md), [`osint-investigation`](../research/research-osint-investigation.md) |
+| Related skills | [`google-workspace`](../../bundled/productivity/productivity-google-workspace.md), [`agentmail`](../../optional/email/email-agentmail.md), [`himalaya`](../../bundled/email/email-himalaya.md), [`scrapling`](../../optional/research/research-scrapling.md), [`osint-investigation`](../../optional/research/research-osint-investigation.md) |
 
 ## Reference: full SKILL.md
 

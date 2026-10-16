@@ -35,8 +35,8 @@ def _install_telegram_mock(monkeypatch: pytest.MonkeyPatch, bot_factory: MagicMo
 def _make_bot() -> MagicMock:
     bot = MagicMock()
     bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
-    bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=2))
     bot.send_animation = AsyncMock(return_value=SimpleNamespace(message_id=5))
+    bot.send_photo = AsyncMock(return_value=SimpleNamespace(message_id=2))
     bot.send_video = AsyncMock(return_value=SimpleNamespace(message_id=3))
     bot.send_document = AsyncMock(return_value=SimpleNamespace(message_id=4))
     return bot
@@ -85,6 +85,29 @@ def test_image_caption_rides_bubble_no_separate_text(monkeypatch: pytest.MonkeyP
         os.unlink(img)
 
 
+def test_multi_file_keeps_separate_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tools.send_message_tool import _send_telegram
+
+    _no_proxy(monkeypatch)
+    bot = _make_bot()
+    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
+    img = _tmpfile(".png")
+    img2 = _tmpfile(".jpg")
+    try:
+        res = asyncio.run(
+            _send_telegram("tok", "123", "two pics", media_files=[(img, False), (img2, False)])
+        )
+        assert res["success"] is True
+        # Ambiguous caption→file association: text stays a separate message.
+        bot.send_message.assert_awaited()
+        assert bot.send_photo.await_count == 2
+        for call in bot.send_photo.await_args_list:
+            assert not call.kwargs.get("caption")
+    finally:
+        os.unlink(img)
+        os.unlink(img2)
+
+
 def test_local_gif_uses_animation_file_upload(monkeypatch: pytest.MonkeyPatch) -> None:
     from tools.send_message_tool import _send_telegram
 
@@ -120,6 +143,7 @@ def test_local_gif_uses_animation_file_upload(monkeypatch: pytest.MonkeyPatch) -
         assert uploaded["file"].closed is True
     finally:
         os.unlink(gif)
+
 
 def test_local_gif_thread_fallback_rewinds_and_drops_thread(
     monkeypatch: pytest.MonkeyPatch,
@@ -163,25 +187,3 @@ def test_local_gif_thread_fallback_rewinds_and_drops_thread(
         bot.send_document.assert_not_awaited()
     finally:
         os.unlink(gif)
-
-def test_multi_file_keeps_separate_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    from tools.send_message_tool import _send_telegram
-
-    _no_proxy(monkeypatch)
-    bot = _make_bot()
-    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
-    img = _tmpfile(".png")
-    img2 = _tmpfile(".jpg")
-    try:
-        res = asyncio.run(
-            _send_telegram("tok", "123", "two pics", media_files=[(img, False), (img2, False)])
-        )
-        assert res["success"] is True
-        # Ambiguous caption→file association: text stays a separate message.
-        bot.send_message.assert_awaited()
-        assert bot.send_photo.await_count == 2
-        for call in bot.send_photo.await_args_list:
-            assert not call.kwargs.get("caption")
-    finally:
-        os.unlink(img)
-        os.unlink(img2)

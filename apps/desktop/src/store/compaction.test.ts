@@ -7,11 +7,13 @@ describe('compaction store', () => {
 
   afterEach(() => $compactingSessions.set({}))
 
-  it('tracks compaction per session independently', () => {
-    setSessionCompacting('session-a', true)
-    setSessionCompacting('session-b', true)
+  it('tracks session ids that collide with object prototype keys', () => {
+    expect(sessionCompacting('toString').get()).toBe(false)
 
-    expect($compactingSessions.get()).toEqual({ 'session-a': true, 'session-b': true })
+    setSessionCompacting('toString', true)
+
+    expect(Object.hasOwn($compactingSessions.get(), 'toString')).toBe(true)
+    expect(sessionCompacting('toString').get()).toBe(true)
   })
 
   it('scopes the view to the session asked for, not whichever is active', () => {
@@ -28,14 +30,5 @@ describe('compaction store', () => {
     setSessionCompacting('session-a', false)
 
     expect($compactingSessions.get()).toEqual({ 'session-b': true })
-  })
-
-  it('is a no-op when clearing an unknown session', () => {
-    setSessionCompacting('session-a', true)
-    const before = $compactingSessions.get()
-
-    setSessionCompacting('session-missing', false)
-
-    expect($compactingSessions.get()).toBe(before)
   })
 })

@@ -1,11 +1,12 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Puzzle } from 'lucide-react'
+import { type ReactNode, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { NEW_CHAT_ROUTE, SETTINGS_ROUTE } from '@/app/routes'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
 import {
   Dialog,
   DialogContent,
@@ -15,128 +16,135 @@ import {
   DialogTitle,
   preventCloseButtonAutoFocus
 } from '@/components/ui/dialog'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
-import { Switch } from '@/components/ui/switch'
-import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { useI18n } from '@/i18n'
-import { ExternalLink } from '@/lib/external-link'
-import { AlertTriangle } from '@/lib/icons'
-import { resolvePluginSourceLinks } from '@/lib/plugin-source-urls'
-import { COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
-import { notify } from '@/store/notifications'
+import { AlertTriangle, Loader2 } from '@/lib/icons'
+import { cn } from '@/lib/utils'
+import { COMMIT_SHA_RE } from '@/store/agent-plugins'
 import {
   $pluginInstallRequest,
   closePluginInstallRequest,
   openPluginInstallRequest,
   type PluginInstallRequest
 } from '@/store/plugin-install-request'
-import { $activeGatewayProfile, $profileScope } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, $profileScope, normalizeProfileKey, profileLabel } from '@/store/profile'
 import { $connection } from '@/store/session'
-import { runGatewayRestart } from '@/store/system-actions'
 
-type ProbeResult = Awaited<ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>>
+import { PluginInstallDetails } from './plugin-install-details'
+import { type InstallModalCopy, type ProbeResult, runPluginInstall } from './plugin-install-run'
+import { usePluginProbe } from './use-plugin-probe'
 
-type ProbePhase = 'idle' | 'probing' | 'ready' | 'error'
+const CAPTION = 'text-[length:var(--conversation-caption-font-size)]'
 
+/** Close the dialog and land on the inventory (Capabilities → Plugins), unless the caller keeps the user in place. */
+function finishInstall(request: PluginInstallRequest, navigate: (to: string) => void): void {
+  closePluginInstallRequest()
+
+  if (!request.stayAfterInstall) {
+    navigate('/capabilities?tab=plugins')
+  }
+}
+
+/** `owner/repo#sub/dir` → `dir`; `https://host/owner/repo.git` → `repo`. */
+function repoName(repo: string): string {
+  const [base, subdir] = repo.split('#')
+
+  return (
+    (subdir || base)
+      .replace(/\/+$/, '')
+      .split('/')
+      .pop()
+      ?.replace(/\.git$/, '') || repo
+  )
+}
+
+function pluginTitle(request: PluginInstallRequest, probe: null | ProbeResult): string {
+  return request.title || request.catalogName || probe?.agentName || probe?.desktopName || repoName(request.repo)
+}
+
+/** The inspection's one-line reason, when it could not read the repository. */
+function probeFailure(probe: null | ProbeResult, fallback: string): null | string {
+  return probe && !probe.ok ? probe.error || fallback : null
+}
+
+function ProbeWarnings({ copy, probe }: { copy: InstallModalCopy; probe: null | ProbeResult }) {
+  const warnings = [...new Set([...(probe?.warnings ?? []), probe?.insecure ? copy.insecureWarning : ''])].filter(
+    Boolean
+  )
+
+  if (!probe?.ok || warnings.length === 0) {
+    return null
+  }
+
+  return (
+    <div
+      className={cn(
+        CAPTION,
+        'flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-foreground'
+      )}
+    >
+      <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+      <span>{warnings.join(' ')}</span>
+    </div>
+  )
+}
+
+/** "Install from Git" with no repository yet: one field, then the same dialog inspects what was pasted. */
+function RepositoryEntry({ request }: { request: PluginInstallRequest }) {
+  const { t } = useI18n()
+  const copy = t.settings.plugins.installModal
+  const [repo, setRepo] = useState('')
+
+  return (
+    <form
+      className="space-y-3"
+      id="plugin-repository-form"
+      onSubmit={event => {
+        event.preventDefault()
+
+        if (repo.trim()) {
+          openPluginInstallRequest({ ...request, repo: repo.trim() })
+        }
+      }}
+    >
+      <label className="block space-y-1">
+        <span>{copy.repoLabel}</span>
+        <Input
+          autoFocus
+          onChange={event => setRepo(event.target.value)}
+          placeholder={copy.repoPlaceholder}
+          spellCheck={false}
+          value={repo}
+        />
+      </label>
+      <DialogFooter>
+        <Button onClick={closePluginInstallRequest} type="button" variant="outline">
+          {t.common.cancel}
+        </Button>
+        <Button disabled={!repo.trim()} type="submit">
+          {copy.reviewRepository}
+        </Button>
+      </DialogFooter>
+    </form>
+  )
+}
+
+/**
+ * THE plugin install dialog, for every door: a reviewed catalog pick (Plugins tab, `hermes://` link,
+ * the setup chat's plugins card) and a raw git URL. A catalog entry shows its name, one line, "Verified"
+ * and Install; its particulars wait behind Advanced. A git URL is marked Unverified with the same
+ * particulars open, because there they are the security check. Install always turns the plugin on
+ * (a deep link's explicit `enable=0` aside) and shows one loader until it is done.
+ */
 export function PluginInstallModal() {
   const request = useStore($pluginInstallRequest)
   const { t } = useI18n()
   const m = t.settings.plugins.installModal
-  const { requestGateway } = useGatewayRequest()
   const navigate = useNavigate()
-  const location = useLocation()
-  const onSettings = location.pathname.startsWith(SETTINGS_ROUTE)
-  const connection = useStore($connection)
-  const activeProfile = useStore($activeGatewayProfile)
-  const profileScope = useStore($profileScope)
-
-  const [repoInput, setRepoInput] = useState('')
-  const [phase, setPhase] = useState<ProbePhase>('idle')
-  const [probe, setProbe] = useState<ProbeResult | null>(null)
-  const [installAgent, setInstallAgent] = useState(true)
-  const [installDesktop, setInstallDesktop] = useState(true)
-  const [enableAgent, setEnableAgent] = useState(true)
-  const [forceReinstall, setForceReinstall] = useState(false)
-  const [pinRef, setPinRef] = useState('')
+  const onSettings = useLocation().pathname.startsWith(SETTINGS_ROUTE)
+  // Lifted so the dialog cannot be dismissed mid-install.
   const [installing, setInstalling] = useState(false)
-  const [installError, setInstallError] = useState<string | null>(null)
-  const probeToken = useRef(0)
-
-  const resetState = useCallback(() => {
-    setRepoInput('')
-    setPhase('idle')
-    setProbe(null)
-    setInstallAgent(true)
-    setInstallDesktop(true)
-    setEnableAgent(true)
-    setForceReinstall(false)
-    setPinRef('')
-    setInstalling(false)
-    setInstallError(null)
-  }, [])
-
-  const applyLegacyHint = useCallback((payload: PluginInstallRequest, detected: ProbeResult) => {
-    if (payload.legacyHint === 'agent') {
-      setInstallAgent(Boolean(detected.agent))
-      setInstallDesktop(false)
-    } else if (payload.legacyHint === 'desktop') {
-      setInstallAgent(false)
-      setInstallDesktop(Boolean(detected.desktop))
-    } else {
-      setInstallAgent(Boolean(detected.agent))
-      setInstallDesktop(Boolean(detected.desktop))
-    }
-  }, [])
-
-  const runProbe = useCallback(
-    async (payload: PluginInstallRequest) => {
-      const token = ++probeToken.current
-      setPhase('probing')
-      setProbe(null)
-      setInstallError(null)
-      // Reviewed catalog picks streamline the ceremony: enable defaults ON
-      // (installing a reviewed entry to not use it is the rare case).
-      setEnableAgent(payload.enable ?? true)
-      setForceReinstall(payload.force ?? false)
-
-      const probeFn = window.hermesDesktop?.probePluginRepo
-
-      if (!probeFn) {
-        if (token !== probeToken.current) {
-          return
-        }
-
-        setPhase('error')
-        setProbe({
-          ok: false,
-          agent: false,
-          desktop: false,
-          warnings: [],
-          error: m.probeUnavailable
-        })
-
-        return
-      }
-
-      const result = await probeFn({ identifier: payload.repo })
-
-      if (token !== probeToken.current) {
-        return
-      }
-
-      setProbe(result)
-
-      if (!result.ok) {
-        setPhase('error')
-
-        return
-      }
-
-      applyLegacyHint(payload, result)
-      setPhase('ready')
-    },
-    [applyLegacyHint, m.probeUnavailable]
-  )
 
   useEffect(() => {
     if (request && onSettings) {
@@ -144,402 +152,256 @@ export function PluginInstallModal() {
     }
   }, [request, onSettings, navigate])
 
-  useEffect(() => {
-    if (!request) {
-      resetState()
-
-      return
-    }
-
-    if (request.repo) {
-      void runProbe(request)
-    }
-  }, [request, resetState, runProbe])
-
-  const profileLabel = request?.profile || activeProfile || profileScope || 'default'
-
-  const agentTargetHint =
-    connection?.mode === 'remote'
-      ? m.agentTargetRemote(profileLabel)
-      : m.agentTargetLocal(
-          profileLabel,
-          request?.profile && request.profile !== 'default'
-            ? `~/.hermes/profiles/${request.profile}/plugins/`
-            : '~/.hermes/plugins/'
-        )
-
-  // A unified package installed into a local backend carries its own desktop
-  // half; the app copies that half out of the package folder. Only a remote
-  // backend (whose plugins/ folder this machine cannot read) or a desktop-only
-  // repo needs a separate desktop clone.
-  const desktopHalfFromPackage = Boolean(probe?.agent && installAgent && connection?.mode !== 'remote')
-
-  const sourceLinks = useMemo(() => (request ? resolvePluginSourceLinks(request.repo) : null), [request])
-
-  const handleClose = () => {
-    if (installing) {
-      return
-    }
-
-    probeToken.current += 1
-    closePluginInstallRequest()
-  }
-
-  const handleInstall = async () => {
-    if (!request || !probe?.ok || installing) {
-      return
-    }
-
-    if (!installAgent && !installDesktop) {
-      setInstallError(m.selectComponent)
-
-      return
-    }
-
-    setInstalling(true)
-    setInstallError(null)
-
-    const errors: string[] = []
-    const successes: string[] = []
-    let agentInstalled = false
-
-    try {
-      if (installAgent && probe.agent) {
-        const result = await installAgentPlugin(requestGateway, {
-          identifier: request.repo,
-          force: forceReinstall,
-          enable: enableAgent,
-          catalogName: request.catalogName,
-          ref: pinRefTrimmed || undefined,
-          profile: request.profile
-        })
-
-        if (result.ok) {
-          successes.push(m.agentSuccess(result.pluginName ?? request.repo))
-          agentInstalled = true
-
-          if (result.missingEnv?.length) {
-            const firstVar = result.missingEnv[0]
-
-            notify({
-              kind: 'warning',
-              message: m.missingEnv(result.pluginName ?? request.repo, result.missingEnv.join(', ')),
-              // Deep-link straight to the credential card instead of leaving
-              // the user to hunt through Settings → Tools & Keys by hand.
-              action: {
-                label: m.missingEnvAction,
-                onClick: () => navigate(`/settings?tab=keys&key=${encodeURIComponent(firstVar)}`)
-              }
-            })
-          }
-
-          for (const warning of result.warnings ?? []) {
-            notify({ kind: 'warning', message: warning })
-          }
-        } else {
-          errors.push(result.error || m.agentFailed)
-        }
-      }
-
-      if (installDesktop && probe.desktop) {
-        if (agentInstalled && desktopHalfFromPackage) {
-          // Unified package into a LOCAL backend: the desktop half ships inside
-          // the package folder Electron just watched land. Materialise it from
-          // there (one source of truth, follows updates/uninstall) instead of
-          // cloning a second, standalone copy under another folder name.
-          const touched = (await window.hermesDesktop?.reconcileDesktopPlugins?.()) ?? []
-
-          successes.push(m.desktopSuccess(probe.agentName ?? request.repo))
-
-          if (touched.length > 0) {
-            await discoverRuntimePlugins()
-          }
-        } else {
-          const installFn = window.hermesDesktop?.installDesktopPlugin
-
-          if (!installFn) {
-            errors.push(m.desktopUnavailable)
-          } else {
-            const result = await installFn({ identifier: request.repo, force: forceReinstall })
-
-            if (result.ok) {
-              successes.push(m.desktopSuccess(result.pluginName ?? request.repo))
-              await discoverRuntimePlugins()
-            } else {
-              errors.push(result.error || m.desktopFailed)
-            }
-          }
-        }
-      }
-
-      await loadAgentPlugins(requestGateway)
-
-      if (errors.length === 0) {
-        for (const message of successes) {
-          notify({ kind: 'success', message })
-        }
-
-        // An enabled agent plugin only takes effect after a gateway restart —
-        // offer the restart right here instead of a dim hint to run later.
-        if (agentInstalled && enableAgent) {
-          notify({
-            kind: 'success',
-            message: m.restartToApply,
-            action: { label: m.restartNow, onClick: () => void runGatewayRestart() }
-          })
-        }
-
-        closePluginInstallRequest()
-        // Catalog picks come from Capabilities → Plugins; land back there.
-        navigate(request.catalogName ? '/capabilities?tab=plugins' : '/settings?tab=plugins')
-
-        return
-      }
-
-      if (successes.length > 0) {
-        for (const message of successes) {
-          notify({ kind: 'success', message })
-        }
-      }
-
-      setInstallError(errors.join('\n'))
-    } finally {
-      setInstalling(false)
-    }
-  }
-
-  const open = request !== null && !onSettings
-  const busy = phase === 'probing' || installing
-  const pinRefTrimmed = pinRef.trim().toLowerCase()
-  const pinRefInvalid = pinRefTrimmed !== '' && !COMMIT_SHA_RE.test(pinRefTrimmed)
-
   return (
     <Dialog
       onOpenChange={next => {
-        if (!next) {
-          handleClose()
+        if (!next && !installing) {
+          closePluginInstallRequest()
         }
       }}
-      open={open}
+      open={request !== null && !onSettings}
     >
       <DialogContent className="max-w-lg" onOpenAutoFocus={request?.repo ? preventCloseButtonAutoFocus : undefined}>
-        <DialogHeader>
-          <DialogTitle>{m.title}</DialogTitle>
-          <DialogDescription>{m.description}</DialogDescription>
-        </DialogHeader>
-
         {request && !request.repo && (
-          <form
-            className="space-y-3"
-            id="plugin-repository-form"
-            onSubmit={event => {
-              event.preventDefault()
-              const repo = repoInput.trim()
-
-              if (repo) {
-                openPluginInstallRequest({ ...request, repo })
-              }
-            }}
-          >
-            <label className="block space-y-1">
-              <span>{m.repoLabel}</span>
-              <Input
-                autoFocus
-                onChange={event => setRepoInput(event.target.value)}
-                placeholder={m.repoPlaceholder}
-                spellCheck={false}
-                value={repoInput}
-              />
-            </label>
-          </form>
+          <>
+            <DialogHeader>
+              <DialogTitle>{m.title}</DialogTitle>
+              <DialogDescription>{m.description}</DialogDescription>
+            </DialogHeader>
+            <RepositoryEntry request={request} />
+          </>
         )}
-
         {request?.repo && (
-          <div className="space-y-4">
-            <div>
-              <div className="mb-1 text-[length:var(--conversation-caption-font-size)] font-medium text-foreground">
-                {m.repoLabel}
-              </div>
-              <div className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-2 font-mono text-[length:var(--conversation-caption-font-size)] break-all text-foreground">
-                {request.repo}
-              </div>
-              {request.catalogName && (
-                <p className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                  {m.catalogPinned(request.catalogName, request.sha?.slice(0, 8) ?? '')}
-                </p>
-              )}
-            </div>
-
-            <div className="space-y-3 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-2.5">
-              <div className="space-y-2 text-[length:var(--conversation-caption-font-size)]">
-                <div className="font-medium text-foreground">
-                  {request.catalogName ? m.reviewedHeading : m.securityHeading}
-                </div>
-                <p className="text-(--ui-text-secondary)">{request.catalogName ? m.reviewedIntro : m.securityIntro}</p>
-              </div>
-
-              {sourceLinks && (
-                <div className="space-y-2 border-t border-(--ui-stroke-tertiary) pt-3">
-                  <div className="font-medium text-foreground">{m.sourceHeading}</div>
-                  {sourceLinks.browseUrl && (
-                    <ExternalLink
-                      className="text-[length:var(--conversation-caption-font-size)]"
-                      href={sourceLinks.browseUrl}
-                      showExternalIcon
-                    >
-                      {sourceLinks.subdir ? m.viewPluginFiles : m.viewRepository}
-                    </ExternalLink>
-                  )}
-                  <div>
-                    <div className="mb-1 text-(--ui-text-tertiary)">{m.gitCloneLabel}</div>
-                    <div className="rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-2.5 py-1.5 font-mono break-all text-foreground">
-                      {sourceLinks.gitUrl}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {phase === 'probing' && (
-              <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                {m.probing}
-              </p>
-            )}
-
-            {phase === 'error' && probe?.error && (
-              <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-[length:var(--conversation-caption-font-size)] text-destructive">
-                {probe.error}
-              </p>
-            )}
-
-            {phase === 'ready' && probe && (
-              <div className="space-y-3">
-                <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-foreground">
-                  {m.includesHeading}
-                </div>
-
-                {probe.agent && (
-                  <label className="flex items-start gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
-                    <Checkbox
-                      checked={installAgent}
-                      disabled={busy}
-                      onCheckedChange={value => setInstallAgent(value === true)}
-                    />
-                    <span className="min-w-0">
-                      <span className="block font-medium text-foreground">{m.agentLabel}</span>
-                      <span className="block text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        {agentTargetHint}
-                        {probe.agentName ? ` · ${probe.agentName}` : ''}
-                      </span>
-                    </span>
-                  </label>
-                )}
-
-                {probe.desktop && (
-                  <label className="flex items-start gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
-                    <Checkbox
-                      checked={installDesktop}
-                      disabled={busy}
-                      onCheckedChange={value => setInstallDesktop(value === true)}
-                    />
-                    <span className="min-w-0">
-                      <span className="block font-medium text-foreground">{m.desktopLabel}</span>
-                      <span className="block text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        {desktopHalfFromPackage ? m.desktopTargetFromPackage : m.desktopTarget}
-                        {desktopHalfFromPackage ? '' : probe.desktopName ? ` · ${probe.desktopName}` : ''}
-                      </span>
-                    </span>
-                  </label>
-                )}
-
-                {probe.desktop && !probe.agent && (
-                  <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                    {m.desktopOnlyNote}
-                  </p>
-                )}
-
-                {(probe.insecure || (probe.warnings?.length ?? 0) > 0) && (
-                  <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[length:var(--conversation-caption-font-size)] text-foreground">
-                    <AlertTriangle
-                      aria-hidden
-                      className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400"
-                    />
-                    <span>
-                      {[...new Set([...(probe.warnings ?? []), probe.insecure ? m.insecureWarning : ''])]
-                        .filter(Boolean)
-                        .join(' ')}
-                    </span>
-                  </div>
-                )}
-
-                {probe.agent && (
-                  <label className="flex items-center justify-between gap-3">
-                    <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
-                      {m.enableAgent}
-                    </span>
-                    <Switch checked={enableAgent} disabled={busy || !installAgent} onCheckedChange={setEnableAgent} />
-                  </label>
-                )}
-
-                {!request.catalogName && (
-                  <label className="flex items-center justify-between gap-3">
-                    <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
-                      {m.forceReinstall}
-                    </span>
-                    <Switch checked={forceReinstall} disabled={busy} onCheckedChange={setForceReinstall} />
-                  </label>
-                )}
-
-                {!request.catalogName && probe.agent && (
-                  <label className="block space-y-1">
-                    <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
-                      {m.pinToCommit}
-                    </span>
-                    <Input
-                      aria-invalid={pinRefInvalid || undefined}
-                      aria-label={m.pinToCommit}
-                      disabled={busy || !installAgent}
-                      onChange={event => setPinRef(event.target.value)}
-                      placeholder={m.pinToCommitPlaceholder}
-                      spellCheck={false}
-                      value={pinRef}
-                    />
-                    <span
-                      className={`block text-[length:var(--conversation-caption-font-size)] ${pinRefInvalid ? 'text-destructive' : 'text-(--ui-text-tertiary)'}`}
-                    >
-                      {pinRefInvalid ? m.pinToCommitInvalid : m.pinToCommitHint}
-                    </span>
-                  </label>
-                )}
-              </div>
-            )}
-
-            {installError && (
-              <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 whitespace-pre-wrap text-[length:var(--conversation-caption-font-size)] text-destructive">
-                {installError}
-              </p>
-            )}
-          </div>
+          <InstallView
+            installing={installing}
+            key={request.repo}
+            onInstallingChange={setInstalling}
+            request={request}
+          />
         )}
-
-        <DialogFooter>
-          <Button disabled={busy} onClick={handleClose} variant="outline">
-            {t.common.cancel}
-          </Button>
-          {request && !request.repo ? (
-            <Button disabled={!repoInput.trim()} form="plugin-repository-form" type="submit">
-              {m.reviewRepository}
-            </Button>
-          ) : (
-            <Button
-              disabled={busy || phase !== 'ready' || !probe?.ok || pinRefInvalid}
-              onClick={() => void handleInstall()}
-            >
-              {installing ? m.installing : m.install}
-            </Button>
-          )}
-        </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** Name, Verified/Unverified, the one line on what it does, then who reviewed it and where it lands. */
+function InstallHeader({
+  line,
+  probe,
+  request
+}: {
+  line: string
+  probe: null | ProbeResult
+  request: PluginInstallRequest
+}) {
+  const { t } = useI18n()
+  const m = t.settings.plugins.installModal
+  const verified = Boolean(request.catalogName)
+
+  return (
+    <DialogHeader>
+      <div className="flex items-start gap-3">
+        <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-(--ui-bg-quinary) text-(--ui-text-secondary)">
+          <Puzzle className="size-4" />
+        </span>
+        <div className="min-w-0 space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <DialogTitle>{pluginTitle(request, probe)}</DialogTitle>
+            <Badge variant={verified ? 'success' : 'warn'}>{verified ? m.verified : m.unverified}</Badge>
+          </div>
+          <DialogDescription>{request.summary || line}</DialogDescription>
+          {request.summary && <p className={cn(CAPTION, 'text-(--ui-text-secondary)')}>{line}</p>}
+        </div>
+      </div>
+    </DialogHeader>
+  )
+}
+
+function Disclosure({
+  children,
+  label,
+  onToggle,
+  open
+}: {
+  children: ReactNode
+  label: string
+  onToggle: () => void
+  open: boolean
+}) {
+  return (
+    <div>
+      <button
+        aria-expanded={open}
+        className={cn(CAPTION, 'flex items-center gap-1.5 font-medium text-(--ui-text-secondary)')}
+        onClick={onToggle}
+        type="button"
+      >
+        <DisclosureCaret open={open} />
+        {label}
+      </button>
+      {open && <div className="pt-2">{children}</div>}
+    </div>
+  )
+}
+
+interface InstallFooterProps {
+  canInstall: boolean
+  failed: boolean
+  installing: boolean
+  onInstall: () => void
+  onRetry: () => void
+}
+
+/** Cancel, then Install (one loader while it runs) or, after a failure, Retry. */
+function InstallFooter({ canInstall, failed, installing, onInstall, onRetry }: InstallFooterProps) {
+  const { t } = useI18n()
+  const m = t.settings.plugins.installModal
+
+  return (
+    <DialogFooter>
+      <Button disabled={installing} onClick={closePluginInstallRequest} variant="outline">
+        {t.common.cancel}
+      </Button>
+      {failed ? (
+        <Button onClick={onRetry}>{t.common.retry}</Button>
+      ) : (
+        <Button disabled={!canInstall} onClick={onInstall}>
+          {installing && <Loader2 className="animate-spin" />}
+          {installing ? m.installing : m.install}
+        </Button>
+      )}
+    </DialogFooter>
+  )
+}
+
+interface InstallViewProps {
+  request: PluginInstallRequest
+  installing: boolean
+  onInstallingChange: (installing: boolean) => void
+}
+
+function InstallView({ request, installing, onInstallingChange }: InstallViewProps) {
+  const { t } = useI18n()
+  const m = t.settings.plugins.installModal
+  const { requestGateway } = useGatewayRequest()
+  const navigate = useNavigate()
+  const remote = useStore($connection)?.mode === 'remote'
+  const activeProfile = useStore($activeGatewayProfile)
+  const profiles = useStore($profiles)
+  const profileScope = useStore($profileScope)
+  const verified = Boolean(request.catalogName)
+  const enable = request.enable ?? true
+  const { probe, start, cancel, settled } = usePluginProbe(m.probeUnavailable)
+
+  const [targetProfile, setTargetProfile] = useState(() =>
+    normalizeProfileKey(request.profile || activeProfile || profileScope)
+  )
+
+  const [advancedOpen, setAdvancedOpen] = useState(!verified)
+  const [force, setForce] = useState(request.force ?? false)
+  const [pinRef, setPinRef] = useState('')
+  const [installError, setInstallError] = useState<null | string>(null)
+  const [installUncertain, setInstallUncertain] = useState(false)
+
+  useEffect(() => {
+    start(request.repo)
+
+    return cancel
+  }, [cancel, request.repo, start])
+
+  const targetInfo = profiles.find(profile => normalizeProfileKey(profile.name) === targetProfile)
+  const targetLabel = profileLabel(targetInfo ?? { name: targetProfile })
+  const pin = pinRef.trim().toLowerCase()
+  const pinInvalid = pin !== '' && !COMMIT_SHA_RE.test(pin)
+  // Hidden while a retry runs, so the loader is the only thing on screen.
+  const failure = installing ? null : (installError ?? probeFailure(probe, m.probeUnavailable))
+  const line = `${verified ? m.reviewedByNous : m.securityIntro} ${(enable ? m.installsAndEnables : m.installsOnly)(targetLabel)}`
+
+  const install = async () => {
+    onInstallingChange(true)
+    setInstallError(null)
+
+    try {
+      // A catalog pick may click Install while the inspection is still running: wait for it under the loader.
+      const detected = await settled()
+
+      if (!detected?.ok) {
+        return
+      }
+
+      const outcome = await runPluginInstall(
+        { request, probe: detected, profile: targetProfile, enable, force, ref: pin || undefined, remote },
+        { copy: m, navigate, requestGateway }
+      )
+
+      if (outcome.status === 'done') {
+        finishInstall(request, navigate)
+      } else if (outcome.status === 'uncertain') {
+        setInstallUncertain(true)
+      } else {
+        setInstallError(outcome.error)
+      }
+    } finally {
+      onInstallingChange(false)
+    }
+  }
+
+  const retry = () => {
+    if (installError) {
+      void install()
+    } else {
+      start(request.repo)
+    }
+  }
+
+  // An unverified repository installs only once its contents are on screen; a reviewed pick may start at once.
+  const canInstall = !installing && !installUncertain && !pinInvalid && (verified || Boolean(probe?.ok))
+
+  return (
+    <>
+      <InstallHeader line={line} probe={probe} request={request} />
+
+      <div className="space-y-3">
+        <ProbeWarnings copy={m} probe={probe} />
+
+        <Disclosure label={m.advanced} onToggle={() => setAdvancedOpen(open => !open)} open={advancedOpen}>
+          <PluginInstallDetails
+            busy={installing}
+            copy={m}
+            force={force}
+            onForceChange={setForce}
+            pin={{ value: pinRef, invalid: pinInvalid, onChange: setPinRef }}
+            probe={probe}
+            profile={{
+              value: targetProfile,
+              label: targetLabel,
+              options: targetInfo ? profiles : [...profiles, { name: targetProfile }],
+              onChange: setTargetProfile
+            }}
+            remote={remote}
+            request={request}
+          />
+        </Disclosure>
+
+        {failure && (
+          <p className={cn(CAPTION, 'text-destructive')} role="alert">
+            {failure}
+          </p>
+        )}
+        {installUncertain && (
+          <p className={cn(CAPTION, 'text-(--ui-text-secondary)')} role="status">
+            {m.installUncertain}
+          </p>
+        )}
+      </div>
+
+      <InstallFooter
+        canInstall={canInstall}
+        failed={Boolean(failure)}
+        installing={installing}
+        onInstall={() => void install()}
+        onRetry={retry}
+      />
+    </>
   )
 }

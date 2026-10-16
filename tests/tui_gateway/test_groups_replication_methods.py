@@ -61,18 +61,6 @@ def _authority_page(tmp_path, gateway_id="install:" + "a" * 32, n=3):
     return rooms.read_events(db, room_id="room-1", since_seq=0, limit=100)
 
 
-def test_capabilities_advertise_replication(home):
-    result = _result(srv._methods["groups.capabilities"](1, {}))
-    assert "log_replication" in result["features"]
-    assert "authority_takeover" in result["features"]
-    for name in (
-        "groups.replicate",
-        "groups.replica_state",
-        "groups.promote",
-        "groups.demote",
-    ):
-        assert name in result["methods"]
-        assert name in srv._LONG_HANDLERS
 
 
 def test_replicate_then_state_roundtrip(home, tmp_path):

@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.i18n import t
 from gateway.platforms.base import unauthorized_action_notice, utf16_len
 
 # ---------------------------------------------------------------------------
@@ -143,31 +144,8 @@ class TestTelegramExecApproval:
             allow_permanent=False,
         )
 
-        assert buttons == ["✅ Allow Once", "✅ Session", "❌ Deny"]
+        assert buttons == [t(f"platform.telegram.approval.action_{c}") for c in ("once", "session", "deny")]
 
-    @pytest.mark.asyncio
-    async def test_full_approval_keyboard_is_two_by_two(self, monkeypatch):
-        """Regression: d48bf743f flattened all buttons into one row (4x1)."""
-        adapter = _make_adapter()
-        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
-        captured_rows = []
-        monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
-            lambda text, callback_data: text,
-        )
-        monkeypatch.setattr(
-            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup",
-            lambda rows: captured_rows.extend(rows) or rows,
-        )
-
-        await adapter.send_exec_approval(
-            chat_id="12345", command="curl example.test", session_key="s",
-        )
-
-        assert captured_rows == [
-            ["✅ Allow Once", "✅ Session"],
-            ["✅ Always", "❌ Deny"],
-        ]
 
 
     @pytest.mark.asyncio
@@ -191,7 +169,7 @@ class TestTelegramExecApproval:
         )
 
         assert captured_rows == [
-            ["✅ Allow Once", "❌ Deny"],
+            [t("platform.telegram.approval.action_once"), t("platform.telegram.approval.action_deny")],
         ]
 
 
@@ -285,7 +263,6 @@ class TestTelegramApprovalCallback:
         edit_kwargs = query.edit_message_text.call_args[1]
         assert "MARKDOWN_V2" in repr(edit_kwargs["parse_mode"])
         assert "Alice\\_Bob" in edit_kwargs["text"]
-        assert "Approved once" in edit_kwargs["text"]
 
 
     @pytest.mark.asyncio

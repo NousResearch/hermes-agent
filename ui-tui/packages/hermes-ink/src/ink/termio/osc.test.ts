@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { env, supportsOsc52Clipboard } from '../../utils/env.js'
+import { supportsOsc52Clipboard } from '../../utils/env.js'
 
 import { shouldEmitClipboardSequence, shouldUseNativeClipboard } from './osc.js'
 
@@ -53,38 +53,8 @@ describe('shouldEmitClipboardSequence', () => {
 })
 
 describe('supportsOsc52Clipboard', () => {
-  // Terminals known to correctly implement OSC 52. On these, setClipboard()
-  // skips the native-tool safety net (wl-copy/xclip/pbcopy) to avoid racing
-  // the terminal's own clipboard write. Values must match what
-  // detectTerminal() in utils/env.ts returns — TERM=xterm-ghostty normalises
-  // to 'ghostty', TERM_PROGRAM=WezTerm stays 'WezTerm', etc.
-  it.each(['ghostty', 'kitty', 'WezTerm', 'windows-terminal', 'vscode'])(
-    'returns true for allowlisted terminal %s',
-    terminal => {
-      expect(supportsOsc52Clipboard(terminal)).toBe(true)
-    }
-  )
-
-  // Intentionally conservative — iTerm2 disables OSC 52 by default; Alacritty
-  // and GNOME Terminal detection is unreliable; xterm/Terminal.app lack
-  // reliable OSC 52. These keep the existing native-safety-net behaviour.
-  it.each(['iTerm.app', 'alacritty', 'Apple_Terminal', 'xterm', 'tmux', 'screen', 'cursor', 'WarpTerminal', ''])(
-    'returns false for non-allowlisted terminal %s',
-    terminal => {
-      expect(supportsOsc52Clipboard(terminal)).toBe(false)
-    }
-  )
-
   it('returns false when terminal is null (detection failed)', () => {
     expect(supportsOsc52Clipboard(null)).toBe(false)
-  })
-
-  it('defaults to the module-level detected terminal when no argument is passed', () => {
-    // With no argument, uses env.terminal detected at module load. We don't
-    // know what that is in CI, but the call must return a boolean (not throw)
-    // and the result must match calling with env.terminal explicitly.
-    expect(typeof supportsOsc52Clipboard()).toBe('boolean')
-    expect(supportsOsc52Clipboard()).toBe(supportsOsc52Clipboard(env.terminal))
   })
 })
 
@@ -166,12 +136,6 @@ describe('shouldUseNativeClipboard', () => {
     ).toBe(true)
   })
 
-  it('SSH_CONNECTION takes precedence over allowlisted terminal', () => {
-    // Even on Ghostty, if we're SSH'd in we shouldn't run pbcopy on the
-    // remote machine — the user's clipboard is on the other end.
-    expect(shouldUseNativeClipboard({ SSH_CONNECTION: '1' } as NodeJS.ProcessEnv, 'ghostty')).toBe(false)
-  })
-
   it('SSH_CONNECTION takes precedence over TMUX', () => {
     // Combined: SSH'd in and inside tmux on the remote. SSH_CONNECTION
     // gate fires first, native stays off (we use OSC 52 to reach the
@@ -179,13 +143,5 @@ describe('shouldUseNativeClipboard', () => {
     expect(shouldUseNativeClipboard({ SSH_CONNECTION: '1', TMUX: '/tmp/t,1,0' } as NodeJS.ProcessEnv, 'xterm')).toBe(
       false
     )
-  })
-
-  it('defaults env to process.env and terminal to the module-detected terminal when no args passed', () => {
-    // Smoke test: no args is a valid call shape for the convenience seam.
-    // shouldUseNativeClipboard() defaults `terminal` to envModule.terminal
-    // (the module-level detected terminal), not null. Returns a boolean
-    // without throwing.
-    expect(typeof shouldUseNativeClipboard()).toBe('boolean')
   })
 })

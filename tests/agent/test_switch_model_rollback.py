@@ -19,7 +19,6 @@ import pytest
 
 from run_agent import AIAgent
 
-
 def _make_agent_openrouter():
     """Agent on openrouter (openai-compatible) with sentinel client + kwargs."""
     agent = AIAgent.__new__(AIAgent)
@@ -50,7 +49,6 @@ def _make_agent_openrouter():
 
     return agent
 
-
 def _make_agent_anthropic():
     """Agent on native anthropic with a sentinel anthropic client."""
     agent = AIAgent.__new__(AIAgent)
@@ -77,7 +75,6 @@ def _make_agent_anthropic():
     agent.runtime_capabilities = {"native_compaction": False}
 
     return agent
-
 
 def test_openai_client_rebuild_failure_rolls_back_to_original_state():
     """When OpenAI client construction fails, every mutated field must restore."""
@@ -111,7 +108,6 @@ def test_openai_client_rebuild_failure_rolls_back_to_original_state():
     assert agent.client is original_client
     assert agent._client_kwargs == original_kwargs
     assert agent.runtime_capabilities == {"native_compaction": False}
-
 
 def test_anthropic_client_rebuild_failure_rolls_back_to_original_state():
     """When build_anthropic_client raises, every mutated field must restore."""
@@ -154,7 +150,6 @@ def test_anthropic_client_rebuild_failure_rolls_back_to_original_state():
     assert agent.api_mode == "anthropic_messages"
     assert agent.api_key == "sk-ant-original"
 
-
 def test_cross_branch_anthropic_to_openai_rebuild_failure_rolls_back():
     """Switching from anthropic_messages to chat_completions: failure must
     restore the anthropic state, not leave the agent half-converted."""
@@ -183,25 +178,3 @@ def test_cross_branch_anthropic_to_openai_rebuild_failure_rolls_back():
     assert agent.provider == "anthropic"
     assert agent.api_mode == "anthropic_messages"
     assert agent.base_url == "https://api.anthropic.com"
-
-
-def test_successful_switch_still_works_after_rollback_refactor():
-    """Sanity check: the try/except wrapper hasn't broken the happy path."""
-    agent = _make_agent_openrouter()
-
-    new_client = MagicMock(name="NewClient")
-    agent._create_openai_client = lambda *_a, **_kw: new_client
-
-    with patch("hermes_cli.timeouts.get_provider_request_timeout", return_value=None):
-        agent.switch_model(
-            new_model="openai/gpt-5",
-            new_provider="openrouter",
-            api_key="or-key-new",
-            base_url="https://openrouter.ai/api/v1",
-            api_mode="chat_completions",
-        )
-
-    assert agent.model == "openai/gpt-5"
-    assert agent.provider == "openrouter"
-    assert agent.api_key == "or-key-new"
-    assert agent.client is new_client

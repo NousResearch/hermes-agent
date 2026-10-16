@@ -101,9 +101,9 @@ def handle_outer_loop_error(
     )
 
     if _is_local_processing_error:
-        error_msg = f"Error during local message processing after API call #{api_call_count}: {str(e)}"
+        error_msg = f"Error during local message processing after API call #{api_call_count}: {e!s}"
     else:
-        error_msg = f"Error during API call #{api_call_count}: {str(e)}"
+        error_msg = f"Error during API call #{api_call_count}: {e!s}"
     # Honor the _vprint contract: suppress_status_output silences hard failures;
     # quiet_mode -q still shows them. Traceback is logged below.
     if getattr(agent, "suppress_status_output", False):

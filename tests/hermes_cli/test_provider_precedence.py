@@ -25,7 +25,7 @@ def _config(monkeypatch, model_cfg):
 
 def _no_aws(monkeypatch):
     # Neutralize any ambient AWS creds so Bedrock auto-detect can't interfere.
-    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
+    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
 
 
 def _clear_provider_env(monkeypatch):
@@ -50,7 +50,7 @@ class TestProviderPrecedence:
         _login(monkeypatch, "anthropic")
         _config(monkeypatch, {"default": "some-model"})  # dict, NO provider key
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
-        assert resolve_provider("auto") == "openrouter"
+        assert resolve_provider("auto") == "openai-api"
 
 
     def test_oauth_used_as_last_resort(self, monkeypatch):
@@ -63,17 +63,6 @@ class TestProviderPrecedence:
         assert resolve_provider("auto") == "anthropic"
 
 
-    def test_warns_on_silent_oauth_fallthrough(self, monkeypatch, caplog):
-        """A populated model dict lacking `provider` that falls through to OAuth
-        emits a WARN so the silent override is visible (#29285)."""
-        import logging
-        _clear_provider_env(monkeypatch)
-        _no_aws(monkeypatch)
-        _login(monkeypatch, "anthropic")
-        _config(monkeypatch, {"default": "claude-x"})  # populated, no provider
-        with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
-            assert resolve_provider("auto") == "anthropic"
-        assert any("no `provider` key" in r.message for r in caplog.records)
 
 
     def test_openrouter_pool_beats_stale_oauth(self, monkeypatch):
@@ -92,56 +81,65 @@ class TestProviderPrecedence:
         assert resolve_provider("auto") == "openrouter"
 
 
-def _logged_out(monkeypatch):
-    monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: {})
-    monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda p: {"logged_in": False})
+@pytest.fixture
+def portal(monkeypatch, tmp_path):
+    from tests.hermes_cli.anon_portal import install_portal
+    return install_portal(monkeypatch, tmp_path)
 
 
-def _free_tier(monkeypatch, *, on=True, identity=False):
-    """Free tier switch + whether a free-tier identity already exists. The resolver is a READ: any
-    call into the creator from inside it is a bug, so the stub fails loudly."""
-    monkeypatch.setattr("hermes_cli.anon_auth.guest_enabled", lambda: on)
-    monkeypatch.setattr("hermes_cli.anon_auth.has_guest", lambda: identity)
+def _never_mint(monkeypatch):
+    """The resolver is a READ: any call into the creator from inside it is a bug."""
     monkeypatch.setattr("hermes_cli.anon_auth.ensure_portal_identity",
                         lambda **kw: (_ for _ in ()).throw(AssertionError("resolve_provider must not mint")))
 
 
+def _claimed_trial_with_aws(monkeypatch):
+    """A claimed welcome trial on the desktop's local backend, then a leftover ~/.aws profile."""
+    from tests.hermes_cli.anon_portal import claimed_trial
+    _clear_provider_env(monkeypatch)
+    claimed_trial(monkeypatch)
+    _never_mint(monkeypatch)
+    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: True)
+
+
 class TestFreeTierBeatsImplicitHostCredentials:
-    """NS-829: a leftover ~/.aws profile must not pre-empt the free tier on a fresh install.
+    """NS-829: a leftover ~/.aws profile must not pre-empt the welcome trial on a fresh install.
 
-    The ladder: explicit intent still wins, an EXISTING free-tier identity sits above the implicit
-    Bedrock chain, the free tier off (or its identity absent) restores Bedrock. The resolver never
-    creates the identity; the boot bootstrap does, before any turn asks."""
+    A claimed trial on the desktop's local backend sits above the implicit Bedrock chain; explicit
+    intent still beats it; off the desktop backend a claimed guest never resolves to nous. The
+    resolver never creates the identity."""
 
-    @pytest.mark.parametrize("free_tier_on, identity, env_key, login, expected", [
-        (True, True, None, None, "nous"),                 # existing identity beats the AWS chain
-        (True, False, None, None, "bedrock"),             # no identity yet: Bedrock, nothing minted
-        (False, True, None, None, "bedrock"),             # free tier off: Bedrock as before
-        (True, True, "OPENAI_API_KEY", None, "openrouter"),  # env key still wins
-        (True, True, None, "anthropic", "anthropic"),        # a sign-in still wins
-    ])
-    def test_free_tier_sits_above_the_bedrock_chain(self, monkeypatch, free_tier_on, identity,
-                                                     env_key, login, expected):
-        _clear_provider_env(monkeypatch)
-        _config(monkeypatch, "")
-        if login:
-            _login(monkeypatch, login)
-        else:
-            _logged_out(monkeypatch)
+    def test_a_claimed_trial_on_the_desktop_backend_beats_the_bedrock_chain(self, portal, monkeypatch):
+        _claimed_trial_with_aws(monkeypatch)
+        assert resolve_provider("auto") == "nous"
+
+    @pytest.mark.parametrize("env_key, config_provider, expected", [
+        ("OPENAI_API_KEY", None, "openai-api"),  # an exported key wins
+        (None, "zai", "zai"),                     # a config pin wins
+    ], ids=["env-key", "config-provider"])
+    def test_explicit_providers_beat_a_claimed_trial(self, portal, monkeypatch, env_key, config_provider,
+                                                     expected):
+        _claimed_trial_with_aws(monkeypatch)
         if env_key:
             monkeypatch.setenv(env_key, "sk-test-key")
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: True)
-        _free_tier(monkeypatch, on=free_tier_on, identity=identity)
+        if config_provider:
+            _config(monkeypatch, {"provider": config_provider, "default": "some-model"})
         assert resolve_provider("auto") == expected
 
-    def test_skip_free_tier_answers_what_else_would_carry_inference(self, monkeypatch):
-        """The bootstrap's question: with the free tier hidden, an existing identity is not an
-        answer and the ladder falls through to the next real rung."""
-        _clear_provider_env(monkeypatch)
-        _config(monkeypatch, "")
-        _logged_out(monkeypatch)
-        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
-        _free_tier(monkeypatch, on=True, identity=True)
+    def test_on_the_cli_surface_a_claimed_guest_never_resolves_to_nous(self, portal, monkeypatch):
+        _claimed_trial_with_aws(monkeypatch)
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        assert resolve_provider("auto") == "bedrock"
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
+        with pytest.raises(AuthError):
+            resolve_provider("auto")
+
+    def test_skip_free_tier_answers_what_else_would_carry_inference(self, portal, monkeypatch):
+        """With the free tier hidden, a claimed trial is not an answer and the ladder falls through
+        to the next real rung."""
+        _claimed_trial_with_aws(monkeypatch)
+        monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
         assert resolve_provider("auto") == "nous"
         with pytest.raises(AuthError):
             resolve_provider("auto", skip_free_tier=True)

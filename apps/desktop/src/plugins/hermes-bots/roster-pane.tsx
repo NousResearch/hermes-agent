@@ -15,6 +15,7 @@ import {
   parseRosterKey,
   saveSelectedRosterBot
 } from './bot-state'
+import { CanonicalGroupList } from './canonical-group-registry'
 /**
  * The Bots pane itself: the roster's selection reconciliation, the
  * workspace-ownership reads its lifecycle keys off, and the pane that lists
@@ -51,7 +52,13 @@ import { botNeedsHandleLabel, rosterGatewayOptions } from './roster-sections'
 import { botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { activeBots, useTurnBusy } from './row-helpers'
 import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
-import { $botSections, $draggingBot, adoptBotSectionsFromMeta, backfillBotSectionNames, type SectionDialogState } from './user-sections'
+import {
+  $botSections,
+  $draggingBot,
+  adoptBotSectionsFromMeta,
+  backfillBotSectionNames,
+  type SectionDialogState
+} from './user-sections'
 import { useEscapeCancelsBotDrag } from './user-sections-ui'
 
 // ── roster pane ──────────────────────────────────────────────────────────────
@@ -464,6 +471,7 @@ export function BotsPane() {
 
   return (
     <div className="flex h-full flex-col">
+      <CanonicalGroupList onOpen={openGroupChat} />
       {renderRosterToolbar({
         b,
         activityToasts,

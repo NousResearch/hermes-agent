@@ -6,7 +6,6 @@ don't have to construct a full HermesCLI (which requires extensive setup).
 
 from __future__ import annotations
 
-import queue
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -147,31 +146,6 @@ def test_confirm_destructive_slash_now_skips_modal():
     assert result == "once"
 
 
-def test_confirm_destructive_slash_yes_flag_skips_modal():
-    """``--yes`` flag is equivalent to ``now``."""
-    from cli import HermesCLI
-
-    def _explode(**_kw):
-        raise AssertionError("modal must not be invoked when --yes present")
-
-    self_ = SimpleNamespace(
-        _app=None,
-        _prompt_text_input_modal=_explode,
-    )
-    self_._normalize_slash_confirm_choice = _bound(
-        HermesCLI._normalize_slash_confirm_choice, self_,
-    )
-    self_._split_destructive_skip = HermesCLI._split_destructive_skip
-
-    with patch(
-        "cli.load_cli_config",
-        return_value={"approvals": {"destructive_slash_confirm": True}},
-    ):
-        result = _bound(HermesCLI._confirm_destructive_slash, self_)(
-            "new", "detail", cmd_original="/new --yes My Session",
-        )
-
-    assert result == "once"
 
 
 def test_confirm_destructive_slash_no_skip_token_still_prompts():

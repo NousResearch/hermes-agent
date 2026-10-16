@@ -42,8 +42,7 @@ class TestExtractMediaImages:
 # ---------------------------------------------------------------------------
 # Telegram send_image_file tests
 # ---------------------------------------------------------------------------
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
-from plugins.platforms.telegram.adapter import _file_url_to_path  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 class TestTelegramSendImageFile:
@@ -110,18 +109,9 @@ class TestTelegramSendImageFile:
         assert kwargs["metadata"] == {"thread_id": "789"}
         adapter._bot.send_photo.assert_not_awaited()
 
-    def test_file_url_round_trip_decodes_windows_path_and_spaces(self, tmp_path):
-        """Path.as_uri output decodes back to the native Windows/Unix path."""
-        gif_path = (tmp_path / "folder with spaces" / "encoded name.gif").resolve()
-        gif_path.parent.mkdir()
-        gif_path.write_bytes(b"GIF89a")
-        file_url = gif_path.as_uri()
-
-        assert "%20" in file_url
-        assert _file_url_to_path(file_url) == str(gif_path)
-
-    def test_file_url_image_uses_decoded_path(self, adapter, tmp_path):
-        image_path = (tmp_path / "folder with spaces" / "encoded image.png").resolve()
+    @pytest.mark.parametrize("filename", ["encoded image.png", "literal%20name.png"])
+    def test_file_url_image_uses_decoded_path(self, adapter, tmp_path, filename):
+        image_path = (tmp_path / "folder with spaces" / filename).resolve()
         image_path.parent.mkdir()
         payload = b"\x89PNG" + b"\x00" * 32
         image_path.write_bytes(payload)
@@ -191,8 +181,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-import discord as discord_mod_ref  # noqa: E402
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+import discord as discord_mod_ref
+from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 class TestDiscordSendImageFile:
@@ -279,7 +269,7 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter
 
 
 class TestSlackSendImageFile:

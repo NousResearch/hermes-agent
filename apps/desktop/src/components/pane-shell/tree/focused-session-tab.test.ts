@@ -105,7 +105,10 @@ describe('focused chat zone drives the tab verbs', () => {
     tree.declareDefaultTree(
       model.split('row', [
         model.group(['workspace'], { active: 'workspace', id: 'grp-main' }),
-        model.group(['preview-tile:url:x', 'route-tile:/capabilities'], { active: 'preview-tile:url:x', id: 'grp-view' })
+        model.group(['preview-tile:url:x', 'route-tile:/capabilities'], {
+          active: 'preview-tile:url:x',
+          id: 'grp-view'
+        })
       ])
     )
     tree.noteActiveTreeGroup('grp-view')

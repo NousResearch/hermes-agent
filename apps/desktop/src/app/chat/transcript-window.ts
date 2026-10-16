@@ -20,9 +20,9 @@ import { messageStoreWeight } from '@/lib/render-weight'
 /**
  * One window page, in render-weight units.
  *
- * Four DOM pages (the `RENDER_BUDGET` of 300 in `thread/list.tsx`). "Show
+ * Two DOM pages (the `RENDER_BUDGET` of 600 in `thread/list.tsx`). "Show
  * earlier" spends the DOM budget first, so the user pages through the
- * already-materialized window three times before this asks the store for more
+ * already-materialized window once more before this asks the store for more
  * — and the reported crash shape (~231K tokens ≈ 2,260 units) is windowed
  * rather than handed to the repository whole.
  */
@@ -231,6 +231,7 @@ export function advanceSessionTranscriptWindow(
     // the component-local map would pin the complete source array after the
     // session store intentionally releases a cold transcript.
     memos.delete(sessionKey)
+
     return state
   }
 

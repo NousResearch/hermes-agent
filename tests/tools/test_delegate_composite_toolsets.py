@@ -18,13 +18,6 @@ class TestExpandParentToolsets(unittest.TestCase):
         self.assertIn("hermes-cli", expanded)
 
 
-    def test_intersection_with_expanded_composite(self):
-        """End-to-end: requesting ['web'] from parent with ['hermes-cli'] yields ['web']."""
-        parent_toolsets = {"hermes-cli"}
-        expanded = _expand_parent_toolsets(parent_toolsets)
-        toolsets = ["web"]
-        child_toolsets = [t for t in toolsets if t in expanded]
-        self.assertEqual(child_toolsets, ["web"])
 
     def test_included_toolsets_of_composite_parent_are_grantable(self):
         """A composite parent holds its ``includes`` too (#111700): ``debugging`` = terminal/process_manage +

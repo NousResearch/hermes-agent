@@ -36,13 +36,6 @@ class TestUltraEffortWireTranslation:
             )
             assert out == {"enabled": True, "effort": "max"}, model
 
-    def test_gpt_56_ultra_still_maps(self):
-        """The original pre-existing mapping (gpt-5.6 + ultra → max) is
-        preserved by the generalized one."""
-        out = _reasoning_config_for_model(
-            "gpt-5.6", {"enabled": True, "effort": "ultra"}
-        )
-        assert out == {"enabled": True, "effort": "max"}
 
     def test_wire_native_levels_pass_through_untouched(self):
         for level in ("none", "minimal", "low", "medium", "high", "xhigh", "max"):

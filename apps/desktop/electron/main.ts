@@ -551,6 +551,7 @@ import {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
+import { createSharedDirWatchRegistry } from './shared-dir-watch'
 import { ensureLoginShellPath } from './shell-path'
 import { removeStaleSingletonLock } from './singleton-lock'
 import { createSourcePythonBackend, resolveSourceInstallationBackend, type SourceBackend } from './source-backend'
@@ -642,7 +643,6 @@ import { createStoreStrategy } from './updater/store-client'
 import { isExternalVenvHolder, isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
-import { guardedWatch } from './watch-storm-breaker'
 import { windowAcceleratorAction } from './window-accelerator'
 import { enumerateWindowsFrontToBack, enumerationFailed, readWindowBelow } from './window-below'
 import { bindWindowChromeEvents } from './window-chrome-events'
@@ -2030,6 +2030,9 @@ let connectionRegistryCacheMtime = null
 const remoteHeaderSessions = new WeakSet<object>()
 const remoteWsHeaderStore = createRemoteWsHeaderStore()
 const previewWatchers = new Map()
+// One fs.watch per directory, shared by every preview file/dir watch on it
+// (see shared-dir-watch.ts) — N previews in one dir used to mean N handles.
+const sharedPreviewDirWatches = createSharedDirWatchRegistry()
 let previewShortcutActive = false
 const f12ShortcutActiveWindows = new Set<number>()
 let nativeThemeListenerInstalled = false
@@ -5358,13 +5361,16 @@ function multipartBody(upload) {
   const boundary = `----hermes-${crypto.randomBytes(12).toString('hex')}`
   const filename = String(upload.filename || 'file').replace(/["\r\n]/g, '_')
 
+  // Size-capped upstream: skip Buffer.from's extra copy when already a Buffer.
+  const payload = Buffer.isBuffer(upload.bytes) ? upload.bytes : Buffer.from(upload.bytes ?? [])
+
   const body = Buffer.concat([
     Buffer.from(
       `--${boundary}\r\n` +
         `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
         `Content-Type: ${upload.contentType || 'application/octet-stream'}\r\n\r\n`
     ),
-    Buffer.from(upload.bytes),
+    payload,
     Buffer.from(`\r\n--${boundary}--\r\n`)
   ])
 
@@ -5948,11 +5954,10 @@ async function watchPreviewFile(owner, rawUrl) {
     )
   }
 
-  // guardedWatch: a win32 event storm closes the raw fs.watch and falls back
-  // to a slow stat poll instead of pinning the main thread (#118974).
-  const watcher = guardedWatch({
-    platform: process.platform,
-    watch: listener => fs.watch(watchDir, listener),
+  // Shared directory watch (one fs.watch per dir, fanned out): a win32 event
+  // storm closes the raw handle and falls back to a slow stat poll instead of
+  // pinning the main thread (#118974).
+  const releaseDirWatch = sharedPreviewDirWatches.acquire(watchDir, {
     onEvent: (_eventType, filename) => {
       const changedName = filename ? path.basename(String(filename)) : ''
 
@@ -5974,9 +5979,7 @@ async function watchPreviewFile(owner, rawUrl) {
 
       return `${stat.mtimeMs}:${stat.size}`
     },
-    onPollChange: emit,
-    onTrip: ({ events, windowMs }) =>
-      console.warn(`[hermes] fs.watch storm on ${watchDir} (${events} events within ${windowMs}ms); polling instead`)
+    onPollChange: emit
   })
 
   previewWatchers.set(id, {
@@ -5988,7 +5991,7 @@ async function watchPreviewFile(owner, rawUrl) {
         clearTimeout(timer)
       }
 
-      watcher.close()
+      releaseDirWatch()
     }
   })
 
@@ -6049,11 +6052,10 @@ function watchDirectory(owner, rawDir) {
     )
   }
 
-  // A win32 event storm here pinned a core at 100% (#118974): the breaker
-  // closes the raw watch and falls back to the readdir poll it replaced.
-  const watcher = guardedWatch({
-    platform: process.platform,
-    watch: listener => fs.watch(watchDir, listener),
+  // A win32 event storm here pinned a core at 100% (#118974): the shared
+  // dir watch closes the raw handle and falls back to the readdir poll it
+  // replaced.
+  const releaseDirWatch = sharedPreviewDirWatches.acquire(watchDir, {
     onEvent: () => {
       if (timer) {
         clearTimeout(timer)
@@ -6065,9 +6067,7 @@ function watchDirectory(owner, rawDir) {
       }, PREVIEW_WATCH_DEBOUNCE_MS)
     },
     snapshot: () => fs.readdirSync(watchDir).sort().join('\0'),
-    onPollChange: emit,
-    onTrip: ({ events, windowMs }) =>
-      console.warn(`[hermes] fs.watch storm on ${watchDir} (${events} events within ${windowMs}ms); polling instead`)
+    onPollChange: emit
   })
 
   previewWatchers.set(id, {
@@ -6079,7 +6079,7 @@ function watchDirectory(owner, rawDir) {
         clearTimeout(timer)
       }
 
-      watcher.close()
+      releaseDirWatch()
     }
   })
 

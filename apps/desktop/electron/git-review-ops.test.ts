@@ -190,6 +190,22 @@ test('reviewList caps the file payload returned to the renderer', async () => {
   assert.equal(result.files.length, REVIEW_FILE_CAP)
 })
 
+test('repoStatus caps untracked line-counting instead of reading every new file', async () => {
+  const dir = makeRepo()
+
+  // 60 one-line files: the rail folds only the first 50 into `added` rather
+  // than reading all of them (a generated workspace can have thousands).
+  for (let i = 0; i < 60; i++) {
+    fs.writeFileSync(path.join(dir, `new-${String(i).padStart(2, '0')}.txt`), 'generated\n')
+  }
+
+  const status = await repoStatus(dir, 'git')
+
+  assert.ok(status)
+  assert.equal(status.untracked, 60)
+  assert.equal(status.added, 50)
+})
+
 const mockExecFile = vi.mocked(await import('node:child_process')).execFile
 
 type ExecFileCallback = (error: Error | null, stdout?: string, stderr?: string) => void

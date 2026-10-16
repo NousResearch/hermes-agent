@@ -50,7 +50,7 @@ from agent.reasoning_summaries import (
     append_streamed_reasoning_detail, separate_glued_reasoning_blocks,
     streamed_reasoning_detail_text,
 )
-from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
+from agent.repetition_guard import RunawayStreamWatch
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -3260,7 +3260,7 @@ class _StreamingCall(StreamingWaitMonitor):
 
     @staticmethod
     def _assemble_tool_calls(tool_calls_acc, finish_reason):
-        """Materialize accumulated tool calls; flag truncated/unrepairable args."""
+        """Materialize accumulated tool calls; flag incomplete or unrepairable arguments."""
         mock_tool_calls = []
         has_truncated_tool_args = False
         for idx in sorted(tool_calls_acc):
@@ -3281,14 +3281,9 @@ class _StreamingCall(StreamingWaitMonitor):
                             arguments = repaired
                         else:
                             has_truncated_tool_args = True
-                # Parseable JSON does not prove that a dropped stream completed its
-                # action. Treat degenerate argument loops as partial calls too.
-                # A provider-confirmed call may legitimately write repetitive data.
-                if finish_reason is None and is_repetition_dominated(arguments):
-                    logger.warning(
-                        "Tool call '%s' has repetition-dominated arguments without a "
-                        "finish_reason; treating as a dropped tool call.", tc["function"]["name"] or "?")
-                    has_truncated_tool_args = True
+                # A syntactically complete payload can arrive before a provider drops its
+                # terminal frame. Repetition is not evidence that this tool call is partial:
+                # ordinary search commands commonly repeat a long command prefix.
             elif finish_reason is None:
                 # Name arrived, zero arg bytes, no finish_reason: unflagged this
                 # becomes a "stop" turn executing "{}" with no retry.

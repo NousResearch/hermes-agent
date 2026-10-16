@@ -281,9 +281,15 @@ def check_pip_plugins(
     installed_version: Callable[[str], str],   # dist name -> version
     pypi_latest: Callable[[str], Optional[str]],  # dist name -> latest
     entry_points: Optional[list] = None,       # injectable for tests
+    catalog_plugin_names: frozenset = frozenset(),  # names managed by a catalog pin
 ) -> list[CheckResult]:
     """The pip world, stateless: entry-point dists vs PyPI. Nothing
-    recorded, nothing to drift."""
+    recorded, nothing to drift.
+
+    A plugin installed from the catalog is managed by its pin SHA and its
+    Python deps are locked by the environment ``uv.lock`` — PyPI-latest is
+    not a channel ``hermes plugins update`` will ever act on, so a newer
+    PyPI version there must not print as ``update available`` (#132494)."""
     if entry_points is None:
         entry_points = list(
             importlib.metadata.entry_points().select(group="hermes_agent.plugins")
@@ -329,6 +335,15 @@ def check_pip_plugins(
             )
             continue
         update_available = _version_is_newer(latest, current)
+        reason = ""
+        if update_available and ep.name in catalog_plugin_names:
+            update_available = False
+            reason = (
+                "informational only: managed by the catalog pin "
+                "(deps locked by uv.lock); `hermes plugins update` is the channel that moves it"
+            )
+        elif update_available is None:
+            reason = f"cannot compare PyPI version {latest!r} with installed {current!r}"
         results.append(
             CheckResult(
                 name=ep.name,
@@ -336,10 +351,7 @@ def check_pip_plugins(
                 current=current,
                 latest=latest,
                 update_available=update_available,
-                reason=(
-                    f"cannot compare PyPI version {latest!r} with installed {current!r}"
-                    if update_available is None else ""
-                ),
+                reason=reason,
             )
         )
     return results
@@ -404,6 +416,25 @@ def default_ls_remote(source: str) -> str:
     return out.split("\t")[0] if out else ""
 
 
+def _catalog_plugin_names(prov) -> frozenset:
+    """Installed plugins whose update channel is the catalog pin (same sidecar
+    test ``check_provenanced`` uses to emit klass='catalog' rows)."""
+    names = set()
+    for p in prov:
+        row = p.row or {}
+        catalog_value = row.get("catalog")
+        catalog_name = (
+            catalog_value.get("name") if isinstance(catalog_value, dict) else None
+        ) or row.get("catalog_name")
+        if catalog_name:
+            # two namespaces can name one install: the directory and the
+            # declared catalog identity (entry points are named after the
+            # latter) — a rename between them must not un-suppress the row
+            names.add(p.name)
+            names.add(str(catalog_name))
+    return frozenset(names)
+
+
 def run_checks(
     plugins_dir: Path,
     *,
@@ -424,10 +455,8 @@ def run_checks(
         fetch = default_fetch
     if ls_remote is None:
         ls_remote = default_ls_remote
-    results = [
-        check_provenanced(p, fetch=fetch, ls_remote=ls_remote)
-        for p in plugins_provenance(plugins_dir)
-    ]
+    prov = plugins_provenance(plugins_dir)
+    results = [check_provenanced(p, fetch=fetch, ls_remote=ls_remote) for p in prov]
     if include_pip:
         if pip_pypi_latest is None:
             pip_pypi_latest = _default_pypi_latest
@@ -436,6 +465,7 @@ def run_checks(
                 installed_version=pip_installed_version,
                 pypi_latest=pip_pypi_latest,
                 entry_points=pip_entry_points,
+                catalog_plugin_names=_catalog_plugin_names(prov),
             )
         )
     return results

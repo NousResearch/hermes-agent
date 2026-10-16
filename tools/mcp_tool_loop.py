@@ -258,12 +258,34 @@ def _ensure_mcp_loop():
         _origin._mcp_thread.start()
 
 
+_active_probes = 0
+
+
+@contextlib.contextmanager
+def _mcp_probe_lease():
+    """Hold the background loop open for the duration of a temporary probe.
+
+    Probe servers are deliberately never placed in ``_core._servers``, so two concurrent connector
+    probes were invisible to each other: whichever finished first saw an idle loop and tore it down
+    while the sibling was still connecting, cancelling it. The lease makes them visible to
+    ``_stop_mcp_loop(only_if_idle=True)``.
+    """
+    global _active_probes
+    with _core._lock:
+        _active_probes += 1
+    try:
+        yield
+    finally:
+        with _core._lock:
+            _active_probes -= 1
+
+
 def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
     """Stop the background event loop and join its thread."""
     from tools import mcp_tool as _origin
     with _core._lock:
-        if only_if_idle and (_core._servers or _core._server_connecting):
-            logger.debug("Leaving MCP event loop running; active servers are registered or connecting")
+        if only_if_idle and (_core._servers or _core._server_connecting or _active_probes):
+            logger.debug("Leaving MCP event loop running; active servers are registered, connecting or probing")
             return False
         loop, thread = _origin._mcp_loop, _origin._mcp_thread
         _origin._mcp_loop = _origin._mcp_thread = None

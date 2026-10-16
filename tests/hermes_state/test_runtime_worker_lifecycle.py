@@ -48,6 +48,7 @@ def test_reserved_constructor_backfill_and_end_are_receipted(tmp_path):
             original(method, **params)
             raise TimeoutError('lost-ack')
         store.rpc = lost_ack
+        store.owner_patience_s = 0  # every reply is lost: no resend window
         with pytest.raises(TimeoutError, match='lost-ack'):
             store.end_session('owned', 'agent_close')
         ended = db.get_session('owned')

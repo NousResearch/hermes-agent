@@ -11,17 +11,17 @@ from hermes_platform.resolver.app import LOCATION_KINDS, AppDef, AppLocation
 
 __all__ = [
     "AppSpec",
-    "RequiresSpec",
     "Declaration",
     "DeclarationError",
+    "RequiresSpec",
+    "clear",
     "gpu_label",
+    "lookup",
     "parse_app",
-    "parse_requires",
     "parse_declaration",
+    "parse_requires",
     "register",
     "unregister",
-    "lookup",
-    "clear",
 ]
 
 
@@ -236,7 +236,7 @@ def parse_declaration(name: str, raw_app: Any, raw_requires: Any, *, where: str)
     return Declaration(name=name, app=app, requires=parse_requires(raw_requires, app, where=where))
 
 
-_REGISTRY: Dict[str, Declaration] = {}
+_REGISTRY: dict[str, Declaration] = {}
 _REGISTRY_LOCK = threading.Lock()
 on_change: Optional[Callable[[], None]] = None
 

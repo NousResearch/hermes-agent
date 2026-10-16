@@ -7,13 +7,28 @@ under the user's block and may inherit another slot via ``inherit_from``.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+from contextvars import ContextVar
 from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
+# A gateway session's frozen effective ``auxiliary:`` section (recovered secrets applied, a task whose
+# secret changed returned to the primary route). Set for the turn; never the live config.yaml.
+_SESSION_AUXILIARY: ContextVar = ContextVar("session_auxiliary", default=None)
 
-def _get_auxiliary_task_config(task: str, _seen: frozenset = frozenset()) -> Dict[str, Any]:
+
+@contextlib.contextmanager
+def session_auxiliary_scope(auxiliary):
+    token = _SESSION_AUXILIARY.set(auxiliary if isinstance(auxiliary, dict) else {})
+    try:
+        yield
+    finally:
+        _SESSION_AUXILIARY.reset(token)
+
+
+def _get_auxiliary_task_config(task: str, _seen: frozenset = frozenset()) -> dict[str, Any]:
     """Config dict for auxiliary.<task>, or {} when unavailable. Plugin-registered tasks get their
     declared defaults layered under user config (user wins); built-in defaults live in DEFAULT_CONFIG.
     A task registered with ``inherit_from`` is resolved here, at read time, over the base task's
@@ -21,12 +36,14 @@ def _get_auxiliary_task_config(task: str, _seen: frozenset = frozenset()) -> Dic
     until the user pins a route on the task itself. ``_seen`` guards re-registration cycles."""
     if not task:
         return {}
-    try:
-        from hermes_cli.config import load_config_readonly
-        config = load_config_readonly()
-    except ImportError:
-        return {}
-    aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
+    aux = _SESSION_AUXILIARY.get()
+    if aux is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly()
+        except ImportError:
+            return {}
+        aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
     task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
     if not isinstance(task_config, dict):
         task_config = {}
@@ -57,7 +74,7 @@ _AUX_ROUTE_KEYS = frozenset({"provider", "model", "base_url", "api_key", "api_mo
                              "api_key_env", "reasoning_effort"})
 
 
-def _layer_over_inherited(inherited: Dict[str, Any], user: Dict[str, Any]) -> Dict[str, Any]:
+def _layer_over_inherited(inherited: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
     """Merge a task's own ``auxiliary.<task>`` block over its inherited base.
 
     The picker, "reset to auto" and the dashboard persist ``provider: auto`` plus ``""`` for

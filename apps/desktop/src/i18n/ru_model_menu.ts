@@ -1,4 +1,5 @@
 export const ruModelMenu = {
+  pickDeferred: (model: string) => `${model} применится со следующего сообщения`,
   search: 'Поиск моделей',
   noModels: 'Модели не найдены',
   editModels: 'Изменить модели…',
@@ -13,6 +14,11 @@ export const ruModelMenu = {
   cacheRead: 'чтение из кэша',
   priceTitle: (input: string, output: string, cache: string) =>
     `Вход ${input}/Mtok · Выход ${output}/Mtok` + (cache ? ` · Чтение из кэша ${cache}/Mtok` : ''),
+  localSetup: {
+    title: 'Запуск локально · бесплатно, приватно',
+    text: (model: string, size: string) => `${model} подходит для этого компьютера · загрузка ${size}`,
+    action: 'Настроить'
+  },
   limited: 'Лимит',
   limitedUntil: (time: string) => `Лимит до ${time}`,
   limitedTip: (provider: string, time: null | string) =>

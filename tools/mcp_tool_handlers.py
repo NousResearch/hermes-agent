@@ -21,7 +21,8 @@ from tools.mcp_tool_content import (
     _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block, _mcp_result_with_native_images,
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
     _truncate_mcp_text_result)
-from tools.mcp_tool_errors import _is_auth_error, _is_session_expired_error
+from tools.mcp_tool_errors import (
+    _auth_error_detail, _is_auth_error, _is_session_expired_error, _mcp_call_failed_message)
 
 logger = logging.getLogger("tools.mcp_tool")
 _MISSING = object()
@@ -29,7 +30,7 @@ _MISSING = object()
 declaration.on_change = invalidate_check_fn_cache
 
 _NEEDS_REAUTH_MSG = (
-    "MCP server '{s}' requires re-authentication. Run `hermes mcp login {s}` (or delete the tokens file under "
+    "MCP server '{s}' requires re-authentication.{detail} Run `hermes mcp login {s}` (or delete the tokens file under "
     "~/.hermes/mcp-tokens/ and restart). Do NOT retry this tool — ask the user to re-authenticate.")
 _STDIO_NO_RESPAWN_MSG = (
     "MCP server '{s}' stdio subprocess had exited (this is not a timeout — the call never reached the server). A "
@@ -210,7 +211,8 @@ def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_cal
         result = _retry_once(server_name, retry_call, op_description, "auth recovery")
         if result is not None:
             return result
-    return _strike(server_name, _NEEDS_REAUTH_MSG.format(s=server_name), needs_reauth=True, server=server_name)
+    return _strike(server_name, _NEEDS_REAUTH_MSG.format(s=server_name, detail=_auth_error_detail(exc)),
+                   needs_reauth=True, server=server_name)
 
 
 def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str,
@@ -345,7 +347,7 @@ def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float,
             if recovered is not None:
                 return recovered
         on_final_failure(exc)
-        return tool_error(_sanitize_error(f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"))
+        return tool_error(_mcp_call_failed_message(exc))
 
 
 @asynccontextmanager
@@ -437,16 +439,16 @@ def _error_result_text(result) -> str:
     return "".join(str(t) for t in texts if t)
 
 
-def _render_content_blocks(result, server_name: str) -> Tuple[str, int, List[str]]:
+def _render_content_blocks(result, server_name: str) -> tuple[str, int, list[str]]:
     """Text passes through; image/audio blocks are cached (MEDIA: tags); resource blocks are
     materialized rather than silently dropped; unsupported blocks become an inline drop notice
     (kimi-code#3227). Returns ``(text, usable_parts, image_paths)``: ``usable_parts`` counts REAL
     rendered blocks (whitespace-only text and drop notices excluded) for the structuredContent
     arbitration; ``image_paths`` are the files THIS call's image blocks were cached to — never
     parsed back out of the text, where a server-written ``MEDIA:`` line could name any local file."""
-    parts: List[str] = []
+    parts: list[str] = []
     usable_parts = 0
-    image_paths: List[str] = []
+    image_paths: list[str] = []
     # MCP tool results can also include ImageContent blocks (screenshot / Blockbench / Playwright etc.);
     # cache those via the gateway's image-cache helper so they flow through Hermes' MEDIA: tag convention
     # and out to messaging adapters that render images natively. Without this, image blocks were silently
@@ -520,7 +522,7 @@ def _content_dual_emits_structured(result, structured) -> bool:
     return False
 
 
-def _render_call_tool_result(result, server_name: str, image_paths: Optional[List[str]] = None) -> str:
+def _render_call_tool_result(result, server_name: str, image_paths: Optional[list[str]] = None) -> str:
     """Pure: ``CallToolResult`` -> handler JSON (``image_paths``, when given, receives the files this
     call's image blocks were cached to). ``content`` and ``structuredContent`` are both
     forwarded, except that a ``structuredContent`` whose JSON also sits verbatim in a text block
@@ -546,7 +548,7 @@ def _render_call_tool_result(result, server_name: str, image_paths: Optional[Lis
     if structured is None and meta is None:
         return json.dumps({"result": text_result}, ensure_ascii=False)
     # Key order is part of the output: "result" leads when there is text, otherwise "_meta" precedes it.
-    payload: Dict[str, Any] = {"result": text_result} if text_result else {}
+    payload: dict[str, Any] = {"result": text_result} if text_result else {}
     # Cap structuredContent too — a malicious server could flood context via a multi-MB JSON payload
     # (#56059). When the serialized form exceeds the hard cap, replace it with the truncated string (head +
     # tail preserved) so it degrades gracefully instead of flooding downstream.
@@ -579,7 +581,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
         # Only a tool annotated readOnlyHint=True is replayed after session expiry; a 401 is always
         # pre-dispatch so the auth recoverer keeps its retry for every tool.
         read_only = _tool_is_read_only(server_name, tool_name)
-        image_paths: List[str] = []  # the LAST attempt's cached images (a recoverer may retry _call)
+        image_paths: list[str] = []  # the LAST attempt's cached images (a recoverer may retry _call)
 
         async def _call():
             async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
@@ -656,7 +658,7 @@ def _render_resource_list(all_resources, server_name: str) -> dict:
 
 
 def _render_read_resource(result, server_name: str) -> dict:
-    parts: List[str] = []
+    parts: list[str] = []
     for block in getattr(result, "contents", []):
         if getattr(block, "text", None) is not None:
             parts.append(strip_unicode_tags(block.text))

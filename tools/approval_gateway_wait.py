@@ -24,7 +24,7 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason", "acknowledged", "settle", "cancelled")
+    __slots__ = ("acknowledged", "cancelled", "data", "event", "expired", "reason", "result", "settle")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
@@ -40,6 +40,8 @@ class _ApprovalEntry:
         # Why the prompt was withdrawn with nobody answering (interrupt cause, session teardown);
         # followers and teardown read it so a withdrawn prompt never renders as a user deny.
         self.cancelled: str | None = None
+        # The prompt timed out unanswered; followers woken by its event adopt that timeout.
+        self.expired = False
 
 
 def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str) -> str:
@@ -114,6 +116,8 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     state = _poll_event(leader.event, session_key,
                         interrupt_log="Coalesced approval wait interrupted — "
                                       "returning deny for session %s")
+    if state == "set" and leader.result is None and leader.expired:
+        state = "timeout"
     cancelled = _cancel_cause(state, leader)
     if state == "interrupted":
         # Deny only OUR follower; the leader thread handles its own signal.
@@ -142,7 +146,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     coalesced: parallel tool calls would otherwise fire N identical prompts
     the user must /approve N times while the agent sits wedged. Followers adopt
     the leader's ``session``/``always``/``deny``/timeout; a ``once`` covers only
-    the leader, so the follower falls through to a fresh prompt."""
+    the leader, so the followers fall through to ONE fresh prompt they coalesce on."""
     from tools import approval as _approval
     from agent.terminal_approval_batch import approval_published, preparing_terminal_approval, register_prepared_approval
 
@@ -155,19 +159,29 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         "session_key": session_key, "surface": surface,
     }
     keys = list(approval_data.get("pattern_keys") or [])
-    with _approval._lock:
-        leader = next((e for e in _approval._gateway_queues.get(session_key, [])
-                       if e.data.get("command") == approval_data.get("command")
-                       and list(e.data.get("pattern_keys") or []) == keys), None)
-    if leader is not None and not preparing_terminal_approval():
+    entry = _ApprovalEntry(approval_data)
+
+    def _enqueue() -> None:
+        register_prepared_approval(session_key, entry)
+        _approval._gateway_queues.setdefault(session_key, []).append(entry)
+
+    # The leader lookup and our enqueue are ONE critical section: split, two identical requests both
+    # miss each other, both enqueue and the user gets duplicate prompts. A ``once`` releases the
+    # followers to prompt for themselves; they re-coalesce behind whichever re-prompts first, so the
+    # user still sees one prompt at a time (the answered leader is already off the queue).
+    while True:
+        with _approval._lock:
+            leader = None
+            if not preparing_terminal_approval():
+                leader = next((e for e in _approval._gateway_queues.get(session_key, [])
+                               if e.data.get("command") == approval_data.get("command")
+                               and list(e.data.get("pattern_keys") or []) == keys), None)
+            if leader is None:
+                _enqueue()
+                break
         adopted = _await_coalesced_leader(session_key, leader, payload)
         if adopted is not None:
             return adopted
-
-    entry = _ApprovalEntry(approval_data)
-    with _approval._lock:
-        register_prepared_approval(session_key, entry)
-        _approval._gateway_queues.setdefault(session_key, []).append(entry)
 
     def _drop_entry(state: str) -> str | None:
         """Leave the queue and return the choice committed so far. Reading ``entry.result`` and
@@ -183,6 +197,13 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             if not queue:
                 _approval._gateway_queues.pop(session_key, None)
             settle, entry.settle = entry.settle, None
+            if choice is None and state in ("timeout", "notify_failed"):
+                # Coalesced followers block on this event: wake them with the leader's outcome rather than
+                # leaving them waiting their own full timeout on a prompt that no longer exists.
+                entry.expired = state == "timeout"
+                if state == "notify_failed":
+                    entry.cancelled = "the approval prompt could not be delivered"
+                entry.event.set()
         if settle is not None:
             # ``request.cancel`` carries a RequestCancelReason: a choice committed from another surface is
             # ``resolved``; a withdrawn entry (woken with no choice — session torn down, turn ended, client

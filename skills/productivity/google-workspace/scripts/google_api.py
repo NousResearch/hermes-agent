@@ -27,7 +27,7 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from email.mime.text import MIMEText
 from pathlib import Path
 
@@ -110,6 +110,7 @@ def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None 
         capture_output=True,
         text=True, encoding='utf-8', errors='replace',
         env=_gws_env(),
+        check=False,
     )
     if result.returncode != 0:
         err = result.stderr.strip() or result.stdout.strip() or "Unknown gws error"
@@ -523,7 +524,7 @@ def gmail_modify(args):
 
 
 def calendar_list(args):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     time_min = _datetime_with_timezone(args.start or now.isoformat())
     time_max = _datetime_with_timezone(args.end or (now + timedelta(days=7)).isoformat())
 

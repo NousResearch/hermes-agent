@@ -536,7 +536,31 @@ Full-text search across message content. Query parameter: `q`. Returns matching 
 
 ### DELETE /api/sessions/\{session_id\}
 
-Deletes a session and its message history. Returns `409 Conflict` if the session has an active turn lease or compression lock.
+Deletes a session and its message history. The request must carry the mutation identity
+the client read from `GET /api/sessions/{id}/mutation-snapshot` (`request_id`,
+`expected_revision`, and `expected_generation`); without it the route answers `409
+mutation_identity_required`. The delete is executed by the profile's gateway, so a
+session with a running or queued turn is refused with `409 session_busy` and one whose
+last turn was lost across a gateway restart with `409 unknown_execution` — nothing is
+removed in either case. Deleting a session that has executed turns leaves small
+terminal-receipt tombstones in the `state_meta` table (admission and worker identities
+with the user text and history stripped); they let an exact retry of the same delete —
+or of an API run that targeted the deleted session — return the same answer instead of
+recreating the session, and stop the deleted ID from being re-imported. They are kept
+indefinitely (a few hundred bytes per executed turn).
+
+### Bulk maintenance while a gateway owns the store
+
+`POST /api/sessions/bulk-delete`, `DELETE /api/sessions/empty`, `POST /api/sessions/prune`
+(non-dry-run) and `POST /api/sessions/owner-backfill` rewrite many rows at once and
+bypass the per-session revision fence, so they are **offline maintenance**: they take the
+profile's exclusive `gateway.lock`. While that profile's gateway is running they return
+`409` with `Exclusive maintenance refused: Gateway runtime already owns profile <home>.
+Drain and stop the gateway, then retry.` and change nothing. Stop the gateway
+(`hermes gateway stop`), run the maintenance call, then start it again. `dry_run` prune
+and every read endpoint keep working against a live gateway. The Desktop's one-shot legacy
+owner backfill treats this `409` as the steady state of an attached gateway (like a backend
+without the route) and does not retry it on every sidebar refresh.
 
 ### GET /api/logs
 
@@ -1208,6 +1232,8 @@ npm run dev
 The Vite dev server at `http://localhost:5173` proxies `/api` requests to the FastAPI backend at `http://127.0.0.1:9119`.
 
 The frontend is built with React 19, TypeScript, Tailwind CSS v4, and shadcn/ui-style components. Production builds output to `hermes_cli/web_dist/` which the FastAPI server serves as a static SPA.
+
+The build is CPU- and memory-intensive (Vite 8's Rust-native Rolldown bundler parallelizes across cores), so it is **resource-bounded by default**: the V8 heap is capped (`--max-old-space-size`, sized from the container's memory limit) and the native bundler's thread pool is limited to half the available cores (`RAYON_NUM_THREADS`), preventing the 200%+ CPU spikes and OOMs small VPS hosts otherwise hit during a build (#63338). Override with `HERMES_WEB_BUILD_MAX_OLD_SPACE_SIZE` / `HERMES_WEB_BUILD_THREADS`; set `HERMES_WEB_BUILD_LIGHT=1` to tighten the caps (1 thread, 1 GB heap) when the host cannot spare full CPU.
 
 ## Automatic Build on Update
 

@@ -4,7 +4,6 @@ import { translateNow } from '@/i18n'
 import { isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
 import { isTimeoutError } from '@/lib/with-timeout'
 import { type ErrorToastCategory, recordFriction } from '@/store/desktop-metrics'
-import { isLocalBackendSlotWaitTimeout, requestPoolLimitsSettings } from '@/store/pool-limits'
 import { requestBackendRestart, requestRoute } from '@/store/recovery-requests'
 
 export type NotificationKind = 'error' | 'warning' | 'info' | 'success'
@@ -312,29 +311,20 @@ export function notifyError(
   options: { action?: NotificationAction; id?: string } = {}
 ): string {
   const readable = readableError(error, fallback)
-  const poolSlotTimeout = isLocalBackendSlotWaitTimeout(error)
   logErrorToDesktopLog(error, fallback)
 
-  const category: ErrorToastCategory = poolSlotTimeout
-    ? 'pool_slot_timeout'
-    : readable.category === 'unclassified' && isTimeoutError(error)
-      ? 'timeout'
-      : readable.category
+  const category: ErrorToastCategory =
+    readable.category === 'unclassified' && isTimeoutError(error) ? 'timeout' : readable.category
 
   return showNotification(
     {
-      action: poolSlotTimeout
-        ? {
-            label: translateNow('desktop.poolSlotTimeoutOpenSettings'),
-            onClick: requestPoolLimitsSettings
-          }
-        : (options.action ?? readable.action),
+      action: options.action ?? readable.action,
       // A caller that can fire again for the same cause names its toast, so the repeat replaces it.
       id: options.id,
       kind: 'error',
       title: fallback,
-      message: poolSlotTimeout ? translateNow('desktop.poolSlotTimeoutBody') : readable.message,
-      detail: poolSlotTimeout ? readable.message : readable.detail
+      message: readable.message,
+      detail: readable.detail
     },
     category
   )

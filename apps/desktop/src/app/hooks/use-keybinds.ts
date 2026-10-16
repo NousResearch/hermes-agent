@@ -27,6 +27,7 @@ import {
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
 import { actionAllowedInInput, comboFromEvent, IS_MAC, isEditableTarget, isFocusWithin } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
+import { registerBuiltinActionRunner } from '@/lib/keybinds/plugin-actions'
 import { stepReasoningEffort, writeSessionReasoningEffort } from '@/lib/reasoning-step'
 import { openWorktreeDialog } from '@/store/coding-status'
 import { $commandPaletteOpen, openCommandPalettePage, toggleCommandPalette } from '@/store/command-palette'
@@ -397,6 +398,25 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'profile.toggleAll': toggleShowAllProfiles,
     'profile.create': requestProfileCreate
   }
+
+  // Plugins run built-in actions by id (`ctx.runAction`) through this same
+  // table, read at call time, so a plugin run and a keypress share one handler
+  // and rebinding the chord never changes what the plugin gets.
+  useEffect(
+    () =>
+      registerBuiltinActionRunner(actionId => {
+        const handler = handlersRef.current[actionId]
+
+        if (!handler) {
+          return false
+        }
+
+        handler()
+
+        return true
+      }),
+    []
+  )
 
   // A keyboard-driven overlay closing hands typing back to the composer: Radix
   // restores focus to the trigger (a toolbar button for the model pill), so

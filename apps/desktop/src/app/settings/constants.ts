@@ -361,7 +361,12 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   ],
   // STT model lists mirror STT_MODEL_CATALOG in tools/transcription_common.py.
   'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'gpt-transcribe'],
-  'stt.openai.streaming_model': ['gpt-live-transcribe', 'gpt-transcribe', 'gpt-4o-transcribe', 'gpt-4o-mini-transcribe'],
+  'stt.openai.streaming_model': [
+    'gpt-live-transcribe',
+    'gpt-transcribe',
+    'gpt-4o-transcribe',
+    'gpt-4o-mini-transcribe'
+  ],
   'stt.groq.model': ['whisper-large-v3-turbo', 'whisper-large-v3'],
   'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
   'stt.xai.model': ['grok-voice-transcribe-2.0', 'grok-voice-transcribe-1.0'],
@@ -624,7 +629,8 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   },
   terminal: {
     cwd: 'Default project folder for tool and terminal work.',
-    persistentShell: 'Keep shell state between commands when the backend supports it.',
+    persistentShell:
+      'SSH backend: keep exported variables between commands. Off starts each command from the login environment; the working directory always carries over.',
     envPassthrough: 'Environment variables to pass into tool execution.',
     dockerImage: 'Container image used when the execution backend is Docker.',
     singularityImage: 'Image used when the execution backend is Singularity.',

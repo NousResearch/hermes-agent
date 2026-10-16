@@ -45,6 +45,16 @@ def _wait_for(path: Path, proc: subprocess.Popen | None = None, timeout: float =
     return path.read_text(encoding="utf-8")
 
 
+def _wait_for_pid(path: Path, proc: subprocess.Popen | None = None, timeout: float = 30.0) -> int:
+    """A child's ``write_text(str(pid))`` creates the file before it writes the pid: under load
+    the file can exist and still be empty, so wait for the digits, not just the path."""
+    end = time.monotonic() + timeout
+    while not (text := _wait_for(path, proc, timeout).strip()):
+        assert time.monotonic() < end, f"timed out waiting for a pid in {path}"
+        time.sleep(0.02)
+    return int(text)
+
+
 def _alive(pid: int) -> bool:
     from hermes_cli.update_lock import _pid_alive
 
@@ -238,7 +248,7 @@ def test_an_orphaned_delegate_removes_its_killed_owners_marker(tmp_path):
     (native artifact crash-12db). The delegate's release now removes a claim whose owner died."""
     owner = _python(tmp_path, _HANDOFF_OWNER, tmp_path, _script(tmp_path, _ORPHAN_UPDATE))
     try:
-        child = int(_wait_for(tmp_path / "delegate-written", owner))
+        child = _wait_for_pid(tmp_path / "delegate-written", owner)
         _wait_for(tmp_path / "ready", owner)
         owner.kill()
         owner.wait()
@@ -314,7 +324,7 @@ def test_git_keeps_checkout_custody_after_its_updater_is_killed(tmp_path):
                                            "GIT_CONFIG_GLOBAL": os.devnull})
     contender = UpdateLock(path=tmp_path / "contender-marker", install_root=root)
     try:
-        stalled_pid = int(_wait_for(tmp_path / "stalled", owner))
+        stalled_pid = _wait_for_pid(tmp_path / "stalled", owner)
         owner.kill()
         owner.wait()
         assert _alive(stalled_pid)
@@ -359,7 +369,7 @@ def test_the_source_build_keeps_checkout_custody_after_its_updater_is_killed(tmp
     owner = _python(tmp_path, _BUILD_OWNER, root, bin_dir)
     contender = UpdateLock(path=tmp_path / "contender-marker", install_root=root)
     try:
-        node_pid = int(_wait_for(tmp_path / "node", owner))
+        node_pid = _wait_for_pid(tmp_path / "node", owner)
         owner.kill()
         owner.wait()
         assert _alive(node_pid)

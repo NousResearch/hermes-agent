@@ -4,7 +4,7 @@
 profile scope must bind the real ``hermes_constants`` home override for A->B->A to mean anything.
 """
 
-import tui_gateway.server as server
+from tui_gateway import server
 
 
 def test_plugin_skills_reach_tui_slash_menu_and_stack_per_profile(tmp_path, monkeypatch):

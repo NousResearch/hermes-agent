@@ -1,7 +1,7 @@
 """Regression tests for curator skill activity timestamps."""
 
 import importlib
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
 import pytest
@@ -23,8 +23,8 @@ def curator_modules(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    import tools.skill_usage as skill_usage
-    import agent.curator as curator
+    from tools import skill_usage
+    from agent import curator
 
     importlib.reload(skill_usage)
     importlib.reload(curator)
@@ -36,7 +36,7 @@ def test_recent_view_activity_prevents_false_stale_transition(curator_modules, m
     skills_dir = home / "skills"
     _write_skill(skills_dir, "recently-viewed")
 
-    now = datetime(2026, 4, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 4, 30, tzinfo=UTC)
     created_at = (now - timedelta(days=60)).isoformat()
     last_viewed_at = (now - timedelta(days=1)).isoformat()
     skill_usage.save_usage({

@@ -524,7 +524,6 @@ class TestHoldInboundAcrossReconnect:
         async def _handle(event):
             if event.text == "boom":
                 raise RuntimeError("dispatch failed")
-            return None
 
         adapter.handle_message = _handle
         # Direct drain (no auto follow-up on failure)

@@ -3,47 +3,25 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
+import { frClarify } from './fr_clarify'
+import { frConnectorAccounts } from './fr_connector_accounts'
+import { frConnectorCard } from './fr_connector_card'
+import { frFirstRun } from './fr_first_run'
 import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
 import { frNotices } from './fr_notices'
+import { frOnboarding } from './fr_onboarding'
+import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
+import { frThemePicker } from './fr_theme_picker'
+import { frUpdateChannel } from './fr_update_channel'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
   sharedMetrics: frSharedMetrics,
+  firstRun: frFirstRun,
   intro: introFr,
-  connectors: {
-    title: 'Connectez vos applications',
-    connect: 'Connecter',
-    skip: 'Pas maintenant',
-    cancel: "Arrêter l'attente",
-    retry: 'Réessayer',
-    grant: 'Reconnecter',
-    connected: 'Connecté',
-    checking: 'Vérification de vos applications…',
-    notConnected: 'Non connecté',
-    skipped: 'Ignoré',
-    disabled: 'Indisponible',
-    failed: 'Connexion impossible',
-    needsAuth: 'Accès expiré',
-    opening: 'Ouverture de la connexion…',
-    waiting: 'Terminez la connexion dans votre navigateur…',
-    timeout: "Toujours en attente de l'autorisation.",
-    refresh: "Actualiser l'état",
-    connectError: "Impossible de démarrer l'autorisation. Réessayez.",
-    connectErrorFor: app => `Impossible de démarrer l'autorisation pour ${app}.`,
-    unavailable: 'Les connecteurs ne sont pas disponibles pour cette session.',
-    ownerMissing: 'Rouvrez cette conversation pour gérer ses connexions.',
-    search: 'Rechercher une application',
-    empty: 'Aucune application correspondante',
-    disclaimer: "La connexion est facultative. N'autorisez que les applications que vous voulez confier à Hermes.",
-    execution: 'Outils des connecteurs',
-    setup: server => `Configurer ${server}`,
-    openInBrowser: 'Ouvrir dans le navigateur',
-    setupCancel: 'Annuler',
-    authorizedToolsUnavailable: 'Autorisé. Outils indisponibles.',
-    required: 'Obligatoire'
-  },
+  connectors: frConnectorCard,
   connectorsPage: {
     title: 'Connecteurs',
     searchPlaceholder: (count: number) => `Rechercher parmi ${count} applications`,
@@ -200,6 +178,9 @@ export const frOverrides = {
       advanced: 'Avancé',
       advancedHint: "l'entrée mcp.json et les journaux"
     },
+
+    accounts: frConnectorAccounts,
+
     tools: {
       title: 'Outils',
       notInstalledBody: "Installez-le sur cet appareil pour voir les outils qu'il apporte.",
@@ -811,11 +792,6 @@ export const frOverrides = {
         profileLabel: 'Installer pour le profil',
         agentTargetLocal: (profile, dir) => `Installe dans le backend ${profile} (${dir})`,
         agentTargetRemote: profile => `S'installe dans le backend ${profile} connecté`,
-        catalogPinned: (name, sha) =>
-          `Entrée « ${name} » du catalogue Hermes — le composant agent sera installé depuis le commit vérifié${sha ? ` ${sha}` : ''}, et non depuis la tête de branche.`,
-        reviewedHeading: 'Entrée du catalogue vérifiée',
-        reviewedIntro:
-          'Cette entrée a été vérifiée manuellement à son commit épinglé. Vous pouvez encore examiner le code exact ci-dessous.',
         toolsConnected: n => (n === 1 ? '1 outil connecté' : `${n} outils connectés`),
         skillsReady: names => (names.length === 1 ? `skill ${names[0]} prêt` : `${names.length} skills prêts`),
         nextChat: "d'autres outils disponibles dans votre prochaine conversation",
@@ -829,13 +805,11 @@ export const frOverrides = {
         desktopOnlyNote: "Les paquets réservés au Desktop n'installent aucun plugin dans le backend.",
         insecureWarning:
           'Cette URL utilise un protocole non sécurisé ou local. Préférez https:// ou git@ en production.',
-        securityHeading: "Avant l'installation",
         securityIntro:
           'Installez uniquement des sources de confiance — consultez le dépôt ci-dessous pour vérifier ce qui sera ajouté.',
         sourceHeading: 'Code source',
         viewRepository: 'Voir le dépôt',
         viewPluginFiles: 'Voir les fichiers du plugin',
-        gitCloneLabel: 'URL de clonage Git',
         enableAgent: "Activer le plugin de l'agent après l'installation",
         forceReinstall: 'Forcer la réinstallation (remplacer la version existante)',
         pinToCommit: 'Épingler à un commit (facultatif)',
@@ -857,7 +831,17 @@ export const frOverrides = {
           "Hermes n'attend plus le résultat de l'installation, mais le plugin est peut-être encore en cours d'installation. Fermez cette fenêtre et actualisez la liste des plugins avant de relancer l'installation.",
         desktopFailed: "Échec de l'installation du plugin Desktop",
         missingEnv: (name, vars) =>
-          `${name} est installé, mais a besoin d'une clé pour fonctionner : ${vars}. Ajoutez-la maintenant, sinon les outils du plugin échoueront.`
+          `${name} est installé, mais a besoin d'une clé pour fonctionner : ${vars}. Ajoutez-la maintenant, sinon les outils du plugin échoueront.`,
+        verified: 'Vérifié',
+        unverified: 'Non vérifié',
+        reviewedByNous: 'Examiné par Nous.',
+        installsAndEnables: profile => `S’installe pour ${profile} et s’active tout de suite.`,
+        installsOnly: profile => `S’installe pour ${profile}.`,
+        advanced: 'Avancé',
+        versionLabel: 'Version',
+        reviewedPin: sha => (sha ? `Pin examiné ${sha}` : 'Pin examiné'),
+        latestCommit: 'Dernier commit',
+        nothingToInstall: 'Ce paquet n’a rien à installer ici.'
       }
     },
     vault: {
@@ -1235,9 +1219,7 @@ export const frOverrides = {
         maxLines: 'Limite de pagination de fichier',
         maxLineLength: 'Limite de longueur de ligne'
       },
-      codeExecution: {
-        mode: "Mode d'exécution du code"
-      },
+      codeExecution: { mode: "Mode d'exécution du code" },
       approvals: {
         mode: "Mode d'approbation",
         timeout: "Délai d'expiration de l'approbation",
@@ -1510,12 +1492,6 @@ export const frOverrides = {
         }
       }
     },
-    poolLimits: {
-      warmBotBackendsAria: 'Backends de bots maintenus actifs',
-      warmBotBackendsTitle: 'Backends de bots actifs',
-      backendIdleTimeoutAria: "Délai d'inactivité du backend en millisecondes",
-      backendIdleTimeoutTitle: "Délai d'inactivité du backend"
-    },
     customEndpoints: {
       active: 'Actif',
       apiKeySet: 'Clé API définie',
@@ -1563,9 +1539,7 @@ export const frOverrides = {
       screenRecording: "Enregistrement de l'écran",
       driverHealth: 'État du pilote'
     },
-    about: {
-      updates: 'Mises à jour'
-    },
+    about: { updates: 'Mises à jour', channel: frUpdateChannel },
     config: {
       minimizeToTrayTitle: 'Réduire dans la barre d’état',
       minimizeToTrayDesc:
@@ -3553,6 +3527,7 @@ export const frOverrides = {
     next: 'Prochaine :',
     overdueSince: 'En retard depuis :',
     noRuns: 'Aucune exécution',
+    queuedRun: 'Exécution en file d’attente',
     manage: 'Gérer',
     showRuns: 'Afficher les exécutions',
     hideRuns: 'Masquer les exécutions',
@@ -3765,87 +3740,7 @@ export const frOverrides = {
       guide: 'Guide de récupération'
     },
     noFilterMatches: 'Aucune session ne correspond à ces filtres',
-    projects: {
-      showAllSessions: 'Afficher toutes les sessions',
-      sectionLabel: 'Projets',
-      home: 'Accueil',
-      autoDiscovered: 'Détecté automatiquement',
-      newButton: 'Nouveau projet',
-      createTitle: 'Nouveau projet',
-      createDesc: 'Nommez un espace de travail et ajoutez un ou plusieurs dossiers.',
-      renameTitle: 'Renommer le projet',
-      addFolderTitle: 'Ajouter un dossier',
-      namePlaceholder: 'ex. Projet secret',
-      foldersLabel: 'Dossiers',
-      ideaLabel: 'Idée',
-      ideaPlaceholder: "De quoi s'agit-il ? (enregistré dans IDEA.md)",
-      ideaGenerate: 'Générer une idée',
-      ideaGenerating: 'Génération…',
-      ideaShuffle: 'Mélanger les modèles',
-      noFolders: 'Aucun dossier ajouté pour le moment.',
-      addFolder: 'Ajouter un dossier',
-      primaryBadge: 'principal',
-      removeFolder: 'Supprimer',
-      create: 'Créer',
-      menu: 'Actions',
-      menuRename: 'Renommer',
-      menuAppearance: 'Apparence',
-      noColor: 'Aucune couleur',
-      menuAddFolder: 'Ajouter un dossier',
-      menuSetActive: 'Définir comme actif',
-      menuDelete: 'Supprimer',
-      moveToProject: 'Déplacer vers un projet',
-      movedTo: name => `Déplacée vers ${name}`,
-      moveFailed: 'Impossible de déplacer la session',
-      moveNoFolder: "Ce projet n'a aucun dossier vers lequel effectuer le déplacement",
-      moveNoProjects: 'Aucun autre projet',
-      reveal: 'Afficher dans le dossier',
-      copyPath: 'Copier le chemin',
-      removeFromSidebar: 'Masquer de la barre latérale',
-      createdInPreviousContext:
-        "Le projet a été créé sur la connexion ou le profil précédent. Revenez-y ; IDEA.md n'a pas été écrit.",
-      createFailed: 'Impossible de créer le projet',
-      staleBackend:
-        'Mettez à jour le backend Hermes pour créer des projets — votre backend est plus ancien que cette application de bureau (Paramètres → Mises à jour → Backend).',
-      deleteConfirm:
-        'Cela supprime le projet enregistré de Hermes. Les fichiers, dépôts git et worktrees restent inchangés.',
-      startWork: 'Nouveau worktree',
-      newWorktreeTitle: 'Nouveau worktree',
-      newWorktreeDesc: 'Nommez la branche pour ce worktree.',
-      branchPlaceholder: 'ex. ma-fonctionnalité',
-      branchOff: () => ({ after: '', before: 'à partir de ' }),
-      baseBranchPlaceholder: 'Rechercher des branches…',
-      baseBranchNone: 'Aucune branche trouvée',
-      startWorkFailed: 'Impossible de créer le worktree',
-      worktreeStaleBackend:
-        'Mettez à jour le backend Hermes pour créer des worktrees depuis Desktop — votre backend est plus ancien que cette application (Paramètres → Mises à jour → Backend).',
-      worktreeProjectLabel: 'Projet',
-      worktreeProjectPlaceholder: 'Rechercher des projets…',
-      worktreeProjectNone: 'Aucun projet avec un dossier',
-      convertBranch: 'Convertir une branche…',
-      convertBranchTitle: 'Convertir une branche',
-      convertBranchDesc: 'Ouvrez des branches vérifiées ou créez un worktree pour une branche libre.',
-      convertBranchPlaceholder: 'Rechercher des branches…',
-      convertBranchInstead: 'Convertir une branche existante',
-      branchOpenExisting: 'ouverte',
-      branchSwitchHome: "basculer l'accueil",
-      branchCreateWorktree: 'nouveau worktree',
-      branchTrackRemote: 'suivre la branche distante',
-      branchesLoading: 'Chargement des branches…',
-      noBranches: 'Aucune branche trouvée',
-      removeWorktree: 'Supprimer le worktree',
-      removeWorktreeFailed: 'Impossible de supprimer le worktree (modifications non validées ?)',
-      removeWorktreeConfirm:
-        'Supprimez-le de git (supprime le répertoire du worktree ; la branche reste), ou masquez simplement la voie de la barre latérale et laissez le worktree sur le disque.',
-      removeWorktreeDirty:
-        'Ce worktree a des modifications non validées. Forcez sa suppression (ces modifications seront perdues), ou masquez simplement la voie et conservez-le sur le disque.',
-      forceRemove: 'Supprimer par force',
-      enter: label => `Ouvrir ${label}`,
-      reorder: label => `Réorganiser ${label}`,
-      toggle: (label, open) => `${open ? 'Afficher' : 'Masquer'} les sessions de ${label}`,
-      showAllCount: count => `Afficher les ${count} sessions`,
-      back: 'Tous les projets'
-    },
+    projects: frProjects,
     newSessionIn: label => `Nouvelle session dans ${label}`,
     showMoreIn: (count, label) => `Afficher ${count} de plus dans ${label}`,
     loading: 'Chargement…',
@@ -3939,6 +3834,7 @@ export const frOverrides = {
     openDirective: 'Ouvrir',
     queueMessage: "Mettre le message en file d'attente",
     steer: "Diriger l'exécution en cours",
+    redirect: "Rediriger l'exécution en cours",
     stop: 'Arrêter',
     send: 'Envoyer',
     speaking: 'Parle',
@@ -4089,6 +3985,12 @@ export const frOverrides = {
     queueDelete: 'Supprimer',
     queueResume: 'Reprendre',
     queueResumeTip: "Mis en pause par Arrêter — reprendre l'envoi des tours en file d'attente",
+    queueLostNote: 'Tour perdu pendant le redémarrage',
+    restoreImageDraft: "Restaurer le brouillon d'image",
+    queueCancelFailed: "Impossible de retirer le tour en file d'attente",
+    queueLostDiscard: 'Ignorer',
+    queueLostDiscardTip:
+      "La passerelle a redémarré en plein tour et ne peut pas le terminer. Ignorez-le pour que les tours en file d'attente derrière lui s'exécutent.",
     queueStuckTitle: "Message en file d'attente non envoyé",
     queueStuckBody:
       "Un tour en file d'attente a continué à échouer lors de l'envoi. Il est toujours en file d'attente — essayez de l'envoyer à nouveau.",
@@ -4263,7 +4165,7 @@ export const frOverrides = {
       heartbeatEveryHours: hours => `toutes les ${hours} h`,
       heartbeatEverySeconds: seconds => `toutes les ${seconds} s`,
       heartbeatNext: time => `prochain : ${time}`,
-      heartbeatDueWaitingForIdle: 'échu — en attente de disponibilité',
+      dueWaitingForIdle: 'échu — en attente de disponibilité',
       heartbeatActions: 'Actions du suivi périodique',
       pauseHeartbeat: 'Mettre le suivi en pause',
       resumeHeartbeat: 'Reprendre le suivi',
@@ -4494,21 +4396,6 @@ export const frOverrides = {
         "Le backend ne s'est pas reconnecté. La mise à jour n'est peut-être pas terminée — vérifiez l'hôte du backend."
     }
   },
-  handoffTour: {
-    profileTitle: 'Votre première tâche utilise le profil par défaut',
-    profileText:
-      "Cette barre change de profil. Celui qui est éclairé est le profil par défaut, où se trouve la session de la tâche. L'autre est le profil de configuration, où se trouve la conversation de bienvenue.",
-    sessionsTitle: 'Chaque profil conserve ses propres sessions',
-    sessionsText:
-      'Cette liste appartient au profil par défaut. Nouvelle session démarre une tâche sur le profil sélectionné. Changez de profil dans la barre et la liste change avec lui.',
-    stayTitle: "Hermes reste à portée d'un clic",
-    stayText:
-      'Passez au profil de configuration et ouvrez Bienvenue dans Hermes lorsque vous avez besoin d’aide. La conversation y reste disponible.'
-  },
-  guidedGreeting: {
-    line: "Salut, entrez ! Je suis Hermes. Donnez-moi deux minutes pour préparer les lieux à votre façon, puis nous nous attaquerons à quelque chose que vous voulez vraiment accomplir.\n\nMais d'abord, comment dois-je vous appeler ?",
-    nameSuggestion: name => `(Je peux aussi simplement vous appeler ${name}, si vous préférez.)`
-  },
   install: {
     stageStates: {
       pending: 'En attente',
@@ -4585,105 +4472,7 @@ export const frOverrides = {
     reloadRetry: 'Recharger et réessayer',
     openLogs: 'Ouvrir les journaux'
   },
-  onboarding: {
-    headerTitle: 'Configurons Hermes Agent pour vous',
-    headerDesc:
-      'Connectez un fournisseur de modèles pour commencer à discuter. La plupart des options nécessitent un clic.',
-    preparingInstall:
-      "Hermes finalise l'installation. Cela prend généralement moins d'une minute au premier lancement.",
-    starting: 'Démarrage de Hermes…',
-    lookingUpProviders: 'Recherche des fournisseurs...',
-    collapse: 'Réduire',
-    otherProviders: 'Autres fournisseurs',
-    haveApiKey: 'Vous avez une clé API ?',
-    chooseLater: 'Je choisirai un fournisseur plus tard',
-    recommended: 'Recommandé',
-    connected: 'Connecté',
-    featuredPitch: 'Un abonnement, 300+ modèles de pointe — la méthode recommandée pour exécuter Hermes',
-    fireworksPitch: 'API de modèles directe — modèles de pointe hébergés par Fireworks',
-    localModelsTitle: 'Exécuter des modèles en local',
-    localModelsPitch: 'Aucun compte requis — téléchargez un modèle et exécutez-le sur cette machine',
-    openRouterPitch: 'Une clé, des centaines de modèles — une valeur par défaut solide',
-    apiKeyOptions: {
-      fireworks: {
-        short: 'API de modèles directe',
-        description: 'Accès direct aux modèles hébergés par Fireworks AI.'
-      },
-      openrouter: {
-        short: 'une clé, de nombreux modèles',
-        description:
-          'Héberge des centaines de modèles derrière une seule clé. Bonne valeur par défaut pour les nouvelles installations.'
-      },
-      openai: {
-        short: 'Modèles de classe GPT',
-        description: 'Accès direct aux modèles OpenAI.'
-      },
-      gemini: {
-        short: 'Modèles Gemini',
-        description: 'Accès direct aux modèles Google Gemini.'
-      },
-      xai: {
-        short: 'Modèles Grok',
-        description: 'Accès direct aux modèles xAI Grok.'
-      },
-      local: {
-        short: 'auto-hébergé',
-        description:
-          'Pointez Hermes vers un point de terminaison local ou auto-hébergé compatible OpenAI (vLLM, llama.cpp, Ollama, etc).'
-      }
-    },
-    backToSignIn: 'Retour à la connexion',
-    getKey: 'Obtenir une clé',
-    replaceCurrent: 'Remplacer la valeur actuelle',
-    pasteApiKey: 'Collez votre clé API',
-    localApiKeyPlaceholder: 'Clé API (facultatif — uniquement si votre point de terminaison en requiert une)',
-    localModelNamePlaceholder: 'Nom du modèle (ex. command-a-plus-05-2026)',
-    couldNotSave: "Impossible d'enregistrer l'identifiant.",
-    connecting: 'Connexion',
-    update: 'Mettre à jour',
-    flowSubtitles: {
-      pkce: 'Ouvre votre navigateur pour vous connecter, puis continue ici',
-      device_code: 'Ouvre une page de vérification dans votre navigateur — Hermes se connecte automatiquement',
-      external: 'Connectez-vous une fois dans votre terminal, puis revenez discuter'
-    },
-    startingSignIn: provider => `Démarrage de la connexion pour ${provider}...`,
-    verifyingCode: provider => `Vérification de votre code avec ${provider}...`,
-    connectedProvider: provider => `${provider} connecté`,
-    connectedPicking: provider => `${provider} connecté. Choix d'un modèle par défaut...`,
-    signInFailed: 'Échec de la connexion. Réessayez.',
-    signInExpired:
-      "La connexion a expiré dans l'attente de l'autorisation. Cela signifie généralement que la page de connexion s'est figée dans l'onglet ouvert (problème côté serveur) — terminez la connexion dans cet onglet, puis réessayez. Si le problème persiste, utilisez plutôt une clé API ou la solution de secours en ligne de commande.",
-    signInDidNotFinish: provider =>
-      `La connexion avec ${provider} ne s'est pas terminée. Vérifiez votre connexion Internet et réessayez, ou choisissez un autre fournisseur.`,
-    tryAgain: 'Réessayer',
-    useApiKeyInstead: 'Utiliser une clé API',
-    errorDetails: 'Détails',
-    pickDifferentProvider: 'Choisissez un autre fournisseur',
-    signInWith: provider => `Se connecter avec ${provider}`,
-    openedBrowser: provider => `Nous avons ouvert ${provider} dans votre navigateur.`,
-    authorizeThere: 'Autorisez Hermes là-bas.',
-    copyAuthCode: "Copiez le code d'autorisation et collez-le ci-dessous.",
-    pasteAuthCode: "Coller le code d'autorisation",
-    reopenAuthPage: "Rouvrir la page d'autorisation",
-    autoBrowser: provider =>
-      `Nous avons ouvert ${provider} dans votre navigateur. Autorisez Hermes là-bas et vous serez connecté automatiquement — rien à copier ou coller.`,
-    reopenSignInPage: 'Rouvrir la page de connexion',
-    waitingAuthorize: 'En attente de votre autorisation...',
-    externalPending: provider =>
-      `${provider} se connecte via sa propre CLI. Exécutez cette commande dans un terminal, puis revenez et choisissez « Je me suis connecté » :`,
-    signedIn: 'Je me suis connecté',
-    deviceCodeOpened: provider => `Nous avons ouvert ${provider} dans votre navigateur. Entrez ce code là-bas :`,
-    reopenVerification: 'Rouvrir la page de vérification',
-    copy: 'Copier',
-    defaultModel: 'Modèle par défaut',
-    freeTier: 'Gratuit',
-    pro: 'Pro',
-    free: 'Gratuit',
-    price: (input, output) => `${input} entrant / ${output} sortant par Mtok`,
-    change: 'Modifier',
-    startChatting: 'Commencer',
-    docs: provider => `Documentation ${provider}`
-  },
+  onboarding: frOnboarding,
   freeTier: {
     providerRowTitle: 'Nous · offre gratuite',
     providerRowPitch: 'Connectez-vous avec un compte Nous pour débloquer davantage de modèles et outils.',
@@ -4731,6 +4520,12 @@ export const frOverrides = {
       "Hermes n'a pas pu joindre le service Nous pour terminer votre connexion. Vérifiez votre connexion Internet et réessayez. Votre session reste disponible.",
     alreadySignedInHeading: 'Déjà connecté.',
     alreadySignedInBody: 'Cette installation Hermes est déjà connectée à un compte Nous.',
+    offer: {
+      heading: 'Continuez avec Hermes',
+      body: 'Vous utilisez le quota gratuit. Si vous continuez à utiliser Hermes, vous allez commencer à atteindre des limites. Connectez-vous avec un compte Nous gratuit pour obtenir un quota plus important.',
+      signIn: 'Se connecter',
+      notNow: 'Pas maintenant'
+    },
     setupFailed: {
       gateClosed:
         'Cette version de Hermes ne peut pas démarrer sans compte Nous. Connectez-vous ou créez-en un gratuitement en une minute.',
@@ -5456,23 +5251,8 @@ export const frOverrides = {
         `Cela ajoute le motif « ${pattern} » à votre liste d'autorisation permanente (~/.hermes/config.yaml). Hermes ne redemandera plus pour ce type de commande — que ce soit dans cette session ou dans une session future.`,
       alwaysAllow: 'Toujours autoriser'
     },
-    clarify: {
-      notReady: "La demande de clarification n'est pas encore prête",
-      gatewayDisconnected: "La Gateway Hermes n'est pas connectée",
-      sendFailed: "Impossible d'envoyer la réponse de clarification",
-      loadingQuestion: 'Chargement de la question…',
-      other: 'Autre (saisissez votre réponse)',
-      placeholder: 'Saisissez votre réponse…',
-      skip: 'Passer',
-      skipped: 'Ignoré',
-      noAnswer: 'Pas de réponse',
-      confirmAndContinueLabel: 'Confirmer et continuer',
-      singleSelectHint: 'Choisir une réponse',
-      multiSelectHint: 'Choisir toutes les réponses qui s’appliquent',
-      questionProgress: (answered, total) => `${answered} réponse${answered === 1 ? '' : 's'} sur ${total}`,
-      notDelivered:
-        "Cette question n'a pas atteint l'app, elle ne peut donc pas être répondue ici. Appuyez sur Arrêter pour terminer le tour, puis répondez dans le chat."
-    },
+    clarify: frClarify,
+    themePicker: frThemePicker,
     catalogInstall: {
       preparing: 'Préparation de l’installation…',
       install: 'Installer',
@@ -5881,11 +5661,6 @@ export const frOverrides = {
         title: 'Une mise à jour du moteur local est disponible',
         text: 'Mettez à jour le moteur qui exécute vos modèles locaux. Les requêtes locales actives peuvent être interrompues.',
         action: 'Mettre à jour maintenant'
-      },
-      'local-setup': {
-        title: 'Cette machine peut exécuter des modèles en local',
-        text: 'Votre matériel peut servir un modèle local. Les conversations restent sur votre ordinateur et ne coûtent rien.',
-        action: 'Configurer'
       },
       'right-pane': {
         title: 'Le volet de travail',

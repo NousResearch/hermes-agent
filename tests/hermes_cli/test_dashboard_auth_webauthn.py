@@ -654,6 +654,10 @@ class TestCliEnrolAndForget:
         url = out.splitlines()[1].strip()
         assert url.startswith(f"{HTTPS_ORIGIN}/auth/webauthn/enrol?token=")
         token = url.split("token=", 1)[1].split("&", 1)[0]
+        # the diagnostics block: pending path + explicit expiry + single-use semantics
+        assert f"Token {token[:8]}" in out
+        assert "pending in" in out and "expires" in out
+        assert "already used" in out
         from plugins.dashboard_auth.webauthn import WebauthnDashboardAuthProvider
 
         settings = _settings_or_skip(hermes_home)

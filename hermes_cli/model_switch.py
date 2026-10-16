@@ -1849,7 +1849,15 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
         model_cfg = config.get("model")
         if model_cfg != planned_from:
             updates = model_selection_config_updates(result, model_cfg)
-        config["model"] = _merge_selection_updates(model_cfg, updates)
+        merged = _merge_selection_updates(model_cfg, updates)
+        if isinstance(model_cfg, dict):
+            # A YAML anchor on ``model:`` reused elsewhere (``vision: *route``) loads as ONE shared
+            # dict; edit it in place so every alias carries the new route, as the shared node on
+            # disk will. A fresh copy left the alias stale and the round-trip merge wrote it back.
+            model_cfg.clear()
+            model_cfg.update(merged)
+        else:
+            config["model"] = merged
         atomic_config_replace(path, config)
     try:  # owner-only: config files contain API keys
         os.chmod(path, 0o600)

@@ -135,3 +135,25 @@ def test_setting_saved_while_route_is_decided_survives(profile_config, monkeypat
     saved = yaml.safe_load(profile_config.read_text(encoding="utf-8-sig"))
     assert wrote and saved["display"]["theme"] == "dark"
     assert saved["model"] == _EXPECTED
+
+
+def test_anchored_model_route_reused_later_saves_the_new_route(tmp_path, monkeypatch):
+    """``model: &route`` aliased later (``vision: *route``) must not resurrect the old route."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "model: &route\n"
+        "  default: old-model\n"
+        "  provider: custom:old\n"
+        "  base_url: https://old.example.test/v1\n"
+        "  api_mode: chat_completions\n"
+        "auxiliary:\n"
+        "  vision: *route\n",
+        encoding="utf-8",
+    )
+    persist_model_selection(_RESULT, path)
+
+    saved = yaml.safe_load(path.read_text(encoding="utf-8-sig"))
+    route = {k: v for k, v in _EXPECTED.items() if k != "model_slots"}
+    assert saved["model"] == route
+    assert saved["auxiliary"]["vision"] == route  # the alias still shares the node, as on main

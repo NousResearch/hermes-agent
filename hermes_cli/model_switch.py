@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+from ipaddress import ip_address
+from urllib.parse import urlsplit
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple, Optional
@@ -1105,6 +1107,54 @@ def _config_declares_model(
     return False
 
 
+def _same_validation_endpoint(left: str, right: str) -> bool:
+    """Compare endpoints without collapsing case-sensitive path/query data."""
+    def _normalized(value: str):
+        try:
+            parsed = urlsplit(str(value or "").strip())
+            hostname = parsed.hostname
+            port = parsed.port
+        except ValueError:
+            return None
+        if not parsed.scheme or not hostname:
+            return None
+        scheme = parsed.scheme.lower()
+        if "%" in hostname:
+            address, zone = hostname.split("%", 1)
+        else:
+            address, zone = hostname, ""
+        try:
+            normalized_address = ip_address(address).compressed.lower()
+        except ValueError:
+            normalized_address = address.lower()
+        normalized_hostname = (
+            f"{normalized_address}%{zone}" if zone else normalized_address
+        )
+        if (scheme, port) in {("http", 80), ("https", 443)}:
+            port = None
+        path = parsed.path
+        if path == "/":
+            path = ""
+        elif path.endswith("/"):
+            path = path[:-1]
+        return (
+            scheme,
+            normalized_hostname,
+            port,
+            parsed.username,
+            parsed.password,
+            path,
+            parsed.query,
+            parsed.fragment,
+        )
+
+    normalized_left = _normalized(left)
+    normalized_right = _normalized(right)
+    if normalized_left is None or normalized_right is None:
+        return False
+    return normalized_left == normalized_right
+
+
 def _apply_direct_alias_endpoint(st: _Switch, da: DirectAlias) -> None:
     """Route a direct alias to its own base_url and decide its credential (mutates ``st``).
 
@@ -1115,6 +1165,8 @@ def _apply_direct_alias_endpoint(st: _Switch, da: DirectAlias) -> None:
     resolves for ollama.com, OPENROUTER_API_KEY never reaches an unrelated host)."""
     from hermes_cli.models_local import _same_ollama_native_root
     from hermes_cli.runtime_provider import resolve_runtime_provider
+    endpoint_changed = not _same_validation_endpoint(st.base_url, da.base_url)
+    alias_runtime = {}
     alias_key = direct_alias_api_key(da)
     same_host = _may_reuse_session_credential(st.base_url, da.base_url)
     if alias_key:
@@ -1137,6 +1189,10 @@ def _apply_direct_alias_endpoint(st: _Switch, da: DirectAlias) -> None:
             resolved_key = ""
         st.api_key = resolved_key or (st.api_key if same_host else "") or "no-key-required"
 
+    if endpoint_changed:
+        st.validation_headers = _extra_headers_from_config(alias_runtime)
+        st.api_mode = alias_runtime.get("api_mode", "")
+
     # providers.ollama refinement: pick up the configured key only for the configured native
     # root; drop key and provider-level headers for any other origin. Skipped when the alias
     # declared its own credential (explicit api_key/key_env outranks a provider-level config key).
@@ -1150,7 +1206,6 @@ def _apply_direct_alias_endpoint(st: _Switch, da: DirectAlias) -> None:
             # Different origin, or no configured root to safely associate the headers with.
             st.validation_headers, st.suppress_ollama_headers, st.api_key = {}, True, "no-key-required"
     st.api_key = st.api_key or "no-key-required"
-    st.api_mode = ""  # clear so determine_api_mode re-detects from URL
 
 
 def _moa_default_preset() -> str:
@@ -1615,9 +1670,7 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     if st.target_provider.strip().lower() == "ollama":
         headers = {} if st.suppress_ollama_headers else (st.validation_headers or _get_ollama_request_headers())
     else:
-        headers = st.validation_headers or (
-            _extra_headers_from_config(st.user_providers.get(st.target_provider))
-            if st.user_providers and st.target_provider in st.user_providers else None)
+        headers = st.validation_headers or None
     # A ``providers.<key>`` endpoint is the user's own: validate it as a custom endpoint (an id its
     # listing lacks is soft-accepted) whether the slug arrived as ``custom:<key>`` or the bare key
     # the picker rows carry — otherwise the bare spelling fell into the built-in live-listing

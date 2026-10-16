@@ -39,11 +39,10 @@ def test_native_carriers_follow_only_their_owner_on_each_request():
 NOUS_PORTAL = "https://inference-api.nousresearch.com/v1"
 
 
-def test_nous_portal_strips_replayed_reasoning_details_from_wire():
-    """The Portal enforces a cumulative replayed-reasoning budget; replaying stored
-    reasoning_details wedges long sessions with a non-retryable 400 (#118182). Only the
-    wire copy is stripped — stored history keeps the field, so switching to a replaying
-    route (OpenRouter) still replays it."""
+def test_nous_portal_replays_reasoning_details_on_wire():
+    """The Portal forwards assistant carriers to its upstream lanes and the "cumulative replay
+    budget" blamed for #118182 does not exist (no 400 across ~440 live replay requests), so the
+    Portal reads reasoning_details again. Lookalike hosts never match and still strip."""
     standard = {"type": "reasoning.encrypted", "data": "opaque-signature"}
     history = [{"role": "assistant", "content": "answer", "reasoning_details": [standard]}]
     original = deepcopy(history)
@@ -51,10 +50,9 @@ def test_nous_portal_strips_replayed_reasoning_details_from_wire():
 
     for base_url in (NOUS_PORTAL, "https://stg-inference-api.nousresearch.com/v1"):
         wire = transport.convert_messages(deepcopy(history), base_url=base_url)
-        assert "reasoning_details" not in wire[0]
+        assert wire[0]["reasoning_details"] == [standard]
         assert history == original
 
-    # Substring lookalikes never matched the allowlist; they still strip (strict routes).
     assert "reasoning_details" not in transport.convert_messages(
         deepcopy(history), base_url="https://nousresearch.com.evil.io/v1")[0]
 

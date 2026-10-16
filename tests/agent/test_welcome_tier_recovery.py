@@ -305,6 +305,14 @@ class TestFreeTierCooldownCutoff:
         finally:
             clear_session_vars(tokens)
 
+    def test_a_gateway_admitted_finite_cli_turn_keeps_waiting(self):
+        """``hermes chat -q`` over the daemon carries its one-shot fact on the admission, not in env."""
+        from agent.turn_recovery import free_tier_cooldown_ends_turn
+        from gateway.session_finite import finite_turn_scope
+        with finite_turn_scope(True):
+            assert free_tier_cooldown_ends_turn(_agent(platform="cli"), _plain_429(90), WELCOME) is False
+        assert free_tier_cooldown_ends_turn(_agent(platform="cli"), _plain_429(90), WELCOME) is True
+
     @pytest.mark.parametrize("platform", ["cron", None])
     def test_an_unattended_run_keeps_waiting_and_is_told_the_reset(self, platform):
         from agent.turn_recovery import compute_error_backoff, free_tier_cooldown_ends_turn

@@ -126,6 +126,7 @@ print(json.dumps(results))
             capture_output=True,
             text=True,
             timeout=180,
+            check=False,
         )
         assert result.returncode == 0, (
             f"driver failed rc={result.returncode}\n"
@@ -206,3 +207,12 @@ class TestChatSubparserInheritedValueFlags:
             + "\n  ".join(f"{opts} dest={dest} default={d!r}"
                           for opts, dest, d in offenders)
         )
+
+
+@pytest.mark.parametrize("argv", [
+    ["--tui", "--checkpoints"], ["--checkpoints", "chat"], ["chat", "--tui", "--checkpoints"]])
+def test_checkpoints_parses_at_the_top_level_and_survives_chat(argv):
+    """`hermes --tui --checkpoints` is the TUI launch the docs and gateway refusals name; it was
+    declared only on `chat`, so the top-level form failed with "unrecognized arguments"."""
+    from hermes_cli._parser import build_top_level_parser
+    assert build_top_level_parser()[0].parse_args(argv).checkpoints is True

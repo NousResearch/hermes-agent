@@ -85,7 +85,7 @@ import httpx
 with httpx.Client(verify=resolve_httpx_verify()) as client:
     ctx = client._transport._pool._ssl_context
     assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
-"""], capture_output=True, text=True, timeout=30)
+"""], capture_output=True, text=True, timeout=30, check=False)
     assert child.returncode == 0, child.stderr
     assert "truststore unavailable" in child.stderr
 
@@ -184,5 +184,5 @@ ctx = resolve_httpx_verify(ca_bundle=certifi.where())
 assert isinstance(ctx, ssl.SSLContext), ctx
 assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname
 assert ctx.cert_store_stats()['x509_ca'] > 0
-"""], capture_output=True, text=True, timeout=30)
+"""], capture_output=True, text=True, timeout=30, check=False)
     assert child.returncode == 0, child.stderr

@@ -70,6 +70,8 @@ export interface ComposerAttachment {
   /** Downscaled data URL for the attachment card and optimistic bubble only. */
   thumbnailUrl?: string
   path?: string
+  /** Validated MIME returned by canonical owner staging. */
+  mime?: string
   /** Bounded source text from a Hermes-generated large paste, sent only to the title path. */
   titlePreview?: string
   attachedSessionId?: string
@@ -573,12 +575,20 @@ export function announceNewSessionDraftKey(toKey: string | null | undefined): vo
   announcedNewSessionDraftKey = toKey?.trim() || null
 }
 
-/** Consume the announcement; move the `__new__` draft when it names `toKey`. */
+/** Consume the announcement; move the `__new__` draft when it names `toKey`.
+ *  True when the announcement named `toKey` (the caller hands the rest of the
+ *  pre-session chat over), even if there was no draft text to move. */
 export function adoptNewSessionDraft(toKey: string | null | undefined): boolean {
   const announced = announcedNewSessionDraftKey
   announcedNewSessionDraftKey = null
 
-  return !!announced && announced === toKey?.trim() && migrateSessionDraft(null, toKey)
+  if (!announced || announced !== toKey?.trim()) {
+    return false
+  }
+
+  migrateSessionDraft(null, toKey)
+
+  return true
 }
 
 /**

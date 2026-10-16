@@ -40,7 +40,7 @@ _CONFIG = {"dashboard": {"webauthn": {
 
 
 def _load_cfg(monkeypatch, cfg):
-    import hermes_cli.config as config
+    from hermes_cli import config
 
     monkeypatch.setattr(config, "load_config_readonly", lambda: cfg)
 

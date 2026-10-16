@@ -55,6 +55,6 @@ def maybe_sync_webauthn_extra() -> None:
               "extra (fido2)…", flush=True)
         pm.sync_venv(["webauthn"], explicit=True)
         print("  ✓ passkey support ready", flush=True)
-    except Exception as exc:  # noqa: BLE001 -- startup must not hard-fail on the extra
+    except Exception as exc:  # health: allow BLE001 -- startup must not hard-fail on the extra
         log.warning("could not provision the dashboard.webauthn extra: %s; "
                     "the passkey provider will skip with its own hint", exc)

@@ -1,3 +1,6 @@
+# health: allow FILE_LINES -- dashboard.webauthn's 21 default lines are the provider's documented
+# config surface (validated by `hermes config set`, mirrored on the docs page); relocating the
+# block to a topical sibling is a separate refactor.
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing

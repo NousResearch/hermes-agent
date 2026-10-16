@@ -25,6 +25,7 @@ import json
 import os
 import stat
 import time
+from pathlib import Path
 
 import pytest
 import hermes_yaml as yaml
@@ -285,7 +286,7 @@ class TestCredentialStore:
         auth = StubWebAuthnAuthenticator(HTTPS_ORIGIN, RP_ID)
         _enrol(provider, auth)
         options, handle = provider.webauthn_login_options(client_ip="t")
-        entry = webauthn_state._challenges[handle]  # noqa: SLF001 - contract check
+        entry = webauthn_state._challenges[handle]  # contract check
         object.__setattr__(entry, "expires_at", int(time.time()) - 1)
         with pytest.raises(Exception):
             provider.complete_webauthn_login(
@@ -601,12 +602,12 @@ class TestSessionParity:
     def test_tokens_are_basic_shaped_and_interoperable(self, provider):
         from plugins.dashboard_auth.basic import _unsign as basic_unsign
 
-        session = provider._mint_session()  # noqa: SLF001
-        payload = basic_unsign(  # noqa: SLF001
+        session = provider._mint_session()
+        payload = basic_unsign(
             session.access_token, provider._secret, "access")
         assert payload == {"sub": "hermes-operator", "kind": "access",
                            "exp": session.expires_at}
-        refresh = basic_unsign(  # noqa: SLF001
+        refresh = basic_unsign(
             session.refresh_token, provider._secret, "refresh")
         assert refresh["kind"] == "refresh" and refresh["sub"] == "hermes-operator"
 
@@ -634,11 +635,11 @@ class TestSessionParity:
 
         def _expired(token: str) -> str:
             blob = base64.urlsafe_b64decode(token.encode())
-            raw, sig = blob[:-32], blob[-32:]
+            raw = blob[:-32]
             payload = json.loads(raw)
             payload["exp"] = int(time.time()) - 5
             new_raw = json.dumps(payload, separators=(",", ":")).encode()
-            new_sig = hmac_mod.new(  # noqa: SLF001 - test-only signing
+            new_sig = hmac_mod.new(  # test-only signing
                 provider._secret, new_raw, hashlib.sha256).digest()
             return base64.urlsafe_b64encode(new_raw + new_sig).decode()
 
@@ -688,7 +689,7 @@ class TestNativeBrokerParity:
         assert body["access_token"] and body["token_type"] == "Bearer"
 
     def test_native_wrong_provider_verify_is_rejected(self, gated_client, provider):
-        verifier, challenge = _make_pkce()
+        challenge = _make_pkce()[1]
         auth = StubWebAuthnAuthenticator(HTTPS_ORIGIN, RP_ID)
         _enrol(provider, auth)
         start = gated_client.get("/auth/native/authorize", params={
@@ -729,7 +730,7 @@ class TestCliEnrolAndForget:
         assert live.peek_enrolment_token(token)
         doc = webauthn_store.load(
             webauthn_store.resolve_store_path(str(hermes_home / "dashboard_webauthn.json")))
-        entry = list(doc["pending_enrolments"].values())[0]
+        entry = next(iter(doc["pending_enrolments"].values()))
         assert entry["expires_at"] > entry["created_at"]
 
     def test_enrol_origin_selection(self, hermes_home, capsys):
@@ -1018,7 +1019,7 @@ class TestSetupPreflight:
         assert cfg["dashboard"]["webauthn"]["rp_id"] == "other.example.com"
 
     def test_unreadable_config_stops_before_input(self, hermes_home, capsys, monkeypatch):
-        import hermes_cli.config as config
+        from hermes_cli import config
 
         from hermes_cli import dashboard_webauthn
 

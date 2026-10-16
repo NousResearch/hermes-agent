@@ -96,7 +96,7 @@ def request_origin(request) -> str:
 def _fido2_or_skip() -> None:
     """Import ``fido2`` or raise a SkipRegistration with the exact install fix."""
     try:
-        import fido2  # noqa: F401
+        import fido2
     except ImportError as exc:
         raise SkipRegistration(
             "dashboard.webauthn is configured but the 'fido2' library is not "
@@ -362,7 +362,7 @@ class WebauthnDashboardAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
                 self._credentials, credential)
         except InvalidCredentialsError:
             raise
-        except Exception as exc:  # noqa: BLE001 - any rejection is the generic 401
+        except Exception as exc:  # health: allow BLE001 -- any rejection is the generic 401
             _log_ceremony_failure("authentication", exc)
             raise InvalidCredentialsError("passkey rejected") from exc
         if self._allowed and credential_id_b64(credential_id_hex) not in self._allowed:
@@ -518,7 +518,7 @@ class WebauthnDashboardAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
                         if stored.get("credential_id") == record.get("credential_id"):
                             stored["sign_count"] = new_count
                     store.save(self._store_path, doc)
-            except Exception as exc:  # noqa: BLE001 - best-effort persistence
+            except Exception as exc:  # health: allow BLE001 -- best-effort persistence
                 logger.warning(
                     "dashboard-auth-webauthn: could not persist sign count: %s", exc)
             return

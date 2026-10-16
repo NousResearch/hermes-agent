@@ -266,8 +266,8 @@ class GatewayBusySessionMixin:
     def _agent_has_active_subagents(running_agent: Any) -> bool:
         """True when *running_agent* is driving subagents (callers demote interrupt → queue;
         ``interrupt()`` would cascade through ``_active_children``). Fail-safe False on any error."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
-        if running_agent is None or running_agent is _AGENT_PENDING_SENTINEL:
+        from gateway.run import AGENT_PENDING_SENTINEL
+        if running_agent is None or running_agent is AGENT_PENDING_SENTINEL:
             return False
         children = getattr(running_agent, "_active_children", None)
         # Real collections only — a ``MagicMock()._active_children`` auto-attr must not demote.
@@ -584,7 +584,7 @@ class GatewayBusySessionMixin:
         self, event: MessageEvent, session_key: str, effective_mode: str, running_agent: Any
     ) -> GatewayRunner._BusySteerOutcome:
         """Apply interrupt->queue demotions, then attempt steer (steer mode) or redirect (interrupt mode)."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         # Steer injects mid-run via running_agent.steer(), falling back to queue (nothing lost) when
         # the agent isn't running yet, lacks steer(), or the payload is empty. Interrupt is demoted
         # to queue while subagents run (interrupt() would abort them); /stop and /new still cancel all.
@@ -599,7 +599,7 @@ class GatewayBusySessionMixin:
         if demoted_for_compression:
             effective_mode = self._demote_interrupt(session_key, "context compression is in flight (#56391)")
         steered = redirected = False
-        agent_live = running_agent is not None and running_agent is not _AGENT_PENDING_SENTINEL
+        agent_live = running_agent is not None and running_agent is not AGENT_PENDING_SENTINEL
         plain_text = (
             event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
         )
@@ -732,7 +732,7 @@ class GatewayBusySessionMixin:
         demoted_for_subagents: bool, demoted_for_compression: bool,
     ) -> str:
         from gateway.run import (
-            _AGENT_PENDING_SENTINEL, _hermes_home, _load_gateway_config, _platform_config_key
+            AGENT_PENDING_SENTINEL, _hermes_home, _load_gateway_config, _platform_config_key
         )
         from gateway.display_config import resolve_display_setting
 
@@ -744,7 +744,7 @@ class GatewayBusySessionMixin:
                 "busy_ack_detail", True,
             )
         )
-        if busy_ack_detail_enabled and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+        if busy_ack_detail_enabled and running_agent and running_agent is not AGENT_PENDING_SENTINEL:
             try:
                 summary = running_agent.get_activity_summary()
                 elapsed_min = 0
@@ -816,7 +816,7 @@ class GatewayBusySessionMixin:
 
         # Same authorization gate as the cold path, else unauthorized users in shared threads
         # inject messages into a session they don't own.
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         # See #17775. A primary transport can route a turn into a secondary
         # profile, so authorize in the stamped transport scope.
         if not self._is_user_authorized_for_source(event.source):
@@ -875,14 +875,14 @@ class GatewayBusySessionMixin:
     async def _busy_interrupt_and_ack(self, event, session_key, adapter, _busy_state, running_agent, _steer) -> None:
         """Interrupt-mode abort (voice transcribed) and the busy ack, after the steer/redirect resolution.
         Shared by the in-process busy handler and the session authority's busy preempt."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         effective_mode, redirected = _steer.effective_mode, _steer.redirected
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
         is_redirect_mode = effective_mode == "interrupt" and redirected
         if (
             effective_mode == "interrupt" and not redirected
-            and running_agent and running_agent is not _AGENT_PENDING_SENTINEL
+            and running_agent and running_agent is not AGENT_PENDING_SENTINEL
         ):
             await self._interrupt_running_agent_for_busy_event(event, adapter, running_agent)
 
@@ -1073,7 +1073,7 @@ class GatewayBusySessionMixin:
     async def _busy_steer_command(self, event: MessageEvent, quick_key: str, source):
         # /steer lands BETWEEN tool-call iterations of the same run (appended to the last tool
         # result) — no interrupt, no new user turn, no role-alternation violation.
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         steer_text = event.get_command_args().strip()
         if not steer_text:
             return t("gateway.steer.usage")
@@ -1091,7 +1091,7 @@ class GatewayBusySessionMixin:
                 ), adapter)
             return reply
 
-        if running_agent is _AGENT_PENDING_SENTINEL:
+        if running_agent is AGENT_PENDING_SENTINEL:
             return _queue_fallback(t("gateway.steer.queued_starting"))
         if not running_agent or not hasattr(running_agent, "steer"):
             return _queue_fallback(t("gateway.steer.queued_no_agent"))

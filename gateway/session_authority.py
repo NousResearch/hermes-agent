@@ -695,10 +695,10 @@ class SessionAuthority:
     def _runs_own_agent(self, ref):
         """The route's running slot holds a real agent (not the claim's pending sentinel), so the
         Stop above reached the turn's own agent, not a cached one it may still replace."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
+        from gateway.run import AGENT_PENDING_SENTINEL
         running = getattr(self.runner, '_running_agents', None) or {}
         agent = running.get(self.sessions[ref.session_id].route)
-        return agent is not None and agent is not _AGENT_PENDING_SENTINEL
+        return agent is not None and agent is not AGENT_PENDING_SENTINEL
 
     def steer_agent(self, ref, generation, text):
         """The agent a steer for this running generation reaches; the caller holds the session's

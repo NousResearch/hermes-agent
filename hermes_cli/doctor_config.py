@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 from hermes_cli.doctor_report import (
-    Finding, _fail_and_issue, _section, check_bool, check_fail, check_info, check_ok, check_warn, doctor_check,
+    Finding, _fail_and_issue, section, check_bool, check_fail, check_info, check_ok, check_warn, doctor_check,
     warn_on_error,
 )
 
@@ -447,7 +447,7 @@ def _drift_structure(f: Finding, should_fix: bool, config_path) -> None:
     config_issues = validate_config_structure()
     if not config_issues:
         return
-    _section("Config Structure")
+    section("Config Structure")
     for ci in config_issues:
         (check_fail if ci.severity == "error" else check_warn)(ci.message)
         for hint_line in ci.hint.splitlines():

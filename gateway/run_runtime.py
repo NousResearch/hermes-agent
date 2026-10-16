@@ -225,7 +225,7 @@ def stop_authority_turns(authority, *, in_process=False):
     if not in_process:
         return signalled
     from agent.interrupt_compat import request_hard_interrupt
-    from gateway.run import _AGENT_PENDING_SENTINEL
+    from gateway.run import AGENT_PENDING_SENTINEL
     running = getattr(authority.runner, '_running_agents', {})
     for sid, live in list(authority.sessions.items()):
         generation = live.event_stream.execution.get('execution_generation')
@@ -234,7 +234,7 @@ def stop_authority_turns(authority, *, in_process=False):
         adopted_generation, agent = authority.adopted.get(sid, (None, None))
         if adopted_generation != generation:
             agent = running.get(live.route)
-        if agent is None or agent is _AGENT_PENDING_SENTINEL:
+        if agent is None or agent is AGENT_PENDING_SENTINEL:
             authority.pending_stops[sid] = generation
         else:
             request_hard_interrupt(agent, 'Profile stopping', tool_reason='gateway shutdown')

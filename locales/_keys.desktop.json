@@ -3857,6 +3857,7 @@
     "settings.subpages.workspaceShell",
     "settings.toolsets.activeBackend",
     "settings.toolsets.activeBackendHint",
+    "settings.toolsets.browserAxesHint",
     "settings.toolsets.browserRealProfile.description",
     "settings.toolsets.browserRealProfile.disabledMessage",
     "settings.toolsets.browserRealProfile.disabledTitle",

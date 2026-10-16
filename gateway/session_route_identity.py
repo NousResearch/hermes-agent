@@ -34,6 +34,29 @@ def _canonical(name: str) -> str:
         return canonical
 
 
+def configured_entry_aliases(identity: str, config: dict) -> frozenset[str]:
+    """Every spelling the configured entry behind a route identity accepts, empty when it names none.
+
+    Raw provider resolution defers a bare name that is a canonical built-in to the built-in, so a
+    ``providers:`` entry named ``deepseek`` is reachable only through its ``custom:`` spelling —
+    the entry's own alias set is what tells its keys apart from the built-in's head-on name.
+    """
+    entry = _named_entry(str(identity or '').strip().lower(), config)
+    if not entry:
+        return frozenset()
+    from hermes_cli.providers import custom_provider_aliases
+    return custom_provider_aliases(str(entry.get('name') or ''), str(entry.get('provider_key') or ''))
+
+
+def profile_route_identity(config: dict) -> str:
+    """The identity the profile's own ``model`` block resolves to — ``custom`` for an endpoint with
+    no provider named (or ``auto``), which already routes to ``custom`` at that URL."""
+    held = dict(config.get('model') or {}) if isinstance(config.get('model'), dict) else {}
+    if str(held.get('provider') or '').strip().lower() in ('', 'auto') and str(held.get('base_url') or '').strip():
+        held['provider'] = 'custom'
+    return resolved_route(held, config)[0]
+
+
 def resolved_route(model_cfg: dict, config: dict) -> tuple[str, str]:
     """``(provider_identity, effective_base_url)`` the runtime resolves ``model_cfg`` to."""
     model_cfg = model_cfg if isinstance(model_cfg, dict) else {}

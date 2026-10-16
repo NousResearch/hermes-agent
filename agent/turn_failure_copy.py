@@ -22,7 +22,7 @@ from persistence.conversation.messages import (
 # Failure codes minted by loop sites that are not provider verdicts (see module docstring).
 SITE_FAILURE_CODES = frozenset({
     "context_overflow", "truncated", "invalid_response", "empty_response", "loop_error",
-    "interpreter_shutdown", "session_busy", "gateway_connection", "host_error",
+    "interpreter_shutdown", "session_busy", "gateway_connection", "host_error", "unknown_execution",
 })
 
 

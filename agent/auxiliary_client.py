@@ -32,6 +32,9 @@ from agent.error_classifier import (
     is_reasoning_required_rejection,
 )
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
+from agent.auxiliary_profile_gates import (
+    PROFILE_REASONING_KEYS, contains_profile_reasoning_fields, profile_forwards_max_tokens,
+)
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
 from agent.codex_headers import (
     CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
@@ -3442,7 +3445,7 @@ def _without_reasoning_fields(kwargs: dict) -> Optional[dict]:
     changed = retry_kwargs.pop("_reasoning_config", None) is not None or changed
     extra_body = retry_kwargs.get("extra_body")
     if isinstance(extra_body, dict):
-        remaining = {k: v for k, v in extra_body.items() if str(k).strip().lower() not in _PROFILE_REASONING_KEYS}
+        remaining = {k: v for k, v in extra_body.items() if str(k).strip().lower() not in PROFILE_REASONING_KEYS}
         if len(remaining) != len(extra_body):
             if remaining:
                 retry_kwargs["extra_body"] = remaining
@@ -6526,22 +6529,6 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
     return converted
 
 
-_PROFILE_REASONING_KEYS = {
-    "reasoning", "reasoning_effort", "thinking", "thinking_config", "thinkingconfig",
-    "thinking_budget", "thinkingbudget", "enable_thinking", "think", "verbosity",
-}
-
-
-def _contains_profile_reasoning_fields(value: Any) -> bool:
-    """Return whether a profile payload contains a reasoning wire control (recursive)."""
-    if not isinstance(value, dict):
-        return False
-    return any(
-        str(key).strip().lower() in _PROFILE_REASONING_KEYS or _contains_profile_reasoning_fields(nested)
-        for key, nested in value.items()
-    )
-
-
 _NOUS_PROVIDER_NAMES = frozenset({"nous", "nous-portal", "nousresearch"})
 
 
@@ -6577,7 +6564,8 @@ def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effectiv
     quirks). Forward only where mandatory or honored: Anthropic Messages wire (400 without it);
     NVIDIA NIM (empty choices[] when omitted); MoA reference slots; Gemini native (fixed 65,535
     ceiling otherwise); OpenRouter (budgets the FULL window when omitted → 402 on low credit);
-    managed local llama-server (uncapped decode with no EOS burns the GPU to the context window).
+    managed local llama-server (uncapped decode with no EOS burns the GPU to the context window);
+    a provider profile opting in via ``forwards_max_tokens``.
     """
     return (
         _is_anthropic_compat_endpoint(provider, effective_base)
@@ -6589,6 +6577,7 @@ def _forwards_max_tokens(provider: str, provider_norm: str, model: str, effectiv
         or provider_norm == "openrouter"
         or base_url_host_matches(effective_base, "openrouter.ai")
         or _is_managed_local_endpoint(effective_base)
+        or profile_forwards_max_tokens(provider_norm)
     )
 
 
@@ -6660,9 +6649,9 @@ def _project_provider_profile(
             top_level = top_level or {}
             handles_reasoning = (
                 type(profile).build_api_kwargs_extras is not ProviderProfile.build_api_kwargs_extras
-                or _contains_profile_reasoning_fields(body)
-                or _contains_profile_reasoning_fields(reasoning_extra)
-                or _contains_profile_reasoning_fields(top_level)
+                or contains_profile_reasoning_fields(body)
+                or contains_profile_reasoning_fields(reasoning_extra)
+                or contains_profile_reasoning_fields(top_level)
             )
     except Exception as exc:
         logger.debug("_build_call_kwargs: provider profile projection failed for %s: %s", provider, exc)
@@ -6676,7 +6665,7 @@ def _merge_aux_extra_body(
     merged_extra = dict(extra_body or {})
     caller_reasoning_fields = {
         key: value for key, value in merged_extra.items()
-        if str(key).strip().lower() in _PROFILE_REASONING_KEYS and str(key).strip().lower() != "reasoning"
+        if str(key).strip().lower() in PROFILE_REASONING_KEYS and str(key).strip().lower() != "reasoning"
     }
     caller_disabled = isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False
     if caller_disabled:

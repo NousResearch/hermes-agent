@@ -138,6 +138,11 @@ class ProviderProfile:
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
     fixed_temperature: Any = None
     default_max_tokens: int | None = None
+    # True when an explicit caller ``max_tokens`` is honored on this wire and should be
+    # forwarded by auxiliary calls. Deliberately opt-in: an unlisted route keeps the aux
+    # default of omitting the cap (provider applies its own), so a plugin declares this
+    # only once it has verified its subprocess/API accepts the kwarg (#139778).
+    forwards_max_tokens: bool = False
     # ``response_format`` types the API rejects outright (e.g. ("json_schema",)); aux requests omit them up front.
     unsupported_response_formats: tuple = ()
     default_aux_model: str = (

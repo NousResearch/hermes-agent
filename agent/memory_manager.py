@@ -19,6 +19,8 @@ from typing import Any, Callable, Dict, List, Mapping, NamedTuple, Optional
 
 from agent.redact import redact_for_egress
 
+from agent.redact import redact_for_egress
+
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.hook_output_spill import get_spill_config, spill_if_oversized

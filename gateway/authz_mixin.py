@@ -300,6 +300,11 @@ class GatewayAuthorizationMixin:
         """
         if source is None:
             return None
+        from gateway.session_viewer_turn import NOT_A_VIEWER_TURN, viewer_delivery_adapter
+        viewer = viewer_delivery_adapter(source)
+        if viewer is not NOT_A_VIEWER_TURN:
+            # A local viewer's turn answers in its panel, never through the platform (TUI-8).
+            return viewer
         adapter = self._intake_adapter_for(source)
         if adapter is not None:
             return adapter

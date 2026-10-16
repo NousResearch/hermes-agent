@@ -1186,6 +1186,21 @@ Sessions that are mid-turn, the `protect_recent` most recently used ones, and an
 Agent cache pressure: anon RSS 6802MB over budget 6656MB — evicting 5 LRU session(s): ...
 ```
 
+## Viewer Turns on Messaging Sessions
+
+A local viewer (TUI, Desktop) can open a messaging session (Telegram, Discord, ...) and send a message into it. `gateway.session.viewer_replies_stay_local` decides where that turn answers:
+
+```yaml
+gateway:
+  session:
+    viewer_replies_stay_local: false   # true = viewer turns answer only in the panel
+```
+
+- `false` (default) is upstream behaviour: the viewer's turn runs on the session's lane and its reply, typing and prompts are delivered by that platform's own adapter, exactly like the chat's own messages.
+- `true` keeps a turn the local viewer starts on a messaging session in the panel: nothing it produces is sent to the platform chat. A historical row the chat has since moved past (`/new`, `/resume`) can then be adopted as the viewer's own local session instead of being refused, and a lane whose routing cannot be resolved refuses the viewer's turn visibly instead of guessing.
+
+Only YAML `true` enables it; any other value is the default. The value is read from the profile that owns the session, so each profile opts in separately.
+
 ## Context Engine
 
 The context engine controls how conversations are managed when approaching the model's token limit. The built-in `compressor` engine uses lossy summarization (see [Context Compression](../developer-guide/context-compression-and-caching.md)). Plugin engines can replace it with alternative strategies.

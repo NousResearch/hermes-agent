@@ -288,6 +288,32 @@ class SessionRecoveryMixin:
             row=recovered, session_key=session_key, source=source, now=now)
         return entry, migrated_legacy
 
+    def peek_recovery(self, session_key: str, source: SessionSource) -> tuple[bool, Optional[str]]:
+        """Dry run of the recovery a routing transition runs for *session_key* once it has no usable
+        entry (``_get_or_create_session_impl``: none, or a stale one ``_apply_route_checks`` drops):
+        ``(True, session_id)`` when it would continue that durable row, ``(True, None)`` when it would
+        mint a fresh session, ``(False, None)`` when that cannot be told without the once-per-process
+        legacy Slack claim (``_claim_legacy_slack_key``): a scoped Slack lane whose legacy entry phase 0
+        would migrate, or whose exact-key lookup misses, so the claimed legacy-key lookup decides.
+        Writes nothing: no claim, no reopen, no peer record. Lookup errors raise."""
+        legacy_key = self._legacy_slack_session_key(source)
+        if legacy_key is not None:
+            with self._lock:
+                self._ensure_loaded_locked()
+                if legacy_key in self._entries:
+                    return False, None
+        recovered = self._find_gateway_session_row(
+            session_key=session_key, source=source, allow_peer_fallback=legacy_key is None,
+            raise_on_lookup_error=True)
+        if not isinstance(recovered, dict):
+            claimed = getattr(self, "_claimed_legacy_slack_keys", ())
+            return (legacy_key is None or legacy_key in claimed), None
+        if not (self._recovered_row_matches_source_scope(recovered, source)
+                and self._recovered_row_allowed_for_active_profile(
+                    requested_session_key=session_key, recovered=recovered)):
+            return True, None
+        return True, str(recovered["id"])
+
     def _promote_session_reset(self, session_key: str, session_id: str, reason: str, *, log) -> None:
         """End *session_id* with *reason* via ``promote_to_session_reset`` (``end_session`` on old
         SessionDBs). Promote, not plain end: a row already ended with a recoverable accidental

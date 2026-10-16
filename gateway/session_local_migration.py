@@ -132,17 +132,25 @@ def adopt_legacy_session(authority, actor, row):
         raise RuntimeStoreError('not_found')
     from hermes_state_local_migration import LEGACY_CREATION_SOURCES, validate_legacy_row
     validate_legacy_row(authority.db, row)
+    from gateway.session_local_recovery import restore_local_session
+    commit_row_adoption(authority, actor, row, LEGACY_CREATION_SOURCES.get(row['source'], row['source']),
+                        'legacy:' + row['id'])
+    return restore_local_session(authority, row['id'])
+
+
+def commit_row_adoption(authority, actor, row, creation_source, request_id, **receipt_extra):
+    """Bind an existing row as *actor*'s local session under one receipt: its frozen launch policy,
+    its local route and ``bind_legacy_target``'s identity rewrite commit together. The caller has
+    validated the row and publishes it (``restore_local_session``)."""
     authority._require_admission_open()
     from gateway.run import _load_gateway_config, _resolve_gateway_model
     from gateway.session_policy import build_policy, bind_launch_key
-    from gateway.session_local_recovery import restore_local_session
     from hermes_state_local import commit_local_session
     from hermes_cli.active_sessions import active_session_liveness_guard, ActiveSessionRegistryError
 
-    request_id = 'legacy:' + row['id']
     sid = row['id']
     params, api_mode = legacy_launch_params(row)
-    params['source'] = LEGACY_CREATION_SOURCES.get(row['source'], row['source'])
+    params['source'] = creation_source
     private = {}
     config = _load_gateway_config()
     model_cfg = config.get('model')
@@ -180,13 +188,12 @@ def adopt_legacy_session(authority, actor, row):
     entry = SessionEntry(route, row['id'], now, now, origin=source, platform=Platform.LOCAL)
     receipt = {'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,
                'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy),
-               'legacy_session_id': row['id'], 'lineage': [row['id']]}
+               'legacy_session_id': row['id'], 'lineage': [row['id']], **receipt_extra}
     try:
         # Same lock order as old Bot Chat: mailbox (if any), liveness, SQLite.
         with active_session_liveness_guard(row['id'], registry_home=Path(authority.db.db_path).parent) as active:
             if active:
                 raise RuntimeStoreError('runtime_coordination_required')
-            commit_local_session(authority.db, epoch=authority.epoch, receipt=receipt)
+            return commit_local_session(authority.db, epoch=authority.epoch, receipt=receipt)
     except ActiveSessionRegistryError as exc:
         raise RuntimeStoreError('runtime_coordination_required') from exc
-    return restore_local_session(authority, sid)

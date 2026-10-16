@@ -244,8 +244,9 @@ async def execute_admission(authority, ref, row):
     # This drain, not the handler's unwind, releases the turn's crash marker (see below).
     event._turn_marker_handoff = True
     handed = False
+    from gateway.session_viewer_turn import viewer_turn_scope
     try:
-        with await _execution_scope(authority, home):
+        with await _execution_scope(authority, home), viewer_turn_scope(authority, ref, live.source, row['payload']):
             if is_api:
                 # Committed media resolves under the owning profile's home, like admission did.
                 prepared = prepare_api_execution(authority, ref, row['payload'])

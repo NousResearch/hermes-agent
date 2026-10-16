@@ -41,10 +41,11 @@ def _commit_generation() -> None:
         json.dumps({"packages": {"venv": {"environment": str(venv)}}, "schema": 1}), encoding="utf-8")
 
 
-def _ink_child(script: str, *args: str, **env: str) -> subprocess.CompletedProcess:
+def _ink_child(script: str, *args: str, scripts: Path = _SCRIPTS, **env: str) -> subprocess.CompletedProcess:
+    """Exactly what gatewayClient.ts runs: PYTHONPATH and HERMES_PYTHON_SRC_ROOT name the Python root."""
     child_env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
-    child_env.update(PYTHONPATH=str(_ROOT), **env)
-    return subprocess.run([sys.executable, "-S", str(_SCRIPTS / script), *args], cwd=_ROOT,
+    child_env.update(PYTHONPATH=str(_ROOT), HERMES_PYTHON_SRC_ROOT=str(_ROOT), **env)
+    return subprocess.run([sys.executable, "-S", str(scripts / script), *args], cwd=_ROOT,
                           env=child_env, capture_output=True, text=True, timeout=60, check=False)
 
 
@@ -59,6 +60,26 @@ def test_gateway_bootstrap_reaches_a_verdict_on_the_store_python():
     assert child.returncode == 1
     assert "No module named" not in child.stderr
     assert child.stderr.strip().splitlines()[0].startswith("gateway "), child.stderr
+
+
+def test_packaged_gateway_bootstrap_boots_the_root_it_is_given_or_names_why_it_cannot(tmp_path):
+    """The TUI product ships the helper in its own dist/scripts/ (a separate Nix store path, #139208),
+    where parents[2] is not the Python root: the helper must boot the generation of the root Ink
+    passes, and an interpreter that still cannot load Hermes is a named, terminal verdict the client
+    stops retrying on, never a bare ImportError retried every 30 s (#138878)."""
+    packaged = tmp_path / "hermes-tui" / "dist" / "scripts"
+    packaged.mkdir(parents=True)
+    shutil.copy2(_SCRIPTS / "gateway_bootstrap.py", packaged / "gateway_bootstrap.py")
+
+    bare = _ink_child("gateway_bootstrap.py", "--start", scripts=packaged)
+    assert bare.returncode == 1
+    assert bare.stderr.splitlines()[0] == "gateway unavailable: bootstrap_dependencies", bare.stderr
+
+    _commit_generation()
+    booted = _ink_child("gateway_bootstrap.py", scripts=packaged)
+    assert booted.returncode == 1
+    assert booted.stderr.strip().splitlines()[0].startswith("gateway "), booted.stderr
+    assert "unavailable" not in booted.stderr
 
 
 @pytest.mark.platforms("linux")

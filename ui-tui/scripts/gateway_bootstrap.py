@@ -12,7 +12,11 @@ import os
 from pathlib import Path
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# The Python root, not this file's location: the TUI product ships this helper in its own
+# dist/scripts/ (a separate Nix store path), so parents[2] is only right in a source tree.
+# gatewayClient.ts passes the root it put on PYTHONPATH.
+ROOT = Path(os.environ.get("HERMES_PYTHON_SRC_ROOT") or Path(__file__).resolve().parents[2])
+sys.path.insert(0, str(ROOT))
 
 
 
@@ -36,7 +40,10 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
     # store Python, which owns no packages, and the no-owner discovery fallback already imports one
     # (gateway.status -> utils -> hermes_yaml -> ruamel): boot the committed generation first, as
     # hermes_bootstrap does for every other entry point.
-    activate_dependencies(Path(__file__).resolve().parents[2])
+    try:
+        activate_dependencies(ROOT)
+    except (RuntimeError, OSError) as exc:  # no committed generation / unreadable install state
+        raise ImportError(f"dependency environment unavailable: {exc}") from exc
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_runtime import control_home_for, discover_gateway_endpoint, ensure_gateway_runtime
     from hermes_cli.gateway_runtime_discovery import connect_private
@@ -92,6 +99,11 @@ if __name__ == "__main__":
     # Discovery/ticket failures: missing modules, socket/pipe I/O (incl. timeouts), DiscoveryError and
     # bad JSON (ValueError), rejected grants (RuntimeError), malformed reply shapes. Anything else
     # still exits 1, with a traceback.
-    except (ImportError, OSError, RuntimeError, ValueError, LookupError, AttributeError, TypeError) as exc:
+    except ImportError as exc:
+        # This interpreter cannot load Hermes at all: no reconnect fixes that, so name it
+        # (gatewayClient.ts stops retrying on this verdict).
+        print(f"gateway unavailable: bootstrap_dependencies\n{exc}", file=sys.stderr)
+        raise SystemExit(1)
+    except (OSError, RuntimeError, ValueError, LookupError, AttributeError, TypeError) as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1)

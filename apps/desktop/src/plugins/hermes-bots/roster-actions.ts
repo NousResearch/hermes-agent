@@ -18,7 +18,7 @@ import {
   rosterWatermarks,
   saveSelectedRosterBot
 } from './bot-state'
-import { CANONICAL_CHAT_TITLE, notifyBotOpenFailure, openBotCanonicalChat, prepareBotSource } from './canonical-chat'
+import { isStaleBotChatTile, notifyBotOpenFailure, openBotCanonicalChat, prepareBotSource } from './canonical-chat'
 import { $botMeta, botActivitySession, botRosterKey, botSelectionKey, newBotChat } from './data'
 import { $groupChats, $groupChatWorkspace } from './group-chat'
 import { openGroupChat } from './group-chat-view'
@@ -197,13 +197,12 @@ function focusExistingBotTab(bot: RosterRow): null | { registryId: string; store
     return null
   }
 
-  const isStaleTile = (tile: { storedSessionId: string; workspaceTabTitle?: string }) =>
-    typeof tile.workspaceTabTitle === 'string' &&
-    tile.workspaceTabTitle === CANONICAL_CHAT_TITLE &&
-    !canonicalIds.includes(String(tile.storedSessionId))
-
   try {
-    const focused = host.focusOpenWorkspaceSession(botWorkspaceOwnerKey(bot), isStaleTile, canonicalIds)
+    const focused = host.focusOpenWorkspaceSession(
+      botWorkspaceOwnerKey(bot),
+      isStaleBotChatTile(canonicalIds),
+      canonicalIds
+    )
 
     return typeof focused === 'string' && focused
       ? { registryId: String(canonical!.id), storedSessionId: focused }

@@ -51,9 +51,7 @@ export const backendGaveUp = (code: null | number, lastLine?: string): string =>
   const detail = detailLine(lastLine)
 
   return [
-    code === null
-      ? t('userMessages.backend.gaveUpTitle')
-      : t('userMessages.backend.gaveUpTitleWithCode', String(code)),
+    code === null ? t('userMessages.backend.gaveUpTitle') : t('userMessages.backend.gaveUpTitleWithCode', String(code)),
     detail,
     t('userMessages.backend.gaveUpReconnect'),
     t('userMessages.backend.gaveUpLogs')
@@ -87,9 +85,12 @@ export const backendSlowStartStatus = (): string => t('userMessages.backend.slow
 // ── stderr noise ──────────────────────────────────────────────────────────
 
 // Only real failures: a traceback, a CRITICAL log line, an `XxxError:` / `XxxException:`
-// head, or the gateway's own turn/exit markers. Dependency `DeprecationWarning` /
+// head, the gateway's own turn/exit markers, or the canonical bootstrap's verdict lines
+// (`gateway incompatible: runtime_protocol`, `gateway inaccessible: …` and their remedy, see
+// ui-tui/scripts/gateway_bootstrap.py failure_message). Dependency `DeprecationWarning` /
 // `UserWarning` lines are noise and stay in /logs only.
-const STDERR_PROBLEM_RE = /Traceback|\b[A-Z][A-Za-z]*(?:Error|Exception)\b:|CRITICAL|\[gateway-turn\]|\[gateway-exit\]/
+const STDERR_PROBLEM_RE =
+  /Traceback|\b[A-Z][A-Za-z]*(?:Error|Exception)\b:|CRITICAL|\[gateway-turn\]|\[gateway-exit\]|^gateway (?:absent|conflict|draining|inaccessible|incompatible|starting|unavailable): /
 
 /** Only lines that look like a failure earn an activity row; the rest stay in /logs. */
 export const stderrLooksLikeProblem = (line: string): boolean => STDERR_PROBLEM_RE.test(line)
@@ -134,14 +135,8 @@ const RPC_ERROR_ROWS: RpcErrorRow[] = [
     (code, text) => (code === RPC_SESSION_NOT_FOUND || code === undefined) && SESSION_NOT_FOUND_RE.test(text),
     () => t('userMessages.rpc.sessionNotFound')
   ],
-  [
-    (_code, text) => NOT_CONNECTED_RE.test(text),
-    () => t('userMessages.rpc.notConnected')
-  ],
-  [
-    (_code, text) => TIMED_OUT_RE.exec(text),
-    m => t('userMessages.rpc.timedOut', m?.[1] ?? '?')
-  ]
+  [(_code, text) => NOT_CONNECTED_RE.test(text), () => t('userMessages.rpc.notConnected')],
+  [(_code, text) => TIMED_OUT_RE.exec(text), m => t('userMessages.rpc.timedOut', m?.[1] ?? '?')]
 ]
 
 let rpcErrorLogSink: ((line: string) => void) | null = null
@@ -179,10 +174,19 @@ export const describeRpcError = (err: unknown): string => {
   return text
 }
 
+/** The shared owner's slash.exec refuses every command outside its reviewed reads with
+ *  `unsupported_command` (gateway/session_commands.py): name the command, as the classic CLI does. */
+export const isUnsupportedCommand = (err: unknown): boolean =>
+  (err as { data?: { reason?: string } } | null)?.data?.reason === 'unsupported_command'
+
 /** The slash worker (built-in command helper) failed; name the command, not the helper. */
 export const describeSlashExecError = (command: string, err: unknown): string => {
   const { message } = rpcShape(err)
   const text = message ?? ''
+
+  if (isUnsupportedCommand(err)) {
+    return t('canonical.controls.notAvailable', command)
+  }
 
   if (/slash worker timed out/.test(text)) {
     return t('userMessages.rpc.slashTimedOut', command)
@@ -191,9 +195,7 @@ export const describeSlashExecError = (command: string, err: unknown): string =>
   if (/slash worker (?:exited|closed pipe|start failed)/.test(text)) {
     const detail = detailLine(text.replace(/^slash worker (?:exited|closed pipe:?|start failed:?)\s*/, ''))
 
-    return [t('userMessages.rpc.slashCrashed', command), detail]
-      .filter(Boolean)
-      .join('\n')
+    return [t('userMessages.rpc.slashCrashed', command), detail].filter(Boolean).join('\n')
   }
 
   return describeRpcError(err)

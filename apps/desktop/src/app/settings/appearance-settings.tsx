@@ -16,6 +16,7 @@ import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
+import { $chatTextScale, CHAT_TEXT_SCALE_PRESETS, setChatTextScale } from '@/store/chat-text-scale'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import {
@@ -169,11 +170,6 @@ function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) 
   )
 }
 
-// UI scale presets, as zoom percentages. 100 is Chromium's actual-size
-// baseline; the shipped default is the 90% preset. Ids double as the percent
-// values sent to the main process. A Cmd/Ctrl +/- step landing between
-// presets highlights nothing, and the row description keeps showing the
-// exact current percent.
 const UI_SCALE_PRESETS = ['90', '100', '110', '125', '150', '175'] as const
 const ids = SETTING_IDS.appearance
 type UiScalePreset = (typeof UI_SCALE_PRESETS)[number]
@@ -429,6 +425,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const tabStripDefault = useStore($tabStripDefault)
   const titlebarAppActionsSide = useStore($titlebarAppActionsSide)
   const zoomPercent = useStore($zoomPercent)
+  const chatTextScale = useStore($chatTextScale)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
@@ -687,6 +684,22 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
                 description={a.uiScaleDesc(zoomPercent)}
                 id={settingElementId(ids.uiScale)}
                 title={a.uiScaleTitle}
+              />
+
+              <ListRow
+                action={
+                  <SegmentedControl
+                    onChange={value => {
+                      triggerHaptic('selection')
+                      setChatTextScale(Number(value))
+                    }}
+                    options={CHAT_TEXT_SCALE_PRESETS.map(value => ({ id: String(value), label: `${value}%` }))}
+                    value={String(chatTextScale)}
+                  />
+                }
+                description={a.chatTextScaleDesc}
+                id={settingElementId(ids.chatTextScale)}
+                title={a.chatTextScaleTitle}
               />
 
               <div id={settingElementId(ids.chatFont)}>

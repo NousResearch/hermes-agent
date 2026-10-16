@@ -33,7 +33,6 @@ def _q(index, question, choices=None, multi_select=False):
     """One normalized batch entry, shaped like _normalize_questions output."""
     return {
         "qid": f"q{index}",
-        "id": None,
         "question": question,
         "choices": list(choices) if choices else None,
         "choices_offered": list(choices) if choices else None,
@@ -46,7 +45,7 @@ def _start_batch(cli, questions):
     result = {}
 
     def _run():
-        result["value"] = cli._clarify_callback("", None, questions=questions)
+        result["value"] = cli._clarify_callback(questions)
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
@@ -81,7 +80,7 @@ class TestClarifyBatchPanel:
         cli._clarify_batch_enter(state)
 
         thread.join(timeout=2)
-        assert result["value"] == {"answers": {"q0": "red", "q1": "large"}}
+        assert result["value"] == {"answers": {"q0": "red", "q1": "large"}, "outcome": "submitted"}
         assert cli._clarify_state is None
 
     def test_any_order_answering_via_tab_cycle(self):
@@ -111,7 +110,7 @@ class TestClarifyBatchPanel:
 
         thread.join(timeout=2)
         assert result["value"] == {
-            "answers": {"q0": "b", "q1": "c", "q2": "e"}
+            "answers": {"q0": "b", "q1": "c", "q2": "e"}, "outcome": "submitted"
         }
 
     def test_reanswer_overwrites_before_completion(self):
@@ -139,10 +138,10 @@ class TestClarifyBatchPanel:
 
         thread.join(timeout=2)
         assert result["value"] == {
-            "answers": {"q0": "thorough", "q1": "narrow"}
+            "answers": {"q0": "thorough", "q1": "narrow"}, "outcome": "submitted"
         }
 
-    def test_timeout_returns_partials_with_timed_out_flag(self):
+    def test_timeout_returns_partials_with_timed_out_outcome(self):
         cli = _make_cli_stub()
         questions = [
             _q(0, "Answered?", ["yes", "no"]),
@@ -157,7 +156,7 @@ class TestClarifyBatchPanel:
             thread.join(timeout=5)
 
         assert not thread.is_alive()
-        assert result["value"] == {"answers": {"q0": "yes"}, "timed_out": True}
+        assert result["value"] == {"answers": {"q0": "yes"}, "outcome": "timed_out"}
         assert cli._clarify_state is None
 
     def test_multi_select_lock_produces_json_array_string(self):
@@ -197,7 +196,7 @@ class TestClarifyBatchPanel:
 
         thread.join(timeout=2)
         assert result["value"] == {
-            "answers": {"q0": "custom words", "q1": "a"}
+            "answers": {"q0": "custom words", "q1": "a"}, "outcome": "submitted"
         }
 
     def test_locked_question_persists_scrollback_summary(self):
@@ -206,7 +205,7 @@ class TestClarifyBatchPanel:
             _q(0, "Color?", ["red", "blue"]),
             _q(1, "Size?", ["small", "large"]),
         ]
-        thread, result = _start_batch(cli, questions)
+        thread, _result = _start_batch(cli, questions)
         state = cli._clarify_state
 
         cli._clarify_batch_enter(state)
@@ -218,26 +217,8 @@ class TestClarifyBatchPanel:
         assert calls[0].args == ("?", "Clarify", "Color?", "red")
         assert calls[1].args == ("?", "Clarify", "Size?", "small")
 
-    def test_single_question_path_returns_plain_string(self):
+    def test_connection_callback_masks_secret_and_submits_env(self):
         cli = _make_cli_stub()
-        result = {}
-
-        def _run():
-            result["value"] = cli._clarify_callback("Pick?", ["a", "b"])
-
-        thread = threading.Thread(target=_run, daemon=True)
-        thread.start()
-
-        deadline = time.time() + 2
-        while cli._clarify_state is None and time.time() < deadline:
-            time.sleep(0.01)
-        assert cli._clarify_state is not None
-        assert "questions" not in cli._clarify_state
-
-        cli._clarify_state["response_queue"].put("a")
-        thread.join(timeout=2)
-        assert result["value"] == "a"
-
         cli._connection_state = None
         cli._capture_modal_input_snapshot = MagicMock()
         cli._restore_modal_input_snapshot = MagicMock()
@@ -292,7 +273,7 @@ class TestClarifyBatchNavigation:
             _q(1, "Size?", ["small", "large"]),
             _q(2, "Speed?", ["slow", "fast"]),
         ]
-        thread, result = _start_batch(cli, questions)
+        thread, _result = _start_batch(cli, questions)
         state = cli._clarify_state
 
         # Shift-Tab from question 0 wraps to the last question.
@@ -301,7 +282,7 @@ class TestClarifyBatchNavigation:
         cli._clarify_batch_set_active(state, (state["active"] - 1) % 3)
         assert state["active"] == 1
 
-        state["response_queue"].put("cancel")
+        state["response_queue"].put(None)
         thread.join(timeout=2)
 
     def test_revisit_choice_answer_restores_cursor(self):
@@ -310,7 +291,7 @@ class TestClarifyBatchNavigation:
             _q(0, "Color?", ["red", "blue"]),
             _q(1, "Size?", ["small", "large"]),
         ]
-        thread, result = _start_batch(cli, questions)
+        thread, _result = _start_batch(cli, questions)
         state = cli._clarify_state
 
         # Lock "blue" (index 1) on q0; the cursor advances to q1.
@@ -322,7 +303,7 @@ class TestClarifyBatchNavigation:
         cli._clarify_batch_set_active(state, 0)
         assert state["selected"] == 1
 
-        state["response_queue"].put("cancel")
+        state["response_queue"].put(None)
         thread.join(timeout=2)
 
     def test_revisit_other_answer_highlights_other_and_prefills_edit(self):
@@ -331,7 +312,7 @@ class TestClarifyBatchNavigation:
             _q(0, "Color?", ["red", "blue"]),
             _q(1, "Size?", ["small", "large"]),
         ]
-        thread, result = _start_batch(cli, questions)
+        thread, _result = _start_batch(cli, questions)
         state = cli._clarify_state
 
         # Answer q0 via Other: select the Other row, then the freetext
@@ -355,7 +336,7 @@ class TestClarifyBatchNavigation:
         assert cli._clarify_freetext is True
         assert cli._clarify_prefill == "chartreuse"
 
-        state["response_queue"].put("cancel")
+        state["response_queue"].put(None)
         thread.join(timeout=2)
 
     def test_reanswer_overwrites_and_updates_meta(self):
@@ -383,7 +364,7 @@ class TestClarifyBatchNavigation:
         cli._clarify_batch_set_active(state, 1)
         cli._clarify_batch_enter(state)
         thread.join(timeout=2)
-        assert result["value"] == {"answers": {"q0": "red", "q1": "small"}}
+        assert result["value"] == {"answers": {"q0": "red", "q1": "small"}, "outcome": "submitted"}
 
 
 
@@ -401,14 +382,14 @@ class TestClarifyBellOnPrompt:
             "tools.clarify_gateway.resolve_clarify_timeout", return_value=60
         ):
             thread = threading.Thread(
-                target=cli._clarify_callback, args=("Color?", ["red", "blue"]), daemon=True
+                target=cli._clarify_callback, args=([_q(0, "Color?", ["red", "blue"])],), daemon=True
             )
             thread.start()
             deadline = time.time() + 2
             while cli._clarify_state is None and time.time() < deadline:
                 time.sleep(0.01)
             assert cli._clarify_state is not None
-            cli._clarify_state["response_queue"].put("red")
+            cli._clarify_state["response_queue"].put(None)
             thread.join(timeout=2)
         return out.getvalue()
 

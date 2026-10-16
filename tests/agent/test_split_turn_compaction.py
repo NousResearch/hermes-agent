@@ -9,6 +9,7 @@ boundary, and the active request must survive the handoff.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +17,10 @@ import pytest
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     ContextCompressor,
+    _ACTIVE_TASK_MAX_CHARS,
+    _INFLIGHT_TASK_REPLAY_HEADER,
+    _SUMMARY_END_MARKER,
+    _authored_request_text,
     _estimate_msg_budget_tokens,
 )
 
@@ -78,16 +83,23 @@ def _tool_group(index: int) -> list[dict]:
     ]
 
 
-def _oversized_active_turn() -> list[dict]:
+def _oversized_active_turn(request: Any = _ACTIVE_REQUEST, groups: int = 10) -> list[dict]:
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "older request"},
         {"role": "assistant", "content": "older request completed"},
-        {"role": "user", "content": _ACTIVE_REQUEST},
+        {"role": "user", "content": request},
     ]
-    for index in range(10):
+    for index in range(groups):
         messages.extend(_tool_group(index))
     return messages
+
+
+def _actionable_user_text(messages: list[dict]) -> str:
+    """User text after each row's last summary boundary (historical quotes excluded)."""
+    return "\n".join(
+        str(m.get("content")).rsplit(_SUMMARY_END_MARKER, 1)[-1] for m in messages if m["role"] == "user"
+    )
 
 
 def _assert_tool_pairs_are_complete(messages: list[dict]) -> None:
@@ -221,7 +233,6 @@ def test_a_tail_that_fits_the_budget_still_anchors_the_active_request() -> None:
 def test_active_request_survives_repeated_compaction_and_restart(tmp_path) -> None:
     # Fallback compaction (no LLM summary) + SQLite reload between cycles:
     # the active request must be recognized from persisted content alone.
-    from agent.context_compressor import _INFLIGHT_TASK_REPLAY_HEADER, _SUMMARY_END_MARKER
     from agent.conversation_compression import _ensure_compressed_has_user_turn
     from hermes_state import SessionDB
 
@@ -244,10 +255,7 @@ def test_active_request_survives_repeated_compaction_and_restart(tmp_path) -> No
             _assert_tool_pairs_are_complete(messages)
             # Historical summaries may quote the request. Count only actionable
             # text after their boundary, not those explicitly historical quotes.
-            user_content = "\n".join(
-                str(m.get("content")).rsplit(_SUMMARY_END_MARKER, 1)[-1]
-                for m in messages if m["role"] == "user"
-            )
+            user_content = _actionable_user_text(messages)
             assert user_content.count(_ACTIVE_REQUEST) == 1
             assert user_content.count(_INFLIGHT_TASK_REPLAY_HEADER) == 1
             assert user_content.rfind(_ACTIVE_REQUEST) > user_content.rfind(_SUMMARY_END_MARKER)
@@ -277,6 +285,102 @@ def test_active_request_survives_repeated_compaction_and_restart(tmp_path) -> No
     assert not detect({"role": "user", "content": "hi", "_inflight_replay_merged": True})
 
 
+_LONG_QUOTE = "Earlier assistant answer. " * 80
+
+
+def _gateway_reply(text: str, *, own: bool = False, discord_id: str | None = None) -> str:
+    """Build the row exactly as the gateway does, so a pointer format change fails here."""
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+
+    platform = Platform.DISCORD if discord_id else Platform.TELEGRAM
+    source = SessionSource(platform=platform, chat_id="1", chat_type="dm")
+    event = MessageEvent(
+        text=text, source=source, message_id=discord_id,
+        reply_to_message_id="7", reply_to_text=_LONG_QUOTE, reply_to_is_own_message=own,
+    )
+    with patch("gateway.session._discord_tools_loaded", return_value=True):
+        return GatewayRunner._prepend_inbound_reply_context(event, source, text)
+
+
+@pytest.mark.parametrize(
+    "gateway_kwargs",
+    [{}, {"own": True}, {"discord_id": "42"}],
+    ids=["reply", "own-reply", "discord-note"],
+)
+def test_reply_pointer_does_not_count_toward_the_request_size(gateway_kwargs: dict[str, Any]) -> None:
+    """A short reply to a long answer must still split, and the snapshot must keep the request
+    rather than the quote: past the cap it drops the gateway ``[Replying to: …]`` pointer
+    before eliding.
+    """
+    request = _gateway_reply(_ACTIVE_REQUEST, **gateway_kwargs)
+    assert len(request) > _ACTIVE_TASK_MAX_CHARS
+    assert _authored_request_text(request) == _ACTIVE_REQUEST
+    # Past the cap the deterministic snapshot must drop the quote, not elide the request away.
+    snapshot = ContextCompressor._latest_user_task_snapshot([{"role": "user", "content": request}])
+    assert _ACTIVE_REQUEST in (snapshot or "")
+    compressor = _make_compressor()
+    compressor.tail_token_budget = 1_000
+    messages = _oversized_active_turn(request, 30)
+    active_user_idx = 3
+
+    cut = compressor._find_tail_cut_by_tokens(messages, compressor._protect_head_size(messages))
+    assert cut > active_user_idx
+
+    with patch.object(compressor, "_generate_summary", return_value=None):
+        compressed = compressor.compress(messages, current_tokens=90_000)
+    assert len(compressed) < len(messages)
+    _assert_tool_pairs_are_complete(compressed)
+    actionable = _actionable_user_text(compressed)
+    assert actionable.count(_ACTIVE_REQUEST) == 1
+
+
+def test_restated_reply_keeps_splitting_on_later_compactions() -> None:
+    """After the first split the request is restated behind the replay header; later passes
+    must keep splitting and restate it once.
+
+    ``protect_first_n=3`` (the default) keeps the restated row standalone, so the second
+    pass anchors on it instead of on the summary carrier.
+    """
+    compressor = _make_compressor(protect_first_n=3)
+    compressor.tail_token_budget = 1_000
+    messages = _oversized_active_turn(_gateway_reply(_ACTIVE_REQUEST), 30)
+    for cycle in range(3):
+        with patch.object(compressor, "_generate_summary", return_value=None):
+            compressed = compressor.compress(messages, current_tokens=90_000)
+        # One cycle adds 30 tool groups (60 rows); a refused split reclaims only a handful.
+        assert len(messages) - len(compressed) >= 30, f"cycle {cycle}: split refused"
+        _assert_tool_pairs_are_complete(compressed)
+        messages = list(compressed)
+        for index in range(30):
+            messages.extend(_tool_group(100 * (cycle + 1) + index))
+
+
+def test_a_long_active_request_still_splits_and_survives_verbatim() -> None:
+    """A long but token-bounded request (e.g. a /goal continuation prompt) must not pin the turn.
+
+    The row-size guard is the token soft ceiling; a character cap on the request made every
+    long-goal session uncompressible (empty window, structural backoff, context overflow).
+    """
+    compressor = _make_compressor()
+    compressor.tail_token_budget = 1_000  # soft ceiling must hold the long request row itself
+    long_request = " ".join(f"step-{i}" for i in range(400))
+    assert len(long_request) > _ACTIVE_TASK_MAX_CHARS
+    messages = _oversized_active_turn(long_request, groups=40)
+
+    cut = compressor._find_tail_cut_by_tokens(messages, compressor._protect_head_size(messages))
+    assert cut > 3
+
+    with patch.object(compressor, "_generate_summary", return_value=None):
+        compressed = compressor.compress(messages, current_tokens=90_000, force=True)
+    assert len(compressed) < len(messages)
+    _assert_tool_pairs_are_complete(compressed)
+    live = _actionable_user_text(compressed)
+    assert live.count(long_request) == 1
+
+
 @pytest.mark.parametrize(
     "payload, can_split",
     [
@@ -299,3 +403,138 @@ def test_split_requires_a_request_that_can_be_restated_as_text(payload, can_spli
     else:
         assert any(m.get("content") == payload for m in compressed)
     _assert_tool_pairs_are_complete(compressed)
+
+
+def _tail_group(index: int) -> list[dict]:
+    """A small group so the region after the latest user turn stays under the soft ceiling."""
+    call_id = f"tail_{index}"
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": "inspect_shard", "arguments": "x" * 100},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": call_id, "content": f"t-{index}:" + "r" * 50},
+    ]
+
+
+def _textless_oversized_turn() -> list[dict]:
+    """#131412 shape: a completed older turn, then an oversized active turn with no text reply."""
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "older request"},
+        {"role": "assistant", "content": "older request completed"},
+    ]
+    for index in range(10):
+        messages.extend(_tool_group(index))
+    # Newest text-bearing assistant reply: the older turn's closer.
+    messages.append({"role": "assistant", "content": "older turn finished"})
+    # The oversized active turn: a normal opening request, then tool groups with no
+    # interleaved text reply (assistant rows carry only tool_calls).
+    messages.append({"role": "user", "content": _ACTIVE_REQUEST})
+    for index in range(10, 20):
+        messages.extend(_tool_group(index))
+    # A final short user nudge plus a small tail region: the latest user turn stays
+    # inside the token-budget tail, so the #80449 user-anchor split does not fire.
+    messages.append({"role": "user", "content": "keep going"})
+    messages.extend(_tail_group(0))
+    messages.extend(_tail_group(1))
+    return messages
+
+
+def test_assistant_anchor_cannot_retain_a_textless_oversized_turn(
+    compressor: ContextCompressor,
+) -> None:
+    """The assistant anchor needs the same soft-ceiling bound as the user anchor (#131412).
+
+    When the newest text-bearing assistant is the previous turn's closer, anchoring the
+    cut to it retains the whole oversized active turn and the middle collapses to
+    nothing — the session wedges in no_progress. The cut must keep a tool-group-aligned
+    mid-turn boundary instead.
+    """
+    messages = _textless_oversized_turn()
+    head_end = compressor._protect_head_size(messages)
+    active_user_idx = next(
+        index for index, message in enumerate(messages)
+        if message.get("content") == _ACTIVE_REQUEST
+    )
+
+    cut = compressor._find_tail_cut_by_tokens(messages, head_end, token_budget=_TOKEN_BUDGET)
+
+    latest_user_idx = next(
+        index for index, message in enumerate(messages)
+        if message.get("role") == "user" and message.get("content") == "keep going"
+    )
+    # The walk's tool-group-aligned cut: only the active turn's last two groups ride the
+    # tail with the #10896-anchored nudge; the rest of the turn stays summarizable.
+    assert active_user_idx < cut == latest_user_idx - 4
+    _assert_tool_pairs_are_complete(messages[head_end:cut])
+    _assert_tool_pairs_are_complete(messages[cut:])
+
+
+def _reasoning_heavy_small_turn() -> list[dict]:
+    """Under the ceiling on the wire, over it only if stale thinking were charged (#84371)."""
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "older request"},
+        {"role": "assistant", "content": "older turn finished"},
+    ]
+    for index in range(2):
+        group = _tail_group(index)
+        group[0]["reasoning_content"] = "t" * 1200
+        messages.extend(group)
+    messages.append({"role": "user", "content": "keep going"})
+    for index in range(2, 6):
+        messages.extend(_tail_group(index))
+    return messages
+
+
+def _plain_text_oversized_region() -> list[dict]:
+    """Over the ceiling, but in plain text rows with no tool-call bodies to summarize."""
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "older request"},
+        {"role": "assistant", "content": "older turn finished"},
+    ]
+    messages.extend({"role": "user", "content": f"note-{index}:" + "n" * 600} for index in range(6))
+    messages.append({"role": "user", "content": "keep going"})
+    messages.extend(_tail_group(0) + _tail_group(1))
+    return messages
+
+
+@pytest.mark.parametrize(
+    ("build", "allow_split_turn"),
+    [
+        # Rolling micro-compaction consumes complete exchanges only (allow_split_turn=False).
+        (_textless_oversized_turn, False),
+        # Stale thinking never reaches the wire on this route, so the escape must price the
+        # region like the walk does (#84371) and not drop a reply that fits (#29824).
+        (_reasoning_heavy_small_turn, True),
+        # The escape exists to free tool-call bodies; an over-ceiling region of plain text
+        # rows carries none, so the reply anchor still binds.
+        (_plain_text_oversized_region, True),
+    ],
+)
+def test_assistant_anchor_still_binds(
+    compressor: ContextCompressor, build, allow_split_turn: bool,
+) -> None:
+    """The #131412 escape fires only for a wire-oversized tool region with splitting allowed."""
+    messages = build()
+    head_end = compressor._protect_head_size(messages)
+
+    cut = compressor._find_tail_cut_by_tokens(
+        messages, head_end, token_budget=_TOKEN_BUDGET, allow_split_turn=allow_split_turn,
+    )
+
+    older_closer_idx = next(
+        index for index, message in enumerate(messages)
+        if message.get("content") == "older turn finished"
+    )
+    # The anchor pulls the cut back to the older turn's closer, aligned before any tool group.
+    assert cut == compressor._align_boundary_backward(messages, older_closer_idx)

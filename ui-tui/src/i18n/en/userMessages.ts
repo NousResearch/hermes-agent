@@ -12,8 +12,7 @@ export const userMessagesEn = {
     details: (text: string) => `Details: ${text}`,
 
     backend: {
-      restarting:
-        'Hermes stopped unexpectedly — restarting and reopening your chat (the reply in progress was lost).',
+      restarting: 'Hermes stopped unexpectedly — restarting and reopening your chat (the reply in progress was lost).',
       restartingActivity: 'Hermes stopped unexpectedly · restarting…',
       connectionLost: 'Connection to Hermes lost — reconnecting and reopening your chat…',
       connectionLostActivity: 'connection lost · reconnecting…',
@@ -86,7 +85,10 @@ export const userMessagesEn = {
           hint: 'Try /retry; if it persists, switch with /model.',
           hintNoRetry: 'Pick another model with /model; if it persists, switch with /model.'
         },
-        modelNotFound: { title: 'The model provider does not know this model', hint: 'Pick another model with /model.' },
+        modelNotFound: {
+          title: 'The model provider does not know this model',
+          hint: 'Pick another model with /model.'
+        },
         overloaded: { title: 'The model provider is overloaded', hint: 'Wait a moment, then /retry.' },
         payloadTooLarge: { title: 'The request was too large for this model', hint: 'Run /compress, then /retry.' },
         providerPolicyBlocked: {

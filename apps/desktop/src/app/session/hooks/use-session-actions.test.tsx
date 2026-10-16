@@ -1751,6 +1751,7 @@ describe('resumeSession failure recovery', () => {
       { content: 'branch question', role: 'user', timestamp: 1 },
       { content: 'branch answer', role: 'assistant', timestamp: 2 }
     ]
+
     const storedSessionId = 'stored-branch'
 
     setSessions([storedSession({ id: storedSessionId, message_count: storedMessages.length })])
@@ -1761,6 +1762,7 @@ describe('resumeSession failure recovery', () => {
 
     let routeToken = `${sessionRoute('stored-parent')}::`
     let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.resume') {
         return {

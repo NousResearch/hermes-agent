@@ -59,6 +59,15 @@ export function formatPositional(template: string, args: readonly unknown[]): st
  *  express functions — this is the only bridge between the two. */
 export function adaptStringOverrides(base: unknown, overrides: unknown): unknown {
   if (typeof base === 'function' && typeof overrides === 'string') {
+    try {
+      const result = base(...Array.from({ length: base.length }, (_, index) => `{${index}}`))
+      if (typeof result !== 'string') {
+        return undefined
+      }
+    } catch {
+      return undefined
+    }
+
     return (...args: unknown[]) => formatPositional(overrides, args)
   }
 

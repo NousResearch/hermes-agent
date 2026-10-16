@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import json
+import logging
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -1679,3 +1682,142 @@ def test_stream_current_inside_managed_callback_returns_raw(relay_turn):
     assert list(stream) == []
     assert stream.final_response is not None
     assert stream.final_response.choices[0].message.content == "done"
+
+
+def test_stream_close_abandons_generator_still_busy_past_retry_bound(
+    relay_turn, monkeypatch, caplog
+):
+    """Regression for #132048 (timeout leg): a provider generator still executing
+    past the busy-retry bound must not resurface "generator already executing"
+    from close(). The close is abandoned with a warning and cleanup is left to
+    the garbage collector, mirroring the _aclose_on_loop abandon-with-warning
+    pattern."""
+    del relay_turn
+
+    class PermanentlyBusyStream:
+        def __init__(self):
+            self._chunks = iter([{"delta": "partial"}])
+            self.close_attempts = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._chunks)
+
+        def close(self):
+            self.close_attempts += 1
+            raise ValueError("generator already executing")
+
+    retry_delay, retry_timeout = 0.01, 0.05
+    monkeypatch.setattr(relay_llm, "_GENERATOR_BUSY_RETRY_DELAY", retry_delay)
+    monkeypatch.setattr(relay_llm, "_GENERATOR_BUSY_RETRY_TIMEOUT", retry_timeout)
+    raw_stream = PermanentlyBusyStream()
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: raw_stream,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {"content": "partial"},
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-busy-abandon",
+        },
+    )
+
+    assert next(stream) == {"delta": "partial"}
+    with caplog.at_level(logging.WARNING):
+        start = time.monotonic()
+        stream.close()  # must not raise the busy ValueError
+        elapsed = time.monotonic() - start
+
+    abandon_warnings = [
+        record for record in caplog.records
+        if record.name == "agent.relay_llm"
+        and record.levelno == logging.WARNING
+        and "abandon" in record.getMessage()
+    ]
+    assert abandon_warnings, "expected an abandon warning for the abandoned close"
+    assert str(retry_timeout) in abandon_warnings[0].getMessage()
+    assert raw_stream.close_attempts >= 1  # bounded retries ran before the abandon
+    assert elapsed < 1.0  # abandons on the patched bound, not the 2.0s default
+    assert stream._runtime_lease is None
+    stream.close()  # idempotent second close must not resurrect the abandoned error
+
+
+def test_stream_close_retries_reenter_managed_callback_guard(relay_turn, monkeypatch):
+    """Regression for #132048 (seam-1 guard fidelity): every provider-close
+    attempt — initial and retry — must run as a full run_callback(close) unit,
+    inside managed_callback_guard with the request-captured context, exactly
+    like the pre-helper close it replaced."""
+    relay, _turn = relay_turn
+    request_marker = contextvars.ContextVar("relay_close_guard_marker", default=None)
+    request_marker.set("request-context")
+
+    guard_events = []
+    in_guard = contextvars.ContextVar("relay_close_in_guard", default=False)
+    real_guard = relay_runtime.managed_callback_guard
+
+    @contextlib.contextmanager
+    def spying_guard():
+        guard_events.append("enter")
+        token = in_guard.set(True)
+        try:
+            with real_guard():
+                yield
+        finally:
+            in_guard.reset(token)
+            guard_events.append("exit")
+
+    monkeypatch.setattr(relay_runtime, "managed_callback_guard", spying_guard)
+    monkeypatch.setattr(relay_llm, "_GENERATOR_BUSY_RETRY_DELAY", 0.01)
+
+    class OnceBusyStream:
+        def __init__(self):
+            self._chunks = iter([{"delta": "partial"}])
+            self.close_calls = 0
+            self.in_guard_per_call = []
+            self.marker_per_call = []
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._chunks)
+
+        def close(self):
+            self.close_calls += 1
+            self.in_guard_per_call.append(in_guard.get())
+            self.marker_per_call.append(request_marker.get())
+            if self.close_calls == 1:
+                raise ValueError("generator already executing")
+
+    raw_stream = OnceBusyStream()
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: raw_stream,
+        session_id="session-1",
+        name="test-provider",
+        model_name="test-model",
+        finalizer=lambda: {"content": "partial"},
+        metadata={
+            "api_mode": "custom",
+            "api_request_id": "request-guard-fidelity",
+        },
+    )
+
+    assert next(stream) == {"delta": "partial"}
+    stream.close()
+
+    # One busy rejection + one successful retry; every attempt re-entered the
+    # guard and saw the request-captured context. (Relay may exhaust the single-
+    # chunk provider while prefetching, so the retry sequence can fire inside
+    # next() — the assertions cover both trigger points.) Each attempt copies
+    # the unpolluted captured context, so in_guard is only True if that very
+    # attempt entered the guard; the flags cannot leak across attempts.
+    assert raw_stream.close_calls == 2
+    assert raw_stream.in_guard_per_call == [True, True]
+    assert raw_stream.marker_per_call == ["request-context", "request-context"]
+    assert guard_events.count("enter") >= raw_stream.close_calls
+    assert guard_events.count("enter") == guard_events.count("exit")

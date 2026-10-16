@@ -8,6 +8,7 @@ import contextvars
 import inspect
 import json
 import logging
+import time
 from collections.abc import Callable, Iterator
 from functools import partial
 from types import SimpleNamespace
@@ -289,6 +290,45 @@ def _aclose_on_loop(loop: asyncio.AbstractEventLoop, stream: Any) -> bool:
     return True
 
 
+# A sync generator close() racing a worker still executing the generator raises
+# "generator already executing"; bounded retries cover the window and a
+# still-busy close past the bound is abandoned with a warning rather than
+# turning an interrupt into a secondary close failure.
+_GENERATOR_BUSY_RETRY_DELAY = 0.05
+_GENERATOR_BUSY_RETRY_TIMEOUT = 2.0
+
+
+def _close_raw_provider_iterator(close: Callable[[], Any]) -> None:
+    """Run a zero-argument provider-stream close, waiting out the "already executing" window.
+
+    ``GeneratorExit`` must be delivered from the closing thread for cleanup
+    (provider ``finally`` blocks) to run, so a busy window is retried briefly
+    rather than abandoned to the garbage collector. ``close`` is re-invoked
+    whole on every attempt — the managed seam passes ``lambda: run_callback(close)``
+    so each retry re-enters the managed-callback guard with the request-captured
+    context. Past the deadline the close is abandoned with a warning (mirroring
+    ``_aclose_on_loop``) instead of raising: the still-busy generator is left
+    to the garbage collector and the caller's ``close()`` must not resurface
+    the very "already executing" error this helper exists to absorb.
+    """
+    deadline = time.monotonic() + _GENERATOR_BUSY_RETRY_TIMEOUT
+    while True:
+        try:
+            close()
+            return
+        except ValueError as exc:
+            if "already executing" not in str(exc):
+                raise
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "Provider stream close stayed busy for %ss; abandoning the close "
+                    "attempt and leaving cleanup to the garbage collector",
+                    _GENERATOR_BUSY_RETRY_TIMEOUT,
+                )
+                return
+            time.sleep(_GENERATOR_BUSY_RETRY_DELAY)
+
+
 def _next_provider_chunk(callback: Callable[..., Any], raw_iterator: Any) -> tuple[Any, bool]:
     """Read one synchronous provider chunk without leaking StopIteration through a Future."""
     try:
@@ -379,7 +419,9 @@ class ManagedLlmStream(Iterator[Any]):
             close = getattr(raw_stream, "close", None)
             if callable(close):
                 try:
-                    run_callback(close)
+                    # Retry the whole run_callback(close) unit so every attempt,
+                    # retries included, re-enters the guard and the captured context.
+                    _close_raw_provider_iterator(lambda: run_callback(close))
                 except BaseException as exc:
                     self._close_error = exc
                     raise
@@ -562,7 +604,7 @@ class ManagedLlmStream(Iterator[Any]):
             close = getattr(resource, "close", None)
             try:
                 if callable(close):
-                    close()
+                    _close_raw_provider_iterator(close)
             except Exception as exc:
                 self._keep_first_close_error(exc)
                 logger.debug("Provider stream cleanup failed", exc_info=True)

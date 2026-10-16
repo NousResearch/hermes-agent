@@ -126,6 +126,7 @@ async def authenticate_native_http(request):
     tickets = request.headers.getlist(HEADER)
     if not tickets:
         return None
+    from gateway.drain_control import restart_wait_read
     from gateway.session_authorities import all_authorities, authority_for_profile_id
     runner = getattr(request.app.state, 'gateway_runner', None)
     descriptor = getattr(runner, 'session_runtime_descriptor', {})
@@ -134,7 +135,9 @@ async def authenticate_native_http(request):
     peer = request.scope.get('hermes.gateway_socket_peer')
     if (len(tickets) != 1 or 'origin' in request.headers or not peer
             or peer[0] not in {'127.0.0.1', '::1'}
-            or descriptor.get('state') != 'ready' or getattr(runner, '_draining', True)
+            or descriptor.get('state') != 'ready'
+            # A restart's after-turn wait still serves the reads that open a parked prompt (#139041).
+            or (getattr(runner, '_draining', True) and not restart_wait_read(runner, request.method, request.url.path))
             or not authorities or store is None
             or store.instance_id != descriptor.get('instance_id')
             or any(a is not None and a.instance_id != store.instance_id for a in authorities)

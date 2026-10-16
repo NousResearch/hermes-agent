@@ -71,8 +71,11 @@ export interface GatewayEndpoint {
   code_sha?: string | null
 }
 
-/** Restarts a ready owner whose code differs from this client's; true when a restart was requested. */
-export type StaleGatewayRestart = (endpoint: GatewayEndpoint, stale: { gateway: string; client: string }) => Promise<boolean>
+/** Requests a restart of a ready owner whose code differs from this client's. Resolves as soon as the
+ *  restart is requested: `{ done }` settles when the restart client exits; null when none was requested.
+ *  Never awaited to completion before re-discovery: a supervised restart waits for the old owner to
+ *  drain, and a turn parked on approval/clarify there waits for an answer only this window can give. */
+export type StaleGatewayRestart = (endpoint: GatewayEndpoint, stale: { gateway: string; client: string }) => Promise<null | { done: Promise<void> }>
 
 /** The profile whose `hermes --profile P gateway restart` replaces the process behind `endpoint`:
  *  the multiplexer root (`default`) for a served secondary, else the endpoint's own profile home. */
@@ -98,28 +101,21 @@ export function createStaleGatewayRestarter(
     const pending = restarts.get(key)
 
     if (pending && !pending.done) {
-      await pending.promise
-
-      return true
+      return { done: pending.promise }
     }
 
     if (pending) {
       log(`[gateway] owner still runs ${stale.gateway} (this Hermes is ${stale.client}) after a restart; attaching as-is`)
 
-      return false
+      return null
     }
 
     log(`[gateway] owner runs ${stale.gateway} but this Hermes is ${stale.client}; restarting it`)
-    const entry = { done: false, promise: restart(gatewayOwnerProfile(endpoint)) }
+    const entry = { done: false, promise: restart(gatewayOwnerProfile(endpoint)).catch(() => undefined) }
     restarts.set(key, entry)
+    void entry.promise.then(() => { entry.done = true })
 
-    try {
-      await entry.promise
-    } finally {
-      entry.done = true
-    }
-
-    return true
+    return { done: entry.promise }
   }
 }
 
@@ -166,6 +162,34 @@ function assertLocalGatewayEndpoint(endpoint: GatewayEndpoint): void {
   }
 }
 
+/** Poll interval while a requested stale-owner restart is in flight. */
+export const STALE_RESTART_POLL_MS = 1000
+
+/** Re-ensure while a stale-owner restart runs, without waiting for it to finish (#139041): the first
+ *  answer that is no longer the stale owner wins — its restart wait (attach to answer a parked
+ *  prompt), or a replacement. Once the restart client exits, whatever answers next is final. */
+async function reensureDuringRestart(
+  run: () => Promise<{ code: number; stdout: string; stderr?: string }>,
+  done: Promise<void>,
+  staleInstance: string
+): Promise<{ result: { code: number; stdout: string; stderr?: string }; payload: Record<string, any> }> {
+  let finished = false
+  void done.then(() => { finished = true })
+
+  for (;;) {
+    const last = finished
+    const result = await run()
+    const payload = parseGatewayEnsureOutput(result)
+    const restartWait = payload.state === 'draining' && payload.reason_code === 'restart_wait' && Boolean(payload.endpoint)
+    const replaced = payload.state === 'ready' && payload.endpoint?.instance_id !== staleInstance
+
+    if (last || restartWait || replaced) {return { result, payload }}
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([done, new Promise(resolve => { timer = setTimeout(resolve, STALE_RESTART_POLL_MS) })])
+    clearTimeout(timer)
+  }
+}
+
 export async function ensureLocalGateway(
   run: () => Promise<{ code: number; stdout: string; stderr?: string }>,
   beforeEnsure?: () => Promise<void>,
@@ -178,9 +202,10 @@ export async function ensureLocalGateway(
 
   // Attaching would pin a stale owner (503 "Restart required" forever): replace it once, then
   // take whatever answers the re-ensure.
-  if (stale && await restartStale!(payload.endpoint, stale)) {
-    result = await run()
-    payload = parseGatewayEnsureOutput(result)
+  const restart = stale ? await restartStale!(payload.endpoint, stale) : null
+
+  if (restart) {
+    ({ result, payload } = await reensureDuringRestart(run, restart.done, payload.endpoint.instance_id))
   }
 
   // A graceful restart's after-turn wait still owns its turns (#139041): attach to it so a turn parked

@@ -152,12 +152,33 @@ test('ensure consumes structured readiness without acquiring a child owner', asy
 
 test('a restart-wait owner is attached to answer a parked prompt; a plain drain stays refused (#139041)', async () => {
   const endpoint = { profile_id: '/private/profile', instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none', code_sha: 'old' }
-  const restartStale = vi.fn(async () => true)
+  const restartStale = vi.fn(async () => ({ done: Promise.resolve() }))
   const wait = { code: 6, stdout: JSON.stringify({ state: 'draining', reason_code: 'restart_wait', endpoint, client_code_sha: 'new' }) }
   const connection = await ensureLocalGateway(async () => wait, undefined, restartStale)
   expect(connection.gatewayEndpoint).toEqual(endpoint)
   expect(restartStale).not.toHaveBeenCalled() // already restarting: never a second restart
   await expect(ensureLocalGateway(async () => ({ code: 6, stdout: JSON.stringify({ state: 'draining', reason_code: 'update_paused', endpoint: null }) }))).rejects.toThrow('Gateway draining (update_paused)')
+})
+
+test('a stale owner this window restarts is attached in its restart wait before the restart finishes (#139041)', async () => {
+  // `hermes gateway restart` waits for the old owner to exit; a turn parked on approval/clarify
+  // there waits for an answer only this window can give. Awaiting the restart first deadlocked both.
+  const { createStaleGatewayRestarter } = await import('./local-gateway')
+  const endpoint = { profile_id: '/h', instance_id: 'old', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none', code_sha: 'old' }
+  let finishRestart = () => {}
+  const restarted: string[] = []
+  const restartStale = createStaleGatewayRestarter(owner => { restarted.push(owner)
+
+ return new Promise<void>(resolve => { finishRestart = resolve }) }, () => undefined)
+  const answers = [
+    { code: 0, stdout: JSON.stringify({ state: 'ready', endpoint, client_code_sha: 'new' }) },
+    { code: 6, stdout: JSON.stringify({ state: 'draining', reason_code: 'restart_wait', endpoint, client_code_sha: 'new' }) }
+  ]
+  const attached = ensureLocalGateway(async () => answers.shift()!, undefined, restartStale)
+  const outcome = await Promise.race([attached, new Promise(resolve => setTimeout(() => resolve('blocked on the restart'), 500))])
+  finishRestart()
+  expect(outcome).toMatchObject({ gatewayEndpoint: { instance_id: 'old' } })
+  expect(restarted).toEqual(['default'])
 })
 
 test('an ensure child that never reached the protocol boundary is diagnosed from stderr, not as a JSON parse error', async () => {

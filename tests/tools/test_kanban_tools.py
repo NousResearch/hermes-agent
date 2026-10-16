@@ -9,6 +9,7 @@ Verifies:
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -295,6 +296,64 @@ def test_request_review_accepts_installed_profile(monkeypatch, worker_env, tmp_p
     with kbc.connect() as conn:
         task = kb.get_task(conn, worker_env)
         assert (task.status, task.assignee) == ("review", "verifier")
+
+
+def test_live_claim_conflicts_are_actionable_and_do_not_mutate(monkeypatch, worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
+    from tools import kanban_tools as kt
+
+    with kbc.connect() as conn:
+        implementation_run = kb.get_task(conn, worker_env).current_run_id
+        kbd._set_worker_pid(conn, worker_env, os.getpid())
+        before_events = kb.list_events(conn, worker_env)
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID")
+    out = json.loads(kt._handle_request_review({
+        "task_id": worker_env,
+        "summary": "unbound handoff",
+    }))
+
+    assert "live worker claim" in out["error"]
+    assert "Nothing changed" in out["error"]
+    assert "Do not call another lifecycle transition" in out["error"]
+    assert "wait for the owning worker" in out["error"].lower()
+    assert "reclaim" in out["error"].lower()
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        assert (task.status, task.current_run_id) == ("running", implementation_run)
+        assert kb.list_events(conn, worker_env) == before_events
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", worker_env)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(implementation_run))
+    assert json.loads(kt._handle_request_review({
+        "summary": "owned handoff",
+    }))["ok"] is True
+
+    with kbc.connect() as conn:
+        assert kb.claim_review_task(conn, worker_env) is not None
+        review_run = kb.get_task(conn, worker_env).current_run_id
+        kbd._set_worker_pid(conn, worker_env, os.getpid())
+        before_events = kb.list_events(conn, worker_env)
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    monkeypatch.delenv("HERMES_KANBAN_RUN_ID")
+    out = json.loads(kt._handle_request_changes({
+        "task_id": worker_env,
+        "reason": "unbound verdict",
+    }))
+
+    assert "live reviewer claim" in out["error"]
+    assert "Nothing changed" in out["error"]
+    assert "Do not call another lifecycle transition" in out["error"]
+    assert "wait for the owning worker" in out["error"].lower()
+    assert "reclaim" in out["error"].lower()
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        assert (task.status, task.current_run_id) == ("running", review_run)
+        assert kb.list_events(conn, worker_env) == before_events
 
 
 def test_unbound_worker_cannot_mutate_card(monkeypatch, worker_env):

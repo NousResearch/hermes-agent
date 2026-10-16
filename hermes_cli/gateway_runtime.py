@@ -252,6 +252,17 @@ def _update_fenced(homes) -> bool:
     return False
 
 
+def _fenced_verdict(home: Path, timeout: float) -> GatewayDiscovery:
+    """What ensure answers while an update owns the install. The update's own drain
+    (``pause-for-update``) is a restart's after-turn wait whose owner may hold a turn parked on
+    approval/clarify, so it is handed out for clients to answer it (#139041). Discovery only:
+    nothing is started or replaced while fenced, and any other owner state stays ``update_paused``."""
+    observed = discover_gateway_endpoint(home, timeout=timeout)
+    if observed.state == "draining" and attachable(observed):
+        return observed
+    return GatewayDiscovery("draining", reason_code="update_paused")
+
+
 _REPLACE_FAILED_DETAIL = "an older Hermes gateway still owns this profile after a stop; run: hermes gateway stop"
 # ``draining`` reasons after which the owner is going away by itself: its own idle exit, or the
 # older-Hermes owner this call just stopped. Ensure waits it out and starts the current owner.
@@ -316,7 +327,7 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
         while True:
             # The install-root marker also covers profiles.
             if _update_fenced({home, get_process_hermes_home(), get_default_hermes_root()}):
-                return GatewayDiscovery("draining", reason_code="update_paused")
+                return _fenced_verdict(home, remaining(deadline))
             # Poll BEFORE discovering: an exit observed first, then "absent", cannot be a child that
             # published its owner a moment later. A winning racer shows up as starting/ready instead.
             status = child.poll() if child is not None else None

@@ -12,6 +12,7 @@ except ModuleNotFoundError as exc:
     if exc.name != "hermes_bootstrap":
         raise
 
+import contextlib
 import json
 import logging
 import os
@@ -396,7 +397,11 @@ def execute(frame, channel):
         unregister_gateway_notify(frame['route'])
         if agent is not None:
             retire_agent(agent)
-        store.close()
+        try:
+            store.close()
+        finally:
+            with contextlib.suppress(Exception):  # a failing socket close never replaces the turn's outcome
+                rpc.close()
 
 
 def _construct_agent(frame, factory, policy, **kwargs):

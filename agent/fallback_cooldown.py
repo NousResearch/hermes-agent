@@ -62,12 +62,16 @@ def _arm_rate_limit_cooldown(
     backoff_count = getattr(agent, "_rate_limit_backoff_count", 0)
     agent._rate_limit_backoff_count = backoff_count + 1
     provider_delay = _provider_reset_delay(reset_at)
-    if provider_delay is not None:
+    # A billing refusal's ``reset_at`` rides the billing cycle, but the remedy is an
+    # external top-up that can land at any moment (#126818): the wait is unknowable,
+    # so billing keeps the exponential ladder (capped below) instead of pinning the
+    # primary for the whole recorded window while the fallback keeps billing.
+    if provider_delay is not None and reason != FailoverReason.billing:
         backoff_seconds = math.ceil(provider_delay)
         source = "provider reset"
     else:
         backoff_seconds = min(60 * (2 ** backoff_count), 14400)
-        source = "exponential fallback"
+        source = "billing top-up ladder" if reason == FailoverReason.billing else "exponential fallback"
     agent._rate_limited_until = time.monotonic() + backoff_seconds
     logging.info(
         "Rate-limit backoff level %d: cooldown %d s (%.1f min, backoff#%d, %s)",

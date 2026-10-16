@@ -253,3 +253,34 @@ html[dir="rtl"] {
   direction: rtl;
 }
 
+/* 【2026-10-17 手机输入补丁 v3】把 xterm 的隐藏输入框改造成"移动端输入法认得的元素"。
+   诊断页实测（鸿蒙 ArkWeb，见 /root/hermes-web-mobile-input-test/index2.html）：
+      v1 完全可见 ✅ / v2 opacity:1 ✅ / v3 opacity:0.5 ✅ / v4 opacity:0.01 ✅
+      v5 opacity:0 + left:-9999em ❌ —— 0 字，连键盘都不弹
+   结论：杀手是【屏幕外 + 完全透明】这个组合，不是透明度本身。
+   xterm 恰好两样都占（opacity:0，且未聚焦时位于 left:-9999em）→ 所以手机上永远聚焦不上。
+   修法：真机上把它锁定在终端底部一行、全宽、可点，文字/光标/背景全透明
+   （肉眼依旧看不见，不新增任何输入框），布局与桌面端行为完全不变。 */
+.hermes-mobile-ime .xterm-helper-textarea {
+  /* v4(2026-10-17): 改成【固定在视口底部】的浮层。
+     诊断页证明：手指必须【直接点在输入元素上】ArkWeb 才聚焦（v1~v4 都成），
+     程序化 focus() 或点在画布上都不行（首版测试页 C 变体 0 事件）。
+     所以把它从 xterm 的图层里"抬"到最顶层并铺满屏幕底部一条，
+     保证底部那一条的触摸一定落在它身上，而不是 xterm 的 canvas。
+     外观依旧全透明（文字/光标/背景都不可见），不新增任何输入框。 */
+  position: fixed !important;
+  inset: auto 0 0 0 !important;
+  width: 100% !important;
+  height: 2.6em !important;
+  z-index: 2147482000 !important;
+  opacity: 0.01 !important;
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
+  caret-color: transparent !important;
+  background: transparent !important;
+  border: 0 !important;
+  font-size: 16px !important;
+  clip: auto !important;
+  transform: none !important;
+  pointer-events: auto !important;
+}

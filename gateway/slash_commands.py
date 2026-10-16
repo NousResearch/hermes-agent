@@ -595,6 +595,15 @@ class GatewaySlashCommandsMixin(
             return t("gateway.draining", count=active_agents)
         return EphemeralReply(t("gateway.restart.restarting"))
 
+    async def _handle_autoprune_command(self, event: MessageEvent) -> str:
+        """Handle /autoprune — the low-disk auto-prune decision (same text as the CLI)."""
+        from hermes_cli.prune_advisor import answered
+        reply = _execute("autoprune", args=event.get_command_args()).text
+        if event.get_command_args().strip() and answered():  # a failed save or `status` keeps it
+            from gateway.run_housekeeping_disk import clear_local_auto_prune_notice
+            clear_local_auto_prune_notice(self, event.source)
+        return reply
+
     async def _handle_version_command(self, event: MessageEvent) -> str:
         """Handle /version — show the running Hermes Agent version."""
         return _execute("version").text

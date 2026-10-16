@@ -95,6 +95,11 @@ hermes_cli/web_dist/
 apps/desktop/build/
 apps/desktop/dist/
 
+# Stray hashed Vite/Rolldown bundles emitted to the repo root by `desktop --build`.
+# Official bundles live in dist/assets/; these root copies are untracked duplicates.
+apps/desktop/cron-*.js
+apps/desktop/index-*.js
+
 # tsc-emitted artifacts (a stray `tsc -b` compiles into src/, and vite then
 # resolves the stale .js OVER the .tsx — never track these)
 apps/desktop/src/**/*.js

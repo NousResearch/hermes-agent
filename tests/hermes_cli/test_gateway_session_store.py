@@ -415,7 +415,8 @@ def test_verbose_flag_rides_session_create():
 
 def test_row_cwd_is_mains_stamp_while_the_tools_run_in_terminal_cwd(store, monkeypatch, tmp_path):
     """Main's row cwd: the launching process's cwd on its first session (``-w`` never chdirs, so the
-    repo root), none on ``/new`` and ``--create-if-missing``. The execution cwd stays TERMINAL_CWD."""
+    repo root), none on ``/new``. ``--create-if-missing`` stamps it too: the caller resumes the new id,
+    so nothing later records it (#106016). The execution cwd stays TERMINAL_CWD."""
     from hermes_cli.cli_init_mixin import CLIInitMixin
     from hermes_cli import gateway_session_store as gss
     db, client = store
@@ -433,9 +434,11 @@ def test_row_cwd_is_mains_stamp_while_the_tools_run_in_terminal_cwd(store, monke
     assert [p for m, p in client.calls if m == "session.create"][-1]["row_cwd"] == ""
     monkeypatch.setattr(gss, "session_store", lambda: db)
     gss.create_titled_session("Fresh Named")
-    assert [p for m, p in client.calls if m == "session.create"][-1]["row_cwd"] == ""
+    assert [p for m, p in client.calls if m == "session.create"][-1]["row_cwd"] == str(repo.resolve())
     monkeypatch.setenv("TERMINAL_ENV", "docker")  # main stamps no host cwd for a remote backend
     db.create({"toolsets": ["file"]})
+    assert [p for m, p in client.calls if m == "session.create"][-1]["row_cwd"] == ""
+    gss.create_titled_session("Remote Named")
     assert [p for m, p in client.calls if m == "session.create"][-1]["row_cwd"] == ""
 
 

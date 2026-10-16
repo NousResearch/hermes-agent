@@ -451,13 +451,17 @@ def session_store():
 def create_titled_session(title):
     """``chat -c <title> --create-if-missing`` for the classic CLI: the gateway's ``session.create``
     with ``title`` (it resolves-or-creates under one owner lock), so this process writes no row.
-    Main's ``_create_titled_session`` minted the id and wrote the row itself, with no cwd stamp
-    (``row_cwd`` ""). Returns the id, or None when the gateway refused (the caller prints main's
-    "could not be created" copy)."""
+    The row is stamped with the launch cwd like any first CLI session (``create``'s stamp): the
+    caller then resumes the new id, so no later lazy create records it, and a cwd-less row is
+    workspace-unbound (``Workspace: —``, invisible to ``sessions list --workspace``; #106016).
+    Returns the id, or None when the gateway refused (the caller prints main's "could not be
+    created" copy)."""
     params = _creation_policy({})
     params["cwd"] = os.path.realpath(os.getenv("TERMINAL_CWD") or os.getcwd())
     params["source"] = "cli"  # main's titled row is `cli` (hermes_cli.main._create_titled_session)
-    params["row_cwd"] = ""
+    # Same guard as ``create``: only a local terminal backend has a stable host cwd to record.
+    local = (os.getenv("TERMINAL_ENV") or "local").strip().lower() in ("", "local")
+    params["row_cwd"] = os.getcwd() if local else ""
     try:
         snapshot = session_store().call("session.create", request_id=uuid.uuid4().hex, title=title, **params)
     except GatewayClientError as exc:

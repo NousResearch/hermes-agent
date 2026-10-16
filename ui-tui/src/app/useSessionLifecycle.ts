@@ -30,6 +30,7 @@ import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
 import { renameCanonicalSession } from './slash/canonicalSessionCommands.js'
+import { mutateCanonical } from './slash/canonicalSessionControls.js'
 import { captureDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -227,6 +228,39 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       return pending
     },
     [gw.isCanonical, rpc]
+  )
+
+  // The switcher's close of a live row on a canonical gateway cannot send legacy `session.close`
+  // (not in the canonical contract). A row this view subscribes to is ended by its own detach
+  // carrying `tui_close` — the owner ends the last idle viewer's local session; a row nobody here
+  // holds stays the gateway's to end, via the revision-fenced `session.mutate` archive.
+  const closeCanonicalSession = useCallback(
+    async (targetSid: string): Promise<SessionCloseResponse> => {
+      if (!gw.isCanonical) {
+        return { closed: false }
+      }
+
+      const subscriptionId = canonicalSubscriptions.current.get(targetSid)
+
+      if (subscriptionId) {
+        const result = await rpc<SessionDetachResponse>('session.detach', {
+          session_id: targetSid,
+          subscription_id: subscriptionId,
+          end_reason: 'tui_close'
+        })
+
+        if (result?.detached && canonicalSubscriptions.current.get(targetSid) === subscriptionId) {
+          canonicalSubscriptions.current.delete(targetSid)
+        }
+
+        return { closed: Boolean(result?.detached) }
+      }
+
+      const mutation = await mutateCanonical(gw, targetSid, 'archive', { archived: true })
+
+      return { closed: Boolean(mutation?.result) }
+    },
+    [gw, rpc]
   )
 
   // Exit (`/quit`, Ctrl+D): main's sidecar stamped every session it held `tui_shutdown` at shutdown.
@@ -729,6 +763,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     () => ({
       activateLiveSession,
       closeForExit,
+      closeCanonicalSession,
       closeSession,
       guardBusySessionSwitch,
       newLiveSession,
@@ -740,6 +775,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     }),
     [
       activateLiveSession,
+      closeCanonicalSession,
       closeForExit,
       closeSession,
       guardBusySessionSwitch,

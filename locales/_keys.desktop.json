@@ -4115,6 +4115,7 @@
     "shell.modelMenu.modelLimitedTip",
     "shell.modelMenu.modelResets",
     "shell.modelMenu.noModels",
+    "shell.modelMenu.pickDeferred",
     "shell.modelMenu.poolAccount",
     "shell.modelMenu.poolAccounts",
     "shell.modelMenu.poolLimited",

@@ -109,6 +109,15 @@ def test_kanban_guidance_fallback_requires_owned_worker_task(monkeypatch, task_i
         assert (_tool_guidance_block(agent) == KANBAN_GUIDANCE) is expected
 
 
+def test_kanban_guidance_explicit_owner_is_not_inherited_from_environment(monkeypatch):
+    """The caller's ownership decision must override an inherited task variable."""
+    from agent.prompt_builder import KANBAN_GUIDANCE, kanban_worker_guidance
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "inherited-task")
+    assert kanban_worker_guidance({"kanban_show"}, task_id="owned-task") == KANBAN_GUIDANCE
+    assert kanban_worker_guidance({"kanban_show"}, task_id="") == ""
+
+
 @pytest.mark.parametrize("stores", [(True, True), (False, True), (True, False), (False, False)])
 @pytest.mark.parametrize("names", [
     set(), {"memory"}, {"memory", "skill_view", "skills_list"},

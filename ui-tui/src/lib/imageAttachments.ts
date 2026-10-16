@@ -79,7 +79,7 @@ async function extractClipboardImage(path: string): Promise<boolean> {
     (process.platform === 'win32' ? 'python' : 'python3')
 
   const { stdout } = await promisify(execFile)(python, [pythonHelperPath('clipboard_image.py', root), path],
-    { cwd: root, env: { ...process.env, PYTHONPATH: root }, timeout: 15_000, windowsHide: true })
+    { cwd: root, env: { ...process.env, PYTHONPATH: root, HERMES_PYTHON_SRC_ROOT: root }, timeout: 15_000, windowsHide: true })
 
   return stdout.trim() === 'true'
 }

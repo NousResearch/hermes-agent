@@ -130,12 +130,16 @@ export interface LocalGatewayGrant { url: string; protocols: string[]; profile_i
 export const OWNER_RECOVERY_LIMIT = 3
 export const OWNER_RECOVERY_WINDOW_MS = 60_000
 
+/** gateway_bootstrap.py's verdict for an interpreter that cannot load Hermes or its dependencies. */
+// execFile's error text is `Command failed: …` followed by the child's stderr, hence the line match.
+export const isTerminalBootstrapFailure = (message: string) => /^gateway unavailable: /m.test(message)
+
 const bootstrapLocalGateway = async (start: boolean, recover = false): Promise<LocalGatewayGrant> => {
   const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
 
   const { stdout } = await promisify(execFile)(resolvePython(),
     [pythonHelperPath('gateway_bootstrap.py', root), ...(start ? ['--start'] : recover ? ['--recover'] : [])],
-    { cwd: root, env: { ...process.env, PYTHONPATH: root }, timeout: 40_000, maxBuffer: 1024 * 1024 })
+    { cwd: root, env: { ...process.env, PYTHONPATH: root, HERMES_PYTHON_SRC_ROOT: root }, timeout: 40_000, maxBuffer: 1024 * 1024 })
 
   return JSON.parse(stdout) as LocalGatewayGrant
 }
@@ -606,6 +610,15 @@ export class GatewayClient extends EventEmitter {
         python: 'gateway ensure', cwd: '', stderr_tail: this.bootstrapError.message
       } })
       this.channel.detach(this.bootstrapError)
+
+      // The helper's interpreter cannot load Hermes (gateway_bootstrap.py `gateway unavailable:`):
+      // no reconnect fixes that, so report it once instead of retrying every 30 s forever (#138878).
+      if (isTerminalBootstrapFailure(this.bootstrapError.message)) {
+        this.lifecycle(`[lifecycle] gateway bootstrap cannot start; not retrying: ${this.bootstrapError.message.match(/^gateway unavailable: .*$/m)?.[0]}`)
+
+        return
+      }
+
       this.scheduleReconnect()
     })
   }

@@ -1,7 +1,13 @@
 """Extract the Ink host clipboard without loading a session runtime."""
 import json
+import os
 import sys
 from pathlib import Path
+
+# The Python root (gatewayClient.ts/imageAttachments.ts pass it): the TUI product ships this
+# helper in dist/scripts/, where parents[2] is not the root.
+ROOT = Path(os.environ.get("HERMES_PYTHON_SRC_ROOT") or Path(__file__).resolve().parents[2])
+sys.path.insert(0, str(ROOT))
 
 from hermes_cli.clipboard import save_clipboard_image
 from pm.environments import activate_dependencies
@@ -10,5 +16,5 @@ if __name__ == "__main__":
     # Ink runs this on HERMES_PYTHON with PYTHONPATH=<root> only, which on a source install is PM's
     # store Python: without the committed generation, Pillow is missing and non-PNG clipboard
     # images silently depend on ImageMagick being installed.
-    activate_dependencies(Path(__file__).resolve().parents[2])
+    activate_dependencies(ROOT)
     print(json.dumps(bool(save_clipboard_image(Path(sys.argv[1])))))

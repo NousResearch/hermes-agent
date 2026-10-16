@@ -4,6 +4,7 @@ prompts) and scoped controls; no agent-loop state is changed. Process rows come 
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 from prompt_toolkit.utils import get_cwidth
@@ -45,21 +46,33 @@ class SubagentMonitor:
         # Footer selection (``cli_dock_footer``): Down on an empty composer, Esc/Up leaves.
         self.footer_active = False
         self.confirm_key = None
+        self.confirm_action = None  # a plugin row action waiting for its second key press
         self.notice = ''
         # The footer's one-line steer input (``s``): target row key and the typed draft.
         self.steer_target = None
         self.steer_draft = ''
+        # Plugin footer items (``ctx.register_footer_item``): polled snapshots and their rows.
+        self.plugin_items = []
+        self.plugin_rows = []
+        self._plugin_dirty = False
+        self._plugin_poller = None
         # ``cli_footer_tips.FooterTips`` while display.cli_footer_tips is on (install_dock).
         self.tips = None
 
     @property
     def has_rows(self):
-        return bool(self.entries or self.processes or self.goal or self.loop or self.queued)
+        return bool(self.entries or self.processes or self.goal or self.loop or self.queued
+                    or self.plugin_items)
+
+    @property
+    def tasks(self):
+        """Agents first, then processes — what the full-height monitor lists."""
+        return [*self.entries, *self.processes]
 
     @property
     def roster(self):
-        """Agents first, then processes — the order the dock and the full-height monitor paint."""
-        return [*self.entries, *self.processes]
+        """The footer's selectable rows: agents, processes, then plugin rows."""
+        return [*self.entries, *self.processes, *self.plugin_rows]
 
     @staticmethod
     def _key(row):
@@ -89,8 +102,23 @@ class SubagentMonitor:
             row.pop('running_seconds', None)
         return entries
 
+    def _poll_plugin_items(self):
+        """Last good plugin footer snapshots; each runs in its own worker thread, never here."""
+        from hermes_cli import cli_plugin_footer as plugin_footer
+        if self._plugin_poller is None:
+            self._plugin_poller = plugin_footer.FooterItemPoller(on_change=self._plugin_changed)
+        try:
+            return self._plugin_poller.poll(plugin_footer.session_info(self.cli))
+        except Exception:
+            logging.getLogger(__name__).debug('plugin footer poll failed', exc_info=True)
+            return self.plugin_items
+
+    def _plugin_changed(self):
+        self._plugin_dirty = True
+
     def refresh(self, now=None):
         from hermes_cli.gateway_tools import process_view
+        from hermes_cli.cli_plugin_footer import footer_rows
         now = time.time() if now is None else now
         # A gateway-backed CLI runs its children in the gateway process, so the in-process
         # registry is empty there: read the session's ``subagent.list`` snapshot instead.
@@ -100,7 +128,8 @@ class SubagentMonitor:
         goal = session_rows.goal_line(self.cli)
         loop_badge, loop, loop_prompt = session_rows.loop_row(self.cli, now)
         queued = session_rows.queued_prompts(self.cli)
-        signature = json.dumps([entries, processes, goal, loop, queued], sort_keys=True, default=str)
+        plugin_items = self._poll_plugin_items()
+        signature = json.dumps([entries, processes, goal, loop, queued, plugin_items], sort_keys=True, default=str)
         changed = signature != self._signature
         self._signature = signature
         self.entries = entries
@@ -110,10 +139,12 @@ class SubagentMonitor:
         self.loop_badge = loop_badge
         self.loop_prompt = loop_prompt
         self.queued = queued
+        self.plugin_items = plugin_items
+        self.plugin_rows = footer_rows(plugin_items)
         if self.selected is None:
             roster = self.roster
             self.selected_id = self._key(roster[0]) if roster else None
-            self.confirm_key = None
+            self.confirm_key = self.confirm_action = None
         if not self.roster:
             self.footer_active = False
         if self.steer_target is not None and not any(self._key(r) == self.steer_target for r in self.entries):
@@ -131,9 +162,11 @@ class SubagentMonitor:
 
     def tick(self):
         now = time.monotonic()
-        if now - self._last_poll < 1:
+        # A plugin snapshot that finished with a new value repaints without waiting a whole second.
+        if now - self._last_poll < 1 and not self._plugin_dirty:
             return
         self._last_poll = now
+        self._plugin_dirty = False
         changed = self.refresh()
         if self.tips is not None and not self.has_rows and self.tips.due():
             changed = self.tips.rotate() or changed  # repaint only when the tip text changed
@@ -144,7 +177,7 @@ class SubagentMonitor:
                 self.cli._invalidate()
 
     def select(self, delta):
-        roster = self.roster
+        roster = self.tasks
         if roster:
             index = next((i for i, r in enumerate(roster) if self._key(r) == self.selected_id), 0)
             self.selected_id = self._key(roster[(index + delta) % len(roster)])
@@ -242,13 +275,18 @@ def build_monitor_application(monitor, *, detail_key=None, **kwargs):
 
     state = {'detail': False, 'steering': False, 'confirm': False, 'notice': '', 'direct': False}
     tail_cache = {}
+
+    def current():
+        # The footer's plugin rows are not tasks: this view never opens or stops them.
+        row = monitor.selected
+        return row if row is not None and row.get('kind') != 'plugin' else None
     steer = TextArea(height=1, prompt=t('cli.subagents.steer_prompt'), multiline=False)
     tail = TextArea(read_only=True, scrollbar=True, wrap_lines=True)
 
     def roster_text():
         size = app.output.get_size()
         rows = []
-        for row in monitor.roster:
+        for row in monitor.tasks:
             selected = monitor._key(row) == monitor.selected_id
             if row.get('kind') == 'process':
                 prefix = f"{procs.process_glyph(row)} {procs.process_activity(row)} · "
@@ -266,13 +304,13 @@ def build_monitor_application(monitor, *, detail_key=None, **kwargs):
         return rows or [('', t('cli.subagents.roster_empty'))]
 
     def cursor():
-        index = next((i for i, row in enumerate(monitor.roster) if monitor._key(row) == monitor.selected_id), 0)
+        index = next((i for i, row in enumerate(monitor.tasks) if monitor._key(row) == monitor.selected_id), 0)
         return Point(x=0, y=index)
 
     roster = Window(FormattedTextControl(roster_text, focusable=True, get_cursor_position=cursor))
 
     def update_tail():
-        row = monitor.selected
+        row = current()
         if row is None:
             text = t('cli.subagents.entry_gone')
         elif row.get('kind') == 'process':
@@ -286,7 +324,7 @@ def build_monitor_application(monitor, *, detail_key=None, **kwargs):
             tail.buffer.cursor_position = len(text) if following else min(position, len(text))
 
     def header():
-        row = monitor.selected
+        row = current()
         title = f"{monitor._title()} · {monitor._counts(session=False)}"
         if state['detail'] and row:
             title += f" · {monitor._key(row)} · {row.get('goal') or row.get('command') or ''}"
@@ -326,14 +364,14 @@ def build_monitor_application(monitor, *, detail_key=None, **kwargs):
 
     @kb.add('enter', filter=listing)
     def detail(event):
-        if monitor.selected:
+        if current():
             state['detail'] = True
             update_tail()
             app.layout.focus(tail)
 
     @kb.add('s', filter=normal)
     def start_steer(event):
-        if monitor.selected and monitor.selected_process is None:
+        if current() and monitor.selected_process is None:
             state['steering'] = True
             state['target'] = monitor.selected_id
             app.layout.focus(steer)
@@ -350,7 +388,7 @@ def build_monitor_application(monitor, *, detail_key=None, **kwargs):
 
     @kb.add('x', filter=normal)
     def stop(event):
-        if monitor.selected:
+        if current():
             state['confirm'] = True
             state['target'] = monitor.selected_id
 
@@ -397,7 +435,9 @@ def build_monitor_application(monitor, *, detail_key=None, **kwargs):
     from prompt_toolkit.styles import Style
     from hermes_cli.skin_engine import get_prompt_toolkit_style_overrides
     kwargs.setdefault('style', Style.from_dict(get_prompt_toolkit_style_overrides()))
-    if detail_key is not None and any(monitor._key(r) == detail_key for r in monitor.roster):
+    if current() is None and monitor.tasks:
+        monitor.selected_id = monitor._key(monitor.tasks[0])
+    if detail_key is not None and any(monitor._key(r) == detail_key for r in monitor.tasks):
         monitor.selected_id = detail_key
         state['detail'] = state['direct'] = True
         update_tail()

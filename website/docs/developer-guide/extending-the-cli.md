@@ -183,6 +183,13 @@ The default layout from top to bottom:
 7. **Voice status** — recording indicator
 8. **Completions menu** — autocomplete suggestions
 
+## Plugin footer items
+
+A wrapper CLI is not needed to show live plugin state under the composer: a plugin can add a pill
+part and selectable rows to the live-work footer with `ctx.register_footer_item()` (keyboard and
+mouse actions included). See
+[Show live state in the CLI footer](./plugins/index.md#show-live-state-in-the-cli-footer).
+
 ## Tips
 
 - **Invalidate the display** after state changes: call `self._invalidate()` to trigger a prompt_toolkit redraw.

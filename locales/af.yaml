@@ -2237,6 +2237,8 @@ cli:
     select_hint_steer: "↑↓ kies · Enter open · s stuur · x stop · Esc terug"
     select_hint_steer_compact: "↑↓ · Enter · s · x · Esc"
     hint_mouse: "/mouse vir klikke"
+    plugin_select_hint: "{actions} · Esc terug"
+    plugin_confirm: "{action}? {letter} weer · Esc kanselleer"
     confirm_stop: "Stop hierdie {noun}? x weer · Esc kanselleer"
     footer_confirm_stop: "Gekose {noun} stop? y bevestig · Esc kanselleer"
     footer_confirm_stop_compact: "Stop? y ja · Esc kanselleer"

@@ -2510,6 +2510,8 @@ cli:
     select_hint_steer: "↑↓ choisir · Entrée ouvrir · s guider · x arrêter · Échap retour"
     select_hint_steer_compact: "↑↓ · Entrée · s · x · Échap"
     hint_mouse: "/mouse pour les clics"
+    plugin_select_hint: "{actions} · Échap retour"
+    plugin_confirm: "{action} ? {letter} à nouveau · Échap annuler"
     confirm_stop: "Arrêter ce {noun} ? x à nouveau · Échap annuler"
     footer_confirm_stop: "Arrêter le {noun} sélectionné ? y confirmer · Esc annuler"
     footer_confirm_stop_compact: "Arrêter ? y oui · Esc annuler"

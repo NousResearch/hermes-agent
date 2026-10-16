@@ -6,8 +6,10 @@ row's live log in the full-screen monitor (``Esc`` comes straight back), ``x`` t
 steers a subagent from a one-line input, ``Tab`` jumps to the next kind (agents, shells, monitors)
 and ``Esc`` / ``Up`` past the first row returns to the composer. With mouse support on
 (``display.cli_mouse`` / ``/mouse``), a click on a pill badge selects that kind's first row, the
-rest of the pill toggles the selection and a click on a row opens it. The model is
-``cli_subagent_monitor.SubagentMonitor``; nothing here changes agent-loop state.
+rest of the pill toggles the selection and a click on a row opens it. Plugin footer items
+(``ctx.register_footer_item``, ``cli_plugin_footer``) add a pill part and rows after the tasks;
+on their rows ``Enter`` / a click runs the row's Enter action and its letter keys run the others.
+The model is ``cli_subagent_monitor.SubagentMonitor``; nothing here changes agent-loop state.
 """
 from __future__ import annotations
 
@@ -19,6 +21,9 @@ from hermes_cli import cli_process_dock as procs
 AGENT_GLYPH = "☤"
 SHELL_GLYPH = "⚙"
 MONITOR_GLYPH = "◉"
+PLUGIN_GLYPH = "◇"
+_TONE_STYLES = {"ok": "class:live-dock.ok", "warn": "class:live-dock.warn", "bad": "class:live-dock.bad",
+                "dim": "class:live-dock.dim"}
 _POINTER = "❯ "
 
 
@@ -93,7 +98,17 @@ def _count_parts(monitor):
         parts.append(("class:live-dock.count", monitor.loop_badge))
     if monitor.queued:
         parts.append(("class:live-dock.count", t("cli.subagents.count_queued", count=len(monitor.queued))))
+    parts += [(_TONE_STYLES[item["tone"]], item["label"]) for item in monitor.plugin_items if item["label"]]
     return [part if len(part) == 3 else (*part, None) for part in parts]
+
+
+def _is_plugin(row) -> bool:
+    return bool(row) and row.get("kind") == "plugin"
+
+
+def _plugin_hint(row) -> str:
+    keys = " · ".join(f"{'↵' if a['key'] == 'enter' else a['key']} {a['label']}" for a in row["actions"])
+    return t("cli.subagents.plugin_select_hint", actions=keys) if keys else t("cli.subagents.select_hint_compact")
 
 
 def _hints(monitor, selecting):
@@ -103,6 +118,12 @@ def _hints(monitor, selecting):
     if monitor.notice:
         return (monitor.notice,)
     if selecting:
+        row = monitor.selected
+        if _is_plugin(row):
+            action = monitor.confirm_action
+            if action is not None and monitor.confirm_key == monitor.selected_id:
+                return (t("cli.subagents.plugin_confirm", action=action["label"], letter=action["key"]),)
+            return (_plugin_hint(row),)
         if monitor.confirm_key is not None and monitor.confirm_key == monitor.selected_id:
             noun = t("cli.subagents.noun_process" if monitor.selected_process else "cli.subagents.noun_subagent")
             return (t("cli.subagents.confirm_stop", noun=noun),)
@@ -174,9 +195,14 @@ def _process_cells(row):
             f"{detail} · {elapsed(row.get('elapsed'))}")
 
 
+def _plugin_cells(row):
+    return _TONE_STYLES.get(row.get("tone"), "class:live-dock.dim"), PLUGIN_GLYPH, row["label"], row["detail"]
+
+
 def row_fragments(row, columns, *, selected, on_click=None):
+    kind = row.get("kind")
     glyph_style, glyph, subject, activity = (
-        _process_cells(row) if row.get("kind") == "process" else _agent_cells(row))
+        _process_cells(row) if kind == "process" else _plugin_cells(row) if kind == "plugin" else _agent_cells(row))
     lead = _POINTER if selected else "  "
     right_width = min(get_cwidth(activity), max(0, columns // 3))
     right = clip(activity, right_width) if right_width >= 6 else ""
@@ -222,7 +248,7 @@ def dock_lines(monitor, *, columns, rows, selecting=False, actions=None):
     lines = []
     # The pill heads live tasks; a goal/loop/queue-only footer paints its own rows (as before)
     # and only folds into the pill when collapsed.
-    if roster or (monitor.collapsed and not selecting):
+    if roster or monitor.plugin_items or (monitor.collapsed and not selecting):
         lines.append(pill_fragments(monitor, columns, selecting=selecting, on_click=(actions or {}).get("pill"),
                                     on_badge=(actions or {}).get("badge")))
     if monitor.collapsed and not selecting:
@@ -240,7 +266,9 @@ def dock_lines(monitor, *, columns, rows, selecting=False, actions=None):
         lines.append(row_fragments(row, columns, selected=selecting and key == monitor.selected_id, on_click=click))
     hidden = [r for r in roster if r not in shown_rows]
     if hidden:
-        key = "more_processes" if all(r.get("kind") == "process" for r in hidden) else "more_subagents"
+        kinds = {r.get("kind") for r in hidden}
+        key = ("more_queued" if "plugin" in kinds else "more_processes" if kinds == {"process"}
+               else "more_subagents")
         lines.append([("class:live-dock.dim", "  " + clip(t(f"cli.subagents.{key}", count=len(hidden)), columns - 2))])
     if selecting and monitor.steer_target is not None:
         lines.append(_steer_line(monitor, columns))
@@ -309,7 +337,7 @@ def enter(cli, key=None):
         return
     monitor.footer_active = True
     monitor.notice = ""
-    monitor.confirm_key = None
+    monitor.confirm_key = monitor.confirm_action = None
     _end_steer(monitor)
     # Down always lands on the first row, so one Up always leaves again.
     monitor.selected_id = key if key is not None else monitor._key(monitor.roster[0])
@@ -319,7 +347,7 @@ def leave(cli):
     monitor = _monitor(cli)
     if monitor is not None:
         monitor.footer_active = False
-        monitor.confirm_key = None
+        monitor.confirm_key = monitor.confirm_action = None
         monitor.notice = ""
         _end_steer(monitor)
 
@@ -328,7 +356,7 @@ def move(cli, delta):
     monitor = _monitor(cli)
     roster = monitor.roster
     index = next((i for i, r in enumerate(roster) if monitor._key(r) == monitor.selected_id), 0)
-    monitor.confirm_key = None
+    monitor.confirm_key = monitor.confirm_action = None
     monitor.notice = ""
     if index + delta < 0:
         leave(cli)
@@ -395,10 +423,41 @@ def steer_send(cli):
     monitor.notice = str(result.get("error") or result.get("note") or result.get("status") or "")
 
 
+def plugin_key(cli, letter) -> bool:
+    """Whether ``letter`` runs an action of the selected plugin row (a key binding filter)."""
+    from hermes_cli.cli_plugin_footer import action_for
+    monitor = _monitor(cli)
+    row = monitor.selected if monitor is not None else None
+    return _is_plugin(row) and action_for(row, letter) is not None
+
+
+def run_plugin_action(cli, letter, key=None):
+    """Run the plugin row's action for ``letter`` (``'enter'``: its Enter action, else the first).
+    An action marked ``confirm`` asks for the same key twice, like stopping a task."""
+    from hermes_cli import cli_plugin_footer as plugin_footer
+    monitor = _monitor(cli)
+    key = key if key is not None else monitor.selected_id
+    row = next((r for r in monitor.roster if monitor._key(r) == key), None)
+    action = plugin_footer.action_for(row, letter) if _is_plugin(row) else None
+    if action is None:
+        return None
+    if action.get("confirm") and not (monitor.confirm_key == key and monitor.confirm_action == action):
+        monitor.confirm_key, monitor.confirm_action, monitor.notice = key, action, ""
+        return None
+    monitor.confirm_key = monitor.confirm_action = None
+    monitor.notice = ""
+    return plugin_footer.run_action(cli, monitor, row, action)
+
+
 def open_selected(cli, key=None):
     from hermes_cli.cli_subagent_monitor import open_monitor
     monitor = _monitor(cli)
     key = key if key is not None else monitor.selected_id
+    row = next((r for r in monitor.roster if monitor._key(r) == key), None)
+    if _is_plugin(row):
+        # The plugin's Enter action; the selection stays so its notice and other keys remain.
+        run_plugin_action(cli, "enter", key)
+        return
     leave(cli)
     if key is not None:
         open_monitor(cli, key=key)
@@ -407,6 +466,9 @@ def open_selected(cli, key=None):
 def stop_selected(cli):
     monitor = _monitor(cli)
     if monitor.selected is None:
+        return
+    if _is_plugin(monitor.selected):
+        run_plugin_action(cli, "x")
         return
     if monitor.confirm_key != monitor.selected_id:
         monitor.confirm_key = monitor.selected_id
@@ -485,9 +547,14 @@ def bind_keys(cli, kb):
     kb.add("s-tab", filter=active, eager=True)(lambda event: next_kind(cli, -1))
     kb.add("enter", filter=active, eager=True)(lambda event: open_selected(cli))
     kb.add("x", filter=active, eager=True)(lambda event: stop_selected(cli))
-    kb.add("s", filter=active, eager=True)(lambda event: start_steer(cli))
+    kb.add("s", filter=active & ~Condition(lambda: plugin_key(cli, "s")), eager=True)(
+        lambda event: start_steer(cli))  # a plugin row's own "s" action wins on its rows
     kb.add("escape", filter=active, eager=True)(lambda event: leave(cli))
     _bind_steer_keys(cli, kb, typing)
+    # Plugin rows: their own letter keys while selected (``x`` already routes through stop_selected).
+    for letter in "abcdefghijklmnopqrstuvwyz":
+        kb.add(letter, filter=active & Condition(lambda letter=letter: plugin_key(cli, letter)), eager=True)(
+            lambda event, letter=letter: run_plugin_action(cli, letter))
     # Only reached when display.cli_mouse asked the terminal for mouse reports.
     from prompt_toolkit.key_binding.bindings.mouse import load_mouse_bindings
     from prompt_toolkit.keys import Keys

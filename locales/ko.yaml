@@ -2237,6 +2237,8 @@ cli:
     select_hint_steer: "↑↓ 선택 · Enter 열기 · s 지시 · x 중지 · Esc 뒤로"
     select_hint_steer_compact: "↑↓ · Enter · s · x · Esc"
     hint_mouse: "클릭은 /mouse"
+    plugin_select_hint: "{actions} · Esc 뒤로"
+    plugin_confirm: "{action}? {letter} 한 번 더 · Esc 취소"
     confirm_stop: "이 {noun}을(를) 중지할까요? x 한 번 더 · Esc 취소"
     footer_confirm_stop: "선택한 {noun}을(를) 중지할까요? y 확인 · Esc 취소"
     footer_confirm_stop_compact: "중지할까요? y 예 · Esc 취소"

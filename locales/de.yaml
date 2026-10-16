@@ -2237,6 +2237,8 @@ cli:
     select_hint_steer: "↑↓ wählen · Enter öffnen · s steuern · x stoppen · Esc zurück"
     select_hint_steer_compact: "↑↓ · Enter · s · x · Esc"
     hint_mouse: "/mouse für Klicks"
+    plugin_select_hint: "{actions} · Esc zurück"
+    plugin_confirm: "{action}? {letter} erneut · Esc abbrechen"
     confirm_stop: "Diesen {noun} stoppen? x erneut · Esc abbrechen"
     footer_confirm_stop: "Ausgewählten {noun} stoppen? y bestätigen · Esc abbrechen"
     footer_confirm_stop_compact: "Stoppen? y ja · Esc abbrechen"

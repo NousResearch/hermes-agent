@@ -2237,6 +2237,8 @@ cli:
     select_hint_steer: "↑↓ 選択 · Enter 開く · s 指示 · x 停止 · Esc 戻る"
     select_hint_steer_compact: "↑↓ · Enter · s · x · Esc"
     hint_mouse: "/mouse でクリック"
+    plugin_select_hint: "{actions} · Esc 戻る"
+    plugin_confirm: "{action}？ もう一度 {letter} · Esc キャンセル"
     confirm_stop: "この{noun}を停止しますか？ もう一度 x · Esc キャンセル"
     footer_confirm_stop: "選択した{noun}を停止しますか？ y 確定 · Esc キャンセル"
     footer_confirm_stop_compact: "停止しますか？ y はい · Esc キャンセル"

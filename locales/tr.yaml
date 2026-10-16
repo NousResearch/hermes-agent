@@ -2237,6 +2237,8 @@ cli:
     select_hint_steer: "↑↓ seç · Enter aç · s yönlendir · x durdur · Esc geri"
     select_hint_steer_compact: "↑↓ · Enter · s · x · Esc"
     hint_mouse: "tıklama için /mouse"
+    plugin_select_hint: "{actions} · Esc geri"
+    plugin_confirm: "{action}? tekrar {letter} · Esc iptal"
     confirm_stop: "Bu {noun} durdurulsun mu? tekrar x · Esc iptal"
     footer_confirm_stop: "Seçili {noun} durdurulsun mu? y onayla · Esc iptal"
     footer_confirm_stop_compact: "Durdurulsun mu? y evet · Esc iptal"

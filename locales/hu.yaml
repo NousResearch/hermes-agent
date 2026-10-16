@@ -2254,6 +2254,8 @@ cli:
     select_hint_steer: "↑↓ kijelölés · Enter megnyitás · s irányítás · x leállítás · Esc vissza"
     select_hint_steer_compact: "↑↓ · Enter · s · x · Esc"
     hint_mouse: "/mouse a kattintáshoz"
+    plugin_select_hint: "{actions} · Esc vissza"
+    plugin_confirm: "{action}? {letter} újra · Esc mégse"
     confirm_stop: "Leállítod ezt: {noun}? x újra · Esc mégse"
     footer_confirm_stop: "Leállítod a kijelölt {noun} elemet? y megerősít · Esc mégse"
     footer_confirm_stop_compact: "Leállítás? y igen · Esc mégse"

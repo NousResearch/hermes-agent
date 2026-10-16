@@ -2237,6 +2237,8 @@ cli:
     select_hint_steer: "↑↓ выбор · Enter открыть · s направить · x стоп · Esc назад"
     select_hint_steer_compact: "↑↓ · Enter · s · x · Esc"
     hint_mouse: "/mouse для кликов"
+    plugin_select_hint: "{actions} · Esc назад"
+    plugin_confirm: "{action}? ещё раз {letter} · Esc отмена"
     confirm_stop: "Остановить {noun}? ещё раз x · Esc отмена"
     footer_confirm_stop: "Остановить выбранный {noun}? y подтвердить · Esc отмена"
     footer_confirm_stop_compact: "Остановить? y да · Esc отмена"

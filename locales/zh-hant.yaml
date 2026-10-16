@@ -2237,6 +2237,8 @@ cli:
     select_hint_steer: "↑↓ 選擇 · Enter 開啟 · s 引導 · x 停止 · Esc 返回"
     select_hint_steer_compact: "↑↓ · Enter · s · x · Esc"
     hint_mouse: "/mouse 啟用點擊"
+    plugin_select_hint: "{actions} · Esc 返回"
+    plugin_confirm: "{action}？再按 {letter} · Esc 取消"
     confirm_stop: "停止此{noun}？再按 x · Esc 取消"
     footer_confirm_stop: "停止所選{noun}？y 確認 · Esc 取消"
     footer_confirm_stop_compact: "停止？y 是 · Esc 取消"

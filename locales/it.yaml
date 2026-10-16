@@ -2237,6 +2237,8 @@ cli:
     select_hint_steer: "↑↓ scegli · Invio apri · s guida · x ferma · Esc indietro"
     select_hint_steer_compact: "↑↓ · Invio · s · x · Esc"
     hint_mouse: "/mouse per i clic"
+    plugin_select_hint: "{actions} · Esc indietro"
+    plugin_confirm: "{action}? {letter} di nuovo · Esc annulla"
     confirm_stop: "Fermare questo {noun}? x di nuovo · Esc annulla"
     footer_confirm_stop: "Interrompere il {noun} selezionato? s conferma · Esc annulla"
     footer_confirm_stop_compact: "Interrompere? s sì · Esc annulla"

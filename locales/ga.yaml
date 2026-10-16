@@ -2237,6 +2237,8 @@ cli:
     select_hint_steer: "↑↓ roghnaigh · Enter oscail · s stiúir · x stad · Esc ar ais"
     select_hint_steer_compact: "↑↓ · Enter · s · x · Esc"
     hint_mouse: "/mouse le cliceáil"
+    plugin_select_hint: "{actions} · Esc ar ais"
+    plugin_confirm: "{action}? {letter} arís · Esc cealaigh"
     confirm_stop: "Stad an {noun} seo? x arís · Esc cealaigh"
     footer_confirm_stop: "Stop {noun} roghnaithe? y dearbhaigh · Esc cealaigh"
     footer_confirm_stop_compact: "Stop? y tá · Esc cealaigh"

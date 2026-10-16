@@ -33,6 +33,7 @@ def skill_tree(tmp_path, monkeypatch):
     src = bundled / "coding" / "demo"
     _write(src, "SKILL.md", "---\nname: demo\n---\n# Demo\n")
     _write(src, "scripts/helper.py", "ANSWER = 1\n")
+    _write(src, "references/notes.md", "Shipped reference.\n")
     skills = base / "skills"
     monkeypatch.setattr(ss, "HERMES_HOME", base)
     monkeypatch.setattr(ss, "SKILLS_DIR", skills)

@@ -20,7 +20,9 @@ def _stdout_queue(proc: subprocess.Popen) -> queue.Queue[dict]:
     return out
 
 
-def _read_json_line(out: queue.Queue[dict], timeout: float = 2.0) -> dict:
+# An upper bound, not a pace: the first frame includes a cold interpreter start plus the
+# tui_gateway import, which takes well over 2s on a loaded runner.
+def _read_json_line(out: queue.Queue[dict], timeout: float = 30.0) -> dict:
     try:
         return out.get(timeout=timeout)
     except queue.Empty as exc:

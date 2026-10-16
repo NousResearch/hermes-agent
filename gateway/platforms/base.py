@@ -155,7 +155,8 @@ def _mark_notify_metadata(metadata: dict | None) -> dict:
 
 
 def _reply_anchor_for_event(event) -> str | None:
-    """Return reply_to id for platforms that need reply semantics."""
+    """Return reply_to id for platforms that need reply semantics (Telegram topics quote the
+    triggering message; topic routing still comes from ``message_thread_id`` metadata)."""
     override = getattr(event, "reply_anchor_override", None)
     if override is not None:
         return override  # the turn was redirected onto another message (#115001)
@@ -168,11 +169,9 @@ def _reply_anchor_for_event(event) -> str | None:
         # A synthetic wake's message_id is its producer identity, not a platform id (Telegram int()s
         # it; #52694). A Slack reaction handoff is a new top-level message, not a thread reply.
         return None
-    if platform == "telegram" and thread_id:
-        # Forum topics route by topic metadata (no reply); DM-topic lanes reply to the triggering
-        # message — replying to the topic seed/anchor can render outside the active lane.
-        if getattr(source, "chat_type", None) != "dm":
-            return None
+    if platform == "telegram" and thread_id and getattr(source, "chat_type", None) == "dm":
+        # Reply to the triggering user message. Replying to Telegram's earlier
+        # topic seed/anchor can render the bot response outside the active lane.
         return getattr(event, "message_id", None) or getattr(event, "reply_to_message_id", None)
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)

@@ -387,7 +387,7 @@ def _strip_mdv2(text: str) -> str:
     cleaned = re.sub(r'(?<!\w)_([^_]+)_(?!\w)', r'\1', cleaned)  # italic; word-bounded so snake_case survives
     cleaned = re.sub(r'~([^~]+)~', r'\1', cleaned)  # strikethrough
     cleaned = re.sub(r'\|\|([^|]+)\|\|', r'\1', cleaned)  # spoiler
-    return cleaned
+    return strip_markdown(cleaned)
 
 
 _CHUNK_INDICATOR_ON_FENCE_RE = re.compile(r'(?m)^``` (?P<indicator>(?:\\)?\(\d+/\d+(?:\\)?\))$')
@@ -401,6 +401,9 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
 
 # MarkdownV2 has no table syntax, so pipe tables become bullet groups via convert_table_to_bullets().
 from gateway.platforms.helpers import (
+    strip_markdown,
+    normalize_latex_math_symbols,
+    normalize_markdown_bullets,
     TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE, compile_mention_patterns, convert_table_to_bullets as _wrap_markdown_tables)
 
 # Rich-message regions whose internal newlines must stay bare (Telegram renders them natively):
@@ -3458,7 +3461,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             _TimedOut = None  # type: ignore[assignment,misc]
         return _NetErr, _BadReq, _TimedOut
 
-    async def _send_chunk_markdown_or_plain(self, chunk: str, send_kwargs: dict[str, Any]):
+    async def _send_chunk_markdown_or_plain(
+        self, chunk: str, send_kwargs: dict[str, Any], *, original_raw_chunk: Optional[str] = None
+    ):
         """MarkdownV2 first; on a parse/markdown rejection resend as stripped plain text."""
         try:
             return await _await_with_thread_deadline(
@@ -3467,8 +3472,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         except Exception as md_error:
             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
+                plain_text = strip_markdown(original_raw_chunk) if original_raw_chunk is not None else strip_markdown(chunk)
                 return await _await_with_thread_deadline(
-                    self._bot.send_message(text=_strip_mdv2(chunk), parse_mode=None, **send_kwargs),
+                    self._bot.send_message(text=plain_text, parse_mode=None, **send_kwargs),
                     timeout=_TEXT_SEND_DEADLINE, label="telegram-send", dump_on_blocked_loop=False)
             raise
 
@@ -5611,6 +5617,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         modified), markdown constructs become MarkdownV2 syntax, everything else is escaped."""
         if not content:
             return content
+
+        content = normalize_latex_math_symbols(content)
+        content = normalize_markdown_bullets(content)
         placeholders: dict = {}
         counter = [0]
 
@@ -5659,9 +5668,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         )
 
         # 2) Protect inline code (`...`)
-        #    Escape \ inside inline code per MarkdownV2 spec.
+        #    Escape \ inside inline code per MarkdownV2 spec ([^`\n]+ prevents multi-line spans).
         text = re.sub(
-            r'(`[^`]+`)',
+            r'(`[^`\n]+`)',
             lambda m: _ph(m.group(0).replace('\\', '\\\\')),
             text,
         )

@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from contextlib import contextmanager
 from contextvars import ContextVar
+
+from tools.code_execution_env import is_secret_env_name
 
 # What main's CLI read per process and the gateway otherwise reads daemon-wide.
 BEHAVIOUR_ENV = ('HERMES_EPHEMERAL_SYSTEM_PROMPT', 'HERMES_PREFILL_MESSAGES_FILE', 'HERMES_INFERENCE_PROVIDER',
@@ -23,9 +24,6 @@ TOOL_ENV = ('PATH', 'VIRTUAL_ENV', 'GOPATH', 'GOROOT', 'CARGO_HOME', 'RUSTUP_HOM
 TOOL_ENV_PREFIXES = ('CONDA_', 'NODE_', 'NVM_', 'PYENV_')
 # ``terminal.client_env_passthrough`` names more non-secret toolchain variables for a profile.
 CONFIG_KEY = 'client_env_passthrough'
-# A name that looks like a credential never travels or lands in the session's stored policy, even when
-# listed (``NODE_AUTH_TOKEN`` matches ``NODE_``); secrets reach tools through ``terminal.env_passthrough``.
-_SECRETISH = re.compile(r'TOKEN|SECRET|PASS|KEY|AUTH|CREDENTIAL|COOKIE', re.IGNORECASE)
 _MAX_NAMES = 256
 _MAX_BYTES = 256 * 1024
 
@@ -39,12 +37,17 @@ def configured_names(config) -> frozenset:
     return frozenset(name.strip() for name in raw if isinstance(name, str) and name.strip()) if isinstance(raw, list) else frozenset()
 
 
+def _travels(name: str) -> bool:
+    """A toolchain name may travel unless it is a credential by execute_code's secret policy (even when
+    listed: ``NODE_AUTH_TOKEN`` matches ``NODE_``; secrets reach tools through ``terminal.env_passthrough``)
+    or a Hermes control name (a delegated child's markers, Kanban pins)."""
+    return not is_secret_env_name(name) and not name.startswith('HERMES_')
+
+
 def allowed(name: str, extra: frozenset = frozenset()) -> bool:
     if name in BEHAVIOUR_ENV:
         return True
-    if _SECRETISH.search(name):
-        return False
-    return name in TOOL_ENV or name.startswith(TOOL_ENV_PREFIXES) or name in extra
+    return _travels(name) and (name in TOOL_ENV or name.startswith(TOOL_ENV_PREFIXES) or name in extra)
 
 
 def collect_client_env(environ=None, config=None) -> dict[str, str]:
@@ -101,4 +104,16 @@ def session_env(name: str, default: str = '') -> str:
 def tool_env() -> dict[str, str]:
     """The toolchain values this session's tool subprocesses start with (empty when unbound)."""
     env = _BOUND.get() or {}
-    return {name: value for name, value in env.items() if name not in BEHAVIOUR_ENV}
+    return {name: value for name, value in env.items() if name not in BEHAVIOUR_ENV and _travels(name)}
+
+
+def toolchain_environ(base=None) -> dict[str, str]:
+    """The environment this session's tool subprocesses start from (``base``: the gateway's). Unbound
+    (messaging, cron, Desktop): unchanged. A shell client's session: its toolchain replaces the gateway's,
+    and a built-in toolchain name it did not export is unset, as in main's process: one client's venv
+    never reaches another's session through the daemon it started."""
+    env = dict(os.environ if base is None else base)
+    if _BOUND.get() is None:
+        return env
+    kept = {k: v for k, v in env.items() if k == 'PATH' or not (k in TOOL_ENV or k.startswith(TOOL_ENV_PREFIXES))}
+    return kept | tool_env()

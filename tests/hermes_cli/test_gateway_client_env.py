@@ -127,6 +127,25 @@ def test_tui_launcher_hands_the_shell_env_to_ink(monkeypatch):
     _expected(json.loads(captured['HERMES_TUI_CLIENT_ENV']))
 
 
-def test_tui_bootstrap_keeps_the_client_env_out_of_a_daemon_it_starts():
-    text = (Path(__file__).resolve().parents[2] / 'ui-tui' / 'scripts' / 'gateway_bootstrap.py').read_text()
-    assert 'HERMES_TUI_CLIENT_ENV' in text
+def test_tui_bootstrap_keeps_the_client_env_out_of_a_daemon_it_starts(monkeypatch):
+    """The daemon Ink's bootstrap starts inherits the bootstrap's environment: the shell's client_env
+    (and its behaviour values) are gone from it by the time the gateway is ensured."""
+    import importlib.util
+    import os
+    from hermes_cli import gateway_runtime
+    path = Path(__file__).resolve().parents[2] / 'ui-tui' / 'scripts' / 'gateway_bootstrap.py'
+    spec = importlib.util.spec_from_file_location('tui_gateway_bootstrap_probe', path)
+    bootstrap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bootstrap)
+    monkeypatch.setenv('HERMES_TUI_CLIENT_ENV', json.dumps({'PATH': '/client/bin', 'HERMES_INFERENCE_PROVIDER': 'x'}))
+    monkeypatch.setenv('HERMES_INFERENCE_PROVIDER', 'x')
+    started = []
+
+    def ensure(home, **kwargs):
+        started.append(dict(os.environ))
+        return SimpleNamespace(state='failed', reason_code='probe', endpoint=None, detail=None)
+    monkeypatch.setattr(gateway_runtime, 'ensure_gateway_runtime', ensure)
+    with pytest.raises(RuntimeError, match='probe'):
+        bootstrap.bootstrap(True)
+    assert len(started) == 1
+    assert 'HERMES_TUI_CLIENT_ENV' not in started[0] and 'HERMES_INFERENCE_PROVIDER' not in started[0]

@@ -127,8 +127,9 @@ async def test_client_env_is_filtered_validated_and_never_echoed(tmp_path, monke
     owner, connection = await _owner(home, monkeypatch)
     try:
         _, policy = _create(owner, connection.actor, home, 'f1', client_env={
-            'HERMES_EPHEMERAL_SYSTEM_PROMPT': 'P', 'OPENAI_API_KEY': 'sk-leak', 'HERMES_YOLO_MODE': '1'})
-        assert policy.client_env() == {'HERMES_EPHEMERAL_SYSTEM_PROMPT': 'P'}
+            'HERMES_EPHEMERAL_SYSTEM_PROMPT': 'P', 'OPENAI_API_KEY': 'sk-leak', 'HERMES_YOLO_MODE': '1',
+            'NODE_CREDS': 'c', 'CONDA_DSN': 'postgres://u:p@h/db', 'NVM_DIR': '/client/.nvm'})
+        assert policy.client_env() == {'HERMES_EPHEMERAL_SYSTEM_PROMPT': 'P', 'NVM_DIR': '/client/.nvm'}
         assert 'client_env' not in json.loads(policy.request_json)  # launch_request stays value-free
         for bad in ('PATH=/x', {'PATH': 1}, {1: 'x'}):
             with pytest.raises(RuntimeStoreError) as exc:

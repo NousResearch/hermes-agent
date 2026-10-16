@@ -431,6 +431,12 @@ terminal:
   home_mode: "auto"
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300
+  # A `hermes` / `hermes --tui` session's local tools (terminal, background processes, execute_code)
+  # start with the launching shell's toolchain: PATH, VIRTUAL_ENV and CONDA_* / NODE_* / NVM_* /
+  # PYENV_* (plus GOPATH, GOROOT, CARGO_HOME, RUSTUP_HOME, JAVA_HOME), for that session only.
+  # List more non-secret names here; names that look like credentials (…TOKEN, …KEY, …SECRET,
+  # …PASSWORD, …AUTH) are never sent: pass secrets with `env_passthrough` instead.
+  # client_env_passthrough: ["GEM_HOME", "POETRY_HOME"]
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
   # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
 

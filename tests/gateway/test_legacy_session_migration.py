@@ -180,7 +180,8 @@ async def test_upgraded_oneshot_and_tool_history_resumes_by_id_and_title_but_sta
 async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
     """main's Desktop stored its chats with ``source='desktop'``. After the upgrade the native owner
     adopts them by id like ``gui`` history, including the ones stamped with the signed-in Nous
-    account. Any other identity still needs its own authority."""
+    account or with a served remote backend's login label (``hermes serve`` basic auth). Any other
+    identity still needs its own authority."""
     from gateway import run
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
@@ -191,7 +192,8 @@ async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'gui': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     db = store._db
-    for sid, user_id in (('old-desktop', None), ('old-desktop-account', 'nous:account')):
+    for sid, user_id in (('old-desktop', None), ('old-desktop-account', 'nous:account'),
+                         ('old-desktop-remote', 'basic:hermes')):
         db.create_session(sid, source='desktop', model='old-model', cwd=str(tmp_path), user_id=user_id)
         db.append_message(sid, role='user', content=sid.upper())
         db.end_session(sid, 'session_switch')
@@ -209,6 +211,11 @@ async def test_upgraded_desktop_history_resumes_by_id(tmp_path, monkeypatch):
     stamped = await native.dispatch({'id': 2, 'method': 'session.resume', 'params': {'session_id': 'old-desktop-account'}})
     assert stamped.get('result', {}).get('session_id') == 'old-desktop-account', stamped
     assert [m['content'] for m in stamped['result']['messages']] == ['OLD-DESKTOP-ACCOUNT']
+    # A served remote backend stamped its basic-auth principal on the row at creation; that login
+    # is a label, so the local native owner adopts the row once its hosting serve is gone (#139818).
+    remote = await native.dispatch({'id': 4, 'method': 'session.resume', 'params': {'session_id': 'old-desktop-remote'}})
+    assert remote.get('result', {}).get('session_id') == 'old-desktop-remote', remote
+    assert [m['content'] for m in remote['result']['messages']] == ['OLD-DESKTOP-REMOTE']
     # Any other identity, or a Nous stamp on a non-Desktop row, still needs its own authority.
     for sid, source, user_id in (('old-desktop-foreign', 'desktop', 'telegram:42'),
                                  ('old-cli-account', 'cli', 'nous:account')):

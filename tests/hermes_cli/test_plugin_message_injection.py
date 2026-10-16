@@ -162,6 +162,7 @@ def test_gateway_injection_passes_host_owned_plugin_identity(tmp_path, monkeypat
     assert result is True
     injector.assert_called_once_with(
         session_key="agent:main:telegram:dm:42",
+        plugin_home=manager.home_path,
         content="[system] wake up",
         plugin_id="notify-plugin",
     )
@@ -238,8 +239,10 @@ def test_published_gateway_host_reaches_existing_and_future_profile_managers(tmp
         finally:
             reset_hermes_home_override(token)
 
+        # The calling manager's immutable home, not the launch home, rides with the key.
         injector.assert_called_once_with(
             session_key="agent:secondary:telegram:dm:42",
+            plugin_home=secondary_manager.home_path,
             content="continue",
             plugin_id="notify-plugin",
         )

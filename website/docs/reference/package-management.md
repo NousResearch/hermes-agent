@@ -132,6 +132,22 @@ hash, an interrupted transfer restarts instead of mixing different versions.
 The small `.locks/` files remain after completion so waiting processes use
 the same lock.
 
+Ranged transfers checkpoint flushed data during a long request, syncing the
+partial before atomically saving its coverage. Successful durable progress
+renews the transfer's retry budget; four attempts without further progress
+still stop a sustained outage. Metadata requests retain their existing retry
+limit. Retry backoff remains interruptible by Pause.
+Resumable transfers honor `Retry-After` waits up to five minutes; a longer
+server-requested wait stops automatic recovery and leaves the job resumable.
+
+An interrupted local-model job keeps its Resume action. Its saved download
+plan can also be rediscovered after restarting the backend, including split
+weights and companion assets. Resume checks the remote identity again and
+reuses completed files and valid coverage, never the preallocated file length.
+Partial-cache garbage collection gives inactive downloads seven days to resume.
+ETags remain representation validators, not expected SHA-256 hashes; the model
+catalog's existing optional-hash policy is unchanged.
+
 ## Optional Python dependencies and plugins
 
 A built-in feature requests a project extra through `pm.ensure_import`.

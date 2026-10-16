@@ -109,7 +109,15 @@ export function downloadStatusText(job: LocalRuntimeJob, copy: DownloadStatusCop
     return job.detail
   }
 
-  const parts: string[] = [job.status === 'paused' ? copy.downloadPausedLabel : copy.downloadStatusRunning]
+  const recovering: boolean = ['retrying', 'waiting', 'verifying', 'interrupted'].includes(job.phase)
+
+  const parts: string[] = [
+    recovering && job.detail
+      ? job.detail
+      : job.status === 'paused'
+        ? copy.downloadPausedLabel
+        : copy.downloadStatusRunning
+  ]
 
   const size = job.total_bytes
     ? copy.downloadProgress(gbLabel(job.done_bytes), gbLabel(job.total_bytes))
@@ -123,7 +131,7 @@ export function downloadStatusText(job: LocalRuntimeJob, copy: DownloadStatusCop
 
   // Speed and ETA only while bytes move: a parked transfer keeps its frozen
   // counter but has no live rate, so the backend sends none and we render none.
-  if (job.status === 'running') {
+  if (job.status === 'running' && !recovering) {
     const speed = formatSpeed(job.bytes_per_sec)
 
     if (speed) {
@@ -149,7 +157,11 @@ const QUICKSTART_DOWNLOAD_PHASES = new Set([
   'downloading',
   'downloading-runtime',
   'unpacking-runtime',
-  'verifying-runtime'
+  'verifying-runtime',
+  'retrying',
+  'waiting',
+  'verifying',
+  'interrupted'
 ])
 
 export function isDownloadPhase(job: LocalRuntimeJob): boolean {

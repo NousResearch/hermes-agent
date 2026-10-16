@@ -93,6 +93,43 @@ def test_retry_after_is_bounded_and_interruptible(monkeypatch, retry_after, mini
     assert minimum <= waits[0] <= network._MAX_DELAY
 
 
+@pytest.mark.parametrize("retry_after,expected", [("7", 7), ("60", 60), ("600", None)])
+def test_resumable_transfer_honors_retry_after_or_parks(retry_after, expected):
+    attempts = []
+    waits = []
+
+    def request():
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise _http_error(503, retry_after)
+        return "complete"
+
+    if expected is None:
+        with pytest.raises(urllib.error.HTTPError):
+            network.retry_network(request, wait=waits.append, progress=lambda: 0)
+        assert len(attempts) == 1 and not waits
+    else:
+        assert network.retry_network(request, wait=waits.append, progress=lambda: 0) == "complete"
+        assert waits == [expected]
+
+
+def test_progress_renews_only_the_consecutive_failure_budget():
+    attempts = []
+    waits = []
+    durable = [0]
+
+    def request():
+        attempts.append(None)
+        if len(attempts) == 1:
+            durable[0] += 1
+        raise ConnectionResetError("disconnected")
+
+    with pytest.raises(ConnectionResetError):
+        network.retry_network(request, wait=waits.append, progress=lambda: durable[0])
+    assert len(attempts) == 1 + network._ATTEMPTS
+    assert waits == [1, 1, 2, 4]
+
+
 @pytest.mark.parametrize("status,headers,cdn", [
     pytest.param(403, {"Server": "Vercel", "x-vercel-mitigated": "deny"}, "Vercel", id="vercel-deny"),
     pytest.param(429, {"Server": "Vercel", "x-vercel-mitigated": "challenge"}, "Vercel", id="vercel-challenge-429"),

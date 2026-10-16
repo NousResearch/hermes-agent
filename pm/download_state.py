@@ -10,7 +10,7 @@ from pm.filesystem import lock_fd
 
 
 @contextmanager
-def partial_lock(root: Path, key: str, *, cancelled=None, wait: bool = True):
+def partial_lock(root: Path, key: str, *, cancelled=None, wait: bool = True, on_wait=None):
     # Lock inodes must survive release: removing one lets a new owner lock a
     # different inode while an older waiter still holds the original handle.
     locks = root / ".locks"
@@ -24,13 +24,17 @@ def partial_lock(root: Path, key: str, *, cancelled=None, wait: bool = True):
             if cancelled is not None and cancelled():
                 yield False
                 return
+            if on_wait is not None:
+                on_wait()
+                on_wait = None
             time.sleep(0.05)
         yield True
     finally:
         os.close(fd)
 
 
-GC_GRACE_SECONDS = 6 * 60 * 60
+# A large model can run for hours and be resumed after an overnight outage.
+GC_GRACE_SECONDS = 7 * 24 * 60 * 60
 
 
 def collect_partials(root: Path, *, grace_seconds: float = GC_GRACE_SECONDS) -> None:

@@ -66,6 +66,14 @@ afterEach(() => {
 })
 
 describe('LocalModelDownloadActions', () => {
+  it('keeps Resume usable after a recoverable interruption', async () => {
+    renderActions(job({ status: 'paused', phase: 'interrupted', can_resume: true }))
+    fireEvent.click(screen.getByRole('button', { name: /resume/i }))
+    await waitFor(() => {
+      expect(resumeLocalDownload).toHaveBeenCalledWith('j1', undefined)
+    })
+  })
+
   it('running download without explicit can_pause shows NO control (no guessing about old backends)', () => {
     renderActions(job({}))
 
@@ -174,6 +182,26 @@ const statusCopy = {
 }
 
 describe('downloadStatusText', () => {
+  it.each(['retrying', 'waiting', 'verifying', 'interrupted'])(
+    'shows the %s recovery detail and retained progress without a stale speed',
+    phase => {
+      const text = downloadStatusText(
+        job({
+          phase,
+          detail: 'Saved progress is retained',
+          done_bytes: 1 << 30,
+          total_bytes: 4 * (1 << 30),
+          bytes_per_sec: 24 * (1 << 20),
+          eta_seconds: 120
+        }),
+        statusCopy
+      )
+
+      expect(text).toBe('Saved progress is retained · 1.0 GB of 4.0 GB')
+      expect(isDownloadPhase(job({ kind: 'quickstart', phase }))).toBe(true)
+    }
+  )
+
   it('composes state, bytes, speed and ETA while bytes move', () => {
     const text = downloadStatusText(
       job({ bytes_per_sec: 24 * (1 << 20), done_bytes: 1 << 30, eta_seconds: 120, total_bytes: 4 * (1 << 30) }),

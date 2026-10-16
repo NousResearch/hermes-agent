@@ -402,6 +402,46 @@ class TestPrompt:
         assert captured.get("child") == resp.session_id
 
     @pytest.mark.asyncio
+    async def test_prompt_surfaces_failed_turn_in_meta(self, agent, mock_manager):
+        """A failed turn is distinguishable from a real answer: ``failed``/``error`` from the
+        conversation loop reach the client in ``_meta.hermes``, stop_reason stays ``end_turn``."""
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        summary = 'HTTP 400: {"error":{"message":"model not found"}}'
+        state.agent.run_conversation = MagicMock(return_value={
+            "final_response": summary, "messages": [], "completed": False, "failed": True, "error": summary,
+        })
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        out = await agent.prompt(prompt=[TextContentBlock(type="text", text="hi")], session_id=resp.session_id)
+
+        meta = (out.field_meta or {}).get("hermes") or {}
+        assert meta.get("failed") is True
+        assert "model not found" in meta.get("error", "")
+        assert out.stop_reason == "end_turn"
+
+    @pytest.mark.asyncio
+    async def test_prompt_leaves_meta_unset_on_success(self, agent, mock_manager):
+        """A normal turn does not grow the failure marker."""
+        resp = await agent.new_session(cwd=".")
+        state = mock_manager.get_session(resp.session_id)
+        state.agent.run_conversation = MagicMock(return_value={"final_response": "ok", "messages": []})
+        state.agent.model = "test-model"
+        state.agent.provider = "openrouter"
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        out = await agent.prompt(prompt=[TextContentBlock(type="text", text="hi")], session_id=resp.session_id)
+
+        assert out.field_meta is None
+        assert out.stop_reason == "end_turn"
+
+    @pytest.mark.asyncio
     async def test_empty_messages_list_replaces_stale_history(self, agent, mock_manager):
         """``run_conversation`` returning ``messages=[]`` clears the ACP transcript instead of
         leaving the previous turn's history in place (#10844)."""

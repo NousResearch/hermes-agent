@@ -118,3 +118,38 @@ async def test_restart_wait_serves_only_the_reads_that_open_the_parked_session()
     del runner.session_runtime_descriptor['drain_reason']  # stop() began: nothing is served anymore
     assert await status('GET', '/api/profiles/sessions/sidebar') == 503
     assert reached == [('GET', path) for path in reads]
+
+
+@pytest.mark.asyncio
+async def test_restart_wait_ws_serves_the_parked_turn_and_refuses_every_other_verb(tmp_path):
+    """The interactive socket a restart's after-turn wait admits may resume, read and answer the
+    parked prompt; a write verb (config.set, session.save, process.kill, reload.*, ...) is refused
+    with runtime_draining before its handler runs on the shutting-down owner."""
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_controls import AuthorityConnection
+
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("s", source="test")
+    runner = SimpleNamespace(_draining=True, _running=True,
+                             session_runtime_descriptor={"state": "draining", "drain_reason": "restart_wait"})
+    authority = SessionAuthority(runner, profile_id="p", instance_id="owner", db=db,
+                                 epoch=begin_runtime_epoch(db, instance_id="owner"))
+    authority.sessions["s"] = LiveSession(None, "route")
+    viewer = AuthorityConnection(authority, object(), {"user_id": "human"}, operator=True)
+
+    async def call(method, **params):
+        return await viewer.dispatch({"id": 1, "method": method, "params": {"session_id": "s", **params}})
+
+    try:
+        assert "result" in await call("session.resume")
+        answered = await call("approval.respond", execution_generation=1, prompt_id="gone", choice="once")
+        # Reached the authority: a stale prompt is its own verdict, never the drain's refusal.
+        assert answered.get("error", {}).get("message") != "runtime_draining"
+        for method, params in [("config.set", {"key": "model", "value": "x"}), ("session.save", {}),
+                               ("process.kill", {"pid": 1}), ("reload.mcp", {}), ("rollback.restore", {})]:
+            refused = await call(method, **params)
+            assert refused["error"]["message"] == "runtime_draining", method
+    finally:
+        await viewer.close()
+        db.close()
+

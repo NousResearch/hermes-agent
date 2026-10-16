@@ -61,6 +61,22 @@ def restart_wait_read(runner, method, path) -> bool:
     return (method == "GET" and bool(_RESTART_WAIT_READS.fullmatch(path or ""))
             and restart_wait_open(runner))
 
+# The WebSocket verbs an interactive client may still call during that wait: attach to and read the
+# parked session, answer its prompt (or interrupt the turn so the restart can finish) and commit
+# queued input for the next owner. Every other verb (config.set, session.save, rollback.restore,
+# process.kill, reload.*, ...) would run on an owner that is shutting down, so it is refused with
+# ``runtime_draining`` exactly like the REST writes above.
+RESTART_WAIT_WS_METHODS = frozenset({
+    "ping", "runtime.describe", "session.resume", "session.detach", "session.events.since",
+    "session.info", "session.list", "prompt.submit", "prompt.receipt", "session.interrupt",
+    "approval.pending", "approval.received", "approval.respond", "clarify.respond",
+})
+
+
+def ws_method_refused_while_draining(runner, method) -> bool:
+    """True when an interactive WebSocket verb must be refused because *runner* is draining."""
+    return bool(getattr(runner, "_draining", False)) and method not in RESTART_WAIT_WS_METHODS
+
 _DRAIN_REQUEST_FILENAME = ".drain_request.json"
 # Drain-gated lifecycle actions complete in minutes; an hour bounds the wedge a leaked
 # marker can cause. Long drains refresh the marker instead of raising this.

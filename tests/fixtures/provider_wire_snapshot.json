@@ -11316,7 +11316,7 @@
      "role": "user"
     }
    ],
-   "model": "solar-pro3",
+   "model": "solar-pro4",
    "reasoning_effort": "high",
    "timeout": 1800.0,
    "tools": [
@@ -11340,7 +11340,7 @@
     }
    ]
   },
-  "model": "solar-pro3",
+  "model": "solar-pro4",
   "off": {
    "messages": [
     {
@@ -11375,7 +11375,7 @@
      "role": "user"
     }
    ],
-   "model": "solar-pro3",
+   "model": "solar-pro4",
    "timeout": 1800.0,
    "tools": [
     {
@@ -11432,7 +11432,7 @@
      "role": "user"
     }
    ],
-   "model": "solar-pro3",
+   "model": "solar-pro4",
    "reasoning_effort": "medium",
    "timeout": 1800.0,
    "tools": [

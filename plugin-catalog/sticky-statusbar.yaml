@@ -1,8 +1,8 @@
 name: sticky-statusbar
 repo: https://github.com/kyssta-exe/hermes-sticky-statusbar
-sha: 5e3e7705de505c031595bc4d03e96d9187417f40
+sha: 827ff54cfa124d263598b49a2866a8d67eb6d3d1
 subdir: sticky-statusbar
-version: "1.0.0"
+version: "1.0.1"
 requires_hermes: ">=0.22.0"
 description: >-
   A self-updating status message that lives in your chat: the tool running right
@@ -25,7 +25,7 @@ description: >-
 maintainer: kyssta-exe
 tier: community
 category: platform
-docs_url: https://github.com/kyssta-exe/hermes-sticky-statusbar/blob/5e3e7705de505c031595bc4d03e96d9187417f40/README.md
+docs_url: https://github.com/kyssta-exe/hermes-sticky-statusbar/blob/827ff54cfa124d263598b49a2866a8d67eb6d3d1/README.md
 readme: true
 platforms: []
 capabilities:

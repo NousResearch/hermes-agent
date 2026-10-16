@@ -1786,7 +1786,11 @@ def route_classified_error(
     is_rate_limited = False
     _wrapped_output_cap_budget = None
     _is_zai_coding_overload = False
+    # Prefer a status the classifier recovered from message text (in-stream
+    # errors have no status attribute) over None.
     status_code = getattr(api_error, "status_code", None)
+    if status_code is None:
+        status_code = classified.status_code
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> ClassifiedErrorVerdict:
         return ClassifiedErrorVerdict(

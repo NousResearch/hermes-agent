@@ -121,6 +121,11 @@ def handle_api_error(
         classified.retryable, classified.should_compress,
         classified.should_rotate_credential, classified.should_fallback,
     )
+    # In-stream errors carry no status attribute; the classifier may have
+    # recovered one from message text. Backfill so the error hook and the
+    # recovery steps below report the real status instead of "HTTP None".
+    if status_code is None:
+        status_code = classified.status_code
     agent._invoke_api_request_error_hook(
         task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
         api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,

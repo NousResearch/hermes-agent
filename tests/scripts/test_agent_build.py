@@ -178,6 +178,31 @@ def test_fixed_root_keeps_privilege_shim_and_resolves_venv_command_symlink(tmp_p
 
 
 @pytest.mark.platforms("posix")
+def test_fixed_layout_manifest_makes_the_tree_a_resolvable_payload(tmp_path):
+    """Regression for #138990: the image's ``repo: "."`` assembly must resolve like a payload.
+
+    The Dockerfile assembles /opt/hermes in place, so the manifest lands on the tree
+    itself. A store-Python child boots through committed_venv(), which resolves the
+    sealed venv from that manifest; without it every runtime_command child died with
+    "no dependency environment is committed for this install".
+    """
+    out, data = inputs_fixture(tmp_path)
+    shutil.copytree(data["code"], out, dirs_exist_ok=True)
+    data.update(placement="fixed", repo=".", code=str(out), project=str(out / "pyproject.toml"), bin_dir="libexec", python=sys.executable)
+    assert build_cli(data, out, tmp_path).returncode == 0
+    from pm.environments import committed_venv, payload_venv, store_root
+
+    assert payload_venv(out) == out / "venv"
+    assert committed_venv(out) == out / "venv"
+    assert store_root(out, honor_runtime_override=False) == out / "tools"
+    # A manifest naming another tree never claims this one.
+    manifest = json.loads((out / "manifest.json").read_text())
+    manifest["repo"] = "elsewhere"
+    (out / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    assert payload_venv(out) is None
+
+
+@pytest.mark.platforms("posix")
 def test_source_metadata_keeps_declared_requirements_extras_and_entrypoints(tmp_path):
     from importlib.metadata import distributions
     from packaging.requirements import Requirement

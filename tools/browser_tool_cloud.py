@@ -10,8 +10,6 @@ from typing import Callable, Optional
 from agent.browser_provider import BrowserProvider as CloudBrowserProvider
 from agent.browser_registry import get_provider as _registry_get_browser_provider
 from hermes_constants import get_hermes_home_override, hermes_home_key
-from plugins.browser.browser_use.provider import BrowserUseBrowserProvider
-from plugins.browser.browserbase.provider import BrowserbaseBrowserProvider
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
 from utils import is_truthy_value
 from tools.browser_tool_origin import origin_module as _origin
@@ -103,6 +101,10 @@ def _autodetect_cloud_provider() -> Optional[CloudBrowserProvider]:
     Third-party plugins are only reachable via explicit ``browser.cloud_provider: <name>``.
     """
     _bt = _origin()
+    # Late import: this module is on run_agent's import path, and a core tool must not
+    # execute bundled plugin code before a browser session is actually being resolved.
+    from plugins.browser.browser_use.provider import BrowserUseBrowserProvider
+    from plugins.browser.browserbase.provider import BrowserbaseBrowserProvider
     try:
         for cls in (BrowserUseBrowserProvider, BrowserbaseBrowserProvider):
             fallback_provider = cls()
@@ -181,6 +183,20 @@ def _is_local_backend() -> bool:
     # treat as non-local. See #68559.
     from tools.terminal_scope import terminal_env
     return terminal_env("TERMINAL_ENV", "local").strip().lower() in ("local", "")
+
+
+def browser_backend_name() -> str:
+    """Shared-metrics label for the backend legacy browser calls use in the active profile, in session-creation
+    precedence (CDP override > Camofox > cloud provider > local engine). Config reads only, no network I/O."""
+    _bt = _origin()
+    if _cdp._get_cdp_override_raw():
+        return "cdp"
+    if _bt._is_camofox_mode():
+        return "camofox"
+    provider = _get_cloud_provider()
+    if provider is not None:
+        return str(getattr(provider, "name", "") or "other")
+    return "lightpanda" if _get_browser_engine() == "lightpanda" else "local"
 
 
 def _get_browser_engine() -> str:

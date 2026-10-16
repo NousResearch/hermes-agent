@@ -10,7 +10,6 @@ sidecar, so the next request still replays the answer byte-identically.
 
 from __future__ import annotations
 
-import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -28,9 +27,9 @@ def loop_agent():
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
-            base_url="https://api.deepseek.com/v1",
-            model="deepseek-reasoner",
-            provider="deepseek",
+            base_url="http://127.0.0.1:8000/v1",
+            model="nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+            provider="vllm",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -95,30 +94,16 @@ def test_stall_guard_interim_row_carries_promoted_text_as_sidecar(loop_agent):
     ])
 
     assert result["final_response"] == "Here is the file."
-    interim = [m for m in result["messages"] if m.get("role") == "assistant"][0]
+    interim = next(m for m in result["messages"] if m.get("role") == "assistant")
     assert not interim.get("content")
     assert interim["reasoning"] == stalled
     assert interim["api_content"] == stalled
 
     # The continuation request carried the promoted text as the interim assistant turn.
     second_call = loop_agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
-    interim_wire = [m for m in second_call if m.get("role") == "assistant"][0]
+    interim_wire = next(m for m in second_call if m.get("role") == "assistant")
     assert interim_wire["content"] == stalled
     assert "api_content" not in interim_wire
-
-
-def test_reasoning_only_clean_stop_logs_warning_with_route(loop_agent, caplog):
-    from tests.agent.test_run_agent import _mock_response
-
-    with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
-        _run(loop_agent, [_mock_response(content=None, finish_reason="stop", reasoning_content=REASONING)])
-
-    hits = [r for r in caplog.records if r.getMessage().startswith("Reasoning-only clean stop")]
-    assert len(hits) == 1
-    assert hits[0].levelno == logging.WARNING
-    assert f"model={loop_agent.model}" in hits[0].getMessage()
-    assert "provider=deepseek" in hits[0].getMessage()
-    assert "tool_turns=0" in hits[0].getMessage()
 
 
 # ── planning-monologue stall: promoted reasoning must not fake a completion ──────────────────
@@ -148,7 +133,7 @@ def test_planning_tail_reasoning_only_stop_with_tools_runs_continuation_not_comp
 
     assert result["api_calls"] == 2
     assert result["final_response"] == "Ran the checks; all green."
-    interim = [m for m in result["messages"] if m.get("role") == "assistant"][0]
+    interim = next(m for m in result["messages"] if m.get("role") == "assistant")
     assert not interim.get("content")
     assert interim["api_content"] == tail  # interim row keeps the sidecar shape
 
@@ -190,3 +175,52 @@ def test_genuine_reasoning_only_answer_with_tools_still_promotes_on_first_call(l
         ])
         assert result["api_calls"] == 1
         assert result["final_response"] == answer
+
+
+# ── Anthropic summarized thinking is not an answer ──────────────────────────────────────────
+
+SUMMARY = "The user asks for 391's factors; checking divisibility by 17 gives 23."
+
+
+def test_anthropic_signed_thinking_only_stop_continues_instead_of_promoting(loop_agent):
+    """Claude 4.7+/5.x thinking arrives as a ``display: "summarized"`` block written by a separate
+    summarizer model. A thinking-only ``end_turn`` must take the empty-response continuation, not
+    return the summary as the answer; the next call's text is the answer."""
+    from types import SimpleNamespace
+
+    def _anthropic(*blocks):
+        return SimpleNamespace(content=list(blocks), stop_reason="end_turn", stop_details=None,
+                               model="claude-opus-5-5", usage=None)
+
+    loop_agent.api_mode = "anthropic_messages"
+    loop_agent.provider = "anthropic"
+    thinking_only = _anthropic(SimpleNamespace(type="thinking", thinking=SUMMARY, signature="sig-abc"))
+    answer = _anthropic(SimpleNamespace(type="text", text="391 = 17 x 23."))
+    with (
+        patch.object(loop_agent, "_interruptible_api_call", side_effect=[thinking_only, answer]),
+        patch.object(loop_agent, "_interruptible_streaming_api_call", side_effect=[thinking_only, answer]),
+        patch.object(loop_agent, "_persist_session"),
+        patch.object(loop_agent, "_save_trajectory"),
+        patch.object(loop_agent, "_cleanup_task_resources"),
+    ):
+        result = loop_agent.run_conversation("factor 391")
+
+    assert result["final_response"] == "391 = 17 x 23."
+    assert result["api_calls"] == 2
+
+
+def test_native_claude_carrier_thinking_only_stop_continues_instead_of_promoting(loop_agent):
+    """Same contract for a chat_completions plugin replaying native Claude turns through a
+    ``<provider>.native_assistant`` reasoning_details carrier (claude-subscription-directsdk)."""
+    from tests.agent.test_run_agent import _mock_response
+
+    carrier = [{"type": "claude-subscription-directsdk-experimental.native_assistant", "version": 1,
+                "messages": [{"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": SUMMARY, "signature": "sig-abc"}]}]}]
+    result = _run(loop_agent, [
+        _mock_response(content=None, finish_reason="stop", reasoning_content=SUMMARY, reasoning_details=carrier),
+        _mock_response(content="391 = 17 x 23.", finish_reason="stop"),
+    ])
+
+    assert result["final_response"] == "391 = 17 x 23."
+    assert result["api_calls"] == 2

@@ -32,7 +32,7 @@ Prices are FAL's pricing at time of writing; check [fal.ai](https://fal.ai/) for
 :::tip Nous Subscribers
 If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, you can use image generation through the **[Tool Gateway](tool-gateway.md)** without a FAL API key. Your model selection persists across both paths. New installs can run `hermes setup --portal` to log in and turn on every gateway tool at once; existing installs can pick **Nous Subscription** as the image-gen backend via `hermes tools`.
 
-The **Nous Subscription** row is the only managed row. Its model picker spans every gateway the subscription runs — the FAL catalog above, native **Krea 2** (`krea-2-medium`, `krea-2-large`, `krea-2-medium-turbo`) and any Nous Portal image models — each model listed once, and the model you pick decides which gateway serves the request. Free tool-pool accounts see the FAL models only; Krea and Portal models are paid-subscription.
+The **Nous Subscription** row is the only managed row. Its model picker spans every gateway the subscription runs — the FAL catalog above, native **Krea 2** (`krea-2-medium`, `krea-2-large`, `krea-2-medium-turbo`) and any Nous Portal image models — each model listed once, and the model you pick decides which gateway serves the request. Free tool-pool accounts see the FAL models only; Krea and Portal models are paid-subscription. With a Krea 2 model selected, `image_generate` also offers Krea's `creativity` setting and its `intensity`, `complexity` and `movement` sliders (-100 to 100).
 
 If the managed gateway returns `HTTP 4xx` for a specific model, that model isn't yet proxied on the portal side — the agent will tell you so, with remediation steps (switch to FAL.ai in `hermes tools` with your own `FAL_KEY` for direct access, or pick a different model).
 :::
@@ -189,6 +189,64 @@ accepts any `model` value (including nonexistent ids) and generates with its
 own server-managed engine, so a "selected" Flare or Sunburst tier would be a
 label with no effect. Pick the direct OpenAI API provider or FAL for 2.5.
 
+### Custom OpenAI-compatible image endpoint
+
+The **OpenAI** provider can point at any OpenAI-compatible `/v1/images/generations`
+endpoint (a local gateway, a task-scoped proxy, a third-party API gateway),
+independently of the chat provider, and take its key from a variable of your choice:
+
+```yaml
+image_gen:
+  provider: openai
+  openai:
+    model: gpt-image-2-medium
+    base_url: http://localhost:18081/v1   # → OPENAI_BASE_URL → api.openai.com
+    key_env: IMAGE_GATEWAY_TOKEN          # → OPENAI_API_KEY
+```
+
+Only the variable *name* is stored in `config.yaml`; the secret stays in `.env`
+or the process environment. Availability checks and
+generation use the same resolution, so a configured `key_env` is enough — no
+`OPENAI_API_KEY` is required. Requests go through Hermes' own HTTP client, which
+honours `HTTP(S)_PROXY`/`NO_PROXY` but ignores macOS system proxies (whose
+exception list is invisible to Python), so `localhost` endpoints connect directly.
+The `OpenAI-Project` header is sent blank on image requests: an `OPENAI_PROJECT_ID`
+set for chat otherwise makes the image endpoint return 403 `model_not_found` on
+projects with a model allow-list, while the key itself already carries the project.
+
+**Gateway model names.** Catalog ids are mapped for OpenAI: `gpt-image-2-medium`
+is sent as `model: gpt-image-2` + `quality: medium`. Any other value of
+`image_gen.openai.model` (or `OPENAI_IMAGE_MODEL`) is sent verbatim as `model`
+with **no** `quality` field, so a gateway that serves its own image model names
+(`custom-image-model`, `grok-imagine-image`, ...) receives exactly that id and
+never sees a quality enum it might reject. The shared top-level `image_gen.model`
+is never passed through — it can hold another provider's id (a FAL path, for
+instance) from an earlier selection.
+
+**Reusing a named custom endpoint.** If the gateway is already declared under
+`providers:` for chat, point the image provider at it by *name* instead of
+repeating its URL and key:
+
+```yaml
+providers:
+  my-gateway:
+    name: My Gateway
+    api: https://gateway.example.com/v1
+    key_env: MY_GATEWAY_KEY
+
+image_gen:
+  provider: openai
+  openai:
+    provider: my-gateway        # inherits api + key_env from providers.my-gateway
+    model: grok-imagine-image   # sent verbatim, no quality
+```
+
+Resolution order is `image_gen.openai.base_url` → the named endpoint's URL →
+`OPENAI_BASE_URL`, and the variable named by `image_gen.openai.key_env` → the
+named endpoint's `api_key`/`key_env` → `OPENAI_API_KEY`; an explicit `base_url`
+or `key_env` next to `provider` therefore overrides that part of the endpoint. A
+name that matches no `providers:` entry is logged as a warning and ignored.
+
 ## Usage
 
 The agent-facing schema is intentionally minimal — the model picks up whatever you've configured:
@@ -232,7 +290,7 @@ Two inputs drive the edit:
 | **FAL.ai** (edit-capable models below) | ✓ | up to 16 (per model) | routes to the model's `/edit` endpoint |
 | **OpenAI** (GPT Image 2 / 2.5 Flare / Sunburst) | ✓ | up to 16 | `images.edit()` |
 | **xAI** (Grok Imagine) | ✓ | 1 | `/v1/images/edits` (`grok-imagine-image-quality`) |
-| **Krea** (`Krea 2`) | ✓ | up to 10 | reference-guided generation (`image_style_references`) |
+| **Krea** (`Krea 2`) | ✓ | up to 10 | reference-guided generation (`image_style_references`); local files are embedded in the request, up to 3 MB in total |
 | **OpenAI (Codex auth)** | ✓ | up to 16 | `POST /backend-api/codex/images/edits` with inline `images[]` data URLs (remote URLs are fetched client-side) |
 | **OpenRouter** (Image API models) | ✓ | up to 14–16 (per model) | `input_references` on `POST /images/generations`; chat-served models use `image_url` content parts (up to 3) |
 

@@ -43,7 +43,8 @@ for output in "$MASTER" "$SHARE" "$REPORT" "$CONTACT"; do
   [[ ! -e "$output" ]] || die "refusing to overwrite existing output: $output"
 done
 
-TMP_ROOT="${TMPDIR:-/tmp}"
+TMP_ROOT="${TMPDIR:-${HERMES_HOME:-$HOME/.hermes}/cache/scratch}"
+mkdir -p "$TMP_ROOT"
 TMP_DIR="$(mktemp -d "${TMP_ROOT%/}/presenter-finalize.XXXXXX")"
 trap 'rm -rf -- "$TMP_DIR"' EXIT INT TERM
 

@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
+import { releaseUnplayedSpokenReply, spokenReplyOf } from '@/lib/spoken-reply'
 import { playSpeechText } from '@/lib/voice-playback'
 import { ownsAmbientCue } from '@/store/ambient'
 import { notifyError } from '@/store/notifications'
@@ -13,6 +14,8 @@ interface AutoSpeakReply {
   id: string
   pending: boolean
   text: string
+  /** Survives the live-id rewrite. Absent callers still speak; they just cannot join an in-flight play. */
+  turnKey?: string
 }
 
 interface UseAutoSpeakReplies {
@@ -43,9 +46,9 @@ export function useAutoSpeakReplies({
   const enabled = useStore($autoSpeakReplies)
   // Wake on THIS composer's transcript: a tile subscribed to the primary's
   // would never fire on its own replies (and would fire on someone else's).
-  const { $messages } = useComposerScope()
-  const latest = useRef({ conversationActive, failureLabel, markSpoken, pendingReply })
-  latest.current = { conversationActive, failureLabel, markSpoken, pendingReply }
+  const { $messages, connectionId, profile } = useComposerScope()
+  const latest = useRef({ connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile })
+  latest.current = { connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile }
 
   useEffect(() => {
     if (!enabled) {
@@ -56,8 +59,10 @@ export function useAutoSpeakReplies({
     // on (or a chat opens) — consume it so only later replies are spoken.
     latest.current.markSpoken()
 
+    let attemptSeq = 0
+
     const speakLatest = () => {
-      const { conversationActive, failureLabel, markSpoken, pendingReply } = latest.current
+      const { connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile } = latest.current
 
       if (conversationActive || $voicePlayback.get().status !== 'idle') {
         return
@@ -69,16 +74,37 @@ export function useAutoSpeakReplies({
         return
       }
 
+      const attempt = ++attemptSeq
+
       markSpoken()
+      const marked = spokenReplyOf(sessionId)
       // Only one window voices a given reply when the same chat is open in
-      // several (reply.id is the shared backend message id). markSpoken already
-      // ran in every window, so peers just stay quiet.
-      void ownsAmbientCue(`speak:${reply.id}`).then(owns => {
-        if (owns) {
-          void playSpeechText(reply.text, { messageId: reply.id, source: 'read-aloud' }).catch(error =>
-            notifyError(error, failureLabel)
-          )
+      // several. The claim key is the turn, not the row id: hydration rewrites
+      // the row id, and a second claim would start a second clip.
+      void ownsAmbientCue(`speak:${reply.turnKey ?? reply.id}`).then(owns => {
+        if (!owns || attempt !== attemptSeq) {
+          return
         }
+
+        void playSpeechText(reply.text, {
+          connectionId,
+          messageId: reply.id,
+          profile,
+          source: 'read-aloud',
+          ...(reply.turnKey ? { turnKey: reply.turnKey } : {})
+        }).then(
+          started => {
+            if (!started && attempt === attemptSeq) {
+              releaseUnplayedSpokenReply(sessionId, marked)
+            }
+          },
+          error => {
+            if (attempt === attemptSeq) {
+              releaseUnplayedSpokenReply(sessionId, marked)
+              notifyError(error, failureLabel)
+            }
+          }
+        )
       })
     }
 
@@ -86,6 +112,9 @@ export function useAutoSpeakReplies({
     // ($voicePlayback → idle), which frees us to read the next held reply.
     const stops = [$messages.subscribe(speakLatest), $voicePlayback.listen(speakLatest)]
 
-    return () => stops.forEach(f => f())
+    return () => {
+      attemptSeq += 1
+      stops.forEach(f => f())
+    }
   }, [$messages, enabled, sessionId])
 }

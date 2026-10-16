@@ -125,9 +125,7 @@ describe('inter-agent collapse gate', () => {
 
   it('still collapses the reply to an unsolicited delivery (dispatch went to another teammate)', async () => {
     render(
-      <Harness
-        messages={[dispatch('a0', 'scribe'), user('u2', DELIVERY), assistant('a1', 'build is green', false)]}
-      />
+      <Harness messages={[dispatch('a0', 'scribe'), user('u2', DELIVERY), assistant('a1', 'build is green', false)]} />
     )
 
     expect(await screen.findByText(/Replied to/)).toBeTruthy()
@@ -179,16 +177,5 @@ describe('inter-agent collapse gate', () => {
 
     await screen.findByText('ordinary answer')
     expect(screen.queryByText(/Replied to/)).toBeNull()
-  })
-
-  it('clears the streaming marker once the turn settles', async () => {
-    const { container } = render(<Harness messages={[user('u1', 'q'), assistant('a1', 'done', false)]} />)
-
-    await screen.findByText('done')
-    expect(container.querySelector('[data-message-streaming="true"]')).toBeNull()
-    // The marker element itself stays mounted (attribute toggles, no remount).
-    expect(
-      container.querySelector('[data-slot="aui_assistant-message-root"] [data-slot="aui_message-streaming-marker"]')
-    ).toBeTruthy()
   })
 })

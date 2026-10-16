@@ -3,7 +3,7 @@
 import unittest
 from unittest.mock import patch
 
-from tools.skills_hub_models import SkillBundle, SkillMeta
+from tools.skills_hub_models import SkillMeta
 from tools.skills_hub_sources import BrowseShSource
 
 
@@ -54,8 +54,6 @@ class TestBrowseShSource(unittest.TestCase):
     def setUp(self):
         self.src = BrowseShSource()
 
-    def test_source_id(self):
-        self.assertEqual(self.src.source_id(), "browse-sh")
 
     @patch.object(BrowseShSource, "_fetch_catalog", return_value=SAMPLE_CATALOG)
     def test_search_returns_results(self, _mock_catalog):

@@ -158,7 +158,7 @@ fallback_model:
 ```yaml
 fallback_model:
   provider: openai-codex
-  model: gpt-5.3-codex
+  model: gpt-5.4
 ```
 
 ### 备用适用范围

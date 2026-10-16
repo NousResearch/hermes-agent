@@ -12,6 +12,7 @@ import { asText, prettyName } from '../../settings/helpers'
 import { DetailHeader } from '../primitives'
 
 import { parseFrontmatter } from './frontmatter'
+import { isEditableProvenance } from './skill-provenance'
 import { categoryFor } from './skills-data'
 
 export function SkillDetail({
@@ -26,9 +27,9 @@ export function SkillDetail({
   skill: SkillInfo
 }) {
   const { t } = useI18n()
-  // Only learned/local skills are the user's to rewrite or archive — bundled
-  // and hub skills are managed by their sources.
-  const editable = skill.provenance === 'agent'
+  // Origin only, never mutability: external mounts stay editable in place —
+  // see ./skill-provenance (commit 8c8fc6c1ec).
+  const editable = isEditableProvenance(skill.provenance)
 
   // The FULL skill — frontmatter metadata + complete SKILL.md body — for any
   // provenance, scoped to the Capabilities profile selector. The row list only
@@ -51,7 +52,7 @@ export function SkillDetail({
         pills={
           <>
             <PanelPill>{prettyName(categoryFor(skill))}</PanelPill>
-            {skill.provenance && skill.provenance !== 'bundled' && (
+            {(skill.provenance === 'agent' || skill.provenance === 'hub') && (
               <PanelPill tone={skill.provenance === 'agent' ? 'good' : 'muted'}>
                 {t.skills.provenance[skill.provenance]}
               </PanelPill>

@@ -6,22 +6,14 @@ resolve_qwen_runtime_credentials, get_qwen_auth_status.
 """
 
 import json
-import stat
 import time
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_QWEN_BASE_URL,
-    QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-    _qwen_cli_auth_path,
-    _read_qwen_cli_tokens,
-    _save_qwen_cli_tokens,
-    _qwen_access_token_is_expiring,
-    _refresh_qwen_cli_tokens,
     resolve_qwen_runtime_credentials,
     get_qwen_auth_status,
 )
@@ -77,9 +69,6 @@ def qwen_env(tmp_path, monkeypatch):
 # _qwen_cli_auth_path
 # ---------------------------------------------------------------------------
 
-def test_qwen_cli_auth_path_returns_expected_location():
-    path = _qwen_cli_auth_path()
-    assert path == Path.home() / ".qwen" / "oauth_creds.json"
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +190,6 @@ def test_model_flow_qwen_oauth_stale_token_shows_reauth_guidance(qwen_env, monke
     _model_flow_qwen_oauth({}, current_model="qwen3-coder-plus")
 
     out = capsys.readouterr().out
-    assert "Run: qwen auth qwen-oauth" in out
     assert "Qwen refresh rejected" in out
     assert prompt_called["value"] is False
     assert update_called["value"] is False

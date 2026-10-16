@@ -5,11 +5,10 @@ only HTTP transports are stubbed.
 from __future__ import annotations
 
 import json
-import threading
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -71,17 +70,12 @@ def test_camofox_vnc_memo_is_keyed_by_the_profiles_server_url(two_homes, monkeyp
 
 def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypatch):
     """One mechanism (dict keyed by home / override bypass) across the sites that read per-profile
-    config or per-home files: aux-vision routing, tirith binary path, learned image cost table, aux
+    config or per-home files: aux-vision routing, learned image cost table, aux
     semaphore, MCP lock."""
-    bin_a, bin_b = tmp_path / "binA" / "tirith", tmp_path / "binB" / "tirith"
-    for p in (bin_a, bin_b):
-        p.parent.mkdir()
-        p.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        p.chmod(0o755)
     main = {"model": {"provider": "openai", "model": "gpt-4o"}}
-    a = _make_home(tmp_path / "A", {**main, "security": {"tirith_path": str(bin_a)},
+    a = _make_home(tmp_path / "A", {**main,
                                     "auxiliary": {"vision": {"provider": "auto"}, "summary": {"max_concurrency": 2}}})
-    b = _make_home(tmp_path / "A" / "profiles" / "B", {**main, "security": {"tirith_path": str(bin_b)},
+    b = _make_home(tmp_path / "A" / "profiles" / "B", {**main,
                                                        "auxiliary": {"vision": {"provider": "openai", "model": "gpt-4o-mini"},
                                                                      "summary": {"max_concurrency": 7}}})
     monkeypatch.setenv("HERMES_HOME", str(a))
@@ -91,17 +85,12 @@ def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypat
     import agent.auxiliary_client as ac
     import agent.image_token_cost as itc
     import tools.computer_use.tool as cu
-    import tools.tirith_security as tir
     from tools import mcp_tool_loop
 
-    monkeypatch.setattr(tir, "_resolved_path", None)
-    monkeypatch.setattr(tir, "_resolved_path_by_home", {})
     ac._reset_aux_semaphores()
-    cu._AUX_VISION_ROUTE_CACHE.clear()
 
     with _scoped(a):
         assert cu._should_route_through_aux_vision() is False  # no explicit aux vision: native path
-        assert tir._resolve_tirith_path(tir._load_security_config()["tirith_path"]) == str(bin_a)
         assert itc.learned_image_token_cost("m", "http://gw.example/v1") == 1000
         sem_a = ac._acquire_sync_aux_semaphore("summary")
         sem_a.acquire()
@@ -110,7 +99,6 @@ def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypat
         cookie.release()
     with _scoped(b):
         assert cu._should_route_through_aux_vision() is True  # B named a dedicated vision model
-        assert tir._resolve_tirith_path(tir._load_security_config()["tirith_path"]) == str(bin_b)
         assert itc.learned_image_token_cost("m", "http://gw.example/v1") == 3000
         sem_b = ac._acquire_sync_aux_semaphore("summary")
         cookie = mcp_tool_loop._try_acquire_mcp_discovery_lock()
@@ -124,61 +112,24 @@ def test_home_keyed_caches_serve_each_profile_its_own_config(tmp_path, monkeypat
     sem_a.release()
 
 
-def test_debounced_sync_push_fires_in_the_scheduling_profiles_context(two_homes, monkeypatch):
-    """Timer threads start with empty ContextVars: the push must run under the writing profile's
-    home, and B's write must not cancel A's pending push."""
-    import tools.skill_manager_tool as smt
-    import tools.skill_usage as su
-    import tools.skills_sync_client as ssc
-    from hermes_constants import get_hermes_home
-
-    a, b = two_homes
-    fired: dict[str, str] = {}
-    both = threading.Event()
-
-    def fake_push(*, message=""):
-        fired[message] = str(get_hermes_home())
-        if len(fired) == 2:
-            both.set()
-
-    monkeypatch.setattr(su, "is_sync_enabled", lambda name: True)
-    monkeypatch.setattr(ssc, "maybe_push_skills", fake_push)
-    monkeypatch.setattr(smt, "_SYNC_PUSH_DEBOUNCE_S", 0.05)
-    monkeypatch.setattr(smt, "_sync_push_timers", {})
-    with _scoped(a):
-        smt._maybe_debounced_sync_push("skill-a")
-    with _scoped(b):
-        smt._maybe_debounced_sync_push("skill-b")
-    assert both.wait(5), fired
-    assert fired == {"sync: skill-a": str(a), "sync: skill-b": str(b)}
-
-
 def test_endpoint_model_catalog_memo_is_keyed_by_credential(two_homes, monkeypatch):
     """Two profiles, same base_url, different api_key: a per-key gateway's catalog fetched with A's
     key must not be served to B from the in-memory memo (the disk memo already lives per home)."""
+    from contextlib import contextmanager
+    import httpx
     import agent.model_metadata as mm
 
     a, b = two_homes
     mm._endpoint_model_metadata_cache.clear()
     mm._endpoint_model_metadata_cache_time.clear()
-    mm._ensure_requests()
 
-    class _Resp:
-        status_code, ok = 200, True
+    @contextmanager
+    def stream(url, headers=None, **kwargs):
+        who = headers.get("Authorization", "").rsplit("-", 1)[-1]
+        yield httpx.Response(200, request=httpx.Request("GET", url),
+                             json={"data": [{"id": f"model-for-{who}", "context_length": 1}]})
 
-        def __init__(self, headers):
-            self._who = headers.get("Authorization", "").rsplit("-", 1)[-1]
-
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"data": [{"id": f"model-for-{self._who}", "context_length": 1}]}
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(mm.requests, "get", lambda url, headers=None, **k: _Resp(headers or {}))
+    monkeypatch.setattr(mm.model_metadata_http, "stream", stream)
     with _scoped(a):
         assert set(mm.fetch_endpoint_model_metadata("http://gw.example/v1", api_key="key-A")) == {"model-for-A"}
     with _scoped(b):

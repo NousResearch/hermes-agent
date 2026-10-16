@@ -36,6 +36,11 @@ class ClientCapabilitiesParams(Params):
 class ClientCapabilitiesResult(Result):
     #: Server→client request methods this backend may send.
     server_requests: list[str]
+    #: This backend counts a ``4404`` "no window here shows this session" error from a window-owned
+    #: bridge (preview/terminal/window read, preview act, tour) as that client declining, not as the
+    #: answer: the request settles only once every attached client declined (server_requests.py).
+    #: An older backend settles on the first error, so a client sends the decline only when this is true.
+    declines_not_shown: bool = False
 
 
 method("client.capabilities", params=ClientCapabilitiesParams, result=ClientCapabilitiesResult,

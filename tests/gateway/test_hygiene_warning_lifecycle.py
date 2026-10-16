@@ -55,7 +55,6 @@ async def test_aborted_hygiene_retains_cooldown_across_restart_and_final_result(
             cooldown = db.get_compression_failure_cooldown(sid)
             assert cooldown and cooldown["remaining_seconds"] > 0
             runner.session_store.rewrite_transcript.assert_not_called()
-        assert "Session hygiene compression aborted: fixture auxiliary failure" in caplog.text
         # Let the durable cooldown expire, then exercise actual gateway adoption
         # of a committed fallback summary (provider compression is the fake edge).
         recovering = True

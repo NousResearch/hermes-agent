@@ -3,6 +3,8 @@
 Before launching an MCP server via npx/uvx, queries Google's free public OSV API for
 known malware advisories (MAL-* IDs). Regular CVEs are ignored — only confirmed malware
 is blocked. Fail-open: network errors allow the package to proceed (~300ms typical).
+A failed query opens a short network breaker so spawns in an unreachable network
+fail open instantly instead of re-paying the full _TIMEOUT every time.
 Inspired by Block/goose's extension malware check.
 """
 import json
@@ -38,6 +40,21 @@ _cache: dict = {}
 _cache_lock = threading.Lock()
 _disk_cache_loaded = False
 _DISK_CACHE_VERSION = 1
+
+# Network breaker (#139641): a failed query opens a short cooldown during which the
+# preflight skips the doomed _TIMEOUT round-trip and fails open immediately. Where
+# api.osv.dev is persistently unreachable, every MCP spawn otherwise re-blocks the
+# full 10–12s with no convergence. Fail-open verdicts are still NOT cached (see above);
+# the breaker only rate-limits retries, so a recovered endpoint is re-checked as soon
+# as the window lapses (<= 10 min by default — far below the clean-verdict TTL window).
+# In-process only: a fresh CLI process re-probes once. 0 restores always-retry.
+_breaker_until = 0.0
+
+
+def _breaker_cooldown_s() -> float:
+    """Breaker cooldown, read per call so OSV_CHECK_BREAKER_S is honored on every
+    spawn (module constants would freeze the launch environment's value)."""
+    return float(os.getenv("OSV_CHECK_BREAKER_S", "600"))
 
 
 def _disk_cache_path() -> Optional[Path]:
@@ -166,6 +183,7 @@ def _cache_put(key, result: Optional[str]) -> None:
 def check_package_for_malware(command: str, args: list) -> Optional[str]:
     """Check an MCP server package (inferred from ``command``/``args``) for MAL-* advisories.
     Returns a BLOCKED message, else None — also on network errors/unknown commands (fail-open)."""
+    global _breaker_until
     ecosystem = _infer_ecosystem(command)
     if not ecosystem:
         return None  # not npx/uvx — skip
@@ -176,12 +194,29 @@ def check_package_for_malware(command: str, args: list) -> Optional[str]:
     hit, cached = _cache_get(cache_key)
     if hit:
         return cached
+    with _cache_lock:
+        breaker_until = _breaker_until
+    if time.time() < breaker_until:
+        logger.debug("OSV check skipped for %s/%s: network breaker open for %.0fs more",
+                     ecosystem, package, breaker_until - time.time())
+        return None
     try:
         malware = _query_osv(package, ecosystem, version)
     except Exception as exc:
         # Fail-open; deliberately NOT cached — see _CACHE_TTL_S comment.
         logger.debug("OSV check failed for %s/%s (allowing): %s", ecosystem, package, exc)
+        cooldown = _breaker_cooldown_s()
+        if cooldown > 0:
+            with _cache_lock:
+                _breaker_until = time.time() + cooldown
+            logger.warning(
+                "OSV preflight failed for %s/%s — failing open and skipping further OSV "
+                "queries for %ds (api.osv.dev unreachable?; set OSV_CHECK_BREAKER_S=0 "
+                "to always retry)", ecosystem, package, int(cooldown))
         return None
+    if breaker_until:
+        with _cache_lock:
+            _breaker_until = 0.0  # endpoint answered — close the breaker early
     result = None
     if malware:
         ids = ", ".join(m["id"] for m in malware[:3])

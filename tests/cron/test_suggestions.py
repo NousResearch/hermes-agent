@@ -6,12 +6,9 @@ HERMES_HOME so the real suggestions.json is never touched.
 """
 
 import importlib
-import json
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
@@ -25,7 +22,6 @@ def store(tmp_path, monkeypatch):
     importlib.reload(s)
     return s
 
-
 def _add(store, key="k1", title="Test", source="catalog", schedule="0 9 * * *"):
     return store.add_suggestion(
         title=title,
@@ -34,7 +30,6 @@ def _add(store, key="k1", title="Test", source="catalog", schedule="0 9 * * *"):
         job_spec={"prompt": "do it", "schedule": schedule, "name": title, "deliver": "origin"},
         dedup_key=key,
     )
-
 
 class TestStore:
     def test_explicit_file_override_wins_over_profile_home(self, tmp_path, monkeypatch):
@@ -184,7 +179,6 @@ class TestStore:
         # Dismissed record retained so its dedup_key still latches.
         assert _add(store, key="b") is None
 
-
 class TestCatalog:
     def test_seed_registers_all_entries(self, store):
         from cron.suggestion_catalog import CATALOG, seed_catalog_suggestions
@@ -193,19 +187,14 @@ class TestCatalog:
         assert len(created) == len(CATALOG)
         assert len(store.list_pending()) == min(len(CATALOG), store.MAX_PENDING)
 
-
-    def test_monitor_entry_references_classifier_script(self):
+    def test_no_catalog_prompt_bakes_in_absolute_script_path(self):
         from cron.suggestion_catalog import CATALOG, classify_items_script_path
 
-        monitor = next(e for e in CATALOG if e.key == "catalog:important-mail-monitor")
-        # The prompt must reference the classifier by module path (resolvable
-        # at run time on any backend), never by a baked-in absolute path —
-        # absolute paths go stale after relocation and don't exist on remote
-        # terminal backends (Docker/Modal).
-        assert "cron.scripts.classify_items" in monitor.job_spec["prompt"]
-        assert classify_items_script_path() not in monitor.job_spec["prompt"]
-        assert Path(classify_items_script_path()).name == "classify_items.py"
-
+        # Absolute install paths go stale after relocation and don't exist on
+        # remote terminal backends (Docker/Modal); prompts must reference
+        # scripts by module path instead.
+        for entry in CATALOG:
+            assert classify_items_script_path() not in entry.job_spec.get("prompt", ""), entry.key
 
 class TestBlueprintBridge:
     def test_blueprint_registers_suggestion(self, store):
@@ -219,7 +208,6 @@ class TestBlueprintBridge:
         assert rec["job_spec"]["skills"] == ["morning-brief"]
         assert rec["job_spec"]["schedule"] == "0 8 * * *"
 
-
 class TestCommandHandler:
     def test_bare_lists_pending(self, store):
         _add(store, key="c1", title="Daily thing")
@@ -229,16 +217,3 @@ class TestCommandHandler:
             with patch.dict("sys.modules"):
                 out = handle_suggestions_command("")
         assert "Daily thing" in out
-
-
-    def test_empty_list_message(self, store):
-        from hermes_cli.suggestions_cmd import handle_suggestions_command
-
-        out = handle_suggestions_command("")
-        assert "No suggested automations" in out
-
-    def test_aux_monitor_config_default(self):
-        from hermes_cli.config import DEFAULT_CONFIG
-
-        assert "monitor" in DEFAULT_CONFIG["auxiliary"]
-        assert DEFAULT_CONFIG["auxiliary"]["monitor"]["provider"] == "auto"

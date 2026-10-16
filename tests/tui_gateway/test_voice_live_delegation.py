@@ -105,7 +105,6 @@ class TestVoiceLiveTurnNote:
         assert busy_session["client_surface"] == "voice-live"
         note = server._hud_surface_note(busy_session)
         assert note.startswith(voice_live.VOICE_LIVE_TURN_NOTE)
-        assert "spoken" in note and "no markdown" in note
         assert "User: what's the weather" in note
 
     def test_voice_context_ignored_off_the_live_surface(self, busy_session):

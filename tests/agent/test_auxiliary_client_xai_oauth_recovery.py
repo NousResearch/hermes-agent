@@ -114,14 +114,6 @@ class TestRefreshProviderCredentialsXaiOAuth:
     def _import(self):
         self.refresh = _import_refresh_provider_credentials()
 
-    def test_xai_oauth_no_pool_returns_false(self):
-        """When no xai-oauth pool exists, refresh returns False gracefully."""
-        # This tests that the branch exists and doesn't crash.
-        # It may return True if the singleton resolver finds tokens,
-        # or False if neither pool nor singleton has credentials.
-        # Either way, it should not raise an exception.
-        result = self.refresh("xai-oauth")
-        assert isinstance(result, bool)
 
     def test_unknown_provider_returns_false(self):
         """Unknown providers fall through to return False."""

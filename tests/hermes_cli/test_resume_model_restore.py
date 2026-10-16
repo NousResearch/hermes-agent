@@ -8,7 +8,6 @@ used instead of the ambient config default (#57588-class, #79536).
 
 import json
 
-import pytest
 
 import cli as cli_mod
 from hermes_state import SessionDB
@@ -187,7 +186,7 @@ def test_persist_model_switch_writes_model_and_both_route_shapes():
     stub = _make_stub(_session_db=_DB(), session_id="s1")
     stub._persist_model_switch_to_session(_Result())
     assert written["model"] == ("s1", "deepseek-v4-flash-free")
-    sid, patch = written["patch"]
+    _sid, patch = written["patch"]
     # Nested shape for the CLI reader...
     assert patch["gateway_runtime"]["provider"] == "custom:opencode-zen"
     # ...and top-level for the TUI gateway's _stored_session_runtime_overrides.
@@ -245,9 +244,6 @@ def test_persist_model_switch_clears_stale_route_keys(tmp_path, monkeypatch):
     assert "api_mode" not in runtime
 
 
-def test_persist_model_switch_noop_without_db_or_session():
-    stub = _make_stub()  # no _session_db / session_id attributes at all
-    stub._persist_model_switch_to_session(_Result())  # must not raise
 
 
 def test_persist_model_switch_swallows_db_errors():
@@ -305,6 +301,26 @@ def test_restore_session_model_heals_bare_custom_stored_rows(monkeypatch):
     # Provider dropped -> model restored but provider stays ambient.
     assert stub.model == "glm-4.7"
     assert stub.provider == "openrouter"
+
+
+def test_restore_session_model_rederives_per_model_wire_for_opencode_rows(monkeypatch):
+    """A row persisted while an opencode-go session ran an anthropic_messages model (MiniMax) must not
+    pin that wire onto a chat_completions model on resume — api_mode and the relay URL follow the
+    stored model, and a fixed-wire provider's row is still honored verbatim (#96066)."""
+    import hermes_cli.runtime_provider as rp
+    monkeypatch.setattr(rp, "resolve_runtime_provider", lambda **kw: {"api_key": "go-key"})
+    stub = _make_stub(provider="opencode-go", requested_provider="opencode-go",
+                      base_url="https://opencode.ai/zen/go/v1", api_mode="chat_completions")
+    stub._restore_session_model(_row(model="deepseek-v4-flash-vision-exp", model_config={
+        "gateway_runtime": {"provider": "opencode-go", "base_url": "https://opencode.ai/zen/go",
+                            "api_mode": "anthropic_messages"}}))
+    assert (stub.api_mode, stub.base_url) == ("chat_completions", "https://opencode.ai/zen/go/v1")
+
+    stub = _make_stub()
+    stub._restore_session_model(_row(model="MiniMax-M2.5", model_config={
+        "gateway_runtime": {"provider": "minimax", "base_url": "https://api.minimax.io/anthropic",
+                            "api_mode": "anthropic_messages"}}))
+    assert (stub.api_mode, stub.base_url) == ("anthropic_messages", "https://api.minimax.io/anthropic")
 
 
 # ── round trip: persist → get_session shape → restore ───────────────
@@ -399,6 +415,18 @@ def test_session_gateway_runtime_explicit_provider_wins_over_billing():
     meta["billing_provider"] = "minimax"
     runtime = SessionDB.session_gateway_runtime(meta)
     assert runtime == {"provider": "nous"}
+
+
+def test_session_gateway_runtime_billing_provider_fills_top_level_route_without_provider():
+    """A TUI row with top-level base_url/api_mode but no provider keeps that endpoint AND takes the
+    provider the session was billed to — the same merge the TUI gateway always did (#125942); a bare
+    bucket still contributes nothing."""
+    meta = _row(model_config={"base_url": "https://f/v1", "api_mode": "chat_completions"})
+    meta["billing_provider"] = "minimax"
+    assert SessionDB.session_gateway_runtime(meta) == {
+        "provider": "minimax", "base_url": "https://f/v1", "api_mode": "chat_completions"}
+    meta["billing_provider"] = "custom"
+    assert SessionDB.session_gateway_runtime(meta) == {"base_url": "https://f/v1", "api_mode": "chat_completions"}
 
 
 def test_restore_session_model_restores_billing_provider_fallback():

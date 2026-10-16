@@ -22,13 +22,13 @@ _DEADLINE = re.compile(r"timed out after ([\d.]+)s")
 
 def main(argv=None) -> int:
     run = Run.from_args(argv, (__doc__ or "").split("\n\n")[0])
-    by_tool_bytes: Dict[str, int] = collections.Counter()
-    by_tool_calls: Dict[str, int] = collections.Counter()
+    by_tool_bytes: dict[str, int] = collections.Counter()
+    by_tool_calls: dict[str, int] = collections.Counter()
     hardline = malformed = fg_timeout = fg_amp = fg_wrap = tool_deadline = 0
-    fg_timeout_requested: Dict[int, int] = collections.Counter()
+    fg_timeout_requested: dict[int, int] = collections.Counter()
     write_calls = big_writes = rewrite_of_existing = 0
     write_chars = 0
-    read_paths_by_sess: Dict[str, set] = collections.defaultdict(set)
+    read_paths_by_sess: dict[str, set] = collections.defaultdict(set)
     for sid in run.in_run:
         for m in run.messages(sid, "role, tool_name, content, tool_calls"):
             if m["role"] == "assistant" and m.get("tool_calls"):
@@ -74,7 +74,7 @@ def main(argv=None) -> int:
             if (m.get("tool_name") or "") == "terminal" and _DEADLINE.search(c):
                 tool_deadline += 1
     top_bytes = sorted(by_tool_bytes.items(), key=lambda kv: -kv[1])[:8]
-    report: Dict[str, Any] = {"observed": {
+    report: dict[str, Any] = {"observed": {
         "tool_results": sum(by_tool_calls.values()),
         "output_bytes_by_tool_top8": {k: v for k, v in top_bytes},
         "hardline_blocks": hardline, "hardline_blocks_malformed_class": malformed,

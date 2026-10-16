@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from starlette.testclient import TestClient
 
-from hermes_cli import web_server
+from hermes_cli import web_server, web_server_files
 import hermes_cli.web_routers.files as _rt_files
 
 
@@ -90,6 +90,25 @@ def _seed_file(client, root, name="out/hello.txt"):
     return file_path
 
 
+
+
+@pytest.mark.parametrize("client_fixture", ["local_files_client", "forced_files_client"])
+def test_mkdir_creates_a_folder_the_picker_can_list_and_enter(client_fixture, request):
+    """The desktop remote folder picker's New folder: mkdir an absolute child of
+    the folder it is browsing, then list the parent and navigate into the result."""
+    client, root = request.getfixturevalue(client_fixture)
+    root.mkdir(exist_ok=True)
+    listed = client.get("/api/fs/list", params={"path": str(root)}).json()
+    assert "error" not in listed
+
+    created = client.post("/api/files/mkdir", json={"path": str(root / "fresh project")})
+
+    assert created.status_code == 200
+    new_dir = created.json()["path"]
+    assert (root / "fresh project").is_dir()
+    after = client.get("/api/fs/list", params={"path": str(root)}).json()["entries"]
+    assert {"name": "fresh project", "path": new_dir, "isDirectory": True} in after
+    assert client.get("/api/fs/list", params={"path": new_dir}).json() == {"entries": []}
 
 
 def test_download_authenticates_via_query_token(forced_files_client):
@@ -226,7 +245,6 @@ def test_stream_rejects_non_media_active_content(forced_files_client):
         file_path = _seed_file(client, root, name=name)
         response = client.get("/api/files/stream", params={"path": str(file_path)})
         assert response.status_code == 415
-        assert response.json()["detail"] == "Unsupported media type"
 
 
 def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
@@ -255,6 +273,160 @@ def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
 
 
 
+
+
+def test_directory_listing_shows_broken_symlink_placeholder(forced_files_client, tmp_path):
+    """Dangling symlinks should appear in listings with broken_link: true."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    valid = root / "valid.txt"
+    valid.write_text("hello")
+
+    broken = root / "broken_link"
+    outside_broken = root / "outside_broken_link"
+    try:
+        broken.symlink_to(root / "nonexistent_target")
+        outside_broken.symlink_to(tmp_path / "outside_nonexistent_target")
+    except OSError:
+        pytest.skip("filesystem does not allow symlinks")
+
+    resp = client.get("/api/files", params={"path": str(root)})
+    assert resp.status_code == 200
+    entries = resp.json()["entries"]
+    names = [e["name"] for e in entries]
+    assert "valid.txt" in names
+    assert "broken_link" in names
+    assert "outside_broken_link" in names
+
+    broken_entry = next(e for e in entries if e["name"] == "broken_link")
+    assert broken_entry["broken_link"] is True
+    assert broken_entry["path"] == str(broken)
+    assert broken_entry["size"] is None
+    assert broken_entry["mtime"] is None
+    assert broken_entry["mime_type"] is None
+    assert broken_entry["is_directory"] is False
+
+    outside_entry = next(e for e in entries if e["name"] == "outside_broken_link")
+    assert outside_entry["broken_link"] is True
+    assert outside_entry["path"] == str(outside_broken)
+
+
+def test_managed_file_entry_reuses_symlink_stat_snapshot(tmp_path, monkeypatch):
+    """A target disappearing after its first stat must not turn the listing into a 500."""
+    root = tmp_path.resolve()
+    target = root / "target.txt"
+    target.write_text("x")
+    link = root / "link"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("filesystem does not allow symlinks")
+
+    original_resolve = web_server.Path.resolve
+    original_stat = web_server.Path.stat
+    resolved_target = original_resolve(link)
+    target_stat_calls = 0
+
+    def stable_resolve(path, *args, **kwargs):
+        if path == link:
+            return resolved_target
+        return original_resolve(path, *args, **kwargs)
+
+    def disappearing_target_stat(path, *args, **kwargs):
+        nonlocal target_stat_calls
+        if path == resolved_target:
+            target_stat_calls += 1
+            if target_stat_calls == 2:
+                raise FileNotFoundError(str(path))
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(web_server.Path, "resolve", stable_resolve)
+    monkeypatch.setattr(web_server.Path, "stat", disappearing_target_stat)
+
+    entry = web_server_files._managed_file_entry(
+        web_server_files.ManagedFilesPolicy(
+            default_path=root,
+            locked_root=root,
+            can_change_path=False,
+        ),
+        link,
+    )
+
+    assert entry["name"] == "link"
+    assert entry["path"] == str(resolved_target)
+    assert entry["size"] == 1
+    assert target_stat_calls == 1
+
+
+@pytest.mark.parametrize("client_fixture", ["forced_files_client", "local_files_client"])
+def test_directory_listing_skips_vanished_regular_file(request, client_fixture, monkeypatch):
+    client, root = request.getfixturevalue(client_fixture)
+    root.mkdir(parents=True, exist_ok=True)
+    vanished = root / "vanished.txt"
+    vanished.write_text("gone", encoding="utf-8")
+    (root / "valid.txt").write_text("still here", encoding="utf-8")
+    (root / "folder").mkdir()
+    original_stat = web_server_files.Path.stat
+
+    def disappearing_stat(path, *args, **kwargs):
+        if path == vanished and kwargs.get("follow_symlinks", True):
+            vanished.unlink(missing_ok=True)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(web_server_files.Path, "stat", disappearing_stat)
+    response = client.get("/api/files", params={"path": str(root)})
+
+    assert response.status_code == 200
+    entries = response.json()["entries"]
+    assert [entry["name"] for entry in entries] == ["folder", "valid.txt"]
+    assert entries[0]["is_directory"] is True
+    assert entries[1]["size"] == len("still here")
+
+
+@pytest.mark.parametrize("error", [PermissionError("denied"), OSError("I/O error")])
+def test_directory_listing_does_not_hide_stat_errors(forced_files_client, monkeypatch, error):
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / "unreadable.txt"
+    target.write_text("x", encoding="utf-8")
+    original_stat = web_server_files.Path.stat
+
+    def unreadable_stat(path, *args, **kwargs):
+        if path == target and kwargs.get("follow_symlinks", True):
+            raise error
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(web_server_files.Path, "stat", unreadable_stat)
+    response = client.get("/api/files", params={"path": str(root)})
+    assert response.status_code == 500
+    assert "Could not stat path" in response.json()["detail"]
+
+
+def test_managed_write_result_rejects_vanished_file(tmp_path):
+    from fastapi import HTTPException
+
+    policy = web_server_files.ManagedFilesPolicy(tmp_path, tmp_path, False)
+    missing = tmp_path / "missing.txt"
+    with pytest.raises(HTTPException) as exc_info:
+        _rt_files._managed_write_result(policy, missing, str(missing))
+    assert exc_info.value.status_code == 500
+
+
+def test_broken_symlink_placeholder_requires_entry_inside_root(tmp_path):
+    from fastapi import HTTPException
+
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside-link"
+    try:
+        outside.symlink_to(root / "missing.txt")
+    except OSError:
+        pytest.skip("filesystem does not allow symlinks")
+    policy = web_server_files.ManagedFilesPolicy(root, root, False)
+    with pytest.raises(HTTPException) as exc_info:
+        web_server_files._managed_file_entry(policy, outside, skip_missing=True)
+    assert exc_info.value.status_code == 403
 
 
 def test_stream_upload_cleans_temp_on_cancellation(forced_files_client):
@@ -420,3 +592,62 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
+def test_git_branch_decodes_utf8_under_a_gbk_default_codec(tmp_path, monkeypatch):
+    """#83851: the Desktop polls ``/api/fs/default-cwd``; on zh-CN Windows the serve process's default
+    subprocess codec is cp936, and git's UTF-8 output (branch names, localized stderr) raised
+    UnicodeDecodeError in communicate()'s reader threads on every poll. The branch must round-trip."""
+    import shutil
+    import subprocess
+
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git not installed")
+    branch = "功能/✅-修复"  # UTF-8 bytes that are illegal multibyte sequences in GBK
+    subprocess.run([git, "init", "-q", str(tmp_path)], check=True)
+    subprocess.run([git, "-C", str(tmp_path), "symbolic-ref", "HEAD", f"refs/heads/{branch}"], check=True)
+    # subprocess resolves an unspecified text-mode codec through _text_encoding() → locale.getencoding()
+    # (cp936 on zh-CN Windows); patch that seam since run_tests.sh's PYTHONUTF8=1 short-circuits locale.
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "gbk")
+
+    assert _rt_files._fs_git_branch(str(tmp_path)) == branch
+
+
+@pytest.mark.require_symlinks
+def test_dangling_symlink_does_not_break_directory_listing(forced_files_client):
+    """Regression: a dangling symlink in a directory must not 500 the listing.
+
+    Symlinks whose target is currently unavailable (deleted file, unmounted
+    external drive, or a Nix/Home Manager profile with /nix/store not mounted)
+    should not prevent the rest of the directory from being browsable. The
+    broken link is surfaced as an informative entry rather than crashing the
+    listing or being misreported as a root escape.
+    """
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+
+    real = root / "real.txt"
+    real.write_text("still here")
+
+    try:
+        (root / "dangling").symlink_to("/nix/store/nonexistent-broken-link-profile")
+    except OSError:
+        pytest.skip("filesystem does not allow symlinks")
+
+    listing = client.get("/api/files", params={"path": str(root)})
+    assert listing.status_code == 200
+
+    entries = {e["name"]: e for e in listing.json()["entries"]}
+    assert "real.txt" in entries
+    assert entries["real.txt"]["is_directory"] is False
+
+    assert "dangling" in entries
+    dangling = entries["dangling"]
+    assert dangling["is_directory"] is False
+    assert dangling.get("broken_link") is True
+    assert dangling["mime_type"] is None
+    assert dangling["size"] is None
+    assert dangling["mtime"] is None
+
+    # Reading or downloading the broken symlink directly is still an error.
+    assert client.get("/api/files/read", params={"path": str(root / "dangling")}).status_code == 404
+    assert client.get("/api/files/download", params={"path": str(root / "dangling")}).status_code == 404

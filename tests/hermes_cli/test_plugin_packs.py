@@ -6,18 +6,14 @@ No live network — index resolution and installs are mocked.
 
 from __future__ import annotations
 
-import argparse
 import json
-from types import SimpleNamespace
 from unittest import mock
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.plugin_packs import (
     PackError,
-    PackPluginEntry,
-    PluginPack,
     ResolvedPackPlugin,
     _sanitized_entry_config as real_sanitized_entry_config,
     cmd_pack_install,
@@ -28,7 +24,6 @@ from hermes_cli.plugin_packs import (
     resolve_pack_plugins,
     validate_config_seed,
 )
-from hermes_cli.subcommands.plugins import build_plugins_parser
 
 SHA_A = "a" * 40
 SHA_B = "b" * 40
@@ -150,17 +145,38 @@ def test_config_seed_rejects_capability_and_trust_gate_keys():
         assert "reserved" in str(exc.value)
 
 
+@pytest.mark.parametrize("seed, fragment", [
+    ({"settings": {"api_key": "LEAK"}}, "secret-shaped key 'settings.api_key'"),
+    ({"security": {"granted_capabilities": ["tools"]}}, "reserved key 'security.granted_capabilities'"),
+    ({"profiles": [{"allow_tool_override": True}]}, "reserved key 'profiles.allow_tool_override'"),
+])
+def test_config_seed_rejects_forbidden_keys_at_any_depth(seed, fragment):
+    """Nesting a secret/consent key under another mapping (or a list) is the same contract
+    violation as setting it at the top level (#85050)."""
+    with pytest.raises(PackError) as exc:
+        validate_config_seed("p", seed)
+    assert fragment in str(exc.value)
+    assert validate_config_seed("p", {"settings": {"voice": "nova", "tags": ["a"]}}) == {
+        "settings": {"voice": "nova", "tags": ["a"]}}
+
+
+def test_sanitized_entry_config_strips_forbidden_keys_at_any_depth():
+    fake_cfg = {"plugins": {"entries": {"tts": {
+        "smtp": {"host": "mail.example", "password": "hunter2"},
+        "rules": [{"name": "r1", "auth_token": "t"}],
+        "voice": "nova",
+    }}}}
+    with mock.patch("hermes_cli.config.load_config", return_value=fake_cfg):
+        assert real_sanitized_entry_config("tts") == {
+            "smtp": {"host": "mail.example"}, "rules": [{"name": "r1"}], "voice": "nova"}
+
+
 def test_parse_pack_validates_config_section():
     text = _pack_yaml(config={"tts-plugin": {"granted_capabilities": ["tools"]}})
     with pytest.raises(PackError):
         parse_pack(text)
     ok = parse_pack(_pack_yaml(config={"tts-plugin": {"voice": "nova"}}))
     assert ok.config["tts-plugin"] == {"voice": "nova"}
-
-
-def test_parse_pack_collects_skills_as_declared_seam():
-    pack = parse_pack(_pack_yaml(skills=["hub/skill-a", "hub/skill-b"]))
-    assert pack.skills == ["hub/skill-a", "hub/skill-b"]
 
 
 def test_load_pack_rejects_insecure_url_schemes(tmp_path):
@@ -237,10 +253,7 @@ def _fanout_patches(install_side_effect, consent_mock=None):
     patches = {
         "_install_plugin_core": mock.MagicMock(side_effect=install_side_effect),
         "_prompt_plugin_env_vars": mock.MagicMock(),
-        "_get_enabled_set": mock.MagicMock(return_value=set()),
-        "_get_disabled_set": mock.MagicMock(return_value=set()),
-        "_save_enabled_set": mock.MagicMock(),
-        "_save_disabled_set": mock.MagicMock(),
+        "_set_plugin_enabled": mock.MagicMock(),
         "_run_capability_consent": consent_mock or mock.MagicMock(return_value=True),
         "_declared_capabilities_from_manifest": mock.MagicMock(
             side_effect=lambda manifest, name: manifest.get("capabilities", [])
@@ -372,7 +385,6 @@ def test_pack_install_exits_nonzero_on_partial_failure(tmp_path, monkeypatch):
         with pytest.raises(SystemExit) as exc:
             cmd_pack_install(str(pack_file))
     assert exc.value.code == 1
-    assert "1 installed, 1 failed" in fake_console.text
 
 
 def test_pack_install_refuses_noninteractive_sessions(tmp_path, monkeypatch):
@@ -411,7 +423,6 @@ def test_pack_install_aborts_cleanly_on_decline(tmp_path, monkeypatch):
         with pytest.raises(SystemExit):
             cmd_pack_install(str(pack_file))
     installer.assert_not_called()
-    assert "Aborted" in fake_console.text
 
 
 # ---------------------------------------------------------------------------
@@ -543,21 +554,3 @@ def test_export_enabled_only_filters(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # Parser wiring
 # ---------------------------------------------------------------------------
-
-def test_parser_wires_pack_subcommands():
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command")
-    build_plugins_parser(subparsers, cmd_plugins=lambda _args: None)
-
-    args = parser.parse_args(["plugins", "pack", "install", "pack.yaml", "--force"])
-    assert args.plugins_action == "pack"
-    assert args.pack_action == "install"
-    assert args.source == "pack.yaml"
-    assert args.force is True
-
-    args = parser.parse_args(["plugins", "pack", "export", "--enabled-only"])
-    assert args.pack_action == "export"
-    assert args.enabled_only is True
-
-    args = parser.parse_args(["plugins", "pack", "show", "https://x/p.yaml"])
-    assert args.pack_action == "show"

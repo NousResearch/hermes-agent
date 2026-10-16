@@ -123,7 +123,7 @@ def short_home():
         shutil.rmtree(path, ignore_errors=True)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.asyncio
 async def test_loop_tick_witness_arms_over_tcp_on_windows(short_home, caplog):
     """Non-POSIX never touches AF_UNIX; the witness arms over TCP loopback.
@@ -166,6 +166,7 @@ async def test_loop_tick_witness_arms_over_tcp_on_windows(short_home, caplog):
     assert not list(tmp_path.glob("**/gateway.loop-tick.*.sock"))
 
 
+@pytest.mark.platforms("posix")
 @pytest.mark.asyncio
 async def test_loop_tick_witness_arms_on_posix(short_home):
     payload = await _run_heartbeat_until_payload(short_home)

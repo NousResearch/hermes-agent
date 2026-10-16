@@ -9,6 +9,8 @@
  * required is a claim that every one of those paths supplies it.
  */
 
+import type { ProfileSessionPreview } from '@hermes/plugin-sdk'
+
 /**
  * The compact age suffixes the sidebar's session rows render ("now", "m", "h",
  * "d"). Structural rather than an import of core's `Translations`, which the
@@ -25,6 +27,8 @@ export interface SidebarRowLabels {
 export interface ProfileRoute {
   connectionId: string
   mode: 'local' | 'remote'
+  /** Electron's authoritative registry primary. Absent on older shells. */
+  primary?: true
   profile: string
   targetProfile: string
 }
@@ -51,6 +55,7 @@ export interface SessionPreview {
   /** Unix seconds, not milliseconds. */
   last_active?: number
   message_count?: number
+  live_message_count?: ProfileSessionPreview['live_message_count']
   preview?: string
   title?: string
 }
@@ -80,6 +85,8 @@ export interface BotMeta {
   /** Legacy single-group scalar, projected alongside `groups`. */
   group?: null | string
   pinned?: boolean
+  /** Raise this bot's Screen tab when it starts driving its desktop (`screen-autoraise.ts`). Opt-in per bot. */
+  screenAutoOpen?: boolean
   shape?: string
   title?: string
   /** Creation timestamp in ms. Deliberately not copied when duplicating a bot. */
@@ -98,8 +105,15 @@ export interface RosterRow {
   ghost?: boolean
   handle?: string
   has_avatar?: boolean
+  /** The connection's backend identity (/api/status `install_id`) when the
+   *  roster source has seen it — stable across Desktops, unlike `connectionId`
+   *  / `connectionLabel`, which are THIS Desktop's names for the connection. */
+  installId?: string
   last_session?: SessionPreview | null
   remoteSource?: boolean
+  /** Kept from an earlier paint because its source did not answer this
+   *  fetch: shown, but never evidence of what the backend holds now. */
+  retained?: boolean
   route?: ProfileRoute
   sourceError?: null | string
   sourceMissing?: boolean
@@ -109,6 +123,11 @@ export interface RosterRow {
   /** Nullable: the gateway sends `null` for a profile with no configured role,
    *  and the create form threads its own optional title through the same shape. */
   title?: null | string
+  /** Canonical ids this profile was previously known by (`hermes profile
+   *  rename` records them in profile.yaml; the gateway surfaces them on
+   *  profiles.list). Lets group chats re-link persisted member descriptors
+   *  after a rename (#110200). */
+  previous_names?: string[]
   ui_meta?: Record<string, unknown> & { 'hermes-bots'?: BotMeta }
   /** Compare-and-swap revisions, per ui_meta key. */
   ui_meta_revisions?: Record<string, number>
@@ -124,7 +143,9 @@ export type GroupMember = Pick<
   | 'display_name'
   | 'ghost'
   | 'handle'
+  | 'installId'
   | 'name'
+  | 'previous_names'
   | 'remoteSource'
   | 'route'
   | 'sourceMissing'
@@ -146,8 +167,14 @@ export interface Attachment {
 export interface GroupMessageAuthor {
   kind: 'member' | 'user'
   name: string
-  /** Connection label, present when the speaker lives on another machine. */
+  /** Connection label (`connectionLabel || connectionId`) — this Desktop's
+   *  name for the speaker's connection; display-only. */
   source?: string
+  /** The speaker's gateway identity (/api/status `install_id`): the same
+   *  token on every Desktop, so a mirrored entry passes the self test whatever
+   *  the reader labelled that connection. Absent when the source never
+   *  reported one. */
+  gateway?: string
 }
 
 export interface GroupMessage {
@@ -169,8 +196,14 @@ export interface GroupHold {
 }
 
 export interface GroupChat {
+  /** Whether user text may create sticky member holds. Defaults to true for
+   *  rooms written by older builds; the room settings switch can disable it. */
+  holdDetection?: boolean
   /** Bumped to abandon in-flight member turns from a previous round. */
   epoch?: number
+  /** Room-entry ids consumed while a member was held, replayed into that
+   *  member's next visible turn. Keyed by the durable member key. */
+  heldMessages?: Record<string, string[]>
   holds?: Record<string, GroupHold>
   image?: null | string
   log: GroupMessage[]
@@ -183,7 +216,14 @@ export interface GroupChat {
    *  `{ name }`, and the sweep re-validates the route before trusting one. */
   sessionOwners?: Record<string, Partial<RosterRow>>
   sessions?: Record<string, string | true>
-  stranded?: Record<string, number | { before: number; thread?: string }>
+  /** A member turn this Desktop is not (or no longer) polling: the message-count baseline to
+   *  harvest its late reply from. `turn` names the poll that owns it while that poll runs. */
+  stranded?: Record<string, number | { before: number; thread?: string; turn?: string }>
+  /** #93813: how far each member's external-write reconcile sweep has read
+   *  into that member's per-group session transcript (absolute row index of
+   *  the last mirrored row + 1). Persisted so external posts aren't rescanned
+   *  (or re-mirrored) after a window restart. */
+  externalCursors?: Record<string, number>
   syncRevision?: number
   /** Left behind when a room is disbanded, so sync can't resurrect it. */
   tombstone?: boolean
@@ -205,39 +245,42 @@ export interface GroupChat {
   watermarks: Record<string, number>
 }
 
-export type GroupPromptKind = 'approval' | 'clarify'
-
 /**
  * One sub-question of a batch clarify, straight off the wire. `choices` and
- * `question` stay unknown because the card re-validates them; the two id
- * spellings are the keys it maps drafts and answers by.
+ * `question` stay unknown because the card re-validates them.
  */
 export interface GroupPromptQuestion {
   choices?: unknown
-  id?: string
   multi_select?: boolean
-  multiSelect?: boolean
-  qid?: string
+  qid: string
   question?: unknown
 }
 
-export interface GroupPrompt {
+interface GroupPromptBase {
   at: number
-  choices: string[]
-  command?: string
   group: string
-  kind: GroupPromptKind
   member: string
   memberKey: string
-  multiSelect: boolean
-  question: string
-  questions?: GroupPromptQuestion[] | null
   requestId: string
   sessionId?: null | string
   /** The thread the blocking question belongs to — part of the mirror key,
    *  since a member can be blocked in two threads at once. */
   thread?: string
 }
+
+interface GroupApprovalPrompt extends GroupPromptBase {
+  choices: string[]
+  command?: string
+  kind: 'approval'
+  question: string
+}
+
+interface GroupClarifyPrompt extends GroupPromptBase {
+  kind: 'clarify'
+  questions: GroupPromptQuestion[]
+}
+
+export type GroupPrompt = GroupApprovalPrompt | GroupClarifyPrompt
 
 export type GroupActivityKind =
   | 'cancelled'
@@ -259,6 +302,10 @@ export interface GroupActivityEvent {
   kind: GroupActivityKind
   member?: string
   preview?: string
+  /** Failure cause: the gateway's typed `data.reason`, the normalized
+   *  `slot_wait_timeout`, or the error's redacted first line (#117366);
+   *  absent on non-failures. */
+  reason?: string
 }
 
 /**
@@ -299,6 +346,8 @@ export interface GatewaySource {
   connectionId: string
   count?: number
   error?: null | string
+  /** Backend identity (/api/status `install_id`) when the enumeration saw it. */
+  installId?: string
   kind?: string
   label?: string
   reachable?: boolean

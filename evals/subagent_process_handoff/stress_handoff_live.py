@@ -9,18 +9,19 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 
 WORKTREE = os.environ["HERMES_WORKTREE"]
 sys.path.insert(0, WORKTREE)
-import tools.process_registry as pr  # noqa: E402
+import tools.process_registry as pr
 pr._SYSTEMD_SCOPE_AVAILABLE = False
-from tools.process_registry import process_registry  # noqa: E402
-import tools.async_delegation as ad  # noqa: E402
-from run_agent import AIAgent  # noqa: E402
+from tools.process_registry import process_registry
+import tools.async_delegation as ad
+from run_agent import AIAgent
 
 MODEL = os.environ.get("LIVE_MODEL", "openai/gpt-5.6-terra")
-OUT = os.environ.get("STRESS_OUT", "/tmp/stress_handoff_results.jsonl")
+OUT = os.environ.get("STRESS_OUT", os.path.join(tempfile.gettempdir(), "stress_handoff_results.jsonl"))
 
 
 def run_scenario(name, parent_prompt, *, wait_for_completions=0, timeout=420, max_iter=12, second_turn=None):
@@ -157,7 +158,7 @@ SCENARIOS["handoff_exited_refused"] = dict(
                          "terminal command sleep 3 (foreground). Then attempt process_manage action=handoff on the first "
                          "process with data=late. Report exactly what the handoff call returned (status or error text).")),
     check=lambda r: (len(r["children"]) == 1 and not r["children"][0].get("handed_off_processes")
-                     and re.search(r"not a running process|already exited|error", (r["children"][0].get("summary") or ""), re.I)),
+                     and re.search(r"not a running process|already exited|error", (r["children"][0].get("summary") or ""), re.IGNORECASE)),
 )
 
 # 8. Parent-level: after a handoff, can the PARENT poll/kill the inherited process on a later turn?
@@ -168,7 +169,7 @@ SCENARIOS["parent_controls_inherited"] = dict(
     second_turn=("You now own the handed-off process named above. Call process_manage action=poll on it, then "
                  "process_manage action=kill on it, and reply with the poll status and the kill result."),
     check=lambda r: (len(r["children"]) == 1 and r["children"][0].get("handed_off_processes")
-                     and re.search(r"kill|terminat", r["second_reply"], re.I) and not r["still_running_after"]),
+                     and re.search(r"kill|terminat", r["second_reply"], re.IGNORECASE) and not r["still_running_after"]),
 )
 
 
@@ -186,7 +187,7 @@ def main(names):
                 rec = run_scenario(name, sc["prompt"], wait_for_completions=sc.get("wait_for_completions", 0),
                                    second_turn=sc.get("second_turn"))
                 rec["pass"] = bool(sc["check"](rec))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 rec = {"scenario": name, "pass": False, "exception": repr(exc)}
             f.write(json.dumps(rec) + "\n")
             f.flush()

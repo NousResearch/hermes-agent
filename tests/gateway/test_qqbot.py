@@ -1232,6 +1232,91 @@ class TestOp9InvalidSession:
 
 
 # ---------------------------------------------------------------------------
+# WS close discipline: detach-then-close (op 7/9 vs reconnect race)
+# ---------------------------------------------------------------------------
+
+class TestWsCloseRace:
+    """_close_ws / _close_ws_soon must never close() the same WS object twice.
+
+    The op-7/op-9 handler schedules an async WS close while the reconnect path
+    closes on entry (_open_ws → _close_ws); two concurrent close() calls on the
+    same object contend on aiohttp's internal locks and can wedge the event
+    loop. Detaching the reference first makes each close single-owner.
+    """
+
+    def _make_adapter(self):
+        from gateway.platforms.qqbot.adapter import QQAdapter
+        return QQAdapter(_make_config(app_id="a", client_secret="b"))
+
+    @staticmethod
+    def _ws_fake():
+        class FakeWS:
+            closed = False
+
+            def __init__(self):
+                self.close_calls = 0
+
+            async def close(self):
+                self.close_calls += 1
+                self.closed = True
+
+        return FakeWS()
+
+    @pytest.mark.asyncio
+    async def test_close_ws_is_single_flight(self):
+        """A second _close_ws must not touch the already-detached objects."""
+        adapter = self._make_adapter()
+        ws = self._ws_fake()
+
+        class FakeSession:
+            closed = False
+
+            def __init__(self):
+                self.close_calls = 0
+
+            async def close(self):
+                self.close_calls += 1
+                self.closed = True
+
+        session = FakeSession()
+        adapter._ws = ws
+        adapter._session = session
+
+        await adapter._close_ws()
+        await adapter._close_ws()  # reconnect path racing in
+
+        assert adapter._ws is None and adapter._session is None
+        assert ws.close_calls == 1
+        assert session.close_calls == 1
+
+    @pytest.mark.asyncio
+    async def test_close_soon_then_reconnect_closes_once(self):
+        """op 7 schedules a close; the reconnect path must not close the same WS again."""
+        adapter = self._make_adapter()
+        ws = self._ws_fake()
+        adapter._ws = ws
+
+        adapter._close_ws_soon()      # op-7 path: detach + schedule close
+        assert adapter._ws is None    # detached immediately, before the task runs
+
+        await adapter._close_ws()     # reconnect path enters right after
+        await asyncio.sleep(0.01)     # let the scheduled close task run
+
+        assert ws.close_calls == 1
+
+    def test_close_soon_without_running_loop_is_safe(self):
+        """Synchronous callers (no loop) must still detach without raising."""
+        adapter = self._make_adapter()
+        ws = self._ws_fake()
+        adapter._ws = ws
+
+        adapter._close_ws_soon()      # no running loop → close is not scheduled
+
+        assert adapter._ws is None
+        assert ws.close_calls == 0
+
+
+# ---------------------------------------------------------------------------
 # Close code classification
 # ---------------------------------------------------------------------------
 

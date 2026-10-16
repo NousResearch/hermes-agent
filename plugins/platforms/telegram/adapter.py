@@ -6116,6 +6116,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if not text or not bot_username:
             return text
         cleaned = re.sub(rf"(?i)@{re.escape(bot_username)}\b[,:\-]*\s*", "", text).strip()
+        if re.search(r"(?i)@\w+bot\b", cleaned):
+            return text
         return cleaned or text
 
     def _topic_gates_pass(self, thread_id, *, warn_non_numeric: bool) -> Optional[bool]:

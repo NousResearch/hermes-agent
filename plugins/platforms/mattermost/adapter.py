@@ -121,6 +121,8 @@ class MattermostAdapter(BasePlatformAdapter):
             config.extra.get("reply_mode", "") or _get_scoped_secret("MATTERMOST_REPLY_MODE", "off")).lower()
         self._last_post_status: Optional[int] = None  # POST-only, read by the broken-thread-root fallback
         self._last_post_error: str = ""
+        # WebSocket posts omit the sender's is_bot flag. Cache successful user lookups.
+        self._user_is_bot_cache: dict[str, bool] = {}
         self._dedup = MessageDeduplicator()
 
     # --- HTTP helpers ---
@@ -165,6 +167,49 @@ class MattermostAdapter(BasePlatformAdapter):
 
     async def _api_get(self, path: str) -> dict[str, Any]:
         return await self._api("GET", path)
+
+    def _message_mentions_self(self, text: str) -> bool:
+        names = (self._bot_username, self._bot_user_id)
+        return any(f"@{name}".lower() in text.lower() for name in names if name)
+
+    def _mattermost_allow_bots_policy(self) -> str:
+        """Return the configured bot policy: none, mentions, or all."""
+        raw = _extra_or_secret(self.config.extra, "allow_bots", "MATTERMOST_ALLOW_BOTS", "all")
+        value = str(raw).strip().lower()
+        if value in {"none", "mentions", "all"}:
+            return value
+        logger.warning("Mattermost: invalid allow_bots policy %r; using 'all' for compatibility", raw)
+        return "all"
+
+    async def _sender_is_bot(self, user_id: str) -> bool:
+        """Resolve Mattermost's user-level is_bot flag, failing open on lookup errors."""
+        if not user_id:
+            return False
+        if user_id in self._user_is_bot_cache:
+            return self._user_is_bot_cache[user_id]
+        if not self._session:
+            return False
+        user = await self._api_get(f"users/{user_id}")
+        # A transient or malformed response must not permanently disable filtering.
+        if not isinstance(user, dict) or "is_bot" not in user:
+            return False
+        is_bot = bool(user["is_bot"])
+        self._user_is_bot_cache[user_id] = is_bot
+        return is_bot
+
+    async def _should_ignore_bot_sender(self, user_id: str, message_text: str) -> tuple[bool, bool]:
+        """Return (ignore_message, sender_is_bot) for an inbound sender."""
+        sender_is_bot = await self._sender_is_bot(user_id)
+        if not sender_is_bot:
+            return False, False
+        policy = self._mattermost_allow_bots_policy()
+        if policy == "none":
+            logger.debug("Mattermost: ignoring bot sender %s (allow_bots=none)", user_id)
+            return True, True
+        if policy == "mentions" and not self._message_mentions_self(message_text):
+            logger.debug("Mattermost: ignoring unmentioned bot sender %s", user_id)
+            return True, True
+        return False, True
 
     async def _api_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._api("POST", path, payload)
@@ -504,8 +549,8 @@ class MattermostAdapter(BasePlatformAdapter):
                               ).lower() not in {"false", "0", "no"}
         free_channels = _channel_id_set(
             _extra_or_secret(self.config.extra, "free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS", blank_is_unset=False))
-        mention_patterns = [f"@{self._bot_username}", f"@{self._bot_user_id}"]
-        has_mention = any(pattern.lower() in message_text.lower() for pattern in mention_patterns)
+        mention_patterns = [f"@{name}" for name in (self._bot_username, self._bot_user_id) if name]
+        has_mention = self._message_mentions_self(message_text)
         if require_mention and channel_id not in free_channels and not has_mention:
             logger.debug("Mattermost: skipping non-DM message without @mention (channel=%s)", channel_id)
             return None
@@ -561,6 +606,9 @@ class MattermostAdapter(BasePlatformAdapter):
             return
         channel_id, is_dm = post.get("channel_id", ""), data.get("channel_type", "O") == "D"
         message_text = post.get("message", "")
+        ignore_bot_sender, sender_is_bot = await self._should_ignore_bot_sender(sender_id, message_text)
+        if ignore_bot_sender:
+            return
         if not is_dm:  # DMs need no gating; channels are mention-gated.
             message_text = self._apply_channel_gating(channel_id, message_text)
             if message_text is None:
@@ -582,7 +630,7 @@ class MattermostAdapter(BasePlatformAdapter):
         source = self.build_source(
             chat_id=channel_id, chat_type=_CHANNEL_TYPE_MAP.get(data.get("channel_type", "O"), "channel"),
             user_id=sender_id, user_name=data.get("sender_name", "").lstrip("@") or sender_id,
-            thread_id=thread_id, message_id=post_id)
+            thread_id=thread_id, message_id=post_id, is_bot=sender_is_bot)
         from gateway.platforms.base import resolve_channel_prompt
         await self.handle_message(MessageEvent(
             text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,
@@ -701,7 +749,8 @@ def interactive_setup() -> None:
 _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge; allowed_channels is a whitelist
     ("require_mention", "MATTERMOST_REQUIRE_MENTION", "lower"),
     ("free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS", "csv"),
-    ("allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", "csv"))
+    ("allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", "csv"),
+    ("allow_bots", "MATTERMOST_ALLOW_BOTS", "lower"))
 
 
 def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:

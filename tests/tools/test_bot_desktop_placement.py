@@ -82,6 +82,45 @@ def test_sandbox_rfb_and_cua_ride_the_exec_prefix(monkeypatch):
     assert not isinstance(env, DockerEnvironment)  # the fake never touched a real daemon
 
 
+def _exercise_sandbox_browser_wrap(monkeypatch, chromium_result):
+    from tools import browser_tool_session as bts
+    from tools.bot_desktop import sandbox_host
+
+    env = _FakeDocker()
+    monkeypatch.setattr(bts, "_browser_in_sandbox", lambda: True)
+    monkeypatch.setattr(runtime, "_sandbox_env", lambda *, create: env)
+    monkeypatch.setattr(runtime, "published_env", lambda: {"DISPLAY": ":20", "XAUTHORITY": "/x"})
+    monkeypatch.setattr(sandbox_host, "_user_for", lambda e: "pn")
+    monkeypatch.setattr(sandbox_host, "browser_profile_dir", lambda e: "/home/pn/profile")
+    calls: list[tuple[list[str], dict]] = []
+
+    def fake_run_in(e, argv, **kwargs):
+        calls.append((argv, kwargs))
+        if argv[:2] == ["bash", "-c"]:
+            return subprocess.CompletedProcess(argv, 0 if chromium_result else 1,
+                                               (chromium_result or "").encode(), b"")
+        return subprocess.CompletedProcess(argv, 0)
+
+    wrapped_env: dict[str, str] = {}
+    monkeypatch.setattr(streams, "run_in", fake_run_in)
+    monkeypatch.setattr(streams, "remote_command",
+                        lambda e, argv, *, child_env, user, interactive: wrapped_env.update(child_env) or ["docker", *argv])
+    return bts._sandbox_wrap(["agent-browser", "open", "https://example.com"],
+                             {"AGENT_BROWSER_EXECUTABLE_PATH": "/stale/path", "PATH": "/bin"}, "/tmp/task"), wrapped_env, calls
+
+
+def test_sandbox_browser_wrap_propagates_found_chromium(monkeypatch):
+    _, remote_env, calls = _exercise_sandbox_browser_wrap(monkeypatch, "/opt/playwright/chromium-1/chrome-linux-arm64/chrome")
+    assert remote_env["AGENT_BROWSER_EXECUTABLE_PATH"] == "/opt/playwright/chromium-1/chrome-linux-arm64/chrome"
+    assert any(argv == ["mkdir", "-p", "/tmp/hermes-bot-desktop/agent-browser", "/tmp/hermes-bot-desktop/shots", "/home/pn/profile"]
+               for argv, _ in calls)
+
+
+def test_sandbox_browser_wrap_omits_chromium_when_probe_finds_nothing(monkeypatch):
+    _, remote_env, _ = _exercise_sandbox_browser_wrap(monkeypatch, None)
+    assert "AGENT_BROWSER_EXECUTABLE_PATH" not in remote_env
+
+
 def test_sandbox_status_offers_the_image_switch_instead_of_a_config_hint(monkeypatch):
     """A docker sandbox kept on the previous default image (no desktop stack) is the common
     upgraded-install case: the blocker becomes the switch offer and ``image_switch`` carries what

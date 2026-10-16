@@ -128,7 +128,7 @@ def browser_profile_dir(env: Any) -> str:
 _CHROMIUM_PROBE = (
     'for d in "${PLAYWRIGHT_BROWSERS_PATH:-}" /opt/playwright "$HOME/.cache/ms-playwright"; do'
     ' [ -n "$d" ] || continue;'
-    ' for c in "$d"/chromium-*/chrome-linux/chrome "$d"/chromium-*/chrome-linux64/chrome; do'
+    ' for c in "$d"/chromium-*/chrome-linux/chrome "$d"/chromium-*/chrome-linux64/chrome "$d"/chromium-*/chrome-linux-arm64/chrome; do'
     ' [ -x "$c" ] && { printf %s "$c"; exit 0; }; done; done; exit 1'
 )
 

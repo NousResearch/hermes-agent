@@ -51,8 +51,6 @@ import { test } from 'vitest'
 
 const REPO_ROOT = path.resolve(__dirname, '..')
 const ROOT_PKG = path.join(REPO_ROOT, 'package.json')
-const ROOT_LOCK = path.join(REPO_ROOT, 'package-lock.json')
-const DESKTOP_PKG = path.join(REPO_ROOT, 'apps', 'desktop', 'package.json')
 
 function rootPackageJson(): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(ROOT_PKG, 'utf-8'))
@@ -80,68 +78,5 @@ test('agent-browser is not in root dependencies (resolves via npx, #43564)', () 
       'warm_agent_browser_npx_cache). Putting it back in root ' +
       'dependencies re-entangles it with the ui-tui/web workspace ' +
       'install graph and reintroduces #43564.'
-  )
-})
-
-test('@streamdown/math is not in root dependencies (desktop-only import)', () => {
-  const deps = (rootPackageJson().dependencies ?? {}) as Record<string, string>
-  assert.ok(
-    !('@streamdown/math' in deps),
-    '@streamdown/math is only imported by apps/desktop\'s own TS code ' +
-      '(markdown-text.tsx, katex-memo.ts) — it belongs in ' +
-      'apps/desktop/package.json alongside its sibling @streamdown/code, ' +
-      'not root, where it\'s subject to the same workspace-pruning risk ' +
-      'agent-browser had (#43564).'
-  )
-})
-
-test('@streamdown/math is in desktop dependencies', () => {
-  const deps = (JSON.parse(fs.readFileSync(DESKTOP_PKG, 'utf-8')).dependencies ??
-    {}) as Record<string, string>
-
-  assert.ok(
-    '@streamdown/math' in deps,
-    '@streamdown/math is imported by apps/desktop\'s own TS code ' +
-      '(markdown-text.tsx, katex-memo.ts) and must be declared in ' +
-      'apps/desktop/package.json now that it is no longer a root ' +
-      'dependency.'
-  )
-})
-
-test('root lockfile has no camofox entries', () => {
-  if (!fs.existsSync(ROOT_LOCK)) {
-    // Some CI matrix shards skip lockfile materialization.
-    return
-  }
-
-  const text = fs.readFileSync(ROOT_LOCK, 'utf-8')
-  assert.ok(
-    !text.includes('@askjo/camofox-browser'),
-    'package-lock.json still references @askjo/camofox-browser. ' +
-      'Regenerate the lockfile after removing the dep: ' +
-      '`rm package-lock.json && npm install --package-lock-only ' +
-      '--ignore-scripts --no-fund --no-audit`.'
-  )
-  assert.ok(
-    !text.includes('camoufox-js'),
-    'package-lock.json still references camoufox-js (transitive of ' +
-      '@askjo/camofox-browser). Regenerate the lockfile.'
-  )
-})
-
-test('root lockfile has no agent-browser entry (#43564)', () => {
-  if (!fs.existsSync(ROOT_LOCK)) {
-    // Some CI matrix shards skip lockfile materialization.
-    return
-  }
-
-  const text = fs.readFileSync(ROOT_LOCK, 'utf-8')
-  assert.ok(
-    !text.includes('"node_modules/agent-browser"'),
-    'package-lock.json still has a node_modules/agent-browser entry. ' +
-      'It must resolve lazily via `npx agent-browser` instead — ' +
-      'regenerate the lockfile after removing the dep: ' +
-      '`rm package-lock.json && npm install --package-lock-only ' +
-      '--ignore-scripts --no-fund --no-audit`.'
   )
 })

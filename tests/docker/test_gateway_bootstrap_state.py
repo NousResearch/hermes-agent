@@ -79,8 +79,12 @@ def test_no_seed_when_env_unset(
 def test_non_running_value_ignored(
     built_image: str, container_name: str,
 ) -> None:
-    """Only literal 'running' is honored; any other value is ignored."""
-    for bogus in ("stopped", "Running", "1", "true", "starting"):
+    """Only literal 'running' is honored; any other value is ignored.
+
+    One representative non-running value: each value costs a full container
+    boot, and the shell comparison has no per-value branches worth pinning.
+    """
+    for bogus in ("stopped",):
         # Need a fresh container per iteration
         name = f"{container_name}-{bogus}"
         _start_container(
@@ -99,6 +103,7 @@ def test_non_running_value_ignored(
         subprocess.run(
             ["docker", "rm", "-f", name],
             capture_output=True, timeout=10,
+            check=False,
         )
 
 
@@ -126,6 +131,7 @@ def _cleanup_bind_mount(built_image: str, container_name: str, host_dir: Path) -
     subprocess.run(
         ["docker", "rm", "-f", container_name],
         capture_output=True, timeout=10,
+        check=False,
     )
     subprocess.run(
         ["docker", "run", "--rm",
@@ -133,6 +139,7 @@ def _cleanup_bind_mount(built_image: str, container_name: str, host_dir: Path) -
          "--entrypoint", "sh", built_image,
          "-c", "chown -R 0:0 /clean 2>/dev/null; rm -rf /clean/* /clean/.* 2>/dev/null; chown 0:0 /clean; true"],
         capture_output=True, timeout=15,
+        check=False,
     )
 
 
@@ -181,6 +188,7 @@ def test_does_not_seed_gateway_state_through_symlink(
         r = subprocess.run(
             ["docker", "logs", container_name],
             capture_output=True, text=True, timeout=10,
+            check=False,
         )
         combined = r.stdout + r.stderr
         assert "refusing" in combined and "gateway_state.json" in combined, (

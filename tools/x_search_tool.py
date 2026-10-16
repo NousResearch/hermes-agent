@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -31,7 +31,7 @@ X_SEARCH_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 MAX_HANDLES = 10
 
 
-def _load_x_search_config() -> Dict[str, Any]:
+def _load_x_search_config() -> dict[str, Any]:
     try:
         from hermes_cli.config import load_config
         return load_config().get("x_search", {}) or {}
@@ -55,7 +55,7 @@ def _get_x_search_int(key: str, default: int, floor: int) -> int:
         return default
 
 
-def _resolve_xai_bearer() -> Tuple[str, str, str]:
+def _resolve_xai_bearer() -> tuple[str, str, str]:
     """Return ``(api_key, base_url, source)``; ``source`` is ``"xai-oauth"`` or ``"xai"``. Raises RuntimeError
     when no credential is usable (expiry between registration and call -> clean tool error, not a 401).
 
@@ -81,7 +81,7 @@ def check_x_search_requirements() -> bool:
     return bool(str(resolve_xai_http_credentials().get("api_key") or "").strip())
 
 
-def _normalize_handles(handles: Optional[List[str]], field_name: str) -> List[str]:
+def _normalize_handles(handles: Optional[list[str]], field_name: str) -> list[str]:
     cleaned = [h for h in (str(handle or "").strip().lstrip("@") for handle in handles or []) if h]
     if len(cleaned) > MAX_HANDLES:
         raise ValueError(f"{field_name} supports at most {MAX_HANDLES} handles")
@@ -106,7 +106,7 @@ def _validate_date_range(from_date: str, to_date: str) -> None:
         raise ValueError(
             f"from_date ({parsed_from.isoformat()}) must be on or before to_date ({parsed_to.isoformat()})"
         )
-    today_utc = datetime.now(timezone.utc).date()
+    today_utc = datetime.now(UTC).date()
     if parsed_from is not None and parsed_from > today_utc:
         raise ValueError(
             f"from_date ({parsed_from.isoformat()}) is in the future; "
@@ -114,13 +114,13 @@ def _validate_date_range(from_date: str, to_date: str) -> None:
         )
 
 
-def _message_contents(payload: Dict[str, Any]):
+def _message_contents(payload: dict[str, Any]):
     for item in payload.get("output", []) or []:
         if item.get("type") == "message":
             yield from item.get("content", []) or []
 
 
-def _extract_response_text(payload: Dict[str, Any]) -> str:
+def _extract_response_text(payload: dict[str, Any]) -> str:
     output_text = str(payload.get("output_text") or "").strip()
     if output_text:
         return output_text
@@ -129,7 +129,7 @@ def _extract_response_text(payload: Dict[str, Any]) -> str:
     return "\n\n".join(p for p in parts if p).strip()
 
 
-def _extract_inline_citations(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _extract_inline_citations(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
             "url": a.get("url", ""), "title": a.get("title", ""),
@@ -162,7 +162,7 @@ def _error_json(error: str, exc: BaseException) -> str:
     return json.dumps({**body, "error_type": type(exc).__name__}, ensure_ascii=False)
 
 
-def _post_with_retries(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> requests.Response:
+def _post_with_retries(url: str, headers: dict[str, str], payload: dict[str, Any]) -> requests.Response:
     """POST with retries on 5xx / timeout / connection errors; re-raises the last failure."""
     timeout_seconds = _get_x_search_int("timeout_seconds", DEFAULT_X_SEARCH_TIMEOUT_SECONDS, 30)
     max_retries = _get_x_search_int("retries", DEFAULT_X_SEARCH_RETRIES, 0)
@@ -188,7 +188,7 @@ def _post_with_retries(url: str, headers: Dict[str, str], payload: Dict[str, Any
 def _build_x_search_tool_def(
     allowed_x_handles, excluded_x_handles, from_date: str, to_date: str,
     enable_image_understanding: bool, enable_video_understanding: bool,
-) -> Tuple[Dict[str, Any], List[str]]:
+) -> tuple[dict[str, Any], list[str]]:
     """Return ``(tool_def, active_filters)``; raises ValueError on invalid filters."""
     allowed = _normalize_handles(allowed_x_handles, "allowed_x_handles")
     excluded = _normalize_handles(excluded_x_handles, "excluded_x_handles")
@@ -196,8 +196,8 @@ def _build_x_search_tool_def(
         raise ValueError("allowed_x_handles and excluded_x_handles cannot be used together")
     _validate_date_range(from_date, to_date)
 
-    tool_def: Dict[str, Any] = {"type": "x_search"}
-    active_filters: List[str] = []
+    tool_def: dict[str, Any] = {"type": "x_search"}
+    active_filters: list[str] = []
     filters = (("allowed_x_handles", allowed), ("excluded_x_handles", excluded),
                ("from_date", from_date.strip()), ("to_date", to_date.strip()))
     for key, value in filters:
@@ -213,8 +213,8 @@ def _build_x_search_tool_def(
 
 def x_search_tool(
     query: str,
-    allowed_x_handles: Optional[List[str]] = None,
-    excluded_x_handles: Optional[List[str]] = None,
+    allowed_x_handles: Optional[list[str]] = None,
+    excluded_x_handles: Optional[list[str]] = None,
     from_date: str = "",
     to_date: str = "",
     enable_image_understanding: bool = False,

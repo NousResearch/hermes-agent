@@ -7,6 +7,7 @@ per-subscription delivery (``_KanbanNotification``) live here.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import re
 from functools import partial
@@ -17,6 +18,7 @@ from typing import Any, Callable, Optional
 from agent.i18n import t
 
 from gateway.kanban_watchers_common import _list_boards, _to_thread_process_service, logger
+from gateway.wake import session_owned_by_profile
 
 
 def _kbc():
@@ -27,6 +29,17 @@ def _kbc():
 def _kbn():
     from hermes_cli import kanban_db_notify
     return kanban_db_notify
+
+
+def _pin_first():
+    """Machine-flow board resolution: env pins outrank the enumerated slug.
+
+    The slug here came from ``list_boards()``, not from a user — on a box whose
+    env pins ``HERMES_KANBAN_DB`` every board must resolve to the pinned file
+    or the notifier reads per-slug DBs nobody writes (see
+    ``kanban_db.pin_first_board_resolution``)."""
+    from hermes_cli import kanban_db
+    return kanban_db.pin_first_board_resolution()
 
 # "status" covers dashboard drag-drop and `_set_status_direct()`.
 # ``review_requested`` wakes the origin like a block but is not one;
@@ -126,6 +139,21 @@ def _warn_anchorless_thread_sub_once(sub: dict, platform: str) -> None:
     )
 
 
+_UNROUTABLE_WARNED: set[tuple] = set()
+
+
+def _warn_unroutable_sub_once(sub: dict, platform: Any, message: str, *extra_args: Any) -> None:
+    """A routed subscription the credential gate fail-closes is a permanent dead-end: delivery
+    rewinds every tick with only a DEBUG line. Say so ONCE per row at WARNING, mirroring
+    ``_warn_anchorless_thread_sub_once`` (#115460)."""
+    key = (sub.get("task_id"), platform, sub.get("chat_id"), sub.get("thread_id") or "")
+    if key in _UNROUTABLE_WARNED:
+        return
+    _UNROUTABLE_WARNED.add(key)
+    logger.warning(message, sub.get("task_id"), getattr(platform, "value", platform),
+                   sub.get("chat_id"), *extra_args)
+
+
 def _platform_names(mapping: Any) -> set[str]:
     """Lower-cased platform names of an adapters mapping (Platform enums or strings)."""
     return {getattr(platform, "value", str(platform)).lower() for platform in mapping}
@@ -143,14 +171,18 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     profile = owner_profile or getattr(runner, "_kanban_notifier_profile", None)
     primary_profile = getattr(runner, "_primary_profile_name", None) or runner._active_profile_name()
     profile = profile or primary_profile
-    # Empty maps are startup placeholders for route-only profiles; a connected
-    # secondary on ANY platform establishes an independent credential boundary.
-    if (getattr(runner, "_profile_adapters", {}) or {}).get(profile):
+    # A profile holding its OWN adapter for this platform is an independent credential boundary —
+    # ``_authorization_adapter`` already answered for it, so the primary never stands in. Adapters
+    # on OTHER platforms do not gate this one: the primary bot is the only credential serving the
+    # pinned chat, for inbound turns and for these notifications alike (#115460).
+    own_adapters = (getattr(runner, "_profile_adapters", {}) or {}).get(profile) or {}
+    if getattr(platform, "value", str(platform)).lower() in _platform_names(own_adapters):
         return None
     metadata = sub.get("delivery_metadata") or {}
     guild = metadata.get("scope_id") or metadata.get("guild_id")
     parent = metadata.get("parent_chat_id")
     chat, thread = sub.get("chat_id"), sub.get("thread_id") or None
+    user_id = sub.get("user_id") or None
     thread_like = bool(thread) or (sub.get("chat_type") or metadata.get("chat_type")) in {
         "thread", "forum", "forum_post", "forum-post", "topic",
     }
@@ -160,15 +192,31 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
     # hand-maintained equality implementation.
     for route in getattr(config, "profile_routes", None) or []:
         if route.matches(platform.value, guild_id=guild, chat_id=chat,
-                         thread_id=thread, parent_chat_id=parent):
+                         thread_id=thread, parent_chat_id=parent, user_id=user_id):
             if route.profile != profile:
+                _warn_unroutable_sub_once(
+                    sub, platform,
+                    "kanban notifier: subscription for %s on %s chat %s is stamped with profile %s but a "
+                    "profile_routes entry pins that chat to profile %s; it will not be delivered. "
+                    "Re-subscribe with `hermes kanban notify-subscribe ... --notifier-profile %s`.",
+                    profile, route.profile, route.profile)
                 return None
             from gateway.run import _multiplex_profile_homes
             served = {name for name, _home in _multiplex_profile_homes(config)}
             return primary if profile in served else None
         if route.matches(platform.value, guild_id=guild or route.guild_id, chat_id=chat,
-                         thread_id=thread, parent_chat_id=parent or (route.chat_id if thread_like else None)):
+                         thread_id=thread, parent_chat_id=parent or (route.chat_id if thread_like else None),
+                         user_id=user_id or route.user_id):
             return None
+    # A stateless (api_server) subscription carries a RAW session id, not a routable chat, so no
+    # profile_routes entry can anchor it — and a platform-wide api_server route would deny the
+    # default profile's own api_server destinations. The shared listener mirrors /p/<profile>/ for
+    # every served profile, so the owner's own session store is the proof: authorize exactly the
+    # session that lives in the served profile's state.db, never the platform. The default profile
+    # keeps the historical fallthrough below (no store read).
+    if profile != primary_profile and getattr(platform, "value", platform) == "api_server" \
+            and session_owned_by_profile(config, profile, chat):
+        return primary
     return primary if profile == primary_profile else None
 
 
@@ -206,21 +254,24 @@ class _Collector:
             logger.debug("kanban notifier: no connected adapters; skipping tick")
             return self.deliveries
         # Poll each resolved DB path once: several slugs can map to one DB when
-        # HERMES_KANBAN_DB pins the board path.
+        # HERMES_KANBAN_DB pins the board path. The whole tick resolves pin-first:
+        # on a dispatcher-pinned box each enumerated slug must map to the pinned
+        # DB, never to that slug's own (empty) physical file.
         kb = self.kb
-        seen_db_paths: set[str] = set()
-        for board_meta in _list_boards(kb):
-            slug = board_meta.get("slug") or kb.DEFAULT_BOARD
-            db_path = board_meta.get("db_path")
-            try:
-                resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(kb.kanban_db_path(slug).resolve())
-            except Exception:
-                resolved_db_path = f"slug:{slug}"
-            if resolved_db_path in seen_db_paths:
-                logger.debug("kanban notifier: skipping duplicate board slug %s for DB %s", slug, resolved_db_path)
-                continue
-            seen_db_paths.add(resolved_db_path)
-            self.collect_board(slug)
+        with _pin_first():
+            seen_db_paths: set[str] = set()
+            for board_meta in _list_boards(kb):
+                slug = board_meta.get("slug") or kb.DEFAULT_BOARD
+                db_path = board_meta.get("db_path")
+                try:
+                    resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(kb.kanban_db_path(slug).resolve())
+                except Exception:
+                    resolved_db_path = f"slug:{slug}"
+                if resolved_db_path in seen_db_paths:
+                    logger.debug("kanban notifier: skipping duplicate board slug %s for DB %s", slug, resolved_db_path)
+                    continue
+                seen_db_paths.add(resolved_db_path)
+                self.collect_board(slug)
         return self.deliveries
 
     def _board_has_subs(self, slug: str) -> bool:
@@ -275,7 +326,6 @@ class _Collector:
         """Claim events on one board, appending delivery dicts to ``deliveries``."""
         if not self._board_has_subs(slug):
             return
-        kb = self.kb
         try:
             conn = _kbc().connect(board=slug)
         except Exception as exc:
@@ -324,10 +374,11 @@ def _payload(ev: Any, key: str) -> Any:
     return ev.payload.get(key) if ev.payload and ev.payload.get(key) else None
 
 
-def _clip(ev: Any, key: str, fmt: str, limit: int) -> str:
-    """``fmt`` applied to the truncated payload value, or ``""`` when absent."""
+def _clip(ev: Any, key: str, msg_key: str, limit: int) -> str:
+    """Catalog message ``msg_key`` (``{value}`` placeholder) rendered with the truncated payload
+    value, or ``""`` when absent."""
     value = _payload(ev, key)
-    return fmt.format(str(value)[:limit]) if value else ""
+    return t(msg_key, value=str(value)[:limit]) if value else ""
 
 
 _NL = "\n{}"
@@ -347,7 +398,7 @@ def _fmt_completed(ev, n) -> tuple:
     elif n.task and n.task.result:
         wake_handoff = _first_line(n.task.result, 160)
     handoff = f"\n{wake_handoff}" if wake_handoff is not None else ""
-    return f"✔ {n.head} done — {n.title}{handoff}", wake_handoff, None
+    return t("gateway.kanban.ping.completed", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
 
 def _fmt_review_requested(ev, n) -> tuple:
@@ -360,7 +411,7 @@ def _fmt_review_requested(ev, n) -> tuple:
         summary = str(summary)
         handoff = f"\n{summary[:200]}"
         wake_handoff = _first_line(summary, 200)
-    return f"👀 {n.head} ready for review — {n.title}{handoff}", wake_handoff, None
+    return t("gateway.kanban.ping.review_requested", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
 
 def _fmt_changes_requested(ev, n) -> tuple:
@@ -368,11 +419,12 @@ def _fmt_changes_requested(ev, n) -> tuple:
     reason = _safe_review_reason(payload.get("reason"))
     reviewer = _safe_review_reason(payload.get("reviewer"), 48)
     implementer = _safe_review_reason(payload.get("implementer"), 48)
-    reason_text = reason or "reviewer feedback requires changes"
-    provenance = f" — reviewer @{reviewer}" if reviewer else ""
+    reason_text = reason or t("gateway.kanban.ping.changes_default_reason")
+    provenance = t("gateway.kanban.ping.reviewer_suffix", reviewer=reviewer) if reviewer else ""
     if implementer:
-        provenance += f" → implementer @{implementer}"
-    msg = f"🛑 {n.board_tag}Kanban {n.task_id} review requested changes/BLOCK: {reason_text}{provenance}"
+        provenance += t("gateway.kanban.ping.implementer_suffix", implementer=implementer)
+    msg = t("gateway.kanban.ping.changes_requested",
+            board_tag=n.board_tag, task_id=n.task_id, reason=reason_text, provenance=provenance)
     return msg, None, reason_text
 
 
@@ -388,10 +440,11 @@ def _fmt_block_loop_detected(ev, n) -> tuple:
     """
     kind = _payload(ev, "kind")
     decision = kind == "needs_input"
-    msg = (
-        f"🛑 {n.head} routed to TRIAGE — "
-        f"{'needs a human decision' if decision else 'for orchestration attention'}"
-        f"{_clip(ev, 'recurrences', ' (blocked {}x for the same cause)', 200)}{_clip(ev, 'reason', ': {}', 160)}"
+    msg = t(
+        "gateway.kanban.ping.triage", head=n.head,
+        why=t("gateway.kanban.ping.triage_decision" if decision else "gateway.kanban.ping.triage_attention"),
+        recurrences=_clip(ev, "recurrences", "gateway.kanban.ping.triage_recurrences", 200),
+        reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160),
     )
     return msg, None, None
 
@@ -400,34 +453,32 @@ def _fmt_gave_up(ev, n) -> tuple:
     # The dispatcher auto-blocked the task after ``failures`` consecutive non-success attempts
     # (spawn failure, crash, or timeout alike): it is now Blocked and waiting for a human.
     failures = _payload(ev, "failures")
-    count = f"it failed {int(failures)} times in a row" if failures else "it kept failing"
-    last = _clip(ev, "error", " (last: {})", 160)
-    return (
-        f"⛔ {n.head} is now blocked: {count}{last}. Fix the cause, then `hermes kanban unblock "
-        f"{n.task_id}` (or `hermes kanban reassign {n.task_id}`). Logs: `hermes kanban log {n.task_id}`.",
-        None, None,
-    )
+    count = (t("gateway.kanban.ping.failed_n_times", count=int(failures)) if failures
+             else t("gateway.kanban.ping.kept_failing"))
+    last = _clip(ev, "error", "gateway.kanban.ping.last_error", 160)
+    return t("gateway.kanban.ping.gave_up", head=n.head, count=count, last=last, task_id=n.task_id), None, None
 
 
 def _fmt_timed_out(ev, n) -> tuple:
     limit = int(_payload(ev, "limit_seconds") or 0)
     minutes = max(1, round(limit / 60)) if limit else 0
-    span = f"its {minutes}-minute limit" if minutes else "its time limit"
-    return f"⏱ {n.head} ran past {span} and was stopped; it will be retried automatically.", None, None
+    span = t("gateway.kanban.ping.limit_minutes", minutes=minutes) if minutes else t("gateway.kanban.ping.limit_generic")
+    return t("gateway.kanban.ping.timed_out", head=n.head, span=span), None, None
 
 
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
-_EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
+_EVENT_FORMATTERS: dict[str, Callable[[Any, _KanbanNotification], tuple]] = {
     "completed": _fmt_completed,
-    "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
-    "gave_up": _fmt_gave_up,
-    "crashed": lambda ev, n: (
-        f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None,
+    "blocked": lambda ev, n: (
+        t("gateway.kanban.ping.blocked", head=n.head, reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160)),
+        None, None,
     ),
+    "gave_up": _fmt_gave_up,
+    "crashed": lambda ev, n: (t("gateway.kanban.ping.crashed", head=n.head), None, None),
     "timed_out": _fmt_timed_out,
-    "status": lambda ev, n: (f"🔄 {n.head} → {_payload(ev, 'status') or ''}", None, None),
+    "status": lambda ev, n: (t("gateway.kanban.ping.status", head=n.head, status=_payload(ev, "status") or ""), None, None),
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
     "block_loop_detected": _fmt_block_loop_detected,
@@ -457,10 +508,10 @@ class _KanbanNotification:
         self.task_id = sub["task_id"]
         self.sub_profile = sub.get("notifier_profile") or ""
         self.title = (task.title if task else sub["task_id"])[:120]
-        self.board_tag = f"[{self.board_slug}] " if self.board_slug else ""
+        self.board_tag = t("gateway.kanban.ping.board_tag", board=self.board_slug) if self.board_slug else ""
         # Attribute the ping to the worker that did the work.
-        tag = f"@{task.assignee} " if task and task.assignee else ""
-        self.head = f"{self.board_tag}{tag}Kanban {self.task_id}"
+        tag = t("gateway.kanban.ping.assignee_tag", assignee=task.assignee) if task and task.assignee else ""
+        self.head = t("gateway.kanban.ping.head", board_tag=self.board_tag, assignee_tag=tag, task_id=self.task_id)
         # The wake self-post path needs the key even when every event was skipped.
         self.sub_key = (sub["task_id"], sub["platform"], sub["chat_id"], sub.get("thread_id") or "")
         mode = sub.get("delivery_mode") or "notify"
@@ -554,14 +605,27 @@ class _KanbanNotification:
         logger.info("kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
                     self.task_id, self.platform_str, self.sub["chat_id"], self.sub_profile or "default", self.wake_kinds)
 
+    def _served_wake_profile(self) -> Optional[str]:
+        """The subscription's profile when THIS gateway is a multiplexer serving it, else ``None``.
+
+        ``None`` keeps the historical path: a standalone ``hermes -p <name>`` gateway owns its own
+        listener and key, so its api_server wakes keep using the HTTP self-post.
+        """
+        if not self.sub_profile:
+            return None
+        if not getattr(getattr(self.runner, "config", None), "multiplex_profiles", False):
+            return None
+        return self.sub_profile
+
     def _owner_scope(self):
         """Runtime scope of the subscription's profile under multiplex, else a no-op context."""
         runner = self.runner
-        if not (self.sub_profile and getattr(getattr(runner, "config", None), "multiplex_profiles", False)):
+        served_profile = self._served_wake_profile()
+        if not served_profile:
             return contextlib.nullcontext()
         from gateway.run import _async_profile_runtime_scope
         from gateway.session import SessionSource
-        source = SessionSource(platform=self.plat, chat_id=self.sub["chat_id"], profile=self.sub_profile)
+        source = SessionSource(platform=self.plat, chat_id=self.sub["chat_id"], profile=served_profile)
         return _async_profile_runtime_scope(runner._resolve_profile_home_for_source(source))
 
     async def wake(self) -> None:
@@ -569,8 +633,14 @@ class _KanbanNotification:
         from gateway.wake import deliver_wake
         sub = self.sub
         if not self.is_push_adapter:
-            await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key,
-                               notification_category="diagnostic" if self.wake_diagnostic else "result")
+            # A served profile's raw-session wake runs in THAT profile's scope, in-process: the
+            # shared listener's /p/<profile>/ self-post would need the profile's own
+            # API_SERVER_KEY, which a route-only profile legitimately does not have, and an
+            # unprefixed self-post would resume the session in the DEFAULT profile's store.
+            async with self._owner_scope():
+                await deliver_wake(self.adapter, text=self.synth, session_id=self.session_key,
+                                   profile=self._served_wake_profile(),
+                                   notification_category="diagnostic" if self.wake_diagnostic else "result")
             self._log_woke()
             return
         from gateway.session import SessionSource
@@ -681,8 +751,11 @@ class _KanbanNotification:
         except ValueError:
             await self.advance()
             return
-        # Recheck the exact route after claiming: config/adapters can change between ticks.
-        adapter = _adapter_for_subscription(self.runner, self.plat, self.sub, self.sub_profile or None)
+        # Recheck the exact route after claiming: config/adapters can change between ticks. The
+        # recheck reads the served profile's session store for a stateless destination, so it runs
+        # off the event loop (the claim path already collects in a worker thread).
+        adapter = await asyncio.to_thread(
+            _adapter_for_subscription, self.runner, self.plat, self.sub, self.sub_profile or None)
         if adapter is None:
             logger.debug("kanban notifier: adapter %s disconnected before delivery for %s; rewinding claim",
                          self.platform_str, self.task_id)
@@ -717,7 +790,7 @@ class _KanbanNotification:
                 if self.wake_kinds:
                     wake_payloads.append((self.synth, self.wake_diagnostic, self.wake_kinds))
             self.d = {**self.d, "events": original_events}
-        wake_kinds, is_push = self.wake_kinds, self.is_push_adapter
+        is_push = self.is_push_adapter
         from gateway.wake import WakeNotAccepted
 
         # A requested wake is required even when its passive ping already landed.

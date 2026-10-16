@@ -23,6 +23,7 @@ function context(type: GatewayEventName): GatewayEventContext {
       failAssistantMessage: vi.fn(),
       finalizeInterimAssistantMessage: vi.fn(),
       flushQueuedDeltas: vi.fn(),
+      dropQueuedDeltas: vi.fn(),
       hydrateFromStoredSession: vi.fn(async () => undefined),
       lastCwdInfoSessionRef: { current: null },
       nativeSubagentSessionsRef: { current: new Set() },

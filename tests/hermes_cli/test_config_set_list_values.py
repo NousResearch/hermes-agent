@@ -49,14 +49,16 @@ def test_yaml_flow_list_is_parsed(user_home):
     assert raw["plugins"]["enabled"] == ["model-providers/gemini"]
 
 
-def test_invalid_list_literal_warns_and_stores_string(user_home, capsys):
+def test_invalid_list_literal_is_refused_and_nothing_written(user_home, capsys):
+    # Was warn-and-store: every isinstance-gated reader ignored the string while
+    # `config get` echoed it back (#114471). The writer now refuses the literal.
     from hermes_cli.config import set_config_value, read_raw_config
 
-    set_config_value("platform_toolsets.line", '["unclosed')
+    with pytest.raises(SystemExit):
+        set_config_value("platform_toolsets.line", '["unclosed')
     captured = capsys.readouterr()
-    assert "not valid" in captured.err.lower() or "warning" in captured.err.lower()
-    raw = read_raw_config()
-    assert raw["platform_toolsets"]["line"] == '["unclosed'
+    assert "not valid yaml/json" in captured.err.lower()
+    assert "platform_toolsets" not in (read_raw_config() or {})
 
 
 def test_scalar_values_unaffected(user_home):
@@ -159,3 +161,16 @@ def test_round_trip_through_load_config(user_home):
     set_config_value("platform_toolsets.line", '["clarify", "file", "web"]')
     cfg = load_config()
     assert cfg["platform_toolsets"]["line"] == ["clarify", "file", "web"]
+
+
+def test_bare_string_into_list_slot_absent_from_defaults_is_refused(user_home, capsys):
+    """`plugins.enabled` / `model_catalog.excluded_providers` are omitted from DEFAULT_CONFIG, so the
+    container guard did not know them and `config set plugins.enabled a,b` stored a string every
+    isinstance(list) reader ignored (#83308, #105706)."""
+    from hermes_cli.config import set_config_value, read_raw_config
+
+    for key in ("plugins.enabled", "model_catalog.excluded_providers"):
+        with pytest.raises(SystemExit):
+            set_config_value(key, "a,b")
+        assert "must be a list" in capsys.readouterr().err
+    assert read_raw_config() in (None, {})

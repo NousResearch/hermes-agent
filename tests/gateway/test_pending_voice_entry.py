@@ -30,6 +30,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 from plugins.platforms.telegram.adapter import TelegramAdapter
+from tests.waiting import async_wait_until as until
 
 
 class LocalTelegramRequest(BaseRequest):
@@ -147,13 +148,6 @@ def update(bot, number, *, text=None, voice=False):
     return Update.de_json({"update_id": number, "message": message}, bot)
 
 
-async def until(predicate, timeout=8):
-    async def wait():
-        while not predicate():
-            await asyncio.sleep(0.01)
-    await asyncio.wait_for(wait(), timeout)
-
-
 @asynccontextmanager
 async def telegram_gateway(monkeypatch, tmp_path, busy_text_mode, echo):
     hermes_home = tmp_path / "hermes"
@@ -177,7 +171,6 @@ async def telegram_gateway(monkeypatch, tmp_path, busy_text_mode, echo):
     monkeypatch.setattr("gateway.run._hermes_home", hermes_home)
     monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs", lambda **kwargs: {"api_key": "fixture"})
     monkeypatch.setattr("run_agent.AIAgent", WaitingModel)
-    monkeypatch.setattr("tools.tirith_security._install_tirith", lambda **kwargs: (None, "offline test"))
     WaitingModel.instances, WaitingModel.messages, WaitingModel.redirects = [], [], []
     WaitingModel.started, WaitingModel.release = threading.Event(), threading.Event()
     platform_config = PlatformConfig(enabled=True, token="999:fixture")
@@ -272,7 +265,7 @@ async def test_telegram_voice_followups_reach_model_once(case, echo, busy_text_m
                 voice_task = asyncio.create_task(app.process_update(update(app.bot, 3, voice="voice-b")))
                 if case == "inflight_b":
                     await until(stt_entered.is_set)
-                    # The update is still awaiting B while the existing model turn drains A+B.
+                    # B is still transcribing when the existing turn releases the FIFO queue.
                     WaitingModel.release.set()
                     await until(lambda: not adapter._pending_messages)
                 else:
@@ -282,17 +275,17 @@ async def test_telegram_voice_followups_reach_model_once(case, echo, busy_text_m
             WaitingModel.release.set()
             await until(lambda: not adapter._background_tasks, timeout=10)
             assert not errors, errors
-            assert len(WaitingModel.messages) == 2, WaitingModel.messages
             delivered = "\n".join(WaitingModel.messages + WaitingModel.redirects)
             expected_clips = ["A"] if case.startswith("buffered_text") else ["A", "B"]
             assert Counter(calls) == Counter(expected_clips), (calls, WaitingModel.messages)
-            for clip in expected_clips:
-                model_input = WaitingModel.messages[0 if case == "active_a" and clip == "A" else 1]
-                assert model_input.count(f"voice {clip} request") == 1
             if case.startswith("buffered_text"):
+                assert len(WaitingModel.messages) == 2, WaitingModel.messages
+                assert WaitingModel.messages[1].count("voice A request") == 1
                 assert added_text in delivered
-            elif case != "active_a":
-                assert WaitingModel.messages[1].index("voice A request") < WaitingModel.messages[1].index("voice B request")
+            else:
+                # Each voice follow-up keeps its own FIFO turn, in arrival order.
+                older = [] if case == "active_a" else ["older task X"]
+                assert WaitingModel.messages == older + ['"voice A request"', '"voice B request"']
             assert Counter(transport.echoes) == Counter(
                 [f'🎙️ "voice {clip} request"' for clip in expected_clips] if echo else []
             )
@@ -303,12 +296,25 @@ async def test_telegram_voice_followups_reach_model_once(case, echo, busy_text_m
                 await asyncio.gather(voice_task, return_exceptions=True)
 
 
+def assert_incoming_clip_results(results, expected_transcripts, late_text, case):
+    for text, transcripts in results:
+        assert text is not None
+        assert transcripts == expected_transcripts
+        assert "caption A" not in text and late_text not in text
+        if case != "same_words":
+            assert '"voice A"' not in text
+        for transcript in expected_transcripts:
+            assert text.count(f'"{transcript}"') == 1
+        if case == "failed_audio":
+            assert "could not be transcribed" in text
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("user_text", [None, "", "call-specific caption"])
 @pytest.mark.parametrize("case", ["cold", "warm", "inflight", "cancelled", "error_retry", "failed_audio", "same_words", "during_echo", "legacy_photo"])
 async def test_merged_voice_cache_preserves_clip_and_caption_ownership(case, user_text, monkeypatch, tmp_path):
     runner = object.__new__(GatewayRunner)
-    runner.config = SimpleNamespace(stt_enabled=True, stt_echo_transcripts=True)
+    runner.config = GatewayConfig(stt_enabled=True, stt_echo_transcripts=True)
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
     adapter = SimpleNamespace(send=AsyncMock())
     paths = [str(tmp_path / f"{clip}.ogg") for clip in ("A", "B")]
@@ -322,8 +328,8 @@ async def test_merged_voice_cache_preserves_clip_and_caption_ownership(case, use
     calls = []
     fallback_calls = []
     tasks = []
-    b_results = []
-    merged_results = []
+    b_results: list[tuple[str | None, list[str]]] = []
+    merged_results: list[tuple[str | None, list[str]]] = []
     blocking = case in {"inflight", "cancelled"}
     if not blocking:
         release.set()
@@ -404,6 +410,7 @@ async def test_merged_voice_cache_preserves_clip_and_caption_ownership(case, use
                         (b_results if task is first else merged_results).append(result)
 
         override, b_transcripts = await runner._transcribe_pending_audio_event_once(incoming, user_text)
+        assert override is not None
         b_results.append((override, b_transcripts))
         caption = incoming.text if user_text is None else user_text
         if caption:
@@ -412,18 +419,10 @@ async def test_merged_voice_cache_preserves_clip_and_caption_ownership(case, use
             assert incoming.text not in override
         expected_a = "same words" if case == "same_words" else "voice A"
         expected_b = [] if case == "failed_audio" else ["same words" if case == "same_words" else "voice B"]
-        for b_text, transcripts in b_results:
-            assert b_text is not None
-            assert transcripts == expected_b
-            assert "caption A" not in b_text and late_text.text not in b_text
-            if case != "same_words":
-                assert '"voice A"' not in b_text
-            for transcript in expected_b:
-                assert b_text.count(f'"{transcript}"') == 1
-            if case == "failed_audio":
-                assert "could not be transcribed" in b_text
+        assert_incoming_clip_results(b_results, expected_b, late_text.text, case)
         await runner._echo_pending_stt_transcripts_once(incoming, adapter, source, b_transcripts)
         canonical, all_transcripts = await runner._transcribe_pending_audio_event_once(head)
+        assert canonical is not None
         await runner._echo_pending_stt_transcripts_once(head, adapter, source, all_transcripts)
         merged_results.append((canonical, all_transcripts))
         expected_all = [expected_a, *expected_b]
@@ -452,6 +451,7 @@ async def test_merged_voice_cache_preserves_clip_and_caption_ownership(case, use
             separate = MessageEvent(text="separate caption", message_type=MessageType.VOICE,
                                     source=other_source, media_urls=[paths[0]], media_types=["audio/ogg"])
             other_text, other_transcripts = await runner._transcribe_pending_audio_event_once(separate)
+            assert other_text is not None
             await runner._echo_pending_stt_transcripts_once(separate, adapter, other_source, other_transcripts)
             assert "separate caption" in other_text and "caption B" not in other_text
             assert calls.count(paths[0]) == index

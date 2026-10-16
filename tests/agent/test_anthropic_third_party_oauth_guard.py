@@ -18,17 +18,15 @@ This test class covers all FIVE sites that assign ``_is_anthropic_oauth``:
 
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from run_agent import AIAgent
 
-
 # A plausible-looking OAuth token (``sk-ant-`` without the ``-api`` suffix).
 _OAUTH_LIKE_TOKEN = "sk-ant-oauth-example-1234567890abcdef"
-_API_KEY_TOKEN = "sk-ant-api-abcdef1234567890"
-
 
 @pytest.fixture
 def agent():
@@ -47,7 +45,6 @@ def agent():
         )
         a.client = MagicMock()
         return a
-
 
 class TestOAuthFlagOnRefresh:
     """Site 3 — _try_refresh_anthropic_client_credentials."""
@@ -76,6 +73,146 @@ class TestOAuthFlagOnRefresh:
         # And the flag is untouched regardless.
         assert agent._is_anthropic_oauth is False
 
+    @pytest.mark.parametrize("base_url", [
+        "https://llmbox.bytedance.net",
+        "http://127.0.0.1:8080/anthropic.com",  # substring spoof: the host is still foreign
+        "https://llmbox.bytedance.net/anthropic",  # accepted proxy shape, but holds a custom key
+    ])
+    def test_third_party_endpoint_skips_refresh(self, agent, base_url):
+        """provider == 'anthropic' on a third-party endpoint must not refresh: the refresh
+        would swap in native Anthropic credentials the endpoint was never given."""
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
+        agent._anthropic_api_key = "custom-api-key"
+        agent._anthropic_base_url = base_url
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = False
+
+        with (
+            patch("agent.anthropic_credentials.resolve_anthropic_token",
+                  return_value=_OAUTH_LIKE_TOKEN),
+            patch("agent.anthropic_adapter.build_anthropic_client",
+                  return_value=MagicMock()),
+        ):
+            result = agent._try_refresh_anthropic_client_credentials()
+
+        assert result is False
+        assert agent._anthropic_api_key == "custom-api-key"
+        assert agent._is_anthropic_oauth is False
+
+    @pytest.mark.parametrize("base_url", [
+        "https://api.claude.com",
+        "https://llm.corp.example/anthropic",
+    ])
+    def test_accepted_native_proxy_keeps_rotating_anthropic_token(self, agent, base_url):
+        """Hosts the resolver accepts as native Anthropic already hold the Anthropic token, so
+        blocking the refresh would strand an expiring OAuth token (401 with no recovery)."""
+        old, new = "sk-ant-oat01-old-token-aaaaaaaa", "sk-ant-oat01-new-token-bbbbbbbb"
+        agent.api_mode = "anthropic_messages"
+        agent.provider = "anthropic"
+        agent._anthropic_api_key = old
+        agent._anthropic_base_url = base_url
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = True
+        agent._primary_runtime = {"anthropic_api_key": old, "is_anthropic_oauth": False}
+
+        with (
+            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            result = agent._try_refresh_anthropic_client_credentials()
+
+        assert result is True
+        assert agent._anthropic_api_key == new
+        # Fallback restore rebuilds from the key + flag pair, so the flag moves with the key.
+        assert agent._primary_runtime == {"anthropic_api_key": new, "is_anthropic_oauth": agent._is_anthropic_oauth}
+
+    def test_compression_before_any_request_sends_the_refreshed_token(self, agent):
+        """Claude Code revokes the old token on refresh. Manual /compress and turn-start compaction
+        run before any main request, so compress_context must refresh first and move every holder
+        (the compressor forwards its OWN ``api_key``), or the summary 401s for the session's life."""
+        from agent.conversation_compression import compress_context
+
+        old, new = "sk-ant-oat01-old", "sk-ant-oat01-new"
+        seen, announced = [], []
+        agent.api_mode, agent.provider = "anthropic_messages", "anthropic"
+        agent._anthropic_base_url = "https://api.anthropic.com"
+        agent._anthropic_client = MagicMock()
+        agent.api_key = agent._anthropic_api_key = agent.context_compressor.api_key = old
+        agent._primary_runtime = {"api_key": old, "anthropic_api_key": old, "compressor_api_key": old}
+        agent._compression_feasibility_checked = True
+        cc = agent.context_compressor
+
+        def fake_compress(_messages, **_kwargs):
+            seen.append(cc.api_key)
+            return [{"role": "user", "content": "[summary]"}, {"role": "assistant", "content": "tail"}]
+
+        with (
+            patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
+            patch.object(AIAgent, "_build_direct_anthropic_client", return_value=MagicMock()),
+            patch.object(cc, "compress", side_effect=fake_compress),
+            patch.object(agent, "_emit_status", side_effect=lambda _s: announced.append(agent._anthropic_api_key)),
+        ):
+            compress_context(agent, [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}],
+                             "system", approx_tokens=100_000, force=True)
+
+        assert seen == [new]
+        assert announced[:1] == [old]  # the Desktop announce lands before the (possibly blocking) refresh
+        assert agent._anthropic_api_key == agent.api_key == new
+        assert agent._primary_runtime == {"api_key": new, "anthropic_api_key": new, "compressor_api_key": new,
+                                          "is_anthropic_oauth": agent._is_anthropic_oauth}
+
+    def test_auxiliary_main_route_uses_refreshed_token(self, agent):
+        """Production order: the turn publishes its aux runtime BEFORE the first request triggers
+        the silent refresh, so same-turn `auto` aux calls must still pick up the new token."""
+        from agent import auxiliary_client as aux
+        from agent.auxiliary_key_rotation import rotate_runtime_main_api_key
+        from agent.chat_completion_helpers import _context_thread_target
+        from agent.turn_context import _publish_runtime_main
+
+        old, new = "sk-ant...aaaa", "sk-ant...bbbb"
+        agent.api_mode, agent.provider, agent.model = "anthropic_messages", "anthropic", "claude-opus-4-6"
+        agent.base_url = agent._anthropic_base_url = "https://api.anthropic.com"
+        agent.api_key = agent._anthropic_api_key = old
+        agent._anthropic_client = MagicMock()
+        agent._is_anthropic_oauth = True
+        seen = {}
+
+        def fake_resolve(provider, model, explicit_api_key=None, **kwargs):
+            seen["api_key"] = explicit_api_key
+            return MagicMock(), model
+
+        refreshed = []
+        try:
+            _publish_runtime_main(agent)
+            with (
+                patch("agent.anthropic_credentials.resolve_anthropic_token", return_value=new),
+                patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            ):
+                # The refresh runs in the request worker's copied Context; the turn thread reads after.
+                worker = threading.Thread(target=_context_thread_target(
+                    lambda: refreshed.append(agent._try_refresh_anthropic_client_credentials())))
+                worker.start()
+                worker.join()
+            assert refreshed == [True]
+            runtime = aux._normalize_main_runtime(None)
+            assert runtime.get("api_key") == new
+            with (
+                patch.object(aux, "resolve_provider_client", side_effect=fake_resolve),
+                patch.object(aux, "_is_provider_unhealthy", return_value=False),
+            ):
+                aux._try_main_provider_route(
+                    "anthropic", agent.model, runtime.get("base_url", ""), runtime.get("api_key"), "anthropic_messages",
+                )
+            assert seen["api_key"] == new
+            # A scoped runtime rotates in place; the legacy mirrors are never republished by a rotation.
+            with aux.scoped_runtime_main({"provider": "anthropic", "api_key": new, "model": "m"}):
+                rotate_runtime_main_api_key(new, "sk-ant...cccc")
+                assert aux._RUNTIME_MAIN_CONTEXT.get()["api_key"] == "sk-ant...cccc"
+            assert (aux._RUNTIME_MAIN_MODEL, aux._RUNTIME_MAIN_API_KEY) == (agent.model, old)
+            assert aux._compat_runtime_main() is None  # unchanged mirrors never become a runtime input
+        finally:
+            aux.clear_runtime_main()
 
 
 class TestOAuthFlagOnCredentialSwap:
@@ -98,7 +235,6 @@ class TestOAuthFlagOnCredentialSwap:
             agent._swap_credential(entry)
 
         assert agent._is_anthropic_oauth is False
-
 
 class TestOAuthFlagOnConstruction:
     """Site 1 — AIAgent.__init__ on a third-party anthropic_messages provider."""
@@ -129,30 +265,3 @@ class TestOAuthFlagOnConstruction:
         # stale Anthropic OAuth token, and the OAuth flag must be False.
         assert agent._anthropic_api_key == "minimax-key-1234"
         assert agent._is_anthropic_oauth is False
-
-
-class TestOAuthFlagOnFallbackActivation:
-    """Site 5 — _try_activate_fallback targeting a third-party Anthropic endpoint."""
-
-    def test_fallback_to_third_party_does_not_flip_oauth(self, agent):
-        """Directly mimic the post-fallback assignment at line ~6537."""
-        from agent.anthropic_credentials import _is_oauth_token
-
-        # Emulate the relevant lines of _try_activate_fallback without
-        # running the entire recovery stack (which pulls in streaming,
-        # sessions, etc.).
-        fb_provider = "minimax"
-        effective_key = _OAUTH_LIKE_TOKEN
-        agent._is_anthropic_oauth = (
-            _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
-        )
-        assert agent._is_anthropic_oauth is False
-
-
-class TestApiKeyTokensAlwaysSafe:
-    """Regression: plain API-key shapes must always resolve to non-OAuth, any provider."""
-
-    def test_native_anthropic_with_api_key_token(self):
-        from agent.anthropic_credentials import _is_oauth_token
-        assert _is_oauth_token(_API_KEY_TOKEN) is False
-

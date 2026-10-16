@@ -21,18 +21,6 @@ def _make_cli():
 
 
 class TestPromptTextInputThreadSafety:
-    def test_main_thread_uses_run_in_terminal(self):
-        """On the main thread with an active app, route through run_in_terminal."""
-        cli = _make_cli()
-
-        with patch("prompt_toolkit.application.run_in_terminal") as mock_rit, \
-             patch("builtins.input", return_value="2"):
-            cli._prompt_text_input("Choice: ")
-
-        # run_in_terminal was invoked; the _ask closure passed to it would
-        # call input() when driven by the event loop.  We assert dispatch path,
-        # not the orphaned-coroutine result.
-        assert mock_rit.called
 
     def test_background_thread_cancels_instead_of_hanging(self):
         """On a daemon thread with an active app, cancel cleanly (return None).

@@ -123,6 +123,14 @@ type KanbanMessages = {
   metaCreatedBy: string
   metaCreated: string
   metaWorkerPid: string
+  /** #124391 — blocked-card detail: why it blocked and what it cost. */
+  blockKindTip: (kind: string) => string
+  blockReason: string
+  blockRecurrences: string
+  blockRecurrencesTip: string
+  consecutiveFailures: string
+  lastFailureError: string
+  unblockedMessage: (id: string) => string
   readyUnassignedTitle: string
   readyUnassignedBody: string
   diagnosticsN: (n: number) => string
@@ -163,6 +171,9 @@ type KanbanMessages = {
   // board switcher
   board: string
   newBoard: string
+  /** Tooltip on the page-header trigger — names the ACTION, since the visible
+   *  text is the board's own name and reads as a static label otherwise. */
+  switchBoard: string
   newBoardDots: string
   // Menu labels are bare verbs — the board they act on is the one named in the
   // switcher's trigger. The nouns come back for the native file-dialog and
@@ -338,6 +349,20 @@ export const en: KanbanMessages = {
   metaCreatedBy: 'Created by',
   metaCreated: 'Created',
   metaWorkerPid: 'Worker pid',
+  blockKindTip: kind =>
+    kind === 'needs_input'
+      ? 'The worker asked for human input.'
+      : kind === 'capability'
+        ? 'The worker hit a capability wall it cannot get past.'
+        : kind === 'transient'
+          ? 'The worker failed on a transient error.'
+          : 'The worker reported a dependency it must wait on.',
+  blockReason: 'Block kind',
+  blockRecurrences: 'Block recurrences',
+  blockRecurrencesTip: 'Times this task re-blocked for the same reason after a human unblock.',
+  consecutiveFailures: 'Consecutive failures',
+  lastFailureError: 'Last failure',
+  unblockedMessage: id => `Unblocked ${id}. Task is ready for the next tick.`,
   readyUnassignedTitle: 'Ready, but unassigned — this card will never run.',
   readyUnassignedBody:
     'The dispatcher only claims Ready cards that have an assignee. Pick a profile in the Assignee field above (or set a default assignee in the orchestration settings) and it runs within a minute.',
@@ -380,6 +405,7 @@ export const en: KanbanMessages = {
   working: 'working',
   board: 'Board',
   newBoard: 'New board',
+  switchBoard: 'Switch board',
   newBoardDots: 'New board…',
   exportDots: 'Export…',
   importDots: 'Import…',
@@ -550,6 +576,20 @@ const ja: KanbanMessages = {
   metaCreatedBy: '作成者',
   metaCreated: '作成',
   metaWorkerPid: 'ワーカー PID',
+  blockKindTip: kind =>
+    kind === 'needs_input'
+      ? 'ワーカーが人間の入力を求めています。'
+      : kind === 'capability'
+        ? 'ワーカーが越えられない能力の壁に当たりました。'
+        : kind === 'transient'
+          ? 'ワーカーが一時的なエラーで失敗しました。'
+          : 'ワーカーが待機すべき依存関係を報告しました。',
+  blockReason: 'ブロック種別',
+  blockRecurrences: 'ブロック回数',
+  blockRecurrencesTip: '人間がブロック解除した後、同じ理由で再ブロックされた回数。',
+  consecutiveFailures: '連続失敗',
+  lastFailureError: '直近の失敗',
+  unblockedMessage: id => `${id} をブロック解除しました。次のティックで実行できます。`,
   readyUnassignedTitle: 'Ready ですが未割り当て — このカードは実行されません。',
   readyUnassignedBody:
     'ディスパッチャは担当のある Ready カードのみ取得します。上の担当フィールドでプロフィールを選ぶ（またはオーケストレーション設定でデフォルトの担当を設定する）と、1分以内に実行されます。',
@@ -592,6 +632,7 @@ const ja: KanbanMessages = {
   working: '作業中',
   board: 'ボード',
   newBoard: '新しいボード',
+  switchBoard: 'ボードを切り替え',
   newBoardDots: '新しいボード…',
   exportDots: 'エクスポート…',
   importDots: 'インポート…',
@@ -761,6 +802,20 @@ const zh: KanbanMessages = {
   metaCreatedBy: '创建者',
   metaCreated: '创建于',
   metaWorkerPid: '工作单元 PID',
+  blockKindTip: kind =>
+    kind === 'needs_input'
+      ? '工作单元正在等待人工输入。'
+      : kind === 'capability'
+        ? '工作单元遇到了无法逾越的能力限制。'
+        : kind === 'transient'
+          ? '工作单元因临时性错误失败。'
+          : '工作单元报告了需要等待的依赖。',
+  blockReason: '阻塞类型',
+  blockRecurrences: '阻塞次数',
+  blockRecurrencesTip: '人工解除阻塞后，该任务因同一原因再次阻塞的次数。',
+  consecutiveFailures: '连续失败',
+  lastFailureError: '最近失败',
+  unblockedMessage: id => `已解除 ${id} 的阻塞。任务将在下一轮调度中就绪。`,
   readyUnassignedTitle: '就绪但未分配 — 这张卡片永远不会运行。',
   readyUnassignedBody:
     '调度器只领取有负责人的就绪卡片。在上面的负责人字段选择一个配置档（或在编排设置中设置默认负责人），它会在一分钟内运行。',
@@ -802,6 +857,7 @@ const zh: KanbanMessages = {
   working: '进行中',
   board: '面板',
   newBoard: '新建面板',
+  switchBoard: '切换面板',
   newBoardDots: '新建面板…',
   exportDots: '导出…',
   importDots: '导入…',
@@ -970,6 +1026,20 @@ const zhHant: KanbanMessages = {
   metaCreatedBy: '建立者',
   metaCreated: '建立於',
   metaWorkerPid: '工作單元 PID',
+  blockKindTip: kind =>
+    kind === 'needs_input'
+      ? '工作單元正在等待人工輸入。'
+      : kind === 'capability'
+        ? '工作單元遇到了無法跨越的能力限制。'
+        : kind === 'transient'
+          ? '工作單元因暫時性錯誤失敗。'
+          : '工作單元回報了需要等待的相依關係。',
+  blockReason: '封鎖類型',
+  blockRecurrences: '封鎖次數',
+  blockRecurrencesTip: '人工解除封鎖後，該任務因同一原因再次封鎖的次數。',
+  consecutiveFailures: '連續失敗',
+  lastFailureError: '最近失敗',
+  unblockedMessage: id => `已解除 ${id} 的封鎖。任務將在下一輪排程中就緒。`,
   readyUnassignedTitle: '就緒但未指派 — 這張卡片永遠不會執行。',
   readyUnassignedBody:
     '排程器只領取有負責人的就緒卡片。在上方的負責人欄位選擇一個設定檔（或在編排設定中設定預設負責人），它會在一分鐘內執行。',
@@ -1011,6 +1081,7 @@ const zhHant: KanbanMessages = {
   working: '進行中',
   board: '面板',
   newBoard: '新增面板',
+  switchBoard: '切換面板',
   newBoardDots: '新增面板…',
   exportDots: '匯出…',
   importDots: '匯入…',

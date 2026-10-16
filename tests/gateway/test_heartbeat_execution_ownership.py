@@ -22,7 +22,7 @@ async def test_admitted_heartbeat_executes_only_in_own_conversation(tmp_path, bo
     runner.session_store = SessionStore(tmp_path / "sessions", runner.config)
     adapter = WireAdapter(PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM)
     adapter.wire = []
-    runner._adapter_for_source = lambda source: adapter
+    runner._delivery_adapter_for = lambda source: adapter
     runner._is_telegram_topic_lane = lambda source: False
     runner._cache_session_source = lambda *args: None
     runner._clear_session_env = lambda tokens: None

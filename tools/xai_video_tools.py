@@ -44,10 +44,9 @@ _VIDEO_URL_PARAM = {
         "`public_url` from a prior xAI Imagine result."
     ),
 }
-_MODEL_PARAM = {"type": "string", "description": "Optional xAI Imagine model override."}
 
 
-def _xai_video_schema(name: str, verb: str, noun: str, prompt_verb: str, extra: Dict[str, Any]) -> Dict[str, Any]:
+def _xai_video_schema(name: str, verb: str, noun: str, prompt_verb: str, extra: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": name,
         "description": (
@@ -65,16 +64,15 @@ def _xai_video_schema(name: str, verb: str, noun: str, prompt_verb: str, extra: 
                 },
                 "video_url": _VIDEO_URL_PARAM,
                 **extra,
-                "model": _MODEL_PARAM,
             },
             "required": ["prompt", "video_url"],
         },
     }
 
 
-XAI_VIDEO_EDIT_SCHEMA: Dict[str, Any] = _xai_video_schema("xai_video_edit", "Edit", "editing", "modify", {})
+XAI_VIDEO_EDIT_SCHEMA: dict[str, Any] = _xai_video_schema("xai_video_edit", "Edit", "editing", "modify", {})
 
-XAI_VIDEO_EXTEND_SCHEMA: Dict[str, Any] = _xai_video_schema(
+XAI_VIDEO_EXTEND_SCHEMA: dict[str, Any] = _xai_video_schema(
     "xai_video_extend", "Extend", "extension", "continue", {
         "duration": {
             "type": "integer",
@@ -87,7 +85,7 @@ XAI_VIDEO_EXTEND_SCHEMA: Dict[str, Any] = _xai_video_schema(
 )
 
 
-def _run_xai_video_tool(args: Dict[str, Any], op: str, run, **extra: Any) -> str:
+def _run_xai_video_tool(args: dict[str, Any], op: str, run, **extra: Any) -> str:
     prompt, video_url = _clean_string(args.get("prompt")), _clean_string(args.get("video_url"))
     if not prompt:
         return tool_error(f"prompt is required for xAI video {op}")
@@ -106,15 +104,14 @@ def _run_xai_video_tool(args: Dict[str, Any], op: str, run, **extra: Any) -> str
             "error_type": "provider_not_configured",
             "provider": "xai",
         })
-    model = _clean_string(args.get("model"))
-    return json.dumps(run(prompt=prompt, video_url=video_url, model=model, **extra))
+    return json.dumps(run(prompt=prompt, video_url=video_url, **extra))
 
 
-def _handle_xai_video_edit(args: Dict[str, Any], **_kw: Any) -> str:
+def _handle_xai_video_edit(args: dict[str, Any], **_kw: Any) -> str:
     return _run_xai_video_tool(args, "edit", run_xai_video_edit)
 
 
-def _handle_xai_video_extend(args: Dict[str, Any], **_kw: Any) -> str:
+def _handle_xai_video_extend(args: dict[str, Any], **_kw: Any) -> str:
     return _run_xai_video_tool(args, "extend", run_xai_video_extend, duration=_coerce_int(args.get("duration")))
 
 

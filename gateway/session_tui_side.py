@@ -135,6 +135,7 @@ async def background(connection, ref, params):
     authority = connection.authority
 
     def body():
+        from tui_gateway.methods_prompt import _final_response_text
         with _side_scope(authority, policy, task_id):
             agent = _side_agent(authority, policy, live, task_id)
             try:
@@ -143,7 +144,7 @@ async def background(connection, ref, params):
                 # AIAgent.close() is the owner boundary (memory, tool subprocesses, clients).
                 with contextlib.suppress(Exception):
                     agent.close()
-        return result.get('final_response', str(result)) if isinstance(result, dict) else str(result)
+        return _final_response_text(result)
 
     return _spawn(authority, ref, task_id, 'background.complete', body)
 
@@ -180,8 +181,6 @@ async def preview_restart(connection, ref, params):
     live, policy, url, task_id = _admit(connection, ref, params, 'preview', required='url',
                                         optional=('cwd', 'context'))
     authority = connection.authority
-    import os
-    from tui_gateway.methods_prompt import _PREVIEW_RESTART_HISTORY_NOTE, _PREVIEW_RESTART_RULES
     cwd, context = (str(params.get(key) or '').strip() for key in ('cwd', 'context'))
     from gateway.session_local_recovery import transcript_target
     target = transcript_target(authority, ref)
@@ -193,17 +192,11 @@ async def preview_restart(connection, ref, params):
 
     def body():
         from tui_gateway.agent_callbacks import _preview_restart_history
-        try:  # A malformed client path (embedded NUL, a missing dir) is "no validated cwd".
-            preview_cwd = os.path.abspath(os.path.expanduser(cwd)) if cwd else ''
-            preview_cwd = preview_cwd if preview_cwd and os.path.isdir(preview_cwd) else ''
-        except (OSError, ValueError):
-            preview_cwd = ''
+        from tui_gateway.methods_prompt import (_final_response_text, _preview_restart_prompt,
+                                                _validated_preview_cwd)
+        preview_cwd = _validated_preview_cwd(cwd)
         history = _preview_restart_history(authority.db.get_messages_as_conversation(target) if target else [])
-        prompt = '\n'.join(line for line in [
-            'The desktop preview pane cannot load a local server URL.', f'Preview URL: {url.strip()}',
-            f"Current working directory: {cwd or '(unknown)'}",
-            f'Preview console:\n{context}' if context else '',
-            _PREVIEW_RESTART_HISTORY_NOTE if history else '', *_PREVIEW_RESTART_RULES] if line)
+        prompt = _preview_restart_prompt(url, cwd, context, bool(history))
         with _side_scope(authority, policy, task_id):
             if preview_cwd:
                 from tools.terminal_tool import register_task_env_overrides
@@ -221,6 +214,6 @@ async def preview_restart(connection, ref, params):
                 with contextlib.suppress(Exception):
                     from tools.terminal_tool import clear_task_env_overrides
                     clear_task_env_overrides(task_id)
-        return result.get('final_response', str(result)) if isinstance(result, dict) else str(result)
+        return _final_response_text(result)
 
     return _spawn(authority, ref, task_id, 'preview.restart.complete', body)

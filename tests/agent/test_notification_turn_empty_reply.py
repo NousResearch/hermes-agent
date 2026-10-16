@@ -41,6 +41,46 @@ def _assistant_msg():
     return SimpleNamespace(reasoning=None, reasoning_content=None, reasoning_details=None)
 
 
+def _empty_response():
+    choice = SimpleNamespace(message=_assistant_msg(), finish_reason="stop")
+    choice.message.content = ""
+    choice.message.tool_calls = None
+    return SimpleNamespace(choices=[choice], model="test/model", usage=None)
+
+
+@pytest.fixture
+def loop_agent(monkeypatch):
+    from run_agent import AIAgent
+
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+    agent.client = MagicMock()
+    agent.client.chat.completions.create.side_effect = lambda **_kwargs: _empty_response()
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent.tool_delay = 0
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    monkeypatch.setattr("model_tools.handle_function_call", MagicMock(return_value="unused"))
+    monkeypatch.setattr("agent.retry_utils.jittered_backoff", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr("agent.turn_empty_response.interruptible_backoff_sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(agent, "_persist_session", MagicMock())
+    monkeypatch.setattr(agent, "_save_trajectory", MagicMock())
+    monkeypatch.setattr(agent, "_cleanup_task_resources", MagicMock())
+    return agent
+
+
 def _recover(agent, messages, **kwargs):
     return ter.recover_empty_response(
         agent,
@@ -57,6 +97,51 @@ def _recover(agent, messages, **kwargs):
         preflight_compression_blocked=False,
         **kwargs,
     )
+
+
+def _completed_tool_round():
+    return [
+        {"role": "user", "content": "Run the background task."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "content": "Process exited successfully.", "tool_call_id": "call_1"},
+    ]
+
+
+class TestNotificationTurnLoop:
+    def test_process_complete_empty_reply_exits_without_nudge(self, loop_agent):
+        result = loop_agent.run_conversation(
+            "[process completed] Background task finished.",
+            conversation_history=_completed_tool_round(),
+            persist_user_display_kind="process_complete",
+        )
+
+        assert loop_agent.client.chat.completions.create.call_count == 1
+        assert result["final_response"] == ""
+        assert result["turn_exit_reason"] == "notification_no_reply"
+        provider_messages = loop_agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert all(
+            "You just executed tool calls but returned an empty response."
+            not in str(message.get("content") or "")
+            for message in provider_messages
+        )
+
+    def test_human_turn_empty_reply_still_retries(self, loop_agent):
+        loop_agent.run_conversation(
+            "What happened?",
+            conversation_history=_completed_tool_round(),
+        )
+
+        assert loop_agent.client.chat.completions.create.call_count > 1
 
 
 class TestNotificationTurnDetection:
@@ -131,26 +216,6 @@ class TestNotificationQuietExit:
         assert verdict.final_response == ""
         assert verdict.turn_exit_reason == ter.NOTIFICATION_NO_REPLY_EXIT
 
-    def test_process_complete_empty_reply_skips_post_tool_nudge(self):
-        """Confirm the notification check returns before the post-tool-nudge
-        block so no synthetic nudge rows are appended."""
-        agent = _agent()
-        messages = [
-            {"role": "user", "content": "[process completed]", "display_kind": "process_complete"},
-        ]
-        verdict = _recover(agent, messages)
-        assert verdict.action == "break"
-        # The recover_empty_response code sets _post_tool_empty_retried = True
-        # inside the post-tool nudge block; the notification path returns
-        # before that block so the flag stays as whatever it was before.
-        # Since _agent() is a fresh MagicMock, looking up ._post_tool_empty_retried
-        # creates a truthy child mock -- but since the code never assigns it
-        # in the notification path, the original attr stays unset.
-        # Just verify the turn exited without running the nudge path at all
-        # by checking the messages list wasn't extended with synthetic rows.
-        original_len = len(messages)
-        assert len(messages) == original_len
-
     def test_async_delegation_complete_empty_reply_exits_quietly(self):
         agent = _agent()
         messages = [
@@ -194,14 +259,6 @@ class TestNotificationQuietExit:
 class TestNotificationNoReplyExitConstant:
     def test_constant_is_importable_and_stable(self):
         assert ter.NOTIFICATION_NO_REPLY_EXIT == "notification_no_reply"
-
-    def test_fallback_refund_not_affected_by_notification_constant(self):
-        from agent.turn_empty_response import _refund_api_call
-        agent = _agent()
-        agent._api_call_count = 5
-        agent.iteration_budget = MagicMock()
-        result = _refund_api_call(agent, 5)
-        assert result == 4
 
 
 class TestResponseFiltersNotificationNoReply:

@@ -109,7 +109,9 @@ export function downloadStatusText(job: LocalRuntimeJob, copy: DownloadStatusCop
     return job.detail
   }
 
-  const recovering: boolean = ['retrying', 'waiting', 'verifying', 'interrupted'].includes(job.phase)
+  const recovering: boolean =
+    job.phase === 'interrupted' ||
+    (job.status === 'running' && ['retrying', 'waiting', 'verifying'].includes(job.phase))
 
   const parts: string[] = [
     recovering && job.detail
@@ -145,7 +147,7 @@ export function downloadStatusText(job: LocalRuntimeJob, copy: DownloadStatusCop
     }
   }
 
-  return parts.length > 1 ? parts.join(' · ') : job.detail || parts[0]
+  return parts.length > 1 || job.status === 'paused' ? parts.join(' · ') : job.detail || parts[0]
 }
 
 // Phases where bytes are actually moving (or parked mid-move). Quickstart

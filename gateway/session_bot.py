@@ -15,7 +15,7 @@ from gateway.session_contract import Principal, SessionRef
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from hermes_state_runtime import RuntimeStoreError, get_session_admission
-from tools.bot_live_delivery import _delivery_id, _read
+from tools.bot_live_delivery import _TERMINAL, _delivery_id, _read
 from gateway.session_bot_mailbox import (mailbox_lock, read_receipt, write_receipt,
     scan_receipts, remember_receipt, track_receipt_task, withdraw_pin, refuse_pin, requeue_pin)
 
@@ -249,7 +249,7 @@ def _admission_outcome(authority, admission_id, fallback=None):
     """``(status, reply)`` of one admission, read from its committed result, never transcript recency."""
     row = get_session_admission(authority.db, admission_id=admission_id)
     if row is None:
-        raise RuntimeStoreError('storage_unavailable')
+        return _expired_outcome(authority, fallback)
     # A terminal row without a result blob is still definitive when the outcome says the
     # input never ran (cancelled) or was refused/failed; ambiguous is reserved for the
     # durable unknown state and for missing evidence (completed/interrupted without result).
@@ -270,6 +270,21 @@ def _admission_outcome(authority, admission_id, fallback=None):
     elif fallback is not None and fallback.get('status') in {'settled', 'failed'}:
         status = fallback['status']
     return status, reply
+
+
+def _expired_outcome(authority, record):
+    """A receipt outlives its admission once a deleted target's tombstone passes the retry horizon
+    (``prune_retired_tombstones``). A final receipt keeps the answer it already holds; a pending one
+    whose session was deleted (retired, or its row gone) can never learn its outcome and becomes
+    ``ambiguous``, never resent. A live session missing its admission is still a storage fault."""
+    from hermes_state_mutation_retirement import retired_session
+    record = record or {}
+    if record.get('status') in _TERMINAL:
+        return record['status'], record.get('reply', '')
+    session_id = record.get('session_id')
+    if session_id and (retired_session(authority.db, session_id) or authority.db.get_session(session_id) is None):
+        return 'ambiguous', record.get('reply', '')
+    raise RuntimeStoreError('storage_unavailable')
 
 
 def _retry_admission(authority, record):

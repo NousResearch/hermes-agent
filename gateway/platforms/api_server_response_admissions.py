@@ -45,7 +45,8 @@ def find_admission(adapter, durable_key, request_id):
     if admission_id:
         row = get_session_admission(authority.db, admission_id=admission_id)
         if row is None:
-            raise RuntimeStoreError('storage_unavailable')
+            # The admission's deletion tombstone aged out: the key is spent, never a new request.
+            raise RuntimeStoreError('admission_conflict')
     else:
         rows = _request_admission_rows(authority.db, request_id)
         if len(rows) > 1:

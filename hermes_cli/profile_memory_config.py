@@ -67,7 +67,9 @@ def _load_config_dict(profile_dir: Path) -> Optional[dict]:
     from hermes_cli.config_backend import read_config_doc
     try:
         data = read_config_doc(profile_dir / "config.yaml") or {}
-    except (YAMLError, OSError, UnicodeError):  # FileNotFoundError included: no config
+    # FileNotFoundError included (no config). ValueError: the YAML constructors raise it bare for
+    # values like ``2024-02-30`` / ``!!int abc``; this read is a best-effort notice and never fails a clone.
+    except (YAMLError, OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
 

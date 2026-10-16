@@ -556,6 +556,8 @@ def inline_source_flag_index(tokens: list[str]) -> int | None:
         _PYTHON_SHORT_OPTIONS_WITH_OPERANDS,
     )
 
+    # Return indices into the caller's unchanged list, even if argv[0] needs reconstruction.
+    token_offset = 0
     # Windows process readers may return an unquoted CreateProcess command line even when
     # argv[0] contains spaces. Reconstruct that interpreter token before walking options;
     # otherwise the first path fragment looks like a script name and hides a later ``-c``.
@@ -576,6 +578,7 @@ def inline_source_flag_index(tokens: list[str]) -> int | None:
             option_index, executable = candidate_index, candidate
             break
         if option_index is not None:
+            token_offset = option_index - 1
             tokens = [executable, *tokens[option_index:]]
 
     index = 1
@@ -597,7 +600,7 @@ def inline_source_flag_index(tokens: list[str]) -> int | None:
         cluster = token[1:]
         for position, letter in enumerate(cluster):
             if letter == "c":
-                return index
+                return index + token_offset
             if letter in _PYTHON_SHORT_OPTIONS_WITH_OPERANDS:
                 index += 1 if cluster[position + 1 :] else 2
                 break

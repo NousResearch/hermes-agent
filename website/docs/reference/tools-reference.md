@@ -189,6 +189,15 @@ Enabled for sessions whose source is the desktop app, whichever backend it's con
 |------|-------------|----------------------|
 | `session_search` | Search past sessions stored in the local session DB, or scroll inside one. FTS5-backed retrieval; returns actual messages from the DB (no LLM calls). Four shapes: discovery (pass `query`), scroll (pass `session_id` + `around_message_id`), read (pass `session_id` only), browse (no args). Discovery supports time bounds (`after`/`before` — ISO dates or relative durations like `7d`, `24h`, `2w`) and `exclude_session_ids` for iterative re-finding. | — |
 
+## `peer_messaging` toolset
+
+Inspired by Muse Code's inter-session messaging. Off by default — enable via `hermes tools` → Peer Messaging or `tools.<platform>.enabled` in `config.yaml`.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `peer_sessions` | List the user's other recently active Hermes sessions on this machine (session id, title, source, cwd, last activity). Local-only discovery over the session store. | — |
+| `peer_send` | Send a message to another of the user's Hermes sessions. Delivered via a local filesystem mailbox under the Hermes home (never the network); the peer receives it mid-turn over the steer channel if running, else at the start of its next turn. | — |
+
 ## `skills` toolset
 
 | Tool | Description | Requires environment |

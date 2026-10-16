@@ -52,11 +52,11 @@ from gateway.platforms import helpers as _mdchunk
 from gateway.platforms._shared import get_scoped_secret as _yb_secret, profile_scoped as _profile_scoped
 from gateway.platforms.helpers import MessageDeduplicator, cancel_task
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
-from gateway.platforms.yuanbao_media import (
+from plugins.platforms.yuanbao.yuanbao_media import (
     download_url as media_download_url, get_cos_credentials, upload_to_cos,
     build_image_msg_body, build_file_msg_body, guess_mime_type, md5_hex,
 )
-from gateway.platforms.yuanbao_proto import (
+from plugins.platforms.yuanbao.yuanbao_proto import (
     CMD_TYPE, WS_HEARTBEAT_RUNNING, WS_HEARTBEAT_FINISH, HERMES_INSTANCE_ID,
     _fields_to_dict, _get_string, _get_varint, _parse_fields,
     decode_conn_msg, decode_inbound_push, decode_forward_msg_data,
@@ -2261,7 +2261,7 @@ class StickerHandler(MediaSendHandler):
         return b"", "sticker", "application/octet-stream"  # no file bytes needed
 
     def build_msg_body(self, upload_result, **kwargs):
-        from gateway.platforms.yuanbao_sticker import (
+        from plugins.platforms.yuanbao.yuanbao_sticker import (
             get_sticker_by_name, get_random_sticker, build_face_msg_body, build_sticker_msg_body,
         )
         sticker_name = kwargs.get("sticker_name")

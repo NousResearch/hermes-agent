@@ -14,6 +14,7 @@ import { enModelMenu } from './en_model_menu'
 import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
 import { enProjects } from './en_projects'
+import { enSettingsSessions } from './en_settings_sessions'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
 import { enUninstallSection } from './en_uninstall_section'
@@ -1950,39 +1951,7 @@ export const en: Translations = {
       },
       loading: 'Loading providers...'
     },
-    sessions: {
-      loading: 'Loading archived sessions…',
-      archivedTitle: 'Archived sessions',
-      archivedIntro:
-        'Archived chats are hidden from the sidebar but keep all their messages. Alt/⌥+Shift-click a chat in the sidebar to archive it.',
-      emptyArchivedTitle: 'Nothing archived',
-      emptyArchivedDesc: 'Archive a chat to hide it here.',
-      unarchive: 'Unarchive',
-      deletePermanently: 'Delete permanently',
-      messages: count => `${count} ${count === 1 ? 'message' : 'messages'}`,
-      restored: 'Restored',
-      deleteConfirm: title => `Permanently delete "${title}"? This cannot be undone.`,
-      autoArchiveTitle: 'Auto-archive stale chats',
-      autoArchiveDesc:
-        "Automatically archive chats you haven't touched in a while. Pinned chats are never archived, and nothing is deleted — archived chats just move here.",
-      autoArchiveDaysLabel: 'Archive after',
-      autoArchiveDaysUnit: 'days of inactivity',
-      autoArchiveFailed: 'Could not update auto-archive',
-      defaultDirTitle: 'Default project directory',
-      defaultDirDesc:
-        'New sessions start in this folder unless you pick another. Leave it unset to use your home directory.',
-      defaultDirUpdated: 'Default project directory updated — start a new chat (Ctrl/⌘+N) for it to take effect',
-      defaultsTo: label => `Defaults to ${label}.`,
-      change: 'Change',
-      choose: 'Choose',
-      clear: 'Clear',
-      notSet: 'Not set',
-      failedLoad: 'Could not load archived sessions',
-      unarchiveFailed: 'Unarchive failed',
-      deleteFailed: 'Delete failed',
-      updateDirFailed: 'Could not update default directory',
-      clearDirFailed: 'Could not clear default directory'
-    },
+    sessions: enSettingsSessions,
     toolsets: {
       loadingConfig: 'Loading configuration',
       savedTitle: 'Credential saved',

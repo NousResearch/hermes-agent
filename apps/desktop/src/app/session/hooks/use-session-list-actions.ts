@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 
+import { useHermesConfigRecord } from '@/app/hooks/use-config-record'
 import { getApiRequestConnection, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
 import { sameCronSignature } from '@/lib/session-signatures'
 import {
   isMessagingSource,
   LOCAL_SESSION_SOURCE_IDS,
   MESSAGING_SESSION_SOURCE_IDS,
-  normalizeSessionSource
+  normalizeSessionSource,
+  recentsExcludedSources
 } from '@/lib/session-source'
 import { gatewayActivationEpoch } from '@/store/gateway'
 import {
@@ -173,6 +175,17 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   const loadMoreMessagingRequestRef = useRef<Record<string, number>>({})
   const refreshMessagingSessionsRequestRef = useRef(0)
   const refreshSessionsRequestRef = useRef(0)
+
+  // The recents slice hides the built-in machine sources (SIDEBAR_EXCLUDED_SOURCES) plus the
+  // config-driven extras from sessions.exclude_sources. A2A peer dispatches are hidden by default
+  // and return only when sessions.recents_show_a2a is on; the built-in entries can never be
+  // configured away. Search is unaffected, so a hidden A2A session stays findable.
+  const { data: configRecord } = useHermesConfigRecord()
+
+  const recentsExclude = useMemo(
+    () => recentsExcludedSources(SIDEBAR_EXCLUDED_SOURCES, configRecord),
+    [configRecord]
+  )
 
   useLayoutEffect(() => {
     profileScopeRef.current = profileScope
@@ -373,7 +386,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           listSidebarSessions({
             recentsProfile: sessionProfile,
             recentsLimit: limit,
-            recentsExclude: SIDEBAR_EXCLUDED_SOURCES,
+            recentsExclude,
             cronLimit: CRON_SECTION_LIMIT,
             messagingLimit: MESSAGING_SECTION_LIMIT,
             messagingExclude: MESSAGING_EXCLUDED_SOURCES
@@ -517,7 +530,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         void refreshCronJobs()
       }
     },
-    [profileScope, refreshCronJobs]
+    [profileScope, recentsExclude, refreshCronJobs]
   )
 
   const loadMoreSessions = useCallback(async () => {

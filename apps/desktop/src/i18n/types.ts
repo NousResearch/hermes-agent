@@ -20,6 +20,7 @@ import type { ModelMenuTranslations } from './types_model_menu'
 import type { NoticeTranslations } from './types_notices'
 import type { OnboardingTranslations } from './types_onboarding'
 import type { SidebarProjectsTranslations } from './types_projects'
+import type { SettingsSessionsCopy } from './types_settings_sessions'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
 import type { ThemePickerCopy } from './types_theme_picker'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
@@ -1745,36 +1746,7 @@ export interface Translations extends NoticeTranslations {
       }
       loading: string
     }
-    sessions: {
-      loading: string
-      archivedTitle: string
-      archivedIntro: string
-      emptyArchivedTitle: string
-      emptyArchivedDesc: string
-      unarchive: string
-      deletePermanently: string
-      messages: (count: number) => string
-      restored: string
-      deleteConfirm: (title: string) => string
-      autoArchiveTitle: string
-      autoArchiveDesc: string
-      autoArchiveDaysLabel: string
-      autoArchiveDaysUnit: string
-      autoArchiveFailed: string
-      defaultDirTitle: string
-      defaultDirDesc: string
-      defaultDirUpdated: string
-      defaultsTo: (label: string) => string
-      change: string
-      choose: string
-      clear: string
-      notSet: string
-      failedLoad: string
-      unarchiveFailed: string
-      deleteFailed: string
-      updateDirFailed: string
-      clearDirFailed: string
-    }
+    sessions: SettingsSessionsCopy
     toolsets: {
       loadingConfig: string
       savedTitle: string

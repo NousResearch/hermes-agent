@@ -4,6 +4,8 @@ Pure-data leaf module — must not import from hermes_cli.config. Comments are t
 docs of config.yaml.
 """
 
+from hermes_cli.config_defaults_aux import _aux
+
 
 #: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -15,19 +17,6 @@ LEGACY_SANDBOX_IMAGE = LEGACY_SANDBOX_IMAGES[0]
 # Vercel Sandbox managed image (Vercel deprecated its `runtime` presets in Aug 2026).
 DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
 LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
-
-
-def _aux(timeout, *, reasoning_effort=True, **extra):
-    """Standard auxiliary-task model block (see DEFAULT_CONFIG["auxiliary"]).
-
-    reasoning_effort=False omits that key (MoA blocks configure depth per slot);
-    ``extra`` keys are appended after the standard ones.
-    """
-    d = {"provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": timeout, "extra_body": {}}
-    if reasoning_effort:
-        d["reasoning_effort"] = ""
-    d.update(extra)
-    return d
 
 
 DEFAULT_CONFIG = {
@@ -2284,6 +2273,13 @@ DEFAULT_CONFIG = {
         # List delegate_task subagent runs in session lists (desktop sidebar, dashboard, session.list),
         # nested under their parent. Off by default: they are machinery, not conversations.
         "show_subagents": False,
+        # List machine-to-machine (A2A) peer dispatches in the Desktop sidebar's "recent sessions"
+        # slice. Off by default for the same reason as show_subagents: an A2A task is a peer
+        # dispatch, not a conversation, and on a host that runs peers each inbound task mints its
+        # own row, so they crowd out interactive chats (a 628-session store measured 36% A2A).
+        # Session search deliberately ignores this switch - searching is an explicit request, so
+        # A2A sessions stay findable even while the passive list hides them.
+        "recents_show_a2a": False,
         # VACUUM after a prune that deleted rows (SQLite never reclaims disk on DELETE). VACUUM
         # blocks writes (~seconds per 100MB), so it runs only at startup, only when ≥1 session was
         # deleted AND freelist/page_count > 25%.

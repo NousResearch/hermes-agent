@@ -222,6 +222,14 @@ export const SETTINGS_MANIFEST = {
       subpage: 'archived',
       keywords: ['archive', 'stale', 'cleanup', 'old chats', 'days', 'after'],
       copy: t => ({ label: t.settings.sessions.autoArchiveTitle, description: t.settings.sessions.autoArchiveDesc })
+    },
+    recentsShowA2A: {
+      subpage: 'archived',
+      keywords: ['a2a', 'agent to agent', 'peer', 'machine', 'sidebar', 'recents', 'hide', 'show', 'crowd'],
+      copy: t => ({
+        label: t.settings.sessions.recentsShowA2ATitle,
+        description: t.settings.sessions.recentsShowA2ADesc
+      })
     }
   },
   gateway: {

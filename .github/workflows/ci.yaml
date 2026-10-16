@@ -85,6 +85,10 @@ jobs:
       desktop_updater: ${{ steps.gate-lanes.outputs.desktop_updater }}
       rust: ${{ steps.gate-lanes.outputs.rust }}
       remote_backends: ${{ steps.gate-lanes.outputs.remote_backends }}
+<<<<<<< HEAD
+=======
+      catalog: ${{ steps.gate-lanes.outputs.catalog }}
+>>>>>>> upstream/main
       docker_meta: ${{ steps.gate-lanes.outputs.docker_meta }}
       e2e: ${{ steps.gate-lanes.outputs.e2e }}
       e2e_upgrade: ${{ steps.gate-lanes.outputs.e2e_upgrade }}
@@ -203,6 +207,20 @@ jobs:
     with:
       commit: ${{ inputs.commit }}
 
+<<<<<<< HEAD
+=======
+  catalog-tests:
+    name: Catalog tests
+    needs: detect
+    # A PR that changes only catalog entry data runs these instead of the
+    # Python suite (the classifier turns `python` off for it); required whenever
+    # detect selects it.
+    if: needs.detect.outputs.catalog == 'true'
+    uses: ./.github/workflows/catalog-tests.yml
+    with:
+      commit: ${{ inputs.commit }}
+
+>>>>>>> upstream/main
   remote-backends:
     name: Remote terminal backends
     needs: detect
@@ -290,7 +308,7 @@ jobs:
   contributor-check:
     name: Check contributors
     needs: detect
-    if: needs.detect.outputs.python == 'true'
+    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.catalog == 'true'
     uses: ./.github/workflows/contributor-check.yml
     with:
       commit: ${{ inputs.commit }}
@@ -422,6 +440,10 @@ jobs:
       - js-tests
       - rust-tests
       - remote-backends
+<<<<<<< HEAD
+=======
+      - catalog-tests
+>>>>>>> upstream/main
       - bootstrap-installer
       - e2e-desktop
       - e2e-desktop-core

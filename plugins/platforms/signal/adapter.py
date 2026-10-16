@@ -34,8 +34,8 @@ from gateway.platforms.helpers import redact_phone
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.media_cache import mime_for_ext
 from tools.audio_container import CONTAINER_TO_EXT, sniff_container
-from gateway.platforms.signal_format import markdown_to_signal
-from gateway.platforms.signal_rate_limit import (
+from plugins.platforms.signal.signal_format import markdown_to_signal
+from plugins.platforms.signal.signal_rate_limit import (
     SIGNAL_BATCH_PACING_NOTICE_THRESHOLD, SIGNAL_MAX_ATTACHMENTS_PER_MSG, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
     SignalRateLimitError, _extract_retry_after_seconds, _format_wait, _is_signal_rate_limit_error,
     _signal_send_timeout, get_scheduler)
@@ -113,7 +113,7 @@ def _remux_aac_to_m4a(aac_data: bytes) -> Optional[tuple[bytes, str]]:
         dst_path = src_path[:-4] + ".m4a"
         try:
             proc = subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-i", src_path, "-c:a", "copy", "-movflags",
-                                   "+faststart", dst_path], capture_output=True, timeout=10, check=False)
+                                   "+faststart", dst_path], stdin=subprocess.DEVNULL, capture_output=True, timeout=10, check=False)
             if proc.returncode != 0:
                 logger.warning("Signal: AAC→M4A remux failed (ffmpeg exit %d): %s",
                                proc.returncode, proc.stderr.decode("utf-8", "replace")[:300])
@@ -171,6 +171,7 @@ def validate_signal_config(config: PlatformConfig) -> bool:
     http_url = (extra.get("http_url", "") or _sig_secret("SIGNAL_HTTP_URL", "")).strip()
     account = (extra.get("account", "") or _sig_secret("SIGNAL_ACCOUNT", "")).strip()
     return bool(http_url and account)
+
 
 
 class SignalAdapter(BasePlatformAdapter):

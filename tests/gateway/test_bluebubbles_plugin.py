@@ -13,7 +13,7 @@ from gateway.platforms.base import BasePlatformAdapter
 def _make_adapter(monkeypatch, **extra):
     monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
     monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
-    from gateway.platforms.bluebubbles import BlueBubblesAdapter
+    from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
 
     cfg = PlatformConfig(
         enabled=True,
@@ -260,7 +260,7 @@ class TestBlueBubblesAttachmentDownload:
             return cached_path
 
         monkeypatch.setattr(
-            "gateway.platforms.bluebubbles.cache_image_from_bytes_async",
+            "plugins.platforms.bluebubbles.adapter.cache_image_from_bytes_async",
             mock_cache_image,
         )
 
@@ -331,7 +331,7 @@ class TestBlueBubblesWebhookUrl:
     def test_register_url_omits_query_when_no_password(self, monkeypatch):
         """If no password is configured, the register URL should be the bare URL."""
         monkeypatch.delenv("BLUEBUBBLES_PASSWORD", raising=False)
-        from gateway.platforms.bluebubbles import BlueBubblesAdapter
+        from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
         cfg = PlatformConfig(
             enabled=True,
             extra={"server_url": "http://localhost:1234", "password": ""},
@@ -583,3 +583,43 @@ class TestBlueBubblesGateBeforeDownload:
         assert response.status == 200
         assert download.await_count == downloads
         assert len(handled) == handled_count
+
+
+class TestBlueBubblesPluginRegistration:
+    def test_register_declares_platform_entry_hooks(self):
+        """Plugin shape: the former core wiring (_BUILTIN_ADAPTERS row, _send_bluebubbles,
+        _setup_bluebubbles) now rides on the registry entry."""
+        import plugins.platforms.bluebubbles as plugin
+        from plugins.platforms.bluebubbles import adapter as mod
+
+        captured = {}
+
+        class _Ctx:
+            def register_platform(self, **kwargs):
+                captured.update(kwargs)
+
+        plugin.register(_Ctx())
+        assert captured["name"] == "bluebubbles"
+        assert captured["label"] == "BlueBubbles (iMessage)"
+        assert captured["adapter_factory"] is mod.BlueBubblesAdapter
+        assert captured["check_fn"] is mod.check_bluebubbles_requirements
+        assert captured["setup_fn"] is mod.interactive_setup
+        assert captured["standalone_sender_fn"] is mod._standalone_send
+        assert captured["required_env"] == ["BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD"]
+        assert captured["allowed_users_env"] == "BLUEBUBBLES_ALLOWED_USERS"
+        assert captured["allow_all_env"] == "BLUEBUBBLES_ALLOW_ALL_USERS"
+        assert captured["cron_deliver_env_var"] == "BLUEBUBBLES_HOME_CHANNEL"
+        assert captured["emoji"] == "💬"
+        assert captured["pii_safe"] is True and captured["allow_update_command"] is True
+        assert "BLUEBUBBLES_SERVER_URL/BLUEBUBBLES_PASSWORD" in captured["install_hint"]
+
+    def test_core_wiring_removed(self):
+        import tools.send_message_senders as senders
+        import tools.send_message_tool as smt
+        from gateway.run import _BUILTIN_ADAPTERS
+        from hermes_cli import gateway_setup_wizard as wiz
+
+        assert Platform.BLUEBUBBLES not in _BUILTIN_ADAPTERS
+        assert "bluebubbles" not in smt._TEXT_SENDERS
+        assert not hasattr(senders, "_send_bluebubbles")
+        assert all(p["key"] != "bluebubbles" for p in wiz._PLATFORMS)

@@ -22,9 +22,11 @@ import { useI18n } from '@/i18n'
 import {
   type ChatMessage,
   preserveLocalAssistantErrors,
+  QUESTION_CARD_TOOLS,
   restorePendingClarifyToolCall,
   settlePendingClarifyToolCall,
   stripPendingClarifyProjectionForCache,
+  textPart,
   toChatMessages
 } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
@@ -37,14 +39,7 @@ import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDra
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import { resetSessionBackground } from '@/store/composer-status'
 import { $connectionRequests } from '@/store/connection-request'
-import {
-  isActivePrimary,
-  openGatewayForAgent,
-  openGatewayForProfile,
-  pendingSessionReplay,
-  requestGatewayForAgent,
-  retainGatewayForAgent
-} from '@/store/gateway'
+import { pendingSessionReplay, requestGatewayForAgent, retainGatewayForAgent } from '@/store/gateway'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { clearSessionGoal } from '@/store/goals'
 import { $pinnedSessionIds } from '@/store/layout'
@@ -55,7 +50,6 @@ import {
   $gatewaySwapTarget,
   $newChatProfile,
   $profiles,
-  $showAllProfiles,
   type AgentProfileRoute,
   ensureGatewayAgent,
   ensureGatewayProfile,
@@ -72,17 +66,10 @@ import {
   $activeSessionStoredIdRotation,
   $connection,
   $currentCwd,
-  $currentCwdExplicit,
-  $currentFastMode,
-  $currentModel,
-  $currentProvider,
-  $currentReasoningEffort,
-  $currentServiceTier,
   $messages,
   $newChatWorkspaceTarget,
   $sessions,
   $yoloActive,
-  getCurrentModelSource,
   idsShareLineage,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
@@ -166,7 +153,9 @@ import {
 } from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
 
-import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
+import { branchThroughRowId } from './branch-boundary'
+import { branchCreateKey } from './branch-create-key'
+import type { SessionCreateOverrides } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
@@ -175,7 +164,14 @@ import { rememberedOwnerForResume } from './remembered-owner'
 import { restorePendingApproval } from './restore-pending-approval'
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
-import { createGatewaySession } from './session-create-request'
+import {
+  ambientResumeConnectionId,
+  openResumeGateway,
+  primaryResumeParams,
+  rememberResolvedResumeOwner,
+  resolveResumeOwner
+} from './resume-owner'
+import { createGatewaySession, desktopSessionCreateParams } from './session-create-request'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
@@ -250,42 +246,6 @@ export interface BranchLoadedSessionOptions {
   storedSessionId: null | string
 }
 
-const branchMessagesFingerprint = (messages: BranchMessage[]): string =>
-  JSON.stringify(messages.map(({ content, role }) => [role, content]))
-
-// Identity of one branch create, so a re-entered branch action (a retried
-// renderer transition, a double right-click) rides the create already in
-// flight instead of minting a second child. The OWNER is part of the identity:
-// the same parent id served by two connections is two different sessions.
-function branchCreateKey({
-  branchCount,
-  branchMessages,
-  cwd,
-  ownerRoute,
-  parentStoredId,
-  profile,
-  sourceSessionId
-}: {
-  branchCount?: number
-  branchMessages: BranchMessage[]
-  cwd?: string
-  ownerRoute?: SessionOwnerRoute
-  parentStoredId: null | string
-  profile?: null | string
-  sourceSessionId: null | string
-}): string {
-  return JSON.stringify({
-    branchCount: branchCount ?? null,
-    connectionId: ownerRoute?.connectionId || null,
-    cwd: cwd?.trim() || null,
-    messages: sourceSessionId ? null : branchMessagesFingerprint(branchMessages),
-    ownerProfile: ownerRoute?.profile || null,
-    parentStoredId,
-    profile: profile?.trim() || null,
-    sourceSessionId
-  })
-}
-
 // How long we keep creatingSessionRef after create/fork navigate before giving up
 // if the router never lands on the pending stored id (stuck navigate / lost race).
 const CREATE_GUARD_RELEASE_MS = 3_000
@@ -332,80 +292,6 @@ function reconcileAuthoritativeMessages(
   )
 }
 
-// `session.create` params from the current profile + sticky-UI model/effort/fast,
-// ensuring the gateway is on that profile first. Shared by the primary send path
-// and the "open in split" tile path; `cwd` is the one thing that differs (the
-// live composer cwd for a send, the resolved new-session cwd for a fresh tile).
-//
-// Resolving null profile to the active gateway's is load-bearing: in global-remote
-// mode one backend serves every profile, so an omitted profile silently lands the
-// chat on the launch (default) profile — the "rubberbands back to default" bug.
-// A no-op for single-profile/local-pooled users (a backend resolves its own launch
-// profile to None). Effort/fast still ride as per-session overrides. Model and
-// provider only ride when the composer source is 'manual' — a default-sourced
-// value is a mirror of Settings → Model and must not pin the new chat.
-async function desktopSessionCreateParams(
-  cwd: string,
-  capturedRoute = resolveNewChatOwnerRoute(),
-  requestedProfile?: string,
-  legacyProfileIntent = false,
-  includeComposerSelection = true
-): Promise<Record<string, unknown>> {
-  // Treat Send as the linearization point for the visible selector state. The
-  // profile handshake below can yield long enough for background config/model
-  // refreshes to finish; reading atoms afterward would silently create the
-  // session with a different selection than the one the user submitted.
-  // Settings → Model while a session is live leaves $currentModel painted with
-  // the live agent (applySavedMainModel) and only flips the source to 'default'.
-  // Shipping that stale value as an override pins every new chat to the old
-  // model. Omit model/provider unless the source is 'manual'.
-  const isManualSelection = getCurrentModelSource() === 'manual'
-
-  const selection = {
-    effort: $currentReasoningEffort.get().trim(),
-    fast: $currentFastMode.get(),
-    serviceTier: $currentServiceTier.get().trim(),
-    model: isManualSelection ? $currentModel.get().trim() : '',
-    provider: isManualSelection ? $currentProvider.get().trim() : ''
-  }
-
-  const profile =
-    capturedRoute?.profile ||
-    requestedProfile ||
-    $newChatProfile.get() ||
-    normalizeProfileKey($activeGatewayProfile.get())
-
-  if (capturedRoute) {
-    await ensureGatewayAgent(capturedRoute.connectionId, profile)
-  } else if (legacyProfileIntent) {
-    await ensureGatewayProfile(profile, { forceLegacyRoute: true })
-  } else {
-    await ensureGatewayProfile(profile)
-  }
-
-  return {
-    cols: 96,
-    source: 'desktop',
-    ...(cwd && { cwd }),
-    // #52589: explicit provenance for the shipped cwd — an inherited app-global
-    // workspace must not override the target profile's configured terminal.cwd.
-    ...(cwd && { cwd_explicit: $currentCwdExplicit.get() }),
-    ...(profile ? { profile: capturedRoute?.targetProfile || profile } : {}),
-    ...(includeComposerSelection
-      ? {
-          ...(selection.model
-            ? { model: selection.model, ...(selection.provider ? { provider: selection.provider } : {}) }
-            : {}),
-          ...(selection.effort ? { reasoning_effort: selection.effort } : {}),
-          fast: selection.fast,
-          // Only Ultrafast needs the tier: `fast` already pins Priority/normal, and a
-          // pre-Ultrafast backend rejects the field (createGatewaySession drops it).
-          ...(selection.serviceTier === 'ultrafast' ? { service_tier: 'ultrafast' } : {})
-        }
-      : {})
-  }
-}
-
 interface FreshSessionDraftOptions {
   preserveRoute?: boolean
   replaceRoute?: boolean
@@ -424,7 +310,7 @@ function withoutEarlyClarifyProjection(messages: ChatMessage[], requestId: strin
       part =>
         !(
           part.type === 'tool-call' &&
-          part.toolName === 'clarify' &&
+          QUESTION_CARD_TOOLS.has(part.toolName) &&
           part.result === undefined &&
           part.toolCallId === requestId
         )
@@ -483,6 +369,7 @@ export function useSessionActions({
   const { t } = useI18n()
   const copy = t.desktop
   const resumeRequestRef = useRef(0)
+  const createIntentRef = useRef<string | null>(null)
   const transcriptHydrationByRuntimeRef = useRef(new Map<string, symbol>())
   const coldDisplayReadsRef = useRef(new Map<string, symbol>())
   const branchCreateFlightsRef = useRef(new Map<string, Promise<SessionCreateResponse>>())
@@ -672,6 +559,7 @@ export function useSessionActions({
     (options: boolean | FreshSessionDraftOptions = false) => {
       const draftOptions = typeof options === 'boolean' ? { replaceRoute: options } : options
       const preserveRoute = draftOptions.preserveRoute ?? false
+      createIntentRef.current = null
       const replaceRoute = draftOptions.replaceRoute ?? false
 
       const hasWorkspaceTarget =
@@ -762,18 +650,10 @@ export function useSessionActions({
   )
 
   const createBackendSessionForSend = useCallback(
-    async (
-      preview: string | null = null,
-      seedMessages?: SessionSeedMessage[],
-      // Create the session titled or at a pinned reasoning effort (guided
-      // onboarding mints its welcome chat this way). The owning profile is NOT
-      // an override — point $newChatProfile at it first (selectProfile-style)
-      // so the create lands on that profile's own backend and every later
-      // ambient RPC follows.
-      createOverrides?: SessionCreateOverrides
-    ): Promise<string | null> => {
+    async (preview: string | null = null, createOverrides?: SessionCreateOverrides): Promise<string | null> => {
       const startingStoredSessionId = selectedStoredSessionIdRef.current
       const startingRouteToken = getRouteToken()
+      const createIntent = (createIntentRef.current ??= crypto.randomUUID())
 
       creatingSessionRef.current = true
 
@@ -806,7 +686,7 @@ export function useSessionActions({
 
         const params = {
           ...(await desktopSessionCreateParams(cwd, capturedRoute, capturedProfile, legacyProfileIntent)),
-          ...sessionCreateOverrideParams(createOverrides, seedMessages)
+          request_id: createIntent
         }
 
         // Lease the owner socket for the whole create → owner-publication
@@ -892,6 +772,11 @@ export function useSessionActions({
         }
 
         resetViewSync()
+
+        if (createIntentRef.current === createIntent) {
+          createIntentRef.current = null
+        }
+
         activeSessionIdRef.current = created.session_id
         selectedStoredSessionIdRef.current = stored
         ensureSessionState(created.session_id, stored)
@@ -1014,9 +899,50 @@ export function useSessionActions({
         runtimeIdByStoredSessionIdRef.current.set(stored, created.session_id)
         ensureSessionState(created.session_id, stored)
         upsertOptimisticSession(created, stored, null, text.trim())
+        // The route's warm resume paints this cached state as-is, so the first
+        // user message has to be in it, as a composer send seeds it.
+        const firstMessageId = `user-${created.session_id}`
+        updateSessionState(
+          created.session_id,
+          state => ({
+            ...state,
+            messages: [
+              ...state.messages,
+              {
+                id: firstMessageId,
+                role: 'user',
+                parts: [textPart(text.trim())],
+                timestamp: Date.now() / 1000
+              }
+            ],
+            awaitingResponse: true,
+            busy: true,
+            turnStartedAt: state.turnStartedAt ?? Date.now()
+          }),
+          stored
+        )
+
         // Submit the exact runtime id returned by session.create so this
         // atomic path cannot fall back to a route token (#85590).
-        await requestGateway('prompt.submit', { session_id: created.session_id, text })
+        try {
+          await requestGateway('prompt.submit', { session_id: created.session_id, text })
+        } catch (error) {
+          // A refused prompt leaves no turn behind, so its bubble and spinner go too.
+          updateSessionState(
+            created.session_id,
+            state => ({
+              ...state,
+              messages: state.messages.filter(message => message.id !== firstMessageId),
+              awaitingResponse: false,
+              busy: false,
+              turnStartedAt: null
+            }),
+            stored
+          )
+
+          throw error
+        }
+
         navigate(sessionRoute(stored), { replace: true })
 
         return { runtimeSessionId: created.session_id, sessionId: stored }
@@ -1033,7 +959,8 @@ export function useSessionActions({
       navigate,
       requestGateway,
       runtimeIdByStoredSessionIdRef,
-      selectedStoredSessionIdRef
+      selectedStoredSessionIdRef,
+      updateSessionState
     ]
   )
 
@@ -1167,13 +1094,16 @@ export function useSessionActions({
         // `/resume`, and reachable only while their tab stayed open, since the
         // bot row opens the canonical chat and "Open recent session" reads
         // `last_session`, which never reports a hidden row.
-        const params = await desktopSessionCreateParams(
-          cwd,
-          capturedRoute,
-          requestedProfile,
-          options?.route === null || defaultTarget?.route === null,
-          workspaceScope.workspaceMode !== 'bots'
-        )
+        const params = {
+          ...(await desktopSessionCreateParams(
+            cwd,
+            capturedRoute,
+            requestedProfile,
+            options?.route === null || defaultTarget?.route === null,
+            workspaceScope.workspaceMode !== 'bots'
+          )),
+          request_id: crypto.randomUUID()
+        }
 
         // Same lease chain as createBackendSessionForSend: owner socket held
         // across the create, then the foreground hold carries it until the
@@ -1283,7 +1213,12 @@ export function useSessionActions({
   }, [navigate, selectedStoredSessionId])
 
   const resumeSession = useCallback(
-    async (storedSessionId: string, replaceRoute = false, capturedOwner?: SessionProfileRoute) => {
+    async (
+      storedSessionId: string,
+      replaceRoute = false,
+      capturedOwner?: SessionProfileRoute,
+      options?: { authoritativeSnapshot?: boolean }
+    ) => {
       // Delete/archive tombstones the durable id before the route flips, and
       // requestSessionResume already refuses to queue for a doomed id. This is
       // the actuator-side half of the same rule: a resume that was queued
@@ -1298,6 +1233,11 @@ export function useSessionActions({
       resumeRequestRef.current = requestId
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
 
+      // A route change is drift only when it leads AWAY from this session. A
+      // caller that navigates and resumes in one tick (branch → child) starts
+      // here on the previous route; the router commits the target route a
+      // render later, and treating that as drift abandoned the child behind a
+      // "Waking up…" overlay that never cleared.
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId &&
         selectedStoredSessionIdRef.current === storedSessionId &&
@@ -1421,21 +1361,8 @@ export function useSessionActions({
       // fills in when the caller had no route to give.
       const ownerRoute = capturedOwner || rememberedOwner
 
-      // A connection switch clears/reloads the session rows before this path
-      // runs, so an untagged row belongs to the connection that supplied the
-      // current list. Capture that source before the async metadata lookup. If
-      // we reduce it to the profile string `default`, requestForSessionProfile
-      // resolves the local default socket and sends an SSH session id to the
-      // wrong machine ("resume failed: session not found").
-      const ambientConnection = $connection.get()
-
-      // Keep the legacy primary-local profile door: main may resolve a named
-      // profile to its own remote override (#94166). A registry secondary is
-      // already an explicit source, even when it is This device under Home.
-      const ambientConnectionId =
-        ambientConnection?.mode === 'remote' || (ambientConnection?.registryScoped && !isActivePrimary())
-          ? ambientConnection.connectionId?.trim() || ''
-          : ''
+      // Capture the list's source connection before the async metadata lookup.
+      const ambientConnectionId = ambientResumeConnectionId()
 
       const provisional = provisionalTranscriptPaint(
         storedSessionId,
@@ -1472,55 +1399,18 @@ export function useSessionActions({
         return
       }
 
-      const resolvedConnectionId = ownerRoute?.connectionId || storedForProfile?.connection_id || ambientConnectionId
+      const { resolvedConnectionId, sessionOwner } = resolveResumeOwner(
+        ownerRoute,
+        storedForProfile,
+        ambientConnectionId
+      )
 
-      // A row spliced from a CONNECTED registry gateway (#88880) carries its
-      // owning connection. A row fetched directly after activating a registry
-      // gateway can be untagged, so retain the captured ambient connection too.
-      // Either way, route by the composite (connection, profile), never by a
-      // same-named profile alone.
-      const sessionOwner: SessionOwnerScope =
-        ownerRoute ||
-        (resolvedConnectionId
-          ? {
-              connectionId: resolvedConnectionId,
-              profile: sessionProfile || 'default'
-            }
-          : sessionProfile)
-
-      // Preserve this resolved source for later prompt/approval RPCs too;
-      // otherwise an untagged row falls back to its bare profile after resume.
-      // Only for a row the ambient source actually returned: an id that did not
-      // resolve (deep link, routed restore) proves nothing about its owner, and
-      // a persisted hint would pin it to whichever source was in front.
-      if (
-        !ownerRoute &&
-        storedForProfile &&
-        !storedForProfile.connection_id &&
-        sessionOwner &&
-        typeof sessionOwner === 'object'
-      ) {
-        setSessionOwnerHint(storedSessionId, sessionOwner)
-      }
+      rememberResolvedResumeOwner(storedSessionId, ownerRoute, storedForProfile, sessionOwner)
 
       const sessionRestScope = transcriptRestScope(ownerRoute, storedForProfile, ambientConnectionId)
       provisional.paint(sessionRestScope)
 
-      // All-profiles / plugin navigation must not steal chrome API-home:
-      // dial the owning backend without moving $activeGatewayProfile.
-      if ($showAllProfiles.get()) {
-        if (resolvedConnectionId) {
-          await openGatewayForAgent(resolvedConnectionId, ownerRoute?.profile || sessionProfile || 'default', {
-            spawnPriority: 'foreground'
-          })
-        } else if (sessionProfile) {
-          await openGatewayForProfile(normalizeProfileKey(sessionProfile), { spawnPriority: 'foreground' })
-        }
-      } else if (resolvedConnectionId) {
-        await ensureGatewayAgent(resolvedConnectionId, ownerRoute?.profile || sessionProfile || 'default')
-      } else {
-        await ensureGatewayProfile(sessionProfile)
-      }
+      await openResumeGateway(resolvedConnectionId, ownerRoute, sessionProfile)
 
       // Request-time routing guard for every session-scoped RPC below. The
       // await above REQUESTS the swap, but by dispatch time the active gateway
@@ -1546,7 +1436,7 @@ export function useSessionActions({
       // purges a cross-wired mapping before we trust the fast-path.
       const warmHit = takeWarmCache()
 
-      if (warmHit) {
+      if (warmHit && !options?.authoritativeSnapshot) {
         const cachedRuntimeId = warmHit.runtimeId
         const cachedState = warmHit.state
 
@@ -2160,27 +2050,22 @@ export function useSessionActions({
         // max(prefetch, resume) instead of their sum. The prefetch paints the
         // transcript as soon as it lands; the RPC binds the runtime id.
         // Watch windows skip the prefetch — lazy resume attaches the live mirror.
-        const prefetchPromise = watchWindow ? null : getLatestSessionMessages(storedSessionId, sessionRestScope)
+        const prefetchPromise =
+          watchWindow || options?.authoritativeSnapshot
+            ? null
+            : getLatestSessionMessages(storedSessionId, sessionRestScope)
 
         let resumeRuntimeBaselineMessages: ChatMessage[] = []
         const resumeStartedAt = Date.now() / 1000
 
-        const resumePromise = singleFlightSessionResume(storedSessionId, () =>
-          requestForSession<SessionResumeResult>('session.resume', {
-            session_id: storedSessionId,
-            cols: 96,
-            source: 'desktop',
-            defer_history: !watchWindow,
-            // REST is the transcript authority for Desktop. Avoid duplicating a
-            // potentially huge compression lineage in the WebSocket response.
-            // Watch windows attach lazily (live mirror). Every other cold resume
-            // gets the gateway's default deferred build: the RPC returns the
-            // transcript immediately instead of blocking the switch on _make_agent
-            // (MCP discovery / prompt build), and the agent pre-warms in the
-            // background while the prefetch above paints the transcript.
-            ...(watchWindow ? { lazy: true } : { omit_messages: true }),
-            ...(sessionProfile ? { profile: sessionProfile } : {})
-          })
+        const resumePromise = singleFlightSessionResume(
+          storedSessionId,
+          () =>
+            requestForSession<SessionResumeResult>(
+              'session.resume',
+              primaryResumeParams(storedSessionId, watchWindow, options?.authoritativeSnapshot, sessionProfile)
+            ),
+          { requiresMessages: options?.authoritativeSnapshot, scope: sessionOwner }
         ).then(resumed => {
           resumeRuntimeBaselineMessages =
             sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.messages ?? resumeRuntimeBaselineMessages
@@ -2278,6 +2163,10 @@ export function useSessionActions({
         const hasLiveProjection = Boolean(resumed.inflight || resumed.queued)
 
         const preferredMessages = (() => {
+          if (options?.authoritativeSnapshot && resumed.messages.length === 0 && !hasLiveProjection) {
+            return currentMessages
+          }
+
           if (prefetchApplied && prefetchMatchesResumedSession) {
             if (hasLiveProjection && prefetchedTranscriptMessages) {
               const runtimeMessages = toChatMessages(resumed.messages)
@@ -2802,7 +2691,9 @@ export function useSessionActions({
             // Stable per-attempt key: a lost-response retry of session.branch /
             // session.branch_whole returns the SAME child (#65410).
             idempotency_key: key,
-            ...(branchCount !== undefined ? { count: branchCount } : {})
+            ...(branchCount !== undefined
+              ? { count: branchCount, through_message_id: branchThroughRowId(branchMessages) }
+              : {})
           }
 
           const createParams = {

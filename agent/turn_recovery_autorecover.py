@@ -74,7 +74,7 @@ def ladder_notice(agent: Any, *, wait_s: float, cycle: int, total: int) -> str:
 def auto_recover_after_exhaustion(
     agent: Any, api_error: Any, classified: Any, _retry: Any, *, messages: Any,
     conversation_history: Any, api_call_count: int,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[dict[str, Any]]:
     """Run one recovery cycle after retries + fallback exhausted. Returns ``{"action": "continue"}``
     when the wait completed (caller zeroes ``retry_count`` and re-enters the retry loop),
     ``{"action": "break"}`` when a steering correction arrived mid-wait, ``{"action": "return",

@@ -2,48 +2,26 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { deAuxTasks } from './de_aux_tasks'
 import { deBoot } from './de_boot'
+import { deClarify } from './de_clarify'
+import { deConnectorAccounts } from './de_connector_accounts'
+import { deConnectorCard } from './de_connector_card'
+import { deFirstRun } from './de_first_run'
 import { deLocalModels } from './de_local_models'
 import { deModelMenu } from './de_model_menu'
 import { deNotices } from './de_notices'
+import { deOnboarding } from './de_onboarding'
+import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
+import { deThemePicker } from './de_theme_picker'
+import { deUpdateChannel } from './de_update_channel'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
 export const deOverrides = {
   sharedMetrics: deSharedMetrics,
+  firstRun: deFirstRun,
   intro: introDe,
-  connectors: {
-    title: 'Verbinden Sie Ihre Apps',
-    connect: 'Verbinden',
-    skip: 'Nicht jetzt',
-    cancel: 'Warten beenden',
-    retry: 'Erneut versuchen',
-    grant: 'Neu verbinden',
-    connected: 'Verbunden',
-    checking: 'Ihre Apps werden geprüft…',
-    notConnected: 'Verbindung fehlgeschlagen',
-    skipped: 'Übersprungen',
-    disabled: 'Nicht verfügbar',
-    failed: 'Verbindung fehlgeschlagen',
-    needsAuth: 'Zugriff abgelaufen',
-    opening: 'Anmeldung wird geöffnet…',
-    waiting: 'Schließen Sie die Verbindung im Browser ab…',
-    timeout: 'Freigabe steht noch aus.',
-    refresh: 'Status aktualisieren',
-    connectError: 'Freigabe konnte nicht gestartet werden. Versuchen Sie es erneut.',
-    connectErrorFor: app => `Die Freigabe für ${app} konnte nicht gestartet werden.`,
-    unavailable: 'Verbindungen sind für diese Session nicht verfügbar.',
-    ownerMissing: 'Öffnen Sie diese Konversation erneut, um ihre Verbindungen zu verwalten.',
-    search: 'App finden',
-    empty: 'Keine passende App',
-    disclaimer: 'Das Verbinden ist freiwillig. Geben Sie nur den Apps Zugriff, die Hermes verwenden soll.',
-    execution: 'Verbindungs-Tools',
-    setup: server => `${server} einrichten`,
-    openInBrowser: 'Im Browser öffnen',
-    setupCancel: 'Abbrechen',
-    authorizedToolsUnavailable: 'Autorisiert. Tools nicht verfügbar.',
-    required: 'Erforderlich'
-  },
+  connectors: deConnectorCard,
   connectorsPage: {
     title: 'Konnektoren',
     searchPlaceholder: (count: number) => `${count} Apps durchsuchen`,
@@ -200,6 +178,9 @@ export const deOverrides = {
       advanced: 'Erweitert',
       advancedHint: 'der mcp.json-Eintrag und die Logs'
     },
+
+    accounts: deConnectorAccounts,
+
     tools: {
       title: 'Tools',
       notInstalledBody: 'Installieren Sie ihn auf diesem Gerät, um seine Tools zu sehen.',
@@ -810,11 +791,6 @@ export const deOverrides = {
         profileLabel: 'Für Profil installieren',
         agentTargetLocal: (profile, dir) => `Wird in das Backend ${profile} installiert (${dir})`,
         agentTargetRemote: profile => `Installiert in das verbundene ${profile}-Backend`,
-        catalogPinned: (name, sha) =>
-          `Hermes-Katalog-Eintrag „${name}" — die Agent-Komponente wird am geprüften Pin installiert${sha ? ` ${sha}` : ''}, nicht an der Spitze des Branches.`,
-        reviewedHeading: 'Geprüfter Katalog-Eintrag',
-        reviewedIntro:
-          'Dieser Eintrag wurde an seinem gepinnten Commit von einem Menschen geprüft. Sie können den genauen Code trotzdem unten ansehen.',
         toolsConnected: n => (n === 1 ? '1 Tool verbunden' : `${n} Tools verbunden`),
         skillsReady: names => (names.length === 1 ? `Skill ${names[0]} bereit` : `${names.length} Skills bereit`),
         nextChat: 'weitere Tools in Ihrem nächsten Chat verfügbar',
@@ -827,13 +803,11 @@ export const deOverrides = {
         desktopOnlyNote: 'Nur-Desktop-Pakete installieren kein Backend-Agent-Plugin.',
         insecureWarning:
           'Diese URL verwendet ein unsicheres oder lokales Schema. Für Produktionsinstallationen bevorzuge https:// oder git@.',
-        securityHeading: 'Vor der Installation',
         securityIntro:
           'Installieren Sie nur aus Quellen, denen Sie vertrauen – prüfen Sie das Repository unten, wenn Sie sehen möchten, was hinzugefügt wird.',
         sourceHeading: 'Quellcode',
         viewRepository: 'Repository ansehen',
         viewPluginFiles: 'Plugin-Dateien ansehen',
-        gitCloneLabel: 'Git-Clone-URL',
         enableAgent: 'Agent-Plugin nach der Installation aktivieren',
         forceReinstall: 'Neuinstallation erzwingen (ersetzen, falls bereits installiert)',
         pinToCommit: 'An Commit binden (optional)',
@@ -855,7 +829,17 @@ export const deOverrides = {
           'Hermes wartet nicht mehr auf das Installationsergebnis, aber das Plugin wird möglicherweise noch installiert. Schließe dieses Fenster und aktualisiere die Pluginliste, bevor du die Installation erneut startest.',
         desktopFailed: 'Installation des Desktop-Plugins fehlgeschlagen',
         missingEnv: (name, vars) =>
-          `${name} ist installiert, benötigt aber einen Schlüssel, um zu funktionieren: ${vars}. Fügen Sie ihn jetzt hinzu, sonst schlagen die Tools des Plugins fehl.`
+          `${name} ist installiert, benötigt aber einen Schlüssel, um zu funktionieren: ${vars}. Fügen Sie ihn jetzt hinzu, sonst schlagen die Tools des Plugins fehl.`,
+        verified: 'Verifiziert',
+        unverified: 'Nicht verifiziert',
+        reviewedByNous: 'Von Nous geprüft.',
+        installsAndEnables: profile => `Wird für ${profile} installiert und sofort eingeschaltet.`,
+        installsOnly: profile => `Wird für ${profile} installiert.`,
+        advanced: 'Erweitert',
+        versionLabel: 'Version',
+        reviewedPin: sha => (sha ? `Geprüfter Pin ${sha}` : 'Geprüfter Pin'),
+        latestCommit: 'Neuester Commit',
+        nothingToInstall: 'Dieses Paket hat hier nichts zu installieren.'
       }
     },
     vault: {
@@ -1231,9 +1215,7 @@ export const deOverrides = {
         maxLines: 'Datei-Seitenlimit',
         maxLineLength: 'Zeilenlängenlimit'
       },
-      codeExecution: {
-        mode: 'Code-Ausführungsmodus'
-      },
+      codeExecution: { mode: 'Code-Ausführungsmodus' },
       approvals: {
         mode: 'Genehmigungsmodus',
         timeout: 'Genehmigungs-Timeout',
@@ -1504,12 +1486,6 @@ export const deOverrides = {
         }
       }
     },
-    poolLimits: {
-      warmBotBackendsAria: 'Bot-Backends vorwärmen',
-      warmBotBackendsTitle: 'Bot-Backends vorwärmen',
-      backendIdleTimeoutAria: 'Leerlauf-Timeout des Backends in Millisekunden',
-      backendIdleTimeoutTitle: 'Leerlauf-Timeout des Backends'
-    },
     customEndpoints: {
       active: 'Aktiv',
       apiKeySet: 'API-Schlüssel gesetzt',
@@ -1556,9 +1532,7 @@ export const deOverrides = {
       screenRecording: 'Bildschirmaufnahme',
       driverHealth: 'Treiberstatus'
     },
-    about: {
-      updates: 'Updates'
-    },
+    about: { updates: 'Updates', channel: deUpdateChannel },
     config: {
       minimizeToTrayTitle: 'In den Infobereich minimieren',
       minimizeToTrayDesc:
@@ -3546,6 +3520,7 @@ export const deOverrides = {
     next: 'Als Nächstes:',
     overdueSince: 'Überfällig seit:',
     noRuns: 'Noch keine Ausführungen',
+    queuedRun: 'Ausführung in der Warteschlange',
     manage: 'Verwalten',
     showRuns: 'Ausführungen anzeigen',
     hideRuns: 'Ausführungen ausblenden',
@@ -3757,87 +3732,7 @@ export const deOverrides = {
       guide: 'Wiederherstellungsanleitung'
     },
     noFilterMatches: 'Keine Sessions passen zu diesen Filtern',
-    projects: {
-      showAllSessions: 'Alle Sessions anzeigen',
-      sectionLabel: 'Projekte',
-      home: 'Start',
-      autoDiscovered: 'Automatisch erkannt',
-      newButton: 'Neues Projekt',
-      createTitle: 'Neues Projekt',
-      createDesc: 'Geben Sie dem Workspace einen Namen und fügen Sie einen oder mehrere Ordner hinzu.',
-      renameTitle: 'Projekt umbenennen',
-      addFolderTitle: 'Ordner hinzufügen',
-      namePlaceholder: 'z. B. Skunkworks',
-      foldersLabel: 'Ordner',
-      ideaLabel: 'Idee',
-      ideaPlaceholder: 'Worum geht es in diesem Projekt? (gespeichert in IDEA.md)',
-      ideaGenerate: 'Idee generieren',
-      ideaGenerating: 'Wird generiert…',
-      ideaShuffle: 'Vorlagen mischen',
-      noFolders: 'Noch keine Ordner hinzugefügt.',
-      addFolder: 'Ordner hinzufügen',
-      primaryBadge: 'primär',
-      removeFolder: 'Entfernen',
-      create: 'Erstellen',
-      menu: 'Aktionen',
-      menuRename: 'Umbenennen…',
-      menuAppearance: 'Aussehen',
-      noColor: 'Keine Farbe',
-      menuAddFolder: 'Ordner hinzufügen',
-      menuSetActive: 'Als aktiv festlegen',
-      menuDelete: 'Löschen',
-      moveToProject: 'In Projekt verschieben',
-      movedTo: name => `In ${name} verschoben`,
-      moveFailed: 'Session konnte nicht verschoben werden',
-      moveNoFolder: 'Dieses Projekt hat keinen Ordner, in den verschoben werden kann',
-      moveNoProjects: 'Keine anderen Projekte',
-      reveal: 'Im Ordner anzeigen',
-      copyPath: 'Pfad kopieren',
-      removeFromSidebar: 'Aus der Sidebar ausblenden',
-      createdInPreviousContext:
-        'Das Projekt wurde auf der vorherigen Verbindung oder im vorherigen Profil erstellt. Wechsle zurück; IDEA.md wurde nicht geschrieben.',
-      createFailed: 'Projekt konnte nicht erstellt werden',
-      staleBackend:
-        'Aktualisieren Sie das Hermes-Backend, um Projekte zu erstellen – Ihr Backend ist älter als diese Desktop-App (Einstellungen → Updates → Backend).',
-      deleteConfirm:
-        'Das entfernt das gespeicherte Projekt aus Hermes. Dateien, Git-Repos und Worktrees bleiben unberührt.',
-      startWork: 'Neuer Worktree',
-      newWorktreeTitle: 'Neuer Worktree',
-      newWorktreeDesc: 'Benennen Sie den Branch für diesen Worktree.',
-      branchPlaceholder: 'z. B. my-feature',
-      branchOff: () => ({ after: '', before: 'abzweigen von ' }),
-      baseBranchPlaceholder: 'Branches durchsuchen…',
-      baseBranchNone: 'Keine Branches gefunden',
-      startWorkFailed: 'Worktree konnte nicht erstellt werden',
-      worktreeStaleBackend:
-        'Aktualisieren Sie das Hermes-Backend, um Worktrees über diese Remote-Verbindung zu erstellen – es ist älter als die Git-Worktree-API.',
-      worktreeProjectLabel: 'Projekt',
-      worktreeProjectPlaceholder: 'Projekte durchsuchen…',
-      worktreeProjectNone: 'Keine Projekte mit Ordner',
-      convertBranch: 'Einen Branch konvertieren…',
-      convertBranchTitle: 'Einen Branch konvertieren',
-      convertBranchDesc: 'Ausgecheckte Branches öffnen oder einen Worktree für einen freien Branch erstellen.',
-      convertBranchPlaceholder: 'Branches durchsuchen…',
-      convertBranchInstead: 'Einen bestehenden Branch konvertieren',
-      branchOpenExisting: 'öffnen',
-      branchSwitchHome: 'Start wechseln',
-      branchCreateWorktree: 'neuer Worktree',
-      branchTrackRemote: 'Remote verfolgen',
-      branchesLoading: 'Branches werden geladen…',
-      noBranches: 'Keine Branches gefunden',
-      removeWorktree: 'Worktree entfernen',
-      removeWorktreeFailed: 'Worktree konnte nicht entfernt werden (nicht committete Änderungen?)',
-      removeWorktreeConfirm:
-        'Aus Git entfernen (löscht das Worktree-Verzeichnis; der Branch bleibt), oder einfach die Lane aus der Sidebar ausblenden und den Worktree auf der Festplatte belassen.',
-      removeWorktreeDirty:
-        'Dieser Worktree hat nicht committete Änderungen. Kraftvoll entfernen (verwirft diese Änderungen), oder einfach die Lane ausblenden und ihn auf der Festplatte behalten.',
-      forceRemove: 'Kraftvoll entfernen',
-      enter: label => `${label} öffnen`,
-      reorder: label => `${label} neu anordnen`,
-      toggle: (label, open) => `${open ? 'Anzeigen' : 'Ausblenden'} ${label} Sessions`,
-      showAllCount: (count: number) => `Alle ${count} Sessions anzeigen`,
-      back: 'Alle Projekte'
-    },
+    projects: deProjects,
     newSessionIn: label => `Neue Session in ${label}`,
     showMoreIn: (count, label) => `Noch ${count} mehr in ${label} anzeigen`,
     loading: 'Wird geladen…',
@@ -3931,6 +3826,7 @@ export const deOverrides = {
     openDirective: 'Öffnen',
     queueMessage: 'Nachricht einreihen',
     steer: 'Laufenden Lauf steuern',
+    redirect: 'Laufenden Lauf umleiten',
     stop: 'Stopp',
     send: 'Senden',
     speaking: 'Spricht',
@@ -4079,6 +3975,12 @@ export const deOverrides = {
     queueDelete: 'Löschen',
     queueResume: 'Fortsetzen',
     queueResumeTip: 'Durch Stopp pausiert — fortsetzen, um die eingereihten Turns zu senden',
+    queueLostNote: 'Turn beim Neustart verloren',
+    restoreImageDraft: 'Bildentwurf wiederherstellen',
+    queueCancelFailed: 'Der wartende Zug konnte nicht entfernt werden',
+    queueLostDiscard: 'Verwerfen',
+    queueLostDiscardTip:
+      'Das Gateway wurde mitten im Turn neu gestartet und kann ihn nicht abschließen. Verwirf ihn, damit die eingereihten Turns dahinter laufen.',
     queueStuckTitle: 'Eingereihte Nachricht nicht gesendet',
     queueStuckBody:
       'Ein eingereihter Turn konnte nicht gesendet werden. Er ist noch in der Warteschlange — versuchen Sie, ihn erneut zu senden.',
@@ -4252,7 +4154,7 @@ export const deOverrides = {
       heartbeatEveryHours: hours => `alle ${hours}h`,
       heartbeatEverySeconds: seconds => `alle ${seconds}s`,
       heartbeatNext: time => `nächstes ${time}`,
-      heartbeatDueWaitingForIdle: 'fällig — wartet auf Ruhezustand',
+      dueWaitingForIdle: 'fällig — wartet auf Ruhezustand',
       heartbeatActions: 'Heartbeat-Aktionen',
       pauseHeartbeat: 'Heartbeat pausieren',
       resumeHeartbeat: 'Heartbeat fortsetzen',
@@ -4482,21 +4384,6 @@ export const deOverrides = {
         'Das Backend kam nicht wieder online. Das Update wurde möglicherweise nicht abgeschlossen — prüfen Sie den Backend-Host.'
     }
   },
-  handoffTour: {
-    profileTitle: 'Ihre erste Aufgabe läuft im Standardprofil',
-    profileText:
-      'Diese Leiste wechselt die Profile. Das jetzt hervorgehobene ist „Standard", wo die Aufgaben-Session lebt. Das andere ist das Einrichtungsprofil, wo der Willkommens-Chat lebt.',
-    sessionsTitle: 'Jedes Profil führt seine eigenen Sessions',
-    sessionsText:
-      'Diese Liste gehört zum Standardprofil. „Neue Session“ startet eine im jeweils gewählten Profil. Wechseln Sie Profile über die Leiste, und die Liste ändert sich mit.',
-    stayTitle: 'Hermes ist einen Klick entfernt',
-    stayText:
-      'Wechseln Sie ins Einrichtungsprofil und öffnen Sie „Willkommen bei Hermes“, wenn Sie Hilfe brauchen. Es bleibt dort.'
-  },
-  guidedGreeting: {
-    line: 'Hallo und willkommen. Ich bin Hermes. Geben Sie mir zwei Minuten, um alles für Sie einzurichten, dann setzen wir mich auf etwas an, das Sie wirklich erledigt haben möchten.\\n\\nAber zuerst: Wie soll ich Sie nennen?',
-    nameSuggestion: name => `(Ich kann Sie auch einfach ${name} nennen, wenn Ihnen das lieber ist.)`
-  },
   install: {
     stageStates: {
       pending: 'Ausstehend',
@@ -4575,104 +4462,7 @@ export const deOverrides = {
     reloadRetry: 'Neu laden und erneut versuchen',
     openLogs: 'Logs öffnen'
   },
-  onboarding: {
-    headerTitle: 'Hermes Agent für Sie einrichten',
-    headerDesc:
-      'Verbinden Sie einen Modell-Anbieter, um mit dem Chatten zu beginnen. Die meisten Optionen brauchen nur einen Klick.',
-    preparingInstall:
-      'Hermes schließt die Installation ab. Das dauert beim ersten Start normalerweise unter einer Minute.',
-    starting: 'Hermes wird gestartet…',
-    lookingUpProviders: 'Anbieter werden gesucht...',
-    collapse: 'Einklappen',
-    otherProviders: 'Andere Anbieter',
-    haveApiKey: 'Ich habe bereits einen API-Key',
-    chooseLater: 'Ich wähle später einen Anbieter',
-    recommended: 'Empfohlen',
-    connected: 'Verbunden',
-    featuredPitch: 'Ein Abo, 300+ Frontier-Modelle – die empfohlene Art, Hermes zu nutzen',
-    fireworksPitch: 'Direkte Model-API – Fireworks-gehostete Frontier-Modelle',
-    localModelsTitle: 'Modelle lokal ausführen',
-    localModelsPitch: 'Kein Konto nötig – laden Sie ein Modell herunter und führen Sie es auf diesem Rechner aus',
-    openRouterPitch: 'Ein Key, hunderte Modelle – ein solider Standard',
-    apiKeyOptions: {
-      fireworks: {
-        short: 'direkte Model-API',
-        description: 'Direkter Zugriff auf Modelle, die von Fireworks AI gehostet werden.'
-      },
-      openrouter: {
-        short: 'ein Key, viele Modelle',
-        description: 'Hostet hunderte Modelle hinter einem einzigen Key. Guter Standard für neue Installationen.'
-      },
-      openai: {
-        short: 'GPT-Klasse-Modelle',
-        description: 'Direkter Zugriff auf OpenAI-Modelle.'
-      },
-      gemini: {
-        short: 'Gemini-Modelle',
-        description: 'Direkter Zugriff auf Google-Gemini-Modelle.'
-      },
-      xai: {
-        short: 'Grok-Modelle',
-        description: 'Direkter Zugriff auf xAI-Grok-Modelle.'
-      },
-      local: {
-        short: 'selbst gehostet',
-        description:
-          'Verbinden Sie Hermes mit einem lokalen oder selbst gehosteten OpenAI-kompatiblen Endpunkt (vLLM, llama.cpp, Ollama usw.).'
-      }
-    },
-    backToSignIn: 'Zurück zur Anmeldung',
-    getKey: 'Einen Key holen',
-    replaceCurrent: 'Aktuellen Wert ersetzen',
-    pasteApiKey: 'API-Key einfügen',
-    localApiKeyPlaceholder: 'API-Key (optional – nur falls Ihr Endpunkt einen benötigt)',
-    localModelNamePlaceholder: 'Modellname (z. B. command-a-plus-05-2026)',
-    couldNotSave: 'Anmeldedaten konnten nicht gespeichert werden.',
-    connecting: 'Verbinden',
-    update: 'Aktualisieren',
-    flowSubtitles: {
-      pkce: 'Öffnet Ihren Browser zur Anmeldung und fährt dann hier fort',
-      device_code: 'Öffnet eine Verifizierungsseite in Ihrem Browser – Hermes verbindet sich automatisch',
-      external: 'Melden Sie sich einmal in Ihrem Terminal an und kehren Sie dann zum Chatten zurück'
-    },
-    startingSignIn: provider => `Anmeldung für ${provider} wird gestartet...`,
-    verifyingCode: provider => `Ihr Code wird mit ${provider} überprüft…`,
-    connectedProvider: provider => `${provider} verbunden`,
-    connectedPicking: provider => `${provider} verbunden. Standardmodell wird ausgewählt...`,
-    signInFailed: 'Anmeldung fehlgeschlagen. Versuchen Sie es erneut.',
-    signInExpired:
-      'Die Anmeldung ist beim Warten auf die Autorisierung abgelaufen. Meist bedeutet das, dass die Anmeldeseite im geöffneten Tab hängen geblieben ist (serverseitiges Problem) – schließen Sie die Anmeldung dort ab und versuchen Sie es dann erneut. Wenn es weiterhin fehlschlägt, verwenden Sie stattdessen einen API-Key oder die CLI als Alternative.',
-    signInDidNotFinish: provider =>
-      `Die Anmeldung bei ${provider} wurde nicht abgeschlossen. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut, oder wählen Sie einen anderen Anbieter.`,
-    tryAgain: 'Erneut versuchen',
-    useApiKeyInstead: 'API-Key verwenden',
-    errorDetails: 'Details',
-    pickDifferentProvider: 'Einen anderen Anbieter wählen',
-    signInWith: provider => `Mit ${provider} anmelden`,
-    openedBrowser: provider => `Wir haben ${provider} in Ihrem Browser geöffnet.`,
-    authorizeThere: 'Autorisieren Sie Hermes dort.',
-    copyAuthCode: 'Kopieren Sie den Autorisierungscode und fügen Sie ihn unten ein.',
-    pasteAuthCode: 'Autorisierungscode einfügen',
-    reopenAuthPage: 'Autorisierungsseite erneut öffnen',
-    autoBrowser: provider =>
-      `Wir haben ${provider} in Ihrem Browser geöffnet. Autorisieren Sie Hermes dort, und Sie werden automatisch verbunden – nichts zu kopieren oder einzufügen.`,
-    reopenSignInPage: 'Anmeldeseite erneut öffnen',
-    waitingAuthorize: 'Warten auf Ihre Autorisierung…',
-    externalPending: provider =>
-      `${provider} meldet sich über seine eigene CLI an. Führen Sie diesen Befehl in einem Terminal aus, kehren Sie dann zurück und wählen Sie „Ich habe mich angemeldet“:`,
-    signedIn: 'Ich habe mich angemeldet',
-    deviceCodeOpened: provider => `Wir haben ${provider} in Ihrem Browser geöffnet. Geben Sie dort diesen Code ein:`,
-    reopenVerification: 'Verifikationsseite erneut öffnen',
-    copy: 'Kopieren',
-    defaultModel: 'Standardmodell',
-    freeTier: 'Free-Tier',
-    pro: 'Pro',
-    free: 'Kostenlos',
-    price: (input, output) => `${input} rein / ${output} raus pro Mtok`,
-    change: 'Ändern',
-    startChatting: 'Loslegen',
-    docs: provider => `${provider}-Doku`
-  },
+  onboarding: deOnboarding,
   freeTier: {
     providerRowTitle: 'Nous · Gratis-Tarif',
     providerRowPitch: 'Melden Sie sich mit einem Nous-Konto an, um mehr Modelle und Tools freizuschalten.',
@@ -4720,6 +4510,12 @@ export const deOverrides = {
       'Hermes konnte den Nous-Dienst nicht erreichen, um Ihre Anmeldung abzuschließen. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut. Ihre Session bleibt erhalten.',
     alreadySignedInHeading: 'Bereits angemeldet.',
     alreadySignedInBody: 'Dieses Hermes ist bereits mit einem Nous-Konto angemeldet.',
+    offer: {
+      heading: 'Mit Hermes weitermachen',
+      body: 'Sie nutzen das kostenlose Kontingent. Wenn Sie Hermes weiter verwenden, stoßen Sie bald an Grenzen. Melden Sie sich mit einem kostenlosen Nous-Konto an, um ein größeres Kontingent zu erhalten.',
+      signIn: 'Anmelden',
+      notNow: 'Nicht jetzt'
+    },
     setupFailed: {
       gateClosed:
         'Diese Hermes-Version kann ohne Nous-Konto nicht starten. Melden Sie sich an oder legen Sie eines an – kostenlos und in einer Minute erledigt.',
@@ -5446,23 +5242,8 @@ export const deOverrides = {
         `Dies fügt das Muster „${pattern}“ Ihrer dauerhaften Zulassungsliste hinzu (~/.hermes/config.yaml). Hermes fragt bei solchen Befehlen nicht mehr nach – weder in dieser noch in zukünftigen Sessions.`,
       alwaysAllow: 'Immer erlauben'
     },
-    clarify: {
-      notReady: 'Klärungsanfrage ist noch nicht bereit',
-      gatewayDisconnected: 'Hermes-Gateway ist nicht verbunden',
-      sendFailed: 'Klärungsantwort konnte nicht gesendet werden',
-      loadingQuestion: 'Frage wird geladen…',
-      other: 'Anderes (Antwort eingeben)',
-      placeholder: 'Geben Sie Ihre Antwort ein…',
-      skip: 'Überspringen',
-      skipped: 'Übersprungen',
-      noAnswer: 'Keine Antwort',
-      confirmAndContinueLabel: 'Bestätigen und fortfahren',
-      singleSelectHint: 'Eines auswählen',
-      multiSelectHint: 'Alle Treffer auswählen',
-      questionProgress: (answered, total) => `${answered} von ${total} beantwortet`,
-      notDelivered:
-        'Diese Frage hat die App nicht erreicht und kann hier nicht beantwortet werden. Klicken Sie auf Stopp, um den Durchgang zu beenden, und antworten Sie dann im Chat.'
-    },
+    clarify: deClarify,
+    themePicker: deThemePicker,
     catalogInstall: {
       preparing: 'Installation wird vorbereitet…',
       install: 'Installieren',
@@ -5871,11 +5652,6 @@ export const deOverrides = {
         title: 'Ein Update für die lokale Engine ist verfügbar',
         text: 'Aktualisieren Sie die Engine, die Ihre lokalen Modelle ausführt. Laufende lokale Anfragen können unterbrochen werden.',
         action: 'Jetzt aktualisieren'
-      },
-      'local-setup': {
-        title: 'Dieses Gerät kann Modelle lokal ausführen',
-        text: 'Ihre Hardware kann ein lokales Modell ausführen. Chats bleiben auf Ihrem Computer und kosten nichts.',
-        action: 'Einrichten'
       },
       'right-pane': {
         title: 'Der Arbeitsbereich',

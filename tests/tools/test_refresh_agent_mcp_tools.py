@@ -279,6 +279,26 @@ def test_preserve_prefix_appends_late_arrivals_at_the_tail(monkeypatch):
     ]
 
 
+def test_explicit_reload_replaces_a_same_name_schema(monkeypatch):
+    """``/reload-mcp`` takes the fresh schema when the tool name stays the same.
+
+    Between-turns refresh freezes the bytes already sent. Reload is the other
+    path (``preserve_prefix`` off): the user already accepted a cache break, so
+    a new description on ``read_file`` has to be what the next request sends.
+    """
+    agent = _agent(["read_file"])
+    agent.tools[0]["function"]["description"] = "Read a file. schema v1"
+
+    fresh = _tool("read_file")
+    fresh["function"]["description"] = "Read a file. schema v2"
+    _serve(monkeypatch, [fresh])
+    _registered(monkeypatch, ["read_file"])
+
+    _mcp_agent.refresh_agent_mcp_tools(agent)
+
+    assert agent.tools[0]["function"]["description"] == "Read a file. schema v2"
+
+
 def test_preserve_prefix_keeps_the_bridge_tools_byte_identical(monkeypatch):
     """``tool_search``'s description is derived from the session at build time: the
     deferred-tool count, the embedded listing, and whether ``manage_connections`` was
@@ -397,7 +417,7 @@ def test_a_pin_never_re_adds_a_tool_this_sessions_config_excludes(monkeypatch):
     """A pin from a surface where ``terminal`` was allowed must not hand it back where config
     disables it, nor ``browser_exec`` (host Python) once ``terminal`` is gone. A client-surface
     tool (``focus_pane``) is still carried: no config choice removed it here."""
-    import model_tools  # noqa: F401  registers the real tools
+    import model_tools
 
     monkeypatch.setattr(_mcp_agent, "persist_agent_tool_names", lambda agent: None)
     pin = {"version": _mcp_agent.tool_pin_version(),

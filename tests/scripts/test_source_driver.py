@@ -42,7 +42,7 @@ chmod +x "$INSTALL_DIR/venv/bin/hermes"
 mkdir -p "$INSTALL_DIR/pm"
 printf '{}' > "$INSTALL_DIR/pm/lock.json"
 if source_hermes "$INSTALL_DIR"; then exit 92; fi
-'''], env=env, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+'''], env=env, cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.splitlines() == ["published:literal argument", "legacy"]
 
@@ -61,7 +61,7 @@ def test_installer_marker_is_the_only_dirty_state_a_driver_accepts(tmp_path):
 
     def accept():
         return subprocess.run(["bash", "-euc", 'source "$ASSETS/source-driver.sh"; accept_installer_marker "$INSTALL_DIR"'],
-                              env=env, capture_output=True, text=True, timeout=30)
+                              env=env, capture_output=True, text=True, timeout=30, check=False)
 
     assert accept().returncode == 0
     assert (root / ".install_method").read_text(encoding="utf-8") == "git\n"
@@ -114,7 +114,7 @@ Write-Output 'selection verified'
 ''', encoding="utf-8")
     result = subprocess.run([pwsh, "-NoProfile", "-NonInteractive", "-File", str(harness)],
                             env=dict(os.environ, INSTALL_DIR=str(root), ASSETS=str(ASSETS), HOME=str(tmp_path)),
-                            cwd=tmp_path, capture_output=True, text=True, timeout=30)
+                            cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout.strip() == "selection verified"
 
@@ -217,7 +217,7 @@ for (const [product, out] of [['tui', 'ui-tui/dist'], ['web', 'hermes_cli/web_di
         return {p: (hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_mtime_ns) for tree in (root, home, store)
                 for p in tree.rglob("*") if p.is_file()}
     before = snapshot()
-    result = subprocess.run(command, env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    result = subprocess.run(command, env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     assert snapshot() == before
     if fault in {"uv-lock", "no-desktop"}:
@@ -239,7 +239,7 @@ for (const [product, out] of [['tui', 'ui-tui/dist'], ['web', 'hermes_cli/web_di
         else:
             damaged.write_bytes(b"damaged")
     before = snapshot()
-    result = subprocess.run(command, env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    result = subprocess.run(command, env=env, cwd=tmp_path, capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode != 0
     assert error in result.stderr
     assert "bootstrap must not run" not in result.stderr

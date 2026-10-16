@@ -67,7 +67,7 @@ def _reclone_plugin_update(target: Path, source: str, previous_revision: object)
     return f"Re-installed from {source}: {previous[:8]}..{revision[:8]}"
 
 
-def cmd_update(name: str, *, interactive: bool = True, allow_live_gateway: bool = False) -> None:
+def cmd_update(name: str, *, interactive: bool = True) -> None:
     """Update an installed plugin by pulling latest from its git remote."""
     from rich.markup import escape
     from hermes_cli import plugins_cmd_catalog as catalog
@@ -78,7 +78,6 @@ def cmd_update(name: str, *, interactive: bool = True, allow_live_gateway: bool 
         catalog.cmd_update_catalog(name, target, sidecar, console, interactive=interactive)
         return
     try:
-        _pc()._refuse_live_gateway_mutation("update", allow_live_gateway=allow_live_gateway)
         output = _pull_plugin_update(
             target,
             lambda rec: (
@@ -283,7 +282,6 @@ def dashboard_update_user_plugin(name: str, *, accept_capabilities: bool = False
         return {"ok": False, "error": f"Plugin '{name}' was not found under {_pc()._plugins_dir()}."}
     sidecar = catalog.catalog_install_record(target)
     try:
-        _pc()._refuse_live_gateway_mutation("update")
         if sidecar:
             result = catalog.repin_catalog_plugin(
                 target, sidecar, consent_cb=(lambda _delta: True) if accept_capabilities else None)

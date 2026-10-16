@@ -95,7 +95,7 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
 
     try:
         server_idle = sup.is_idle(model_id)
-    except Exception:  # noqa: BLE001
+    except Exception:
         server_idle = False
 
     budget = probe_budget(planning=True)

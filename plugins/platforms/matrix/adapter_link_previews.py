@@ -8,14 +8,14 @@ unstable name older clients still read.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Set
+from typing import Any
 
 LINK_PREVIEW_OPT_OUT_KEYS = ("m.url_previews", "com.beeper.linkpreviews")
 _TRUE_WORDS = frozenset({"true", "1", "yes", "on", "all"})
 _FALSE_WORDS = frozenset({"", "false", "0", "no", "off", "none"})
 
 
-def parse_link_preview_opt_out(raw: Any) -> tuple[bool, Set[str]]:
+def parse_link_preview_opt_out(raw: Any) -> tuple[bool, set[str]]:
     """``disable_link_previews`` → ``(all_rooms, room_ids)``: true opts out every room, a room-ID
     list/CSV only those rooms, unset/false none."""
     if raw is None or isinstance(raw, bool):
@@ -28,12 +28,12 @@ def parse_link_preview_opt_out(raw: Any) -> tuple[bool, Set[str]]:
     return False, {str(r).strip() for r in items if str(r).strip()}
 
 
-def link_previews_disabled(opt_out: tuple[bool, Set[str]], room_id: Any) -> bool:
+def link_previews_disabled(opt_out: tuple[bool, set[str]], room_id: Any) -> bool:
     all_rooms, rooms = opt_out
     return all_rooms or str(room_id) in rooms
 
 
-def apply_link_preview_opt_out(msg_content: Dict[str, Any]) -> None:
+def apply_link_preview_opt_out(msg_content: dict[str, Any]) -> None:
     """Mark a text event as carrying no link previews."""
     for key in LINK_PREVIEW_OPT_OUT_KEYS:
         msg_content[key] = []

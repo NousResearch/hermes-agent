@@ -256,7 +256,7 @@ class TestDefaultModelFromCache:
     def test_shipped_manifest_labels_glm52_default(self, isolated_home):
         """Contract with the in-repo manifest: both provider blocks label the
         same default entry the code constant points at."""
-        import hermes_cli.model_catalog as model_catalog
+        from hermes_cli import model_catalog
         from hermes_cli.models import PREFERRED_SILENT_DEFAULT_MODEL
 
         repo_root = Path(model_catalog.__file__).resolve().parent.parent
@@ -539,7 +539,6 @@ class TestSwrRefreshProfileScope:
             with seen:
                 refreshed_paths.append(str(model_catalog._cache_path()))
             release.wait(5)
-            return None
 
         set_multiplex_active(True)
         try:
@@ -624,3 +623,12 @@ class TestManifestMatchesInRepoLists:
                 for entry in json.load(fh)["providers"]["openrouter"]["models"]
             ]
         assert "inclusionai/ling-3.0-flash:free" in manifest_ids
+
+    def test_nous_lists_portal_served_muse_spark_but_not_contributor_twins(self):
+        """The Portal serves plain muse-spark 1.2/1.3; only the -contributor twins are OpenRouter-only."""
+        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+
+        nous = _PROVIDER_MODELS["nous"]
+        for version in ("1.2", "1.3"):
+            assert f"meta/muse-spark-{version}" in nous
+            assert f"meta/muse-spark-{version}-contributor" not in nous

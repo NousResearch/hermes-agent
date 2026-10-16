@@ -111,7 +111,7 @@ def _invoke_hook_safely(name: str, logger: logging.Logger, **kwargs) -> list:
         return []
 
 
-def _guarded_cleanup(label: str, fn: Callable[[], Any], errors: List[str], logger) -> None:
+def _guarded_cleanup(label: str, fn: Callable[[], Any], errors: list[str], logger) -> None:
     """Post-loop cleanup must never lose the response: each step is guarded
     independently and errors surface via ``cleanup_errors`` (#8049)."""
     try:
@@ -124,7 +124,7 @@ def _guarded_cleanup(label: str, fn: Callable[[], Any], errors: List[str], logge
 def _resolve_budget_fallback(
     agent, *, final_response, api_call_count, interrupted, failed, messages, _turn_exit_reason,
     _pending_verification_response, _pending_verification_response_previewed, logger,
-) -> Tuple[Any, Any, bool, Any]:
+) -> tuple[Any, Any, bool, Any]:
     """Iteration-budget exhaustion. Returns ``(final_response, _turn_exit_reason,
     preserved_verification_fallback, interrupted)``."""
     budget_exhausted = (
@@ -222,7 +222,7 @@ def _drop_transcript_scaffolding(agent, messages) -> None:
     _drop_verification_continuation_scaffolding(messages)
 
 
-def _recover_final_from_stream(agent, final_response, interrupted, failed) -> Tuple[Any, bool]:
+def _recover_final_from_stream(agent, final_response, interrupted, failed) -> tuple[Any, bool]:
     """An empty terminal completion is not authoritative when the stream already
     delivered text; recover before persist so a blank tail isn't frozen (#95514).
     Returns ``(final_response, recovered_from_stream)``. Called by the finalizer BEFORE
@@ -303,7 +303,10 @@ def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) 
             and not getattr(agent, "_persist_disabled", False)
         ):
             _before = len(messages)
-            _compacted = _compressor._micro_compact(messages)
+            # A rotating compaction earlier in this turn may have moved the agent to a child session.
+            _compacted = _compressor._micro_compact(
+                messages, turn_session_id=getattr(agent, "_inflight_turn_session_id", None),
+            )
             # Defrag rewrites the newest MICRO marker in place and pops _db_persisted;
             # the compressor flags us to invalidate the flush-scan cursor, else the
             # rewritten row is identity-skipped (stale).
@@ -450,7 +453,7 @@ def _last_turn_reasoning(messages) -> Optional[Any]:
 def _apply_output_hooks(
     agent, final_response, logger, *, platform, effective_task_id, turn_id, original_user_message,
     messages,
-) -> Tuple[Any, bool, Optional[Any]]:
+) -> tuple[Any, bool, Optional[Any]]:
     """Resolve the turn's ``transform_llm_output`` outcome, then fire ``post_llm_call`` once per
     turn after the tool loop. Returns ``(final_response, transformed, pre_transform_response)``.
 
@@ -479,7 +482,7 @@ def _apply_output_hooks(
 
 def apply_llm_output_transform(
     agent, final_response, *, turn_id, platform=None, logger=None,
-) -> Tuple[Any, bool, Optional[Any]]:
+) -> tuple[Any, bool, Optional[Any]]:
     """Fire ``transform_llm_output`` once per turn and return
     ``(final_response, transformed, pre_transform_response)``.
 
@@ -594,7 +597,7 @@ def finalize_turn(
     from hermes_cli.observability.shared_metrics_harness import finish_turn
     finish_turn(agent, _turn_exit_reason, final_response, interrupted=interrupted, failed=failed)
 
-    _cleanup_errors: List[str] = []
+    _cleanup_errors: list[str] = []
     # The model has answered (or the loop gave up): a title upgrade held back because it shares a
     # self-hosted endpoint with the main request (#117296) may go out now.
     from agent.turn_context import start_deferred_title_upgrade

@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import tui_gateway.server as server
+from tui_gateway import server
 from tui_gateway import launch_profile_policy as lpp
 
 A_VAL = "a-only-secret-0001"
@@ -78,7 +78,7 @@ def _probe(profile: str | None) -> dict:
 def test_config_get_for_secondary_resolves_only_its_own_secrets_and_flips_fail_closed(two_homes):
     from agent.secret_scope import UnscopedSecretError, get_secret, is_multiplex_active
 
-    root, _b = two_homes
+    _root, _b = two_homes
     assert not is_multiplex_active()  # single-profile so far
 
     probe_b = _probe("b")
@@ -113,7 +113,7 @@ def test_rpc_scope_reaches_llm_oneshot_and_model_options(two_homes, monkeypatch)
     """The scope must wrap the body of every credential-reading RPC, not only config.get."""
     from agent.secret_scope import get_secret
 
-    root, b = two_homes
+    _root, b = two_homes
     seen = {}
 
     def fake_oneshot(**kwargs):
@@ -389,7 +389,7 @@ def test_off_turn_prompt_rebuilds_run_under_the_sessions_profile_scope(two_homes
     model-switch prompt re-persist rebuilt the system prompt with no secret scope, so the external memory
     provider's ``system_prompt_block()`` hit ``UnscopedSecretError`` on the LAUNCH profile once the process
     hosted a second home — and for a secondary they resolved the launch profile's credential/home."""
-    import agent.system_prompt as system_prompt
+    from agent import system_prompt
 
     root, b = two_homes
     (root / ".env").write_text((root / ".env").read_text() + "MEM_PROVIDER_KEY=launch-mem-key\n")

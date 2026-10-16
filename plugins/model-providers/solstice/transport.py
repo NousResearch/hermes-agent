@@ -11,7 +11,7 @@ from typing import Any, Dict
 
 from agent.gemini_native_adapter import GeminiAPIError, GeminiNativeClient, gemini_http_error
 
-INFERENCE_BASE_URL = "https://generativelanguage.googleapis.com/v1alpha"
+from . import INFERENCE_BASE_URL
 
 
 class SolsticeClient(GeminiNativeClient):
@@ -24,7 +24,7 @@ class SolsticeClient(GeminiNativeClient):
         # No base means this endpoint, never the generic Gemini default (a different API surface).
         super().__init__(base_url=base_url or INFERENCE_BASE_URL, **kwargs)
 
-    def _auth_headers(self) -> Dict[str, str]:
+    def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}"}
 
     def _http_error(self, response: Any, body_text: Any = None) -> GeminiAPIError:

@@ -17,10 +17,12 @@ export function Butterbar() {
   const items = useStore($butterbarItems)
   const [activeId, setActiveId] = useState<null | string>(null)
   const [paused, setPaused] = useState(false)
+
   const index = Math.max(
     0,
     items.findIndex(item => item.id === activeId)
   )
+
   const item = items[index]
   const multiple = items.length > 1
 

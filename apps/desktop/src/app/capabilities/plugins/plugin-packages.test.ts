@@ -36,6 +36,28 @@ describe('mergePluginPackages', () => {
     expect(rows[0].agent?.name).toBe('hermes-media-studio')
   })
 
+  it('pairs a desktop half with an agent row whose folder differs from its manifest name', () => {
+    // Electron names the half after the package FOLDER (plugins/<folder>/desktop);
+    // the agent row is named from its manifest. `hermes plugins install` lands a
+    // package at plugins/<manifest name>, but a self-cloned one (the README's
+    // `git clone … ~/.hermes/plugins/hermes-subscription-meter`) keeps the repo
+    // name. The join key has to be the folder or it splits into two rows.
+    const rows = mergePluginPackages(
+      [desktop({ id: 'meter-ui', name: 'Meter', packageName: 'hermes-subscription-meter' })],
+      [
+        agent({
+          name: 'subscription-meter',
+          has_desktop_half: true,
+          install_dir: '/home/u/.hermes/plugins/hermes-subscription-meter'
+        })
+      ]
+    )
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ kind: 'both', agentMissingInProfile: false, desktopMissing: false })
+    expect(rows[0].agent?.name).toBe('subscription-meter')
+  })
+
   it('a desktop half whose agent half is absent from THIS profile offers the install-here affordance', () => {
     const rows = mergePluginPackages([desktop({ id: 'media', packageName: 'hermes-media-studio' })], [])
 

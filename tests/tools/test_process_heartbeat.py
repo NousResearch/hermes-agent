@@ -15,7 +15,7 @@ import tools.process_registry as pr
 from tools.process_registry import ProcessRegistry
 
 
-def _drain(q: "queue.Queue") -> list:
+def _drain(q: queue.Queue) -> list:
     out = []
     while True:
         try:

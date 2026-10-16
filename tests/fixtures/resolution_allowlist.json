@@ -75,11 +75,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "cron/scheduler_delivery.py",
-    "symbol": "_deliver_to_bot_chat",
-    "kind": "bare_which"
-  },
-  {
     "path": "cron/scheduler_script.py",
     "symbol": "_script_argv",
     "kind": "bare_which"
@@ -87,16 +82,6 @@
   {
     "path": "gateway/platforms/base.py",
     "symbol": "transcode_to_ogg_opus",
-    "kind": "bare_which"
-  },
-  {
-    "path": "gateway/platforms/signal.py",
-    "symbol": "_remux_aac_to_m4a",
-    "kind": "bare_which"
-  },
-  {
-    "path": "gateway/platforms/whatsapp_cloud.py",
-    "symbol": "<module>",
     "kind": "bare_which"
   },
   {
@@ -218,11 +203,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/gateway_setup_wizard.py",
-    "symbol": "_setup_signal",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/gateway_windows.py",
     "symbol": "_exec_schtasks",
     "kind": "bare_which"
@@ -325,11 +305,6 @@
   {
     "path": "hermes_cli/main_tui_launch.py",
     "symbol": "_tui_node_bin",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/mcp_app_detection.py",
-    "symbol": "_Scan.path_candidates",
     "kind": "bare_which"
   },
   {
@@ -564,6 +539,16 @@
     "kind": "bare_which"
   },
   {
+    "path": "tools/mcp_tool_config.py",
+    "symbol": "_outside_package",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/mcp_tool_config.py",
+    "symbol": "_packaged_npx_entry",
+    "kind": "bare_which"
+  },
+  {
     "path": "tools/process_registry.py",
     "symbol": "_build_systemd_scope_argv",
     "kind": "bare_which"
@@ -698,5 +683,11 @@
     "symbol": "_git_executable",
     "kind": "bare_which",
     "reason": "gate reads of the paused gateways' checkout run outside the updater, where install.ps1's PM-staged git is not on PATH; falls back to that staged git (moves to hermes_cli._early_recovery._git_executable when #132361 lands)"
+  },
+  {
+    "path": "hermes_cli/source_check.py",
+    "symbol": "_installed_git",
+    "kind": "bare_which",
+    "reason": "only asks whether the caller's bare git is on PATH; when it is not (Desktop on a Windows install whose only git is install.ps1's PM-staged copy) it defers to update_pause_record._git_executable, the updater's own resolution"
   }
 ]

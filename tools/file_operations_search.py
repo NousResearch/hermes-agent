@@ -211,12 +211,13 @@ _OUTPUT_MODE_FLAGS = {"files_only": "-l", "count": "-c"}
 def _parse_search_output(result, output_mode: str, limit: int, offset: int,
                          context: int, warning: Optional[str] = None) -> SearchResult:
     """Parse rg/grep ``| head`` output into a SearchResult (shared by both engines).
-    Exit codes: 0=matches, 1=none, 2=error — but both tools return 2 on PARTIAL
-    errors (one unreadable file), so an error is surfaced only when exit==2 AND no
-    usable payload remains. ``warning`` is attached to files_only/content results."""
+    Direct engines use 1 for no matches and 2 for errors; find folds a failed
+    grep invocation into exit 1. Diagnostics distinguish that failure from an
+    empty search. Keep usable matches on partial errors (one unreadable file).
+    ``warning`` is attached to files_only/content results."""
     stdout, limit_reason = _search_stdout_and_limit(result)
     diagnostics, payload = _split_tool_diagnostics(stdout)
-    if result.exit_code == 2 and not payload.strip():
+    if (result.exit_code == 2 or (result.exit_code == 1 and diagnostics.strip())) and not payload.strip():
         error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
         return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
     lines = [ln for ln in payload.strip().split('\n') if ln]
@@ -523,10 +524,12 @@ class SearchMixin:
 
     def _dispatch_search(self, pattern: str, path: str, target: str,
                          file_glob: Optional[str], limit: int, offset: int,
-                         output_mode: str, context: int, order: str = "discovery") -> SearchResult:
+                         output_mode: str, context: int, order: str = "discovery",
+                         literal: bool = False) -> SearchResult:
         if target == "files":
-            return self._search_files(pattern, path, limit, offset, order)
-        return self._search_content(pattern, path, file_glob, limit, offset, output_mode, context)
+            result = self._search_files(pattern, path, limit, offset, order)
+            return _filename_glob_hint(result, pattern)
+        return self._search_content(pattern, path, file_glob, limit, offset, output_mode, context, literal=literal)
 
     def _path_not_found_result(self, path: str) -> SearchResult:
         """Error result for a missing search root, with nearby-entry suggestions."""
@@ -548,7 +551,7 @@ class SearchMixin:
     def _try_multi_path_search(self, pattern: str, path: str, target: str,
                                file_glob: Optional[str], limit: int, offset: int,
                                output_mode: str, context: int,
-                               order: str = "discovery") -> Optional[SearchResult]:
+                               order: str = "discovery", literal: bool = False) -> Optional[SearchResult]:
         """Recover a not-found ``path`` that is really several paths in one string.
         Commas explicitly delimit paths (internal spaces preserved); without commas
         split on whitespace. Search every existing part, merge, and note skipped
@@ -572,7 +575,7 @@ class SearchMixin:
         else:
             merged = SearchResult()
             for root in existing:
-                sub = self._search_content(pattern, root, file_glob, limit, offset, output_mode, context)
+                sub = self._search_content(pattern, root, file_glob, limit, offset, output_mode, context, literal=literal)
                 if sub.error:
                     return sub
                 merged.matches.extend(sub.matches)
@@ -593,7 +596,7 @@ class SearchMixin:
             if protected_paths:
                 warning_parts.append(self._macos_protected_search_warning(protected_paths))
         merged.warning = " ".join(warning_parts)
-        return merged
+        return _filename_glob_hint(merged, pattern) if target == "files" else merged
 
     def _search_prune_glob_args(self) -> str:
         """rg globs pruning known heavyweight recursive subtrees. Both forms are
@@ -615,11 +618,11 @@ class SearchMixin:
         ("--hidden --no-ignore", "0 matches in visible files, but {total} match(es) in {n} "
                                  "hidden or gitignored file(s): {paths} — these are excluded by default."),
         ("-F", "0 regex matches, but {total} literal match(es) in {n} file(s): {paths} — the "
-               "pattern contains regex metacharacters that likely need escaping "
-               "(or pass a simpler substring)."),
+               "pattern contains regex metacharacters; use literal=true for exact text "
+               "or escape them for a regex."),
     )
 
-    def _zero_match_probe(self, pattern: str, path: str, file_glob: Optional[str]) -> Optional[str]:
+    def _zero_match_probe(self, pattern: str, path: str, file_glob: Optional[str], literal: bool = False) -> Optional[str]:
         """Steering hint for a 0-match content search, or None: a bare zero gives the
         model nothing to act on, so run cheap count-only rg probes (case-insensitive,
         hidden/ignored, fixed-string) and report the first that hits."""
@@ -630,7 +633,7 @@ class SearchMixin:
         has_meta = bool(re.search(r"[.\[\](){}?*+^$\\|]", pattern))
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
         for flags, template in self._ZERO_MATCH_PROBES:
-            if flags == "-F" and not has_meta:
+            if flags == "-F" and (literal or not has_meta):
                 continue
             # The hidden/ignored probe keeps --no-ignore so project-local ignored
             # files stay diagnosable, but prunes heavyweight trees before rg recurses.
@@ -638,8 +641,9 @@ class SearchMixin:
                 glob_expr_probe = f"{glob_expr} {self._search_prune_glob_args()}"
             else:
                 glob_expr_probe = glob_expr
-            probe_words = [rg, flags, "--count-matches", glob_expr_probe,
-                           self._escape_shell_arg(pattern, translate_path=False), self._escape_native_tool_arg(path)]
+            probe_words = [rg, flags, "-F" if literal else "", "--count-matches", glob_expr_probe,
+                           "-e", self._escape_shell_arg(pattern, translate_path=False), "--",
+                           self._escape_native_tool_arg(path)]
             probe = self._run_rg_bounded(probe_words, 50, timeout=30)
             total, per_file = 0, []
             for line in (probe.stdout or "").strip().splitlines():
@@ -994,14 +998,15 @@ class SearchMixin:
             truncated=len(all_files) > offset + limit or bool(limit_reason), limit_reason=limit_reason)
 
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
-                        limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
+                        limit: int, offset: int, output_mode: str, context: int,
+                        literal: bool = False) -> SearchResult:
         """Content search: rg, else grep; attaches zero-match steering hints."""
         used_rg = self._has_command('rg')
         if used_rg:
             result = self._search_with_rg(pattern, path, file_glob, limit, offset, output_mode, context,
-                                          rg_executable=self._resolve_command("rg") or "rg")
+                                          rg_executable=self._resolve_command("rg") or "rg", literal=literal)
         elif self._has_command('grep'):
-            result = self._search_with_grep(pattern, path, file_glob, limit, offset, output_mode, context)
+            result = self._search_with_grep(pattern, path, file_glob, limit, offset, output_mode, context, literal=literal)
         else:
             return SearchResult(
                 error="Content search requires ripgrep (rg) or grep. "
@@ -1009,14 +1014,14 @@ class SearchMixin:
         if (not result.error and result.total_count == 0
                 and not result.matches and not result.files and not result.counts):
             try:
-                hint = self._zero_match_probe(pattern, path, file_glob)
+                hint = self._zero_match_probe(pattern, path, file_glob, literal=literal)
             except Exception:
                 hint = None
             if hint:
                 result.warning = hint if not result.warning else f"{result.warning} {hint}"
         # rg auto-enables --multiline for \n patterns, so the line-oriented
         # explanation only applies to the grep fallback.
-        if used_rg:
+        if used_rg or literal:
             return result
         return _maybe_warn_line_oriented_newline_pattern(result, pattern)
 
@@ -1043,7 +1048,7 @@ class SearchMixin:
 
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int,
-                        rg_executable: Optional[str] = None) -> SearchResult:
+                        rg_executable: Optional[str] = None, literal: bool = False) -> SearchResult:
         """Search using ripgrep."""
         rg_executable = rg_executable or self._resolve_command("rg")
         if not rg_executable:
@@ -1057,7 +1062,7 @@ class SearchMixin:
         if output_mode not in ("files_only", "count"):
             cmd_parts.extend(["--max-columns", "2000", "--max-columns-preview"])
         # A regex \n hard-errors in line-oriented mode; enable -U up front and say so.
-        multiline = _pattern_has_regex_newline(pattern)
+        multiline = not literal and _pattern_has_regex_newline(pattern)
         if multiline:
             cmd_parts.append("--multiline")
         if context > 0:
@@ -1067,7 +1072,9 @@ class SearchMixin:
             cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             cmd_parts.append(_OUTPUT_MODE_FLAGS[output_mode])
-        cmd_parts.append(self._escape_shell_arg(pattern, translate_path=False))
+        if literal:
+            cmd_parts.append("-F")
+        cmd_parts.extend(["-e", self._escape_shell_arg(pattern, translate_path=False), "--"])
         # rg is a native Windows binary (winget/cargo/choco): needs C:/... not MSYS /c/...
         cmd_parts.append(self._escape_native_tool_arg(path))
         ml_note = (
@@ -1077,7 +1084,7 @@ class SearchMixin:
         return self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context, warning=ml_note)
 
     def _grep_cmd(self, head: list[str], pattern: str, output_mode: str, context: int,
-                  file_glob: Optional[str] = None) -> list[str]:
+                  file_glob: Optional[str] = None, literal: bool = False) -> list[str]:
         """``head`` + context/include/mode flags + quoted pattern (argument order is fixed)."""
         parts = list(head)
         if context > 0:
@@ -1086,11 +1093,13 @@ class SearchMixin:
             parts.extend(["--include", self._escape_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             parts.append(_OUTPUT_MODE_FLAGS[output_mode])
-        parts.append(self._escape_shell_arg(pattern, translate_path=False))
+        parts.append("-F" if literal else "-E")
+        parts.extend(["-e", self._escape_shell_arg(pattern, translate_path=False), "--"])
         return parts
 
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
-                          limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
+                          limit: int, offset: int, output_mode: str, context: int,
+                          literal: bool = False) -> SearchResult:
         """Fallback search using grep."""
         # grep's --exclude-dir matches BASENAMES anywhere, so it can't express "only
         # the home-level Downloads"; route pruning through find's path-scoped -prune.
@@ -1100,10 +1109,10 @@ class SearchMixin:
         # ~/.hermes returns nothing (#18473); find's -prune only sees descendants.
         if protected_paths or self._root_under_hidden_dir(path):
             return self._search_with_grep_pruned(
-                pattern, path, file_glob, limit, offset, output_mode, context, protected_paths)
+                pattern, path, file_glob, limit, offset, output_mode, context, protected_paths, literal=literal)
         # -H forces filenames; -E matches rg regex behavior; --exclude-dir='.*'
         # mirrors rg's hidden-dir default (.git/, .hub/index-cache/, ...).
-        cmd_parts = self._grep_cmd(["grep", "-rnHE", "--exclude-dir='.*'"], pattern, output_mode, context, file_glob)
+        cmd_parts = self._grep_cmd(["grep", "-rnH", "--exclude-dir='.*'"], pattern, output_mode, context, file_glob, literal=literal)
         # --exclude-dir applies to the root too, so "." would be excluded by '.*';
         # anchor relative paths at the shell's live $PWD.
         is_absolute = path.startswith(("/", "\\\\")) or bool(re.match(r"^[A-Za-z]:[\\/]", path))
@@ -1119,12 +1128,12 @@ class SearchMixin:
 
     def _search_with_grep_pruned(self, pattern: str, path: str, file_glob: Optional[str],
                                  limit: int, offset: int, output_mode: str, context: int,
-                                 protected_paths: list[str]) -> SearchResult:
+                                 protected_paths: list[str], literal: bool = False) -> SearchResult:
         """grep fallback via ``find ... -prune -exec grep {} +``, used when the root needs
         path-scoped pruning (macOS protected dirs) or is itself under a dot-directory
-        (#18473: grep's ``--exclude-dir='.*'`` would drop the root). Trade-off: find folds
-        grep's exit code, so a hard grep error surfaces as an empty result."""
-        grep_parts = self._grep_cmd(["grep", "-nHE"], pattern, output_mode, context)
+        (#18473: grep's ``--exclude-dir='.*'`` would drop the root). Capture diagnostics
+        because find folds grep's error exit code into its own failure status."""
+        grep_parts = self._grep_cmd(["grep", "-nH"], pattern, output_mode, context, literal=literal)
         q_root = self._escape_shell_arg(path or ".")
         # ``-H``: follow a symlink handed in as the OPERAND (and only the operand). Without
         # it ``find <link> -type f`` tests the link itself and hands grep nothing, so a
@@ -1135,5 +1144,14 @@ class SearchMixin:
         find_parts.extend([self._hidden_prune_expr([q_root]), "-o", "-type f"])
         if file_glob:
             find_parts.extend(["-name", self._escape_shell_arg(file_glob)])
-        find_parts.extend(["-exec", *grep_parts, "{}", "+", "2>/dev/null"])
+        find_parts.extend(["-exec", *grep_parts, "{}", "+", "2>&1"])
         return self._run_search_pipeline(find_parts, output_mode, limit, offset, context, line_cap=True)
+
+
+def _filename_glob_hint(result: SearchResult, pattern: str) -> SearchResult:
+    """Explain likely regex syntax only after an otherwise successful empty glob search."""
+    if not result.error and result.total_count == 0 and (
+            "\\." in pattern or "|" in pattern or pattern.startswith("^") or pattern.endswith("$")):
+        hint = "No filenames matched the glob pattern provided."
+        result.warning = f"{result.warning} {hint}" if result.warning else hint
+    return result

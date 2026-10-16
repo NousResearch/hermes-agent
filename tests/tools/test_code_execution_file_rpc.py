@@ -19,7 +19,7 @@ CALLS = {
     "read_file": {"path": "reference", "offset": 2, "limit": 4},
     "write_file": {"path": "output", "content": "café", "cross_profile": False},
     "search_files": {"pattern": "x", "target": "files", "path": ".", "file_glob": "*.py",
-                     "limit": 4, "offset": 2, "output_mode": "count", "context": 3, "order": "modified"},
+                     "limit": 4, "offset": 2, "output_mode": "count", "context": 3, "order": "modified", "literal": False},
     "patch": {"path": "output", "old_string": "old", "new_string": "new", "replace_all": True,
               "mode": "replace", "patch": None, "cross_profile": False},
     "terminal": {"command": "echo fixture", "timeout": 3, "workdir": "/tmp"},

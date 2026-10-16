@@ -1,4 +1,5 @@
 import { hasCronRunVerdict, isCronRunReadOnly, recordCronRunVerdict } from '@/store/read-only-transcript'
+import { ownerLookupSessionRows, sessionMatchesStoredId } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 type CronRunLiveness = Pick<SessionInfo, 'ended_at' | 'last_active' | 'scheduler_owned'> &
@@ -11,8 +12,10 @@ type CronRunRow = CronRunLiveness & Pick<SessionInfo, 'id'>
 // predates `scheduler_owned`.
 const ACTIVITY_WINDOW_MS = 300_000
 
-// `cron/scheduler.py::run_job` names every agent run `cron_{job_id}_{YYYYmmdd_HHMMSS}`.
-const CRON_RUN_SESSION_ID = /^cron_.+_\d{8}_\d{6}$/
+// Agent runs from before the unified gateway runtime are named
+// `cron_{job_id}_{YYYYmmdd_HHMMSS}`. A unified-runtime run keeps its
+// runtime-minted `local-*` id (#138812), so only its row says what it is.
+const LEGACY_CRON_RUN_SESSION_ID = /^cron_.+_\d{8}_\d{6}$/
 
 /**
  * Cron run sessions are autonomous scheduled executions, never interactive
@@ -48,8 +51,43 @@ export function isResumableCronRun(run: CronRunLiveness, nowMs = Date.now()): bo
   return typeof run.last_active === 'number' && nowMs - run.last_active * 1000 < ACTIVITY_WINDOW_MS
 }
 
-export function isCronRunSessionId(storedSessionId: null | string | undefined): boolean {
-  return Boolean(storedSessionId && CRON_RUN_SESSION_ID.test(storedSessionId.trim()))
+/**
+ * A row is a cron run session when the backend serves it as one: only the
+ * scheduler writes `source === 'cron'` sessions. A run-history row with no
+ * session behind it (`cron_output`, a script-only fire's output doc) is not.
+ */
+export function isCronRunRow(row: null | Pick<SessionInfo, 'source'> | undefined): boolean {
+  return row?.source === 'cron'
+}
+
+/**
+ * Whether a stored session id is a cron run: its cached row says so, whatever
+ * id the run was minted with (an opened run's row is cached into the cron
+ * slice when it resolves), or it carries the legacy run id (a tab restored
+ * before any list loaded its row).
+ */
+export function isCronRunSession(storedSessionId: null | string | undefined): boolean {
+  const id = storedSessionId?.trim()
+
+  if (!id) {
+    return false
+  }
+
+  const cached = ownerLookupSessionRows().find(row => sessionMatchesStoredId(row, id))
+
+  return isCronRunRow(cached) || LEGACY_CRON_RUN_SESSION_ID.test(id)
+}
+
+/**
+ * Whether a send to this session must re-check the cron write gate: it is a
+ * cron run by its cached row or legacy id, or a verdict was recorded when it
+ * was opened. The verdict keeps a `local-*` run gated after a sidebar refresh
+ * drops its row from the cached list.
+ */
+export function cronRunWriteGateApplies(storedSessionId: null | string | undefined): boolean {
+  const id = storedSessionId?.trim()
+
+  return Boolean(id) && (isCronRunSession(id) || hasCronRunVerdict(id))
 }
 
 function recordRunVerdict(run: CronRunRow): void {
@@ -91,7 +129,7 @@ export function reconcileCronRunVerdicts(runs: readonly CronRunRow[]): void {
  * Covers what the Cron surfaces cannot: a verdict that went stale while no
  * surface was polling, and a restored route/tab after an app restart, where no
  * surface ever evaluated the run (the in-memory verdicts start empty). Such a
- * session is recognised by its cron run id. Any other session returns
+ * session is recognised by `isCronRunSession`. Any other session returns
  * immediately without a request.
  *
  * An unreadable row keeps a known verdict; an unknown run fails CLOSED — a
@@ -103,7 +141,7 @@ export async function refreshCronRunWriteGate(
 ): Promise<boolean> {
   const id = storedSessionId?.trim()
 
-  if (!id || !(isCronRunSessionId(id) || hasCronRunVerdict(id))) {
+  if (!id || !cronRunWriteGateApplies(id)) {
     return false
   }
 

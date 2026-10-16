@@ -411,9 +411,10 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
     plugin_name = parts[3] if path.startswith("/api/plugins/") and len(parts) >= 4 else ""
     # Only gate authenticated requests. Unauthenticated ones fall through so
     # auth_middleware / the OAuth gate return 401 first and this route can't
-    # be used as a plugin-name oracle.
+    # be used as a plugin-name oracle. Desktop authenticates with a native ticket.
     if plugin_name and (
         getattr(request.state, "token_authenticated", False)
+        or getattr(request.state, "native_http_principal", None)
         or getattr(request.app.state, "auth_required", False)
         or _has_valid_session_token(request)
         or _has_valid_query_token(request, path)

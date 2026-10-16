@@ -74,6 +74,22 @@ def static_verdicts(entries: list[Entry], python_version: str) -> tuple[dict[Pat
     return reasons, waiting
 
 
+def _refuse_ineffective_eviction(home: Path, config: dict, names: list[str]) -> None:
+    """Never publish reduced dependencies while administrator policy still enables them."""
+    import copy
+    from pm.plugins_state import effective_selection, _enabled_from_config, _provider_from_config
+
+    effective = effective_selection(home, copy.deepcopy(config))
+    selected = set(_enabled_from_config(effective))
+    provider = _provider_from_config(home, effective)
+    if provider:
+        selected.add(provider)
+    blocked = selected.intersection(names)
+    if blocked:
+        raise ValueError("managed configuration prevents disabling incompatible plugins: "
+                         + ", ".join(sorted(blocked)))
+
+
 class PluginEviction:
     """Config edits disabling the plugins in *reasons*; published like a plugin selection."""
 
@@ -106,6 +122,7 @@ class PluginEviction:
                 # plugins.disabled does not veto memory.provider; the provider joins the union on its own.
                 if isinstance(memory, dict) and str(memory.get("provider") or "").strip() == name:
                     memory["provider"] = ""
+            _refuse_ineffective_eviction(home, config, names)
             output = io.StringIO()
             yaml.dump(config, output)
             self.edits.append((path, previous, output.getvalue().encode("utf-8")))

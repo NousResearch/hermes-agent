@@ -46,7 +46,14 @@ def candidate_members(extra_dirs=(), **selection):
 
 def selection_snapshot() -> dict[Path, bytes | None]:
     from pm.plugins_state import dependency_homes
-    return {home / "config.yaml": read_bytes_or_none(home / "config.yaml") for home in dependency_homes()}
+    from hermes_cli.managed_scope import get_managed_dir
+
+    snapshot = {home / "config.yaml": read_bytes_or_none(home / "config.yaml") for home in dependency_homes()}
+    managed = get_managed_dir()
+    if managed is not None:
+        path = managed / "config.yaml"
+        snapshot[path] = read_bytes_or_none(path)
+    return snapshot
 
 
 def validate_manifest(source: Path) -> dict:

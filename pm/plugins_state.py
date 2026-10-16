@@ -46,6 +46,11 @@ def read_home_selection(home: Path) -> Optional[dict[str, Any]]:
         return {}
     if not isinstance(config, dict):
         raise ValueError(f"configuration must be a mapping: {config_path}")
+    _validate_selection(config, config_path)
+    return config
+
+
+def _validate_selection(config: dict[str, Any], config_path: Path) -> None:
     for section in ("plugins", "memory"):
         if config.get(section) is not None and not isinstance(config[section], dict):
             raise ValueError(f"{section} must be a mapping: {config_path}")
@@ -58,7 +63,15 @@ def read_home_selection(home: Path) -> Optional[dict[str, Any]]:
     provider = (config.get("memory") or {}).get("provider")
     if provider is not None and not isinstance(provider, str):
         raise ValueError(f"memory.provider must be a name: {config_path}")
-    return config
+
+
+def effective_selection(home: Path, config: dict[str, Any]) -> dict[str, Any]:
+    """Apply administrator policy to discovery, never to a raw write-back document."""
+    from hermes_cli.managed_scope import apply_managed_overlay
+
+    effective = apply_managed_overlay(config)
+    _validate_selection(effective, home / "config.yaml")
+    return effective
 
 
 def _enabled_from_config(config: dict[str, Any]) -> list[str]:
@@ -140,6 +153,7 @@ def enabled_plugins_ordered(*, proposed_home=None, enabled=None, disabled=None,
         config = config or {}
         if proposed_home is not None and home.resolve() == Path(proposed_home).resolve():
             config = {**config, "plugins": {"enabled": list(enabled or ()), "disabled": list(disabled or ())}}
+        config = effective_selection(home, config)
         names = _enabled_from_config(config)
         provider = _provider_from_config(home, config, installing=installing)
         if provider and provider not in names:

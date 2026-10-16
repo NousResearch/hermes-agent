@@ -136,6 +136,97 @@ def test_loaded_launchd_identity_is_independent_of_disk(configured, command, rea
         verify_launchd_loaded(output, home, uid=123, username="owner")
 
 
+def _launchd_gateway_command(tmp_path, monkeypatch, *, store, profile=""):
+    """The gateway command generate_launchd_plist persists, from a store Python or an external one."""
+    from hermes_cli import _launchers, gateway as gw
+    from hermes_cli.gateway_launchd import _timestamped_stderr_gateway_command
+    monkeypatch.setattr(gw, "PROJECT_ROOT", tmp_path / "hermes-agent")
+    monkeypatch.setattr(gw, "get_python_path", lambda: sys.executable)
+    monkeypatch.setattr(gw, "_profile_arg", lambda *a, **k: profile)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda *a, **k: Path(sys.executable) if store else None)
+    return _timestamped_stderr_gateway_command(tmp_path / "logs" / "gateway.error.log", external_supervisor=True)
+
+
+@pytest.mark.platforms("linux", "macos")  # launchd ProgramArguments are POSIX shell-quoted
+@pytest.mark.parametrize("case,reason", [
+    ("store", None), ("inline", None), ("store_profile", "profile_mismatch"),
+    ("chained_shell", "service_identity_unverified"), ("substituted_shell", "service_identity_unverified"),
+    ("extra_jxa", "service_identity_unverified"), ("foreign_osascript", "service_identity_unverified"),
+    ("tampered_bootstrap", "service_identity_unverified"), ("arbitrary_inline", "service_identity_unverified"),
+    ("other_run_module", "service_identity_unverified"),
+    ("foreign_root_store", "service_identity_unverified"), ("foreign_root_inline", "service_identity_unverified"),
+    ("other_home", "foreign_root"), ("osascript_non_gateway", "service_identity_unverified"),
+    ("own_wrapper_foreign_inner", "service_identity_unverified"),
+    ("osascript_foreign_bare", "service_identity_unverified"),
+    ("osascript_legacy_module", "service_identity_unverified"),
+])
+def test_launchd_verifies_the_osascript_wrapped_command_the_installer_writes(case, reason, tmp_path, monkeypatch):
+    """The Local Network wrapper (#71206) is unwrapped only as its exact template, and the command inside
+    is held to the same gateway identity as a bare ProgramArguments, on disk and as launchd loaded it."""
+    import plistlib
+    from hermes_cli.gateway_launchd import launchd_program_arguments
+    from hermes_cli.gateway_runtime_service_identity import verify_launchd_loaded, verify_launchd_plist
+    home = tmp_path / ".hermes"
+    from hermes_cli import gateway as gw
+    command = _launchd_gateway_command(tmp_path, monkeypatch,
+                                       store=case not in {"inline", "tampered_bootstrap", "foreign_root_inline"},
+                                       profile="--profile stranger" if case == "store_profile" else "")
+    if case.startswith("foreign_root"):  # the installer's own output, written for another checkout
+        from hermes_cli.gateway_launchd import _timestamped_stderr_gateway_command
+        root = gw.PROJECT_ROOT
+        monkeypatch.setattr(gw, "PROJECT_ROOT", tmp_path / "other-checkout")
+        command = _timestamped_stderr_gateway_command(tmp_path / "logs" / "gateway.error.log", external_supervisor=True)
+        monkeypatch.setattr(gw, "PROJECT_ROOT", root)
+    if case in {"own_wrapper_foreign_inner", "osascript_foreign_bare"}:
+        # The installer's own gateway command for ANOTHER checkout: inside OUR stderr wrapper, or bare
+        # inside the Local Network wrapper. Neither is a launcher this install root writes.
+        from hermes_cli._launchers import installation_command
+        foreign = installation_command(tmp_path / "other-checkout", ["gateway", "run", "--external-supervisor"],
+                                       python=sys.executable)
+        assert Path(foreign[0]).name == "hermes"
+        command = foreign if case == "osascript_foreign_bare" else installation_command(
+            gw.PROJECT_ROOT, ["--error-log", str(tmp_path / "logs" / "gateway.error.log"), "--", *foreign],
+            module="hermes_cli.stderr_timestamp", python=sys.executable)
+    if case == "osascript_legacy_module":
+        # The legacy ``python -m`` form from any interpreter: accepted unwrapped, never written inside osascript.
+        command = [sys.executable, "-m", "hermes_cli.stderr_timestamp", "--error-log",
+                   str(tmp_path / "logs" / "gateway.error.log"), "--",
+                   sys.executable, "-m", "hermes_cli.main", "gateway", "run", "--external-supervisor"]
+    if case == "osascript_non_gateway":
+        command = ["/bin/sh", "-c", "id"]
+    if case == "tampered_bootstrap":
+        tampered = command[3].replace("import hermes_bootstrap; ", "import hermes_bootstrap; print('injected'); ")
+        assert tampered != command[3]
+        command[3] = tampered
+    if case == "arbitrary_inline":
+        command = [sys.executable, "-I", "-c", "print('injected')", *command[3:]]
+    if case == "other_run_module":
+        command[2] = "other_module"
+    argv = launchd_program_arguments(command, tmp_path / "logs" / "gateway.log", tmp_path / "logs" / "gateway.error.log")
+    shell_edits = {"chained_shell": (" >> ", "; id >> "), "substituted_shell": (" gateway run", " $(id) gateway run")}
+    if case in shell_edits:
+        edited = argv[4].replace(*shell_edits[case], 1)
+        assert edited != argv[4]
+        argv[4] = edited
+    if case == "extra_jxa":
+        argv[4] += ' $.system("id");'
+    if case == "foreign_osascript":
+        argv[0] = str(tmp_path / "osascript")
+    env = dict(HERMES_HOME=str(home if case != "other_home" else tmp_path / "elsewhere" / ".hermes"),
+               HERMES_SUPERVISED_CHILD="1")
+    definition = plistlib.loads(plistlib.dumps(dict(Label="ai.hermes.gateway", ProgramArguments=argv, EnvironmentVariables=env)))
+    output = ("gui/123/ai.hermes.gateway = {\n\tstate = not running\n\tprogram = " + argv[0] + "\n\targuments = {\n"
+              + "\n".join("\t\t" + arg for arg in argv) + "\n\t}\n\tenvironment = {\n"
+              + "".join(f"\t\t{key} => {value}\n" for key, value in env.items()) + "\t}\n}")
+    for verify in (lambda: verify_launchd_plist(definition, "ai.hermes.gateway", home),
+                   lambda: verify_launchd_loaded(output, home, uid=123, username="owner")):
+        if reason:
+            with pytest.raises(ValueError, match=reason):
+                verify()
+        else:
+            verify()
+
+
 def _installed_vbs(home, configured):
     """The current installed launcher grammar; no script is executed."""
     script = home / 'gateway.vbs'

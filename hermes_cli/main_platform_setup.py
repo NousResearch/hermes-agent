@@ -223,6 +223,29 @@ def cmd_whatsapp(args):
     _say("", "  Or install as a service: hermes gateway install")
 
 
+def cmd_whatsapp_reaction(args) -> int:
+    """React through the active profile's own live Baileys bridge."""
+    import asyncio
+
+    if args.whatsapp_action == "react" and not args.emoji.strip():
+        _err("hermes whatsapp react: emoji is required")
+        return 2
+
+    from gateway.config import Platform, load_gateway_config
+    from plugins.platforms.whatsapp.adapter import _standalone_reaction
+
+    platform_config = load_gateway_config().platforms.get(Platform.WHATSAPP)
+    extra = (platform_config.extra or {}) if platform_config else {}
+    result = asyncio.run(_standalone_reaction(
+        extra, args.to, args.message_id, getattr(args, "emoji", "") if args.whatsapp_action == "react" else "",
+    ))
+    if result.get("success"):
+        print("Reaction sent" if args.whatsapp_action == "react" else "Reaction removed")
+        return 0
+    _err(f"hermes whatsapp {args.whatsapp_action}: {result.get('error') or 'Reaction failed'}")
+    return 1
+
+
 def cmd_whatsapp_cloud(args):
     """Set up WhatsApp Business Cloud API (official Meta integration) — complementary to the
     ``hermes whatsapp`` Baileys bridge wizard. See ``hermes_cli/setup_whatsapp_cloud.py``."""

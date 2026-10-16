@@ -305,6 +305,19 @@ Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables
 
 Replying to (quoting) an earlier message gives the agent the quoted text as context. Quoting an image, voice note, video or document also attaches that file to the turn, so "what is this?" under a quoted image works — whether the attachment came from another person or from the bot itself (a cron-delivered chart, a generated image). WhatsApp only ships a thumbnail stub with a quote, so the file is resolved from the bridge's download cache (inbound media, in-memory for the bridge's lifetime) or from a local index of the bot's own sends (last 1000 messages); quotes of anything older arrive without the attachment.
 
+### Message reactions
+
+With the gateway running, use the original WhatsApp message ID to add or remove a native reaction. This is the platform's `messageId`, not a Hermes SQLite message row ID:
+
+```bash
+hermes whatsapp react --to 15551234567 --message-id '<incoming-id>' '👍'
+hermes whatsapp unreact --to 15551234567 --message-id '<incoming-id>'
+```
+
+For a named profile, add `-p NAME` before `whatsapp`. Gateway-side integrations can also call `send_message` with `action: "react"` or `"unreact"`, the same target and `message_id`, and an `emoji` for `react`.
+
+Reactions require a running gateway with a live Baileys adapter. The bridge only accepts messages still in its recent in-memory message cache; a missing message or a message belonging to another chat is refused. Phone and LID forms of a DM are matched only when the paired session has a saved mapping. The separate WhatsApp Cloud API adapter does not currently support these `send_message` actions.
+
 ---
 
 ## Troubleshooting

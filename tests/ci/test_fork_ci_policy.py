@@ -52,6 +52,40 @@ def test_standard_python_runner_has_bounded_workers() -> None:
     assert "timeout-minutes: 60" in workflow
 
 
+def _upstream_and_fork(expression: object) -> tuple[int, int]:
+    match = re.fullmatch(
+        r"\$\{\{ github\.repository == 'NousResearch/hermes-agent' && '?(\d+)'? \|\| '?(\d+)'? \}\}",
+        str(expression))
+    assert match, expression
+    return int(match.group(1)), int(match.group(2))
+
+
+def test_windows_update_budgets_nest_on_upstream_and_fork_runners() -> None:
+    # Each worker runs its share of the journeys back to back, so the job must outlast that share
+    # at the per-file limit plus setup (~10 min cold); otherwise a slow file cancels the whole job
+    # instead of failing on its own timeout. Each journey's install must also fit inside its file.
+    setup_seconds = 15 * 60
+    workflow = yaml.safe_load(_read(".github/workflows/windows-install-update-e2e.yml"))
+    job = workflow["jobs"]["install-update"]
+    env = next(step for step in job["steps"] if step.get("name") == "Run Windows install + update E2E")["env"]
+    journeys = len(list((ROOT / "tests/e2e/core/windows_update").glob("test_*.py")))
+    budgets = {
+        "job_minutes": _upstream_and_fork(job["timeout-minutes"]),
+        "file_seconds": _upstream_and_fork(env["HERMES_TEST_FILE_TIMEOUT"]),
+        "install_seconds": _upstream_and_fork(env["HERMES_E2E_INSTALL_TIMEOUT"]),
+        "workers": _upstream_and_fork(env["HERMES_TEST_WORKERS"]),
+    }
+    assert journeys >= 1
+    for side in (0, 1):
+        job_minutes, file_seconds, install_seconds, workers = (b[side] for b in budgets.values())
+        assert install_seconds < file_seconds
+        assert -(-journeys // workers) * file_seconds + setup_seconds <= job_minutes * 60
+    # The fork runs on standard hosted capacity, so none of its budgets may undercut upstream's.
+    assert budgets["workers"][1] <= budgets["workers"][0]
+    for name in ("job_minutes", "file_seconds", "install_seconds"):
+        assert budgets[name][1] >= budgets[name][0], name
+
+
 def test_standard_nix_runner_has_bounded_parallelism() -> None:
     workflow = _read(".github/workflows/nix.yml")
     assert "runs-on: ubuntu-latest" in workflow

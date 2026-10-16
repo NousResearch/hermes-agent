@@ -8,7 +8,8 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-import simpleGit from 'simple-git'
+import { isGitEnvKey } from '@simple-git/argv-parser'
+import { simpleGit } from 'simple-git'
 
 import { resolveRequestedPathForIpc } from './hardening'
 import { execGit, noConsoleGitEnv, simpleGitBinary, windowsGitHost } from './no-console-git'
@@ -19,16 +20,12 @@ const REVIEW_FILE_CAP = 2_000
 const UNTRACKED_LINE_COUNT_CONCURRENCY = 16
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
 
-// simple-git 3.x validates a custom binary path against an ASCII whitelist —
-// `isBadArgument` in node_modules/simple-git/dist/cjs/index.js accepts only
-// `/^([a-z]:)?([a-z0-9/.\_~-]+)$/i`. Everything outside it is "restricted": a
-// space in the default `C:\Program Files\Git\...`, the parentheses in
-// `Program Files (x86)`, the accented user name in `C:\Users\João\...`. Without
-// the escape hatch simple-git THROWS on such a path; with it, it console.warns
-// this exact message — the flag only downgrades the throw. Exported so gitFor
-// and its tests share one source of truth.
-export const SIMPLE_GIT_UNSAFE_BINARY_WARN =
-  'Invalid value supplied for custom binary, restricted characters must be removed or supply the unsafe.allowUnsafeCustomBinary option'
+// simple-git guards the environment it hands git: a guarded variable (every GIT_*
+// key, plus EDITOR, PAGER, PREFIX and the like) inherited from this process is
+// dropped, and one passed through `.env()` rejects the task unless
+// `allowEnvironment` names it. The only one Hermes sets is GIT_TERMINAL_PROMPT=0,
+// so a credential prompt can never block a background git call.
+const SIMPLE_GIT_ALLOWED_ENV = ['GIT_TERMINAL_PROMPT']
 
 // GUI-launched Electron apps on macOS inherit only a minimal PATH (no
 // /opt/homebrew/bin or /usr/local/bin), so `gh` — and the `git` gh shells out
@@ -76,40 +73,34 @@ function gitFor(cwd, gitBin) {
   const binary = simpleGitBinary(gitBin, host)
   const unsafe = Boolean(gitBin) || Array.isArray(binary)
 
-  const makeGit = () =>
-    simpleGit({
-      baseDir: cwd,
-      binary,
-      maxConcurrentProcesses: 4,
-      trimmed: false,
-      ...(unsafe ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
-    })
+  const git = simpleGit({
+    allowEnvironment: SIMPLE_GIT_ALLOWED_ENV,
+    baseDir: cwd,
+    binary,
+    maxConcurrentProcesses: 4,
+    trimmed: false,
+    ...(unsafe ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
+  })
 
-  if (!unsafe) {
-    return makeGit()
-  }
+  return Array.isArray(binary) ? git.env(hostTupleGitEnv(gitBin)) : git
+}
 
-  // With the escape hatch set, simple-git still console.warns that same message on
-  // every factory call — the flag only downgrades the throw to a warning. The
-  // binary was resolved by this process, never supplied by the renderer, so on
-  // Windows (where the standard git lives under a spaced "Program Files") that
-  // warning is pure console spam. Filter exactly that message, for the
-  // synchronous factory call only.
-  const originalWarn = console.warn
+// The Windows host tuple has to hand its environment over through `.env()` (the
+// host script reads HERMES_GIT_ARGV0 from it), so drop the guarded variables there
+// exactly as simple-git drops them from the inherited environment everywhere else.
+function hostTupleGitEnv(gitBin) {
+  const allowed = new Set(SIMPLE_GIT_ALLOWED_ENV.map(key => key.toLowerCase()))
+  const env = noConsoleGitEnv(process.env, gitBin || 'git')
 
-  console.warn = (message?: unknown, ...rest: unknown[]) => {
-    if (typeof message !== 'string' || !message.startsWith(SIMPLE_GIT_UNSAFE_BINARY_WARN)) {
-      originalWarn(message, ...rest)
+  for (const key of Object.keys(env)) {
+    const name = key.toLowerCase().trim()
+
+    if ((name.startsWith('git_') || isGitEnvKey(name)) && !allowed.has(name)) {
+      delete env[key]
     }
   }
 
-  try {
-    const git = makeGit()
-
-    return Array.isArray(binary) ? git.env(noConsoleGitEnv(process.env, gitBin || 'git')) : git
-  } finally {
-    console.warn = originalWarn
-  }
+  return env
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve

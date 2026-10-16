@@ -29,7 +29,12 @@ jobs:
     name: Windows install.ps1 + hermes update E2E
     runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-core' || 'windows-latest' }}
     # A typical run is ~17 min; one slow runner took 28 min for the same work (run 36295230146).
-    timeout-minutes: 60
+    # Forks run on windows-latest with 2 workers: 57.6 min with a warm uv cache (run 37065610693)
+    # and ~69 min cold, which every PR's first run is because push CI on main saves no cache.
+    # A slow runner then stretched every file by up to 45% (run 38508650541). The job budget must
+    # hold one worker's share of the files at the per-file limit below, plus ~15 min of setup, so a
+    # stuck file fails on its own timeout with its transcript instead of cancelling the whole job.
+    timeout-minutes: ${{ github.repository == 'NousResearch/hermes-agent' && 60 || 165 }}
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,7 +67,10 @@ jobs:
           HERMES_E2E_ARTIFACTS: ${{ runner.temp }}\win-update-e2e
           # One journey per file, all in parallel (each is mostly network + subprocess wait).
           HERMES_TEST_WORKERS: ${{ github.repository == 'NousResearch/hermes-agent' && '6' || '2' }}
-          HERMES_TEST_FILE_TIMEOUT: '2400'
+          # On a fork's 4-vCPU runner up to three installs share the disk; one slow runner took
+          # 296 s to unpack npm and 804 s for Node dependencies, past the 1500 s install limit.
+          HERMES_E2E_INSTALL_TIMEOUT: ${{ github.repository == 'NousResearch/hermes-agent' && '1500' || '2400' }}
+          HERMES_TEST_FILE_TIMEOUT: ${{ github.repository == 'NousResearch/hermes-agent' && '2400' || '3000' }}
           HERMES_TEST_FILE_RETRIES: '0'
           OPENROUTER_API_KEY: ''
           OPENAI_API_KEY: ''
@@ -70,7 +78,7 @@ jobs:
 
       - name: Upload transcripts, logs and receipts
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-install-update-e2e-${{ github.run_attempt }}
           path: ${{ runner.temp }}/win-update-e2e

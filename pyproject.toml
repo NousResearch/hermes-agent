@@ -696,9 +696,6 @@ exclude-newer = "14 days"
 # 14-day window is younger than the reviewed release.
 
 [tool.uv.exclude-newer-package]
-# 2026-10-02: oauthlib 4.0.0 (2026-09-28) fixes two revocation advisories.
-# The exact security pin expires out of the 14-day window on 2026-10-12.
-oauthlib = false
 agent-client-protocol = false
 aiohttp = false
 aiohttp-socks = false

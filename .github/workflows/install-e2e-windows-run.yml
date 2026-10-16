@@ -148,7 +148,7 @@ jobs:
           output: ${{ runner.temp }}/hermes-bundled-update-recording.mkv
       - name: Upload native acceptance evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: install-e2e-logs-${{ inputs.leg-id }}-bundle-${{ inputs.bundle-arch }}
           path: |
@@ -278,7 +278,7 @@ jobs:
 
       - name: Upload known-failure receipt
         if: steps.update.outputs.known_failure != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: install-e2e-known-${{ steps.update.outputs.known_failure }}--${{ inputs.leg-id }}
           path: gui-e2e-proof/known-failure.json
@@ -321,7 +321,7 @@ jobs:
 
       - name: Upload proof + logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: install-e2e-logs-${{ inputs.leg-id }}
           path: gui-e2e-proof

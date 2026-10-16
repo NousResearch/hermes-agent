@@ -199,16 +199,16 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # Build once, load into the local daemon for testing.  Cached
       # per-arch; the push step below reuses every layer from this build.
       - name: Build image (${{ matrix.variant }}/${{ matrix.arch }})
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.1.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile
@@ -300,7 +300,7 @@ jobs:
 
       - name: Upload tested image archive (release test)
         if: needs.mode.outputs.phase == 'test'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docker-test-image-${{ matrix.variant }}-${{ matrix.arch }}-${{ inputs.tag }}
           path: |
@@ -368,11 +368,11 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Docker Hub
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -384,7 +384,7 @@ jobs:
       # manifest list after both architecture publishers complete.
       - name: Push ${{ matrix.variant }}/${{ matrix.arch }} by digest
         id: push
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile
@@ -404,7 +404,7 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: digest-${{ matrix.variant }}-${{ matrix.arch }}
           path: /tmp/digests/*
@@ -439,7 +439,7 @@ jobs:
             suffix: "-desktop"
     steps:
       - name: Download digests
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           path: /tmp/digests
           pattern: digest-${{ matrix.variant }}-*
@@ -450,11 +450,11 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Docker Hub
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -531,7 +531,7 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Download tested image archive from the test phase (same run)
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: docker-test-image-${{ matrix.variant }}-${{ matrix.arch }}-${{ inputs.tag }}
           path: /tmp/image-artifacts
@@ -546,11 +546,11 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Load tested image
         run: |
@@ -570,7 +570,7 @@ jobs:
           PY
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -595,7 +595,7 @@ jobs:
           cat "/tmp/digests/${ARCH}.digest"
 
       - name: Upload per-arch digest artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docker-publish-digest-${{ matrix.variant }}-${{ matrix.arch }}-${{ inputs.tag }}
           path: /tmp/digests/${{ matrix.arch }}.digest
@@ -622,7 +622,7 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Download per-arch digests
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           path: /tmp/digests
           pattern: docker-publish-digest-*-${{ inputs.tag }}
@@ -630,14 +630,14 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -725,7 +725,7 @@ jobs:
             --tag "$RELEASE_TAG" --commit "$GITHUB_SHA" /tmp/manifest/manifest.json
 
       - name: Upload release manifest artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docker-publish-manifest-${{ inputs.tag }}
           path: /tmp/manifest/manifest.json

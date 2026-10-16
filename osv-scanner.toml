@@ -1,0 +1,109 @@
+# OSV-Scanner configuration for the lockfiles at the repository root (uv.lock).
+#
+# hermes-agent advisories: main carries version 0.0.0 on purpose (upstream
+# 9cc319f9, "main carries 0.0.0 and dev distance counts from release tags"), so
+# OSV compares the editable root package against every advisory published for
+# hermes-agent on PyPI. On 2026-10-02 the same lockfile at version 0.21.5 scanned
+# clean against these advisories (PR #106), and main has since only moved forward
+# from that code. Each advisory is listed by ID, not by package, so a new
+# hermes-agent advisory still shows up. ignoreUntil forces a re-check.
+
+[[IgnoredVulns]]
+id = "PYSEC-2026-2509"
+ignoreUntil = 2027-01-14
+reason = "Fixed upstream in hermes-agent 0.15.0; this fork's code is past 0.21.5. Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "GHSA-238w-f66p-w349"
+ignoreUntil = 2027-01-14
+reason = "Fixed upstream in hermes-agent 0.15.0; this fork's code is past 0.21.5. Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "PYSEC-2026-2510"
+ignoreUntil = 2027-01-14
+reason = "Fixed upstream in hermes-agent 0.16.0; this fork's code is past 0.21.5. Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "GHSA-4pqm-j46f-795x"
+ignoreUntil = 2027-01-14
+reason = "Fixed upstream in hermes-agent 0.16.0; this fork's code is past 0.21.5. Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "PYSEC-2026-2511"
+ignoreUntil = 2027-01-14
+reason = "Fixed upstream in hermes-agent 0.16.0; this fork's code is past 0.21.5. Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "GHSA-99f9-j8r3-p853"
+ignoreUntil = 2027-01-14
+reason = "Fixed upstream in hermes-agent 0.16.0; this fork's code is past 0.21.5. Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "PYSEC-2026-2512"
+ignoreUntil = 2027-01-14
+reason = "Fixed upstream in hermes-agent 0.15.0; this fork's code is past 0.21.5. Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "GHSA-cv5c-mh6j-wvp9"
+ignoreUntil = 2027-01-14
+reason = "Fixed upstream in hermes-agent 0.15.0; this fork's code is past 0.21.5. Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "PYSEC-2026-2513"
+ignoreUntil = 2027-01-14
+reason = "Fixed upstream in hermes-agent 0.18.0; this fork's code is past 0.21.5. Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "GHSA-mv8x-fg99-32mf"
+ignoreUntil = 2027-01-14
+reason = "Fixed upstream in hermes-agent 0.18.0; this fork's code is past 0.21.5. Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "PYSEC-2026-2514"
+ignoreUntil = 2027-01-14
+reason = "Fixed upstream in hermes-agent 0.15.0; this fork's code is past 0.21.5. Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "GHSA-pgp4-xr4j-h5cg"
+ignoreUntil = 2027-01-14
+reason = "Fixed upstream in hermes-agent 0.15.0; this fork's code is past 0.21.5. Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "PYSEC-2026-2515"
+ignoreUntil = 2027-01-14
+reason = "Fixed upstream in hermes-agent 0.11.0; this fork's code is past 0.21.5. Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "GHSA-wm96-9gfh-vvgq"
+ignoreUntil = 2027-01-14
+reason = "Fixed upstream in hermes-agent 0.11.0; this fork's code is past 0.21.5. Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "PYSEC-2026-3575"
+ignoreUntil = 2027-01-14
+reason = "Fixed upstream in hermes-agent 0.15.0; this fork's code is past 0.21.5. Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "GHSA-33qv-c5qm-799v"
+ignoreUntil = 2027-01-14
+reason = "Fixed upstream in hermes-agent 0.15.0; this fork's code is past 0.21.5. Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "PYSEC-2026-3576"
+ignoreUntil = 2027-01-14
+reason = "No fixed version recorded in OSV; did not match this fork at 0.21.5 (PR #106 scan). Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "GHSA-pmqc-57g8-c22c"
+ignoreUntil = 2027-01-14
+reason = "No fixed version recorded in OSV; did not match this fork at 0.21.5 (PR #106 scan). Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "PYSEC-2026-3577"
+ignoreUntil = 2027-01-14
+reason = "No fixed version recorded in OSV; did not match this fork at 0.21.5 (PR #106 scan). Matched only because main carries the 0.0.0 placeholder version."
+
+[[IgnoredVulns]]
+id = "GHSA-xq8w-9jvx-gm3v"
+ignoreUntil = 2027-01-14
+reason = "No fixed version recorded in OSV; did not match this fork at 0.21.5 (PR #106 scan). Matched only because main carries the 0.0.0 placeholder version."

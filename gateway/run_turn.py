@@ -1717,14 +1717,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         if result and adapter and session_key:
             pending_event = _dequeue_pending_event(adapter, session_key)
             if result.get("compression_exhausted") and pending_event is not None:
-                # The outer handler owns the reset. Preserve the exact event in the head slot so the
-                # adapter's post-handler drain starts it against the fresh session; do not promote or
-                # prepare native media on the exhausted session.
-                adapter._pending_messages[session_key] = pending_event
-                logger.info(
-                    "Deferring queued follow-up for session %s until after its compression-exhausted reset",
-                    session_key,
-                )
+                self._defer_past_exhaustion_reset(result, adapter, source, session_key, pending_event)
                 return None, None
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).

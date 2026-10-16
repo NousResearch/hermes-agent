@@ -240,8 +240,10 @@ def test_total_ceiling_exhaustion_does_not_start_fallback():
 
     try:
         msgs, prompt = _run(
-            worker, chain=[dict(CHAIN_ENTRY, timeout=0.3)], timeouts=timeouts, messages=original,
-            idle=0.3, ceiling=0.3,
+            # idle == ceiling: the primary's idle expiry spends the whole shared budget. >= 2 s so a
+            # loaded runner still starts the primary worker inside it (tests/AGENTS.md).
+            worker, chain=[dict(CHAIN_ENTRY, timeout=2.0)], timeouts=timeouts, messages=original,
+            idle=2.0, ceiling=2.0,
         )
     finally:
         worker.release.set()

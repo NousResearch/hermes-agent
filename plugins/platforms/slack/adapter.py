@@ -54,8 +54,12 @@ from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 try:  # sibling module; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
+    from .block_payload import _extract_urls_from_slack_blocks, _serialize_slack_blocks_for_agent
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
+    from block_payload import (  # type: ignore
+        _extract_urls_from_slack_blocks, _serialize_slack_blocks_for_agent,
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -731,74 +735,6 @@ def _extract_additional_text_from_slack_blocks(
     return "\n".join(parts)
 
 
-# Block Kit keys kept in the agent-facing payload dump (scalars copied; containers recursed).
-_BLOCK_SCALAR_KEYS = frozenset(
-    "type block_id action_id style dispatch_action optional multiple emoji".split())
-_BLOCK_RECURSIVE_KEYS = frozenset(
-    "text title description label placeholder accessory fields elements options "
-    "option_groups confirm submit close hint".split())
-
-
-def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> str:
-    """Compact, redacted JSON view of non-``rich_text`` Block Kit blocks.
-    ``rich_text`` is already rendered into the message text; dumping it here would repeat the
-    author's words with every ``url`` stripped by the allowlist. ``table`` is rendered by
-    :func:`_render_slack_table_block`; the allowlist drops ``rows`` so it would dump as a husk."""
-    inspectable = [
-        block for block in (blocks or []) if (block or {}).get("type") not in ("rich_text", "table")]
-    if not inspectable:
-        return ""
-    def _sanitize(value):
-        if isinstance(value, list):
-            return [
-                item for item in (_sanitize(v) for v in value) if item not in (None, {}, [], "")]
-        if isinstance(value, dict):
-            sanitized = {}
-            for key, item in value.items():
-                if key in _BLOCK_SCALAR_KEYS:
-                    sanitized[key] = item
-                elif key in _BLOCK_RECURSIVE_KEYS:
-                    cleaned = _sanitize(item)
-                    if cleaned not in (None, {}, [], ""):
-                        sanitized[key] = cleaned
-            return sanitized
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            return value
-        return repr(value)
-
-    try:
-        payload = json.dumps(_sanitize(inspectable), ensure_ascii=False, indent=2)
-    except Exception:
-        payload = repr(inspectable)
-    payload = elide(payload, max_chars)
-    return f"[Slack Block Kit payload for this message]\n```json\n{payload}\n```"
-
-
-def _extract_urls_from_slack_blocks(blocks: list) -> list[str]:
-    """Return deduped URLs from a Block Kit tree in discovery order.
-    Targeted opt-in for alert links; ``_serialize_slack_blocks_for_agent`` deliberately strips
-    ``url`` from the generic payload dump."""
-    if not blocks:
-        return []
-    found: list[str] = []
-    seen: set[str] = set()
-
-    def _walk(node: Any) -> None:
-        if isinstance(node, dict):
-            for key in ("url", "image_url", "external_url"):
-                value = node.get(key)
-                is_url = isinstance(value, str) and value.startswith(("http://", "https://"))
-                if is_url and value not in seen:
-                    seen.add(value)
-                    found.append(value)
-            for value in node.values():
-                _walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                _walk(item)
-
-    _walk(blocks)
-    return found
 
 
 def _apply_slack_proxy(client: Any, proxy_url: Optional[str]) -> None:

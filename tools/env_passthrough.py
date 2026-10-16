@@ -168,13 +168,15 @@ def scoped_passthrough_additions(present: Iterable[str]) -> dict[str, str]:
     bound scope alone: never ``os.environ``, never another profile. Empty without a scope, so
     single-profile spawns are byte-identical."""
     from agent.secret_scope import _is_global_env, current_secret_scope
+    from hermes_cli.env_loader import managed_dotenv_keys
     scope = current_secret_scope()
     if not scope:
         return {}
     present = set(present)
+    managed_names = {name.upper() for name in managed_dotenv_keys()}
     additions: dict[str, str] = {}
     for name in get_all_passthrough():
-        if name in present or _is_global_env(name):
+        if name in present or _is_global_env(name) or name.upper() in managed_names:
             continue
         value = scope.get(name)
         if value is not None:

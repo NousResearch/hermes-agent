@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from agent import chat_completion_helpers as cch
+from agent import chat_completion_stale as stale
 
 
 class _FakeAgent:
@@ -74,7 +75,7 @@ def test_bedrock_stream_interrupt_not_swallowed_post_worker():
          patch("agent.bedrock_adapter.is_stale_connection_error", return_value=False), \
          patch("agent.bedrock_adapter.is_streaming_access_denied_error", return_value=False), \
          patch("agent.bedrock_adapter.invalidate_runtime_client", lambda *a, **k: None), \
-         patch.object(cch, "_record_interrupted_provider_wait") as record_wait:
+         patch.object(stale, "_record_interrupted_provider_wait") as record_wait:
         api_kwargs = {"__bedrock_region__": "us-east-1", "__bedrock_converse__": True}
         with pytest.raises(InterruptedError):
             cch.interruptible_streaming_api_call(agent, api_kwargs)

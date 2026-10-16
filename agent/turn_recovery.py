@@ -31,8 +31,8 @@ from agent.message_sanitization import (
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
 from agent.vision_message_prep import _provider_model_key
 from agent.turn_failure_copy import (
-    CONTENT_POLICY_NEXT_STEPS, content_policy_copy, exhausted_copy, limit_reset_copy, nonretryable_copy,
-    provider_label_for, site_copy, stamp_failure,
+    CONTENT_POLICY_NEXT_STEPS, _eager_fallback_status, content_policy_copy, exhausted_copy, limit_reset_copy,
+    nonretryable_copy, provider_label_for, site_copy, stamp_failure,
 )
 from agent.route_verdicts import route_visit
 from agent.turn_retry_state import TurnRetryState
@@ -1737,25 +1737,6 @@ def _cap_long_context_tier(agent: Any) -> int:
     return old_ctx
 
 
-def _eager_fallback_status(classified: Any, is_upstream: bool, is_transport_failure: bool) -> str:
-    """Status line announcing an eager fallback switch."""
-    if is_upstream:
-        _upstream_name = (classified.error_context or {}).get("upstream_provider", "aggregator")
-        return f"⚠️ Upstream {_upstream_name} rate-limited — switching to fallback model..."
-    if classified.reason == FailoverReason.billing:
-        if classified.billing_unverified:
-            # Ambiguous body — don't assert billing.
-            return (
-                "⚠️ Provider reported usage/credit exhaustion "
-                "(unverified — may be a content-filter rejection) "
-                "— switching to fallback provider..."
-            )
-        return "⚠️ Billing or credits exhausted — switching to fallback provider..."
-    if is_transport_failure:
-        return "⚠️ Provider unreachable — switching to fallback provider..."
-    return "⚠️ Rate limited — switching to fallback provider..."
-
-
 def activate_codex_app_server_fallback(agent: Any, result: dict[str, Any]) -> bool:
     """The codex app-server runtime reports a failed turn as ``result["error"]`` text instead of
     raising, so the generic classify -> ``fallback_providers`` chain never saw it (#71633).
@@ -1835,6 +1816,7 @@ def route_classified_error(
     from agent.conversation_compression import conversation_history_after_compression
     from agent.conversation_loop import _arm_fallback_restart, _ra
     from agent.model_metadata import estimate_request_tokens_rough
+    from agent.turn_recovery_stale import compact_stale_context
 
     _provider_overflow_recovery_pending = False
     is_rate_limited = False
@@ -1920,6 +1902,22 @@ def route_classified_error(
                 _retry.restart_with_compressed_messages = True
                 return _verdict("break")
         # Compression exhausted or didn't help: fall through to normal error handling.
+
+    original_len = len(messages)
+    stale_compaction = compact_stale_context(
+        agent, api_error, _retry, messages=messages, api_messages=api_messages,
+        system_message=system_message, conversation_history=conversation_history,
+        compression_attempts=compression_attempts, max_compression_attempts=max_compression_attempts,
+        task_id=effective_task_id,
+    )
+    if stale_compaction is not None:
+        messages, active_system_prompt, conversation_history = stale_compaction
+        compression_attempts += 1
+        if len(messages) < original_len:
+            _retry.restart_with_compressed_messages = True
+            return _verdict("break")
+        # A no-op compaction must abort with resume instructions, not resend the same request.
+        return _verdict("fallthrough")
 
     # Eager fallback: rate-limit/billing switch immediately (primary won't recover in
     # the retry window); transport errors get 1 retry first.

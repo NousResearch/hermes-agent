@@ -21,12 +21,10 @@ def _rebind(authority, prepared, old, policy, **extra):
 
 async def prepare_reasoning(authority, live, payload, prepared):
     """``/reasoning <level>`` for this session: the level ``build_policy`` freezes at creation."""
-    from gateway.session_policy import restore_policy
+    from gateway.session_policy import pin_reasoning_effort, restore_policy
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
     frozen = old.config()
-    frozen.setdefault('agent', {})['reasoning_effort'] = payload['effort']
-    # An explicit session level wins over a per-model default, as at creation.
-    frozen['agent'].pop('reasoning_overrides', None)
+    pin_reasoning_effort(frozen, payload['effort'])
     return _rebind(authority, prepared, old, replace(old, config_json=json.dumps(frozen)))
 
 

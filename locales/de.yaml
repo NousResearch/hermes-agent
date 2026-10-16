@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    (nur nächster Zug — wird nach einer Antwort zurückgesetzt)"
     switch_cancelled: "🟡 Modellwechsel abgebrochen. Aktuelles Modell unverändert ({model})."
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_Text-Rückfall: Antworten Sie mit `{prefix}approve`, um zu wechseln, oder mit `{prefix}cancel`, um das aktuelle Modell zu behalten._"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **Aktive Agenten & Aufgaben**"
     active_agents: "**Aktive Agenten:** {count}"

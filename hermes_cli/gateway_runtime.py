@@ -67,12 +67,16 @@ def _endpoint(payload: dict, home: Path, control_home: Path | None = None) -> Ga
     if len(matches) != 1 or not isinstance(matches[0].get("profile_id"), str) or not matches[0]["profile_id"]:
         return GatewayDiscovery("inaccessible", reason_code="profile_mismatch")
     state = payload.get("state")
-    if state in {"starting", "draining", "conflict"}:
+    # A graceful restart's after-turn wait still owns its in-flight turns (#139041): it stays
+    # ``draining`` (exit 6, never a fresh-start target) but carries its endpoint, so an interactive
+    # client can attach to answer a turn parked on approval/clarify. New input queues for the next owner.
+    restart_wait = state == "draining" and payload.get("drain_reason") == "restart_wait"
+    if state in {"starting", "draining", "conflict"} and not restart_wait:
         # An auto-started gateway ending through its idle exit names that, so its clients wait
         # for it to go and start a fresh one instead of reporting a refusal.
         idle = state == "draining" and payload.get("drain_reason") == "idle_exit"
         return GatewayDiscovery(state, reason_code="idle_exit" if idle else None)
-    if state != "ready":
+    if state != "ready" and not restart_wait:
         return GatewayDiscovery("inaccessible", reason_code="invalid_runtime_state")
     capabilities = payload.get("capabilities")
     if (not isinstance(capabilities, list) or not all(isinstance(c, str) for c in capabilities)
@@ -96,13 +100,13 @@ def _endpoint(payload: dict, home: Path, control_home: Path | None = None) -> Ga
     supervisor = payload.get("supervisor")
     if supervisor not in {"none", "systemd", "launchd", "windows", "external"}:
         return GatewayDiscovery("inaccessible", reason_code="invalid_supervisor")
-    return GatewayDiscovery("ready", GatewayEndpoint(
+    return GatewayDiscovery("draining" if restart_wait else "ready", GatewayEndpoint(
         profile_id=matches[0]["profile_id"], instance_id=instance,
         authority_epoch=epoch, runtime_protocol=1, api_origin=origin,
         supervisor=supervisor, capabilities=frozenset(capabilities),
         control_home=str(control_home) if control_home is not None else None,
         code_sha=code_sha if isinstance(code_sha := payload.get("code_sha"), str) and code_sha else None,
-    ))
+    ), reason_code="restart_wait" if restart_wait else None)
 
 
 def control_home_for(home: Path, endpoint: GatewayEndpoint | None) -> Path:

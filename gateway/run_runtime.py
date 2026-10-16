@@ -440,6 +440,9 @@ async def drain_gateway_runtime(runner):
         return
     runner._draining = True
     descriptor.update(state='draining', capabilities=[])
+    from gateway.drain_control import RESTART_WAIT_REASON
+    if descriptor.get('drain_reason') == RESTART_WAIT_REASON:
+        del descriptor['drain_reason']  # stopping now: no client attaches to answer anymore
     from gateway.session_hosted_service import stop_hosted_service
     await stop_hosted_service(runner)
     # Withdraw the public ingress callback without disconnecting egress needed

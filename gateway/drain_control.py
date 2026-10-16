@@ -26,6 +26,18 @@ from utils import atomic_json_write
 
 _log = logging.getLogger(__name__)
 
+# ``drain_reason`` a graceful restart publishes for its after-turn wait (#139041). The owner still
+# runs its in-flight turns, so a client may attach to answer a parked approval/clarify; new input is
+# committed queued for the next owner and never claimed here. ``stop()`` withdraws it.
+RESTART_WAIT_REASON = "restart_wait"
+
+
+def restart_wait_open(runner) -> bool:
+    """True while *runner* is in a restart's after-turn wait (draining, not yet stopping)."""
+    descriptor = getattr(runner, "session_runtime_descriptor", None) or {}
+    return (bool(getattr(runner, "_draining", False)) and bool(getattr(runner, "_running", False))
+            and descriptor.get("drain_reason") == RESTART_WAIT_REASON)
+
 _DRAIN_REQUEST_FILENAME = ".drain_request.json"
 # Drain-gated lifecycle actions complete in minutes; an hour bounds the wedge a leaked
 # marker can cause. Long drains refresh the marker instead of raising this.

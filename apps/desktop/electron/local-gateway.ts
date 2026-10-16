@@ -183,7 +183,12 @@ export async function ensureLocalGateway(
     payload = parseGatewayEnsureOutput(result)
   }
 
-  if (result.code !== 0 || payload.state !== 'ready') {
+  // A graceful restart's after-turn wait still owns its turns (#139041): attach to it so a turn parked
+  // on approval/clarify can be answered; new input queues for the next owner, and the next dial after
+  // the owner exits reaches its replacement.
+  const restartWait = payload.state === 'draining' && payload.reason_code === 'restart_wait' && Boolean(payload.endpoint)
+
+  if (!restartWait && (result.code !== 0 || payload.state !== 'ready')) {
     // A refused replacement (another install's or a newer Hermes's gateway) names its remedy in
     // `detail`; a start that died carries its own output there. Either beats a pointer elsewhere.
     const detail = typeof payload.detail === 'string' && payload.detail.trim() ? ` ${payload.detail.trim().split(/\r?\n/)[0]}.` : ''

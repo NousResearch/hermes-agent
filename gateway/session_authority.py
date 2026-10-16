@@ -138,15 +138,22 @@ class SessionAuthority:
                 and source.user_id != actor.subject and 'session:operator' not in actor.capabilities):
             raise RuntimeStoreError('permission_denied')
 
-    def _require_admission_open(self):
-        if self.runner._draining or self.retiring:
+    def _require_admission_open(self, *, queue_only=False):
+        """``queue_only``: the caller only COMMITS a queued row (never claims or runs it). A restart's
+        after-turn wait accepts those (#139041): the row is durable FIFO input the next owner runs
+        exactly once, while this owner's claim path stays refused."""
+        if self.retiring:
             raise RuntimeStoreError('runtime_draining')
+        if self.runner._draining:
+            from gateway.drain_control import restart_wait_open
+            if not (queue_only and restart_wait_open(self.runner)):
+                raise RuntimeStoreError('runtime_draining')
 
-    def _admission_gate(self, authorize=None):
+    def _admission_gate(self, authorize=None, *, queue_only=False):
         """The admission gate re-checked inside an off-loop write transaction (with the caller's
         own guard), so a drain that began while the write waited on the writer still refuses it."""
         def guard(conn):
-            self._require_admission_open()
+            self._require_admission_open(queue_only=queue_only)
             if authorize is not None:
                 authorize(conn)
         return guard
@@ -434,7 +441,7 @@ class SessionAuthority:
                 return await self._submit(actor, request, _authorize_write=_authorize_write)
 
     async def _submit(self, actor, request, *, _authorize_write=None):
-        self._require_admission_open()
+        self._require_admission_open(queue_only=True)
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
                 'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted',
                 'voice_turn', 'display_kind', 'title_preview', 'turn_author', 'api_text', 'model_override', 'clarify_batch'}
@@ -469,7 +476,7 @@ class SessionAuthority:
                 return admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
                                            session_id=request.ref.session_id, request_id=request.request_id,
                                            payload=payload, intent=request.intent,
-                                           _authorize_write=self._admission_gate(_authorize_write))
+                                           _authorize_write=self._admission_gate(_authorize_write, queue_only=True))
             except Exception:
                 self._release_refused_capture(request, payload)
                 raise

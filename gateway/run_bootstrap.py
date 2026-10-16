@@ -269,6 +269,7 @@ async def _start_gateway_start_control_socket(runner):
             unserve_profile_verb, serve_profile_verb,
         )
         from gateway.run_plugin_rewire import reload_plugins_verb
+        from gateway.drain_control import RESTART_WAIT_REASON
         descriptor = runner.session_runtime_descriptor
 
         def _identify_runtime():
@@ -277,7 +278,11 @@ async def _start_gateway_start_control_socket(runner):
                 "instance_id", "runtime_protocol", "authority_epoch", "state", "api_origin",
                 "served_profiles", "parked_profiles", "capabilities") if key in descriptor})
             if getattr(runner, '_draining', False):
-                payload.update(state='draining', capabilities=[])
+                payload.update(state='draining')
+                # The restart's after-turn wait still owns its turns: clients reach it to answer a
+                # parked approval/clarify (#139041), so the endpoint stays dialable until stop().
+                if descriptor.get('drain_reason') != RESTART_WAIT_REASON:
+                    payload['capabilities'] = []
             if payload.get('state') == 'draining' and descriptor.get('drain_reason'):
                 payload['drain_reason'] = descriptor['drain_reason']
             payload["supervisor"] = {"manual": "none", "desktop": "none"}.get(

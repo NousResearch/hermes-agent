@@ -9,7 +9,9 @@ class DiscordAuthorizationMixin:
         from discord import HTTPException
 
         # Unlike ingress caches, recovery reads current transport-scoped policy, resolved like
-        # ingress: the same gate resolver over the Discord config the loader builds now.
+        # ingress: the same gate resolver over the Discord config the loader builds now. Env still
+        # wins, and outside multiplex the loader copies YAML allowed_roles into it once (first
+        # writer), so there a role removed from YAML is revoked at restart, as for ingress.
         def policy():
             current = load_gateway_config().platforms.get(Platform.DISCORD) or PlatformConfig()
             raw = self._gate_raw('allowed_roles', 'DISCORD_ALLOWED_ROLES', config=current)

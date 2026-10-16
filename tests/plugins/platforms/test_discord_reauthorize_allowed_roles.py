@@ -2,11 +2,15 @@
 
 Ingress reads the gate through ``DiscordAdapter._gate_raw``: scoped env first, then the Discord
 ``PlatformConfig.extra`` that ``load_gateway_config()`` builds from every YAML spelling. Recovery
-must apply that same resolution to the config as it stands now, so a revocation still takes effect.
+applies that same resolution to the config as it stands now. The loader's YAML->env copy of
+``allowed_roles`` (first writer wins) is part of that resolution: outside multiplex a role removed
+from YAML stays granted until restart, exactly as for ingress; a multiplexed profile skips the copy.
 """
 
 import asyncio
+import contextlib
 import importlib
+import os
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -24,8 +28,10 @@ SOURCE = SimpleNamespace(chat_type="group", scope_id=str(GUILD_ID), user_id=USER
 @pytest.fixture(autouse=True)
 def _home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # The default-profile YAML bridge seeds DISCORD_ALLOWED_ROLES first-writer-wins; undo it per test.
-    monkeypatch.delenv("DISCORD_ALLOWED_ROLES", raising=False)
+    # The default-profile YAML bridge seeds DISCORD_ALLOWED_ROLES first-writer-wins; undo it per test
+    # (setenv first so teardown also removes a value the loader copies in during the test).
+    monkeypatch.setenv("DISCORD_ALLOWED_ROLES", "")
+    monkeypatch.delenv("DISCORD_ALLOWED_ROLES")
     if getattr(sys.modules.get("discord"), "HTTPException", None) is None:
         try:
             importlib.import_module("discord")
@@ -85,9 +91,32 @@ def test_legacy_top_level_allowed_roles_still_authorize(_home):
     assert _reauthorize(_adapter(2)) is True
 
 
-def test_revocation_in_current_config_beats_connect_time_extra(_home):
-    _write_config(_home, {"platforms": {"discord": {"enabled": True, "allowed_roles": ["9"]}}})
-    assert _reauthorize(_adapter(2, connect_extra={"allowed_roles": "2"})) is False
+@contextlib.contextmanager
+def _multiplexed_profile(home):
+    """The scope the gateway loads and serves a multiplexed profile in: its own secret scope."""
+    from agent.secret_scope import reset_multiplex_context, set_multiplex_context
+    from gateway.run import _profile_runtime_scope
+    token = set_multiplex_context(True)
+    try:
+        with _profile_runtime_scope(home):
+            yield
+    finally:
+        reset_multiplex_context(token)
+
+
+@pytest.mark.parametrize("multiplexed, granted_after_removal", [(True, False), (False, True)])
+def test_role_removed_from_yaml_after_the_first_reauthorization(_home, multiplexed, granted_after_removal):
+    """Both loads go through the real ``load_gateway_config()``. A multiplexed profile's load never
+    copies YAML into process env, so the current YAML (not the connect-time extra) revokes at once.
+    A single-profile load copies ``allowed_roles`` into ``DISCORD_ALLOWED_ROLES`` the first time and
+    that env value keeps precedence, so the removal takes effect at restart (unchanged from main)."""
+    connect_extra = {"allowed_roles": "2"}
+    _write_config(_home, {"platforms": {"discord": {"enabled": True, "allowed_roles": ["2"]}}})
+    with _multiplexed_profile(_home) if multiplexed else contextlib.nullcontext():
+        assert _reauthorize(_adapter(2, connect_extra)) is True
+        _write_config(_home, {"platforms": {"discord": {"enabled": True, "allowed_roles": ["9"]}}})
+        assert _reauthorize(_adapter(2, connect_extra)) is granted_after_removal
+    assert os.environ.get("DISCORD_ALLOWED_ROLES") == (None if multiplexed else "2")
 
 
 def test_scoped_env_allowlist_wins_over_config(_home, monkeypatch):

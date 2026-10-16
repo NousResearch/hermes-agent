@@ -534,8 +534,63 @@ emit_manifest() {
     printf '%s\n' ']}'
 }
 
+git_runs() { command -v git >/dev/null 2>&1 && git --version >/dev/null 2>&1; }
+
+# macOS ships /usr/bin/git as a stub until Apple's Command Line Tools are
+# installed: it is on PATH, but every call fails ("see man xcode-select").
+# Prefer Homebrew (headless); else open Apple's install dialog and wait for the
+# user to finish it, so the install continues in this run.
+install_macos_git() {
+    # Developer tools present with their git (e.g. an Xcode license never
+    # accepted, or a broken ~/.gitconfig): installing another git won't help,
+    # so let the caller report git's own error. A folder alone is not enough:
+    # a macOS upgrade can leave it behind empty.
+    local _dev
+    _dev="$(xcode-select -p 2>/dev/null)" || _dev=""
+    [ -n "$_dev" ] && [ -x "$_dev/usr/bin/git" ] && return 0
+    if command -v brew >/dev/null 2>&1; then
+        # Auto-update runs git (the broken stub here) and can take minutes.
+        run_logged --may-fail "Installing git with Homebrew" env HOMEBREW_NO_AUTO_UPDATE=1 brew install git || true
+        hash -r
+        git_runs && return 0
+    fi
+    # Opens Apple's install dialog. With a leftover folder it may refuse
+    # instead ("already installed"); no dialog opens, so don't wait for one.
+    local _xs
+    if ! _xs="$(xcode-select --install 2>&1)"; then
+        if [ -n "$_dev" ] && [ -d "$_dev" ]; then
+            fail "The developer tools at $_dev are incomplete and xcode-select --install declined to reinstall them. Reinstall the Command Line Tools (run: sudo rm -rf /Library/Developer/CommandLineTools, then xcode-select --install), then re-run this installer." git_missing
+        fi
+        # Say why (e.g. no GUI session over SSH) before any wait.
+        log_warn "xcode-select --install: $(printf '%s\n' "$_xs" | error_line)"
+    fi
+    local _remedy="Install Apple's Command Line Tools (run: xcode-select --install), then re-run this installer."
+    # Hermes-Setup drives stages with --json: no stage timeout, a Cancel
+    # button, and these log lines show as progress, so it waits too.
+    if [ "$JSON" != true ] && { [ "$NON_INTERACTIVE" = true ] || ! has_terminal; }; then
+        fail "git needs Apple's Command Line Tools. $_remedy" git_missing
+    fi
+    log "git needs Apple's Command Line Tools: click Install in the macOS dialog and accept the license"
+    local _waited=0
+    while [ "$_waited" -lt 900 ]; do
+        git_runs && return 0
+        sleep 5
+        _waited=$((_waited + 5))
+        [ $((_waited % 60)) -ne 0 ] || log "Still waiting for the Command Line Tools install ($((_waited / 60))m)"
+    done
+    fail "Command Line Tools did not finish within 15 minutes. $_remedy" git_missing
+}
+
 stage_prerequisites() {
+    # No git on PATH at all is not the stub: report "git is required" below.
+    if [ "$(uname -s 2>/dev/null)" = Darwin ] && command -v git >/dev/null 2>&1 && ! git_runs; then
+        install_macos_git
+    fi
     command -v git >/dev/null 2>&1 || fail "git is required. Install it with your system package manager." git_missing
+    local _git_err
+    if ! _git_err="$(git --version 2>&1)"; then
+        fail "git is installed but cannot run: $(printf '%s\n' "$_git_err" | error_line)" git_missing
+    fi
     command -v curl >/dev/null 2>&1 || fail "curl is required. Install it with your system package manager." curl_missing
     # PM's Node on musl is the unofficial-builds musl archive, which links the
     # system libstdc++; without it every node/npm stage fails verification.

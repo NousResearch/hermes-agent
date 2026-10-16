@@ -784,7 +784,11 @@ class GatewayAdapterLifecycleMixin:
         change: retrying it re-warns forever at the backoff cap (#5196 fleet nodes). Shared by startup and
         the reconnect watcher so both classify the same platform the same way."""
         from gateway.platform_registry import platform_registry
+        from gateway.relay import relay_url
         from gateway.run import _BUILTIN_ADAPTERS, _platform_has_bot_credential
+        if platform is Platform.RELAY and not relay_url():
+            # Relay is not a plugin: startup registers it only when a relay URL is configured.
+            return False
         return (
             platform not in _BUILTIN_ADAPTERS
             and not platform_registry.is_registered(platform.value)

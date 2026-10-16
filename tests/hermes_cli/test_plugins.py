@@ -1392,6 +1392,38 @@ class TestForceReloadSymmetry:
 
         assert len(starts) == 2
 
+    @pytest.mark.parametrize("hook_name", ["on_session_start", "on_session_end"])
+    def test_concurrent_session_events_for_distinct_sessions_both_run(self, monkeypatch, hook_name):
+        """Session hooks carry no tool/turn id: parallel delegate children starting (or several
+        sessions closing) at once must each reach the plugin, not collapse into one gate key."""
+        import time
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+
+        hold = threading.Event()
+        seen = []
+
+        def recorder(**kwargs):
+            seen.append(kwargs["session_id"])
+            hold.wait(timeout=10.0)
+
+        mgr = PluginManager()
+        mgr._hooks[hook_name] = [recorder]
+
+        threads = [threading.Thread(target=mgr.invoke_hook, args=(hook_name,),
+                                    kwargs={"session_id": sid, "model": "m", "platform": "cli"}, daemon=True)
+                   for sid in ("child-a", "child-b")]
+        threads[0].start()
+        time.sleep(0.1)  # the first session's callback now holds its gate
+        threads[1].start()
+        time.sleep(0.4)
+        hold.set()
+        for t in threads:
+            t.join(5.0)
+
+        assert sorted(seen) == ["child-a", "child-b"]
+
     def test_repeated_same_call_identity_still_deduplicated(self, monkeypatch):
         """Negative control: the same call identity stays a duplicate while its worker
         is still running, so the running gate (not timeout suppression) dedupes it."""

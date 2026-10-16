@@ -1,0 +1,149 @@
+import type { PluginSessionContext } from '@/contrib/session'
+import { resolveSessionContributionContext } from '@/contrib/session-context'
+import { $browserPages, $previewTabs, type BrowserDocument, openPreview, setViewerReopen } from '@/store/preview'
+import { ownerLookupSessionRows, sessionMatchesStoredId } from '@/store/session'
+
+import { safeViewerUrl, sameViewerLocation } from '../../electron/plugin-viewer-policy'
+
+import { startViewerKeepAlive } from './viewer-keep-alive'
+
+export interface PluginPreviewInput {
+  /** Client-reachable absolute HTTP(S) URL. No ambient auth headers are added. */
+  url: string
+  label?: string
+  session: PluginSessionContext
+  /** Renew a scoped lease while this original tab/document remains open. Runs in the host renderer. */
+  onKeepAlive?: () => Promise<void>
+  /** Mint a fresh viewer URL and call `openPreview` again with it. The host
+   *  calls this when it must rebuild the viewer after its document is gone
+   *  (that document spent the one-time capability). Without it, a rebuilt
+   *  viewer reloads the address it was first opened with. */
+  onReopen?: () => Promise<void>
+}
+
+export function currentPluginSession(session: PluginSessionContext): boolean {
+  if (!session || !session.connectionId || !session.profile) {
+    return false
+  }
+
+  const row = ownerLookupSessionRows().find(
+    row =>
+      sessionMatchesStoredId(row, session.storedSessionId || '') &&
+      row.connection_id === session.connectionId &&
+      row.profile === session.profile
+  )
+
+  const current = resolveSessionContributionContext({ storedSessionId: session.storedSessionId, row })
+
+  return Boolean(
+    current &&
+    current.connectionId === session.connectionId &&
+    current.profile === session.profile &&
+    current.storedSessionId === session.storedSessionId &&
+    current.runtimeSessionId === session.runtimeSessionId
+  )
+}
+
+/** Explicit UI action, not an event handler. Ticket-bearing tabs never persist.
+ *  The tab belongs to the plugin's session, like any tab that session opens. */
+export async function openPluginPreview(input: PluginPreviewInput): Promise<boolean> {
+  const url = safeViewerUrl(input?.url)
+
+  if (!url || !currentPluginSession(input.session)) {
+    return false
+  }
+
+  const before = $previewTabs.get()
+
+  const tab = openPreview(
+    {
+      kind: 'url',
+      url,
+      source: url,
+      label: input.label || 'Viewer',
+      transient: true,
+      browserContext: 'isolated'
+    },
+    input.session.storedSessionId,
+    input.session.runtimeSessionId,
+    input.session.profile
+  )
+
+  const onReopen = input.onReopen
+  setViewerReopen(tab.id, typeof onReopen === 'function' ? () => onReopen() : undefined)
+
+  // A new ticket on a reused tab rebuilds its guest; never bind to the outgoing one.
+  const prior = before.find(item => item.id === tab.id)
+  const replaced = prior && prior.target.url !== url ? $browserPages.get()[tab.id]?.document : undefined
+  // Owner rekeys and pins copy the tab but keep its target; a re-open replaces it.
+  const stillOpen = () => $previewTabs.get().some(item => item.id === tab.id && item.target === tab.target)
+
+  if (input.onKeepAlive) {
+    const onKeepAlive = input.onKeepAlive
+    let document: BrowserDocument | undefined
+    let stopped = false
+    let stopRenewal: (() => void) | undefined
+    const subscriptions: Array<() => void> = []
+
+    const stop = () => {
+      if (stopped) {
+        return
+      }
+
+      stopped = true
+      stopRenewal?.()
+      subscriptions.forEach(unsubscribe => unsubscribe())
+    }
+
+    const isOpen = () => {
+      const page = $browserPages.get()[tab.id]
+
+      return (
+        !stopped &&
+        stillOpen() &&
+        tab.target.transient === true &&
+        document !== undefined &&
+        page?.document === document &&
+        document.isLive() &&
+        sameViewerLocation(url, page.url)
+      )
+    }
+
+    const check = () => {
+      if (stopped) {
+        return
+      }
+
+      if (!stillOpen()) {
+        stop()
+
+        return
+      }
+
+      if (!document) {
+        const page = $browserPages.get()[tab.id]
+
+        if (!page?.document?.isLive() || page.document === replaced) {
+          return
+        }
+
+        document = page.document
+
+        if (isOpen()) {
+          stopRenewal = startViewerKeepAlive({ isOpen, onKeepAlive, onStop: stop })
+
+          return
+        }
+      }
+
+      if (document && !isOpen()) {
+        stop()
+      }
+    }
+
+    subscriptions.push($previewTabs.listen(check), $browserPages.listen(check))
+    check()
+  }
+
+  return true
+}

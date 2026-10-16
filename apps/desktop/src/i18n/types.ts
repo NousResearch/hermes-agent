@@ -631,6 +631,16 @@ export interface Translations extends NoticeTranslations {
       reveal: string
       failed: string
       kinds: { bundled: string; disk: string; runtime: string }
+      agent: {
+        setupInstalled: string
+        reviewSetup: string
+        setupTitle: string
+        setupConfirm: string
+        setupBusy: string
+        setupTrust: string
+      }
+      agentHalfMissing: string
+      agentHalfMissingTip: string
       installModal: {
         installFromGit: string
         reviewRepository: string
@@ -1971,6 +1981,7 @@ export interface Translations extends NoticeTranslations {
       emptyHint: string
       loadFailed: string
       toggleFailed: (name: string) => string
+      enabledRestartRequired: (name: string) => string
       toolsetOn: (name: string, profile: string) => string
       toolsetOff: (name: string, profile: string) => string
       toolsetToggleFailed: (name: string) => string

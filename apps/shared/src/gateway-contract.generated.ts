@@ -4337,7 +4337,7 @@ export interface LegacyPluginRow {
   version: string
   enabled: boolean
 }
-/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only); ``presence``: ``names`` (catalog names, answered in that order). */
+/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only); ``presence``: ``names`` (catalog names, answered in that order). ``toggle``/``install`` may carry ``setup_consent``: the reviewed native-setup consent echoed back from a ``consent_required`` refusal (bound to plugin key, profile home and revision). */
 export interface PluginsManageParams {
   profile?: string | null
   action?: PluginsAction
@@ -4351,6 +4351,7 @@ export interface PluginsManageParams {
   ref?: string | null
   accept_capabilities?: boolean | null
   values?: Record<string, unknown> | null
+  setup_consent?: Record<string, unknown> | null
   names?: string[] | null
 }
 export type PluginsAction = 'list' | 'toggle' | 'install' | 'update' | 'remove' | 'settings' | 'onboarding' | 'presence'
@@ -4391,6 +4392,7 @@ export interface AgentPluginRow {
   description: string
   source: string
   status: string
+  default_enabled: boolean
   portable: boolean
   install_dir: string
   has_desktop_half: boolean

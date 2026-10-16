@@ -48,3 +48,28 @@ describe('ConfirmDialog secondary action', () => {
     expect(onSecondary).not.toHaveBeenCalled()
   })
 })
+
+describe.each(['Enter', ' '])('confirmation keyboard ownership (%s)', key => {
+  it.each(['Cancel', 'Other action'])('never confirms from focused %s', async label => {
+    const onConfirm = vi.fn()
+    const onClose = vi.fn()
+    render(
+      <ConfirmDialog
+        onClose={onClose}
+        onConfirm={onConfirm}
+        open
+        secondaryAction={{ label: 'Other action', onClick: vi.fn() }}
+        title="Native setup"
+      />
+    )
+    const button = await screen.findByRole('button', { name: label })
+    button.focus()
+    // jsdom does not synthesize native click from keyboard. Prove the ancestor
+    // neither steals the event nor authorizes setup, then exercise native click.
+    expect(fireEvent.keyDown(button, { key })).toBe(true)
+    expect(onConfirm).not.toHaveBeenCalled()
+    fireEvent.click(button)
+    expect(onClose).toHaveBeenCalledOnce()
+    expect(onConfirm).not.toHaveBeenCalled()
+  })
+})

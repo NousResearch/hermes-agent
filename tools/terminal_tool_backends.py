@@ -133,7 +133,10 @@ def _modal_unavailable_reason(modal_state: dict[str, Any]) -> tuple[str, str]:
 # --- Environment builders. Signature: (*, image, cwd, timeout, cc, task_id, ssh_config, local_config, host_cwd)
 # (env_type is only forwarded to the plugin-registry fallback, not to the built-in builders.)
 def _build_local_env(*, cwd, timeout, local_config=None, **_):
-    return _LocalEnvironment(cwd=cwd, timeout=timeout, persistent=(local_config or {}).get("persistent", True))
+    options = local_config or {}
+    execution = options.get("execution_context")
+    return _LocalEnvironment(cwd=cwd, timeout=timeout, persistent=options.get("persistent", True),
+                             **({"execution_context": execution} if execution else {}))
 
 
 def _build_docker_env(*, image, cwd, timeout, cc, task_id, host_cwd, **_):

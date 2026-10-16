@@ -137,14 +137,32 @@ def _persist_plugin_selection(plugin_keys, chosen, disabled, initial, *, expecte
         return [], []
     if expected_config is None:
         expected_config = _pc()._plugin_selection_version()
-    new_enabled, new_disabled = set(_pc()._get_enabled_set()), set(disabled)
-    entries = _pc()._discover_all_plugins()
-    for keys, enable in ((turned_on, True), (turned_off, False)):
-        for key in keys:
-            _pc()._apply_activation(new_enabled, new_disabled, key, _pc()._plugin_aliases(key, entries), enable=enable)
-    # C13: the composite UI's candidate goes through the ONE admission authority — refusal raises
-    # AdmissionRefused BEFORE any config write; the caller surfaces it and the selection stays unsaved.
-    _pc()._admit_and_save_plugin_sets(new_enabled, new_disabled, action="Save plugin selection", expected_config=expected_config)
+    # Every ticked plugin passes the same consented native-setup gate as ``plugins enable``. A
+    # refused setup leaves that plugin untouched; the rest of the reviewed selection still applies.
+    console = _pc()._console()
+    for key in list(turned_on):
+        refusal = _pc()._setup_gate_cli(key, console)
+        if refusal:
+            console.print(refusal["error"], markup=False)
+            turned_on.remove(key)
+    if not (turned_on or turned_off):
+        return [], []
+    with _pc()._plugin_setup_lock():
+        # Readiness is re-verified under the profile lock that serializes setup with enablement.
+        for key in list(turned_on):
+            if refusal := _pc()._setup_refusal(key):
+                console.print(refusal["error"], markup=False)
+                turned_on.remove(key)
+        if not (turned_on or turned_off):
+            return [], []
+        new_enabled, new_disabled = set(_pc()._get_enabled_set()), set(disabled)
+        entries = _pc()._discover_all_plugins()
+        for keys, enable in ((turned_on, True), (turned_off, False)):
+            for key in keys:
+                _pc()._apply_activation(new_enabled, new_disabled, key, _pc()._plugin_aliases(key, entries), enable=enable)
+        # C13: the composite UI's candidate goes through the ONE admission authority — refusal raises
+        # AdmissionRefused BEFORE any config write; the caller surfaces it and the selection stays unsaved.
+        _pc()._admit_and_save_plugin_sets(new_enabled, new_disabled, action="Save plugin selection", expected_config=expected_config)
     logger.info("plugins picker: enabled %s; disabled %s", turned_on or "none", turned_off or "none")
     return turned_on, turned_off
 

@@ -55,7 +55,12 @@ export interface InstallDeps {
   requestGateway: GatewayRequest
 }
 
-export type InstallOutcome = { error: string; status: 'failed' } | { status: 'done' } | { status: 'uncertain' }
+/** `setup`: the agent half's files landed but its native setup needs review (enablement unchanged). */
+export type InstallOutcome =
+  | { error: string; plugin: string; status: 'setup' }
+  | { error: string; status: 'failed' }
+  | { status: 'done' }
+  | { status: 'uncertain' }
 
 interface Report {
   errors: string[]
@@ -199,6 +204,10 @@ export async function runPluginInstall(plan: InstallPlan, deps: InstallDeps): Pr
 
   for (const message of report.successes) {
     notify({ kind: 'success', message })
+  }
+
+  if (agentResult && !agentResult.ok && agentResult.installed) {
+    return { status: 'setup', error: report.errors.join(' '), plugin: agentResult.pluginName ?? plan.request.repo }
   }
 
   if (report.errors.length > 0) {

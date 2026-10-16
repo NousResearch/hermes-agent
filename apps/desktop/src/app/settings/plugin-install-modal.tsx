@@ -250,19 +250,26 @@ interface InstallFooterProps {
   installing: boolean
   onInstall: () => void
   onRetry: () => void
+  onReviewSetup?: () => void
 }
 
-/** Cancel, then Install (one loader while it runs) or, after a failure, Retry. */
-function InstallFooter({ canInstall, failed, installing, onInstall, onRetry }: InstallFooterProps) {
+/** Cancel, then Install (one loader while it runs) or, after a failure, Retry. Files that landed but
+ *  whose setup needs review offer the Plugins page instead of a retry (no reclone). */
+function InstallFooter({ canInstall, failed, installing, onInstall, onRetry, onReviewSetup }: InstallFooterProps) {
   const { t } = useI18n()
   const m = t.settings.plugins.installModal
 
   return (
     <DialogFooter>
+      {onReviewSetup && (
+        <Button disabled={installing} onClick={onReviewSetup} variant="secondary">
+          {t.settings.plugins.agent.reviewSetup}
+        </Button>
+      )}
       <Button disabled={installing} onClick={closePluginInstallRequest} variant="outline">
         {t.common.cancel}
       </Button>
-      {failed ? (
+      {failed && !onReviewSetup ? (
         <Button onClick={onRetry}>{t.common.retry}</Button>
       ) : (
         <Button disabled={!canInstall} onClick={onInstall}>
@@ -302,6 +309,7 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
   const [pinRef, setPinRef] = useState('')
   const [installError, setInstallError] = useState<null | string>(null)
   const [installUncertain, setInstallUncertain] = useState(false)
+  const [installedPlugin, setInstalledPlugin] = useState<null | string>(null)
 
   useEffect(() => {
     start(request.repo)
@@ -338,6 +346,9 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
         finishInstall(request, navigate)
       } else if (outcome.status === 'uncertain') {
         setInstallUncertain(true)
+      } else if (outcome.status === 'setup') {
+        setInstalledPlugin(outcome.plugin)
+        setInstallError(`${t.settings.plugins.agent.setupInstalled} ${outcome.error}`)
       } else {
         setInstallError(outcome.error)
       }
@@ -355,7 +366,15 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
   }
 
   // An unverified repository installs only once its contents are on screen; a reviewed pick may start at once.
-  const canInstall = !installing && !installUncertain && !pinInvalid && (verified || Boolean(probe?.ok))
+  const canInstall =
+    !installing && !installUncertain && installedPlugin === null && !pinInvalid && (verified || Boolean(probe?.ok))
+
+  const reviewSetup = installedPlugin
+    ? () => {
+        closePluginInstallRequest()
+        navigate(`/capabilities?tab=plugins&plugin=${encodeURIComponent(installedPlugin)}`)
+      }
+    : undefined
 
   return (
     <>
@@ -401,6 +420,7 @@ function InstallView({ request, installing, onInstallingChange }: InstallViewPro
         installing={installing}
         onInstall={() => void install()}
         onRetry={retry}
+        onReviewSetup={reviewSetup}
       />
     </>
   )

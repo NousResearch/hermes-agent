@@ -93,6 +93,29 @@ def stamp_message_uid(msg: MutableMapping[str, Any]) -> str:
     return uid
 
 
+# Producer-owned provenance for the compressor's standalone in-flight-task restatement. It rides in
+# display_metadata (persisted by SessionDB, popped from every wire copy) so gateway replay can send the
+# row unstamped, as the compaction turn did; a human pasting the header text carries no flag.
+INFLIGHT_TASK_RESTATEMENT = "compaction_inflight_task_restatement"
+
+
+def mark_inflight_restatement(msg: MutableMapping[str, Any]) -> None:
+    metadata = msg.get("display_metadata")
+    msg["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), INFLIGHT_TASK_RESTATEMENT: True}
+
+
+def restatement_metadata(msg: Mapping[str, Any]) -> dict:
+    """``{"display_metadata": {flag}}`` for a flagged row, else ``{}``: replay keeps only the flag."""
+    metadata = msg.get("display_metadata")
+    flagged = isinstance(metadata, dict) and bool(metadata.get(INFLIGHT_TASK_RESTATEMENT))
+    return {"display_metadata": {INFLIGHT_TASK_RESTATEMENT: True}} if flagged else {}
+
+
+def is_compaction_scaffolding(msg: Mapping[str, Any]) -> bool:
+    """Compaction sent its summary and restatement rows unstamped; a replay stamp would break the cached prefix."""
+    return bool(msg.get("_compressed_summary")) or bool(restatement_metadata(msg))
+
+
 _IDENTITY_FIELD_TYPES = ((MESSAGE_UID, str), (ABSORBED_MESSAGE_UIDS, list), (TOOL_CALL_UIDS, dict), (TOOL_CALL_UID, str))
 
 

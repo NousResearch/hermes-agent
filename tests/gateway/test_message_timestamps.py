@@ -224,3 +224,57 @@ def test_regular_user_message_still_replays_with_timestamp():
     history, _ = _build_gateway_agent_history([message], inject_timestamps=True)
     assert history[0]["content"].endswith(message["content"])
     assert history[0]["content"] != message["content"]
+
+
+def test_compactor_restatement_replays_unstamped_through_session_db(tmp_path):
+    """Compaction sends its restated in-flight task unstamped; a reload must replay those exact bytes."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from agent.context_compressor import ContextCompressor, _INFLIGHT_TASK_REPLAY_HEADER
+    from gateway.config import GatewayConfig
+    from gateway.run import _build_gateway_agent_history
+    from gateway.session import SessionStore
+    from hermes_state import SessionDB
+    from hermes_time import get_timezone
+
+    sent_at = _epoch(2026, 4, 28, 13, 40, 53)
+    messages = [{"role": "system", "content": "sys"},
+                {"role": "user", "content": "Summarize project files", "timestamp": sent_at}]
+    for i in range(40):
+        messages += [
+            {"role": "assistant", "content": f"step {i}", "tool_calls": [
+                {"id": f"c{i}", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": f"c{i}", "content": "fixture " * 200},
+        ]
+    compressor = ContextCompressor(model="m", quiet_mode=True, config_context_length=100_000,
+                                   protect_first_n=2, protect_last_n=2)
+    compressor.tail_token_budget = 500
+    summary = SimpleNamespace(choices=[SimpleNamespace(
+        message=SimpleNamespace(content="## Historical Task Snapshot\nx\n## Summary\ny"), finish_reason="stop")])
+    with patch("agent.context_compressor.call_llm", return_value=summary):
+        sent = [m for m in compressor.compress(messages, current_tokens=200_000, force=True) if m["role"] != "system"]
+    sent.append({"role": "assistant", "content": "Done"})
+    # A human pasting the header text is still a message someone sent: it keeps its stamp.
+    pasted = f"{_INFLIGHT_TASK_REPLAY_HEADER}\nthis is a pasted log"
+    sent += [{"role": "user", "content": pasted, "timestamp": sent_at}, {"role": "assistant", "content": "ok"}]
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    store._db = db
+    try:
+        db.create_session("room", source="matrix")
+        db.archive_and_compact("room", sent)
+        replay, _ = _build_gateway_agent_history(store.load_transcript("room"), inject_timestamps=True)
+    finally:
+        db.close()
+        store.close_all_db_handles()
+
+    def restatement(rows):
+        return next((m["content"] for m in rows if m["role"] == "user"
+                     and str(m["content"]).startswith(_INFLIGHT_TASK_REPLAY_HEADER)), None)
+
+    assert restatement(sent) is not None
+    assert restatement(replay) == restatement(sent)
+    assert next(m for m in replay if m["role"] == "user" and str(m["content"]).endswith("this is a pasted log"))[
+        "content"] == render_user_content_with_timestamp(pasted, sent_at, tz=get_timezone())

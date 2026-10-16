@@ -32,7 +32,7 @@ from utils import file_signature, is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
 from agent.fast_mode import STATIC_TIERS
-from agent.replay_cleanup import canonicalize_replay_history
+from agent.replay_cleanup import backfill_orphan_tool_results, canonicalize_replay_history
 from agent.reasoning_effort import clamp_effort, route_supported_efforts
 from agent.voice_turn_route import session_runtime_view
 from agent.compaction_display import project_compaction_message_for_display

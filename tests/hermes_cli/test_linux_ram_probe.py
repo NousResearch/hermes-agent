@@ -93,10 +93,11 @@ def test_ram_bytes_falls_back_when_memavailable_is_absent(monkeypatch):
 def test_ram_bytes_falls_back_to_getconf_when_meminfo_unusable(monkeypatch):
     _as_linux(monkeypatch)
     monkeypatch.setattr(hw, "_linux_meminfo_text", lambda: None)
+    # sysconf is the first total source; take it away so getconf is the fallback under test.
+    monkeypatch.delattr(hw.os, "sysconf", raising=False)
     values = {
         "PAGE_SIZE": "4096\n",
         "_PHYS_PAGES": "2097152\n",
-        "_AVPHYS_PAGES": "524288\n",
     }
 
     def fake_stdout(*argv):
@@ -104,4 +105,6 @@ def test_ram_bytes_falls_back_to_getconf_when_meminfo_unusable(monkeypatch):
 
     monkeypatch.setattr(hw, "_stdout", fake_stdout)
 
-    assert hw._ram_bytes() == (8 * GIB, 2 * GIB)
+    # _AVPHYS_PAGES went in-process with the total; without sysconf the conservative
+    # half-of-total stands in for available.
+    assert hw._ram_bytes() == (8 * GIB, 4 * GIB)

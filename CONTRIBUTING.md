@@ -120,6 +120,13 @@ The rules that most often send a submission back: the plugin must extend Hermes 
 | **Python 3.14** | The project requires `>=3.14,<3.15`; PM provides the pinned interpreter |
 | **Node.js** | Use the PM pin, or a version accepted by root `package.json`: `^22.22.0`, `^24.11.0`, or `>=26.0.0` |
 
+> **Windows PATH note:** bare `python` resolves by PATH order, and a conda base
+> (e.g. `D:\jiaxin`, Python 3.10) or the system Python 3.12 can shadow the
+> interpreter you meant. Verify with `python -c "import sys; print(sys.executable)"`.
+> For hermes work always use the project venv explicitly
+> (`./venv/Scripts/python.exe -m pytest tests/...`) or the `py` launcher
+> (`py -0p` lists registered interpreters — conda bases are not registered there).
+
 ### PM developer environment
 
 Use the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow) for preparation, activation, everyday commands,

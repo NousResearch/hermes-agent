@@ -714,12 +714,18 @@ class TestRoutedProfileEnv:
 
 
 @pytest.mark.platforms("windows")
-def test_bare_script_hook_path_executes_on_windows(tmp_path):
+def test_bare_script_hook_path_executes_on_windows(tmp_path, monkeypatch):
     """A hook whose command is a bare script path — the shape every example in
     ``website/docs/user-guide/features/hooks.md`` uses — must run. POSIX gets there through the
     kernel's shebang handling; CreateProcess has no equivalent, so the same config failed on
     Windows while working everywhere else. A path that is not a file must still be reported as
     missing rather than laundered through an interpreter."""
+    # _find_bash resolves PM's runtime store, which on a default-install
+    # checkout (repo inside the real Hermes home) legitimately probes
+    # <home>/manifest.json — real-home state the test guard rightly refuses.
+    # Point PM at a throwaway runtime dir via the documented override so the
+    # test exercises interpreter routing without touching the real home.
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "pm-runtime"))
     script = _write_script(tmp_path, "hook.sh", '#!/usr/bin/env bash\necho "ran" >&2\nexit 7\n')
 
     def spec(command):

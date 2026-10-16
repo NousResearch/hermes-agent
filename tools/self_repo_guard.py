@@ -94,6 +94,60 @@ def _executable_name(value: str) -> str:
     return Path(value.replace("\\", "/")).name.removesuffix(".exe").lower()
 
 
+def _rejoin_spaced_path_candidate(word: str) -> tuple[str, str, str]:
+    """ ``(prefix, path-part, render)`` for words that carry a path after a
+    syntactic prefix: ``NAME=path`` assignments (``GIT_DIR=...``), long options
+    with attached values (``--work-tree=dir``) and attached short options
+    (``-Cdir``); ``("", word, word)`` for bare words.
+    """
+    name, sep, fragment = word.partition("=")
+    if sep and name and not name.startswith("-"):
+        return f"{name}=", fragment, word
+    if sep and name.startswith("-"):  # --work-tree=dir / --git-dir=dir
+        return name + "=", fragment, word
+    if word.startswith("-") and len(word) > 2 and word[1].isalpha():
+        return word[:2], word[2:], word  # -Cdir / -cK=V attached value
+    return "", word, word
+
+
+def _rejoin_spaced_paths(words: list[str]) -> list[str]:
+    """Repair target words an unquoted spaced path broke apart.
+
+    ``git -C K:/tmp/pytest-of-SOKCHHORN PC/pytest-1/repo checkout`` is written
+    meaning one directory, but shell word-splitting delivers one argv entry per
+    space and the guard's target can never match (fail-open on the very paths
+    this guard exists for — checkouts inside the real home contain spaces).
+    Adjacent word RUNS are merged when their single-space join EXISTS on disk —
+    longest run first, so a path whose every proper prefix is also split (two
+    spaces inside two directory names) repairs in one step. A ``NAME=`` /
+    ``-X`` prefix rides along so assignment and option values rejoin too. Runs
+    are only considered from a word containing a path separator and are capped
+    at 8 words: the disk probe is the whole heuristic (the guard reasons about
+    targets, not argv fidelity), and without the anchor ordinary adjacent
+    arguments would be stat-spammed on every command.
+    """
+    if len(words) < 2:
+        return words
+    merged: list[str] = []
+    index = 0
+    total = len(words)
+    while index < total:
+        word = words[index]
+        if "/" in word or "\\" in word:
+            prefix, candidate, _ = _rejoin_spaced_path_candidate(word)
+            for end in range(min(index + 8, total), index, -1):
+                if end == index + 1:
+                    break  # the single word needs no repair
+                joined = " ".join([candidate, *words[index + 1 : end]])
+                if os.path.exists(joined):
+                    word = f"{prefix}{joined}" if prefix else joined
+                    index = end - 1
+                    break
+        merged.append(word)
+        index += 1
+    return merged
+
+
 def _shell_words_at(command: str, start: int) -> list[str]:
     """Deobfuscated words of the simple command at ``start`` (stops at a newline, a redirection
     or a trailing ``# comment``; max 64). The fd prefix of ``2>/dev/null`` / ``2>&1`` belongs to
@@ -108,7 +162,7 @@ def _shell_words_at(command: str, start: int) -> list[str]:
             break
         words.append(_deobfuscate_shell_word_for_detection(raw_word))
         cursor = word_end
-    return words
+    return _rejoin_spaced_paths(words)
 
 
 def _consume_options(

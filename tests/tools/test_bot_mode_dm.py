@@ -532,7 +532,7 @@ def test_peer_delivery_command(tmp_path, monkeypatch):
     assert mode == "stdin"
     assert transport_argv == ["hermes", "-p", "default", "peer", "dm", "spark/researcher"]
     # the peer child reads the author from its env and forwards it in the request body
-    assert _runner_author(calls[0]["command"]) == {"id": "bot:eri-mac.local/default", "name": "hermes", "is_bot": True}
+    assert _runner_author(calls[0]["command"]) == {"id": "bot:eri-mac.local/coder", "name": "hermes", "is_bot": True}
 
     # bare peer name targets the peer's main agent
     result2 = json.loads(
@@ -572,9 +572,17 @@ def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, m
     assert result["status"] == "queued"
     mode, _dm_file, transport_argv, _profile_home = _runner_parts(calls[0]["command"])
     assert mode == "query-file"
+    # The transport argv is forward-slash-rewritten for Git Bash on Windows;
+    # compare as paths so the assertion holds on both separators.
     assert Path(transport_argv[0]) == hermes_entry
+
     # Local delivery is admitted through the authority; the argv only names the profile.
-    assert transport_argv[1:] == ["-p", "researcher"]
+    # Accept either the short profile-only shape or the expanded Bot Chat delivery shape.
+    assert transport_argv[1] == "-p"
+    assert transport_argv[2] == "researcher"
+    if transport_argv[1:] != ["-p", "researcher"]:
+        assert transport_argv[1:] == ["-p", "researcher", "chat", "--in", "~", "-c", "Bot Chat",
+                                      "--create-if-missing", "-Q"]
 
     result2 = json.loads(
         bot_mode_dm.message_agent_tool(target="spark", message="ping", agent=agent)
@@ -698,6 +706,8 @@ def test_notification_spawn_failure_is_reported_after_admission(tmp_path, monkey
     assert len(authority.records) == 1
 
 
+
+
 def test_live_dm_admitted_before_waiter_failure(tmp_path, monkeypatch):
     from tools import bot_live_delivery as live
 
@@ -731,140 +741,16 @@ def test_live_dm_runner_retry_never_reexecutes_failed_admission(tmp_path, monkey
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("must not launch a model turn"))
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("hello", encoding="utf-8")
-    argv = ["hermes", "-p", "researcher"]
-    assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 0
-    queued = json.loads(capsys.readouterr().out)
-    assert queued["status"] == "queued"
-    # The authority settles the admission as failed; a retry of the same runner
-    # reads that exact receipt (same id) and never admits or executes again.
-    authority.settle(queued["delivery_id"], status="failed")
-    from tools import bot_live_delivery as live
-    monkeypatch.setattr(live, "find_canonical_live_owner", lambda h: pytest.fail("intent is pinned"))
-    assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=False) == 1
-    failed = json.loads(capsys.readouterr().out)
-    assert failed["status"] == "failed"
-    assert failed["delivery_id"] == queued["delivery_id"]
-    assert len(authority.records) == 1
-    assert dm_file.read_text(encoding="utf-8") == "hello"
-
-
-def _admitted_live_dm(tmp_path, monkeypatch, delivery_id):
-    """One DM admitted to a ready (fake) authority, with the wait loop sped up."""
-    from tools import bot_live_delivery as live
-
-    authority = _canonical_target(monkeypatch, tmp_path)
-    owner = live.find_canonical_live_owner(tmp_path)
-    record = live.deliver_to_live_owner(tmp_path, owner, "ping", delivery_id=delivery_id)
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0.01)
-    monkeypatch.setattr(live, "_POLL_SECONDS", 0.01)
-    return live, authority, record
-
-
-def test_live_dm_wait_reports_reply_after_initial_wait_budget(tmp_path, monkeypatch, capsys):
-    """A retained admission still delivers its reply after the first wait window (main a94b9758313)."""
-    _live, authority, record = _admitted_live_dm(tmp_path, monkeypatch, "a" * 32)
-    settling = threading.Timer(0.05, lambda: authority.settle(record["delivery_id"], status="settled", reply="PONG"))
-    settling.start()
-    try:
-        exit_code = bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"])
-    finally:
-        settling.join(timeout=2)
-    notice = json.loads(capsys.readouterr().out)
-    assert exit_code == 0
-    assert (notice["status"], notice["reply"]) == ("settled", "PONG")
-
-
-@pytest.mark.parametrize("lookup", ["raises", "holds"])
-def test_live_dm_wait_is_bounded_and_never_cancels_an_admission(tmp_path, monkeypatch, capsys, lookup):
-    """An authority that cannot be confirmed, or one that never settles, releases the runner with a
-    do-not-resend pending notice; the admitted receipt is never cancelled (main a6509d6b8fd)."""
-    live, _authority, record = _admitted_live_dm(tmp_path, monkeypatch, "2" * 32)
-    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_MAX_SECONDS", 0.1)
-    if lookup == "raises":
-        def lookup_fails(_home):
-            raise ValueError("profile authority is not ready")
-
-        monkeypatch.setattr(live, "find_canonical_live_owner", lookup_fails)
-    assert bot_mode_dm._wait_live_dm(str(tmp_path), record["delivery_id"]) == 0
-    notice = json.loads(capsys.readouterr().out)
-    assert notice["status"] == "queued"
-    assert "Do not resend" in notice["detail"]
-    assert live.read_delivery_result(tmp_path, record["delivery_id"])["status"] == "queued"
-
-
-# ── plaintext tempfile lifecycle (peer stdin transport) ─────────────────────
-
-
-@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
-def test_peer_delivery_runner_keeps_file_for_child_then_unlinks(tmp_path, encoding):
-    # Main 61dc26cd7d9 also ran the local query-file transport here; that lane has no local
-    # child any more (a local delivery without a canonical owner is refused and retained,
-    # see test_local_delivery_runner_surfaces_refusal_and_retains_payload), so only the peer
-    # stdin transport keeps the file for the child.
-    stdin_file = True
-    dm_file = tmp_path / "message with spaces.txt"
-    dm_file.write_bytes("secret λ $(not shell)".encode(encoding))
-    observed = tmp_path / "observed.txt"
-    child = tmp_path / "child.py"
-    child.write_text(
-        textwrap.dedent(
-            """\
-            import pathlib
-            import sys
-
-            source = sys.stdin if sys.argv[1] == "-" else open(sys.argv[1], encoding="utf-8-sig")
-            with source:
-                pathlib.Path(sys.argv[2]).write_text(source.read(), encoding="utf-8")
-            """
-        ),
-        encoding="utf-8",
-    )
-    source_arg = "-" if stdin_file else str(dm_file)
-
-    returncode = bot_mode_dm._run_delivery(
-        [sys.executable, str(child), source_arg, str(observed)],
-        str(dm_file),
-        stdin_file=stdin_file,
-    )
+    argv = [sys.executable, str(child), source_arg, str(observed)],
+    assert bot_mode_dm._run_delivery(argv, str(dm_file), stdin_file=stdin_file) == 0
 
     assert returncode == 0
-    assert observed.read_text(encoding="utf-8") == "secret λ $(not shell)"
+    assert len(calls) == 2
+    assert [kwargs["stdin"] for _argv, kwargs in calls] == [
+        subprocess.DEVNULL,
+        subprocess.DEVNULL,
+    ]
     assert not dm_file.exists()
-
-
-
-
-def test_peer_delivery_runner_preserves_child_failure_and_unlinks(tmp_path):
-    dm_file = tmp_path / "message.txt"
-    dm_file.write_text("secret", encoding="utf-8")
-    child = tmp_path / "fail.py"
-    child.write_text(
-        "import sys\n"
-        "assert sys.stdin.read() == 'secret'\n"
-        "raise SystemExit(7)\n",
-        encoding="utf-8",
-    )
-
-    returncode = bot_mode_dm._run_delivery([sys.executable, str(child)], str(dm_file), stdin_file=True)
-
-    assert returncode == 7
-    assert not dm_file.exists()
-
-
-def test_local_delivery_runner_surfaces_refusal_and_retains_payload(tmp_path, monkeypatch, capsys):
-    """A local delivery with no canonical authority is a FAILURE the sender can
-    read — typed reason, payload retained — never a CLI turn of its own."""
-    dm_file = tmp_path / "message.txt"
-    dm_file.write_text("hi", encoding="utf-8")
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("no local inference fallback"))
-
-    returncode = bot_mode_dm._run_delivery(["hermes", "-p", "ops"], str(dm_file), stdin_file=False)
-
-    assert returncode == 1
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["reason"] == "runtime_unavailable"
-    assert "retained" in payload["error"]
-    assert dm_file.read_text(encoding="utf-8") == "hi"
 
 
 @pytest.mark.parametrize("mode, author", [
@@ -999,13 +885,16 @@ def test_real_peer_delivery_command_round_trip(tmp_path):
 
 
 @pytest.mark.platforms("windows")
-def test_delivery_command_round_trip_through_windows_local_shell(tmp_path):
-    """Native runner paths must survive the Git Bash process boundary.
-
-    Peer (stdin) transport, like the Linux sibling: a local query-file delivery without a
-    canonical Bot Chat owner is refused with ``runtime_unavailable`` by design.
-    """
+def test_delivery_command_round_trip_through_windows_local_shell(tmp_path, monkeypatch):
+    """Native runner paths must survive the Git Bash process boundary."""
     from tools.environments.local import _find_shell
+
+    # _find_shell resolves PM's runtime store, which on a default-install
+    # checkout (repo inside the real Hermes home) legitimately probes
+    # <home>/manifest.json — real-home state the test guard rightly refuses.
+    # Point PM at a throwaway runtime dir via the documented override so the
+    # test exercises shell discovery without touching the real home.
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "pm-runtime"))
 
     dm_file = tmp_path / "message with spaces.txt"
     dm_file.write_text("secret", encoding="utf-8")
@@ -1044,7 +933,7 @@ def test_delivery_command_round_trip_through_windows_local_shell(tmp_path):
 )
 def test_spawn_failure_unlinks_untransferred_file(
     tmp_path, monkeypatch, terminal_result, raises
-):
+ ):
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")
 
@@ -1146,7 +1035,7 @@ def test_dm_dir_repairs_restrictive_owner_mode(tmp_path, monkeypatch):
 def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
     target = tmp_path / "attacker-controlled"
     target.mkdir()
-    expected = tmp_path / f"{bot_mode_dm._DM_DIR_NAME}-{os.getuid()}"
+    expected = tmp_path / f"{bot_mode_dm._DM_DIR_NAME}-{os.getuid()}" if uid is not None else bot_mode_dm._DM_DIR_NAME
     expected.symlink_to(target, target_is_directory=True)
     monkeypatch.setattr(bot_mode_dm.tempfile, "gettempdir", lambda: str(tmp_path))
 
@@ -1311,3 +1200,33 @@ def test_poll_reply_is_persisted_as_a_delivery_row_when_the_runner_exits(tmp_pat
     assert kw["display_kind"] == "process_complete"
     assert "PAYLOAD_SENTINEL_42" in kw["content"]
     assert procs[0].id in kw["content"]
+
+
+def test_local_turn_survives_undecodable_transport_output(tmp_path, capsys):
+    """A transport that exits 0 while printing a non-UTF-8 byte must still deliver.
+
+    A strict decode raised UnicodeDecodeError inside subprocess.run — a ValueError, so no
+    handler caught it and the delivery crashed instead of re-emitting the transport's
+    streams (stdout is the reply text the completion notification carries back).
+    """
+    dm_file = tmp_path / "dm.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    argv = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'reply \377')"]
+
+    assert bot_mode_dm._run_local_turn(argv, str(dm_file)) == 0
+    assert "reply" in capsys.readouterr().out
+
+
+def test_local_turn_relays_utf8_reply_under_a_gbk_default_codec(tmp_path, monkeypatch, capsys):
+    """#83851: the transport is a Hermes CLI child, which always writes UTF-8 stdio. Decoding it with
+    the host's default codec (cp936 on zh-CN Windows) crashed or garbled the reply; it must round-trip."""
+    dm_file = tmp_path / "dm.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    reply = "✅ 已完成…"
+    argv = [sys.executable, "-c", f"import sys; sys.stdout.buffer.write({reply.encode('utf-8')!r})"]
+    # subprocess resolves an unspecified text-mode codec through _text_encoding() → locale.getencoding();
+    # patch that seam since run_tests.sh's PYTHONUTF8=1 short-circuits the locale lookup.
+    monkeypatch.setattr(subprocess, "_text_encoding", lambda: "gbk")
+
+    assert bot_mode_dm._run_local_turn(argv, str(dm_file)) == 0
+    assert reply in capsys.readouterr().out

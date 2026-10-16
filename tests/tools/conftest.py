@@ -8,6 +8,8 @@ depend on the registry being populated should use it explicitly or via
 ``@pytest.mark.usefixtures("web_registry_populated")``.
 """
 
+import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -70,6 +72,106 @@ def _materialize_mcp_sdk_symbols():
         mcp_tool._ensure_mcp_sdk()
     except Exception:
         pass
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _sandbox_real_hermes_home(tmp_path, monkeypatch, request):
+    """Keep machine-real PM/home probes out of the REAL Hermes home.
+
+    On a default-install checkout this repo lives INSIDE the real Hermes home
+    (``%LOCALAPPDATA%\\hermes\\hermes-agent``), so probes anchored to the repo
+    path and the launch home — not ``HERMES_HOME`` — reach real-home state the
+    test guard rightly refuses (tests/home_io_guard.py):
+
+    - ``pm.environments.payload_venv`` stats ``<repo>.parent/manifest.json``
+      and ``store_root`` probes the same location for the PM store; the
+      import-time ``activate_dependencies`` chain makes this fire on plain
+      imports of modules that pull in ``hermes_bootstrap``;
+    - ``tools.environments.local._resolve_hermes_bin_dir`` walks the process
+      PATH into the real install, and callers ``isdir`` the real ``<home>/bin``.
+
+    A normal CI checkout (sibling of the native home) gets "not a payload"
+    answers and usually no PATH-resolvable install, so the sandbox emulates
+    exactly that normal-checkout world; nothing here weakens a test that
+    already passes on CI. ``hermes_constants.get_hermes_home`` and
+    ``get_default_hermes_root`` readers are covered by the home redirect in
+    ``tests/conftest.py::_hermetic_environment``.
+
+    Stubs, in the order a test can hit them:
+    - ``pm.environments.payload_venv`` -> ``None`` (the tests that build
+      synthetic payloads re-stub it themselves and keep their coverage);
+    - ``pm.environments.store_root`` -> ``HERMES_RUNTIME_DIR`` when set, else
+      ``<tmp>/pm-runtime`` — the real resolver's documented-override contract,
+      resolved eagerly so the probe never walks the real parent;
+    - ``hermes_constants.get_hermes_home`` -> ``<tmp>/hermes-home`` (attribute
+      pin; ``from hermes_constants import get_hermes_home`` importers instead
+      read the redirected ``HERMES_HOME`` env vars, which is equally sandboxed);
+    - ``tools.environments.local._resolve_hermes_bin_dir`` -> cache-faithful
+      stub mirroring ``_HERMES_BIN_DIR``'s real contract — a set value wins,
+      ``_SENTINEL`` means "resolve now" and yields the fixture's fake bin dir,
+      ``None`` means no injection — so tests expressing injection intent via
+      the cache keep their semantics. Per-file sandboxes that patch the same
+      seams (test_local_env_blocklist's ``_sandbox``) stack on top as the
+      inner monkeypatch and win.
+
+    Tests asserting the REAL resolver's disk walk opt out via the
+    ``real_bin_resolver`` marker. A test that legitimately needs the host
+    install (none today — the ones that spawn real children pin
+    ``HERMES_RUNTIME_DIR`` and stay sandbox-compatible) opts out entirely
+    via the ``real_home`` marker; the real-home tripwire stays armed for
+    everything else on purpose.
+    """
+    pm_runtime = tmp_path / "pm-runtime"
+    pm_runtime.mkdir(exist_ok=True)
+
+    import hermes_constants
+    from pm import environments as pm_env
+    from tools.environments import local as local_mod
+
+    if "real_home" not in request.keywords:
+        if "real_bin_resolver" not in request.keywords:
+            bin_dir = tmp_path / "sandbox-bin"
+            bin_dir.mkdir(exist_ok=True)
+            shim = "hermes.exe" if os.name == "nt" else "hermes"
+            (bin_dir / shim).write_bytes(b"@echo fake-hermes\n")
+            sentinel = local_mod._SENTINEL
+
+            def _fake_resolver():
+                if local_mod._HERMES_BIN_DIR is sentinel:
+                    return str(bin_dir)  # "resolve now" -> the fake install
+                return local_mod._HERMES_BIN_DIR  # None -> no injection; str -> inject it
+
+            monkeypatch.setattr(local_mod, "_resolve_hermes_bin_dir", _fake_resolver)
+
+        def _fake_payload_venv(project_root):
+            return None  # normal checkout: no sibling manifest.json
+
+        def _fake_store_root(project_root):
+            override = os.environ.get("HERMES_RUNTIME_DIR")
+            if override:
+                return Path(override).resolve()
+            return pm_runtime
+
+        monkeypatch.setattr(pm_env, "payload_venv", _fake_payload_venv)
+        monkeypatch.setattr(pm_env, "store_root", _fake_store_root)
+
+        # Attribute-identity matters: live connector ops are keyed by
+        # hermes_home_key() on one thread and get_process_hermes_home() on
+        # another, so the pin must FOLLOW HERMES_HOME exactly like the real
+        # resolver and only substitute the fallback for tests that exercise
+        # default-home resolution (env cleared). The override branch (context-
+        # local set_hermes_home_override) must also keep the real precedence —
+        # tests assert get_hermes_home() equals their override, not this pin.
+        def _pinned_home():
+            override = hermes_constants.get_hermes_home_override()
+            if override:
+                return hermes_constants._expand_hermes_home(override)
+            env_home = os.environ.get("HERMES_HOME", "").strip()
+            return Path(env_home) if env_home else tmp_path / "hermes-home"
+
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", _pinned_home)
+
     yield
 
 

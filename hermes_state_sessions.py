@@ -116,14 +116,12 @@ def _session_filter_where(
     session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
     include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
-    workspace_key: str | None = None,
-    source_sql: str = "s.source",
+    workspace_key: str | None = None, source_sql: str = "s.source",
 ) -> tuple[list[str], list[Any]]:
     """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
     hides sub-agent runs and compression continuations but keeps branch/reset children
     (``_LISTABLE_CHILD_SQL``); ``include_subagents`` re-admits the sub-agent runs only
-    (``sessions.show_subagents``). Clause order is part of the SQL text contract.
-    ``source_sql`` overrides the source column expression (e.g. projected tip source)."""
+    (``sessions.show_subagents``). Clause order is fixed; ``source_sql`` selects the source expression."""
     where: list[str] = []
     params: list[Any] = []
     if exclude_children and include_subagents:
@@ -139,9 +137,7 @@ def _session_filter_where(
     # legacy heuristic (parent ended with 'branched' before the child started), covering branch sessions
     # created before the marker existed.
     include_sources = [source] if source else list(sources or [])
-    source_clause, source_params = _source_match_clause(
-        include_sources, local_created_sources, source_sql=source_sql,
-    )
+    source_clause, source_params = _source_match_clause(include_sources, local_created_sources, source_sql=source_sql)
     for clause, values in (
         (source_clause, source_params),
         ("s.session_key = ?", [session_key] if session_key else []),
@@ -1630,10 +1626,7 @@ class SessionSessionsMixin:
             rows = conn.execute(
                 "SELECT projected_source AS source, COUNT(*) AS count FROM ("
                 f"SELECT {source_sql} AS projected_source FROM sessions s{where_sql}"
-                ") "
-                "GROUP BY projected_source "
-                "ORDER BY count DESC, projected_source ASC",
-                params,
+                ") GROUP BY projected_source ORDER BY count DESC, projected_source ASC", params,
             ).fetchall()
         return {str(row["source"]): int(row["count"] or 0) for row in rows}
 

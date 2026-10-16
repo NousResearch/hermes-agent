@@ -2309,7 +2309,7 @@ updates:
 # dashboard:
 #   webauthn:
 #     rp_id: "hermes.example.com"
-#     rp_name: "Hermes (richards-lab)"
+#     rp_name: "Hermes (home lab)"
 #     origins:
 #       - "https://hermes.example.com"
 #     # user_verification: "preferred"           # preferred | required

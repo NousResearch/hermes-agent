@@ -1,7 +1,7 @@
 """Editor slash commands on the gateway path; each one is an existing gateway verb.
 
 Main served these in-process (``acp_adapter/commands.py``). The reports are the owner's own
-``slash.exec`` reads, ``/model``, ``/compress`` and ``/reset`` the retained ``session.mutate``
+``slash.exec`` reads, ``/model``, ``/compress``, ``/reasoning`` and ``/reset`` the retained ``session.mutate``
 controls, ``/steer`` the owner's ``session.steer``; ``/queue`` and an idle ``/steer`` become the
 next prompt, which the session's FIFO runs after any turn in flight.
 """
@@ -11,7 +11,7 @@ from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 
 # Reports the owner answers for a local session (``gateway/session_commands.py::_READ_COMMANDS``).
 _READS = frozenset({'context', 'usage', 'status', 'version'})
-_MUTATIONS = frozenset({'model', 'compress', 'new', 'branch'})
+_MUTATIONS = frozenset({'model', 'compress', 'new', 'branch', 'reasoning'})
 _PROMPTS = frozenset({'steer', 'queue'})
 COMMANDS = _READS | _MUTATIONS | _PROMPTS | {'help', 'tools'}
 
@@ -35,9 +35,10 @@ async def run_command(agent, session_id, command, arg):
     if command in _READS:
         result = await client.rpc('slash.exec', session_id=session_id, command=f'/{command} {arg}'.strip())
         return str(result.get('output') or result.get('notice') or ''), None
-    if command == 'tools' or (command == 'model' and not arg):
+    if command == 'tools' or (command in {'model', 'reasoning'} and not arg):
         info = await client.rpc('session.info', session_id=session_id)
-        return (_tools_text(info) if command == 'tools' else _model_text('Current model', info)), None
+        return {'tools': _tools_text, 'model': lambda i: _model_text('Current model', i),
+                'reasoning': _reasoning_text}[command](info), None
     return await _mutate(agent, client, session_id, command, arg), None
 
 
@@ -89,7 +90,8 @@ async def _mutate(agent, client, session_id, command, arg):
             await _refresh_context(agent, client, session_id, operation)
         reply = {'model': lambda: _model_text('Model switched to', result),
                  'compress': lambda: _summary_text(result) or 'Context compressed.',
-                 'reset': lambda: 'Conversation history cleared.'}[operation]()
+                 'reset': lambda: 'Conversation history cleared.',
+                 'reasoning': lambda: f"Reasoning effort for this session: {payload['effort']}"}[operation]()
     agent._mutations.acknowledge(session_id, operation, payload)
     return reply
 
@@ -118,6 +120,11 @@ def _model_text(label, fields):
     if fields.get('provider'):
         lines.append(f"Provider: {fields['provider']}")
     return '\n'.join(lines)
+
+
+def _reasoning_text(info):
+    effort = info.get('reasoning_effort')
+    return f'Reasoning effort: {effort}' if effort else 'Reasoning effort: unknown'
 
 
 def _tools_text(info):

@@ -29,6 +29,8 @@ EDIT_APPROVAL_POLICY_CONFIG_ID = "edit_approval_policy"
 COMMANDS: dict[str, tuple[str, str | None]] = {
     "help": ("List available commands", None),
     "model": ("Show current model and provider, or switch models", "model name to switch to"),
+    "reasoning": ("Show the reasoning effort, or set it for this conversation",
+                  "none, minimal, low, medium, high, xhigh, max, ultra"),
     "tools": ("List available tools", None),
     "context": ("Show conversation context usage", None),
     "reset": ("Clear conversation history", None),

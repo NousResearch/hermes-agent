@@ -1,0 +1,7 @@
+# CME price-touch monitor
+
+`cme_price_touch_alert.py` is a no-agent Hermes cron script for CME Group (NASDAQ: CME). The native cron runs on quarter-hour boundaries; the script makes no market-data request outside weekdays, 09:30–16:00 America/New_York. During a candidate session it requires Yahoo Finance's current regular-session metadata to match today's 09:30 opening, then reads only timestamped regular-session 1-minute lows. The source metadata supplies the actual session close, including holidays, DST and early closes; pre-market and post-market bars are excluded.
+
+The first valid check scans today's regular-session bars, then an atomic state file under `~/.hermes/state/cme-price-touch.json` tracks the last processed bar, the session close and alerted New York trading date. A low at or below US$270 emits one Telegram-ready message that includes the bar low, its one-minute timestamp and the Yahoo Finance source. The cron's failure route is local, so source/data errors do not look like price alerts.
+
+The existing Hermes market-data path uses Yahoo Finance Chart API. This monitor requires 1-minute OHLC lows and fails closed if identity, session metadata, timestamps or lows are missing or stale; it does not fall back to sampled prices. Yahoo's chart endpoint has no latency guarantee, so the alert may arrive after the bar timestamp. It cannot detect a touch during a host outage or a source outage beyond the provider's available intraday history.

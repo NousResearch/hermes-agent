@@ -1039,7 +1039,7 @@ def _restart_argv_is_host_gateway(argv: list[str]) -> bool:
     try:
         from gateway import host_rendezvous as hr
         record = hr.read_record(hr.ROLE_GATEWAY)
-        if record is not None and hr.liveness_is_proven(record) and len(record.profiles) > 1:
+        if record is not None and hr.record_names_live_owner(record) and len(record.profiles) > 1:
             return True
     except Exception:
         pass

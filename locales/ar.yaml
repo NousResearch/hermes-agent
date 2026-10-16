@@ -2753,6 +2753,13 @@ cli:
       last_activity: " · آخر نشاط قبل {seconds} ث"
       agent_running: "الوكيل: قيد التشغيل"
       agent_idle: "الوكيل: خامل"
+      background_sessions: "جلسات الخلفية (/bg): {count}"
+      state_running: "قيد التشغيل"
+      state_finishing: "قيد الإنهاء"
+      state_starting: "قيد البدء"
+      api_calls: " · {count} استدعاء API"
+      background_prompt: "\"{prompt}\""
+      background_hint: "تُطبع النتائج هنا عند الانتهاء · تظهر طلبات الموافقة في هذه النافذة · النص الكامل: hermes sessions list"
     journey:
       failed: "فشل /journey: {error}"
     paste:

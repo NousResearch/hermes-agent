@@ -2753,6 +2753,13 @@ cli:
       last_activity: " · son etkinlik {seconds} sn önce"
       agent_running: "Ajan: çalışıyor"
       agent_idle: "Ajan: boşta"
+      background_sessions: "Arka plan oturumları (/bg): {count}"
+      state_running: "çalışıyor"
+      state_finishing: "bitiriliyor"
+      state_starting: "başlatılıyor"
+      api_calls: " · {count} API çağrısı"
+      background_prompt: "\"{prompt}\""
+      background_hint: "sonuçlar bitince burada yazdırılır · onay istemleri bu pencerede görünür · döküm: hermes sessions list"
     journey:
       failed: "/journey başarısız oldu: {error}"
     paste:

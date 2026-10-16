@@ -2753,6 +2753,13 @@ cli:
       last_activity: " · 마지막 활동 {seconds}초 전"
       agent_running: "에이전트: 실행 중"
       agent_idle: "에이전트: 대기 중"
+      background_sessions: "백그라운드 세션 (/bg): {count}"
+      state_running: "실행 중"
+      state_finishing: "종료 중"
+      state_starting: "시작 중"
+      api_calls: " · API 호출 {count}회"
+      background_prompt: "\"{prompt}\""
+      background_hint: "완료되면 결과가 여기에 표시됩니다 · 승인 요청은 이 창에 표시됩니다 · 기록: hermes sessions list"
     journey:
       failed: "/journey 실패: {error}"
     paste:

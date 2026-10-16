@@ -46,7 +46,7 @@ def _update_once(rid, params):
     A pin that widens the plugin (new tools/hooks/deps/capabilities/Desktop half) answers
     ``{ok: false, consent_required: true, delta, delta_lines}`` with nothing changed; the client shows the
     delta and retries with ``accept_capabilities: true``."""
-    from tui_gateway.methods_tools import (
+    from tui_gateway.server import (
         _ensure_plugin_activation_listener, _err, _ok, _tools_mod, _with_activation,
     )
 

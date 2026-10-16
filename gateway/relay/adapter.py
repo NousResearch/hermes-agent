@@ -27,7 +27,6 @@ from gateway.platforms.event import ProcessingOutcome
 from agent.i18n import t
 from gateway.relay.adapter_discord_interaction import RelayDiscordInteractionMixin
 from gateway.relay.descriptor import CapabilityDescriptor
-from hermes_state_runtime import RuntimeStoreError
 from gateway.relay.egress import (
     EGRESS_DECLINE_CODE,
     decline_error,
@@ -157,6 +156,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         # (scope, chat) -> (chat_name, chat_topic); the second map is what the store holds.
         self._discord_chat_labels: dict[tuple, tuple] = {}
         self._discord_labels_recorded: dict[tuple, tuple] = {}
+        # (platform, chat_id) -> the chat's latest off-reader admission task (inbound_admission).
+        self._admission_lanes: dict[tuple[str, str], asyncio.Task] = {}
         # Live cards: draft_key -> draft_id of the OPEN native stream. Armed by
         # send_draft; consumed by send() to convert the turn-final into
         # draft(final=true) instead of a duplicate post. Keyed by _draft_key (chat +
@@ -877,8 +878,9 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         # class default is False, so only an explicit descriptor bit turns it on.
         self.supports_inchannel_continuable = bool(getattr(descriptor, "supports_inchannel_continuable", False))
 
-    async def _on_inbound(self, event) -> None:
-        """Bridge a connector-delivered MessageEvent into the normal adapter path."""
+    async def _on_inbound(self, event) -> Optional[asyncio.Task]:
+        """Bridge a connector-delivered MessageEvent into the normal adapter path; a task when its
+        admission runs off the reader (``admit_relay_delivery``) and the transport ACKs on its end."""
         # Inbound replay dedupe: the relay leg is at-least-once — on WS re-handshake
         # the connector replays its durable buffer, and a long turn straddling a
         # quiet socket drop got re-run (final answer 2-5x). Platform message identity
@@ -908,33 +910,15 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
                 self._seen_inbound.pop(dedupe_key, None)
             raise
         if native:
-            from datetime import datetime, timezone
-            from gateway.platforms.webhook_ingress import admit_producer
+            from datetime import datetime
+            from gateway.relay.inbound_admission import admit_relay_delivery
             # The connector does not transmit a provider timestamp. Local arrival
             # time must not change the fingerprint of a retried provider identity.
             event.timestamp = datetime.fromtimestamp(0, UTC)
-            # Wait only for the SQLite receipt, never inference or outbound ACKs
-            # (those need this same WS reader). A permanent refusal returns, so the
-            # transport ACKs it (a replay would be refused again: main's runner dropped
-            # it too); any other failure withholds the ACK so the connector redelivers.
-            try:
-                receipt = await admit_producer(self, event)
-            except RuntimeStoreError as exc:
-                if exc.reason not in _PERMANENT_REFUSALS:
-                    raise
-                logger.warning("relay inbound refused (%s) for %s chat=%s; acknowledged, not replayed",
-                               exc.reason, event.source.platform.value, event.source.chat_id)
-                return
-            if receipt is None and getattr(event, '_consumer_reply', None):
-                # A post_gateway_admission plugin consumed it (never committed); its reply is
-                # sent off this reader, like an executed admission's.
-                from gateway.session_ingress import deliver_response
-                task = asyncio.create_task(deliver_response(
-                    self, event, runner._session_key_for_source(event.source), event._consumer_reply))
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
-        else:
-            await self.handle_message(event)
+            # Never wait for inference or outbound ACKs (those need this same WS reader).
+            return await admit_relay_delivery(self, runner, event)
+        await self.handle_message(event)
+        return None
 
     _SEEN_INBOUND_MAX = 512
 

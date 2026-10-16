@@ -135,6 +135,115 @@ def test_live_host_record_survives_wall_clock_create_time_drift(host_dir, monkey
     assert hr.record_is_stale(record) is True
 
 
+@pytest.mark.platforms("posix")
+def test_reused_early_pid_after_reboot_is_not_the_gateway(host_dir):
+    """Boot-relative start ticks reset on reboot and collide within the 2s drift tolerance.
+
+    A legacy record (no bootEpoch) whose createTime predates this boot, with nobody holding the
+    host lock, cannot describe a live process, and judging it creates no lock file. A record dated
+    inside this boot stays live however far the live create_time reading has since drifted from it
+    (#117505), and a record with no incarnation proof at all never vouches for the pid.
+    """
+    import psutil
+
+    from gateway.status import get_process_start_time
+
+    child = subprocess.Popen(["sleep", "30"])
+    try:
+        start = get_process_start_time(child.pid)
+        assert start is not None
+        boot = psutil.boot_time()
+        record = hr.HostRecord(
+            role=hr.ROLE_GATEWAY,
+            pid=child.pid,
+            create_time=boot - 3600.0,
+            start_time=int(start) + 10,
+            host="",
+            port=None,
+            protocol_version=hr.HOST_PROTOCOL_VERSION,
+            token_fingerprint="",
+            profiles=("default",),
+            updated_at="2026-01-01T00:00:00+00:00",
+        )
+        assert hr.liveness_is_proven(record) is False
+        assert hr.record_is_stale(record) is True
+        assert not hr.lock_path(hr.ROLE_GATEWAY).exists()
+        drifted = dataclasses.replace(record, create_time=boot + 1.0)
+        assert hr.liveness_is_proven(drifted) is True
+        assert hr.record_is_stale(drifted) is False
+        unprovable = dataclasses.replace(record, create_time=None, start_time=None)
+        assert hr.liveness_is_proven(unprovable) is False
+        assert hr.record_is_stale(unprovable) is True
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+
+
+@pytest.mark.platforms("posix")
+def test_live_legacy_owner_survives_a_clock_step_past_its_create_time(host_dir):
+    """A forward wall-clock step moves boot time past a running owner's saved createTime
+    (boot time is wall clock minus uptime). The host lock is held, so the owner stays live."""
+    import psutil
+
+    from gateway.status import get_process_start_time
+
+    env = {**os.environ, "HERMES_HOME": str(host_dir / "home"), "HERMES_GATEWAY_LOCK_DIR": str(host_dir / "locks")}
+    child = subprocess.Popen(
+        [sys.executable, "-c", _CHILD.format(tree=_tree())], env=env, cwd=_tree(),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    assert child.stdout is not None
+    try:
+        assert json.loads(child.stdout.readline())["host"] is True
+        start = get_process_start_time(child.pid)
+        assert start is not None
+        record = hr.HostRecord(
+            role=hr.ROLE_GATEWAY,
+            pid=child.pid,
+            create_time=psutil.boot_time() - 3600.0,
+            start_time=int(start),
+            host="",
+            port=None,
+            protocol_version=hr.HOST_PROTOCOL_VERSION,
+            token_fingerprint="",
+            profiles=("default",),
+            updated_at="2026-01-01T00:00:00+00:00",
+        )
+        assert hr.liveness_is_proven(record) is True
+        assert hr.record_is_stale(record) is False
+    finally:
+        child.kill()
+        child.wait(timeout=10)
+
+
+@pytest.mark.platforms("linux")
+def test_boot_epoch_mismatch_rejects_a_tick_match(host_dir):
+    record = hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(host_dir))
+    assert record is not None and record.boot_epoch
+    foreign = dataclasses.replace(record, boot_epoch=record.boot_epoch + "-other-boot")
+    assert hr.liveness_is_proven(record) is True
+    assert hr.liveness_is_proven(foreign) is False
+    assert hr.record_is_stale(foreign) is True
+
+
+@pytest.mark.platforms("linux")
+def test_recorded_epoch_with_unreadable_current_epoch_is_unprovable(host_dir, monkeypatch):
+    record = hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(host_dir))
+    assert record is not None and record.boot_epoch
+    monkeypatch.setattr(hr, "_current_boot_epoch", lambda: "")
+    assert hr._record_incarnation_matches(record) is None
+    assert hr.liveness_is_proven(record) is False
+    assert hr.record_is_stale(record) is False
+
+
+@pytest.mark.platforms("posix")
+def test_empty_boot_epoch_does_not_stale_a_live_owner(host_dir):
+    record = hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), home=str(host_dir))
+    assert record is not None
+    empty = dataclasses.replace(record, boot_epoch="")
+    assert hr.liveness_is_proven(empty) is True
+    assert hr.record_is_stale(empty) is False
+
+
 @pytest.mark.platforms("posix")  # POSIX signal disposition
 def test_sigterm_removes_the_record_and_its_live_session_token(host_dir):
     """SIGTERM is the NORMAL stop (systemd stop, docker stop, the update relaunch) and it does not

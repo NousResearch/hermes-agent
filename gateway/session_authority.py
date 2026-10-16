@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from functools import partial
 import sqlite3
@@ -28,6 +29,9 @@ from hermes_state_runtime import (
 _CLAIM_RETRY_MIN_S, _CLAIM_RETRY_MAX_S = 0.25, 5.0
 # Longest a settled turn's adapter may hold its adopted crash marker before the follower is claimed.
 _MARKER_RELEASE_WAIT_S = 60.0
+# True in the admitting task once ``admit_native``'s shielded ledger write began: a caller cancelled
+# after that may still see the row commit, so it must not release the media the write commits.
+native_write_started = ContextVar('native_write_started', default=False)
 
 
 @dataclass
@@ -372,6 +376,8 @@ class SessionAuthority:
         from gateway.session_envelope import prepare_native, restore_native_source
         self._require_admission_open()
         payload = await prepare_native(self.runner, event)
+        if fingerprint := getattr(event, '_ingress_sha256', None):
+            payload['native_text_v1']['ingress_sha256'] = fingerprint  # the delivery before a rewrite
         self._require_admission_open()
         source = restore_native_source(payload)  # no re-hash of the just-captured media on the loop
         from gateway.session_runtime_workers import tracked_write
@@ -384,12 +390,14 @@ class SessionAuthority:
         def admitted(row):
             committed[0] = SessionRef(self.profile_id, row.get('target_session_id') or ref.session_id)
             return self._admitted(committed[0], event, row)
+        native_write_started.set(True)  # shielded from here: a cancelled caller may still commit
         return await tracked_write(self, partial(
             self._admit_native_write, principal_id='messaging:' + identity, session_id=ref.session_id,
-            request_id=request_id, payload=payload, authorize=self._admission_gate()),
+            request_id=request_id, payload=payload, authorize=self._admission_gate(),
+            raw=getattr(event, 'raw_message', None)),
             then=admitted, ordered=True, after=lambda _receipt: self._schedule_admitted(committed[0]))
 
-    def _admit_native_write(self, *, principal_id, session_id, request_id, payload, authorize):
+    def _admit_native_write(self, *, principal_id, session_id, request_id, payload, authorize, raw=None):
         # Off the loop and in admission order: the redelivery reconcile reads the ledger it decides
         # against, so a concurrent first delivery of the same message cannot slip between them.
         from gateway.session_ingress_media import drop_capture_lease, reconcile_native_retry, release_unheld_media
@@ -397,7 +405,7 @@ class SessionAuthority:
         session_id = self._current_owner(session_id)
         try:
             payload = reconcile_native_retry(self.db, principal_id=principal_id, session_id=session_id,
-                                             request_id=request_id, payload=payload)
+                                             request_id=request_id, payload=payload, raw=raw)
             return admit_session_input(self.db, epoch=self.epoch, principal_id=principal_id, session_id=session_id,
                                        request_id=request_id, payload=payload, _authorize_write=authorize)
         except Exception:

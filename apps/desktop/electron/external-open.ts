@@ -11,6 +11,13 @@
  * through notifyFailure (the renderer shows a fallback modal with the URL);
  * the caller reads the result to decide whether an open-failure must also
  * abort its own flow (the native-OAuth path fails fast, link paths don't).
+ *
+ * Every open is bounded by OPEN_TIMEOUT_MS. Electron settles openExternal and
+ * openPath only once the xdg-open it spawns exits, so a desktop-portal
+ * handshake that never completes leaves them pending forever. A caller that
+ * awaits that — main.ts's openPreviewInBrowser handler does — then never sends
+ * its IPC reply, and the renderer reports "reply was never sent" instead of the
+ * fallback modal, which reads as a dead control.
  */
 
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
@@ -70,6 +77,55 @@ export interface ExternalOpenDeps {
 
 const SUPPORTED_WEB = ['http:', 'https:', 'mailto:']
 
+/**
+ * Generous: an ordinary open returns in well under a second. This only has to be
+ * long enough that a slow-but-real browser start is not called a failure.
+ */
+export const OPEN_TIMEOUT_MS = 8000
+
+/**
+ * A distinct type, not a plain Error: the file: route swallows open *failures*
+ * (main already reveals the file in the file manager) but a timeout has had no
+ * fallback applied anywhere, so it must be surfaced.
+ */
+class OpenTimeoutError extends Error {
+  constructor() {
+    super(`the system opener did not respond within ${OPEN_TIMEOUT_MS / 1000}s`)
+    this.name = 'OpenTimeoutError'
+  }
+}
+
+const OPEN_TIMED_OUT = Symbol('open-timed-out')
+
+/**
+ * Resolve with `work`'s value, or reject with OpenTimeoutError once `ms` have
+ * passed. Rejections from `work` propagate unchanged, so existing failure
+ * handling is untouched — only a hang becomes an error.
+ */
+async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  const deadline = new Promise<typeof OPEN_TIMED_OUT>(resolve => {
+    timer = setTimeout(() => resolve(OPEN_TIMED_OUT), ms)
+  })
+
+  try {
+    const winner = await Promise.race([work, deadline])
+
+    if (winner === OPEN_TIMED_OUT) {
+      // The deadline won, so nothing is listening to `work` any more. Attach a
+      // handler so a late rejection cannot surface as an unhandled rejection.
+      void work.catch(() => {})
+
+      throw new OpenTimeoutError()
+    }
+
+    return winner
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export function externalOpenErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -120,9 +176,14 @@ export async function openExternalUrl(rawUrl: string, deps: ExternalOpenDeps): P
 
   if (parsed.protocol === 'file:') {
     try {
-      await deps.openFile(raw)
-    } catch {
-      // main's openFile handles its own fallback; never surfaced here
+      await withDeadline(deps.openFile(raw), OPEN_TIMEOUT_MS)
+    } catch (error) {
+      // main's openFile handles its own fallback; a failure is never surfaced
+      // here. A timeout is the exception: nothing else is holding the caller's
+      // promise open, so it has to resolve.
+      if (error instanceof OpenTimeoutError) {
+        return failOpen(deps, raw, error)
+      }
     }
 
     return { ok: true }
@@ -139,7 +200,7 @@ export async function openExternalUrl(rawUrl: string, deps: ExternalOpenDeps): P
   }
 
   try {
-    await deps.openExternal(url)
+    await withDeadline(deps.openExternal(url), OPEN_TIMEOUT_MS)
 
     return { ok: true }
   } catch (error) {

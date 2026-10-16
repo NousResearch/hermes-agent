@@ -176,7 +176,8 @@ const SITES: Array<[string, string, Record<string, unknown>, string[] | RegExp]>
     'use-preview-routing restart',
     'preview.restart',
     { session_id: 's', url: 'http://x' },
-    /preview\.restart is not available/
+    // TUI-12: the owner serves it (gateway/session_tui_side.py), so it travels as itself.
+    ['preview.restart']
   ],
   [
     'projects.ts moveSessionToProject (B21 / C-hx-2)',

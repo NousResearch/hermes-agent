@@ -133,7 +133,8 @@ export function splitRewindSubmit(params: Record<string, unknown>): { rewind: Re
 // Session verbs only the legacy sidecar implements: it looks the session up in its own table,
 // which never holds an owner session, and answers `session not found` (read by the renderer as a
 // reaped runtime). Refused by name until the owner serves them.
-const SIDECAR_SESSION_VERBS = new Set(['handoff.request', 'handoff.state', 'handoff.fail', 'preview.restart'])
+// `preview.restart` is served by the owner (gateway/session_tui_side.py).
+const SIDECAR_SESSION_VERBS = new Set(['handoff.request', 'handoff.state', 'handoff.fail'])
 
 // `config.set` keys the owner serves (tui_gateway/contracts/canonical_projections.py::CanonicalConfigSetParams;
 // gateway/session_tui_config.py), with the keys that take a `scope` (`reasoning --global`, the

@@ -285,7 +285,7 @@ class TestSenderPrefixWithBackfill:
 class TestNeutralizeUntrustedInlineText:
     """Unit coverage for gateway.session.neutralize_untrusted_inline_text().
 
-    Sibling of _format_untrusted_prompt_value for inline call sites (like the
+    Sibling of format_untrusted_prompt_value for inline call sites (like the
     sender-name prefix in gateway/run.py) that must preserve the surrounding
     format instead of rendering a standalone quoted **Label:** line.
     """

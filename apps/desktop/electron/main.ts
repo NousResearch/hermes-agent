@@ -609,6 +609,7 @@ import {
   type UpdaterStrategy
 } from './updater'
 import {
+  launcherInstallRoot,
   observeUpdaterHandoff,
   repairMacUpdaterHelper,
   resolveInstallationLauncher,
@@ -5059,10 +5060,9 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
     }
   }
 
-  // 3. HERMES_DESKTOP_HERMES — an explicit deployment override (used by the
-  //    Nix wrapper), not a discovered PATH candidate. The pinned backend is
-  //    the only valid runtime there. Resolve it before any mutable install,
-  //    which may belong to an older release or a different Python environment.
+  // 3. HERMES_DESKTOP_HERMES — an explicit deployment override (the Nix wrapper), not a PATH
+  //    candidate; the pinned backend is the only valid runtime there. Resolve it before any
+  //    mutable install (older release, other Python env). It carries the root its launcher reports.
   const hermesOverride: string | undefined = process.env.HERMES_DESKTOP_HERMES
   let hermesCommand: string | null = null
 
@@ -5103,7 +5103,7 @@ async function resolveHermesBackend(backendArgs: string[]): Promise<ResolvedHerm
             env: {},
             kind: 'command',
             shell: shellForProbe,
-            local: 'installed'
+            local: 'installed', root: await launcherInstallRoot(hermesCommand) // ticket minting needs it (#138774)
           }
         }
 

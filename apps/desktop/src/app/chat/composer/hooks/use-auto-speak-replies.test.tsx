@@ -10,7 +10,7 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 
 import { ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
-import { useAutoSpeakReplies } from './use-auto-speak-replies'
+import { AUTO_SPEAK_HOLD_RETRY_MS, useAutoSpeakReplies } from './use-auto-speak-replies'
 
 vi.mock('@/lib/voice-playback', () => ({
   playSpeechText: vi.fn()
@@ -416,7 +416,7 @@ describe('useAutoSpeakReplies — hold re-arm when idle is missed', () => {
 
     // Still speaking — hold retry must not start a second overlapping clip.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(2_000)
+      await vi.advanceTimersByTimeAsync(AUTO_SPEAK_HOLD_RETRY_MS)
     })
     expect(playSpeechText).not.toHaveBeenCalled()
 
@@ -427,7 +427,7 @@ describe('useAutoSpeakReplies — hold re-arm when idle is missed', () => {
     expect(playSpeechText).not.toHaveBeenCalled()
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(2_000)
+      await vi.advanceTimersByTimeAsync(AUTO_SPEAK_HOLD_RETRY_MS)
     })
 
     expect(playSpeechText).toHaveBeenCalledTimes(1)

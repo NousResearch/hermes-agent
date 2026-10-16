@@ -29,6 +29,9 @@ interface UseAutoSpeakReplies {
   sessionId: string | null | undefined
 }
 
+/** Re-check a held reply when the playback-idle edge may never fire (session-final drop). */
+export const AUTO_SPEAK_HOLD_RETRY_MS = 2_000
+
 /**
  * Pure-TTS auto-speak: when `voice.auto_tts` is on, read each completed assistant
  * turn aloud — no dictation, no conversation loop. Stays off while a full voice
@@ -60,19 +63,56 @@ export function useAutoSpeakReplies({
     latest.current.markSpoken()
 
     let attemptSeq = 0
+    let holdRetryTimer: ReturnType<typeof setTimeout> | null = null
+
+    const clearHoldRetry = () => {
+      if (holdRetryTimer !== null) {
+        clearTimeout(holdRetryTimer)
+        holdRetryTimer = null
+      }
+    }
+
+    const armHoldRetry = () => {
+      if (holdRetryTimer !== null) {
+        return
+      }
+
+      holdRetryTimer = setTimeout(() => {
+        holdRetryTimer = null
+        speakLatest()
+      }, AUTO_SPEAK_HOLD_RETRY_MS)
+    }
 
     const speakLatest = () => {
       const { connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile } = latest.current
 
-      if (conversationActive || $voicePlayback.get().status !== 'idle') {
+      if (conversationActive) {
+        clearHoldRetry()
+        return
+      }
+
+      if ($voicePlayback.get().status !== 'idle') {
+        // Mid-playback hold: re-arm on a timer so a missed idle edge cannot
+        // silently abandon a session-final reply (no TTS request at all).
+        const held = pendingReply()
+
+        if (held && !held.pending) {
+          armHoldRetry()
+        } else {
+          clearHoldRetry()
+        }
+
         return
       }
 
       const reply = pendingReply()
 
       if (!reply || reply.pending) {
+        clearHoldRetry()
         return
       }
+
+      clearHoldRetry()
 
       const attempt = ++attemptSeq
 
@@ -114,6 +154,7 @@ export function useAutoSpeakReplies({
 
     return () => {
       attemptSeq += 1
+      clearHoldRetry()
       stops.forEach(f => f())
     }
   }, [$messages, enabled, sessionId])

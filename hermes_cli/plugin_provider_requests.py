@@ -138,13 +138,13 @@ def credentialed_provider_request(
     allowlist; raises :class:`ProviderNotSignedIn` when this profile has no sign-in. Redirects are
     returned as-is, never followed. The result carries no credential.
     """
-    from hermes_cli.plugin_oauth import plugin_oauth_spec
+    from hermes_cli.plugin_oauth import _plugin_oauth_spec
 
     plugin_dir = _calling_plugin_dir()
     if plugin_dir is None:
         raise PermissionError("credentialed_provider_request must be called from an installed plugin's code")
     # The plugin's own oauth: entry first, so a core provider added later under the same id cannot take it over.
-    spec = plugin_oauth_spec(plugin_dir, provider)
+    spec = _plugin_oauth_spec(plugin_dir, provider)
     if spec is None:
         spec = _PROVIDERS.get(provider)
         if spec is None:

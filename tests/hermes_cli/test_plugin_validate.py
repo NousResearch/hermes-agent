@@ -539,6 +539,9 @@ def test_oauth_block_passes_and_a_token_url_in_code_is_only_a_warning(tmp_path):
 @pytest.mark.parametrize("change, problem", [
     ({"id": "Google"}, "id"),
     ({"authorize_url": "http://accounts.example.com/o/oauth2/auth"}, "authorize_url"),
+    ({"authorize_url": "https://accounts.example.com/o/oauth2/auth#consent"}, "authorize_url"),
+    ({"token_url": "https://[oauth2.example.com/token"}, "token_url"),
+    ({"token_url": "https://oauth2.example.com:https/token"}, "token_url"),
     ({"scopes": []}, "scopes"),
     ({"hosts": ["https://docs.example.com"]}, "hosts"),
     ({"hosts": ["docs.example.com:8443"]}, "hosts"),
@@ -554,6 +557,15 @@ def test_oauth_form_errors_fail_admission(tmp_path, change, problem):
 
     assert [ok for name, ok, _ in report.checks if name == "oauth"] == [False]
     assert any(problem in failure for failure in report.failures), report.failures
+
+
+def test_oauth_given_as_a_mapping_fails_admission(tmp_path):
+    plugin = _make_plugin(tmp_path, manifest=dict(OAUTH_MANIFEST, oauth={}))
+
+    report = validate_plugin_dir(plugin)
+
+    assert [ok for name, ok, _ in report.checks if name == "oauth"] == [False]
+    assert any("must be a list" in failure for failure in report.failures), report.failures
 
 
 def test_oauth_in_a_plugin_keyed_custom_fails_admission(tmp_path):

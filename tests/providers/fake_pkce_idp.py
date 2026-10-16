@@ -46,8 +46,8 @@ class FakeIdP:
                 body = parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode())
                 form = {k: v[0] for k, v in body.items()}
                 idp.token_requests.append(form)
-                if idp.token_error is not None:
-                    return self._json(*idp.token_error)
+                if idp.token_answer is not None:
+                    return self._json(*idp.token_answer)
                 grant = form.get("grant_type")
                 if grant == "authorization_code":
                     challenge = idp.codes.pop(form.get("code", ""), None)
@@ -79,7 +79,7 @@ class FakeIdP:
 
         self.override_state: str | None = None
         self.granted_scope: str | None = None  # ``scope`` echoed in token responses (None = omitted)
-        self.token_error: tuple[int, dict] | None = None  # (status, JSON) answered to every token POST
+        self.token_answer: tuple[int, dict] | None = None  # (status, JSON) answered to every token POST instead
         self.server = HTTPServer(("127.0.0.1", 0), Handler)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
         self._thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)

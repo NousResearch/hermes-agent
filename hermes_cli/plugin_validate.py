@@ -190,7 +190,7 @@ def _check_oauth(report: ValidationReport, manifest: dict, plugin_dir: Path) -> 
     code that names a token URL is a reviewer warning, since Hermes refreshes the grant itself."""
     from hermes_cli.plugin_oauth import oauth_admission_problems, token_url_mentions
 
-    if not manifest.get("oauth"):
+    if manifest.get("oauth") in (None, []):
         report.add("oauth", True, "not declared")
         return
     problems = oauth_admission_problems(manifest, plugin_dir)

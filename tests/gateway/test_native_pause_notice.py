@@ -50,6 +50,9 @@ async def test_paused_fifo_releases_the_messaging_waiter_with_one_notice_per_epi
         second = asyncio.create_task(admit_message(authority, MessageEvent(text='two', source=source)))
         replies = await asyncio.wait_for(asyncio.gather(first, second), 5)
         assert sum(r is not None and PAUSE_MARKER in r for r in replies) == 1, replies
+        # The notice names a way out in this chat (GW-10: /discard), never an unnamed "operator".
+        notice = next(r for r in replies if r)
+        assert '/discard' in notice and 'operator' not in notice, notice
         assert executed == []
         # A restart drain is transient: the saved row runs on the next owner, so the notice must
         # not tell the user to /reset (that would discard the very message that is about to run).

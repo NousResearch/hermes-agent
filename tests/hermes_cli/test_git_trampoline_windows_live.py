@@ -8,8 +8,9 @@ broken-trampoline stand-in (a .bat that reproduces the launcher's
 "BUG (fork bomb)" guard output and refuses to run).
 
 windows-latest ships full Git for Windows at ``C:\\Program Files\\Git`` with
-the real ``mingw64\\libexec\\git-core\\git.exe`` — exactly the layout the
-locator targets — so the swap path is exercised end to end.
+the real ``ucrt64\\libexec\\git-core\\git.exe`` (``mingw64`` before Git for
+Windows 2.56.0) — exactly the layout the locator targets — so the swap path is
+exercised end to end.
 """
 
 from __future__ import annotations

@@ -1679,13 +1679,17 @@ class MatrixAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
         choices = prompt.choices
-        tier = "once"
-        if not prompt.smart_denied:
-            tier = "always" if "always" in choices else ("session" if "session" in choices else "once")
-        text = (
-            f"{prompt.text}\n\n"
-            f"{t(self._EA_TYPED_HINT_KEYS[tier])}\n\n"
-            f"{t('platform.matrix.approval.legend_intro')}\n" + "\n".join(t(self._EA_LEGEND_KEYS[c]) for c in choices))
+        if prompt.plain:  # a tool's question: the question, then its reactions as Yes / No
+            text = f"{prompt.text}\n\n" + " · ".join(
+                f"{self._EA_REACTIONS[c]} {label}" for label, c, _ in prompt.actions)
+        else:
+            tier = "once"
+            if not prompt.smart_denied:
+                tier = "always" if "always" in choices else ("session" if "session" in choices else "once")
+            text = (
+                f"{prompt.text}\n\n"
+                f"{t(self._EA_TYPED_HINT_KEYS[tier])}\n\n"
+                f"{t('platform.matrix.approval.legend_intro')}\n" + "\n".join(t(self._EA_LEGEND_KEYS[c]) for c in choices))
         reactions = tuple(self._EA_REACTIONS[c] for c in choices)
         session_key, chat_id = prompt.session_key, prompt.chat_id
 

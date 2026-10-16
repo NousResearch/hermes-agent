@@ -19,6 +19,7 @@ import type { FirstRunCopy } from './types_first_run'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { NoticeTranslations } from './types_notices'
 import type { OnboardingTranslations } from './types_onboarding'
+import type { PluginsTabCopy } from './types_plugins_tab'
 import type { SidebarProjectsTranslations } from './types_projects'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
 import type { ThemePickerCopy } from './types_theme_picker'
@@ -1947,7 +1948,7 @@ export interface Translations extends NoticeTranslations {
     skillArchivedTitle: string
     skillArchivedMessage: string
     tabPlugins: string
-    plugins: {
+    plugins: PluginsTabCopy & {
       agentTitle: string
       agentBlurb: string
       pageBlurb: string
@@ -1962,10 +1963,6 @@ export interface Translations extends NoticeTranslations {
       installAgentHere: string
       installAgentHereTip: (profile: string) => string
       installAgentHereNoOrigin: string
-      desktopHalfPending: string
-      desktopHalfPendingTip: string
-      desktopHalfRemote: string
-      desktopHalfRemoteTip: string
       emptyAll: string
       empty: string
       emptyHint: string
@@ -1976,17 +1973,6 @@ export interface Translations extends NoticeTranslations {
       toolsetToggleFailed: (name: string) => string
       legacyBackend: string
       portableBadge: string
-      serverStates: {
-        connected: string
-        app_not_running: string
-        hermes_not_connected: string
-        endpoint_unavailable: string
-        no_interactive_session: string
-        version_too_old: string
-        missing_app: string
-        unsupported_gpu: string
-        unknown: string
-      }
       catalogTitle: string
       catalogBrowse: string
       catalogHide: string

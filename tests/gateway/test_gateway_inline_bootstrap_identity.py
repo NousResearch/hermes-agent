@@ -16,7 +16,12 @@ from pathlib import Path
 
 import pytest
 
-from gateway.status import inline_source_flag_index, looks_like_gateway_command_line
+from gateway.status import (
+    _gateway_command_subcommand,
+    inline_source_flag_index,
+    looks_like_gateway_command_line,
+    looks_like_gateway_runtime_command_line,
+)
 from hermes_cli import _launchers, venv_sync
 from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
 
@@ -65,4 +70,39 @@ def test_bootstrap_argv_is_identity_only_for_the_process_running_it(join: str) -
     ],
 )
 def test_unquoted_interpreter_path_with_spaces_reaches_inline_source(command_line: str) -> None:
-    assert inline_source_flag_index(command_line.split()) == 2
+    tokens = command_line.split()
+    original = tokens.copy()
+    assert inline_source_flag_index(tokens) == tokens.index("-c")
+    assert tokens == original
+
+
+@pytest.mark.parametrize(
+    "python",
+    [
+        r"D:\Hermes Agent\tools\python.exe",
+        r"C:\Program Files\Python 3.11\python.exe",
+        r"C:\Program Files\Python 3.11\python3.exe",
+        r"C:\Program Files\Python 3.11\python",
+    ],
+)
+def test_spaced_interpreter_venv_reentry_resolves_gateway_runtime(python: str) -> None:
+    argv = venv_sync.relaunch_command(
+        Path(python), ROOT,
+        [str(ROOT / "hermes_cli" / "main.py"), "gateway", "run"],
+        ["/old/python", "-m", "hermes_cli.main", "gateway", "run"],
+        "hermes_cli.main",
+    )
+    command_line = " ".join(str(token) for token in argv)
+    assert _gateway_command_subcommand(command_line) == "run"
+    assert looks_like_gateway_command_line(command_line)
+    assert looks_like_gateway_runtime_command_line(command_line)
+    assert _hermes_holder_subcommand(command_line) == "gateway"
+
+    # A watcher carrying the same gateway command still is not the runtime.
+    watcher = " ".join([
+        python, "-c", "import os, sys, time\npid = int(sys.argv[1]); cmd = sys.argv[2:]\n",
+        "1234", command_line,
+    ])
+    assert _gateway_command_subcommand(watcher) is None
+    assert not looks_like_gateway_runtime_command_line(watcher)
+    assert _hermes_holder_subcommand(watcher) is None

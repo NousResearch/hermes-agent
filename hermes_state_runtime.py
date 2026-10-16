@@ -864,9 +864,13 @@ def _worker_turn(db, conn, session_id, payload, operation):
 
 def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
     from hermes_state_usage import _MODEL_USAGE_FIELDS, _TOKEN_COUNTERS
+    source = None
     if not auxiliary:
-        # ``source`` feeds the legacy path's row-existence guard (#111999); an authority-owned
-        # session row was minted with its real surface at admission, so nothing to repair here.
+        # ``source`` is the agent's surface (turn_usage._agent_session_source). The row is
+        # usually stamped at admission. A compression child can still have a NULL
+        # created_source, and this worker never create_session's it, so fill only that NULL.
+        raw = payload.get('source')
+        source = raw if isinstance(raw, str) else None
         payload = {k: v for k, v in payload.items() if k != 'source'}
     allowed = (_MODEL_USAGE_FIELDS - {'billing_mode', 'actual_cost_usd', 'cost_status', 'cost_source'} | {'task'}) if auxiliary else (_MODEL_USAGE_FIELDS | {'pricing_version', 'absolute', 'task'})
     if set(payload) - allowed:
@@ -888,6 +892,10 @@ def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
         db._record_model_usage(conn, session_id, **({'api_call_count': 1} | payload))
     else:
         db._update_token_counts_in_transaction(conn, session_id, **payload)
+        if source not in (None, '', 'local', 'unknown'):
+            conn.execute(
+                "UPDATE sessions SET created_source=? WHERE id=? AND created_source IS NULL",
+                (source, session_id))
     return {'value': None}
 
 

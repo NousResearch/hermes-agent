@@ -37,15 +37,21 @@ _URL_RE = re.compile(r"https?://\S+")
 _MEDIA_PATH_RE = re.compile(r"MEDIA:\S+?(?=[.,;:!?)\]]*(?:\s|$))")
 
 _DEGREE_UNITS = (("C", "Celsius"), ("F", "Fahrenheit"))
-# Unit suffix (regex, after a digit) -> spoken word; km/h variants before the bare "m".
+# Unit suffix (regex, after a digit) -> spoken word, flags; km/h variants before the bare "m".
+# Lengths are lowercase only: an uppercase M is a magnitude ("10M users", "$5MM"), not metres.
 _UNIT_WORDS = (
-    (r"km\s*/\s*h", "kilometres per hour"), (r"km/h", "kilometres per hour"),
-    (r"mm", "millimetres"), (r"cm", "centimetres"), (r"m", "metres"))
+    (r"km\s*/\s*h", "kilometres per hour", re.IGNORECASE), (r"km/h", "kilometres per hour", re.IGNORECASE),
+    (r"mm", "millimetres", 0), (r"cm", "centimetres", 0), (r"m", "metres", 0))
 # Currency prefix (regex) -> spoken word; order matters (NZ$/A$/US$ before bare $).
 _CURRENCY_WORDS = (
     (r"NZ\$", "New Zealand dollars", re.IGNORECASE), (r"A\$", "Australian dollars", re.IGNORECASE),
     (r"US\$", "US dollars", re.IGNORECASE), ("€", "euros", 0), ("£", "pounds", 0), (r"\$", "dollars", 0),
 )
+# Magnitude after a currency amount -> spoken word: "$5M" is "5 million dollars", never
+# "5 dollarsM" or "5 dollars metres". Letter forms must touch the amount ("$5 T-shirts" stays).
+_MAGNITUDE_WORDS = {"k": "thousand", "m": "million", "mm": "million", "mn": "million",
+                    "b": "billion", "bn": "billion", "t": "trillion", "tn": "trillion"}
+_MAGNITUDE_RE = r"(?i:\s*(thousand|million|billion|trillion)|(k|mm|mn|m|bn|b|tn|t))\b"
 
 # Broad emoji / pictograph cleanup: most voice providers read emojis as awkward labels.
 _EMOJI_RE = re.compile(
@@ -110,9 +116,15 @@ def normalize_symbols_for_tts(text: str) -> str:
     for unit, word in _DEGREE_UNITS:
         text = re.sub(r"°\s*" + unit + r"\b", "degrees " + word, text, flags=re.IGNORECASE)
     text = re.sub(r"(?<!\w)([-+]?\d+(?:\.\d+)?)\s*°", r"\1 degrees", text).replace("°", " degrees")
+    # Currency amounts with a magnitude, before the units pass can read "$5m" as metres.
+    for symbol, word, flags in _CURRENCY_WORDS:
+        text = re.sub(
+            symbol + r"\s*([\d,]*\d(?:\.\d+)?)" + _MAGNITUDE_RE,
+            lambda m, w=word: f"{m.group(1)} {(m.group(2) or _MAGNITUDE_WORDS[m.group(3).lower()]).lower()} {w}",
+            text, flags=flags)
     # Common weather/travel units.
-    for pattern, word in _UNIT_WORDS:
-        text = re.sub(r"(?<=\d)\s*" + pattern + r"\b", " " + word, text, flags=re.IGNORECASE)
+    for pattern, word, flags in _UNIT_WORDS:
+        text = re.sub(r"(?<=\d)\s*" + pattern + r"\b", " " + word, text, flags=flags)
     # Numeric rates only ("5/month" -> "5 per month").  Requiring digit-then-letter
     # keeps "and/or", "N/A", "TCP/IP" and dates like "2026/06" intact.
     text = re.sub(r"(?<=\d)\s*/\s*(?=[A-Za-z])", " per ", text)
@@ -124,8 +136,11 @@ def normalize_symbols_for_tts(text: str) -> str:
     text = re.sub(r"(?<=\d)\s*%", " percent", text)
     # Operators and separators that commonly leak from formatted answers.
     text = re.sub("[•◦▪▫]", " ", text.replace("&", " and "))  # bullet glyphs
-    for symbol, word in (("→", " to "), ("⇒", " to "), ("≈", " about "), ("~", " about ")):
+    for symbol, word in (("→", " to "), ("⇒", " to "), ("≈", " about ")):
         text = text.replace(symbol, word)
+    # "~" means "about" only before an amount ("~5 km", "~$20"). Elsewhere it is a home path
+    # ("~/notes.md", silenced as an identifier below) or a code fence, never the word "about".
+    text = re.sub(r"~(?=\s*(?:[-+]|NZ\$|A\$|US\$|[$€£])?\d)", " about ", text)
     return _EMOJI_RE.sub("", _VARIATION_SELECTOR_RE.sub("", text))
 
 

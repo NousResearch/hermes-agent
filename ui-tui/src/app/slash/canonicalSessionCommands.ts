@@ -3,6 +3,8 @@
 // `session.mutate` rename / rewind (`gateway/session_mutations.py`), the committed admission
 // result (`prompt.receipt include_result`) and the frozen launch policy (`session.info`).
 
+import type { SessionStats } from '@hermes/shared/gateway-events'
+
 import { CANONICAL_REASONING_EFFORTS } from '../../domain/slash.js'
 import { usageFromTick } from '../../domain/usage.js'
 import { t } from '../../i18n/runtime.js'
@@ -191,7 +193,7 @@ export function canonicalUsage(ctx: SlashRunCtx) {
         return
       }
 
-      const usage = usageFromTick(asRpcResult<Record<string, unknown>>(raw))
+      const usage = usageFromTick(asRpcResult<SessionStats>(raw))
 
       if (!usage?.calls) {
         ctx.transcript.sys(t('slashCmd.session.usage.noCalls'))

@@ -76,6 +76,12 @@ def _exec_profile(ctx: CommandContext) -> CommandReply:
                         data={"profile": profile_name, "home": home_display})
 
 
+def _exec_autoprune(ctx: CommandContext) -> CommandReply:
+    """Core /autoprune text — record the auto-prune decision or show its state."""
+    from hermes_cli.prune_advisor import run_command
+    return CommandReply(run_command(ctx.args))
+
+
 def _exec_bundles(ctx: CommandContext) -> CommandReply:
     """Core /bundles data — installed skill bundles listing."""
     try:
@@ -180,6 +186,7 @@ EXECUTORS: dict[str, Callable[[CommandContext], CommandReply]] = {
     "egress": _exec_egress,
     "profile": _exec_profile,
     "bundles": _exec_bundles,
+    "autoprune": _exec_autoprune,
     "gateway_help": _exec_help,
     "gateway_commands": _exec_commands}
 

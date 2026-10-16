@@ -853,6 +853,52 @@ class TestFetchEndpointModelMetadata:
         mm._endpoint_model_metadata_cache.clear()
         mm._endpoint_model_metadata_cache_time.clear()
 
+    def test_llamacpp_invalid_v1_props_falls_back_to_legacy_props(self):
+        import agent.model_metadata as mm
+
+        cache = {"test/model": {"context_length": 32768}}
+        invalid = MagicMock(is_error=False)
+        invalid.json.return_value = {"status": "ok"}
+        legacy = MagicMock(is_error=False)
+        legacy.json.return_value = {
+            "model_alias": "test/model",
+            "default_generation_settings": {"n_ctx": 65536},
+        }
+
+        with patch("agent.model_metadata.model_metadata_http.get", side_effect=[invalid, legacy]) as get:
+            mm._apply_llamacpp_props(cache, "https://custom.example/v1", {}, True)
+
+        assert cache["test/model"]["context_length"] == 65536
+        assert [call.args[0] for call in get.call_args_list] == [
+            "https://custom.example/v1/props", "https://custom.example/props",
+        ]
+
+    def test_llamacpp_unmatched_root_alias_still_probes_loaded_child(self):
+        import agent.model_metadata as mm
+
+        cache = {"loaded/model": {"context_length": 32768}}
+        root_props = MagicMock(is_error=False)
+        root_props.json.return_value = {
+            "model_alias": "not-in-cache",
+            "default_generation_settings": {"n_ctx": 65536},
+        }
+        models = MagicMock(is_error=False)
+        models.json.return_value = {
+            "data": [{"id": "loaded/model", "status": {"value": "loaded"}}],
+        }
+        child_props = MagicMock(is_error=False)
+        child_props.json.return_value = {
+            "default_generation_settings": {"n_ctx": 131072},
+        }
+
+        with patch(
+            "agent.model_metadata.model_metadata_http.get",
+            side_effect=[root_props, models, child_props],
+        ):
+            mm._apply_llamacpp_props(cache, "https://custom.example/v1", {}, True)
+
+        assert cache["loaded/model"]["context_length"] == 131072
+
     @pytest.mark.parametrize("status_code", [401, 403])
     def test_auth_failure_stops_after_first_candidate(self, status_code):
         import agent.model_metadata as mm

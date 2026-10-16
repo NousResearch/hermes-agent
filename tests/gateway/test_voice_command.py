@@ -1515,14 +1515,13 @@ class TestShouldAutoTtsForChat:
     """Three-layer gate: per-chat enable > per-chat disable > config default."""
 
     def _make_adapter(self, *, default: bool, enabled=(), disabled=()):
-        """Build a bare adapter with only the attrs the gate reads."""
+        """Build a voice-capable adapter with the requested chat preferences."""
         adapter = SimpleNamespace(
+            supports_voice_replies=True,
             _auto_tts_default=default,
             _auto_tts_enabled_chats=set(enabled),
             _auto_tts_disabled_chats=set(disabled),
         )
-        # Bind the unbound method — _should_auto_tts_for_chat only reads the
-        # three attrs above via ``self.``, so an unbound call works.
         from gateway.platforms.base import BasePlatformAdapter
         return BasePlatformAdapter._should_auto_tts_for_chat, adapter
 

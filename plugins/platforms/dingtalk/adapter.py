@@ -193,6 +193,7 @@ class DingTalkAdapter(BasePlatformAdapter):
     """Stream Mode adapter: the SDK keeps a long-lived WebSocket and messages arrive via a ChatbotHandler
     callback; replies go through the message's session_webhook (httpx) or, with ``card_template_id``, AI Cards."""
 
+    supports_voice_replies = False
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
 
     @property

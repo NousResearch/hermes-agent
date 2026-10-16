@@ -380,7 +380,14 @@ class TeamsMeetingPipeline:
             existing = self.store.get_sink_record(sink_key)
             # Sinks may be writer objects (write_summary) or bare async callables.
             write: Any = getattr(sink, "write_summary", sink)
-            self.store.upsert_sink_record(sink_key, await write(payload, config, existing))
+            try:
+                record = await write(payload, config, existing)
+            except Exception as exc:
+                from plugins.platforms.teams.summary_writer import PartialWebhookDeliveryError
+                if isinstance(exc, PartialWebhookDeliveryError):
+                    self.store.upsert_sink_record(sink_key, exc.delivery_record)
+                raise
+            self.store.upsert_sink_record(sink_key, record)
 
 
 def _collect_call_metrics(artifacts: list[MeetingArtifact]) -> dict[str, Any]:

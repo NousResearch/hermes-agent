@@ -1543,6 +1543,7 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
         "auto_thread": True,  # auto-create threads on @mention in channels (like Slack)
+        "auto_thread_auto_archive_duration": 1440,  # minutes before auto-thread archive (60, 1440, 4320, 10080)
         # Free-response channels reply inline by default; true also gives each top-level
         # message in them its own thread (still mention-free). Env: DISCORD_FREE_RESPONSE_AUTO_THREAD.
         "free_response_auto_thread": False,

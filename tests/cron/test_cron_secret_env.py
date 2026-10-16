@@ -299,6 +299,33 @@ def test_scrub_replaces_exact_and_line_variants_longest_first():
     assert scrub_secret_values("abc", []) == "abc"
 
 
+@pytest.mark.parametrize("seen_break", [
+    "\n",        # pipe's universal-newline decode of CRLF or CR
+    "\n\n",      # child wrote in text mode (CRLF -> CR CR LF) then decoded
+    "\r\n",      # raw, undecoded
+    "\r",
+    "\r\r\n",    # text-mode doubling, undecoded
+])
+@pytest.mark.parametrize("value_break", ["\r\n", "\n", "\r", "\n\n"])
+def test_scrub_matches_a_multiline_value_whatever_its_line_breaks_became(value_break, seen_break):
+    from cron.secret_env import SECRET_ENV_REDACTION, scrub_secret_values
+
+    halves = ("FAKE-LINE-ONE", "FAKE-LINE-TWO")
+    seen = seen_break.join(halves)
+    scrubbed = scrub_secret_values(f"raw={seen}\nnext", [value_break.join(halves)])
+    assert scrubbed == f"raw={SECRET_ENV_REDACTION}\nnext"
+    assert not any(half in scrubbed for half in halves)
+
+
+def test_scrub_multiline_value_does_not_overmatch():
+    from cron.secret_env import scrub_secret_values
+
+    value = "FAKE-LINE-ONE\r\nFAKE-LINE-TWO"
+    for text in ("FAKE-LINE-ONE other FAKE-LINE-TWO", "FAKE-LINE-ONE\nX\nFAKE-LINE-TWO",
+                 "\r\n\n\r", ""):
+        assert scrub_secret_values(text, [value]) == text
+
+
 # ---------------------------------------------------------------------------
 # WinCredBackend (fake advapi32 — the real credential store is never read)
 # ---------------------------------------------------------------------------

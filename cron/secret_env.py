@@ -343,11 +343,18 @@ def public_job_view(job: Any) -> Any:
     return {**job, "secret_env": secret_env_display(job["secret_env"])}
 
 
+_LINE_BREAKS = re.compile(r"[\r\n]+")
+
+
 def scrub_secret_values(text: str, values: Iterable[str]) -> str:
     """Exact-match scrub, applied whatever ``security.redact_secrets`` says. Longest first, so a
-    value that contains another is replaced whole; CR/LF-trimmed forms are covered too."""
+    value that contains another is replaced whole; CR/LF-trimmed forms are covered too. A line
+    break inside a value matches any run of CR/LF: the pipes decode with universal newlines (CRLF
+    comes back as LF) and a child writing in text mode doubles it first (CR CR LF -> LF LF)."""
     variants = {form for value in values if value
-                for form in (value, value.strip(), value.replace("\r", "").replace("\n", ""))}
+                for form in (value, value.strip(), _LINE_BREAKS.sub("", value))}
     for variant in sorted((v for v in variants if v.strip()), key=len, reverse=True):
-        text = text.replace(variant, SECRET_ENV_REDACTION)
+        # Edge breaks dropped: a pattern opening on [\r\n]+ backtracks quadratically on blank runs.
+        pattern = r"[\r\n]+".join(map(re.escape, _LINE_BREAKS.split(variant.strip("\r\n"))))
+        text = re.sub(pattern, lambda _match: SECRET_ENV_REDACTION, text)
     return text

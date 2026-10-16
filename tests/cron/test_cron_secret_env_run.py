@@ -135,6 +135,46 @@ def test_failed_script_output_is_scrubbed_everywhere_it_persists(
     assert NAME not in os.environ
 
 
+_MULTILINE_HALVES = ("FAKE-MULTILINE-FIRST-0123", "FAKE-MULTILINE-SECOND-4567")
+# stdout through print() (text mode turns the CRLF into CR CR LF), stderr as raw bytes.
+_MULTILINE_SCRIPT = f"""\
+import os, sys
+value = os.environ.get("{NAME}", "")
+print("raw=" + value)
+sys.stderr.buffer.write(("err=" + value + "\\n").encode())
+sys.exit(int(os.environ.get("CRON_SECRET_TEST_EXIT", "0")))
+"""
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("exit_code", ["0", "3"])
+def test_multiline_value_is_scrubbed_after_newline_translation(
+        hermes_env, monkeypatch, caplog, exit_code):
+    """The parent decodes the pipes with universal newlines, so a CRLF in the value comes back
+    as LF (or LF LF): the scrub must still match it in the delivered, stored and logged output."""
+    from cron import secret_env
+    from cron.scheduler import run_job
+    from tools.cronjob_tools import _execute_job_now
+
+    fake = FakeBackend({TARGET: "\r\n".join(_MULTILINE_HALVES)})
+    monkeypatch.setattr(secret_env, "_default_backends", lambda: {"wincred": fake})
+    monkeypatch.setenv("CRON_SECRET_TEST_EXIT", exit_code)
+    caplog.set_level(logging.DEBUG)
+    job, _ = _create(hermes_env, script_body=_MULTILINE_SCRIPT, name="multi.py")
+
+    success, doc, response, error = run_job(job)
+    result = _execute_job_now(job)
+
+    assert success is result["success"] is (exit_code == "0") and result["claimed"] is True
+    delivered = "\n".join([doc, response, error or "", json.dumps(result), caplog.text])
+    assert "raw=[REDACTED-SECRET-ENV]" in delivered
+    persisted = [p.read_bytes() for p in hermes_env.rglob("*") if p.is_file()]
+    assert any(b"[REDACTED-SECRET-ENV]" in body for body in persisted)
+    for half in _MULTILINE_HALVES:
+        assert half not in delivered
+        assert not any(half.encode() in body for body in persisted)
+
+
 @pytest.mark.platforms("windows")
 def test_manual_run_succeeds_and_persists_nothing_sensitive(hermes_env, backend, caplog):
     from tools.cronjob_tools import _execute_job_now

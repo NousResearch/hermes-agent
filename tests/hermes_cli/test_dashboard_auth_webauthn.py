@@ -926,7 +926,8 @@ class TestSetupPreflight:
 
     def test_missing_fido2_interactively_installs_the_extra(
             self, hermes_home, capsys, monkeypatch):
-        """Interactive: one prompt -> PM unions the extra -> setup proceeds."""
+        """Interactive: one prompt -> PM unions the extra -> import caches are
+        invalidated and the extra becomes visible -> setup proceeds."""
         import importlib.util
 
         from hermes_cli import dashboard_webauthn
@@ -938,12 +939,21 @@ class TestSetupPreflight:
 
         monkeypatch.setattr(dashboard_webauthn.sys, "stdin", _FakeTty())
         _write_webauthn_config(hermes_home)
-        monkeypatch.setattr(importlib.util, "find_spec",
-                            lambda name: None if name == "fido2" else None)  # always None here
+        real_find = importlib.util.find_spec
+        state = {"installed": False}
+
+        def fake_find(name, *a, **k):
+            if name == "fido2" and state["installed"]:
+                return importlib.machinery.ModuleSpec("fido2", None, is_package=True)
+            return None if name == "fido2" else real_find(name, *a, **k)
+
+        monkeypatch.setattr(importlib.util, "find_spec", fake_find)
         import pm
 
         calls: list[list[str]] = []
-        monkeypatch.setattr(pm, "sync_venv", lambda extras, **k: calls.append(list(extras)))
+        monkeypatch.setattr(pm, "sync_venv",
+                            lambda extras, **k: (calls.append(list(extras)),
+                                                 state.__setitem__("installed", True)))
         # prompts: preflight-confirm Y, rp_name (blank = default), include-origin Y,
         # www N, extras blank, final write confirm Y
         answers = iter(["y", "", "y", "n", "", "y"])
@@ -954,6 +964,39 @@ class TestSetupPreflight:
         assert calls == [["webauthn"]]
         assert "✓ webauthn extra installed" in out
         assert "✓ dashboard.webauthn written" in out
+
+    def test_installed_but_invisible_offers_a_clean_rerun(
+            self, hermes_home, capsys, monkeypatch):
+        """After a successful sync the running interpreter may still not see the
+        extra (stale import caches / different interpreter): exit cleanly with
+        the re-run instruction instead of crashing in a later plugin import."""
+        import importlib.util
+
+        from hermes_cli import dashboard_webauthn
+
+        class _FakeTty:
+            @staticmethod
+            def isatty():
+                return True
+
+        monkeypatch.setattr(dashboard_webauthn.sys, "stdin", _FakeTty())
+        _write_webauthn_config(hermes_home)
+        real_find = importlib.util.find_spec
+        monkeypatch.setattr(importlib.util, "find_spec",
+                            lambda name, *a, **k: None if name == "fido2" else real_find(name, *a, **k))
+        import pm
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr(pm, "sync_venv", lambda extras, **k: calls.append(list(extras)))
+        monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+        args = self._args(rp_id="dash.example.com", rp_name="Dash",
+                          origin=["https://dash.example.com"])
+        with pytest.raises(SystemExit):
+            dashboard_webauthn.cmd_webauthn_setup(args)
+        out = capsys.readouterr().out
+        assert calls == [["webauthn"]]
+        assert "still can't see it" in out and "again" in out
+        assert "Traceback" not in out
 
     def test_skip_preflight_stages_without_the_check(self, hermes_home, capsys, monkeypatch):
         """--skip-preflight = provisioning a config for another box; writes despite fido2 missing."""

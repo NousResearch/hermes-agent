@@ -107,6 +107,7 @@ import {
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-rounds'
+import { GroupThreadHeader } from './group-thread-header'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugifyProfileName } from './labels'
@@ -823,6 +824,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   // @handle (the roster's name-device form when names collide across
   // connections). Naturally every speaker just shows its display name.
   const [revealedSpeaker, setRevealedSpeaker] = useState<null | string>(null)
+  const [collapsedThreads, setCollapsedThreads] = useState<Record<string, boolean>>({})
   // Thread replies retain their own draft; the main composer starts a new topic.
   // Pending image attachments per composer: `null` thread key = the main
   // composer, otherwise the reply box of that thread. Data URLs, already
@@ -1441,17 +1443,42 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     )
   }
 
-  // The public room is one arrival-ordered conversation. Thread ids scope
-  // replies and prompts, not visibility: a newer topic must never hide a
-  // member's completed answer or move it ahead of intervening messages.
+  // Entries stay in arrival order, even across interleaved threads. Only an
+  // explicit disclosure click hides them; a new topic never changes visibility.
   const threadEnds = new Map<string, number>()
-  room.log.forEach((entry, index) => threadEnds.set(groupThreadOf(entry), index))
+  const threadStarts = new Map<string, number>()
+  const threadCounts = new Map<string, number>()
+  room.log.forEach((entry, index) => {
+    const id = groupThreadOf(entry)
+    threadEnds.set(id, index)
+
+    if (!threadStarts.has(id)) { threadStarts.set(id, index) }
+    threadCounts.set(id, (threadCounts.get(id) ?? 0) + 1)
+  })
   const logChildren: ReactNode[] = []
   room.log.forEach((entry, index) => {
-    logChildren.push(renderEntry(entry, index))
     const id = groupThreadOf(entry)
+    const disclosureKey = JSON.stringify([composerKey, id])
+    const collapsed = collapsedThreads[disclosureKey] ?? false
 
-    if (threadEnds.get(id) !== index) {
+    if (threadStarts.get(id) === index) {
+      logChildren.push(
+        <GroupThreadHeader
+          collapsed={collapsed}
+          customTitle={room.threadTitles?.[id]}
+          group={group}
+          key={`header:${disclosureKey}`}
+          onToggle={() => setCollapsedThreads(prev => ({ ...prev, [disclosureKey]: !collapsed }))}
+          replies={(threadCounts.get(id) ?? 1) - 1}
+          rootText={entry.text}
+          thread={id}
+        />
+      )
+    }
+
+    logChildren.push(<div data-group-entry={entry.id ?? index} hidden={collapsed} key={`entry:${entry.id ?? index}`}>{renderEntry(entry, index)}</div>)
+
+    if (threadEnds.get(id) !== index || collapsed) {
       return
     }
 

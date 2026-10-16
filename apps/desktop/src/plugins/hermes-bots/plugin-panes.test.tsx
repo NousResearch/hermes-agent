@@ -168,6 +168,31 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+describe('thread title hydration', () => {
+  it('restores persisted title overrides during plugin registration', async () => {
+    paneStores()
+    const { $groupChats } = await import('./group-chat')
+    const harness = recordingContext()
+
+    const stored = { Room: {
+      log: [{ thread: 'topic', at: 1, from: { kind: 'user', name: 'You' }, text: 'Root' }],
+      watermarks: {}, threadTitles: { topic: 'Custom title' }
+    } }
+
+    $groupChats.set({})
+    vi.spyOn(harness.ctx.storage, 'get').mockImplementation(async (key, fallback) => key === 'group-chats' ? stored : fallback)
+    plugin.register(harness.ctx)
+
+    try {
+      await settle()
+      expect($groupChats.get().Room).toMatchObject({ threadTitles: { topic: 'Custom title' } })
+    } finally {
+      harness.dispose()
+      $groupChats.set({})
+    }
+  })
+})
+
 describe('the Bots pane dock', () => {
   it('renders its tab label from the live locale, not the register-time string', () => {
     paneStores()

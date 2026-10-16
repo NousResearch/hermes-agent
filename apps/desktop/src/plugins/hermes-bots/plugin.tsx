@@ -66,6 +66,7 @@ import {
   updateGroupChat
 } from './group-chat'
 import { groupWorkspaceOwnerKey } from './group-membership'
+import { boundedThreadTitles } from './group-thread-titles'
 import { annotateOrphanedGroupChatMembers } from './hygiene'
 import { BOTS_LOCALES } from './i18n'
 import { displayName } from './labels'
@@ -284,6 +285,7 @@ export default {
                   // Pre-thread entries get synthetic thread ids on hydrate so
                   // every UI/engine path can assume entry.thread exists.
                   log: assignLegacyThreads(room.log),
+                  threadTitles: boundedThreadTitles(room.threadTitles, room.log),
                   watermarks: room.watermarks && typeof room.watermarks === 'object' ? room.watermarks : {},
                   sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
                   sessionOwners: room.sessionOwners && typeof room.sessionOwners === 'object' ? room.sessionOwners : {},

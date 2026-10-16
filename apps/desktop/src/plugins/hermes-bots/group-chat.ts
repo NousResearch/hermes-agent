@@ -12,6 +12,7 @@
 import { atom, host } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
+import { boundedThreadTitles } from './group-thread-titles'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
 import { displayName } from './labels'
 import { botRosterMeta } from './routing'
@@ -59,6 +60,7 @@ let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
 /** One room inside the bounded ui_meta projection: a compacted log plus the
  *  identity fields, without any of `GroupChat`'s runtime/orchestration state. */
 interface GroupChatSyncRoom {
+  threadTitles?: Record<string, string>
   holdDetection?: boolean
   image?: null | string
   log: GroupMessage[]
@@ -355,6 +357,7 @@ export function groupChatSyncSnapshot(
         : {}),
       log,
       holdDetection: room.holdDetection !== false,
+      threadTitles: boundedThreadTitles(room.threadTitles, log),
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
       members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
         name: String(member?.name || '').slice(0, 128),
@@ -589,6 +592,9 @@ export function mergeGroupChatSyncSnapshots(
         return byTime || groupChatSyncEntryKey(left).localeCompare(groupChatSyncEntryKey(right))
       }),
       holdDetection,
+      threadTitles: localRevision >= remoteRevision
+        ? { ...remoteRoom?.threadTitles, ...localRoom?.threadTitles }
+        : { ...localRoom?.threadTitles, ...remoteRoom?.threadTitles },
       members,
       revision: Math.max(remoteRevision, localRevision),
       ...(omitted > 0
@@ -652,6 +658,8 @@ function groupChatSyncEnvelope(
   })
 
   for (const [key, room] of ranked) {
+    room.threadTitles = boundedThreadTitles(room.threadTitles, room.log)
+
     while ((room.log?.length || 0) > 1 && groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
       room.log.shift()
       room.omitted = (room.omitted || 0) + 1
@@ -819,6 +827,9 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
     rooms[targetName] = {
       ...existing,
       log: bounded.log,
+      threadTitles: !isPreserved && remoteRevision >= localRevision
+        ? { ...existing.threadTitles, ...projected.threadTitles }
+        : existing.threadTitles,
       holdDetection:
         !isPreserved && remoteRevision >= localRevision
           ? projected.holdDetection !== false
@@ -908,6 +919,7 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
     durable[name] = {
       log: room.log,
       holdDetection: room.holdDetection !== false,
+      threadTitles: room.threadTitles,
       heldMessages: room.heldMessages || {},
       watermarks: room.watermarks || {},
       sessions: room.sessions || {},
@@ -1617,6 +1629,7 @@ export function updateGroupChat(
       durable[name] = {
         log: room.log,
         holdDetection: room.holdDetection !== false,
+        threadTitles: room.threadTitles,
         heldMessages: room.heldMessages || {},
         watermarks: room.watermarks,
         sessions: room.sessions || {},

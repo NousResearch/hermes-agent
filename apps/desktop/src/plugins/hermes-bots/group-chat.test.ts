@@ -64,6 +64,49 @@ beforeEach(() => {
   runTimersInline()
 })
 
+describe('thread titles', () => {
+  it('bounds projected titles to visible threads without dropping a room or rolling back newer titles', async () => {
+    const { chat } = await loadRoom()
+
+    const room: GroupChat = {
+      log: [{ id: 'root', thread: 'topic', at: 1, from: { kind: 'user', name: 'You' }, text: 'Root' }],
+      watermarks: {}, syncRevision: 3,
+      threadTitles: { topic: '界'.repeat(50000), orphan: 'x'.repeat(50000) }
+    }
+
+    const snapshot = chat.groupChatSyncSnapshot({ Room: room })
+
+    expect(snapshot.rooms['name:Room']).toBeDefined()
+    expect(snapshot.rooms['name:Room'].threadTitles).toEqual({ topic: '界'.repeat(120) })
+    expect(chat.groupChatGatewayJsonSize(snapshot)).toBeLessThanOrEqual(48000)
+    const newer = { ...room, threadTitles: { topic: 'New title', another: 'Keep' }, syncRevision: 4 }
+
+    expect(chat.mergeRemoteGroupChatSnapshotIntoRooms(snapshot, { Room: newer }).Room.threadTitles).toEqual(newer.threadTitles)
+    const reset = chat.groupChatSyncSnapshot({ Room: { ...room, threadTitles: { topic: '' }, syncRevision: 5 } })
+
+    expect(chat.mergeRemoteGroupChatSnapshotIntoRooms(reset, { Room: newer }).Room.threadTitles).toEqual({ topic: '', another: 'Keep' })
+    expect(chat.mergeRemoteGroupChatSnapshotIntoRooms(reset, { Room: newer }, { preserveRooms: ['Room'] }).Room.threadTitles).toEqual(newer.threadTitles)
+  })
+  it('persists custom titles and carries them through revisioned cross-client projection', async () => {
+    const { chat, gateway } = await loadRoom()
+    const titles = { topic: 'Release checklist' }
+
+    chat.appendGroupChatEntry('Room', { kind: 'user', name: 'You' }, 'Root message', 'topic')
+    chat.updateGroupChat('Room', room => ({ ...room, threadTitles: titles, syncRevision: 2 }))
+    const stored = (gateway.storage.get('group-chats') as Record<string, GroupChat>).Room
+
+    expect(stored).toMatchObject({ threadTitles: titles })
+    const reopened = JSON.parse(JSON.stringify(chat.durableGroupChatRooms({ Room: stored })))
+    const projection = chat.groupChatSyncSnapshot(reopened)
+    const merged = chat.mergeGroupChatSyncSnapshots(null, projection)
+    const remoteRooms = chat.mergeRemoteGroupChatSnapshotIntoRooms(merged, {})
+
+    expect(remoteRooms.Room).toMatchObject({ threadTitles: titles })
+    expect(remoteRooms.Room.log).toEqual(stored.log)
+    expect(chat.durableGroupChatRooms(remoteRooms).Room).toMatchObject({ threadTitles: titles })
+  })
+})
+
 describe('log window', () => {
   it('trimming keeps watermarks consistent with the trimmed array', async () => {
     const { chat } = await loadRoom()

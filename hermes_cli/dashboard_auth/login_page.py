@@ -260,6 +260,14 @@ _LOGIN_HTML_TEMPLATE = """\
     margin-top: 0.25rem;
   }}
 
+  /* Passkey form's password-fallback link — quiet secondary action. */
+  .pw-fallback {{
+    color: color-mix(in srgb, var(--foreground) 55%, transparent);
+    font-size: 0.8rem;
+    text-align: center;
+    text-decoration: underline;
+  }}
+
   footer {{
     margin-top: 1.75rem;
     text-align: center;
@@ -300,6 +308,7 @@ _LOGIN_HTML_TEMPLATE = """\
   </footer>
 </main>
 {password_script}
+{webauthn_script}
 </body>
 </html>
 """
@@ -445,8 +454,124 @@ _PASSWORD_FORM_SCRIPT = """\
 </script>
 """
 
+# Emitted ONLY when a ``supports_webauthn`` provider is rendered (same
+# emit-only-when-used discipline as the password script). Feature-detects
+# ``window.PublicKeyCredential`` + ``isSecureContext``: on an origin the WebAuthn
+# API cannot run on (plain http LAN bind — MDN: secure contexts only), the button
+# disables with an explanatory tooltip and nothing silently half-works. The
+# fallback link scrolls to the password form when one exists.
+_WEBAUTHN_FORM_SCRIPT = """\
+<script>
+(function () {
+  var mainEl = document.querySelector('main');
+  var prefix = (mainEl && mainEl.getAttribute('data-prefix')) || '';
+  var supported = window.PublicKeyCredential && window.isSecureContext;
+  function b64urlToBytes(value) {
+    var s = value.replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) { s += '='; }
+    var bin = atob(s); var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) { bytes[i] = bin.charCodeAt(i); }
+    return bytes;
+  }
+  function bytesToB64url(buffer) {
+    var bytes = new Uint8Array(buffer); var s = '';
+    for (var i = 0; i < bytes.length; i++) { s += String.fromCharCode(bytes[i]); }
+    return btoa(s).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+  }
+  function assertionToJSON(cred) {
+    return {
+      id: cred.id, rawId: bytesToB64url(cred.rawId), type: cred.type,
+      response: {
+        clientDataJSON: bytesToB64url(cred.response.clientDataJSON),
+        authenticatorData: bytesToB64url(cred.response.authenticatorData),
+        signature: bytesToB64url(cred.response.signature),
+        userHandle: cred.response.userHandle ? bytesToB64url(cred.response.userHandle) : null
+      }
+    };
+  }
+  function show(form, text) {
+    var err = form.querySelector('.form-error');
+    if (err) { err.textContent = text; err.hidden = false; }
+  }
+  function clear(form) {
+    var err = form.querySelector('.form-error');
+    if (err) { err.hidden = true; err.textContent = ''; }
+  }
+  var forms = document.querySelectorAll('form.provider-webauthn');
+  for (var i = 0; i < forms.length; i++) { (function (form) {
+    var btn = form.querySelector('button[type=submit]');
+    var fallback = form.querySelector('.pw-fallback');
+    if (fallback) {
+      if (document.querySelector('form.provider-form:not(.provider-webauthn)')) {
+        fallback.addEventListener('click', function (ev) {
+          ev.preventDefault();
+          var pw = document.querySelector('form.provider-form:not(.provider-webauthn)');
+          if (pw) { pw.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    var u = pw.querySelector('input[name=username]'); if (u) { u.focus(); } }
+        });
+      } else { fallback.hidden = true; }
+    }
+    if (!supported) {
+      if (btn) {
+        btn.disabled = true;
+        btn.setAttribute('title', 'Passkeys unavailable on this connection (HTTPS or '
+          + 'localhost is required) - use your password instead.');
+      }
+      return;
+    }
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      clear(form);
+      if (btn) { btn.disabled = true; }
+      fetch(prefix + '/auth/webauthn/options', { credentials: 'same-origin' })
+        .then(function (resp) {
+          if (!resp.ok) { throw new Error('HTTP ' + resp.status); }
+          return resp.json();
+        })
+        .then(function (options) {
+          var pk = options.publicKey || {};
+          var request = { challenge: b64urlToBytes(pk.challenge), rpId: pk.rpId,
+                          userVerification: pk.userVerification || 'preferred' };
+          if (pk.allowCredentials && pk.allowCredentials.length) {
+            request.allowCredentials = pk.allowCredentials.map(function (d) {
+              return { id: b64urlToBytes(d.id), type: d.type || 'public-key' }; });
+          }
+          return navigator.credentials.get({ publicKey: request });
+        })
+        .then(function (assertion) {
+          return fetch(prefix + '/auth/webauthn/verify', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              credential: assertionToJSON(assertion),
+              next: (form.querySelector('input[name=next]') || {}).value || ''
+            })
+          });
+        })
+        .then(function (resp) {
+          if (resp.ok) {
+            return resp.json().then(function (data) {
+              window.location.assign((data && data.next) || (prefix + '/'));
+            });
+          }
+          show(form, resp.status === 429
+            ? 'Too many attempts. Please wait and try again.'
+            : 'Passkey sign-in failed. Use your password instead.');
+          if (btn) { btn.disabled = false; }
+        })
+        .catch(function () {
+          show(form, 'Passkey sign-in failed. Use your password instead.');
+          if (btn) { btn.disabled = false; }
+        });
+    });
+  })(forms[i]); }
+})();
+</script>
+"""
 
-def render_login_html(*, next_path: str = "", prefix: str = "") -> str:
+
+def render_login_html(
+    *, next_path: str = "", prefix: str = "", provider_filter=None) -> str:
     """Return the full HTML for ``GET /login``.
 
     ``next_path`` is threaded into each provider button/form so the OAuth round
@@ -458,8 +583,14 @@ def render_login_html(*, next_path: str = "", prefix: str = "") -> str:
     works behind a reverse proxy that mounts the dashboard at a
     sub-path. Empty string (default) means no prefix — bare-root
     deploys are unaffected.
+
+    ``provider_filter`` — optional callable(provider) -> bool; the route passes
+    the origin-gate so an unoffered provider renders nothing at all on requests
+    it cannot serve (the WebAuthn offering surface).
     """
     providers = list_session_providers()
+    if provider_filter is not None:
+        providers = [p for p in providers if provider_filter(p)]
     if not providers:
         return _EMPTY_HTML
     # URL-encode then HTML-escape, matching the gate's ``_safe_next_target``
@@ -468,15 +599,19 @@ def render_login_html(*, next_path: str = "", prefix: str = "") -> str:
     buttons = [
         _render_password_form(p, next_path, prefix=prefix)
         if getattr(p, "supports_password", False) else
+        _render_webauthn_form(p, next_path)
+        if getattr(p, "supports_webauthn", False) else
         f'      <a class="provider-btn" '
         f'href="{prefix}/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
         f'Sign in with {html.escape(p.display_name)}</a>'
         for p in providers
     ]
     needs_password_script = any(getattr(p, "supports_password", False) for p in providers)
+    needs_webauthn_script = any(getattr(p, "supports_webauthn", False) for p in providers)
     html_out = _LOGIN_HTML_TEMPLATE.format(
         provider_buttons="\n".join(buttons),
         password_script=_PASSWORD_FORM_SCRIPT if needs_password_script else "",
+        webauthn_script=_WEBAUTHN_FORM_SCRIPT if needs_webauthn_script else "",
     )
     # Inject the reverse-proxy prefix so the password-login JS can read
     # it from the <main> element's data attribute, and rewrite the font
@@ -528,7 +663,8 @@ def render_native_provider_choice_html(
         return _EMPTY_HTML
     return _apply_proxy_prefix(
         _LOGIN_HTML_TEMPLATE.format(
-            provider_buttons="\n".join(buttons), password_script=""),
+            provider_buttons="\n".join(buttons), password_script="",
+            webauthn_script=""),
         prefix)
 
 
@@ -564,5 +700,28 @@ def _render_password_form(provider, next_path: str, *, prefix: str = "") -> str:
         f'        </label>\n'
         f'        <div class="form-error" role="alert" hidden></div>\n'
         f'        <button class="provider-btn" type="submit">Sign in</button>\n'
+        f'      </form>'
+    )
+
+
+def _render_webauthn_form(provider, next_path: str) -> str:
+    """Passkey form for a ``supports_webauthn`` provider (design doc §8).
+
+    Same seams as the password form: ``data-provider`` rides the form (the
+    script reads it), the hidden ``next`` input carries the post-login target,
+    and the submit goes through :data:`_WEBAUTHN_FORM_SCRIPT` (emitted only when
+    this form renders). The ``pw-fallback`` link scrolls to the password form —
+    password login is never removed as the recovery path.
+    """
+    pname = html.escape(provider.name, quote=True)
+    plabel = html.escape(provider.display_name)
+    safe_next = html.escape(next_path, quote=True) if next_path else ""
+    return (
+        f'      <form class="provider-form provider-webauthn" data-provider="{pname}">\n'
+        f'        <div class="form-title">Sign in with {plabel}</div>\n'
+        f'        <input type="hidden" name="next" value="{safe_next}">\n'
+        f'        <div class="form-error" role="alert" hidden></div>\n'
+        f'        <button class="provider-btn" type="submit">Sign in with a passkey</button>\n'
+        f'        <a href="#" role="button" class="pw-fallback">Use your password instead</a>\n'
         f'      </form>'
     )

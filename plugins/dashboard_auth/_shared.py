@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
+import json
 import logging
 import math
 import os
 import secrets
+import time
 import urllib.parse
 from typing import Any, Callable, Dict, Optional
 
@@ -21,6 +24,75 @@ import httpx
 from hermes_cli.dashboard_auth import (
     DashboardAuthProvider, InvalidCodeError, LoginStart, ProviderError, RefreshExpiredError, Session,
     classify_jwks_lookup_error)
+
+# ---- Shared session-token signer (the basic-provider HMAC seam) ----
+#
+# Credential providers without an IDP (basic passwords, webauthn passkeys) mint
+# provider-local stateless sessions as HMAC-signed ``{sub, kind, exp}`` JSON
+# blobs. The signer lives here so every such provider produces BIT-IDENTICAL
+# tokens (same cookies, same middleware verify/refresh) instead of copying the
+# helpers into each plugin; basic's ``_sign``/``_unsign`` remain as aliases.
+_TOKEN_SIG_LEN = hashlib.sha256().digest_size
+
+
+def sign_session_token(payload: dict, secret: bytes) -> str:
+    """HMAC-SHA256-sign ``payload`` (compact JSON) — base64url(JSON ++ sig)."""
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    sig = hmac.new(secret, raw, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(raw + sig).decode()
+
+
+def unsign_session_token(token: str, secret: bytes, kind: str) -> Optional[dict]:
+    """Return the payload if the signature is valid, ``kind`` matches and it is
+    unexpired; ``None`` otherwise (including on any decode error)."""
+    try:
+        blob = base64.urlsafe_b64decode(token.encode())
+        if len(blob) <= _TOKEN_SIG_LEN:
+            return None
+        raw, sig = blob[:-_TOKEN_SIG_LEN], blob[-_TOKEN_SIG_LEN:]
+        expected = hmac.new(secret, raw, hashlib.sha256).digest()
+        if not hmac.compare_digest(sig, expected):
+            return None
+        payload = json.loads(raw)
+    except Exception:
+        return None
+    if payload.get("kind") != kind or payload.get("exp", 0) <= int(time.time()):
+        return None
+    return payload
+
+
+def resolve_session_secret(
+    *, tag: str, logger: logging.Logger, candidates: list[tuple]) -> bytes:
+    """Resolve the session-signing secret for a credential provider.
+
+    ``candidates`` is ``[(env_name, cfg_value), ...]`` in precedence order; the
+    first non-empty resolution wins (env-wins semantics of
+    :func:`resolve_env_or_cfg` per candidate). Credential providers without an
+    IDP share the ``dashboard.basic_auth.secret`` deployment secret first so a
+    passkey provider riding the basic seam mints tokens with the SAME key by
+    default; a random per-process key is the last resort, logged at INFO
+    (sessions then don't survive restarts/multi-worker). Decoded base64/hex/raw,
+    >=16 bytes — same shape ``basic::_resolve_secret`` accepts.
+    """
+    raw = ""
+    for env_name, cfg_value in candidates:
+        raw = os.environ.get(env_name, "").strip() or str(cfg_value or "").strip()
+        if raw:
+            break
+    if not raw:
+        logger.info(
+            "%s: no session-signing secret configured; generating a random per-process "
+            "key. Credential-provider session cookies will not survive a restart.", tag)
+        return secrets.token_bytes(32)
+    for decoder in (base64.b64decode, bytes.fromhex):
+        try:
+            decoded = decoder(raw)
+            if len(decoded) >= 16:
+                return decoded
+        except (ValueError, TypeError):
+            pass
+    return raw.encode("utf-8")
+
 
 # JWKS Cache-Control max-age (nous contract C7); self-hosted mirrors it.
 JWKS_CACHE_SECONDS = 300

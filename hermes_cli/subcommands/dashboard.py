@@ -74,7 +74,8 @@ def build_serve_parser(
 
 
 def build_dashboard_parser(
-    subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable) -> None:
+    subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable,
+    cmd_webauthn_enrol: Callable | None = None, cmd_webauthn_forget: Callable | None = None) -> None:
     """Attach ``dashboard`` (browser UI) and ``serve`` (headless backend the desktop spawns)."""
     dashboard_parser = subparsers.add_parser(
         "dashboard", help="Start the web UI dashboard",
@@ -123,3 +124,40 @@ def build_dashboard_parser(
             "portal. Also settable via HERMES_DASHBOARD_PORTAL_URL. Mainly for "
             "testing against a staging/preview portal.")
     dashboard_register_parser.set_defaults(func=cmd_dashboard_register)
+
+    # `webauthn` is nested like `register` so bare `hermes dashboard` keeps
+    # launching the server: enrol/forget manage passkey credentials (first
+    # credential for a headless box / removal of lost ones).
+    if cmd_webauthn_enrol is not None and cmd_webauthn_forget is not None:
+        dashboard_webauthn_parser = dashboard_subparsers.add_parser(
+            "webauthn", help="Manage dashboard passkey (WebAuthn) credentials",
+            description="Enrol or forget dashboard passkeys. Passkeys only work on "
+                "a WebAuthn-capable origin (https://… behind a TLS proxy or the "
+                "http://localhost SSH-tunnel path) — see the web-dashboard docs.")
+        webauthn_subparsers = dashboard_webauthn_parser.add_subparsers(dest="webauthn_subcommand")
+        webauthn_enrol_parser = webauthn_subparsers.add_parser(
+            "enrol",
+            help="Print a one-shot enrolment URL for the dashboard's passkey store",
+            description="Writes a single-use, 10-minute enrolment token into the "
+                "credential store and prints the URL to open in a browser on a "
+                "configured origin.")
+        webauthn_enrol_parser.add_argument(
+            "--label", default="",
+            help="Human-readable label stored with the credential (e.g. 'laptop touchid')")
+        webauthn_enrol_parser.add_argument(
+            "--origin", default="",
+            help="Which configured origin the enrolment URL should use when several "
+                "are set (default: the only one)")
+        webauthn_enrol_parser.set_defaults(func=cmd_webauthn_enrol)
+        webauthn_forget_parser = webauthn_subparsers.add_parser(
+            "forget",
+            help="Remove enrolled passkey credentials",
+            description="Deregister lost or suspicious passkeys. --all clears every "
+                "credential; --label / --credential-id target specific ones.")
+        webauthn_forget_parser.add_argument("--all", dest="all_credentials", action="store_true",
+            help="Forget every enrolled credential")
+        webauthn_forget_parser.add_argument("--label", default="",
+            help="Forget the credential stored with this label")
+        webauthn_forget_parser.add_argument("--credential-id", dest="credential_id", default="",
+            help="Forget the credential with this base64url rawId")
+        webauthn_forget_parser.set_defaults(func=cmd_webauthn_forget)

@@ -2262,9 +2262,39 @@ updates:
 #       # IDP's discovery doc) IN ADDITION to PKCE. Leave unset for a public
 #       # (PKCE-only) client — the common case.
 #       #
-#       # This is a CREDENTIAL: prefer setting HERMES_DASHBOARD_OIDC_CLIENT_SECRET
-#       # in ~/.hermes/.env over putting it here in config.yaml.
-#       #   client_secret: ""
+#      # This is a CREDENTIAL: prefer setting HERMES_DASHBOARD_OIDC_CLIENT_SECRET
+#      # in ~/.hermes/.env over putting it here in config.yaml.
+#      #   client_secret: ""
+
+# -----------------------------------------------------------------------------
+# Passkey (WebAuthn) dashboard login — for TLS-origined (or localhost-tunnelled)
+# dashboards. Optional `webauthn` extra first: pip install 'hermes-agent[webauthn]'.
+# Applies ONLY on WebAuthn-capable origins (https://…, or http://localhost:<port>
+# over an SSH tunnel); on plain http://<LAN-IP> binds the provider stays inert and
+# the password provider is the sign-in surface. See the web-dashboard docs
+# ("Passkeys (WebAuthn) provider") for the applicability table.
+#
+#   dashboard.webauthn.rp_id                    # registrable domain (frozen per credential)
+#   dashboard.webauthn.rp_name                  # label in the browser's passkey UI
+#   dashboard.webauthn.origins[]                # exact scheme+host[:port] origins
+#
+# dashboard:
+#   webauthn:
+#     rp_id: "hermes.example.com"
+#     rp_name: "Hermes (richards-lab)"
+#     origins:
+#       - "https://hermes.example.com"
+#     # user_verification: "preferred"           # preferred | required
+#     # session_ttl_seconds: 43200               # 0 → plugin default (12h)
+#     # credential_store: ""                     # default ~/.hermes/dashboard_webauthn.json
+#     # challenge_ttl_seconds: 120               # ceremony window; clamped 30..300
+#     # allowed_credential_ids: []               # optional base64url rawIds allowlist
+#     # secret: ""  # CREDENTIAL — prefer HERMES_DASHBOARD_WEBAUTHN_SECRET in .env;
+#                 # falls back to dashboard.basic_auth.secret / its env twin first.
+#
+# The session-signing secret reuses the basic-auth deployment secret by default.
+# Enrol: hermes dashboard webauthn enrol   (prints a one-shot, 10-minute URL)
+# Forget: hermes dashboard webauthn forget --label <label> | --all
 
 # =============================================================================
 # External secret sources

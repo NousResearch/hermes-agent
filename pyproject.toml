@@ -397,6 +397,16 @@ mcp = [
   "httpx2==2.12.0",
   "starlette==1.3.1",
 ] # starlette: CVE-2026-48710
+# Dashboard WebAuthn (passkey) provider — plugins/dashboard_auth/webauthn.
+# Yubico fido2's ONLY runtime dependency is `cryptography` with a <52 ceiling;
+# the repo's exact core pin cryptography==50.0.1 already satisfies it, so this
+# extra must not (and does not) touch that pin. Pin stays a range per the
+# dependency-review table's `<next_major` ceiling rule rather than an exact pin
+# because the extra is opt-in and fido2's 2.x line is the reviewed surface
+# (2.2.1 PyPI upload 2026-06-29). NAME-TRAP: `webauthn` on PyPI is Duo's
+# py_webauthn distribution and `py_webauthn` resolves to an unrelated AS207960
+# project — the dependency here is the dist name `fido2` only.
+webauthn = ["fido2>=2.2.1,<3"]
 # Backwards-compatible no-op alias. Relay is a core dependency on supported
 # wheel targets and intentionally unavailable on other platforms.
 nemo-relay = []

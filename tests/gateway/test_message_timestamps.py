@@ -283,3 +283,38 @@ def test_compactor_restatement_replays_unstamped_through_session_db(tmp_path):
     assert restatement(replay) == restatement(sent)
     assert next(m for m in replay if m["role"] == "user" and str(m["content"]).endswith("this is a pasted log"))[
         "content"] == render_user_content_with_timestamp(pasted, sent_at, tz=get_timezone())
+
+
+def test_compaction_summary_stays_unstamped_across_real_prune(tmp_path):
+    """A proactive prune re-persists the replayed view; the summary carrier must keep its flag through it."""
+    from agent.context_compressor import ContextCompressor
+    from gateway.config import GatewayConfig
+    from gateway.run import _build_gateway_agent_history
+    from gateway.session import SessionStore
+    from hermes_state import SessionDB
+
+    summary = {"role": "user", "content": "[CONTEXT COMPACTION — REFERENCE ONLY] retained summary",
+               "_compressed_summary": True}
+    rows = [summary, {"role": "assistant", "content": "Continue"}]
+    for i in range(5):
+        rows += [{"role": "assistant", "content": None, "tool_calls": [
+                     {"id": f"c{i}", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+                 {"role": "tool", "tool_call_id": f"c{i}", "content": f"file {i} " + f"unique output {i} " * 5000}]
+    rows += [{"role": "user", "content": "new task"}, {"role": "assistant", "content": "working"}]
+    db = SessionDB(db_path=tmp_path / "state.db")
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    store._db = db
+    try:
+        db.create_session("room", source="matrix")
+        db.archive_and_compact("room", rows)
+        first, _ = _build_gateway_agent_history(store.load_transcript("room"), inject_timestamps=True)
+        compressor = ContextCompressor(model="m", quiet_mode=True, config_context_length=100_000, protect_first_n=1,
+                                       protect_last_n=2, proactive_prune_tokens=1, proactive_prune_min_reclaim_tokens=1)
+        compressor._session_db, compressor._session_id = db, "room"
+        _, pruned = compressor.prune_tool_results_only(first, current_tokens=100_000)
+        replay, _ = _build_gateway_agent_history(store.load_transcript("room"), inject_timestamps=True)
+    finally:
+        db.close()
+        store.close_all_db_handles()
+    assert pruned
+    assert first[0]["content"] == replay[0]["content"] == summary["content"]

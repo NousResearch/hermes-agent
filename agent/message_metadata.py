@@ -104,16 +104,19 @@ def mark_inflight_restatement(msg: MutableMapping[str, Any]) -> None:
     msg["display_metadata"] = {**(metadata if isinstance(metadata, dict) else {}), INFLIGHT_TASK_RESTATEMENT: True}
 
 
-def restatement_metadata(msg: Mapping[str, Any]) -> dict:
-    """``{"display_metadata": {flag}}`` for a flagged row, else ``{}``: replay keeps only the flag."""
+def scaffolding_replay_fields(msg: Mapping[str, Any]) -> dict:
+    """The compaction-provenance fields replay keeps (summary flag, restatement flag), else ``{}``. A proactive
+    prune re-persists the replayed view, so a dropped flag would get the row stamped on the next replay."""
     metadata = msg.get("display_metadata")
-    flagged = isinstance(metadata, dict) and bool(metadata.get(INFLIGHT_TASK_RESTATEMENT))
-    return {"display_metadata": {INFLIGHT_TASK_RESTATEMENT: True}} if flagged else {}
+    fields: dict = {"_compressed_summary": True} if msg.get("_compressed_summary") else {}
+    if isinstance(metadata, dict) and metadata.get(INFLIGHT_TASK_RESTATEMENT):
+        fields["display_metadata"] = {INFLIGHT_TASK_RESTATEMENT: True}
+    return fields
 
 
 def is_compaction_scaffolding(msg: Mapping[str, Any]) -> bool:
     """Compaction sent its summary and restatement rows unstamped; a replay stamp would break the cached prefix."""
-    return bool(msg.get("_compressed_summary")) or bool(restatement_metadata(msg))
+    return bool(scaffolding_replay_fields(msg))
 
 
 _IDENTITY_FIELD_TYPES = ((MESSAGE_UID, str), (ABSORBED_MESSAGE_UIDS, list), (TOOL_CALL_UIDS, dict), (TOOL_CALL_UID, str))

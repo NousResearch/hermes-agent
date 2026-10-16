@@ -3126,13 +3126,14 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
     return False
 
 
-def _retire_expired_oneshot(d: _DueJob) -> bool:
+def _retire_expired_oneshot(d: _DueJob, run_claim_ttl: float) -> bool:
     """One-shot grace gate; True when the job must not fire this tick.
 
     A one-shot beyond the grace window must never fire (create/update/resume reject such schedules
     and recovery never revives them; only the due scan used to dispatch them hours late). With no
-    claim stamped, retire it with a diagnostic (never silently delete). A claim may mean a run is
-    still in flight elsewhere — skip but keep the record so its mark_job_run can land."""
+    LIVE claim stamped, retire it with a diagnostic (never silently delete). A live claim may mean
+    a run is still in flight elsewhere — skip but keep the record so its mark_job_run can land;
+    a stale (lapsed) claim no longer holds (est-20mb)."""
     if _elapsed_seconds(d.scan.now, d.next_run_dt) <= ONESHOT_GRACE_SECONDS:
         return False
     # Due during an outage of its store: it was skipped, not missed; fire it once on recovery.
@@ -3142,10 +3143,28 @@ def _retire_expired_oneshot(d: _DueJob) -> bool:
     # An outage-covered claim that never reached its fire claim never started: it stays covered.
     if isinstance(claim, dict) and claim.get("outage") and not d.job.get("fire_claim"):
         return False
-    if not (claim or d.job.get("fire_claim")):
-        _write_missed_oneshot_diagnostic(d.job, d.next_run)
-        d.scan.retire(d.job["id"])
-        d.scan.on_saved.append(lambda job=d.job: record_cron_missed(job))
+    # The hold is gated on claim LIVENESS, not presence (est-20mb): a run_claim/fire_claim
+    # whose TTL has lapsed (or whose same-host owner pid has exited) cannot mean a live run,
+    # and holding the record on it forever parked wedged one-shots as state=scheduled +
+    # last_run_at=None + repeat.completed=consumed — OVERDUE indefinitely with the ticker
+    # alive, never fired and never removed (keeper jobs 4aa8422fa577 / 8e814eb0c6ad, 2026-10-03).
+    # A stale claim no longer holds: the consumed-budget case falls through to
+    # _oneshot_dispatch_limit_reached, which retires it WITH the wedged-run diagnostic (fail
+    # loud); any other expired stale-claim record retires here with the missed-run diagnostic,
+    # matching the claim-less path. A live claim keeps the record for its mark_job_run.
+    live_claim = (
+        _claim_is_live(d.job.get("run_claim"), d.scan.now, run_claim_ttl)
+        or _claim_is_live(d.job.get("fire_claim"), d.scan.now, FIRE_CLAIM_TTL_SECONDS)
+    )
+    if live_claim:
+        return True
+    repeat = d.job.get("repeat") or {}
+    times = repeat.get("times")
+    if times is not None and times > 0 and repeat.get("completed", 0) >= times:
+        return False  # dispatch claimed then died: guard retires with the wedged diagnostic
+    _write_missed_oneshot_diagnostic(d.job, d.next_run)
+    d.scan.retire(d.job["id"])
+    d.scan.on_saved.append(lambda job=d.job: record_cron_missed(job))
     return True
 
 
@@ -3262,7 +3281,7 @@ def _evaluate_due_job(job: dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     if not manual_run and recurring and _fast_forward_missed_recurring(d, grace):
         return False
     if kind == "once":
-        if _retire_expired_oneshot(d) or _oneshot_dispatch_limit_reached(job, scan):
+        if _retire_expired_oneshot(d, run_claim_ttl) or _oneshot_dispatch_limit_reached(job, scan):
             return False
         # Durably claim the one-shot for the DURATION of its run: a second scheduler process on the
         # same HERMES_HOME must not re-dispatch it while in flight, and advancing next_run_at by a

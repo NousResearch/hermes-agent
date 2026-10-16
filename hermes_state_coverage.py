@@ -24,8 +24,11 @@ class SessionCoverageMixin:
 
         _row_id is authoritative when the message carries it and the stored identity still matches.
         Resume surfaces that intentionally omit row ids fall back to a UNIQUE
-        (role/content/tool identity, timestamp) match. Ambiguous or timestamp-less fallbacks are left
-        as compacted history rather than risking a false rewind classification.
+        (role/content/tool identity, timestamp) match, then to a UNIQUE identity match without the
+        timestamp — a handoff/continuation re-derivation that loses or re-stamps the stamp would
+        otherwise resolve nothing and leave the original live beside the re-inserted copy (the
+        est-qtya ghost tail). Ambiguous matches stay compacted history rather than risking a false
+        rewind classification.
         """
         if not carried_messages:
             return []
@@ -66,15 +69,28 @@ class SessionCoverageMixin:
         if len(row_ids) == len(carried) and any(by_id.get(rid) != ident for ident, rid, _ in carried):
             by_id, by_key = _index(None)
 
+        # Identity WITHOUT the timestamp: a carried dict whose stamp was lost (handoff/continuation
+        # re-derivation drops it) would otherwise resolve nothing - its original stays active while the
+        # re-inserted copy lands beside it, projecting the ghost tail (est-qtya). Only used when the
+        # timestamped match found nothing, and only on a UNIQUE active-row hit, so an ambiguous
+        # duplicate never risks rewinding the wrong row.
+        by_identity: dict[tuple[Any, ...], list[int]] = {}
+
         resolved: list[int] = []
         for identity, row_id, raw_timestamp in carried:
             if row_id is not None and by_id.get(row_id) == identity:
                 resolved.append(row_id)
                 continue
             timestamp = coerce_epoch(raw_timestamp, field="message timestamp")
-            if timestamp is None:
-                continue
-            matches = by_key.get((*identity, timestamp), [])
+            if timestamp is not None:
+                matches = by_key.get((*identity, timestamp), [])
+                if len(matches) == 1:
+                    resolved.append(matches[0])
+                    continue
+            if not by_identity:
+                for rid, ident in by_id.items():
+                    by_identity.setdefault(ident, []).append(rid)
+            matches = by_identity.get(identity, [])
             if len(matches) == 1:
                 resolved.append(matches[0])
         return list(dict.fromkeys(resolved))

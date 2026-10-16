@@ -366,7 +366,12 @@ class SessionSchemaMixin:
             for name in _FTS_BASE_TRIGGERS:
                 cursor.execute(f"DROP TRIGGER IF EXISTS {name}")
             cursor.execute("DROP TABLE IF EXISTS messages_fts")
-            self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
+            # executescript (via _ensure_fts_schema) implicitly COMMITs the open
+            # fts_align_empty savepoint on the autocommit connection, so the
+            # RELEASE — and the ROLLBACK TO in the handler — die with
+            # "no such savepoint: fts_align_empty", killing every SessionDB open.
+            # Run the DDL statement-by-statement so it stays inside the savepoint.
+            self._execute_ddl_script_transactional(cursor, FTS_SQL)
             if has_messages:
                 cursor.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
             cursor.execute(_CLEAR_REBUILD_MARKERS_SQL)

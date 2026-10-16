@@ -54,15 +54,21 @@ def take_turn_report_path(environ: MutableMapping[str, str] = os.environ) -> str
     return environ.pop(TURN_REPORT_FILE_ENV, None) or None
 
 
-def write_turn_report(path: str | None, *, exit_code: int, error: str = "", reply: str = "") -> None:
-    """Atomically record ``{pid, exit_code, error, reply}`` at *path*; a no-op without a path. Never
-    raises: the report is the spawner's convenience, the turn itself is already persisted. ``reply``
-    is what the run will print — a spawner booking a lingering child from its report relays it."""
+def write_turn_report(path: str | None, *, exit_code: int, error: str = "", reply: str = "",
+                      turn_exit_reason: str = "") -> None:
+    """Atomically record ``{pid, exit_code, error, reply, turn_exit_reason}`` at *path*; a no-op
+    without a path. Never raises: the report is the spawner's convenience, the turn itself is
+    already persisted. ``reply`` is what the run will print — a spawner booking a lingering child
+    from its report relays it. ``turn_exit_reason`` is the loop's typed outcome (e.g.
+    ``max_iterations_reached(60/60)``) — the ONLY machine-readable way a spawner of the ``-q``
+    contract can tell budget exhaustion apart from an ordinary failed turn, since the usage-file
+    report is ``-z``-only."""
     if not path:
         return
     from utils import atomic_json_write
 
-    record = {"pid": os.getpid(), "exit_code": int(exit_code), "error": str(error or ""), "reply": str(reply or "")}
+    record = {"pid": os.getpid(), "exit_code": int(exit_code), "error": str(error or ""), "reply": str(reply or ""),
+              "turn_exit_reason": str(turn_exit_reason or "")}
     # 0600 from creation: the record now carries the turn's answer, like the 0600 query file beside it.
     with contextlib.suppress(Exception):
         atomic_json_write(path, record, indent=None, mode=0o600)

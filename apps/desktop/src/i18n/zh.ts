@@ -3609,7 +3609,7 @@ export const zhOverrides = {
       heartbeatEveryHours: hours => `每 ${hours} 小时`,
       heartbeatEverySeconds: seconds => `每 ${seconds} 秒`,
       heartbeatNext: time => `下次 ${time}`,
-      heartbeatDueWaitingForIdle: '已到期，等待会话空闲',
+      dueWaitingForIdle: '已到期，等待会话空闲',
       heartbeatActions: '心跳操作',
       pauseHeartbeat: '暂停心跳',
       resumeHeartbeat: '恢复心跳',

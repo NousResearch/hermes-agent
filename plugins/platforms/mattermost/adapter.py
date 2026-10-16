@@ -586,7 +586,7 @@ class MattermostAdapter(BasePlatformAdapter):
         from gateway.platforms.base import resolve_channel_prompt
         await self.handle_message(MessageEvent(
             text=message_text, message_type=msg_type, source=source, raw_message=post, message_id=post_id,
-            media_urls=media_urls or None, media_types=media_types or None,
+            media_urls=media_urls, media_types=media_types,
             channel_prompt=resolve_channel_prompt(self.config.extra, channel_id, None)))
 
 

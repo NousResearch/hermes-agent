@@ -1048,7 +1048,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 ):
                     self._restore_telegram_thread_id_after_split(agent_session_id)
                 runner._sync_telegram_topic_binding(src, entry, reason="agent-run-compression")
-        runner._sync_session_model_from_agent(agent_session_id, agent)
+        from gateway.session_cli_turn import cli_turn
+        if not cli_turn(ctx.inbound_message_id).get("model_override"):
+            # A `/model --once` / `/moa` turn ran another route for this admission only: the row keeps
+            # the session's model, or a /resume would come back on the one-turn model.
+            runner._sync_session_model_from_agent(agent_session_id, agent)
         # history_offset=0 whenever the agent's message list lost the original history prefix
         # (split OR in-place compaction): the returned `messages` is the compacted set, persist all
         # of it; slicing past the pre-compaction length would drop everything.

@@ -1483,6 +1483,24 @@ _REAL_INSTALLED_GUI_APPS = sorted({
 
 
 @pytest.fixture(autouse=True)
+def _forbid_real_user_path_writes(monkeypatch):
+    """Fail a test that would add an entry to the real Windows User PATH.
+
+    The registry has no temporary-home equivalent: a test home that reached
+    these writers stayed on the developer's PATH after the run. Tests of the
+    writers' callers inject fakes (``write_user_path=``) or stub them.
+    """
+    if sys.platform != "win32":
+        return
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("TEST BUG: write to the real Windows User PATH (HKCU\\Environment)")
+
+    monkeypatch.setattr("hermes_cli._launchers._register_windows_user_path", refuse)
+    monkeypatch.setattr("hermes_cli._install_repair._write_user_path_raw", refuse)
+
+
+@pytest.fixture(autouse=True)
 def _forbid_real_hermes_home_io(monkeypatch, request):
     """Guard Python file/metadata/deletion calls and SQLite against real state.
 

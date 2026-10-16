@@ -14,9 +14,25 @@ from hermes_state_keys import admission_fingerprint
 
 
 class RuntimeStoreError(ValueError):
-    def __init__(self, reason: str):
+    """A refusal by the state authority. ``reason`` is the bounded wire code (callers compare it as a
+    string); ``field`` and ``detail`` name the check that fired and why, so a client and the gateway
+    log can tell the reasons' many checks apart instead of reporting the bare code."""
+
+    def __init__(self, reason: str, *, field: str | None = None, detail: str | None = None):
         self.reason = reason
+        self.field = _one_line(field, 80)
+        self.detail = _one_line(detail, 160)
         super().__init__(reason)
+
+
+def _one_line(value, limit):
+    """A refusal's ``field``/``detail`` as the log line and the client frame carry it: either may hold
+    client text, so whitespace collapses to single spaces, other non-printables drop (no forged log
+    lines), and the length is bounded below the client's frame limit."""
+    if value is None:
+        return None
+    text = ''.join(ch for ch in ' '.join(str(value).split()) if ch.isprintable())
+    return text[:limit] or None
 
 
 def _text(value):
@@ -149,6 +165,13 @@ def get_session_admission(db, *, admission_id: str) -> dict | None:
         from hermes_state_terminal import terminal_admission
         row = conn.execute('SELECT * FROM session_admissions WHERE admission_id=?', (admission_id,)).fetchone()
         return _row(row if row is not None else terminal_admission(conn, admission_id))
+
+
+def find_session_admission(db, *, principal_id: str, session_id: str, request_id: str) -> dict | None:
+    """The admission at its exact durable identity: the UNIQUE (principal, target, request) key."""
+    with db._read_ctx() as conn:
+        return _row(conn.execute('SELECT * FROM session_admissions WHERE principal_id=? AND target_session_id=? '
+                                 'AND request_id=?', (principal_id, session_id, request_id)).fetchone())
 
 
 def list_session_admissions(db, *, session_id: str, pending_only: bool = True) -> list[dict]:
@@ -299,7 +322,12 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
             _authorize_write(conn)
         if _prepare_only:
             from hermes_state_mutation_prepared import local_snapshot
-            return {'snapshot': local_snapshot(db, conn, session_id)}
+            snapshot = local_snapshot(db, conn, session_id)
+            if operation == 'branch':
+                # The branch commit's own idle rule (queued input too), before the owner starts servers.
+                from hermes_state_mutation_guards import require_idle
+                require_idle(db, conn, list({session_id, snapshot['target']}))
+            return {'snapshot': snapshot}
         affected, projection = apply_action(db, conn, session_id, operation, payload, prepared=_prepared)
         conn.executemany('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?',
                          [(target,) for target in affected])

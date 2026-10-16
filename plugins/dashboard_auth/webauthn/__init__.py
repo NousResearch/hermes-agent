@@ -504,7 +504,8 @@ class WebauthnDashboardAuthProvider(NonInteractiveMixin, DashboardAuthProvider):
             if new_count and previous and new_count <= previous:
                 logger.warning(
                     "dashboard-auth-webauthn: sign count did not increase for %s… "
-                    "(%s -> %s); possible cloned authenticator, refusing silently",
+                    "(%s -> %s); counter untrustworthy (synced passkeys and 0-only "
+                    "authenticators are exempt by design) — accepted, not enforced",
                     credential_id_hex[:16], previous, new_count)
             if new_count == previous:
                 return

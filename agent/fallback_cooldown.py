@@ -42,6 +42,20 @@ def switch_deferred_by_reset(agent, reason: FailoverReason | None, reset_at) -> 
     return True
 
 
+def sticky_session_holds_fallback(agent) -> bool:
+    """Opt-in ``fallback.sticky_session`` (default off, #23094): a provider fallback that fired in
+    this session stays until the session changes, instead of the primary coming back next turn.
+    Every lane swap re-sends the whole prefix uncached, so turn-scoped fallback pays twice per
+    incident, and on every turn while a primary keeps failing auth. ``/new``, ``/resume``, a new
+    agent or a ``/model`` switch ends it; a ``/model --once`` restore is not a fallback."""
+    if not getattr(agent, "_provider_fallback_active", False):
+        return False
+    if getattr(agent, "_provider_fallback_session", None) != getattr(agent, "session_id", None):
+        return False
+    from hermes_cli.config import load_config_readonly
+    return bool((load_config_readonly().get("fallback") or {}).get("sticky_session"))
+
+
 def _arm_rate_limit_cooldown(
     agent, reason: FailoverReason | None, reset_at=None,
 ) -> int | None:

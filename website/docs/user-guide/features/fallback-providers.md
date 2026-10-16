@@ -44,11 +44,13 @@ When a rate-limit response names its reset time, the primary is benched until ex
 ```yaml
 fallback:
   min_switch_reset_seconds: 120   # 0 (default) = always switch
+  sticky_session: true            # false (default) = retry the primary every turn
 ```
 
 | Key | Default | Effect |
 |-----|---------|--------|
 | `fallback.min_switch_reset_seconds` | `0` (off) | A rate-limited primary whose declared reset is sooner than this many seconds is not swapped for a fallback; the retry backoff waits out the window instead. |
+| `fallback.sticky_session` | `false` | Once a fallback fires, the session stays on it until the session changes (`/new`, `/resume`, a fresh agent) or you run `/model`, instead of retrying the primary at the next turn. See [Per-Turn, Not Per-Session](#when-fallback-triggers) below. |
 
 Gemini fallback entries accept `gemini`, `google`, `google-gemini`, and
 `google-ai-studio`. On Google's native API endpoint, all use the native Gemini
@@ -148,6 +150,8 @@ Prompt caches are keyed to the model (and on most providers, the account) servin
 
 :::info Per-Turn, Not Per-Session
 Fallback is **turn-scoped**: each new user message starts with the primary model restored. If the primary fails mid-turn, fallback activates for that turn only. On the next message, Hermes tries the primary again. Within a single turn, fallback activates at most once — if the fallback also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops within a turn while giving the primary model a fresh chance every turn.
+
+Each switch costs a full prompt-cache rewrite, so a turn-scoped incident pays twice (onto the fallback, then back to the primary), and a primary that keeps failing auth pays on every turn. Set `fallback.sticky_session: true` to keep the session on the fallback once it fires. The session returns to the primary when it changes (`/new`, `/resume`, a fresh agent, or a compression that starts a new session id) or on `/model`. Gateway chats do not reset on their own, so a sticky chat stays on the fallback until you run `/new` or `/model`. If the fallback itself fails, the chain advances as usual.
 
 The per-turn retry is **reset-aware**: when the primary's credentials report a rate-limit reset time that hasn't elapsed yet (subscription windows like Claude Pro/Max's 5-hour blocks or Codex weekly limits report these as hours or days), Hermes skips the doomed retry and stays on the fallback until the reset passes — avoiding two pointless provider switches (and two prompt-cache invalidations) per turn. Expiry makes the primary eligible for a later retry; it does not schedule a retry or guarantee recovery. Transient 429s without a reset time use an exponential cooldown.
 
@@ -449,7 +453,7 @@ To keep fallback for a job, leave it unpinned and choose its model with `cron.mo
 
 | Feature | Fallback Mechanism | Config Location |
 |---------|-------------------|----------------|
-| Main agent model | `fallback_providers` in config.yaml — per-turn failover on errors (primary restored each turn) | `fallback_providers:` (top-level list) |
+| Main agent model | `fallback_providers` in config.yaml — per-turn failover on errors (primary restored each turn, or kept for the session with `fallback.sticky_session`) | `fallback_providers:` (top-level list) |
 | Auxiliary tasks (any) — auto users | Full auto-detection chain (main agent model first, then provider chain) on capacity errors | `auxiliary.<task>.provider: auto` |
 | Auxiliary tasks (any) — explicit provider | `fallback_chain` (if set) → main agent model → warn + raise, on capacity errors; auth errors (401) walk `fallback_chain` only | `auxiliary.<task>.fallback_chain` |
 | Vision | Layered (see above) + internal OpenRouter retry | `auxiliary.vision` |

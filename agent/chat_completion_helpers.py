@@ -2123,9 +2123,9 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
                 remaining = max(0, math.ceil(agent._rate_limited_until - time.monotonic()))
                 notice += f" Primary retry eligible in ~{remaining} s; recovery is not guaranteed."
             _buffer_fallback_notice(agent, notice)
-            # ``_fallback_activated`` is also reused by `/model --once` restoration; separate
-            # provenance so the restore path only emits a recovery notice after a real fallback.
+            # Real-fallback provenance (``_fallback_activated`` is shared with `/model --once`) + its session.
             agent._provider_fallback_active = True
+            agent._provider_fallback_session = getattr(agent, "session_id", None)
             agent._provider_fallback_route = (str(fb_model), str(fb_provider))
             _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb_provider)
             from hermes_cli.observability.shared_metrics_events import record_fallback

@@ -1436,14 +1436,14 @@ def restore_primary_runtime(agent) -> bool:
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_model = str((rt or {}).get("model") or "").strip()
-    from agent.fallback_cooldown import _is_entitlement_rejected
+    from agent.fallback_cooldown import _is_entitlement_rejected, sticky_session_holds_fallback
     from hermes_cli.chat_catalog import is_known_non_chat_model
-    if primary_model and (
+    if sticky_session_holds_fallback(agent) or (primary_model and (
         _is_entitlement_rejected(agent, primary_provider, primary_model)
         or is_known_non_chat_model(primary_model)
-    ):
-        # Unentitled (#106475) or already known non-chat: restoring would announce a recovery
-        # that was never verified and re-fail every turn. Stay on the fallback.
+    )):
+        # Opted into a session-sticky fallback, or the primary is unentitled (#106475) / known
+        # non-chat (restoring would announce an unverified recovery and re-fail). Stay on the fallback.
         return False
     primary_runtime_base_url = str((rt or {}).get("base_url") or "")
 

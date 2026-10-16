@@ -3,6 +3,7 @@
 
 import mimetypes
 import os
+import re
 import stat
 import urllib.request
 from dataclasses import dataclass
@@ -32,6 +33,15 @@ def _resolve_fs_candidate(raw: str, *, cwd: str | None = None) -> Path:
     return candidate.resolve(strict=False)
 
 
+def _wsl_unc_distro(raw: str) -> str | None:
+    """Return the distro segment of a ``\\\\wsl.localhost\\<distro>\\...`` (or ``\\\\wsl$``) UNC."""
+    normalized = str(raw or "").strip().replace("/", "\\")
+    match = re.match(
+        r"^\\\\wsl(?:\.localhost|\$)\\([^\\]+)\\", normalized, re.IGNORECASE
+    )
+    return match.group(1) if match else None
+
+
 def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = True) -> Path:
     raw = str(raw_path or "").strip()
     if not raw:
@@ -39,6 +49,26 @@ def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = T
     if "\0" in raw:
         raise HTTPException(status_code=400, detail="Invalid path")
     try:
+        from hermes_constants import is_wsl, wsl_unc_path_to_posix
+
+        if is_wsl():
+            # A Windows desktop client addressing this gateway's own distro sends
+            # \\wsl.localhost\<distro>\... UNCs; Path() would keep the backslashes
+            # as literal filename characters and every read would 404 (#129308).
+            # A UNC naming a *different* distro is refused fail-closed: the
+            # translation drops the distro segment, which would retarget the path
+            # onto this distro's filesystem (reads return the wrong file, writes
+            # clobber it). Off WSL the UNC stays a native path, exactly as before.
+            posix = wsl_unc_path_to_posix(raw)
+            if posix is not None:
+                distro = _wsl_unc_distro(raw)
+                local_distro = os.environ.get("WSL_DISTRO_NAME", "").strip()
+                if not distro or not local_distro or distro.casefold() != local_distro.casefold():
+                    raise HTTPException(
+                        status_code=400,
+                        detail="UNC path targets a WSL distro other than the gateway's",
+                    )
+                raw = posix
         if raw.lower().startswith("file:"):
             parsed = urllib.parse.urlparse(raw)
             uri_path = parsed.path

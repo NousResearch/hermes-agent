@@ -1517,6 +1517,14 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
         if toolsets_list is None:
             from hermes_cli.tools_config import _get_platform_tools
             toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
+            # Saved names may outlive an uninstalled plugin. Unlike an explicit -t,
+            # they must not turn the gateway's strict launch validation into a startup failure.
+            from hermes_cli.toolset_validation import saved_toolset_resolver
+            is_saved_toolset = saved_toolset_resolver(CLI_CONFIG)
+            stale = [name for name in toolsets_list if not is_saved_toolset(name)]
+            if stale:
+                logger.warning("Ignoring unavailable saved CLI toolsets: %s", ", ".join(stale))
+                toolsets_list = [name for name in toolsets_list if name not in stale]
 
     parsed_skills = _parse_skills_argument(skills)
 

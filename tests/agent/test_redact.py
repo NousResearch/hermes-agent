@@ -273,6 +273,13 @@ class TestControlCharSplitTokens:
         result = redact_sensitive_text(text, force=True)
         assert "NOT_TOKEN_TEXT" in result
 
+    def test_orphan_esc_before_csi_does_not_leak_full_credential(self):
+        text = "sk-" + "a" * 5 + "\x1b" + "x" * 3 + "\x1b[31m" + "b" * 10
+        result = redact_sensitive_text(text, force=True)
+        assert result != text
+        assert "a" * 5 not in result
+        assert "b" * 10 not in result
+
     def test_mixed_csi_and_bare_control_split_masked(self):
         # Follow-up review finding on #81012: one complete CSI sequence PLUS
         # one bare/zero-width split inside the SAME credential must still

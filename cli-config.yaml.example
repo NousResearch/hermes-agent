@@ -448,6 +448,8 @@ terminal:
 #   ssh_user: "myuser"
 #   ssh_port: 22
 #   ssh_key: "~/.ssh/id_rsa"  # Optional - uses ssh-agent if not specified
+#   files_via: "local"  # Optional - desktop/dashboard file reads use this host's
+#                       # filesystem instead of SSH (when the workspace is a shared mount)
 
 # -----------------------------------------------------------------------------
 # OPTION 3: Docker container

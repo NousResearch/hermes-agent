@@ -1923,6 +1923,14 @@ DEFAULT_CONFIG = {
         # on a 1 GiB VM. On hosts where total memory can't be read (macOS/Windows), unset falls back to no
         # cap. Set an explicit value to override the derived default in either direction.
         "max_in_progress": None,
+        # How many of those shared slots the READY lane must leave for the review lane whenever
+        # spawnable review work is waiting. The ready loop runs first and would otherwise spend the
+        # whole budget under a sustained ready backlog, so a finished card sits in 'review' for the
+        # full duration of the ready work ahead of it. The hold is sized to the reviews actually
+        # waiting (never to this number blindly), so one pending review cannot pin the ready lane to
+        # zero. Raise it to keep N reviewers running during a ready rush; 0 disables the reservation
+        # and lets reviews compete for leftover budget only.
+        "review_reserved_slots": 1,
         # Per-profile cap: positive int = no single profile runs more than N workers even if the
         # global caps allow; blocked tasks defer to the next tick. None = no per-profile cap. Useful
         # when fan-out would saturate one profile's model/API quota/browser pool.

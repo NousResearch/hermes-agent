@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import {
+  createInitialQuickComposerState,
   initialQuickComposerState,
+  loadPersistedQuickEntryTarget,
+  persistQuickEntryTarget,
+  QUICK_ENTRY_TARGET_STORAGE_KEY,
   QUICK_TARGET_CURRENT,
   QUICK_TARGET_NEW,
   type QuickComposerEvent,
@@ -452,5 +456,40 @@ describe('quickComposerReducer', () => {
     ])
     expect(state.draft).toBe('first prompt')
     expect(state.error).toBe('first failed')
+  })
+
+  describe('persisted target preference', () => {
+    afterEach(() => {
+      window.localStorage?.removeItem(QUICK_ENTRY_TARGET_STORAGE_KEY)
+    })
+
+    it('a fresh composer stays on the current chat when nothing was persisted', () => {
+      expect(createInitialQuickComposerState().target).toBe(QUICK_TARGET_CURRENT)
+    })
+
+    it('a fresh composer honors a persisted "new session" choice', () => {
+      window.localStorage?.setItem(QUICK_ENTRY_TARGET_STORAGE_KEY, QUICK_TARGET_NEW)
+
+      expect(createInitialQuickComposerState().target).toBe(QUICK_TARGET_NEW)
+    })
+
+    it('persistQuickEntryTarget roundtrips to loadPersistedQuickEntryTarget', () => {
+      persistQuickEntryTarget('session-xyz')
+
+      expect(loadPersistedQuickEntryTarget()).toBe('session-xyz')
+    })
+
+    it('re-summoning with resetTarget applies the stored target preference', () => {
+      window.localStorage?.setItem(QUICK_ENTRY_TARGET_STORAGE_KEY, QUICK_TARGET_NEW)
+
+      const { state } = run([
+        connect,
+        { draft: 'something', type: 'edit' },
+        { resetTarget: loadPersistedQuickEntryTarget(), type: 'shown' }
+      ])
+
+      expect(state.target).toBe(QUICK_TARGET_NEW)
+      expect(state.draft).toBe('')
+    })
   })
 })

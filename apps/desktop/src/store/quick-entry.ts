@@ -111,6 +111,38 @@ export const QUICK_TARGET_CURRENT = 'current'
 export const QUICK_TARGET_NEW = 'new'
 
 /**
+ * localStorage key remembering the user's last-chosen quick-entry target
+ * ('current' | 'new' | a stored session id). Defaults to QUICK_TARGET_NEW.
+ */
+export const QUICK_ENTRY_TARGET_STORAGE_KEY = 'hermes.quick-entry.target'
+
+/**
+ * Read the persisted target choice. Falls back to the current chat when the
+ * value is absent, unreadable, or empty — the shipped default stays "send to
+ * the chat in front of you".
+ */
+export function loadPersistedQuickEntryTarget(): string {
+  try {
+    const raw = typeof window !== 'undefined' ? window.localStorage?.getItem(QUICK_ENTRY_TARGET_STORAGE_KEY) : null
+
+    return raw && raw.trim() ? raw : QUICK_TARGET_CURRENT
+  } catch {
+    return QUICK_TARGET_CURRENT
+  }
+}
+
+/** Remember the picker choice across summons. Non-fatal when storage fails. */
+export function persistQuickEntryTarget(target: string): void {
+  try {
+    if (typeof window !== 'undefined') {
+      window.localStorage?.setItem(QUICK_ENTRY_TARGET_STORAGE_KEY, target)
+    }
+  } catch {
+    // Storage unavailable — the picker still works for this window.
+  }
+}
+
+/**
  * The primary renderer's push into the quick window: is the gateway usable, and
  * which recent sessions can be targeted. The quick window has NO gateway of its
  * own, so this pushed copy is its only view of backend truth — it starts
@@ -174,16 +206,16 @@ export interface QuickComposerState {
 
 export type QuickComposerEvent =
   | { type: 'blur' }
-  | { type: 'dismiss' }
-  | { type: 'edit'; draft: string }
-  | { type: 'shown' }
-  | { type: 'state'; connected: boolean; sessions: QuickEntrySessionOption[] }
-  | { type: 'submit'; submitId?: number }
-  | { type: 'submit-error'; message: string; submitId: number }
+  | { resetTarget?: string; type: 'dismiss' }
+  | { draft: string; type: 'edit' }
+  | { resetTarget?: string; type: 'shown' }
+  | { connected: boolean; sessions: QuickEntrySessionOption[]; type: 'state' }
+  | { submitId?: number; type: 'submit' }
+  | { message: string; submitId: number; type: 'submit-error' }
   | { message: string; submitId: number; type: 'submit-unknown' }
   | { message: string; ok: boolean; type: 'late-result' }
-  | { type: 'submit-ok'; submitId: number }
-  | { type: 'target'; target: string }
+  | { submitId: number; type: 'submit-ok' }
+  | { target: string; type: 'target' }
 
 /**
  * Map a relay result to the composer event that reconciles it. A timeout is an
@@ -232,6 +264,14 @@ export const initialQuickComposerState: QuickComposerState = {
   visible: true
 }
 
+/**
+ * The initial state for a freshly created quick window, honoring the user's
+ * persisted target choice (defaults to new session).
+ */
+export function createInitialQuickComposerState(): QuickComposerState {
+  return { ...initialQuickComposerState, target: loadPersistedQuickEntryTarget() }
+}
+
 export function quickComposerReducer(state: QuickComposerState, event: QuickComposerEvent): QuickComposerTransition {
   switch (event.type) {
     case 'blur':
@@ -253,7 +293,7 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
               orphanedFailure: null,
               pendingSubmitId: null,
               submitting: false,
-              target: QUICK_TARGET_CURRENT,
+              target: 'resetTarget' in event ? (event.resetTarget ?? QUICK_TARGET_CURRENT) : QUICK_TARGET_CURRENT,
               unknownSubmitId: null,
               visible: false
             }
@@ -283,7 +323,7 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
           orphanedFailure: null,
           pendingSubmitId: null,
           submitting: false,
-          target: QUICK_TARGET_CURRENT,
+          target: 'resetTarget' in event ? (event.resetTarget ?? QUICK_TARGET_CURRENT) : QUICK_TARGET_CURRENT,
           unknownSubmitId: null,
           visible: true
         }

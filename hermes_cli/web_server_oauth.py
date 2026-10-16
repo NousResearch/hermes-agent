@@ -94,11 +94,20 @@ def _claude_code_only_status() -> dict[str, Any]:
 
 def _external_process_cli_command(provider_id: str, default: str) -> str:
     """Render an external-process provider's sign-in command with the CLI actually configured
-    (its profile's ``process_command_env_vars`` override); others get ``default`` untouched."""
+    (``HERMES_COPILOT_ACP_COMMAND`` / ``COPILOT_CLI_PATH``, or the profile's
+    ``process_command_env_vars`` override); others get ``default`` untouched.
+
+    Only a default that names the provider's *own* CLI is rewritten (``copilot login`` →
+    ``/path/to/copilot login``). A plugin-registered external-process provider signs in through
+    Hermes itself, so the accounts catalog synthesizes ``hermes auth add <id>`` for it — replacing
+    that command's verb with the provider's ``process_command`` (the interpreter driving an ACP
+    subprocess, not a login CLI) corrupts it into ``<python> auth add <id>``."""
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY, get_external_process_provider_status
         pconfig = PROVIDER_REGISTRY.get(provider_id)
         if not pconfig or pconfig.auth_type != "external_process":
+            return default
+        if default.split(" ", 1)[0].lower() in {"hermes", "hermes.exe"}:
             return default
         status = get_external_process_provider_status(provider_id) or {}
         command = str(status.get("command") or "").strip()

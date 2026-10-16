@@ -393,6 +393,65 @@ def _payload(ev: Any, key: str) -> Any:
     return ev.payload.get(key) if ev.payload and ev.payload.get(key) else None
 
 
+def _fresh_events(conn, task, events):
+    """Reject obsolete failure/decision envelopes using ordered board receipts.
+
+    Timestamps have second precision; lifecycle event IDs fence even an
+    unblock/reblock or two worker generations within the same second.
+    """
+    if task is None:
+        return []
+    guarded = {"timed_out", "crashed", "gave_up", "blocked", "block_loop_detected"}
+    kinds = (*TERMINAL_KINDS, "claimed", "promoted", "reclaimed")
+    latest = conn.execute(
+        "SELECT id FROM task_events WHERE task_id = ? AND kind IN ("
+        + ",".join("?" for _ in kinds) + ") ORDER BY id DESC LIMIT 1",
+        (task.id, *kinds),
+    ).fetchone()
+    latest_run = conn.execute(
+        "SELECT id, outcome, ended_at FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+        (task.id,),
+    ).fetchone()
+    accepted = []
+    for ev in events:
+        if ev.kind not in guarded:
+            accepted.append(ev)
+            continue
+        if latest is None or ev.id != latest["id"] or task.current_run_id is not None:
+            continue
+        if ev.kind in {"timed_out", "crashed"}:
+            if (latest_run is None or ev.run_id != latest_run["id"]
+                    or latest_run["ended_at"] is None or latest_run["outcome"] != ev.kind
+                    or task.status not in {"ready", "review"}
+                    or _payload(ev, "retry_status") != task.status):
+                continue
+            original = conn.execute(
+                "SELECT id FROM task_events WHERE task_id = ? AND run_id = ? "
+                "AND kind = ? ORDER BY id LIMIT 1", (task.id, ev.run_id, ev.kind),
+            ).fetchone()
+            if original is None or original["id"] != ev.id:
+                continue
+        elif task.status not in {"blocked", "triage"}:
+            continue
+        accepted.append(ev)
+    return accepted
+
+
+def _refresh_delivery(d):
+    from hermes_cli import kanban_db as kb
+    # Same pin-first fence as collect/cursor ops: an enumerated board slug must
+    # resolve through HERMES_KANBAN_DB on a pinned box, or this re-read opens a
+    # per-slug empty DB and drops every envelope as missing.
+    with _pin_first():
+        conn = _kbc().connect(board=d.get("board"))
+        try:
+            task = kb.get_task(conn, d["sub"]["task_id"])
+            return task, _fresh_events(conn, task, d["events"])
+        finally:
+            conn.close()
+
+
+
 def _clip(ev: Any, key: str, msg_key: str, limit: int) -> str:
     """Catalog message ``msg_key`` (``{value}`` placeholder) rendered with the truncated payload
     value, or ``""`` when absent."""
@@ -413,9 +472,9 @@ def _fmt_completed(ev, n) -> tuple:
     wake_handoff = None
     payload_summary = _payload(ev, "summary")
     if payload_summary:
-        wake_handoff = _first_line(str(payload_summary), 200)
+        wake_handoff = str(payload_summary)
     elif n.task and n.task.result:
-        wake_handoff = _first_line(n.task.result, 160)
+        wake_handoff = n.task.result
     handoff = f"\n{wake_handoff}" if wake_handoff is not None else ""
     return t("gateway.kanban.ping.completed", head=n.head, title=n.title, handoff=handoff), wake_handoff, None
 
@@ -766,6 +825,10 @@ class _KanbanNotification:
         return True
 
     async def deliver(self) -> None:
+        self.task, self.d["events"] = await _to_thread_process_service(_refresh_delivery, self.d)
+        if not self.d["events"]:
+            await self.advance()
+            return
         try:
             self.plat = self.platform_cls(self.platform_str)
         except ValueError:
@@ -805,6 +868,9 @@ class _KanbanNotification:
         async with owner_scope:
             if not await self._send_pings():
                 return
+            # Transport awaits can overlap a human resolving an approval or a
+            # dispatcher claiming the retry. Never wake from the older snapshot.
+            self.task, self.d["events"] = await _to_thread_process_service(_refresh_delivery, self.d)
             # All text pings delivered (or skipped for non-push / wake-only).
             original_events = self.d["events"]
             from gateway.warning_notifications import warning_notifications_enabled

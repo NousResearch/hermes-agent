@@ -2,7 +2,8 @@
 home-channel prompt for the low-disk auto-prune decision (see ``hermes_cli/prune_advisor.py``).
 
 A headless gateway on a small VPS is where a disk fills up, and its owner may never open the CLI,
-so the question goes to each served profile's home channel. It is posted at most once per
+so the question goes to each served profile's home channel; Desktop and Ink TUI viewers of local
+sessions get it as a notice. It is posted at most once per
 snooze window per profile: posting records the snooze, and ``/autoprune on|off`` ends it for good.
 Runs from the housekeeping thread; the send is scheduled onto the gateway loop.
 """
@@ -42,28 +43,65 @@ def housekeeping_media_caches() -> None:
 
 
 def maybe_post_auto_prune_prompt(runner, loop) -> None:
-    """One housekeeping tick: post the prompt to every served profile whose disk is low and who
-    has not decided. Cheap when nothing is due (two syscalls + a YAML read per profile)."""
+    """One housekeeping tick: post the prompt to every served profile that has a home channel, a
+    low disk and no decision yet. Cheap when nothing is due (two syscalls + a YAML read per
+    profile); the database estimate runs only for a profile that can actually receive it."""
     if runner is None or loop is None:
         return
     from agent.async_utils import safe_schedule_threadsafe
     from hermes_cli import prune_advisor
     from hermes_constants import get_routing_process_hermes_home
 
+    reachable = {profile for profile, *_rest in runner._served_home_channel_transports()}
     homes: dict = {None: get_routing_process_hermes_home()}
     homes.update(getattr(runner, "_served_profile_homes", None) or {})
     for profile, home in homes.items():
-        if prune_advisor.should_ask(Path(home)) is None:
+        if profile not in reachable or prune_advisor.should_ask(Path(home)) is None:
             continue
         advice = prune_advisor.advise(Path(home))
         if advice is None:
             continue
         fut = safe_schedule_threadsafe(_post(runner, profile, home, advice), loop, logger=logger,
                                        log_message="Auto-prune prompt scheduling error")
-        # Snooze only on a delivered post: a gateway with no home channel (the one a CLI
-        # auto-starts) must not swallow the question the CLI/TUI is about to ask.
+        # Snooze only on a delivered post: a send that failed must not swallow the question.
         if fut is not None and fut.result(timeout=60):
             prune_advisor.snooze(Path(home))
+
+
+_LOCAL_NOTIFIED: set[str] = set()
+
+
+async def publish_local_auto_prune_notice(authority, ref) -> None:
+    """Desktop / Ink TUI sessions (``AuthorityConnection.resume``): one sticky ``notification.show``
+    per profile per gateway process while the disk is low and auto-prune is undecided. The classic
+    CLI asks at its own startup, so its sessions are skipped here."""
+    import asyncio
+    from gateway.config import Platform
+    from gateway.session_policy import policy_for_source
+    from hermes_cli import prune_advisor
+    from hermes_state_runtime import RuntimeStoreError
+
+    live = authority.sessions.get(ref.session_id)
+    source = getattr(live, "source", None)
+    if source is None or source.platform != Platform.LOCAL:
+        return
+    try:
+        policy = policy_for_source(authority.runner, source)
+    except RuntimeStoreError:  # policy not restored yet: this viewer gets no notice, the next one may
+        return
+    if policy is None or policy.source not in {"tui", "gui"}:
+        return
+    home = Path(authority.db.db_path).parent
+    if str(home) in _LOCAL_NOTIFIED or prune_advisor.should_ask(home) is None:
+        return
+    _LOCAL_NOTIFIED.add(str(home))
+    advice = await asyncio.to_thread(prune_advisor.advise, home)
+    if advice is None:
+        return
+    live.event_stream.publish(ref.session_id, {
+        "text": "⚠ " + " ".join(prune_advisor.advice_lines(advice)), "level": "warn", "kind": "sticky",
+        "ttl_ms": None, "key": "sessions.auto_prune", "id": "sessions.auto_prune"},
+        event_type="notification.show")
 
 
 async def _post(runner, profile, home, advice) -> bool:

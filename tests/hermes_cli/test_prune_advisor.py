@@ -60,3 +60,6 @@ def test_prompt_says_pruning_will_not_help_when_nothing_is_old_enough(home, monk
     advice = prune_advisor.advise(home)
     assert advice.prunable_sessions == 1
     assert "will not help" not in "\n".join(prune_advisor.advice_lines(advice))
+    # The estimate reads THIS home's settings; an explicit 0-day retention is kept, not defaulted.
+    (home / "config.yaml").write_text("sessions:\n  retention_days: 0\n", encoding="utf-8")
+    assert prune_advisor.advise(home).retention_days == 0

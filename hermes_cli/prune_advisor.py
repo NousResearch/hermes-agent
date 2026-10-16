@@ -56,6 +56,8 @@ class Advice:
     prunable_sessions: int
     total_sessions: int
     reclaim_bytes: int  # estimate: the prunable share of messages times the file size
+    estimate_ok: bool = True  # False when state.db could not be read (counts are unknown, not zero)
+    vacuum_after_prune: bool = True
 
     @property
     def helps(self) -> bool:
@@ -86,15 +88,21 @@ def disk_snapshot(home: Optional[Path] = None) -> Optional[DiskSnapshot]:
     return DiskSnapshot(size, usage.free, usage.total)
 
 
-def undecided(home: Optional[Path] = None) -> bool:
-    """True while the user's own config.yaml has no ``sessions.auto_prune`` (default not chosen)."""
+def _user_sessions_config(home: Optional[Path]) -> Optional[dict]:
+    """The ``sessions:`` block of *home*'s own config.yaml ({} when absent); None when unreadable."""
     import hermes_yaml as yaml
     from hermes_cli.config import read_user_config_raw
     try:
         sessions = read_user_config_raw(_home(home) / "config.yaml").get("sessions")
-    except (OSError, ValueError, yaml.YAMLError):  # unreadable/broken config: never nag on top of it
-        return False
-    return not (isinstance(sessions, dict) and "auto_prune" in sessions)
+    except (OSError, ValueError, yaml.YAMLError):
+        return None
+    return sessions if isinstance(sessions, dict) else {}
+
+
+def undecided(home: Optional[Path] = None) -> bool:
+    """True while the user's own config.yaml has no ``sessions.auto_prune`` (default not chosen)."""
+    sessions = _user_sessions_config(home)
+    return sessions is not None and "auto_prune" not in sessions  # unreadable config: never nag on it
 
 
 def _snooze_path(home: Optional[Path]) -> Path:
@@ -131,9 +139,13 @@ def advise(home: Optional[Path] = None) -> Optional[Advice]:
     snap = should_ask(home)
     if snap is None:
         return None
-    from hermes_cli.config import load_config_readonly
-    retention = int(((load_config_readonly() or {}).get("sessions") or {}).get("retention_days", 90) or 90)
+    # Read the settings from THIS home's config: gateway housekeeping calls this for every served
+    # profile without entering its scope. Only an explicit key differs from the defaults here.
+    sessions = _user_sessions_config(home) or {}
+    retention = sessions.get("retention_days", 90)
+    retention = retention if isinstance(retention, int) and retention >= 0 else 90
     prunable = total = prunable_msgs = total_msgs = 0
+    estimate_ok = True
     try:
         from hermes_state import SessionDB
         db = SessionDB(db_path=_home(home) / "state.db", read_only=True)
@@ -147,8 +159,10 @@ def advise(home: Optional[Path] = None) -> Optional[Advice]:
             db.close()
     except (sqlite3.Error, OSError, RuntimeError, ValueError) as exc:  # a busy/damaged store: no estimate
         logger.debug("auto-prune advice: reclaim estimate unavailable: %s", exc)
+        estimate_ok = False
     reclaim = int(snap.db_bytes * prunable_msgs / total_msgs) if total_msgs else 0
-    return Advice(snap, retention, int(prunable), int(total), reclaim)
+    return Advice(snap, retention, int(prunable), int(total), reclaim, estimate_ok,
+                  bool(sessions.get("vacuum_after_prune", True)))
 
 
 def _gb(n: int) -> str:
@@ -169,16 +183,22 @@ def advice_lines(advice: Advice, *, command_prefix: str = "/") -> list[str]:
         f"Auto-prune is off. Turning it on deletes ended sessions inactive for more than "
         f"{advice.retention_days} days, once a day (pinned and open sessions are kept).",
     ]
-    if advice.prunable_sessions == 0:
+    if not advice.estimate_ok:
+        lines.append("Could not read state.db to estimate how much pruning would free.")
+    elif advice.prunable_sessions == 0:
         held = (f"none of your {_sessions(advice.total_sessions)} is older than {advice.retention_days} days"
                 if advice.total_sessions else "there is no session history to delete")
         lines.append(f"Pruning will not help right now: {held}. Something else is filling this disk.")
     elif not advice.helps:
-        lines.append(f"Pruning would free only about {_gb(advice.reclaim_bytes)} "
+        lines.append(f"Pruning would remove only about {_gb(advice.reclaim_bytes)} of history "
                      f"({_sessions(advice.prunable_sessions)}), which will not fix this disk on its own.")
     else:
-        lines.append(f"Pruning would free about {_gb(advice.reclaim_bytes)} "
+        lines.append(f"Pruning would remove about {_gb(advice.reclaim_bytes)} of history "
                      f"({advice.prunable_sessions} of {_sessions(advice.total_sessions)}).")
+    if advice.estimate_ok and advice.prunable_sessions:
+        lines.append("The file shrinks when state.db is next compacted (VACUUM), which needs other Hermes "
+                     "windows closed." if advice.vacuum_after_prune else
+                     "sessions.vacuum_after_prune is off, so state.db keeps its size until you run a VACUUM.")
     p = command_prefix
     lines.append(f"{p}autoprune on to enable, {p}autoprune off to keep everything (never asked again), "
                  f"{p}autoprune later to be reminded in a week.")
@@ -244,14 +264,14 @@ def offer_interactive(*, cprint, ask=input) -> Optional[bool]:
         print()
         return None
     answer = answer.strip().lower()
-    if answer in {"y", "yes"}:
-        decide(True)
-        cprint("  ✓ sessions.auto_prune: true")
-        return True
-    if answer in {"n", "no"}:
-        decide(False)
-        cprint("  ✓ sessions.auto_prune: false. You won't be asked again.")
-        return False
+    if answer in {"y", "yes", "n", "no"}:
+        enable = answer.startswith("y")
+        if not decide(enable):
+            cprint("  Could not save sessions.auto_prune; check disk space and config.yaml permissions.")
+            return None
+        cprint("  ✓ sessions.auto_prune: true" if enable else
+               "  ✓ sessions.auto_prune: false. You won't be asked again.")
+        return enable
     snooze()
     cprint("  Later. /autoprune on|off decides it any time.")
     return None

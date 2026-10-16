@@ -617,6 +617,17 @@ if not _pm_repair:
             raise SystemExit(1) from None
         if command_argv(sys.argv[1:])[:1] != ["pm"]:
             print(f"hermes: {exc}; run `hermes pm repair`", file=sys.stderr)
+            from pm.environments import owning_install_root
+
+            checkout = owning_install_root(_root)
+            if checkout is not None:
+                # A supervisor definition naming a generation workspace: repair
+                # cannot help (nothing is committed for that key); the unit must
+                # be regenerated from the stable install launcher (#131164).
+                print("hermes: this tree is a dependency-generation workspace; regenerate any service "
+                      f"definition that references it from the stable launcher: "
+                      f"{checkout / '.hermes' / 'bin' / 'hermes'} gateway install",
+                      file=sys.stderr)
             raise SystemExit(1) from None
 install_happy_eyeballs_socket_connect()
 export_scratch_tmp_env()

@@ -160,6 +160,26 @@ subcommand. Rules:
 - Before adding any new scan heuristic, read #92091 — the gateway control socket replaces scans as
   the primary coordination mechanism; scans are the fallback layer for old/crashed processes.
 
+## Service installs: persisted supervisor commands bind to the install root
+
+systemd units and launchd plists outlive the process that wrote them, so their launch commands may
+only name roots that survive dependency GC and answer for a committed environment — the install's
+checkout, never a dependency-generation tree (#131164: a venv console script runs with `PROJECT_ROOT`
+inside `installs/<key>/environments/<gen>/workspace`, whose own install key has no committed
+environment, so a definition persisted from there crash-loops the service with "no dependency
+environment is committed"). `hermes_cli/gateway_generation_guards.py` owns the contract:
+
+- `owning_install_root()` (`pm/environments.py`) maps a generation tree back to its checkout via the
+  install state's `inputs/.project-root` stamp, validated against the install-key path hash;
+  `_service_install_root()` canonicalizes the root before `generate_systemd_unit`,
+  `_prepare_service_launcher`, and the launchd run-command wrapping persist anything.
+- `_refuse_generation_launcher_service_write()` backstops every persisted write (systemd refresh +
+  install, launchd refresh/install/start self-heal) and refuses what the mapping cannot vouch for,
+  leaving the installed definition untouched. Scans: Exec lines only for units; the launcher binary
+  itself for plists — a PATH value may legitimately carry a generation's bin dir.
+- `hermes pm repair` heals definitions still pointing into a generation tree and reports what stands
+  after the rewrite.
+
 ## Skin engine — what skins customize
 
 | Element | Skin key | Used by |

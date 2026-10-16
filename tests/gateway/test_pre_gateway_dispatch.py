@@ -214,3 +214,43 @@ def test_relay_binding_moves_to_a_text_rewrite_but_never_to_a_new_source():
         carry_callback(rewritten, replace(rewritten, source=copy(rewritten.source), text="c"))
         assert _relay_callback.get()[1] is rewritten
     assert _relay_callback.get() is None
+
+
+@pytest.mark.asyncio
+async def test_admission_execution_never_refires_the_hook_or_drops_the_prompt(monkeypatch):
+    """PLG-5 (#139523): a durable admission's execution rebuilds the event and re-enters
+    ``_handle_message``. The hook already fired at real ingress, so an executing admission must
+    not offer the message again — and a local turn (CLI/Ink/Desktop/ACP), whose only path is
+    admission execution and which ``main`` never offered to this hook, must not be silently
+    dropped or rewritten by a plugin."""
+    import gateway.session_ingress as ingress
+
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "*")
+
+    fired = {"count": 0}
+
+    async def _skip_hook(name, **_kwargs):
+        fired["count"] += 1
+        return [{"action": "skip", "reason": "plugin-handled"}]
+
+    monkeypatch.setattr("hermes_cli.plugins.ainvoke_hook", _skip_hook)
+
+    async def _capture(event, source, _quick_key, _run_generation):
+        return "agent-ok"
+
+    runner, _adapter = _make_runner(Platform.WHATSAPP)
+    runner._handle_message_with_agent = _capture
+
+    # Real ingress: the hook fires once and its skip drops the message (unchanged behavior).
+    assert await runner._handle_message(_make_event("hi")) is None
+    assert fired["count"] == 1
+
+    # Admission execution (a messaging turn's drain, or a local turn's only path): the hook
+    # must not fire again, and the plugin's skip can no longer drop the prompt.
+    token = ingress.executing_admission.set(True)
+    try:
+        assert await runner._handle_message(_make_event("hi")) == "agent-ok"
+    finally:
+        ingress.executing_admission.reset(token)
+    assert fired["count"] == 1

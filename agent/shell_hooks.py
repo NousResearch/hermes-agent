@@ -95,11 +95,39 @@ def _payload_fields(kwargs: dict[str, Any]) -> dict[str, Any]:
         "tool_name": kwargs.get("tool_name"),
         "tool_input": kwargs.get("args") if isinstance(kwargs.get("args"), dict) else None,
         "session_id": kwargs.get("session_id") or kwargs.get("parent_session_id") or "",
+        # Whether this tool call belongs to a CRON RUN'S LINEAGE, not just to the cron agent
+        # itself. ``session_id`` above is the id of whoever CALLS the tool, and a delegate_task
+        # child generates its own (``agent_init._init_session_state``), so a hook scoping itself
+        # with ``session_id`` alone is silently bypassed by delegating: the same write payload
+        # that a cron session is blocked on passes from its child. Measured on both the parent
+        # and the child before this field existed.
+        # The value is read from the ContextVar ``_CronRunScope`` binds for the run, which
+        # ``contextvars.copy_context()`` carries into the agent thread and which
+        # ``delegated_child_context`` does NOT clear — so it holds at any delegation depth and is
+        # empty outside a cron run. The process-env mirror is deliberately not used: it is
+        # last-writer-wins across concurrent sessions, so it both misses a cron child (open
+        # failure) and mislabels an interactive user's child as cron (false positive).
+        "cron_session": _cron_lineage_flag(),
         "cwd": cwd,
         # Resolved at fire time: a multiplexed gateway's hook script must know which profile fired it.
         "profile": get_active_profile_name(),
         "extra": {k: v for k, v in kwargs.items() if k not in _TOP_LEVEL_PAYLOAD_KEYS},
     }
+
+
+def _cron_lineage_flag() -> str:
+    """``"1"`` while this task runs inside a cron job's lineage, else ``""``.
+
+    ContextVar-only (never the ``os.environ`` mirror) and fails CLOSED: any error reading the
+    session context yields ``""``, so a hook gated on it stays inert rather than biting a user
+    session it cannot classify.
+    """
+    try:
+        from gateway.session_context import _UNSET, _VAR_MAP
+        value = _VAR_MAP["HERMES_CRON_SESSION"].get()
+    except Exception:  # health: allow BLE001 -- fails CLOSED: an unclassifiable context reads as not-cron
+        return ""
+    return "1" if (value is not _UNSET and str(value or "").strip().lower() in _TRUTHY) else ""
 
 
 class _ToolMatcherMixin:

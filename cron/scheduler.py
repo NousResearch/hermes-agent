@@ -530,6 +530,11 @@ SILENT_MARKER = "[SILENT]"
 # report that merely quotes the token cannot turn a healthy run into a failed one.
 CRON_FAILURE_MARKER = "[CRON_FAILURE]"
 
+# Final response of a monitor no_change tick: the run is recorded as a success but is NEUTRAL —
+# it says nothing about the job's real work, so it must not resolve open failure incidents nor
+# reset ``failure_streak`` (only a run whose work actually happened recovers the job).
+NO_CHANGE_TICK_RESPONSE = "[CRON_NO_CHANGE]"
+
 
 def _cron_failure_marker_error(text: str) -> Optional[str]:
     """Return failure evidence when an agent response declares a cron failure.
@@ -1602,10 +1607,12 @@ def _apply_monitor_gate(
             False, f"{header}**Status:** monitor source failed\n\n{_mon.error}\n", _mon_alert, _mon.error,
         ), extra_prompt, None
     if not _mon.changed:
-        # Unchanged: silent no_change tick (ledger doc kept; SILENT_MARKER blocks delivery).
+        # Unchanged: silent no_change tick (ledger doc kept; the marker blocks delivery). The
+        # dedicated response (not bare SILENT_MARKER) marks the tick NEUTRAL downstream: no
+        # incident resolution, no failure_streak reset (#140178).
         logger.info("Job '%s': monitor output unchanged — suppressing agent run", job_id)
         return (
-            True, f"{header}**Status:** no_change (agent run suppressed)\n", SILENT_MARKER, None,
+            True, f"{header}**Status:** no_change (agent run suppressed)\n", NO_CHANGE_TICK_RESPONSE, None,
         ), extra_prompt, None
     # Changed (or first run): pass monitor output through the runtime-data seam. Keep any manual
     # per-run prompt separate: it remains user input and is therefore still strict-scanned.
@@ -2956,8 +2963,14 @@ def _compose_run_delivery(
         from cron.scheduler_failure_copy import blocked_config_notice
         deliver_content = blocked_config_notice(job.get("name") or job["id"], _pf_text)
     elif success:
-        deliver_content = final_response
-        _resolve_incidents_for_recovered_job(job)
+        no_change_tick = final_response == NO_CHANGE_TICK_RESPONSE
+        if no_change_tick:
+            # An unchanged monitor output says nothing about the job's real work: deliver nothing
+            # and leave open failure incidents untouched — the job is neither worse nor recovered.
+            deliver_content = ""
+        else:
+            deliver_content = final_response
+            _resolve_incidents_for_recovered_job(job)
     else:
         # Record the job+error signature once; withhold the per-run ping while the operator
         # already acked it (closed) or was already told (alerted, inside the reminder cooldown).
@@ -3057,6 +3070,9 @@ class _RunDelivery:
     # True when ``error`` is the agent's own ``[CRON_FAILURE]`` evidence rather than a runtime
     # error string, so composition must not run it through the provider-error heuristics.
     agent_declared: bool = False
+    # A monitor no_change tick: success recorded, but neutral — ``mark_job_run`` must not reset
+    # ``failure_streak`` (incidents are already left alone at compose time).
+    no_change_tick: bool = False
     incident_acked: bool = False
     failure_incident_id: Optional[str] = None
     side_effect_ownership_lost: bool = False
@@ -3370,7 +3386,9 @@ def _run_one_job_body(
 
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
         # raise anywhere still tears the deferred agent down.
-        d = _RunDelivery(job=job, success=success, error=error, agent_declared=agent_declared)
+        d = _RunDelivery(
+            job=job, success=success, error=error, agent_declared=agent_declared,
+            no_change_tick=success and final_response == NO_CHANGE_TICK_RESPONSE)
         try:
             _save_compose_deliver(
                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,

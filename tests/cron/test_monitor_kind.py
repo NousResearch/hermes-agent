@@ -325,7 +325,7 @@ def test_monitor_script_uses_configured_interpreter(hermes_env, monkeypatch):
 
 def test_unchanged_output_suppresses_agent_run(hermes_env, monkeypatch):
     from cron.jobs import get_job
-    from cron.scheduler import SILENT_MARKER, run_job
+    from cron.scheduler import NO_CHANGE_TICK_RESPONSE, run_job
 
     job = _make_monitor_job(hermes_env, "echo 'state A'\n")
     observed: dict = {}
@@ -339,7 +339,7 @@ def test_unchanged_output_suppresses_agent_run(hermes_env, monkeypatch):
     success, doc, final, error = run_job(job)
     assert success is True
     assert error is None
-    assert final == SILENT_MARKER
+    assert final == NO_CHANGE_TICK_RESPONSE
     assert observed["agent_runs"] == 1  # unchanged — agent NOT re-invoked
     assert "no_change" in doc
 
@@ -392,7 +392,7 @@ def test_hash_persists_across_scheduler_restart(hermes_env, monkeypatch):
     assert job["monitor_state"]["last_output_hash"]
     success, _doc, final, _error = cron.scheduler.run_job(job)
     assert success is True
-    assert final == cron.scheduler.SILENT_MARKER
+    assert final == cron.scheduler.NO_CHANGE_TICK_RESPONSE
     assert observed["agent_runs"] == 1  # still suppressed after restart
 
 
@@ -416,6 +416,73 @@ def test_monitor_script_failure_is_error_not_change(hermes_env, monkeypatch):
     assert observed["agent_runs"] == 1  # agent NOT invoked on source failure
     # Stored hash untouched — a later recovery to 'state A' still suppresses.
     assert get_job(job["id"])["monitor_state"]["last_output_hash"] == stored_hash
+
+
+def test_no_change_tick_is_neutral_for_failures(hermes_env, monkeypatch):
+    """An unchanged monitor tick says nothing about the job's real work: it must NOT resolve an
+    open failure incident nor reset failure_streak, or every suppressed tick re-arms the
+    alert-once gate and failing runs alert afresh each time (#140178)."""
+    from cron.incidents import get_incident, upsert_incident
+    from cron.jobs import get_job, update_job
+    from cron.scheduler import NO_CHANGE_TICK_RESPONSE, run_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+    run_job(job)  # first run always fires the agent and seeds the hash
+
+    # Aftermath of failing agent runs: an open incident plus a streak of 2.
+    job = get_job(job["id"])
+    incident_id, _is_new = upsert_incident(job["id"], "provider 500: model unreachable")
+    update_job(job["id"], {"failure_streak": 2})
+
+    # Identical monitor output → suppressed tick: neutral, NOT a recovery.
+    success, doc, final, error = run_job(get_job(job["id"]))
+    assert success is True
+    assert error is None
+    assert final == NO_CHANGE_TICK_RESPONSE
+    assert "no_change" in doc
+
+    job = get_job(job["id"])
+    assert job["failure_streak"] == 2  # kept — not reset by the suppressed tick
+    incident = get_incident(incident_id)
+    assert incident is not None
+    assert incident["state"] == "detected"  # incident stays open
+
+
+def test_real_success_after_neutral_tick_still_recovers(hermes_env, monkeypatch):
+    """A changed monitor output runs the agent for real: that success IS a recovery —
+    failure_streak resets and the open incident resolves (#140178)."""
+    from cron.incidents import get_incident, upsert_incident
+    from cron.jobs import get_job, update_job
+    from cron.scheduler import NO_CHANGE_TICK_RESPONSE, run_job
+
+    job = _make_monitor_job(hermes_env, "echo 'state A'\n")
+    observed: dict = {}
+    _install_agent_stubs(monkeypatch, observed)
+    run_job(job)
+
+    job = get_job(job["id"])
+    incident_id, _is_new = upsert_incident(job["id"], "provider 500: model unreachable")
+    update_job(job["id"], {"failure_streak": 2})
+
+    # Neutral suppressed tick first…
+    success, _doc, final, _error = run_job(get_job(job["id"]))
+    assert success is True
+    assert final == NO_CHANGE_TICK_RESPONSE
+
+    # …then the monitor source changes and the agent runs for real.
+    _write_script(hermes_env, "mon.sh", "echo 'state B'\n")
+    success, _doc, final, _error = run_job(get_job(job["id"]))
+    assert success is True
+    assert final == "agent done"
+    assert observed["agent_runs"] == 2
+
+    job = get_job(job["id"])
+    assert job["failure_streak"] == 0  # a real run resets the streak
+    incident = get_incident(incident_id)
+    assert incident is not None
+    assert incident["state"] == "resolved"  # and resolves the incident
 
 
 # ---------------------------------------------------------------------------

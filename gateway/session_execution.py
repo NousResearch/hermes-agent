@@ -229,6 +229,7 @@ class GatewaySessionAgentMixin:
         if found.evicted is not None:
             self._release_evicted_agent(found.evicted)
         if agent is None:
+            build_generation = runner._current_session_run_generation(ctx.session_key)
             agent = self._build_fresh_agent(
                 turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr, skip_context_files,
             )
@@ -237,8 +238,21 @@ class GatewaySessionAgentMixin:
                 with cache_lock:
                     # Record the snapshot's session_id with message_count so the cross-process guard
                     # can skip the meaningless count comparison if the active session_id switches.
-                    claim_cached_agent(self, agent)
-                    cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)
-                    runner._enforce_agent_cache_cap()
+                    turn_generation = getattr(ctx, "run_generation", None)
+                    stale = not runner._is_session_run_current(ctx.session_key, build_generation)
+                    if build_generation and turn_generation is not None:
+                        stale = stale or turn_generation != build_generation
+                    rejected = stale or cache.get(ctx.session_key) is not None
+                    if rejected:
+                        # A stopped constructor must never overwrite its successor. Keep any
+                        # writer reachable before disposing of this unpublished instance.
+                        codex_retirements(runner).track(agent)
+                    else:
+                        claim_cached_agent(self, agent)
+                        cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)
+                        runner._enforce_agent_cache_cap()
+                if rejected:
+                    runner._release_evicted_agent_soft(agent)
+                    raise RuntimeError("agent construction was superseded by another turn")
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, sig)
         return agent, found.reused

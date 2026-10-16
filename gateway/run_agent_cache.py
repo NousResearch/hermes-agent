@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from agent.codex_lifecycle import codex_retirements
-from gateway.agent_cache_claim import cache_agent_in_use
+from gateway.agent_cache_claim import cache_agent_in_use, evict_deferred_agent
 from gateway.config import Platform
 from gateway.session import SessionSource, build_session_context_prompt
 from gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
@@ -317,11 +317,9 @@ class GatewayAgentCacheMixin:
             # cleared here — _release_turn_lease owns them.
             agent = state.turn.agent
             state.turn.clear()
-            if agent is not None and "_cache_evict_after_turn" in vars(agent):
-                boundary = agent._cache_evict_after_turn
-                del agent._cache_evict_after_turn
-                if self._cached_agent_for(session_key) is agent:
-                    self._evict_cached_agent(session_key, commit_memory=boundary)
+            from gateway.run import _AGENT_PENDING_SENTINEL
+            if agent is not None and agent is not _AGENT_PENDING_SENTINEL:
+                evict_deferred_agent(self, session_key, agent)
         # Turn boundary: a running-agent slot was just released; persist the new (lower) in-flight count
         # so the dashboard readout stays current. Preserves gateway_state (see _persist_active_agents).
         self._persist_active_agents()
@@ -816,7 +814,7 @@ class GatewayAgentCacheMixin:
         )
         return hashlib.sha256(repr(key_tuple).encode("utf-8")).hexdigest()
 
-    def _evict_cached_agent(self, session_key: str, *, commit_memory: bool = False) -> None:
+    def _evict_cached_agent(self, session_key: str, *, commit_memory: bool = False, expected_agent: Any = None) -> None:
         """Remove a cached agent (/new, /model, ...) and soft-release its LLM client pool (AIAgent
         holds reference cycles; without it RSS grows across /new). Soft = frees clients and child
         subagents but PRESERVES terminal sandbox / browser / bg processes since the session may
@@ -830,19 +828,22 @@ class GatewayAgentCacheMixin:
         leak class as #25315).
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
-        # Prompt-stability state rides the agent-cache lifecycle: a fresh agent must re-render its
-        # session-context bytes (the pin) and re-see the current voice-channel state once.
-        state = self._peek_session_state(session_key)
-        if state is not None:
-            state.conversation.ephemeral_pin = None
-            state.conversation.vc_last = None
         # Tests build runners with ``_agent_cache_lock = None``; evict lock-free then. With the lock
         # present ``_agent_cache`` is read directly (an initialized runner always has it).
         _lock = getattr(self, "_agent_cache_lock", None)
         evicted = None
         def pop_idle():
+            nonlocal commit_memory
             cached = self._agent_cache.get(session_key)
             agent = _first_agent(cached)
+            if expected_agent is not None and agent is not expected_agent:
+                return None
+            # Prompt-stability state rides the agent-cache lifecycle: a fresh agent must re-render its
+            # session-context bytes (the pin) and re-see the current voice-channel state once.
+            state = self._peek_session_state(session_key)
+            if state is not None:
+                state.conversation.ephemeral_pin = None
+                state.conversation.vc_last = None
             if agent is None or agent is _AGENT_PENDING_SENTINEL:
                 self._agent_cache.pop(session_key, None)
                 return None
@@ -851,6 +852,7 @@ class GatewayAgentCacheMixin:
                 # register a retirement and then abandon it after a second running snapshot.
                 agent._cache_evict_after_turn = commit_memory or getattr(agent, "_cache_evict_after_turn", False)
                 return None
+            commit_memory = vars(agent).pop("_cache_evict_after_turn", False) or commit_memory
             codex_retirements(self).track(agent)
             return self._agent_cache.pop(session_key, None)
 

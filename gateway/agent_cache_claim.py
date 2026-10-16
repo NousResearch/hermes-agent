@@ -1,5 +1,6 @@
 """Cache-use ownership held from lookup/publication through the actual sync worker exit."""
 
+from contextlib import nullcontext
 from functools import wraps
 
 
@@ -33,11 +34,17 @@ def release_cached_agent(turn):
     runner = turn._runner
     with runner._agent_cache_lock:
         unclaim_cached_agent(turn, agent)
-        evict = "_cache_evict_after_turn" in vars(agent)
-        entry = runner._agent_cache.get(turn._ctx.session_key)
-        still_cached = isinstance(entry, tuple) and entry and entry[0] is agent
-    if evict and still_cached:
-        runner._evict_cached_agent(turn._ctx.session_key, commit_memory=agent._cache_evict_after_turn)
+        boundary = vars(agent).pop("_cache_evict_after_turn", None)
+    if boundary is not None:
+        runner._evict_cached_agent(turn._ctx.session_key, commit_memory=boundary, expected_agent=agent)
+
+
+def evict_deferred_agent(runner, session_key, agent):
+    """Consume a deferred request under the same lock as worker exit and cache eviction."""
+    with getattr(runner, "_agent_cache_lock", None) or nullcontext():
+        boundary = vars(agent).pop("_cache_evict_after_turn", None)
+    if boundary is not None:
+        runner._evict_cached_agent(session_key, commit_memory=boundary, expected_agent=agent)
 
 
 def owns_cached_agent(method):

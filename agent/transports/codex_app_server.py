@@ -181,7 +181,7 @@ class CodexAppServerClient:
         return result
 
     def close(self, timeout: float = 3.0) -> None:
-        """Close stdin and wait for the subprocess TREE to exit, escalating to kill.
+        """Confirm root subprocess exit, then best-effort reap snapshotted descendants.
 
         Codex app-server owns stdio MCP descendants that may sit in their own process
         groups (``setsid``). Once the root exits they reparent and a parent walk can no

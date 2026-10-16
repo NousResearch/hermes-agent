@@ -295,3 +295,152 @@ async def test_service_tier_is_a_session_scoped_fast_override(tmp_path, monkeypa
         assert bad['error']['message'] == 'invalid_params', bad
     finally:
         await connection.close()
+
+
+def test_completion_payload_forwards_billing_failure_and_response_flags():
+    """TUI-6: ``message.complete`` carries ``billing``, ``failure_reason``, ``warning``,
+    ``response_previewed`` and ``response_transformed`` from the turn result."""
+    from gateway.session import SessionSource
+    from gateway.session_results import execution_result
+    from gateway.session_settlement_recovery import completion_payload
+    from gateway.turn_context import TurnContext
+    from tests.gateway.test_local_viewer_events_submit import _gateway_runner, _SteeredAgent
+    from tui_gateway.contracts.registry import EVENTS
+
+    runner = _gateway_runner()
+    live = SimpleNamespace(tool_progress_mode=None)
+    authority = SimpleNamespace(sessions={'sid': live}, profile_id='p', adopt_agent=lambda *a: None)
+    ctx = TurnContext(
+        source=SessionSource(platform=Platform.LOCAL, chat_id='sid', user_id='u'),
+        message='hi', history=[], session_id='sid', session_key='key', user_config={},
+        AIAgent=_SteeredAgent, resolve_display_setting=lambda *_a: False,
+        _run_still_current=lambda: True, _hooks_ref=SimpleNamespace(loaded_hooks=False))
+    captured = {}
+    token = execution_result.set(captured)
+    try:
+        turn = TurnRunner(runner, ctx)
+        turn._approval_owner = (authority, 'sid', 1)
+        delivered = turn.run_sync()
+    finally:
+        execution_result.reset(token)
+
+    captured['result'].update(warning='History changed during this turn', response_previewed=True)
+    complete = completion_payload(
+        {'admission_id': 'a1', 'request_id': 'r1'}, {'outcome': 'failed'}, delivered['final_response'], captured)
+    assert complete['billing'] == {'provider': 'openrouter', 'url': 'https://openrouter.ai/credits'}
+    assert complete['failure_reason'] == 'billing'
+    assert complete['warning'] == 'History changed during this turn'
+    assert complete['response_previewed'] is True
+    assert complete['response_transformed'] is True
+    EVENTS['message.complete'].payload.model_validate(complete)
+
+
+def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
+    """TUI-4: ``_ChildProgressRelay`` events reach the viewer stream on ``Platform.LOCAL``
+    (including after the spawning turn's generation settles) and never on messaging platforms."""
+    from tools.delegate_tool_progress import _build_child_progress_callback
+    from tui_gateway.contracts.registry import EVENTS
+
+    published = []
+    live = SimpleNamespace(tool_progress_mode=None, show_reasoning=False)
+    turn = _turn(Platform.LOCAL, published, live=live)
+    parent = SimpleNamespace(_delegate_spinner=None, tool_progress_callback=turn.progress_callback)
+    ref = {'session_id': 'child-sess-1', 'delegation_id': 'deleg_12345678'}
+    relay = _build_child_progress_callback(
+        0, 'inspect viewer payloads', parent, 2,
+        subagent_id='sa-0-abc12345', parent_id='sa-root', depth=1, model='fake-model',
+        toolsets=['terminal'], session_ref=ref)
+
+    relay('subagent.spawn_requested', preview='inspect viewer payloads')
+    relay('subagent.start')
+    relay('tool.started', 'read_file', 'README.md', {'path': 'README.md'})
+    relay('reasoning.available', preview='hidden chain of thought')
+    live.show_reasoning = True
+    relay('reasoning.available', preview='visible chain of thought')
+    relay('subagent.text', preview='streamed child token')
+    relay._flush()
+    relay('subagent.complete', status='completed', summary='all clear', duration_seconds=1.5)
+
+    kinds = [kind for kind, _ in published]
+    assert kinds == [
+        'subagent.spawn_requested', 'subagent.start', 'subagent.tool',
+        'subagent.thinking', 'subagent.thinking', 'subagent.progress', 'subagent.complete',
+    ]
+    for kind, payload in published:
+        EVENTS[kind].payload.model_validate(payload)
+        assert payload['subagent_id'] == 'sa-0-abc12345'
+        assert payload['goal'] == 'inspect viewer payloads'
+        assert payload['task_index'] == 0 and payload['task_count'] == 2
+        assert payload['child_session_id'] == 'child-sess-1'
+        assert payload['delegation_id'] == 'deleg_12345678'
+    tool_payload = published[2][1]
+    assert tool_payload['tool_name'] == 'read_file' and tool_payload['tool_preview'] == 'README.md'
+    assert 'text' not in published[3][1]
+    assert published[4][1]['text'] == 'visible chain of thought'
+    assert published[6][1]['status'] == 'completed' and published[6][1]['summary'] == 'all clear'
+
+    # Background delegation outliving the spawning turn's running claim still publishes to the stream.
+    stream_events = []
+    live.event_stream = SimpleNamespace(
+        publish=lambda sid, payload, *, event_type='message.complete': stream_events.append((sid, event_type, payload)))
+    turn._approval_owner[0].executing = {'s': 2}
+    relay('subagent.complete', status='completed', summary='late finish')
+    assert len(stream_events) == 1 and stream_events[0][1] == 'subagent.complete'
+
+    # Messaging routes never publish subagent.* viewer frames.
+    msg_published = []
+    msg_turn = _turn(Platform.TELEGRAM, msg_published)
+    msg_parent = SimpleNamespace(_delegate_spinner=None, tool_progress_callback=msg_turn.progress_callback)
+    msg_relay = _build_child_progress_callback(0, 'quiet goal', msg_parent, subagent_id='sa-msg')
+    msg_relay('subagent.start')
+    msg_relay('tool.started', 'read_file', 'README.md', {})
+    msg_relay('subagent.complete', status='completed')
+    assert msg_published == []
+
+
+def test_subagent_roster_retains_running_child_after_fallback_evicts_parent():
+    """TUI-4 fallback roster: when ``_run_agent_evict_on_fallback`` evicts the parent after a
+    successful provider fallback, ``subagent_records`` keeps the child visible for the read-only
+    roster without transferring control/tail ownership to an unrelated replacement object."""
+    import weakref
+    from gateway.run_turn import GatewayTurnMixin
+    from gateway.session_ancillary import subagent_records
+    from tools.delegate_tool_registry import _register_subagent, _unregister_subagent
+
+    class Parent:
+        pass
+
+    original = Parent()
+    original.session_id = 'same-parent'
+    original._session_db = None
+    original.model = 'fallback-model'
+    original._provider_fallback_active = True
+
+    replacement = Parent()
+    replacement.session_id = original.session_id
+    replacement._session_db = None
+
+    unevicted = Parent()
+    unevicted.session_id = original.session_id
+
+    child = SimpleNamespace(_delegate_parent_ref=weakref.ref(original))
+    stale_child = SimpleNamespace(_delegate_parent_ref=weakref.ref(unevicted))
+    _register_subagent({'subagent_id': 'fallback-child', 'agent': child, 'owner_agent_session_id': original.session_id})
+    _register_subagent({'subagent_id': 'stale-child', 'agent': stale_child, 'owner_agent_session_id': unevicted.session_id})
+    try:
+        assert [r['subagent_id'] for r in subagent_records(original)] == ['fallback-child']
+        evicted = []
+        GatewayTurnMixin._run_agent_evict_on_fallback(
+            SimpleNamespace(_evict_cached_agent=evicted.append),
+            SimpleNamespace(session_key='route', agent_holder=[original], result_holder=[{'failed': False}]),
+        )
+        assert evicted == ['route']
+        # After a replacement parent is built, and while no resident parent is cached, the fallback
+        # child stays in the read-only roster; the un-evicted same-ID object's child never does.
+        assert [r['subagent_id'] for r in subagent_records(replacement)] == ['fallback-child']
+        assert [r['subagent_id'] for r in subagent_records(None, session_id=original.session_id)] == ['fallback-child']
+        # Control and tail require exact resident-parent identity.
+        assert subagent_records(replacement, include_fallback_evicted=False) == []
+    finally:
+        _unregister_subagent('fallback-child')
+        _unregister_subagent('stale-child')

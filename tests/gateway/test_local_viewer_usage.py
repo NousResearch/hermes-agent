@@ -144,3 +144,40 @@ def test_turn_end_publishes_the_agents_banner_info():
     assert info['system_prompt'] == agent._cached_system_prompt
     assert info['tools'] == {'terminal': ['terminal']} and info['context_length'] == 128000
     assert info['model'] == 'fake-model'
+
+
+@pytest.mark.asyncio
+async def test_local_viewer_admission_settles_with_tui_usage_on_message_complete(tmp_path, monkeypatch):
+    """End-to-end through ``session_ingress``: ``publish_usage(record=True)`` writes
+    ``captured['session_usage']`` during the turn, and the admission packing must carry it
+    into ``pending_results`` so ``completion_payload`` attaches ``usage`` to ``message.complete``."""
+    from gateway.session_controls import AuthorityConnection
+    from gateway.session_usage import publish_usage
+    from tests.gateway.test_surface_admission import _authority
+
+    published = []
+    agent = _agent()
+
+    async def answer(event):
+        turn = _turn(Platform.LOCAL, published, agent)
+        publish_usage(turn, agent, record=True)
+        return 'done'
+
+    authority = await _authority(tmp_path, monkeypatch, answer)
+    frames = []
+    authority.sessions['s'].event_stream.observers.add(frames.append)
+    connection = AuthorityConnection(authority, object(), {'user_id': 'owner'})
+    try:
+        await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 's'}})
+        reply = await connection.dispatch({'id': 2, 'method': 'prompt.submit', 'params': {
+            'session_id': 's', 'submission_id': 'sub-1', 'text': 'hello'}})
+        assert reply['result']['status'] == 'queued', reply
+        await authority.sessions['s'].task
+    finally:
+        await connection.close()
+
+    complete = next(f['params']['payload'] for f in frames if f['params']['type'] == 'message.complete')
+    usage = complete.get('usage')
+    assert isinstance(usage, dict), complete
+    assert usage['cache_hit_pct'] == 9 and usage['avg_tps'] == 10.0
+    assert usage['context_used'] == 900 and usage['context_max'] == 128000 and usage['context_percent'] == 1

@@ -78,6 +78,32 @@ def carry_callback(event, rewritten):
             bound_var.set((bound[0], rewritten, *bound[2:]))
 
 
+def _runtime_profile(runner, source, profile, homes, owner_name, relay):
+    """The multiplexed runtime profile *source* routes to; the caller checks it is served."""
+    if relay and source.profile:
+        # The connector's per-scope profile route (Team Gateway). The relay flag is set only by
+        # the authenticated WS reader or a verified seal, and the seal covers source.profile, so
+        # a stored row cannot be rerouted. It wins over local routes, as resolve_identity
+        # routes only an unstamped source; an unserved profile is refused by the caller.
+        return source.profile
+    # Same matcher as ingress stamping: a route applies only to its ``bot_profile``'s bot
+    # (#104933), so the receiving adapter's owner is part of the match.
+    matches = [route for route in runner.config.profile_routes if route.matches(
+        source.platform.value, guild_id=source.scope_id, chat_id=source.chat_id,
+        thread_id=source.thread_id, parent_chat_id=source.parent_chat_id, adapter_profile=profile)]
+    if matches:
+        rank = max(route.specificity for route in matches)
+        best = [route for route in matches if route.specificity == rank]
+        if len(best) != 1:
+            raise RuntimeStoreError('admission_conflict')
+        return best[0].profile
+    if source.profile and source.profile in homes and source.platform.value in ('webhook', 'api_server', 'msgraph_webhook'):
+        # ``/p/<profile>/`` producers address a served profile explicitly on the HOST's
+        # listener; that URL prefix is the route (webhook.py / api_server.py stamp it).
+        return source.profile
+    return owner_name
+
+
 def _binding(runner, source, profile):
     registries = [(None, runner.adapters), *getattr(runner, '_profile_adapters', {}).items()]
     from gateway.config import Platform
@@ -116,23 +142,7 @@ def _binding(runner, source, profile):
         owner_name = profile or primary
         if homes.get(owner_name) != home:
             raise RuntimeStoreError('profile_mismatch')
-        # Same matcher as ingress stamping: a route applies only to its ``bot_profile``'s bot
-        # (#104933), so the receiving adapter's owner is part of the match.
-        matches = [route for route in runner.config.profile_routes if route.matches(
-            source.platform.value, guild_id=source.scope_id, chat_id=source.chat_id,
-            thread_id=source.thread_id, parent_chat_id=source.parent_chat_id, adapter_profile=profile)]
-        if matches:
-            rank = max(route.specificity for route in matches)
-            best = [route for route in matches if route.specificity == rank]
-            if len(best) != 1:
-                raise RuntimeStoreError('admission_conflict')
-            runtime_profile = best[0].profile
-        elif source.profile and source.profile in homes and source.platform.value in ('webhook', 'api_server', 'msgraph_webhook'):
-            # ``/p/<profile>/`` producers address a served profile explicitly on the HOST's
-            # listener; that URL prefix is the route (webhook.py / api_server.py stamp it).
-            runtime_profile = source.profile
-        else:
-            runtime_profile = owner_name
+        runtime_profile = _runtime_profile(runner, source, profile, homes, owner_name, relay)
         if (source.profile or primary) != runtime_profile or runtime_profile not in homes:
             raise RuntimeStoreError('profile_mismatch')
         runtime_home = homes[runtime_profile]

@@ -120,8 +120,8 @@ function ScopedLocalModelsSettings(): ReactElement {
   return (
     <SettingsContent>
       <ActiveProfileNote className="mb-5" />
-      <LocalModelsRuntimeSection jobs={jobs} lastError={lastError} status={status} />
       <LocalModelsHardwareSection hardware={hardware} />
+      <LocalModelsRuntimeSection jobs={jobs} lastError={lastError} status={status} />
       <LocalModelsModelsSection catalog={catalog} jobs={jobs} lastError={lastError} status={status} />
       <LocalModelsBrowseSection />
     </SettingsContent>

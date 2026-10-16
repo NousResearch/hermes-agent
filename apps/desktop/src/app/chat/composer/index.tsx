@@ -23,6 +23,8 @@ import { chatMessageText } from '@/lib/chat-messages'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
+import { composerFocusBlockedBySurface } from '@/lib/keybinds/composer-focus-keys'
+import { isMacPlatform } from '@/lib/platform'
 import { $touchPointer } from '@/lib/touch-interaction'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -1035,6 +1037,16 @@ export function ChatBar({
     }
 
     if (event.key === 'Escape') {
+      // A surface covering the chat owns Esc — a full page (whose layer goes
+      // back out of it), an overlay, the terminal, the switcher. The chat stays
+      // MOUNTED beneath a page layer (`app/contrib/surfaces.tsx`), so this
+      // editor is alive while the page is on screen; without the gate a focused
+      // editor would halt the run BEHIND the page and swallow the key the page
+      // needs. Same signal every other surface-sensitive path reads.
+      if (composerFocusBlockedBySurface()) {
+        return
+      }
+
       // Editing a queued turn → Esc cancels the edit, restoring the prior draft.
       if (queueEdit) {
         event.preventDefault()

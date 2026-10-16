@@ -5,11 +5,14 @@
  * drops the page layer and shows that session — so a page can never outlive its
  * route (the reported bug: the page stuck after opening another session).
  */
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { useEffect } from 'react'
-import { MemoryRouter, useNavigate } from 'react-router'
+import { MemoryRouter, useLocation, useNavigate } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { ESCAPE_PRIORITY, pushEscapeLayer } from '@/lib/escape-layers'
+import { $viewHistory, noteViewChange } from '@/store/view-history'
 
 import { ChatRoutesSurface } from './surfaces'
 import type { WiringActions } from './types'
@@ -51,9 +54,11 @@ vi.mock('../shell/model-menu-panel', () => ({ ModelMenuPanel: () => null }))
 vi.mock('../shell/reasoning-menu-panel', () => ({ ReasoningMenuPanel: () => null }))
 
 let navigateTo: (to: string) => void = () => {}
+let currentPath = ''
 
 function NavigateProbe() {
   navigateTo = useNavigate()
+  currentPath = useLocation().pathname
 
   return null
 }
@@ -72,7 +77,18 @@ function renderAt(pathname: string) {
 afterEach(() => {
   cleanup()
   chat.mounts = 0
+  $viewHistory.set({ entries: [], index: -1 })
+  currentPath = ''
 })
+
+// The history is seeded the way the wiring seeds it: one entry per navigation.
+function withHistory(...pathnames: string[]) {
+  $viewHistory.set({ entries: [], index: -1 })
+
+  for (const pathname of pathnames) {
+    noteViewChange(pathname)
+  }
+}
 
 describe('a full page is an overlay above the session view', () => {
   it('keeps the session view mounted when a page route opens', async () => {
@@ -131,5 +147,83 @@ describe('a full page is an overlay above the session view', () => {
     act(() => navigateTo('/'))
     expect(screen.queryByTestId('page-view')).toBeNull()
     expect(screen.getByTestId('chat-view')).toBeTruthy()
+  })
+})
+
+describe('Esc on a full page is the way back out of it', () => {
+  it('leaves the page and returns to the view behind it', async () => {
+    withHistory('/session-a', '/capabilities')
+    renderAt('/capabilities')
+
+    expect(await screen.findByTestId('page-view')).toBeTruthy()
+
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' })
+    })
+
+    // The page layer is gone, the chat was never unmounted, and we are on the
+    // route the page was opened from.
+    expect(screen.queryByTestId('page-view')).toBeNull()
+    expect(screen.getByTestId('chat-view')).toBeTruthy()
+    expect(chat.mounts).toBe(1)
+    expect(currentPath).toBe('/session-a')
+  })
+
+  it('does nothing when there is nothing behind the page', async () => {
+    // A cold start straight into a page: the history holds only this route.
+    withHistory('/capabilities')
+    renderAt('/capabilities')
+
+    expect(await screen.findByTestId('page-view')).toBeTruthy()
+
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' })
+    })
+
+    expect(screen.getByTestId('page-view')).toBeTruthy()
+    expect(currentPath).toBe('/capabilities')
+  })
+
+  it('yields to a closer Esc layer, so an overlay closes before the page goes', async () => {
+    withHistory('/session-a', '/capabilities')
+    renderAt('/capabilities')
+
+    expect(await screen.findByTestId('page-view')).toBeTruthy()
+
+    // An overlay (Settings, Cron, …) sits above the page: its Esc wins.
+    const releaseOverlay = pushEscapeLayer(ESCAPE_PRIORITY.overlay)
+
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' })
+    })
+
+    expect(screen.getByTestId('page-view')).toBeTruthy()
+    expect(currentPath).toBe('/capabilities')
+
+    releaseOverlay()
+
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' })
+    })
+
+    expect(screen.queryByTestId('page-view')).toBeNull()
+    expect(currentPath).toBe('/session-a')
+  })
+
+  it('leaves a field on the page to handle its own Esc', async () => {
+    withHistory('/session-a', '/capabilities')
+    renderAt('/capabilities')
+
+    expect(await screen.findByTestId('page-view')).toBeTruthy()
+
+    const input = window.document.createElement('input')
+    screen.getByTestId('page-view').appendChild(input)
+
+    act(() => {
+      fireEvent.keyDown(input, { key: 'Escape' })
+    })
+
+    expect(screen.getByTestId('page-view')).toBeTruthy()
+    expect(currentPath).toBe('/capabilities')
   })
 })

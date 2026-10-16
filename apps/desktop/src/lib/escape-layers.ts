@@ -19,6 +19,11 @@
 
 // Higher number = closer to the user. Gaps leave room to slot new layers.
 export const ESCAPE_PRIORITY = {
+  // The page you are ON is the layer everything else sits above: an overlay, the
+  // zone editor, layout edit mode, a narrow-pane reveal and an in-flight drag
+  // are each closer to the user than the page they cover, and their Esc must win
+  // over leaving the page (surfaces.tsx registers this one).
+  page: 5,
   narrowOverlay: 10,
   layoutEdit: 20,
   zoneEditor: 30,

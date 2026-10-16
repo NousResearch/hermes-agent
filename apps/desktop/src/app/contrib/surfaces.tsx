@@ -8,16 +8,21 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, lazy, memo, type ReactNode, Suspense, useMemo } from 'react'
-import { Navigate, Route, Routes, useLocation, useParams } from 'react-router'
+import { type ComponentProps, lazy, memo, type ReactNode, Suspense, useEffect, useMemo } from 'react'
+import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router'
 
+import { revealTreePane } from '@/components/pane-shell/tree/store'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
+import { triggerHaptic } from '@/lib/haptics'
+import { isEditableTarget } from '@/lib/keybinds/combo'
 import { $activeConnectionId } from '@/store/connections'
 import { $gateway } from '@/store/gateway'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $freshDraftReady, $gatewayState } from '@/store/session'
+import { goBackToPreviousView } from '@/store/view-history'
 
 import { ChatView } from '../chat'
 import { ChatSidebar } from '../chat/sidebar'
@@ -44,6 +49,61 @@ export function LegacySessionRedirect() {
   const { sessionId } = useParams()
 
   return <Navigate replace to={sessionId ? sessionRoute(sessionId) : NEW_CHAT_ROUTE} />
+}
+
+/**
+ * Esc on a full page is the way back out of it — the same action, and the same
+ * route history, as the titlebar's back control (`shell/titlebar-controls`).
+ *
+ * It has to be registered HERE, on the page's own layer, because a page is a
+ * layer ABOVE the session view rather than a surface the chat was unmounted for:
+ * the chat stays mounted and live underneath, so Esc must not reach it. The
+ * composer stands down on a page (`$workspaceIsPage`, read by
+ * `composerFocusBlockedBySurface`), and this layer is what Esc does instead.
+ *
+ * Priority is the lowest in the table — every other Esc layer (an overlay, the
+ * zone editor, layout edit mode, a narrow-pane reveal, an in-flight drag) is
+ * closer to the user than the page it covers, and its Esc must win over leaving
+ * the page.
+ */
+function PageEscapeBack() {
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    const release = pushEscapeLayer(ESCAPE_PRIORITY.page)
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      // A field on the page keeps its own Esc (clearing a search box, leaving an
+      // input) — `defaultPrevented` covers a Radix dialog or a control that
+      // already handled the key.
+      if (
+        event.key !== 'Escape' ||
+        event.defaultPrevented ||
+        isEditableTarget(event.target) ||
+        !isTopEscapeLayer(ESCAPE_PRIORITY.page)
+      ) {
+        return
+      }
+
+      // Nothing behind (a cold start straight into a page): leave the key alone
+      // rather than swallowing it.
+      if (!goBackToPreviousView(navigate, revealTreePane)) {
+        return
+      }
+
+      event.preventDefault()
+      triggerHaptic('tap')
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      release()
+    }
+  }, [navigate])
+
+  return null
 }
 
 export const SidebarSurface = memo(function SidebarSurface({
@@ -196,6 +256,9 @@ export const ChatRoutesSurface = memo(function ChatRoutesSurface({
   // subtree — the same mechanism the overlay card uses for its raised surface.
   const page = (view: ReactNode) => (
     <div className="absolute inset-0 z-10 bg-(--ui-chat-surface-background)" data-glass-raised="">
+      {/* Esc belongs to the page while it is the layer on top: it goes back out
+          of it, and never reaches the live chat mounted beneath. */}
+      <PageEscapeBack />
       <Suspense fallback={null}>{view}</Suspense>
     </div>
   )

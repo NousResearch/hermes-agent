@@ -68,14 +68,15 @@ def maybe_post_auto_prune_prompt(runner, loop) -> None:
             prune_advisor.snooze(Path(home))
 
 
-_LOCAL_NOTIFIED: set[str] = set()
+_LOCAL_NOTIFIED: dict[str, float] = {}
 
 
 async def publish_local_auto_prune_notice(authority, ref) -> None:
     """Desktop / Ink TUI sessions (``AuthorityConnection.resume``): one sticky ``notification.show``
-    per profile per gateway process while the disk is low and auto-prune is undecided. The classic
+    per profile per snooze window while the disk is low and auto-prune is undecided. The classic
     CLI asks at its own startup, so its sessions are skipped here."""
     import asyncio
+    import time
     from gateway.config import Platform
     from gateway.session_policy import policy_for_source
     from hermes_cli import prune_advisor
@@ -92,16 +93,26 @@ async def publish_local_auto_prune_notice(authority, ref) -> None:
     if policy is None or policy.source not in {"tui", "gui"}:
         return
     home = Path(authority.db.db_path).parent
-    if str(home) in _LOCAL_NOTIFIED or prune_advisor.should_ask(home) is None:
+    if not prune_advisor.notice_due(home, _LOCAL_NOTIFIED):
         return
-    _LOCAL_NOTIFIED.add(str(home))
+    _LOCAL_NOTIFIED[str(home)] = time.time()
     advice = await asyncio.to_thread(prune_advisor.advise, home)
     if advice is None:
         return
-    live.event_stream.publish(ref.session_id, {
-        "text": "⚠ " + " ".join(prune_advisor.advice_lines(advice)), "level": "warn", "kind": "sticky",
-        "ttl_ms": None, "key": "sessions.auto_prune", "id": "sessions.auto_prune"},
-        event_type="notification.show")
+    live.event_stream.publish(ref.session_id, prune_advisor.notice_payload(advice), event_type="notification.show")
+
+
+def clear_local_auto_prune_notice(runner, source) -> None:
+    """After /autoprune is answered on a local session, drop its sticky notice for that viewer."""
+    from gateway.config import Platform
+    from gateway.session_authorities import active_authority
+    from hermes_cli.prune_advisor import NOTICE_KEY
+    if getattr(source, "platform", None) != Platform.LOCAL:
+        return
+    authority = active_authority(runner)
+    live = authority.sessions.get(source.chat_id) if authority is not None else None
+    if live is not None:
+        live.event_stream.publish(source.chat_id, {"key": NOTICE_KEY}, event_type="notification.clear")
 
 
 async def _post(runner, profile, home, advice) -> bool:

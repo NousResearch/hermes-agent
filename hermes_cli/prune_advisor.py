@@ -88,21 +88,34 @@ def disk_snapshot(home: Optional[Path] = None) -> Optional[DiskSnapshot]:
     return DiskSnapshot(size, usage.free, usage.total)
 
 
-def _user_sessions_config(home: Optional[Path]) -> Optional[dict]:
-    """The ``sessions:`` block of *home*'s own config.yaml ({} when absent); None when unreadable."""
-    import hermes_yaml as yaml
-    from hermes_cli.config import read_user_config_raw
+def _effective_sessions(home: Optional[Path]) -> Optional[dict]:
+    """*home*'s ``sessions:`` block as maintenance sees it (user file, ``${VAR}`` expansion, managed
+    overlay; no defaults merged) or None when the file cannot be read. Read through *home*'s own
+    config path, so gateway housekeeping gets each served profile's values, not the caller's."""
+    from hermes_cli.config_effective import load_user_config_effective
     try:
-        sessions = read_user_config_raw(_home(home) / "config.yaml").get("sessions")
-    except (OSError, ValueError, yaml.YAMLError):
+        sessions = load_user_config_effective(_home(home) / "config.yaml", fail_closed=True).get("sessions")
+    except Exception as exc:  # health: allow BLE001 -- any parse/read failure means "unreadable": never ask on it
+        logger.debug("auto-prune advice: config unreadable: %s", exc, exc_info=True)
         return None
     return sessions if isinstance(sessions, dict) else {}
 
 
+def _retention_days(sessions: dict) -> int:
+    """Same coercion maintenance applies (``int(...)``); an unusable value reads as the default."""
+    try:
+        days = int(sessions.get("retention_days", 90))
+    except (TypeError, ValueError):
+        return 90
+    return days if days >= 0 else 90
+
+
 def undecided(home: Optional[Path] = None) -> bool:
-    """True while the user's own config.yaml has no ``sessions.auto_prune`` (default not chosen)."""
-    sessions = _user_sessions_config(home)
-    return sessions is not None and "auto_prune" not in sessions  # unreadable config: never nag on it
+    """True while neither the user's config nor an administrator's managed layer sets
+    ``sessions.auto_prune``. A managed value is already decided: asking would promise a choice the
+    user cannot make."""
+    sessions = _effective_sessions(home)
+    return sessions is not None and "auto_prune" not in sessions
 
 
 def _snooze_path(home: Optional[Path]) -> Path:
@@ -141,9 +154,8 @@ def advise(home: Optional[Path] = None) -> Optional[Advice]:
         return None
     # Read the settings from THIS home's config: gateway housekeeping calls this for every served
     # profile without entering its scope. Only an explicit key differs from the defaults here.
-    sessions = _user_sessions_config(home) or {}
-    retention = sessions.get("retention_days", 90)
-    retention = retention if isinstance(retention, int) and retention >= 0 else 90
+    sessions = _effective_sessions(home) or {}
+    retention = _retention_days(sessions)
     prunable = total = prunable_msgs = total_msgs = 0
     estimate_ok = True
     try:
@@ -205,11 +217,41 @@ def advice_lines(advice: Advice, *, command_prefix: str = "/") -> list[str]:
     return lines
 
 
+NOTICE_KEY = "sessions.auto_prune"
+
+
+def notice_payload(advice: Advice) -> dict:
+    """``notification.show`` payload for TUI/Desktop: a short status-line ``text`` plus the full
+    question in ``detail`` (Desktop's expandable toast body; Ink prints it into the transcript)."""
+    d = advice.disk
+    return {"text": f"⚠ Low disk ({_gb(d.free_bytes)} free) · /autoprune on|off|later",
+            "detail": "\n".join(advice_lines(advice)), "level": "warn", "kind": "sticky", "ttl_ms": None,
+            "key": NOTICE_KEY, "id": NOTICE_KEY}
+
+
+def notice_due(home: Optional[Path], shown: dict) -> bool:
+    """Per-process dedup that re-arms: a home already noticed is due again once the gate passes
+    and a full snooze window has gone by since (so ``later`` really asks again in a week)."""
+    if should_ask(home) is None:
+        return False
+    last = shown.get(str(_home(home)))
+    return last is None or time.time() - last >= SNOOZE_SECONDS
+
+
+def managed() -> bool:
+    """True when an administrator pins ``sessions.auto_prune`` (the user cannot change it)."""
+    from hermes_cli import managed_scope
+    return managed_scope.is_key_managed("sessions.auto_prune")
+
+
 def decide(enable: bool, home: Optional[Path] = None) -> bool:
-    """Persist the user's answer as an explicit ``sessions.auto_prune``; ends the prompt for good."""
+    """Persist the user's answer as an explicit ``sessions.auto_prune``; ends the prompt for good.
+    False when the save failed or did not take effect (an administrator-managed value wins)."""
     import hermes_yaml as yaml
     from hermes_constants import mkdir_under_hermes_home
     from utils import atomic_roundtrip_yaml_update
+    if managed():
+        return False
     path = _home(home) / "config.yaml"
     try:
         mkdir_under_hermes_home(path.parent)
@@ -221,30 +263,35 @@ def decide(enable: bool, home: Optional[Path] = None) -> bool:
         _snooze_path(home).unlink(missing_ok=True)
     except OSError:
         pass
-    return True
+    return bool((_effective_sessions(home) or {}).get("auto_prune")) == bool(enable)
+
+
+_SAVE_FAILED = "Could not save sessions.auto_prune; check disk space and config.yaml permissions."
 
 
 def run_command(args: str, home: Optional[Path] = None) -> str:
     """``/autoprune [on|off|later|status]`` — the one handler behind the CLI, TUI, Desktop and
     messaging surfaces."""
-    from hermes_cli.config import load_config_readonly
     arg = (args or "").strip().lower()
+    sessions = _effective_sessions(home) or {}
+    state = "on" if sessions.get("auto_prune") else "off"
+    if arg in {"on", "off", "enable", "disable", "yes", "no", "later", "snooze"} and managed():
+        return f"Auto-prune is {state}, set by your administrator; it cannot be changed here."
     if arg in {"on", "enable", "yes"}:
         return ("Auto-prune is on: ended sessions inactive past retention_days are deleted once a day."
-                if decide(True, home) else "Could not save sessions.auto_prune; check config.yaml permissions.")
+                if decide(True, home) else _SAVE_FAILED)
     if arg in {"off", "disable", "no"}:
         return ("Auto-prune is off and you will not be asked again. `hermes sessions prune` still works any time."
-                if decide(False, home) else "Could not save sessions.auto_prune; check config.yaml permissions.")
+                if decide(False, home) else _SAVE_FAILED)
     if arg in {"later", "snooze"}:
         snooze(home)
         return "OK, I'll ask again in a week if the disk is still low."
-    sessions = (load_config_readonly() or {}).get("sessions") or {}
-    state = "on" if sessions.get("auto_prune") else "off"
-    chosen = "default" if undecided(home) else "your setting"
+    chosen = ("set by your administrator" if managed() else
+              "default" if "auto_prune" not in sessions else "your setting")
     snap = disk_snapshot(home)
     disk = (f" state.db {_gb(snap.db_bytes)}; {_gb(snap.free_bytes)} free of {_gb(snap.total_bytes)}"
             f"{' (low)' if snap.low else ''}.") if snap else ""
-    return (f"Auto-prune is {state} ({chosen}), retention {sessions.get('retention_days', 90)} days.{disk} "
+    return (f"Auto-prune is {state} ({chosen}), retention {_retention_days(sessions)} days.{disk} "
             "Usage: /autoprune on | off | later")
 
 
@@ -267,7 +314,7 @@ def offer_interactive(*, cprint, ask=input) -> Optional[bool]:
     if answer in {"y", "yes", "n", "no"}:
         enable = answer.startswith("y")
         if not decide(enable):
-            cprint("  Could not save sessions.auto_prune; check disk space and config.yaml permissions.")
+            cprint(f"  {_SAVE_FAILED}")
             return None
         cprint("  ✓ sessions.auto_prune: true" if enable else
                "  ✓ sessions.auto_prune: false. You won't be asked again.")

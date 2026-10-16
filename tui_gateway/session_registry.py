@@ -364,26 +364,24 @@ def _init_session(
     _schedule_mcp_late_refresh(sid, agent)
 
 
-_AUTO_PRUNE_NOTIFIED: set[str] = set()
+_AUTO_PRUNE_NOTIFIED: dict[str, float] = {}
 
 
 def _maybe_notify_auto_prune(sid: str, profile_home: str | None) -> None:
-    """Low disk + auto-prune never decided: one sticky notice (TUI status line / Desktop toast)
-    per profile per process, on session create and cold resume. The cheap gate runs inline;
+    """Low disk + auto-prune never decided: a sticky notice (TUI status line / Desktop toast) per
+    profile per snooze window, on session create and cold resume. The cheap gate runs inline;
     the DB estimate runs off-thread."""
     from hermes_cli import prune_advisor
     from hermes_constants import get_hermes_home
     home = Path(profile_home) if profile_home else get_hermes_home()
-    if str(home) in _AUTO_PRUNE_NOTIFIED or prune_advisor.should_ask(home) is None:
+    if not prune_advisor.notice_due(home, _AUTO_PRUNE_NOTIFIED):
         return
-    _AUTO_PRUNE_NOTIFIED.add(str(home))
+    _AUTO_PRUNE_NOTIFIED[str(home)] = time.time()
 
     def _work() -> None:
         advice = prune_advisor.advise(home)
         if advice is not None:
-            _emit("notification.show", sid, {
-                "text": "⚠ " + " ".join(prune_advisor.advice_lines(advice)), "level": "warn",
-                "kind": "sticky", "ttl_ms": None, "key": "sessions.auto_prune", "id": "sessions.auto_prune"})
+            _emit("notification.show", sid, prune_advisor.notice_payload(advice))
 
     from agent.memory_provider import spawn_context_thread
     spawn_context_thread(_work, name="auto-prune-advice").start()

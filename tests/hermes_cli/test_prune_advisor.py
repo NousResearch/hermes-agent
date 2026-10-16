@@ -60,6 +60,39 @@ def test_prompt_says_pruning_will_not_help_when_nothing_is_old_enough(home, monk
     advice = prune_advisor.advise(home)
     assert advice.prunable_sessions == 1
     assert "will not help" not in "\n".join(prune_advisor.advice_lines(advice))
-    # The estimate reads THIS home's settings; an explicit 0-day retention is kept, not defaulted.
-    (home / "config.yaml").write_text("sessions:\n  retention_days: 0\n", encoding="utf-8")
-    assert prune_advisor.advise(home).retention_days == 0
+    # Retention is read the way maintenance reads it (effective config, int()): a quoted or
+    # env-referenced 0 must not be described as the 90-day default.
+    monkeypatch.setenv("KEEP_DAYS", "0")
+    for value in ("0", '"0"', "${KEEP_DAYS}"):
+        (home / "config.yaml").write_text(f"sessions:\n  retention_days: {value}\n", encoding="utf-8")
+        assert prune_advisor.advise(home).retention_days == 0, value
+
+
+def test_admin_managed_setting_is_never_asked_nor_overwritten(home, monkeypatch, tmp_path):
+    """An administrator-pinned auto_prune is already decided: no prompt, and /autoprune off must
+    not claim to have turned pruning off while the managed true still applies."""
+    from hermes_cli import managed_scope
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text("sessions:\n  auto_prune: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    managed_scope.invalidate_managed_cache()
+    _disk(monkeypatch, free_gb=1)
+    try:
+        assert prune_advisor.should_ask(home) is None
+        reply = prune_advisor.run_command("off", home)
+        assert "administrator" in reply
+        cfg = home / "config.yaml"
+        assert not cfg.exists() or "auto_prune" not in cfg.read_text(encoding="utf-8-sig")
+    finally:
+        managed_scope.invalidate_managed_cache()
+
+
+def test_later_re_arms_the_local_notice_after_the_snooze_window(home, monkeypatch):
+    _disk(monkeypatch, free_gb=1)
+    shown: dict = {}
+    assert prune_advisor.notice_due(home, shown)
+    shown[str(home)] = time.time()
+    assert not prune_advisor.notice_due(home, shown)  # same process, same window: once
+    shown[str(home)] = time.time() - prune_advisor.SNOOZE_SECONDS - 1
+    assert prune_advisor.notice_due(home, shown)  # a week later it asks again

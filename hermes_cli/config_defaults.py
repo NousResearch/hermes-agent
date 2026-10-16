@@ -1354,8 +1354,8 @@ DEFAULT_CONFIG = {
         # and every compaction is a chance to lose detail, so the default stays off. A token count >= 16000 enables it;
         # other values (true, "200k") are config errors: warned and ignored.
         "compression_threshold_tokens": 0,
-        # When delegate_task narrows child toolsets, keep the parent's enabled MCP toolsets (so
-        # toolsets=["web"] doesn't strip MCP). false = strict intersection.
+        # Keep the parent's MCP toolsets on every delegate_task child path (narrowed requests and
+        # full inherits). false = strict: narrowed keeps only what it names; full inherit drops MCP.
         "inherit_mcp_toolsets": True,
         # Per-subagent iteration cap (own budget, independent of the parent's).
         "max_iterations": 250,

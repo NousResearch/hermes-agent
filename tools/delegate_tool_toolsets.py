@@ -79,10 +79,12 @@ def _resolve_child_toolsets(
 ) -> tuple[list[str], list[str]]:
     """``(enabled_toolsets, disabled_toolsets)`` for a child. Children never gain tools the parent lacks: explicit
     ``toolsets`` are intersected with the parent's (composite-expanded) set, else the parent's enabled set is
-    inherited. Blocked tools are stripped twice — whole blocked toolsets here, and exact one-tool deny toolsets via
-    ``disabled_toolsets`` so blocked names inside mixed bundles (hermes-cli) are subtracted AFTER composite
-    expansion and survive registry refreshes. Orchestrators get ``delegation`` re-added unconditionally
-    (role-granted, not inherited)."""
+    inherited. The MCP opt-out (``delegation.inherit_mcp_toolsets: false``) applies to both paths: a narrowed
+    request keeps only what it names, and a full inherit drops the parent's MCP toolsets (carried into
+    ``disabled_toolsets`` so expansion cannot re-add them). Blocked tools are stripped twice — whole blocked
+    toolsets here, and exact one-tool deny toolsets via ``disabled_toolsets`` so blocked names inside mixed
+    bundles (hermes-cli) are subtracted AFTER composite expansion and survive registry refreshes. Orchestrators
+    get ``delegation`` re-added unconditionally (role-granted, not inherited)."""
     # enabled_toolsets=None means "all tools", so derive from loaded tool names.
     parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
     if parent_enabled is not None:
@@ -107,6 +109,15 @@ def _resolve_child_toolsets(
         child_toolsets = parent_enabled
     else:
         child_toolsets = sorted(parent_toolsets) or DEFAULT_TOOLSETS
+
+    dropped_mcp_toolsets: list[str] = []
+    if not toolsets and not _get_inherit_mcp_toolsets():
+        # A full inherit copies the parent's whole set, opt-out included: without this the child
+        # still carried every parent MCP server's tool schema (#138695). Disable the names below
+        # so alias/composite expansion cannot re-add them after the fact.
+        dropped_mcp_toolsets = [name for name in child_toolsets if _is_mcp_toolset_name(name)]
+        child_toolsets = [name for name in child_toolsets if name not in dropped_mcp_toolsets]
+
     child_toolsets = _strip_blocked_tools(child_toolsets)
 
     raw_parent_disabled = getattr(parent_agent, "disabled_toolsets", None)
@@ -118,6 +129,6 @@ def _resolve_child_toolsets(
         if "delegation" not in child_toolsets:
             child_toolsets.append("delegation")
     child_disabled_toolsets = list(
-        dict.fromkeys(inherited_disabled + _blocked_toolsets_for_role(effective_role) + ["kanban"])
+        dict.fromkeys(inherited_disabled + dropped_mcp_toolsets + _blocked_toolsets_for_role(effective_role) + ["kanban"])
     )
     return child_toolsets, child_disabled_toolsets

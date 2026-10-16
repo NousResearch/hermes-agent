@@ -570,26 +570,46 @@ def discard_dead_record(role: str) -> bool:
     record = read_record(role, include_stale=True)
     if record is None:
         return False
-    claimed = False
+    guard = None
     if record.pid != os.getpid() and _record_incarnation_matches(record) is not False:
         # A recycled pid can still look like the same incarnation. The publisher holds the
         # host lock for its life, so winning it proves the recorded owner is gone. Hold it
         # across the re-read and unlink: a free-lock probe released first let a new gateway
-        # claim and publish in the gap, and we deleted ITS record and token.
-        if owns_host_lock(role) or claim_host_lock(role)[0] is not HostLockOutcome.ACQUIRED:
+        # claim and publish in the gap, and we deleted ITS record and token. A private handle,
+        # not claim_host_lock: cleanup must not enter this process's own claim/release ledger.
+        if owns_host_lock(role) or (guard := _hold_lock_briefly(role)) is None:
             return False
-        claimed = True
     try:
-        if claimed and read_record(role, include_stale=True) is None:
+        if guard is not None and read_record(role, include_stale=True) is None:
             return False
         for path in (record_path(role), token_path(role)):
             with contextlib.suppress(OSError):
                 path.unlink(missing_ok=True)
     finally:
-        if claimed:
-            release_host_lock(role)
+        if guard is not None:
+            from gateway.status import _release_file_lock
+
+            _release_file_lock(guard)
+            with contextlib.suppress(OSError):
+                guard.close()
     _invalidate_attach_cache()
     return True
+
+
+def _hold_lock_briefly(role: str):
+    """Open and flock ``role``'s host lock without registering it; ``None`` when not won."""
+    from gateway.status import _try_acquire_file_lock
+
+    path = lock_path(role)
+    try:
+        handle = open(path, "a+", encoding="utf-8")
+    except OSError:
+        return None
+    if _try_acquire_file_lock(handle):
+        return handle
+    with contextlib.suppress(OSError):
+        handle.close()
+    return None
 
 
 def clear_record(role: str) -> None:

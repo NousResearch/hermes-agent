@@ -72,6 +72,7 @@ import type {
 import { adoptPreparedSubmission, preparedSubmissionKey } from './prepared-submissions'
 import { queueKickoffIfSessionBusy } from './queue-if-busy'
 import { resolveTargetSessionId } from './resolve-target-session'
+import { runSlashSequence } from './slash-sequence'
 import { sessionCommandHandlers } from './slash-session-commands'
 import { captureSubmissionDestination } from './submission-destination'
 import {
@@ -152,6 +153,7 @@ interface SlashCommandDeps {
   copy: Translations['desktop']
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   getRoutedStoredSessionId: () => null | string
+  getRouteToken: () => string
   getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   handleSkinCommand: (arg: string) => string
   handoffSession: (
@@ -195,6 +197,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
     copy,
     createBackendSessionForSend,
     getRoutedStoredSessionId,
+    getRouteToken,
     getRuntimeIdForStoredSession,
     handleSkinCommand,
     handoffSession,
@@ -211,7 +214,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
   const compressInFlightRef = useRef(new Set<string>())
 
   return useCallback(
-    async (rawCommand: string, options?: SubmitTextOptions & { recordInput?: boolean; typed?: boolean }) => {
+    async function executeSlash(
+      rawCommand: string,
+      options?: SubmitTextOptions & { recordInput?: boolean; remainingSequence?: string[]; typed?: boolean }
+    ): Promise<boolean> {
       const initialRuntimeId = options?.sessionId ?? activeSessionIdRef.current
       const initialSelectedId = selectedStoredSessionIdRef.current
       const initialRoutedId = getRoutedStoredSessionId()
@@ -643,8 +649,17 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           withSlashOutput
         }),
         new: async () => {
+          const routeBefore = getRouteToken()
           prepareDefaultNewSession()
           startFreshSessionDraft()
+
+          // createBackendSessionForSend aborts if navigation changes while its
+          // request is in flight. Wait until React publishes `/new` before a
+          // sequenced command starts that request; a fixed one-tick yield is
+          // insufficient under a loaded renderer.
+          for (let attempt = 0; attempt < 20 && getRouteToken() === routeBefore; attempt += 1) {
+            await new Promise<void>(resolve => window.setTimeout(resolve, 0))
+          }
         },
         branch: async () => {
           await branchCurrentSession()
@@ -1520,9 +1535,24 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         }
       }
 
-      await runSlash(rawCommand, options?.sessionId ?? undefined, options?.recordInput ?? true)
+      const sequenced = await runSlashSequence({
+        activeSessionIdRef,
+        rawCommand,
+        rehome: (remainingSequence, sessionId) =>
+          executeSlash(remainingSequence.join(' '), {
+            recordInput: options?.recordInput,
+            remainingSequence,
+            sessionId,
+            typed: options?.typed
+          }),
+        remainingSequence: options?.remainingSequence,
+        requestGateway,
+        runSlash: (command, sessionHint) => runSlash(command, sessionHint, options?.recordInput ?? true),
+        catalogSessionId: initialRuntimeId ?? undefined,
+        sessionHint: options?.sessionId ?? undefined
+      })
 
-      return submitted
+      return submitted && sequenced
     },
     [
       activeSessionIdRef,
@@ -1532,6 +1562,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       copy,
       createBackendSessionForSend,
       getRoutedStoredSessionId,
+      getRouteToken,
       getRuntimeIdForStoredSession,
       handleSkinCommand,
       handoffSession,

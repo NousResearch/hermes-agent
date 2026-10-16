@@ -65,7 +65,7 @@ class TestSignatureFromSchema:
             },
             "required": ["s", "i", "n", "b", "a", "o"],
         }
-        sig, annots = _signature_from_schema(schema)
+        _sig, annots = _signature_from_schema(schema)
 
         assert annots["s"] == str
         assert annots["i"] == int

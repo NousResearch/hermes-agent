@@ -26,6 +26,42 @@ The SQLite database stores:
 - Timestamps (started_at, ended_at)
 - Parent session ID (for compression-triggered session splitting)
 
+### Authenticated gateway session access and attribution
+
+The gateway owns execution; a client does not own the running agent. Verified
+operators of the same gateway profile can attach to canonical local CLI, TUI, or
+Desktop sessions created through another operator authentication method. For
+example, a native local operator and an authenticated dashboard operator can
+access the same conversation without creating another runtime. Closing a client
+connection detaches that client; accepted work remains with the gateway.
+
+This deliberately replaces creator-only access for verified operators, preserving
+the dashboard's existing operator permissions. Password and OAuth identities stay
+distinct but do not create separate access barriers to canonical local sessions
+when both connections have operator access to the profile. The trusted server
+paths include native interactive bootstrap, authenticated dashboard tickets,
+internal credentials used by server-spawned PTY clients, and the verified legacy
+dashboard token. HTTP session mutations also accept the verified native HTTP owner
+grant. This does not grant operator permissions to restricted worker, messaging,
+room, or service credentials, or remove profile and operation-specific checks.
+
+Attribution remains identity-specific. Dashboard identities include the provider,
+verified OAuth issuer (when present), and subject. Creation receipts retain the
+original identity; submissions and mutation retries retain the acting identity.
+An operator joining a session does not replace its recorded owner or merge retry
+identities. Native bootstrap owner keys and session IDs remain unchanged.
+
+Older remote sessions whose receipts contain only a bare subject cannot establish
+which provider owned them. They remain stored but are not automatically assigned
+to the first authenticated account requesting them. Operator access does not permit
+remote first-claim adoption of unowned historical transcripts.
+
+Cross-device attachment also requires a supported, authenticated route to the same
+gateway. Shared operator access does not itself expose a remote listener or add
+OpenAI-compatible API continuation of local sessions. A gateway crash is different
+from a client disconnect: interrupted work becomes `unknown` rather than being
+automatically replayed, and may need resolution before queued followers proceed.
+
 ### What Counts Toward Context
 
 Hermes stores session history so it can resume conversations, but it does not
@@ -62,9 +98,10 @@ Use `/compress` when a session gets long, `/new` for a fresh thread, and
 `hermes sessions prune` only when you want to delete old ended sessions from
 storage. If `state.db` has simply grown large, start with the non-destructive
 option first: `hermes sessions optimize` merges FTS5 index segments and
-VACUUMs the database without touching any session data. Both `optimize` and `prune` refuse
-while another Hermes process (gateway, Desktop, dashboard, cron) holds `state.db` — stop it
-first, or pass `--force`; see [Session storage recovery](session-storage-recovery.md).
+VACUUMs the database without touching any session data. With the gateway running, `prune`
+asks the gateway to delete the sessions it selected. `optimize`, and `prune` with no gateway
+running, refuse while another Hermes process (Desktop, dashboard, cron) holds `state.db`. Stop
+it first, or pass `--force`; see [Session storage recovery](session-storage-recovery.md).
 Compression reduces the active context; it is not a privacy delete.
 Pass a name to `/new` (e.g. `/new payments-refactor`) to set the new session's
 initial title up front — useful for finding it later with `/resume <name>` or
@@ -94,7 +131,7 @@ Each session is tagged with its source platform:
 | `weixin` | Weixin (personal WeChat) |
 | `bluebubbles` | Apple iMessage via BlueBubbles macOS server |
 | `qqbot` | QQ Bot (Tencent QQ) via Official API v2 |
-| `homeassistant` | Home Assistant conversation |
+| `homeassistant` | Home Assistant events (plugin) |
 | `webhook` | Incoming webhooks |
 | `api-server` | API server requests |
 | `acp` | ACP editor integration |
@@ -385,7 +422,9 @@ hermes sessions export ~/exports/ --session-id 20250305_091523_a1b2c3d4
 hermes sessions export backup.jsonl --redact
 ```
 
-Exported files contain one JSON object per line with full session metadata and all messages.
+Exported files contain one JSON object per line with full session metadata and every stored message, each with its `active`/`compacted` flags. That includes turns archived by in-place compaction and messages removed by rewind or edit. Importing the file (the dashboard's session import) restores those rows as archived history, not as live model context. A `/save json` snapshot (CLI, messaging, TUI, or Desktop) holds the same rows. Treat a backup as holding everything the session ever contained. To share a conversation, export a display format (`--format md` or `html`, which holds only the history the session shows) with `--redact`. Each session's backup is built in memory, so a session with more stored rows than `sessions.max_export_messages` is refused (see [Oversized-Transcript Guards](#oversized-transcript-guards)).
+
+Filtered exports include matching pinned and archived sessions. Pinning protects a session from pruning, rather than excluding it from a backup. If an explicit `--session-id` cannot be resolved, export exits with a non-zero status and creates no output file.
 
 Each record also carries a `timings` block derived from the message timestamps, so a reader of an export attached to a bug report can tell a single long model gap from many small tool round-trips without reconstructing it by hand. It holds only ids, roles, counts and durations — `wall_clock_ms`, `largest_gap_ms`, `role_counts`, `tool_calls_emitted` and per-message `intervals` — never prompt text, tool arguments or results, so it survives `--redact` unchanged. Hermes does not persist a model/tool stopwatch, so `complete` is always `false`; when a session has no timestamped messages, `available` is `false` and `unavailable_reason` says why. The block is rebuilt on every export and ignored (and not counted toward size limits) on import.
 
@@ -456,7 +495,7 @@ hermes sessions export --format md --model sonnet --min-messages 50 --redact
 hermes sessions export --format md --session-id 20250305_091523_a1b2c3d4 --delete-after-verified --yes
 ```
 
-Markdown/QMD export writes one `.md` or `.qmd` file per exported session plus a `manifest.jsonl` with the file path, message count, lineage ids, and SHA-256. Bulk export requires at least one filter; a bare bulk export is refused. `--delete-after-verified` is intentionally limited to `--session-id` and requires `--yes`. Because deleting a parent session also removes its delegate/subagent sessions, this mode exports and verifies each delegate in a separate file before deleting anything. Markdown/QMD files hold the full history shown by the session, including turns archived by in-place compaction. Deletion compares that exact display transcript and the delegate set again inside the same database transaction that performs the delete; any intervening append, rewrite, rewind, compaction, or delegate change refuses deletion. The same display-history rule applies to `--format html`, `--only user-prompts` (with either Markdown or JSONL output), and `/save md|html`. Full-session JSON/JSONL exports and `/save json` remain live-only because importing archived turns would restore them as live model context. `--redact` scrubs secrets (API keys, tokens, credentials) from message content and tool output before writing — recommended for any export you plan to share.
+Markdown/QMD export writes one `.md` or `.qmd` file per exported session plus a `manifest.jsonl` with the file path, message count, lineage ids, and SHA-256. Bulk export requires at least one filter; a bare bulk export is refused. `--delete-after-verified` is intentionally limited to `--session-id` and requires `--yes`. Because deleting a parent session also removes its delegate/subagent sessions, this mode exports and verifies each delegate in a separate file before deleting anything. Markdown/QMD files hold the full history shown by the session, including turns archived by in-place compaction. Deletion compares that exact display transcript and the delegate set again inside the same database transaction that performs the delete; any intervening append, rewrite, rewind, compaction, or delegate change refuses deletion. The same display-history rule applies to `--format html`, `--only user-prompts` (with either Markdown or JSONL output), and `/save md|html`. Full-session JSON/JSONL exports (`hermes sessions export` without `--only`) and `/save json` (CLI, messaging, TUI, Desktop) are backups of every stored row, archived rows included (see [Export Sessions](#export-sessions)). `--redact` scrubs secrets (API keys, tokens, credentials) from message content and tool output before writing — recommended for any export you plan to share.
 
 ### Delete a Session
 
@@ -484,12 +523,39 @@ hermes sessions rename 20250305_091523_a1b2c3d4 debugging auth flow
 
 If the title is already in use by another session, an error is shown.
 
+### Discard a Turn Lost in a Gateway Crash
+
+If the gateway stops in the middle of a turn, that turn's outcome is unknown and it is never replayed. It blocks
+the session until you acknowledge it. Interactive `hermes chat --resume <id>` lists it and accepts
+`/discard <admission_id>`. A scripted `hermes chat --resume <id> -q` refuses with exit code 3 and submits nothing.
+To clear it from a script:
+
+```bash
+# Acknowledge every unknown (lost) turn on the session, then continue it
+hermes sessions discard 20250305_091523_a1b2c3d4 --yes
+hermes chat --resume 20250305_091523_a1b2c3d4 -q "next question"
+
+# Only one specific admission (repeatable); the session may also be named by title
+hermes sessions discard "debugging auth flow" --admission a9b59ad3ee914d75967def2a33435c88 --yes
+```
+
+Without `--yes` the command asks for confirmation, and it refuses (exit code 2) when stdin is not a terminal.
+The lost input stays in the transcript. Some of its actions may already have run, so check their effects before
+you resend it. Inputs queued behind it run once it is discarded.
+
 ### Pin a Session
 
 Pinning sets a durable "keep" flag: pinned sessions are exempt from the
 `sessions.auto_archive` stale sweep and always appear in listings. It is the
 same flag the Desktop sidebar's Pinned section uses — pin from either surface
 and both see it.
+
+Restoring a session export (the dashboard import, or a profile adopting a
+stranded session) keeps the pinned, archived and hidden flags, and whether an
+archive came from the `sessions.auto_archive` sweep. A restored pinned session
+stays exempt from retention cleanup, an adopted Bot Mode chat stays hidden, and
+a restored sweep archive still comes back when you resume it. Exports that
+predate these flags restore as ordinary, unpinned, visible sessions.
 
 ```bash
 # Pin one or more sessions (unique ID prefixes work)
@@ -967,6 +1033,15 @@ install the catalog plugin that reads the same block unchanged:
 replacing the durable conversation. Restart-recovery freshness limits automatic
 continuation, not the history loaded when you send a message.
 
+**`/new` moves only the view that ran it.** One session can be open in several
+places at once — a Desktop window, the TUI, a `hermes chat --resume` terminal, an
+ACP editor, a Telegram topic — all attached to the same live conversation on the
+gateway. Running `/new` (or `/reset`) in one of them creates a fresh session and
+rebinds *that* window or chat route to it. The other viewers stay on the original
+session, its history is untouched, and a turn already running there keeps running.
+Ending or clearing the shared conversation is a separate, explicit action (Stop, then
+`/new`; or a delete, which is refused while a turn is live).
+
 ### Session hygiene: why you should still run `/new`
 
 Because gateway conversations never expire on their own, it is easy to run one
@@ -1110,13 +1185,18 @@ never closed by this sweep.
 ### Oversized-Transcript Guards
 
 Two limits stop a runaway transcript from being loaded into memory all at once
-(both default to `20000` active messages; `0` disables the guard):
+(both default to `20000` messages; `0` disables the guard):
 
 ```yaml
 sessions:
   max_resume_messages: 20000   # interactive resume (CLI / TUI / Desktop)
   max_export_messages: 20000   # one-shot in-memory export of a single session
 ```
+
+`max_export_messages` applies per session to the JSON/JSONL backup (`hermes sessions export`,
+`sessions export` in `hermes console`, and `/save json` in the CLI, messaging, TUI and Desktop). It counts every stored row, archived included, because
+the backup holds all of them. A heavily compacted session with a small live tail can still exceed it.
+The dashboard Sessions page's Export action streams the rows instead and is not capped.
 
 `max_resume_messages` bounds **what the resume actually loads**, not the whole
 history of the conversation:
@@ -1133,7 +1213,9 @@ history of the conversation:
 
 When a resume is refused the client receives error code `4130` with the count
 and the scope it was measured against (`across its lineage` or
-`in its tip segment`). `hermes sessions export` still works for such sessions.
+`in its tip segment`). A TUI/Desktop `/save` refused by `max_export_messages` returns error code `4131`.
+`hermes sessions export` still works for such sessions; its JSON/JSONL
+backup needs each session to stay under `max_export_messages`.
 
 ### Manual Cleanup
 

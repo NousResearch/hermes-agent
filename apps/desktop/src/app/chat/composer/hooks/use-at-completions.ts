@@ -158,10 +158,20 @@ export function useAtCompletions(options: {
             // identity it owns: the gateway lists the same target under one
             // of them (the raw profile name), and that twin gets dropped in
             // the merge below.
+            //
+            // A handle that is the row's own text names no alias and claims
+            // nothing. Taken at face value it deleted the row that declared
+            // it, so a bot whose mention tag equals its profile name never
+            // reached the popover — it was listed in the Bots pane and absent
+            // from the one picker that could insert it. The roster emits such
+            // a handle for every local profile, and which rows hit it depends
+            // on the user's naming, so it read as "only the default bot works".
+            const own = normalize(item.insert)
+
             for (const handle of item.handles || []) {
               const claimed = normalize(handle)
 
-              if (claimed) {
+              if (claimed && claimed !== own) {
                 claimedHandles.add(claimed)
               }
             }

@@ -202,7 +202,11 @@ function ZoneMenu({
               {/* The hint's `ml-auto` makes the label the row's flexible part,
                   so without this it breaks mid-phrase before the menu widens. */}
               <span className="whitespace-nowrap">{stripVisible ? t.zones.hideTabStrip : t.zones.showTabStrip}</span>
-              {toggleHint && <span className="ml-auto pl-2 text-(--ui-text-quaternary)">{toggleHint}</span>}
+              {toggleHint && (
+                <span className="ml-auto shrink-0 pl-2 whitespace-nowrap text-(--ui-text-quaternary)">
+                  {toggleHint}
+                </span>
+              )}
             </>
           ),
           onSelect: () => setTreeGroupTabStrip(nodeId, stripVisible ? 'never' : 'always')
@@ -225,8 +229,10 @@ function ZoneMenu({
     )
   }
 
+  // `w-40` clips the spelled-out chord (`Ctrl+Alt+T`) under the menu's
+  // overflow-x-hidden. Size to the row; `min-w-40` keeps the short rows.
   return (
-    <ActionsContextMenu contentClassName="w-40" items={items}>
+    <ActionsContextMenu contentClassName="w-max min-w-40" items={items}>
       {children}
     </ActionsContextMenu>
   )

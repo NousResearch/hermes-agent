@@ -533,12 +533,20 @@ export class JsonRpcRequestChannel {
       return
     }
 
+    // Silence is judged against the last ping we actually sent. A hidden
+    // Chromium window spaces these ticks 60 s apart (intensive wake-up
+    // throttling), so the previous ping's pong is ~60 s old at every tick;
+    // a deadline on its age alone dropped every idle hidden socket.
+    let lastPingAt = 0
+
     this.heartbeatTimer = setInterval(() => {
       if (this.transport !== transport) {
         return
       }
 
-      if (Date.now() - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
+      const now = Date.now()
+
+      if (lastPingAt > this.lastLivenessAt && now - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
         this.failHeartbeat(new Error('WebSocket heartbeat acknowledgement timed out'))
 
         return
@@ -553,6 +561,8 @@ export class JsonRpcRequestChannel {
       if (this.outstandingPings.size > MAX_OUTSTANDING_PINGS) {
         this.outstandingPings.delete(this.outstandingPings.values().next().value as string)
       }
+
+      lastPingAt = now
 
       try {
         transport.send(JSON.stringify({ jsonrpc: '2.0', id, method: 'gateway.ping', params: {} }))

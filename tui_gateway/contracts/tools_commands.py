@@ -11,7 +11,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .registry import method
+from .registry import canonical_method, method
 
 
 class _Open(Result):
@@ -58,10 +58,12 @@ class ProcessStopParams(Params):
 
 class ProcessStopResult(Result):
     killed: int
+    delegations: int = 0
 
 
 method("process.stop", params=ProcessStopParams, result=ProcessStopResult,
-       doc="Kill every background process in the registry (``/stop``), answering the count killed.")
+       doc="``/stop``: on the shared owner, kill the background processes ``session_id`` owns (required); a "
+           "standalone sidecar kills every process it holds. Answers the count killed.")
 
 
 class AgentsListParams(Params):
@@ -107,6 +109,7 @@ class ProcessEntry(_Open):
     notify_on_complete: bool | None = None
     exit_code: int | None = None
     exited_at: float | None = None
+    started_epoch: float | None = None
     completion_reason: str | None = None
     detached: bool | None = None
 
@@ -165,6 +168,17 @@ class ShellExecResult(Result):
 
 method("shell.exec", params=ShellExecParams, result=ShellExecResult,
        doc="Run a safe (non-dangerous) shell command captured for ``!cmd`` / inline substitution.")
+
+
+class CanonicalShellExecParams(Params):
+    session_id: str
+    command: str
+    profile: str | None = None
+
+
+canonical_method("shell.exec", params=CanonicalShellExecParams, result=ShellExecResult,
+                 doc="Ink ``!cmd`` / ``{!cmd}`` on the shared owner: one safe command for a local session, in "
+                     "its frozen launch cwd (``gateway/session_shell.py``).")
 
 
 class CliExecParams(Params):
@@ -451,7 +465,7 @@ class CronJobRow(_Open):
     last_run_at: str | None = None
     last_status: str | None = None
     last_delivery_error: str | None = None
-    last_delivery_unverified: bool | None = None
+    last_delivery_unverified: list[str] | None = None  # unconfirmed ``platform:chat_id[:thread_id]`` targets
     last_fire_error: str | None = None
     last_error: str | None = None
     enabled: bool = True

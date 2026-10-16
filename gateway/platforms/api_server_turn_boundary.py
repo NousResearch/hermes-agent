@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 _TRANSCRIPT_IDENTITY_KEYS = ("role", "content", "tool_calls", "tool_call_id")
 
 
-def _same_transcript_prefix(agent_messages: List[Any], prefix: List[Any]) -> bool:
+def _same_transcript_prefix(agent_messages: list[Any], prefix: list[Any]) -> bool:
     """True when ``agent_messages`` starts with ``prefix`` by what each message *says*.
 
     The API layer builds bare ``{"role", "content"}`` dicts while the agent stamps its copies
@@ -29,7 +29,7 @@ def _same_transcript_prefix(agent_messages: List[Any], prefix: List[Any]) -> boo
 
 
 def response_turn_start_index(
-    conversation_history: List[Dict[str, Any]], user_message: Any, result: Dict[str, Any],
+    conversation_history: list[dict[str, Any]], user_message: Any, result: dict[str, Any],
 ) -> int:
     """Index in ``result["messages"]`` where this turn's assistant/tool rows begin (0 = all).
 
@@ -48,6 +48,8 @@ def response_turn_start_index(
 
     agent_messages = result.get("messages") if isinstance(result, dict) else None
     if not isinstance(agent_messages, list) or not agent_messages:
+        return 0
+    if result.get('_messages_are_turn_suffix'):
         return 0
     user_idx = reanchor_current_turn_user_idx(agent_messages, user_message)
     if user_idx >= 0:

@@ -56,17 +56,17 @@ def _marker() -> Path:
     return get_hermes_home() / "bot-desktop" / "sandbox.json"
 
 
-def _read_marker() -> Dict[str, Any]:
+def _read_marker() -> dict[str, Any]:
     try:
         return json.loads(_marker().read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return {}
 
 
-def _owner_identity(env: Any) -> Dict[str, Any]:
+def _owner_identity(env: Any) -> dict[str, Any]:
     """What the marker records about the sandbox hosting the screen, so a restarted gateway (empty terminal
     registry) can tell a still-running sandbox from one that was removed."""
-    ident: Dict[str, Any] = {"backend": type(env).__name__}
+    ident: dict[str, Any] = {"backend": type(env).__name__}
     container = getattr(env, "_container_id", None)
     if container:
         ident["container"] = container
@@ -74,10 +74,10 @@ def _owner_identity(env: Any) -> Dict[str, Any]:
     return ident
 
 
-_ALIVE_CACHE: Dict[str, tuple[float, bool]] = {}
+_ALIVE_CACHE: dict[str, tuple[float, bool]] = {}
 
 
-def marker_sandbox_alive(marker: Dict[str, Any]) -> bool:
+def marker_sandbox_alive(marker: dict[str, Any]) -> bool:
     """Whether the sandbox a marker names still exists. Docker: ``docker inspect`` on the recorded container
     (cached a few seconds; this sits on the browser's per-command path). Other backends (ssh host, apptainer
     instance) cannot be probed from here without their environment object: the re-attach's own
@@ -156,7 +156,7 @@ sys.stdout.buffer.write(buf.getvalue())
 """
 
 
-def grab_jpeg(env: Any, published: Dict[str, str], max_size: tuple[int, int], quality: int) -> Optional[bytes]:
+def grab_jpeg(env: Any, published: dict[str, str], max_size: tuple[int, int], quality: int) -> Optional[bytes]:
     """One JPEG of the sandbox screen, grabbed INSIDE the sandbox (the X socket and its cookie live there).
     Needs Pillow in the image (the published desktop image ships it); None when the grab fails."""
     display = published.get("DISPLAY")
@@ -192,13 +192,13 @@ def missing_binaries(env: Any) -> list[str]:
     return [b for b in proc.stdout.decode("utf-8", "replace").split() if b]
 
 
-def _published(env: Any, rdir: str) -> Dict[str, str]:
+def _published(env: Any, rdir: str) -> dict[str, str]:
     proc = streams.run_in(env, ["bash", "-c", f"kill -0 $(cat {shlex.quote(rdir)}/launcher.pid 2>/dev/null) 2>/dev/null "
                                              f"&& test -S {shlex.quote(rdir)}/rfb.sock && cat {shlex.quote(rdir)}/env"],
                           user=_user_for(env), timeout=15)
     if proc.returncode != 0:
         return {}
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
     for line in proc.stdout.decode("utf-8", "replace").splitlines():
         k, sep, v = line.partition("=")
         if sep:
@@ -206,12 +206,12 @@ def _published(env: Any, rdir: str) -> Dict[str, str]:
     return out
 
 
-def published_env(env: Any, profile: str) -> Dict[str, str]:
+def published_env(env: Any, profile: str) -> dict[str, str]:
     return _published(env, _remote_dir(env, profile))
 
 
 def start(env: Any, profile: str, *, geometry: str, wait_seconds: float = 20.0,
-          browser_exec: Optional[str] = None, browser_exec_line: Optional[str] = None) -> Dict[str, str]:
+          browser_exec: Optional[str] = None, browser_exec_line: Optional[str] = None) -> dict[str, str]:
     """Bring the screen up inside ``env`` (idempotent); returns the published env. Raises RuntimeError naming
     the blocker."""
     rdir = _remote_dir(env, profile)
@@ -270,7 +270,7 @@ def start(env: Any, profile: str, *, geometry: str, wait_seconds: float = 20.0,
                        f"{tail.decode('utf-8', 'replace')}")
 
 
-def _record(env: Any, rdir: str, profile: str, live: Dict[str, str]) -> Dict[str, str]:
+def _record(env: Any, rdir: str, profile: str, live: dict[str, str]) -> dict[str, str]:
     _marker().parent.mkdir(parents=True, exist_ok=True)
     _marker().write_text(json.dumps({"display": live["DISPLAY"], "dir": rdir, "profile": profile,
                                      **_owner_identity(env)}), encoding="utf-8")
@@ -304,7 +304,7 @@ def open_rfb_stream(env: Any, profile: str) -> subprocess.Popen:
     return streams.open_stream(env, ["python3", "-c", _RELAY, f"{rdir}/rfb.sock"], user=_user_for(env))
 
 
-def cua_mcp_invocation(env: Any, profile: str, published: Dict[str, str]) -> tuple[str, list[str]]:
+def cua_mcp_invocation(env: Any, profile: str, published: dict[str, str]) -> tuple[str, list[str]]:
     """``(command, args)`` for ``StdioServerParameters``: the backend's exec prefix running ``cua-driver mcp`` on
     the sandbox display."""
     argv = streams.remote_command(env, ["cua-driver", "mcp", "--no-overlay"], child_env=published,

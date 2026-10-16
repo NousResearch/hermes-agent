@@ -1,20 +1,7 @@
 name: cursor-sdk
 repo: https://github.com/mcpeezy/hermes-cursor-sdk
 sha: 0e546bc079ab23451a52a12ca02e8a55af34e217
-description: >-
-  Experimental model transport using the official Cursor Agent SDK.
-  Requests go to Cursor through its official SDK. The plugin cannot enforce an
-  included-only spending cap and never changes account spending settings.
-  Instructions use a Cursor project rule, not a native system-role override.
-  Permission and prompt-hierarchy equivalence remain unqualified.
-  The plugin spawns Node and a local SDK agent, runs Git initialization in a
-  plugin-owned workspace, and writes project rules, hooks, and SDK state under
-  its own runtime directory. That state may contain private conversation data
-  and currently remains on disk. Credentials come from Hermes's profile-scoped
-  secret accessor. No credential store or vendor token file is read directly
-  by plugin code. Text-only, buffered responses. The bundled model snapshot
-  is not live entitlement discovery. Optional picker hooks require Hermes
-  support. This plugin does not patch the desktop.
+description: "Experimental model transport using the official Cursor Agent SDK. Requests go to Cursor through its official SDK. The plugin cannot enforce an included-only spending cap and never changes account spending settings. Instructions use a Cursor project rule, not a native system-role override. Permission and prompt-hierarchy equivalence remain unqualified. The plugin spawns Node and a local SDK agent, runs Git initialization in a plugin-owned workspace, and writes project rules, hooks, and SDK state under its own runtime directory. That state may contain private conversation data and currently remains on disk. Credentials come from Hermes's profile-scoped secret accessor. No credential store or vendor token file is read directly by plugin code. Text-only, buffered responses. The bundled model snapshot is not live entitlement discovery. Optional picker hooks require Hermes support. This plugin does not patch the desktop. Disclosure — spawns Node and a local Cursor Agent SDK worker per request (`npm ci` in the plugin dir installs Cursor's official native platform binaries from npm); sends the full conversation, system prompt and tool schemas to Cursor with your CURSOR_API_KEY; Cursor-native shell/file tools are denied by a fail-closed project hook and the run is cancelled if one fires, but that enforcement is not proven in every Cursor runtime; each request's workspace and conversation state stay under the plugin's runtime/ directory until you delete them."
 maintainer: mcpeezy
 tier: community
 category: models

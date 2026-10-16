@@ -32,6 +32,13 @@ _log = logging.getLogger(__name__)
 RESTART_WAIT_REASON = "restart_wait"
 
 
+def open_restart_wait(runner) -> None:
+    """Publish the restart's after-turn wait (``drain_reason``) unless a drain already named its own."""
+    descriptor = getattr(runner, "session_runtime_descriptor", None)
+    if descriptor is not None and not descriptor.get("drain_reason"):
+        descriptor["drain_reason"] = RESTART_WAIT_REASON
+
+
 def restart_wait_open(runner) -> bool:
     """True while *runner* is in a restart's after-turn wait (draining, not yet stopping)."""
     descriptor = getattr(runner, "session_runtime_descriptor", None) or {}

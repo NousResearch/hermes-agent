@@ -1,6 +1,6 @@
-"""Classic CLI live-work dock (subagents, background processes, active goal, queued prompts) and
-scoped controls; no agent-loop state is changed. Process rows come from ``cli_process_dock``,
-goal/queue rows from ``cli_session_dock``."""
+"""Classic CLI live-work dock (subagents, background processes, active goal, standing loop, queued
+prompts) and scoped controls; no agent-loop state is changed. Process rows come from
+``cli_process_dock``, goal/loop/queue rows from ``cli_session_dock``."""
 from __future__ import annotations
 
 import json
@@ -32,6 +32,9 @@ class SubagentMonitor:
         self.entries = []
         self.processes = []
         self.goal = ''
+        self.loop = ''
+        self.loop_badge = ''
+        self.loop_prompt = ''
         self.queued = []
         self.selected_id = None
         self._signature = None
@@ -42,7 +45,7 @@ class SubagentMonitor:
 
     @property
     def has_rows(self):
-        return bool(self.entries or self.processes or self.goal or self.queued)
+        return bool(self.entries or self.processes or self.goal or self.loop or self.queued)
 
     @property
     def roster(self):
@@ -78,13 +81,17 @@ class SubagentMonitor:
             row.pop('running_seconds', None)
         processes = procs.process_rows(now)
         goal = session_rows.goal_line(self.cli)
+        loop_badge, loop, loop_prompt = session_rows.loop_row(self.cli, now)
         queued = session_rows.queued_prompts(self.cli)
-        signature = json.dumps([entries, processes, goal, queued], sort_keys=True, default=str)
+        signature = json.dumps([entries, processes, goal, loop, queued], sort_keys=True, default=str)
         changed = signature != self._signature
         self._signature = signature
         self.entries = entries
         self.processes = processes
         self.goal = goal
+        self.loop = loop
+        self.loop_badge = loop_badge
+        self.loop_prompt = loop_prompt
         self.queued = queued
         if self.selected is None:
             roster = self.roster
@@ -128,7 +135,7 @@ class SubagentMonitor:
 
     def _counts(self, *, session=True):
         """Count fragment: ``2 live``, ``1 proc``, ``2 live · 3 procs``; the collapsed heading
-        (``session=True``) adds ``goal active|paused|parked`` and ``N queued``."""
+        (``session=True``) adds ``goal active|paused|parked``, the loop badge and ``N queued``."""
         parts = []
         if self.entries:
             parts.append(t('cli.subagents.count_live', count=len(self.entries)))
@@ -142,6 +149,8 @@ class SubagentMonitor:
         if session and self.goal:
             parts.append(t('cli.subagents.goal_parked' if self.goal.startswith('⏳') else
                            'cli.subagents.goal_paused' if self.goal.startswith('⏸') else 'cli.subagents.goal_active'))
+        if session and self.loop_badge:
+            parts.append(self.loop_badge)
         if session and self.queued:
             parts.append(t('cli.subagents.count_queued', count=len(self.queued)))
         return ' · '.join(parts)
@@ -163,7 +172,8 @@ class SubagentMonitor:
             return self._agent_activity(self.entries[0])
         if self.processes:
             return procs.process_activity(self.processes[0])
-        return self.goal or t('cli.subagents.next_queued', text=self.queued[0])
+        # The loop's state is already the heading's badge; its prompt is the activity.
+        return self.goal or self.loop_prompt or t('cli.subagents.next_queued', text=self.queued[0])
 
     def dock_text(self, *, columns, rows):
         if not self.has_rows:
@@ -192,7 +202,7 @@ class SubagentMonitor:
                 heading += ' · ' + _clip(activity, room)
             return _clip(' ' + heading, max(0, columns))
         columns = max(0, columns - 2)
-        lines = [_clip(f' {self.goal}', columns)] if self.goal else []
+        lines = [_clip(f' {row}', columns) for row in (self.goal, self.loop) if row]
         budget = max(1, min(4, (rows - 10) // 3))
         # Both blocks present: split the row budget so neither hides the other entirely.
         agent_budget = budget if not self.processes else max(1, budget - max(1, budget // 2))

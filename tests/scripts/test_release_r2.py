@@ -573,6 +573,7 @@ def test_cli_reuses_an_immutable_multipart_object(r2_server, tmp_path):
     result = subprocess.run(
         [sys.executable, "-c", script, "put", "--tag", "v1.0.0", "--key", path.name, "--file", str(path), "--immutable"],
         cwd=Path(__file__).resolve().parents[2], env=os.environ, capture_output=True, text=True, timeout=60,
+        check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert [method for method, _, _ in r2_server.requests] == ["POST", "GET", "HEAD"]
@@ -621,7 +622,7 @@ def test_put_page_object_carries_html_type_and_no_store(r2_server):
         os.unlink(path)
     stored, _etag = r2_server.store["releases/stable/index.html"]
     assert stored == page.encode("utf-8")
-    headers = [r[2] for r in r2_server.requests if r[0] == "PUT"][0]
+    headers = next(r[2] for r in r2_server.requests if r[0] == "PUT")
     assert headers["Content-Type"] == "text/html; charset=utf-8"
     assert headers["Cache-Control"] == "no-store"
 
@@ -792,11 +793,28 @@ def test_download_streams_verified_bytes_and_preserves_destination_on_failure(r2
     monkeypatch.setattr(r2.time, 'sleep', lambda _: None)
     r2.download_object(**args)
     assert request_times == [NOW, refreshed]
+    # A body corrupted in transit (right length, wrong bytes) is fetched again, not failed on the spot.
+    sent = []
+
+    def corrupt_once(handler):
+        sent.append(1)
+        if len(sent) == 1:
+            handler._send(200, payload[:-1] + bytes([payload[-1] ^ 1]))
+        else:
+            original_get(handler)
+
+    monkeypatch.setattr(_R2StubHandler, 'do_GET', corrupt_once)
+    target.write_bytes(b"previous complete file")
+    r2.download_object(**args)
+    assert target.read_bytes() == payload and len(sent) == 2
     monkeypatch.setattr(_R2StubHandler, 'do_GET', original_get)
 
+    # A stored object that really differs from its receipt still fails, after the bounded attempts.
     r2_server.store[key] = (b"corrupt replacement", '"e"')
+    r2_server.requests.clear()
     with pytest.raises(ValueError, match="checksum mismatch"):
         r2.download_object(**args)
+    assert sum(1 for method, _, _ in r2_server.requests if method == "GET") == 3
     assert target.read_bytes() == payload
     assert list(target.parent.iterdir()) == [target]
     del r2_server.store[key]

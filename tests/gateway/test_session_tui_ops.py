@@ -1,0 +1,154 @@
+"""Ink's /save, /reload, /agents pause and /rollback on the shared owner (main's sidecar parity)."""
+import asyncio
+import json
+from pathlib import Path
+
+import pytest
+
+from tests.gateway.test_session_busy_controls import owner, settled
+from tests.gateway.fixtures.local_recovery_probe import rpc, websocket
+
+
+@pytest.mark.platforms("linux")
+def test_session_save_exports_the_stored_transcript_under_the_profile_home(tmp_path):
+    with owner(tmp_path) as (home, _peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='save', source='tui', toolsets=[]))['result']['session_id']
+                await rpc(ws, 'prompt.submit', session_id=sid, input_id='first', text='SAVE_ME')
+                await settled(home)
+                saved = await rpc(ws, 'session.save', session_id=sid)
+                assert 'result' in saved, saved
+                path = saved['result']['file']
+                assert path.startswith(str(home / 'sessions' / 'saved' / 'hermes_conversation_')), path
+                data = json.loads(await asyncio.to_thread(Path(path).read_text, encoding='utf-8'))
+                contents = [m.get('content') for m in data['messages']]
+                assert 'SAVE_ME' in contents and 'CONTROL_ACK' in contents, data
+                for params, reason in [({'session_id': sid, 'format': 'md'}, 'invalid_params'),
+                                       ({'session_id': sid, 'profile': 'foreign'}, 'profile_mismatch'),
+                                       ({}, 'invalid_params')]:
+                    assert (await rpc(ws, 'session.save', **params))['error']['message'] == reason
+        asyncio.run(probe())
+
+
+@pytest.mark.platforms("linux")
+def test_reload_env_rereads_the_profile_dotenv_for_a_controlled_session(tmp_path):
+    with owner(tmp_path) as (home, _peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                sid = (await rpc(ws, 'session.create', request_id='reload', source='tui', toolsets=[]))['result']['session_id']
+                env = home / '.env'
+                await asyncio.to_thread(env.write_text, 'TUI_RELOAD_PROBE=one\n')
+                first = await rpc(ws, 'reload.env', session_id=sid)
+                assert first.get('result', {}).get('updated', 0) >= 1, first
+                assert (await rpc(ws, 'reload.env', session_id=sid))['result'] == {'updated': 0}
+                await asyncio.to_thread(env.write_text, 'TUI_RELOAD_PROBE=two\n')
+                assert (await rpc(ws, 'reload.env', session_id=sid))['result'] == {'updated': 1}
+                # A bare frame never rewrites the shared owner's environment.
+                for params, reason in [({}, 'invalid_params'), ({'session_id': sid, 'profile': 'foreign'}, 'profile_mismatch'),
+                                       ({'session_id': sid, 'force': True}, 'invalid_params')]:
+                    assert (await rpc(ws, 'reload.env', **params))['error']['message'] == reason
+        asyncio.run(probe())
+
+
+@pytest.mark.platforms("linux")
+def test_delegation_pause_toggles_the_spawn_gate_and_status_reports_it(tmp_path):
+    with owner(tmp_path) as (home, _peer, desc):
+        async def probe():
+            async with websocket(home, desc) as ws:
+                await rpc(ws, 'session.create', request_id='pause', source='tui', toolsets=[])
+                paused = await rpc(ws, 'delegation.pause', paused=True)
+                assert paused.get('result') == {'paused': True}, paused
+                assert (await rpc(ws, 'delegation.status'))['result']['paused'] is True
+                assert (await rpc(ws, 'delegation.pause', paused=False))['result'] == {'paused': False}
+                assert (await rpc(ws, 'delegation.status'))['result']['paused'] is False
+                for params, reason in [({'paused': 'yes'}, 'invalid_params'), ({'paused': True, 'profile': 'foreign'},
+                                       'profile_mismatch')]:
+                    assert (await rpc(ws, 'delegation.pause', **params))['error']['message'] == reason
+                assert (await rpc(ws, 'delegation.status'))['result']['paused'] is False
+        asyncio.run(probe())
+
+
+async def _git_rpc(ws, method, **params):
+    """``rpc`` with room for checkpoint git calls: each one resolves Hermes' managed git first, which
+    can take a second per call on a cold test home (the shared helper waits 20 s)."""
+    await ws.send(json.dumps({'jsonrpc': '2.0', 'id': method, 'method': method, 'params': params}))
+    async with asyncio.timeout(120):
+        while True:
+            reply = json.loads(await ws.recv())
+            if reply.get('id') == method:
+                return reply
+
+
+def _checkpoint(home, cwd, reason):
+    """A checkpoint in the owner profile's shared store (what the agent takes before a write)."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.checkpoint_manager import CheckpointManager
+    token = set_hermes_home_override(str(home))
+    try:
+        assert CheckpointManager(enabled=True).ensure_checkpoint(str(cwd), reason)
+    finally:
+        reset_hermes_home_override(token)
+
+
+@pytest.mark.platforms("linux")
+def test_rollback_lists_diffs_and_restores_the_session_cwd_and_rewinds_the_last_turn(tmp_path):
+    with owner(tmp_path) as (home, peer, desc):
+        work = tmp_path / 'work'
+        work.mkdir()
+        (work / 'a.txt').write_text('original\n')
+        (work / 'b.txt').write_text('original b\n')
+
+        async def probe():
+            async with websocket(home, desc) as ws:
+                plain = (await rpc(ws, 'session.create', request_id='plain', source='tui', toolsets=[],
+                                   cwd=str(work)))['result']['session_id']
+                assert (await _git_rpc(ws, 'rollback.list', session_id=plain))['result'] == {'enabled': False, 'checkpoints': []}
+                sid = (await rpc(ws, 'session.create', request_id='rollback', source='tui', toolsets=[],
+                                 cwd=str(work), checkpoints=True))['result']['session_id']
+                await rpc(ws, 'prompt.submit', session_id=sid, input_id='first', text='FIRST')
+                await settled(home)
+                await rpc(ws, 'prompt.submit', session_id=sid, input_id='second', text='SECOND')
+                await settled(home)
+                await asyncio.to_thread(_checkpoint, home, work, 'before write_file')
+                (work / 'a.txt').write_text('edited\n')
+                (work / 'b.txt').write_text('edited b\n')
+                listed = await _git_rpc(ws, 'rollback.list', session_id=sid)
+                assert listed.get('result', {}).get('enabled') is True, listed
+                [row] = listed['result']['checkpoints']
+                assert row['message'] == 'before write_file' and row['hash'], row
+                diff = (await _git_rpc(ws, 'rollback.diff', session_id=sid, hash='1'))['result']
+                assert 'a.txt' in diff['stat'] and 'edited' in diff['diff'], diff
+                one = (await _git_rpc(ws, 'rollback.restore', session_id=sid, hash=row['hash'], file_path='a.txt'))['result']
+                assert one['success'] is True and 'history_removed' not in one, one
+                assert (work / 'a.txt').read_text() == 'original\n' and (work / 'b.txt').read_text() == 'edited b\n'
+                # A whole-tree restore rewinds the transcript too: refused while a turn runs (main's busy check).
+                peer.blocked.clear()
+                peer.release.clear()
+                await rpc(ws, 'prompt.submit', session_id=sid, input_id='block', text='BLOCK_REDIRECT')
+                assert await asyncio.to_thread(peer.blocked.wait, 25)
+                busy = await _git_rpc(ws, 'rollback.restore', session_id=sid, hash=row['hash'])
+                assert busy['error']['message'] == 'session_busy', busy
+                assert (work / 'b.txt').read_text() == 'edited b\n'
+                peer.release.set()
+                await settled(home)
+                before = (await rpc(ws, 'session.resume', session_id=sid))['result']['messages']
+                # The file restore took a pre-rollback snapshot, now checkpoint 1: restore the original by hash.
+                full = await _git_rpc(ws, 'rollback.restore', session_id=sid, hash=row['hash'])
+                assert 'result' in full, full
+                full = full['result']
+                assert full['success'] is True and full['history_removed'] == 2, full
+                assert (work / 'b.txt').read_text() == 'original b\n'
+                after = (await rpc(ws, 'session.resume', session_id=sid))['result']['messages']
+                assert [m['content'] for m in after] == [m['content'] for m in before[:-2]], (before, after)
+                assert after[-1]['content'] == 'CONTROL_ACK' and after[-2]['content'] == 'SECOND', after
+                for method, params, reason in [
+                    ('rollback.diff', {'session_id': sid}, 'invalid_params'),
+                    ('rollback.restore', {'session_id': sid, 'hash': ''}, 'invalid_params'),
+                    ('rollback.diff', {'session_id': sid, 'hash': '9'}, 'invalid_checkpoint'),
+                    ('rollback.list', {'session_id': sid, 'profile': 'foreign'}, 'profile_mismatch'),
+                ]:
+                    assert (await rpc(ws, method, **params))['error']['message'] == reason
+                bad = (await _git_rpc(ws, 'rollback.restore', session_id=sid, hash='9'))['result']
+                assert bad['success'] is False and 'Invalid checkpoint number' in bad['error'], bad
+        asyncio.run(probe())

@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import inspect
 import threading
+from collections.abc import Generator, Iterable
 from concurrent.futures import Future
 from typing import AsyncIterator, Awaitable, Callable, cast
 
@@ -60,7 +61,7 @@ class _SyncFromAsyncIterator:
             self.close()
             raise
 
-    def __iter__(self) -> "_SyncFromAsyncIterator":
+    def __iter__(self) -> _SyncFromAsyncIterator:
         return self
 
     def __next__(self) -> object:
@@ -132,3 +133,25 @@ def coerce_sync_stream(result: object) -> object:
         return bridge
     bridge.close()
     return result
+
+
+def _release_sync_semaphore_after_stream(
+    stream: Iterable[object], semaphore: threading.BoundedSemaphore,
+) -> Generator[object, None, None]:
+    """Release a permit only after a streaming response is consumed or closed."""
+    def consume() -> Generator[object, None, None]:
+        try:
+            yield None
+            yield from stream
+        finally:
+            try:
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    close()
+            finally:
+                semaphore.release()
+
+    # An unstarted generator skips finally on close; prime only our sentinel.
+    wrapped = consume()
+    next(wrapped)
+    return wrapped

@@ -290,6 +290,43 @@ def test_pairing_probe_reuses_live_profile_roots_until_the_profile_set_moves(wat
     assert sorted(live_calls) == ["play", "work", "work"]
 
 
+def test_second_ledger_with_the_same_mtime_still_broadcasts_pairing_changed(watcher_home):
+    """Coarse-timestamp filesystems give two ledgers written in one tick the same mtime; a
+    newest-mtime signature cannot see the second one, so the badge for it never appears."""
+    home, events = watcher_home
+    store = home / "platforms" / "pairing"
+    store.mkdir(parents=True)
+    first = store / "telegram-pending.json"
+    first.write_text("{}", encoding="utf-8")
+    server._broadcast_watched_changes(now=0.0)
+
+    second = store / "discord-pending.json"
+    second.write_text("{}", encoding="utf-8")
+    pinned = first.stat().st_mtime_ns
+    os.utime(second, ns=(pinned, pinned))
+    server._broadcast_watched_changes(now=10.0)
+
+    assert events == [("pairing.changed", {})]
+
+
+def test_sibling_projects_db_write_in_the_same_mtime_tick_broadcasts(watcher_home, monkeypatch):
+    """One served profile's projects.db write that lands in the same timestamp tick as
+    another's must not be masked by a newest-mtime-across-homes signature."""
+    home, events = watcher_home
+    coder_home = home / "profiles" / "coder"
+    coder_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_served_profile_homes", {coder_home})
+    (home / "projects.db").write_text("x", encoding="utf-8")
+    server._broadcast_watched_changes(now=0.0)
+
+    (coder_home / "projects.db").write_text("x", encoding="utf-8")
+    pinned = (home / "projects.db").stat().st_mtime_ns
+    os.utime(coder_home / "projects.db", ns=(pinned, pinned))
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("projects.changed", {}) in events
+
+
 def test_rate_limit_churn_does_not_broadcast_pairing_changed(watcher_home):
     """_rate_limits.json moves on every unauthorized DM, including ones that
     produce no new row — signalling on it would refetch for nothing."""
@@ -424,7 +461,7 @@ def test_new_envelope_after_drain_fires_pending_again(watcher_home):
 
 
 def test_no_outbox_dir_never_fires_pending(watcher_home):
-    home, events = watcher_home
+    _home, events = watcher_home
     server._broadcast_watched_changes(now=0.0)
     server._broadcast_watched_changes(now=10.0)
 
@@ -438,7 +475,7 @@ def test_broken_probe_never_kills_the_pass(watcher_home, monkeypatch):
     monkeypatch.setitem(
         server._CHANGE_WATCHES,
         "cron.changed",
-        (1.0, lambda: (_ for _ in ()).throw(RuntimeError("boom")), lambda: {}),
+        (1.0, lambda: (_ for _ in ()).throw(RuntimeError("boom")), dict),
     )
     _write_session_change(home / "state.db", "created")
     server._broadcast_watched_changes(now=10.0)

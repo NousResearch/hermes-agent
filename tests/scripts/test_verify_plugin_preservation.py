@@ -108,7 +108,7 @@ def test_preservation_cli_fault_matrix(home, tmp_path, relative, action, categor
                 for root in (home, tmp_path / "external-mnemosyne-runtime") for p in root.rglob("*")}
     before = fingerprint()
     result = subprocess.run([sys.executable, VERIFIER, "snapshot", "--home", str(home), "--out", str(snapshot)],
-                            capture_output=True, text=True, timeout=30)
+                            capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     entries = json.loads(snapshot.read_text(encoding="utf-8-sig"))["entries"]
     assert {"plugins/mnemosyne-wrapper/plugin.py", "profiles/work/plugins/second-plugin/data.bin",
@@ -117,7 +117,7 @@ def test_preservation_cli_fault_matrix(home, tmp_path, relative, action, categor
     link = entries["plugins/mnemosyne-wrapper/runtime"]
     assert link["kind"] == "symlink" and link["target_resolves"] and link["target_kind"] == "dir"
     assert {"engine.bin", "sidecar-witness.txt"} <= link["target_tree"].keys()
-    assert subprocess.run(command, capture_output=True, text=True, timeout=30).returncode == 0
+    assert subprocess.run(command, capture_output=True, text=True, timeout=30, check=False).returncode == 0
     assert fingerprint() == before
     target = home / relative
     if action == "repoint":
@@ -133,7 +133,7 @@ def test_preservation_cli_fault_matrix(home, tmp_path, relative, action, categor
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"tampered or added")
     before = fingerprint()
-    result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == (0 if action == "add" else 1), result.stderr
     data = json.loads(report.read_text(encoding="utf-8-sig"))
     affected = "plugins/mnemosyne-wrapper/runtime" if "/runtime/" in relative else relative
@@ -151,6 +151,7 @@ def test_empty_snapshot_is_inconclusive(tmp_path):
         [sys.executable, VERIFIER, "snapshot", "--home", str(empty_home),
          "--out", str(snap_file)],
         capture_output=True, text=True,
+        check=False,
     )
     assert r1.returncode == 3
     assert "ZERO entries" in r1.stderr
@@ -159,6 +160,7 @@ def test_empty_snapshot_is_inconclusive(tmp_path):
         [sys.executable, VERIFIER, "verify", "--home", str(empty_home),
          "--snapshot", str(snap_file)],
         capture_output=True, text=True,
+        check=False,
     )
     assert r2.returncode == 3
     assert "INCONCLUSIVE" in r2.stderr
@@ -186,6 +188,7 @@ def test_missing_home_fails_snapshot(tmp_path):
         [sys.executable, VERIFIER, "snapshot", "--home", str(tmp_path / "nope"),
          "--out", str(tmp_path / "x.json")],
         capture_output=True, text=True,
+        check=False,
     )
     assert proc.returncode == 2
 
@@ -193,14 +196,14 @@ def test_missing_home_fails_snapshot(tmp_path):
 def test_release_fixture_seed_is_shared_and_never_repairs_damage(tmp_path):
     home, external = tmp_path / "home", tmp_path / "external"
     args = [sys.executable, VERIFIER, "seed", "--home", str(home), "--external", str(external)]
-    result = subprocess.run(args, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(args, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     snap = vpp.snapshot_home(str(home))
     runtime = snap["entries"]["plugins/mnemosyne-wrapper/runtime"]
     assert runtime["target_tree"]["engine.bin"]["kind"] == "file"
     witness = external / "sidecar-witness.txt"
     witness.unlink()
-    retry = subprocess.run(args, capture_output=True, text=True, timeout=30)
+    retry = subprocess.run(args, capture_output=True, text=True, timeout=30, check=False)
     assert retry.returncode != 0
     assert not witness.exists()
     assert not vpp.verify_home(str(home), snap)["ok"]

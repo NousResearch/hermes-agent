@@ -1,3 +1,4 @@
+import { arThemePicker } from './ar_theme_picker'
 import type { TranslationOverrides } from './define-locale'
 
 export const arAssistant = {
@@ -115,8 +116,12 @@ export const arAssistant = {
       placeholder: 'اكتب إجابتك...',
       skip: 'تخطي',
       confirmAndContinueLabel: 'تأكيد ومتابعة',
+      singleSelectHint: 'اختر واحدا',
+      multiSelectHint: 'حدد كل ما ينطبق',
+      oneQuestion: 'سؤال واحد',
       questionProgress: (answered, total) => `تمت الإجابة على ${answered} من ${total}`
     },
+    themePicker: arThemePicker,
     tool: {
       copyCode: 'نسخ الكود',
       renderingImage: 'جار عرض الصورة...',

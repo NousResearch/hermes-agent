@@ -98,7 +98,7 @@ def _call(server, method, **params):
 
 
 def test_undo_returns_prefill_with_target_text(server, session_with_history):
-    sid, session_key, s, agent = session_with_history
+    sid, _session_key, s, _agent = session_with_history
     resp = _call(server, "command.dispatch", session_id=sid, name="undo", arg="")
     result = resp["result"]
     assert result["type"] == "prefill"

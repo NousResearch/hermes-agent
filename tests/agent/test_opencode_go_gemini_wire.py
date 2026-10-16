@@ -87,7 +87,7 @@ def test_go_native_preserves_controls_and_request_headers(monkeypatch, stream):
             result = client.chat.completions.create(
                 model="gemini-4-argon-contributor", messages=[{"role": "user", "content": "OK"}],
                 stream=stream, max_tokens=123, extra_body={"reasoning": {"enabled": False}},
-                extra_headers={"x-opencode-session": "request-session"},
+                extra_headers={"X-OpenCode-Session": "request-session", "aCcEpT": "application/x-fixture"},
             )
             if stream:
                 list(result)
@@ -97,7 +97,8 @@ def test_go_native_preserves_controls_and_request_headers(monkeypatch, stream):
         assert request.url.params["fixture"] == "preserved"
         assert request.url.params["route"] == ""
         assert request.url.params.get_list("tag") == ["a", "b"]
-        assert request.headers["x-opencode-session"] == "request-session"
+        assert request.headers.get_list("x-opencode-session") == ["request-session"]
+        assert request.headers.get_list("accept") == ["application/x-fixture"]
         config = json.loads(request.content)["generationConfig"]
         assert config["maxOutputTokens"] == 123
         assert config["thinkingConfig"]["includeThoughts"] is False

@@ -952,7 +952,9 @@ class GeminiNativeClient:
 
     def _generate(self, url: str, request: dict[str, Any], timeout: Any, extra_headers=None, extra_query=None) -> dict[str, Any]:
         query = self._default_query.merge(extra_query or {})
-        response = self._http.post(url, json=request, headers={**self._headers(), **(extra_headers or {})},
+        headers = httpx.Headers(self._headers())
+        headers.update(extra_headers or {})
+        response = self._http.post(url, json=request, headers=headers,
                                    timeout=timeout, **({"params": query} if query else {}))
         if response.status_code != 200:
             raise self._http_error(response)
@@ -974,7 +976,9 @@ class GeminiNativeClient:
         resume, sends = None, 0
         while True:
             try:
-                headers = {**self._headers(), "Accept": "text/event-stream", **(extra_headers or {})}
+                headers = httpx.Headers(self._headers())
+                headers["Accept"] = "text/event-stream"
+                headers.update(extra_headers or {})
                 with self._http.stream("POST", url, json=body, headers=headers,
                                        timeout=timeout, **({"params": query.set("alt", "sse")} if query else {})) as response:
                     if response.status_code != 200:

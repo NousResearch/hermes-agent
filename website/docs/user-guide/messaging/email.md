@@ -122,7 +122,7 @@ sudo hermes gateway install --system   # Linux only: boot-time system service
 
 On startup, the adapter:
 1. Tests IMAP and SMTP connections
-2. Marks all existing inbox messages as "seen" (only processes new emails)
+2. Restores the seen-message baseline (on a mailbox it has never polled, marks all existing inbox messages as "seen")
 3. Starts polling for new messages
 
 ---
@@ -141,6 +141,14 @@ The adapter polls the IMAP inbox for UNSEEN messages at a configurable interval 
 - **HTML-only emails** have tags stripped for plain text extraction
 - **Self-messages** are filtered out to prevent reply loops
 - **Automated/noreply senders** are silently ignored — `noreply@`, `mailer-daemon@`, `bounce@`, `no-reply@`, and emails with `Auto-Submitted`, `Precedence: bulk`, or `List-Unsubscribe` headers
+
+### Message Baseline Across Restarts
+
+The "seen" set is a per-account baseline persisted to `~/.hermes/email_seen_uids/<hash>.json`, tagged with the
+mailbox's UIDVALIDITY. The first run marks everything already in the inbox as seen so a long-lived mailbox is
+not replayed into the agent; later runs restore that baseline, so unread mail that arrived while the gateway
+was down is still delivered when it comes back up. A mailbox whose UIDVALIDITY changed is re-baselined instead
+of trusted, since its UIDs then name different messages.
 
 ### Sending Replies
 

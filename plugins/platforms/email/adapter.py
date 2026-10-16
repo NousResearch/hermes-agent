@@ -4,7 +4,9 @@ receives, SMTP sends. Configured via EMAIL_* env vars or ``platforms.email`` in 
 import asyncio
 import email as email_lib
 from contextlib import contextmanager, suppress
+import hashlib
 import imaplib
+import json
 import logging
 import os
 import re
@@ -20,7 +22,7 @@ from email.parser import BytesHeaderParser
 from email.utils import formatdate, parseaddr
 from email import encoders
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
@@ -33,6 +35,7 @@ from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
 from utils import is_truthy_value
 from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_port, decode_json_list_literal, send_error
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -446,6 +449,40 @@ def _attach_file(msg: MIMEMultipart, path: Path, filename: str) -> None:
         msg.attach(part)
 
 
+# A UIDVALIDITY-scoped boundary of everything handled so far, persisted per account. A process
+# restart (host reboot, `hermes gateway restart`, update) loses the in-memory baseline; re-deriving
+# it with `UID SEARCH ALL` both swallows mail that arrived while the gateway was down and, in a
+# mailbox larger than `_seen_uids_max`, re-reads the trimmed-away lower half as new.
+_SEEN_UIDS_STATE_VERSION = 1
+_SEEN_UIDS_STATE_DIR = "email_seen_uids"
+
+
+def _seen_uids_state_path(address: str) -> Path:
+    """Per-account state file; the address is hashed so any address stays a legal filename."""
+    digest = hashlib.sha256(address.strip().lower().encode("utf-8")).hexdigest()[:16]
+    return get_hermes_home() / _SEEN_UIDS_STATE_DIR / f"{digest}.json"
+
+
+def _imap_field(imap: imaplib.IMAP4, code: str) -> str:
+    """An untagged SELECT response field (``UIDVALIDITY``, ``UIDNEXT``, ``EXISTS``); "" when absent."""
+    try:
+        status, data = imap.response(code)
+    except (imaplib.IMAP4.error, OSError, ValueError):
+        return ""
+    if status != code or not data:
+        return ""
+    first = data[0]
+    return first.decode("ascii", "replace") if isinstance(first, (bytes, bytearray)) else str(first)
+
+
+def _imap_int_field(imap: imaplib.IMAP4, code: str) -> int:
+    """``_imap_field`` as an int; 0 when the server did not report it."""
+    try:
+        return int(_imap_field(imap, code))
+    except ValueError:
+        return 0
+
+
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
     # One email carries the whole body, so cron delivery hands over the full payload untruncated.
@@ -489,6 +526,10 @@ class EmailAdapter(BasePlatformAdapter):
         self._authserv_id = (extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")).strip().lower()
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
+        # Every UID at or below this boundary is history (existed when a previous run baselined the
+        # mailbox) or has been handled; 0 = nothing baselined yet in this process.
+        self._baseline: int = 0
+        self._persisted_baseline: Optional[tuple[int, list[int]]] = None  # last state written, to skip unchanged writes
         self._poll_task: Optional[asyncio.Task] = None
         self._last_fetch_failed, self._last_fetch_error = False, ""  # "checked, nothing new" vs "the check itself failed"
         # chat_id (sender email) -> last subject + message-id for threading
@@ -507,6 +548,71 @@ class EmailAdapter(BasePlatformAdapter):
             logger.debug("[Email] Trimmed seen UIDs to %d entries", len(self._seen_uids))
         except (ValueError, TypeError):
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
+
+    def _is_history(self, uid: bytes) -> bool:
+        """True for a UID at or below the restored boundary — mail that predates this process."""
+        return uid.isdigit() and int(uid) <= self._baseline
+
+    def _load_baseline(self, uidvalidity: str) -> Optional[tuple[int, list[bytes]]]:
+        """(boundary, UIDs above it handled afterwards) from the previous run, or None when there is none to trust.
+
+        Absent, unreadable or malformed state re-baselines (what connect did before this existed)
+        rather than failing the connect, and a changed UIDVALIDITY is discarded: the server
+        renumbered the mailbox, so those UIDs now name different messages.
+        """
+        path = _seen_uids_state_path(self._address)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError) as e:
+            logger.warning("[Email] Ignoring unreadable seen-UID state %s: %s", path, e)
+            return None
+        if not isinstance(payload, dict):
+            logger.warning("[Email] Ignoring malformed seen-UID state %s", path)
+            return None
+        if payload.get("uidvalidity") != uidvalidity:
+            logger.info("[Email] Ignoring seen-UID state %s: the mailbox was renumbered (UIDVALIDITY changed).", path)
+            return None
+        try:
+            baseline, above = int(payload["baseline"]), [int(u) for u in payload["uids"]]
+        except (KeyError, TypeError, ValueError):
+            logger.warning("[Email] Ignoring malformed seen-UID state %s", path)
+            return None
+        return baseline, [str(u).encode() for u in above]
+
+    def _persist_baseline(self, uidvalidity: str, unconsumed: Sequence[bytes] = ()) -> None:
+        """Store the boundary so the next process resumes where this one left off, not at the mailbox.
+
+        Best effort: a read-only home must not stop polling.
+        """
+        # Without UIDVALIDITY the file cannot be validated against a renumbered mailbox, and a stale
+        # boundary would suppress genuinely new mail — so there is nothing safe to write.
+        if not uidvalidity:
+            return
+        handled = {int(u) for u in self._seen_uids if u.isdigit()}
+        # Never move the boundary past a UID this poll left unconsumed: a transient per-UID refusal
+        # is retried next round, and a restart must not turn that retry into a skip.
+        pending = [int(u) for u in unconsumed if u.isdigit()]
+        baseline = min(pending) - 1 if pending else max([self._baseline, *handled])
+        above = sorted(u for u in handled if u > baseline)
+        self._baseline = baseline
+        if (baseline, above) == self._persisted_baseline:
+            return
+        path = _seen_uids_state_path(self._address)
+        payload = {"version": _SEEN_UIDS_STATE_VERSION, "address": self._address, "uidvalidity": uidvalidity,
+                   "baseline": baseline, "uids": above}
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_name(path.name + ".tmp")
+            tmp_path.write_text(json.dumps(payload), encoding="utf-8")
+            os.replace(tmp_path, path)  # atomic: an interrupted write cannot leave a truncated baseline
+            with suppress(OSError):
+                os.chmod(path, 0o600)
+        except (OSError, TypeError, ValueError) as e:
+            logger.warning("[Email] Could not persist seen-UID state %s: %s", path, e)
+        else:
+            self._persisted_baseline = (baseline, above)
 
     def _connect_imap(self) -> imaplib.IMAP4:
         """Create an IMAP connection using implicit TLS, STARTTLS, or plaintext."""
@@ -559,20 +665,44 @@ class EmailAdapter(BasePlatformAdapter):
     def _probe_imap(self, is_reconnect: bool) -> bool:
         """Connection test + seen-UID baseline. Sets a fatal error and returns False on failure."""
         try:
+            uidvalidity = ""
             with self._inbox() as imap:
+                uidvalidity = _imap_field(imap, "UIDVALIDITY")
+                persisted = self._load_baseline(uidvalidity)
                 snapshot = self._seen_uids_snapshot.get(self._address)
                 if is_reconnect and snapshot is not None:
                     # Same-process reconnect: restore the previous adapter's baseline so mail that
                     # arrived during the outage stays eligible for the next poll.
                     self._seen_uids = set(snapshot)
-                    passed = "[Email] IMAP reconnect test passed. Restored %d seen UIDs; messages received during the outage will be processed."
-                else:  # first connect (or no snapshot): mark all existing messages seen
+                    if persisted is not None:
+                        self._baseline = persisted[0]
+                    passed = (f"[Email] IMAP reconnect test passed. Restored {len(self._seen_uids)} seen UIDs; "
+                              "messages received during the outage will be processed.")
+                elif persisted is not None:
+                    # Fresh process (reboot, `hermes gateway restart`, update): resume from the
+                    # boundary the previous run reached, so mail that arrived while the gateway was
+                    # down is delivered instead of being taken for pre-existing history.
+                    self._baseline, above = persisted
+                    self._seen_uids = set(above)
+                    passed = (f"[Email] IMAP connection test passed. Resumed from the baseline UID {self._baseline}; "
+                              "messages received while the gateway was down will be processed.")
+                elif uidnext := _imap_int_field(imap, "UIDNEXT"):
+                    # Nothing to resume from: everything already in the mailbox is history. Take the
+                    # boundary from the mailbox itself rather than enumerating it — UID SEARCH ALL is
+                    # capped at _seen_uids_max, and the trimmed-away lower half was then re-read as
+                    # new mail (#60637).
+                    self._baseline = uidnext - 1
+                    passed = (f"[Email] IMAP connection test passed. Baseline UID {self._baseline}; "
+                              f"{_imap_int_field(imap, 'EXISTS')} existing messages skipped.")
+                else:  # no UIDNEXT (not RFC 3501-compliant): enumerate, as this path always did
                     status, data = imap.uid("search", None, "ALL")
                     self._seen_uids.update(data[0].split() if status == "OK" and data and data[0] else ())
-                    passed = "[Email] IMAP connection test passed. %d existing messages skipped."
-                self._trim_seen_uids()
-                logger.info(passed, len(self._seen_uids))
+                    self._baseline = max([0, *(int(u) for u in self._seen_uids if u.isdigit())])
+                    self._trim_seen_uids()
+                    passed = f"[Email] IMAP connection test passed. {len(self._seen_uids)} existing messages skipped."
+                logger.info(passed)
             self._seen_uids_snapshot[self._address] = set(self._seen_uids)
+            self._persist_baseline(uidvalidity)
             return True
         except Exception as e:
             # Always set an explicit fatal code, else the gateway treats every failure as transient with zero
@@ -676,14 +806,18 @@ class EmailAdapter(BasePlatformAdapter):
     def _fetch_new_messages(self, preauthorize: Callable[[dict[str, Any]], bool]) -> list[dict[str, Any]]:
         """Fetch unseen messages; bounded headers pass *preauthorize* before RFC822 is requested."""
         results = []
+        uidvalidity = ""
+        unconsumed: list[bytes] = []
         try:
             with self._inbox() as imap:
+                uidvalidity = _imap_field(imap, "UIDVALIDITY")
                 status, data = imap.uid("search", None, "UNSEEN")
                 for uid in (data[0].split() if status == "OK" and data and data[0] else []):
-                    if uid in self._seen_uids:
+                    if uid in self._seen_uids or self._is_history(uid):
                         continue
                     header_status, header_data = imap.uid("fetch", uid, _PREAUTH_FETCH)
                     if header_status != "OK":
+                        unconsumed.append(uid)  # transient: keep it above the persisted boundary too
                         continue
                     raw_headers = _imap_payload(header_data)
                     if raw_headers is None or len(raw_headers) > _MAX_PREAUTH_HEADER_BYTES:
@@ -701,6 +835,7 @@ class EmailAdapter(BasePlatformAdapter):
                         continue
                     status, msg_data = imap.uid("fetch", uid, "(RFC822)")
                     if status != "OK":
+                        unconsumed.append(uid)
                         continue  # transient per-UID refusal: leave unseen so the next poll retries
                     # Mark seen once a response arrived (even malformed) so garbage is skipped once, not retried forever —
                     # but NOT before the fetch: a connection failure must leave the rest of the batch eligible for the next poll.
@@ -725,6 +860,7 @@ class EmailAdapter(BasePlatformAdapter):
             self._last_fetch_failed, self._last_fetch_error = True, str(e)
         # Keep the reconnect snapshot current so a mid-outage adapter recreation does not re-dispatch messages already processed.
         self._seen_uids_snapshot[self._address] = set(self._seen_uids)
+        self._persist_baseline(uidvalidity, unconsumed)
         return results
 
     def _message_metadata(self, uid: bytes, msg: email_lib.message.Message) -> Optional[dict[str, Any]]:

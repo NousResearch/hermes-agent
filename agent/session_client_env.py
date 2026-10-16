@@ -6,7 +6,9 @@ keep the gateway's environment, and so does a session created before ``client_en
 
 Plain names and string values only. Behaviour names are read through :func:`session_env`; the
 toolchain names (``PATH``, an activated venv, nvm/pyenv/conda) reach that session's tool subprocesses
-through :func:`tool_env`. Values are never logged.
+through :func:`toolchain_environ`. Values naming this host (toolchain paths, the prefill file, the
+project-plugins check of the client's folder) apply only when the gateway proved the client is on its
+host (``local``); otherwise the session keeps the gateway's and is told so. Values are never logged.
 """
 from __future__ import annotations
 
@@ -20,13 +22,19 @@ from tools.code_execution_env import is_secret_env_name
 # What main's CLI read per process and the gateway otherwise reads daemon-wide.
 BEHAVIOUR_ENV = ('HERMES_EPHEMERAL_SYSTEM_PROMPT', 'HERMES_PREFILL_MESSAGES_FILE', 'HERMES_INFERENCE_PROVIDER',
                  'HERMES_ENABLE_PROJECT_PLUGINS')
+# Behaviour values that name the client's host: a path, or the opt-in that inspects the client's folder.
+HOST_BEHAVIOUR = ('HERMES_PREFILL_MESSAGES_FILE', 'HERMES_ENABLE_PROJECT_PLUGINS')
 TOOL_ENV = ('PATH', 'VIRTUAL_ENV', 'GOPATH', 'GOROOT', 'CARGO_HOME', 'RUSTUP_HOME', 'JAVA_HOME')
 TOOL_ENV_PREFIXES = ('CONDA_', 'NODE_', 'NVM_', 'PYENV_')
 # ``terminal.client_env_passthrough`` names more non-secret toolchain variables for a profile.
 CONFIG_KEY = 'client_env_passthrough'
+# The session-start notice of a session whose client the gateway could not place on its own host.
+NOT_LOCAL_WARNING = ("this session uses the gateway's own PATH, toolchain and prefill file: the client's environment "
+                     'was not applied because the client is not attached to this gateway locally.')
 _MAX_NAMES = 256
 _MAX_BYTES = 256 * 1024
 
+# (env, local) for the session executing here; None outside a shell client's session.
 _BOUND: ContextVar = ContextVar('session_client_env', default=None)
 
 
@@ -57,15 +65,17 @@ def collect_client_env(environ=None, config=None) -> dict[str, str]:
     return {name: value for name, value in environ.items() if isinstance(value, str) and allowed(name, extra)}
 
 
-def accept_client_env(value, config) -> dict[str, str]:
-    """Gateway side: the validated map, filtered again against the session profile's own allowlist.
+def accept_client_env(value, config, *, local=True) -> dict[str, str]:
+    """Gateway side: the validated map, filtered again against the session profile's own allowlist; for a
+    client not proven ``local`` only the values that name nothing on this host (prompt, provider request).
     Raises ``ValueError`` for anything but a bounded flat string-to-string map."""
     if (not isinstance(value, dict) or len(value) > _MAX_NAMES
             or any(not isinstance(k, str) or not isinstance(v, str) for k, v in value.items())
             or sum(len(k) + len(v) for k, v in value.items()) > _MAX_BYTES):
         raise ValueError('client_env must be a map of variable names to string values')
     extra = configured_names(config)
-    return {name: value[name] for name in sorted(value) if allowed(name, extra)}
+    return {name: value[name] for name in sorted(value) if allowed(name, extra)
+            and (local or (name in BEHAVIOUR_ENV and name not in HOST_BEHAVIOUR))}
 
 
 def retry_matches(committed_json, params) -> bool:
@@ -79,9 +89,10 @@ def retry_matches(committed_json, params) -> bool:
 
 
 @contextmanager
-def client_env_scope(env):
-    """Bind one session's client environment (``None``: the gateway's own) for this context."""
-    token = _BOUND.set(env)
+def client_env_scope(env, *, local=True):
+    """Bind one session's client environment (``None``: the gateway's own) for this context; ``local``
+    is the gateway's own proof, frozen in the session's policy, that the client runs on this host."""
+    token = _BOUND.set(None if env is None else (env, bool(local)))
     try:
         yield
     finally:
@@ -89,31 +100,37 @@ def client_env_scope(env):
 
 
 def bound_client_env():
-    return _BOUND.get()
+    bound = _BOUND.get()
+    return None if bound is None else bound[0]
 
 
 def session_env(name: str, default: str = '') -> str:
     """A behaviour value for the session executing here: its client's (an unexported name is unset,
-    as it was for main's process), else the gateway's own environment."""
-    env = _BOUND.get()
-    if env is None:
+    as it was for main's process), else the gateway's own environment, which a client not attached
+    locally also keeps for the values that name this host."""
+    bound = _BOUND.get()
+    if bound is None or (name in HOST_BEHAVIOUR and not bound[1]):
         return os.getenv(name, default)
-    return env.get(name, default)
+    return bound[0].get(name, default)
 
 
 def tool_env() -> dict[str, str]:
-    """The toolchain values this session's tool subprocesses start with (empty when unbound)."""
-    env = _BOUND.get() or {}
-    return {name: value for name, value in env.items() if name not in BEHAVIOUR_ENV and _travels(name)}
+    """The toolchain values this session's tool subprocesses start with (empty when unbound or remote)."""
+    bound = _BOUND.get()
+    if bound is None or not bound[1]:
+        return {}
+    return {name: value for name, value in bound[0].items() if name not in BEHAVIOUR_ENV and _travels(name)}
 
 
 def toolchain_environ(base=None) -> dict[str, str]:
     """The environment this session's tool subprocesses start from (``base``: the gateway's). Unbound
-    (messaging, cron, Desktop): unchanged. A shell client's session: its toolchain replaces the gateway's,
-    and a built-in toolchain name it did not export is unset, as in main's process: one client's venv
-    never reaches another's session through the daemon it started."""
+    (messaging, cron, Desktop) or a client not attached locally: unchanged. A local shell client's
+    session: its toolchain replaces the gateway's, and a built-in toolchain name it did not export is
+    unset, as in main's process: one client's venv never reaches another's session through the daemon
+    it started."""
     env = dict(os.environ if base is None else base)
-    if _BOUND.get() is None:
+    bound = _BOUND.get()
+    if bound is None or not bound[1]:
         return env
     kept = {k: v for k, v in env.items() if k == 'PATH' or not (k in TOOL_ENV or k.startswith(TOOL_ENV_PREFIXES))}
     return kept | tool_env()

@@ -41,9 +41,8 @@ def _ephemeral_prompt(authority, policy, chat_id):
     configured = None
     resolve = getattr(authority.runner, '_get_system_prompt_for_channel', None)
     if not policy.ignore_user_config and resolve is not None:
-        from agent.session_client_env import client_env_scope
         from gateway.config import Platform
-        with client_env_scope(policy.client_env()):
+        with policy.client_env_scope():
             configured = resolve(Platform.LOCAL, chat_id or '')
     return '\n\n'.join(p for p in (configured, policy.skills_prompt) if p) or None
 
@@ -119,13 +118,12 @@ def _held_prefill(authority):
 
 
 def _read_prefill(authority, policy):
-    from agent.session_client_env import client_env_scope
     from hermes_cli.cli_config_load import _load_prefill_messages, _resolve_prefill_messages_file
     home = Path(str(authority.profile_id))
     if not home.is_absolute():
         from hermes_constants import get_hermes_home
         home = get_hermes_home()
-    with client_env_scope(policy.client_env()):  # HERMES_PREFILL_MESSAGES_FILE: the session's client's
+    with policy.client_env_scope():  # HERMES_PREFILL_MESSAGES_FILE: a local session's client's
         path = _resolve_prefill_messages_file(policy.config(authority, secrets=False))
     return _load_prefill_messages(path, home) or None
 

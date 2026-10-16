@@ -19,6 +19,7 @@ import argparse
 import logging
 import os
 import re
+import sys
 import uuid
 
 from hermes_cli.gateway_client import GatewayClientError
@@ -159,6 +160,9 @@ class GatewaySessionStore:
             params["title"] = title
         params.update(self.client_env())
         snapshot = self.call("session.create", request_id=uuid.uuid4().hex, **params)
+        warning = (snapshot.get("info") or {}).get("config_warning")
+        if warning:
+            print(f"Warning: {warning}", file=sys.stderr)
         return self._adopt(snapshot)
 
     def client_env(self):

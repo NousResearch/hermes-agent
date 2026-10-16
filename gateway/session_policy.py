@@ -78,9 +78,16 @@ class LocalSessionPolicy:
     # The shell-launched client's allowlisted environment (``agent.session_client_env``), bound for this
     # session's turns only; None when the client sent none (Desktop, a session from before the field).
     client_env_json: str | None = None
+    # The client sent one over an attach the gateway could not prove is on its host (no gateway-minted
+    # ticket): only host-free values were kept, and its tools run with the gateway's own toolchain.
+    client_env_remote: bool = False
 
     def client_env(self):
         return None if self.client_env_json is None else json.loads(self.client_env_json)
+
+    def client_env_scope(self):
+        from agent.session_client_env import client_env_scope
+        return client_env_scope(self.client_env(), local=not self.client_env_remote)
 
     def config(self, authority=None, *, secrets=True):
         return self.effective(authority, secrets=secrets)[0]
@@ -296,7 +303,8 @@ def present_sections(config):
     return config
 
 
-def build_policy(params, config, *, private_secrets=None, profile_terminal=True, workspace_posture=False):
+def build_policy(params, config, *, private_secrets=None, profile_terminal=True, workspace_posture=False,
+                 client_local=False):
     from agent.runtime_cwd import resolve_agent_cwd
     from tools.terminal_scope import build_profile_terminal_scope, default_terminal_scope
     from hermes_constants import get_hermes_home
@@ -351,7 +359,8 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     if 'client_env' in params:
         from agent.session_client_env import accept_client_env
         try:
-            client_env = json.dumps(accept_client_env(params['client_env'], config), sort_keys=True)
+            client_env = json.dumps(accept_client_env(params['client_env'], config, local=client_local),
+                                    sort_keys=True)
         except ValueError as exc:
             _refuse('client_env', str(exc))
     # Values stay out of the request: ``launch_request`` is echoed to every viewer of the session.
@@ -364,7 +373,8 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     return LocalSessionPolicy(source, SURFACES[source], cwd, model, tuple(sorted(enabled)),
                               json.dumps(config), json.dumps(request, sort_keys=True), json.dumps(terminal),
                               safe_mode=safe_mode, ignore_user_config=ignore_user_config,
-                              coding_posture=coding_posture, client_env_json=client_env)
+                              coding_posture=coding_posture, client_env_json=client_env,
+                              client_env_remote=client_env is not None and not client_local)
 
 
 def terminal_uses_host_cwd(terminal):
@@ -807,7 +817,7 @@ def restore_policy(data):
                 or type(policy.safe_mode) is not bool or type(policy.ignore_user_config) is not bool
                 or not isinstance(policy.skills_prompt, (str, type(None)))
                 or type(policy.coding_posture) is not bool
-                or not _valid_client_env(policy.client_env_json)
+                or not _valid_client_env(policy.client_env_json) or type(policy.client_env_remote) is not bool
                 or (policy.safe_mode and not policy.ignore_user_config)):
             raise ValueError('invalid policy')
         from dataclasses import replace
@@ -871,7 +881,6 @@ def policy_scope(policy, *, authority=None):
     cwd_token = set_session_cwd(policy.cwd)
     terminal_token = set_terminal_scope(terminal)
     policy_token = _ACTIVE_POLICY.set(active)
-    from agent.session_client_env import client_env_scope
     from gateway.session_local_editor import editor_scope
     try:
         from agent.auxiliary_task_config import session_auxiliary_scope
@@ -880,7 +889,7 @@ def policy_scope(policy, *, authority=None):
         auxiliary = policy.config(authority).get('auxiliary') if authority is not None else None
         aux_scope = session_auxiliary_scope(auxiliary) if authority is not None else contextlib.nullcontext()
         with (editor_scope(policy), editor_mcp_scope(authority, policy), aux_scope,
-              client_env_scope(policy.client_env())):
+              policy.client_env_scope()):
             yield
     finally:
         _ACTIVE_POLICY.reset(policy_token)

@@ -68,6 +68,8 @@ def policy_identity(policy):
         data.pop('coding_posture', None)
     if data.get('client_env_json') is None:
         data.pop('client_env_json', None)
+    if not data.get('client_env_remote'):
+        data.pop('client_env_remote', None)
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 

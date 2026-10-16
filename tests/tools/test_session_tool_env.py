@@ -152,7 +152,8 @@ async def test_a_sessions_terminal_runs_with_its_clients_path(tmp_path, monkeypa
             ref = create_local_session(owner, connection.actor, {
                 'request_id': name, 'source': 'cli', 'cwd': str(home), 'toolsets': [],
                 'client_env': {'PATH': f'{path}{os.pathsep}/usr/bin{os.pathsep}/bin', 'NVM_DIR': str(path.parent),
-                               'MY_TOOLCHAIN_HOME': f'/opt/{name}', 'MY_API_TOKEN': 'secret', 'UNLISTED': 'x'}})
+                               'MY_TOOLCHAIN_HOME': f'/opt/{name}', 'MY_API_TOKEN': 'secret', 'UNLISTED': 'x'}},
+                client_local=True)  # attached through the gateway's own ticket
             policies[name] = restore_policy(local_receipt(owner.db, ref.session_id)['policy'])
         # Listed toolchain names travel; a credential-looking name never lands in the stored policy.
         assert set(policies['alpha'].client_env()) == {'PATH', 'NVM_DIR', 'MY_TOOLCHAIN_HOME'}

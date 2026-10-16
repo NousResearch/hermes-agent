@@ -40,7 +40,7 @@ from agent.conversation_compression import (
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
-from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields
+from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields, is_compaction_scaffolding, scaffolding_replay_fields
 from agent.turn_context import compression_made_progress
 from agent.session_activity import ActivityProvenance, AwakeIdleMeter
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get
@@ -1152,9 +1152,9 @@ def _build_replay_entry(
             entry[_rkey] = _rval
     if preserve_timestamp and msg.get("timestamp"):
         entry["timestamp"] = msg["timestamp"]
-    # Replay rebuilds the SAME conversation for its next turn: every role keeps its uid and merge witness, so a
-    # context engine sees the uids the store holds. Tool-call uid maps stay with the rows that still carry
-    # their calls (those pass through whole); on a plain row a leftover map would name calls it no longer has.
+    entry.update(scaffolding_replay_fields(msg))  # a proactive prune re-persists this view: keep the flags
+    # Replay rebuilds the SAME conversation: every role keeps its uid and merge witness, so a context engine sees the
+    # uids the store holds. Tool-call uid maps stay on rows that still carry their calls (those pass through whole).
     copy_identity_fields({key: msg[key] for key in (MESSAGE_UID, ABSORBED_MESSAGE_UIDS) if key in msg}, entry)
     # Replay rewrites are view-only: keep the durable-row stamp so marker-only
     # flushes skip rows already in state.db (#121462/#123462).
@@ -1302,7 +1302,7 @@ def _build_gateway_agent_history(
                     continue
             # Keep user timestamps for the stale-dangerous-confirmation stripper in agent/replay_cleanup.py.
             entry = _build_replay_entry(role, content, msg, preserve_timestamp=(role == "user"))
-            if inject_timestamps and role == "user" and isinstance(content, str):
+            if inject_timestamps and role == "user" and isinstance(content, str) and not is_compaction_scaffolding(msg):
                 rendered = _render_msg_ts(content, replay_timestamp, tz=_msg_tz)
                 # Preserve only a sidecar matching the complete rendered message,
                 # optionally followed by the normal context separator. Cleanup

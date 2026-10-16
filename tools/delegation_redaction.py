@@ -52,8 +52,29 @@ _RESULT_METADATA = frozenset(
 )
 
 
+class _ParentCopy(str):
+    """The parent's own (opt-out) text carrying the forced projection of the same output.
+
+    The forced copy is made from the complete output *before* the parent's copy is
+    budget-trimmed: a head/tail cut can drop a PEM ``BEGIN`` marker and leave a key body
+    the text redactor no longer recognizes. Persistent/external sinks read ``forced``."""
+
+    forced: str
+
+
+def parent_copy(text: str, forced: str) -> str:
+    """``text`` for the parent, remembering ``forced`` for persistent sinks (plain str when equal)."""
+    if text == forced:
+        return text
+    carrier = _ParentCopy(text)
+    carrier.forced = forced
+    return carrier
+
+
 def redact_child_text(text: Any, *, force: bool = True) -> str:
     """Scrub one child-produced string. ``force=False`` honours the user's opt-out."""
+    if isinstance(text, _ParentCopy):  # already projected; forced sinks take the pre-trim projection
+        return text.forced if force else text
     if force or _redact._redact_enabled():
         return redact_for_egress(text)
     try:  # opted out: vault values only (still a hard boundary)
@@ -103,13 +124,15 @@ def redact_child_value(value: Any, *, force: bool = True, _depth: int = 0) -> An
     return REDACTION_UNAVAILABLE
 
 
-def _redact_summary(summary: Any, structured: bool, force: bool) -> Any:
+def redact_summary(summary: Any, structured: bool, force: bool) -> Any:
     """Structured (schema) summaries are redacted per value and re-serialized: a text
     pass can eat JSON delimiters (``KEY=***`` swallowing the closing quote and comma)
     and break an answer that was valid. The JSON is located with the validator's own
     extraction grammar (code fence / surrounding prose), so every wrapper the validator
     accepts stays accepted; the wrapper text gets the text pass. Unchanged output keeps
     its original formatting; anything without a parseable candidate gets the text pass."""
+    if isinstance(summary, _ParentCopy):
+        return redact_child_text(summary, force=force)
     if structured and isinstance(summary, str):
         from tools.delegation_output_schema import extract_json_candidate
 
@@ -147,7 +170,7 @@ def redact_child_result(result: dict[str, Any], output_schema=None, *, force: bo
                 for entry in value
             ]
         elif key == "summary":
-            cleaned[key] = _redact_summary(value, structured, force)
+            cleaned[key] = redact_summary(value, structured, force)
         else:
             cleaned[key] = (
                 value if key in _RESULT_METADATA else redact_child_value(value, force=force)

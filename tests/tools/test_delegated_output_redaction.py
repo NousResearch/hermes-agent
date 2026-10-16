@@ -213,3 +213,39 @@ def test_parent_copy_honours_opt_out_while_persisted_copies_stay_forced(
     with ad._transaction() as conn:
         row = conn.execute("SELECT event_json,result_json FROM async_delegations").fetchone()
     assert SECRET not in "".join(row)
+
+
+def test_forced_copies_are_projected_from_complete_output_before_the_parent_budget(
+    tmp_path, monkeypatch
+):
+    """Opt-out + budget: the trimmed parent tail can start after a PEM BEGIN marker; the
+    memory/durable copies must still hide the key body, and the spill must stay valid JSON."""
+    monkeypatch.setattr("agent.redact._redact_enabled", lambda: False)
+    monkeypatch.setattr(delegate, "_load_config", lambda: {"max_summary_chars": 2000})
+    body = "\n".join("MC4CAQAwBQYDK2VwBCIEI" + chr(65 + i) * 43 for i in range(4))
+    pem = "-----BEGIN PRIVATE KEY-----\n" + body + "\n-----END PRIVATE KEY-----\n"
+    tail = pem[pem.index("KEY-----\n") :] + "ordinary ending\n" * 10
+    tail += "x" * (500 - len(tail))  # the parent's 500-char tail starts inside the BEGIN line
+    summaries = ["ordinary explanation\n" * 200 + pem[: pem.index("KEY-----\n")] + tail,
+                 json.dumps({"env": "OPENAI_API_KEY=" + SECRET, "pad": "z" * 3000, "n": 2})]
+    parent = _Parent()
+    entries = [{"task_index": i, "status": "completed", "summary": s} for i, s in enumerate(summaries)]
+    entries[1]["schema_valid"] = True
+    schema_child = SimpleNamespace(_delegate_output_schema={"type": "object"})
+    results._finalize_child_results(
+        entries, [{"goal": "a"}, {"goal": "b"}], [(0, {}, None), (1, {}, schema_child)], parent
+    )
+
+    assert all(e["summary_truncated"] for e in entries) and body in entries[0]["summary"]
+    memory = parent._memory_manager.on_delegation.call_args_list[0].kwargs["result"]
+    assert body[-43:] not in memory
+    spilled = json.loads(Path(entries[1]["summary_full_path"]).read_text(encoding="utf-8-sig"))
+    assert spilled["n"] == 2 and SECRET not in spilled["env"]
+
+    record, target = {**_record(), "is_batch": True}, queue.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", target)
+    ad._push_completion_event(record, {"results": entries}, "completed")
+    assert body in target.get_nowait()["results"][0]["summary"]
+    with ad._transaction() as conn:
+        row = conn.execute("SELECT event_json,result_json FROM async_delegations").fetchone()
+    assert body[-43:] not in "".join(row) and SECRET not in "".join(row)

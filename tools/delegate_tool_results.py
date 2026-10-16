@@ -7,8 +7,9 @@ import json
 import threading
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
-from agent.redact import redact_for_egress
-from tools.delegation_redaction import redact_child_result, redact_child_text, redact_child_value
+from tools.delegation_redaction import (
+    parent_copy, redact_child_result, redact_child_text, redact_child_value, redact_summary,
+)
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -182,8 +183,9 @@ def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
         from tools.spill_safety import write_text_exclusive
         # Exclusive symlink-refusing create; not private because cache/delegation is bind-mounted read-only into
         # remote backends whose container UID must be able to read it.
-        # Forced: the spill file persists and is bind-mounted into remote backends.
-        write_text_exclusive(path, redact_for_egress(summary), private=False)
+        # ``summary`` is already the forced, structure-preserving projection (_trim_summary_with_footer); a
+        # second whole-text pass here would eat JSON delimiters and corrupt a valid structured answer.
+        write_text_exclusive(path, summary, private=False)
         return str(path)
     except Exception as exc:
         logger.debug("Failed to spill subagent summary to file: %s", exc)
@@ -193,8 +195,20 @@ def _trim_summary_with_footer(summary: str, cap: int, task_index: int) -> tuple[
     """``(model_text, spill_path)`` for one over-budget summary: a ~75% head / ~25% tail window snapped to line
     boundaries (so the opening AND the closing outcomes/files-changed/issues both survive), the full text spilled
     to disk, and a footer giving the exact ``read_file offset=`` for the omitted middle."""
-    # ``summary`` is the parent's copy (already scrubbed per the user's setting in _finalize_child_results);
-    # the spill write below is forced regardless.
+    # ``summary`` is the parent's copy (scrubbed per the user's setting in _finalize_child_results), carrying the
+    # forced projection of the COMPLETE output. The spill file and the forced (memory/hook/ledger) excerpt are cut
+    # from that projection: trimming the opt-out copy first can drop a PEM BEGIN marker and leave an unrecognizable
+    # key body behind. Direct callers pass plain text: project it here (idempotent on already-forced text).
+    forced = redact_child_text(summary) if hasattr(summary, "forced") else redact_summary(summary, True, True)
+    spill_path = _spill_summary_to_file(task_index, forced)
+    if spill_path:
+        # Agent-visible path: the parent's read_file runs inside the active backend (#81984, #77015).
+        from tools.credential_files import to_agent_visible_cache_path
+        spill_path = to_agent_visible_cache_path(spill_path)
+    model_text = _head_tail_with_footer(str(summary), cap, spill_path)
+    return parent_copy(model_text, _head_tail_with_footer(forced, cap, spill_path)), spill_path
+
+def _head_tail_with_footer(summary: str, cap: int, spill_path: Optional[str]) -> str:
     original_len = len(summary)
     head_budget = int(cap * 0.75)
     tail_budget = cap - head_budget
@@ -205,12 +219,6 @@ def _trim_summary_with_footer(summary: str, cap: int, task_index: int) -> tuple[
     nl = tail.find("\n")
     if 0 <= nl < tail_budget * 0.5:
         tail = tail[nl + 1:]
-
-    spill_path = _spill_summary_to_file(task_index, summary)
-    if spill_path:
-        # Agent-visible path: the parent's read_file runs inside the active backend (#81984, #77015).
-        from tools.credential_files import to_agent_visible_cache_path
-        spill_path = to_agent_visible_cache_path(spill_path)
     footer_lines = [
         "", "─" * 8 + " [SUMMARY TRUNCATED] " + "─" * 8,
         f"Showing {len(head):,} chars (head) + {len(tail):,} chars (tail) "
@@ -227,7 +235,7 @@ def _trim_summary_with_footer(summary: str, cap: int, task_index: int) -> tuple[
     else:
         footer_lines.append("Full output could not be stored to disk; the head+tail above is all that was preserved.")
     footer_lines.append("─" * 37)
-    return head + "\n\n[... middle omitted — see footer ...]\n\n" + tail + "\n".join(footer_lines), spill_path
+    return head + "\n\n[... middle omitted — see footer ...]\n\n" + tail + "\n".join(footer_lines)
 
 def _parent_prompt_size_tokens(parent_agent) -> Optional[int]:
     """The parent's current prompt size: the aggregator's own last ``prompt_tokens`` (pre-MoA-fold), else
@@ -406,9 +414,15 @@ def _finalize_child_results(
     with _parent_finalization_lock(parent_agent):
         child_by_index = {index: child for index, _task, child in children}
         for entry in results:
-            child = child_by_index.get(entry.get("task_index"))
-            # The parent's own copy honours security.redact_secrets=false; spill/memory/hooks force their own scrub.
-            entry.update(redact_child_result(entry, getattr(child, "_delegate_output_schema", None), force=False))
+            schema = getattr(child_by_index.get(entry.get("task_index")), "_delegate_output_schema", None)
+            # Fork the forced, structure-preserving projection from the COMPLETE output before the parent budget
+            # trims anything; spill/memory/hooks/the durable row read it. The parent's own copy honours
+            # security.redact_secrets=false.
+            summary = entry.get("summary")
+            forced = redact_summary(summary, isinstance(schema, dict) or "schema_valid" in entry, True)
+            entry.update(redact_child_result(entry, schema, force=False))
+            if isinstance(summary, str) and isinstance(entry.get("summary"), str):
+                entry["summary"] = parent_copy(entry["summary"], forced)
         _apply_summary_budget(results, parent_agent)
         _notify_memory_manager(results, task_list, child_by_index, parent_agent)
         _rollup_children_cost(parent_agent, _fire_subagent_stop_hooks(results, child_by_index, parent_agent))

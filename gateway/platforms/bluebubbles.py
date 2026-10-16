@@ -2,6 +2,7 @@
 inbound webhooks (text, media attachments, typing indicators, read receipts)."""
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -114,7 +115,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.BLUEBUBBLES)
         extra = config.extra or {}
         self.server_url = _normalize_server_url(_extra_or_secret(extra, "server_url", "BLUEBUBBLES_SERVER_URL"))
-        self.password = extra.get("password") or _get_scoped_secret("BLUEBUBBLES_PASSWORD", "")
+        # Whitespace-only is unset: connect() then refuses rather than accept "   " on the webhook.
+        self.password = str(extra.get("password") or _get_scoped_secret("BLUEBUBBLES_PASSWORD", "") or "").strip()
         self.webhook_host = _extra_or_secret(extra, "webhook_host", "BLUEBUBBLES_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
         self.webhook_port = int(_extra_or_secret(extra, "webhook_port", "BLUEBUBBLES_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT)))
         path = str(_extra_or_secret(extra, "webhook_path", "BLUEBUBBLES_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH))
@@ -562,7 +564,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     async def _handle_webhook(self, request):
         from aiohttp import web
 
-        if self._webhook_token(request) != self.password:
+        token = (self._webhook_token(request) or "").encode("utf-8")
+        if not self.password or not hmac.compare_digest(token, self.password.encode("utf-8")):
             return web.json_response({"error": "unauthorized"}, status=401)
         try:
             payload = self._parse_webhook_body(await request.read())

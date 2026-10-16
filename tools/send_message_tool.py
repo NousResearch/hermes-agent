@@ -39,6 +39,9 @@ def send_message_tool(args, **kw):
         return _handle_list()
     if action in ("react", "unreact"):
         return _handle_react(args, remove=action == "unreact")
+    if action == "send_template":
+        from tools.send_message_templates import handle_template_request
+        return handle_template_request(args)
     return _handle_send(args)
 
 

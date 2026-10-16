@@ -111,6 +111,8 @@ _PLATFORM_PARSERS = {
     "email": _parse_regex_stripped(_EMAIL_TARGET_RE),
     # Native WhatsApp JIDs pass through verbatim; E.164 numbers use the phone rule.
     "whatsapp": _parse_regex_stripped(_WHATSAPP_JID_RE),
+    # Cloud Graph recipients use bare wa_id digits; normalize optional E.164 prefix.
+    "whatsapp_cloud": _parse_regex_groups(_E164_TARGET_RE, thread_group=False),
     "buzz": _parse_regex_stripped(_BUZZ_UUID_RE),
     "signal": _parse_signal,
     "wecom": _parse_nonempty,

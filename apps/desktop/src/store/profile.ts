@@ -30,7 +30,7 @@ import { notifyRemoteOverrideAuthFailure } from '@/store/profile-remote-override
 import { exitProjectScope } from '@/store/project-scope'
 import { $connection, clearComposerSelectionOwner, setComposerSelectionOwner, setConnection } from '@/store/session'
 import type { SessionOwnerRoute } from '@/store/session-request-router'
-import { resetStarmapGraph } from '@/store/starmap'
+import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
 
 // Canonical key for a profile: trimmed, empty → "default". Used everywhere we
@@ -467,6 +467,8 @@ $activeGatewayProfile.subscribe(value => {
     // every profile switch.
     invalidateProfileScopedQueries()
     resetStarmapGraph()
+    // setApiRequestProfile above already routes requests to the new profile.
+    reloadOpenStarmapGraph()
     // /api/profiles now routes to a different backend: strand any in-flight
     // profile-list fetch so the previous backend's late answer can't clobber
     // the rail (the #85731 class — same guard as the connection-apply wipe).

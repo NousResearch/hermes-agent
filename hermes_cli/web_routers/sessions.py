@@ -569,9 +569,12 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
         session["profile"] = _serving_profile(profile)
         session["is_default_profile"] = session["profile"] == "default"
         # A cron run's liveness is scheduler ownership, not the 300s activity
-        # window (#88443): a run inside a long tool call is still owned.
+        # window (#88443): a run inside a long tool call is still owned. A
+        # unified-runtime run's local id names no job, so stamp its identity first.
         from hermes_cli.web_routers.cron import cron_run_scheduler_owned
 
+        if session.get("source") == "cron":
+            session.update(db.cron_run_identity(sid) or {})
         owned = cron_run_scheduler_owned(session, profile)
         if owned is not None:
             session["scheduler_owned"] = owned

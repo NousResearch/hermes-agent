@@ -73,5 +73,11 @@ def workspace_in_transaction(db, conn, session_id, payload, prepared):
                                               'git_repo_root': git['root'] or None, 'execution_generation': generation}
 
 
+def editor_mcp_in_transaction(db, conn, session_id, payload, prepared):
+    snapshot, generation = _commit_policy(db, conn, session_id, prepared)
+    return {session_id, snapshot['target']}, {'tools_changed': prepared['tools_changed'],
+                                              'mcp_servers': prepared['mcp_servers'], 'execution_generation': generation}
+
+
 POLICY_HANDLERS = {'model': model_in_transaction, 'reasoning': reasoning_in_transaction,
-                   'workspace': workspace_in_transaction}
+                   'workspace': workspace_in_transaction, 'editor_mcp': editor_mcp_in_transaction}

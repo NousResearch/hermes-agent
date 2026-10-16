@@ -132,6 +132,10 @@ def classify_login_control(control: LoginControl) -> Optional[ClassifiedLoginCon
 _RE_OTP = re.compile(
     r"\b(?:one[\s-]?time|verification|security|auth(?:entication|enticator)?|2fa|two[\s-]?factor|mfa|totp|otp|"
     r"passcode|sms)\b.*\b(?:code|pin|token)\b|\b(?:otp|totp|2fa|mfa|verification\s*code|passcode)\b"
+    # German compounds glue "code" to the word ("Verifizierungscode"), so the \bcode\b above never matches.
+    # "besta ?tigungs": _normalize_text splits "ä" into "a" + a dropped combining mark. "Sicherheitscode" is
+    # left out on purpose: German checkouts use it for the card CVC.
+    r"|\b(?:verifizierungs|besta ?tigungs|authentifizierungs|anmelde|einmal)code\b|\beinmal\w*\b.*\bcode\b"
 )
 
 

@@ -9,6 +9,7 @@ client drives the REAL ``_connect_websocket`` / ``_run_official_feishu_ws_client
 """
 
 import asyncio
+from contextlib import contextmanager
 import sys
 import types
 from pathlib import Path
@@ -79,6 +80,56 @@ def test_drive_comment_agent_turn_runs_under_the_adapter_profile_scope(routed_sc
         asyncio.run(fc.handle_drive_comment_event(object(), event, self_open_id="ou_bot"))
 
     assert seen["turn"] == ("routed", "routed-value")
+
+
+def test_drive_comment_agent_turn_binds_the_unscoped_launch_profile(tmp_path):
+    """A default-adapter SDK callback has no contextvar scope after multiplexing.
+
+    The comment entry point must install the launch profile scope before the
+    copied executor context resolves model credentials.
+    """
+    from plugins.platforms.feishu import feishu_comment as fc
+    from plugins.platforms.feishu import feishu_comment_rules as rules
+
+    launch_home = tmp_path / "launch"
+    launch_home.mkdir()
+    seen = {}
+
+    @contextmanager
+    def _launch_scope():
+        home_token = set_hermes_home_override(str(launch_home))
+        secret_token = set_secret_scope({"FEISHU_PROBE_TOKEN": "launch-value"})
+        try:
+            yield
+        finally:
+            reset_secret_scope(secret_token)
+            reset_hermes_home_override(home_token)
+
+    def _fake_agent(prompt, client, session_key=""):
+        seen["turn"] = _observe(launch_home)
+        return "NO_REPLY"
+
+    event = SimpleNamespace(event={
+        "comment_id": "c1", "reply_id": "", "is_mentioned": True, "timestamp": "1",
+        "notice_meta": {"file_token": "docx_t", "file_type": "docx", "notice_type": "add_reply",
+                        "from_user_id": {"open_id": "ou_user"}, "to_user_id": {"open_id": "ou_bot"}},
+    })
+    set_multiplex_active(True)
+    try:
+        with patch("tui_gateway.launch_profile_policy.launch_profile_scope_if_multiplexed", _launch_scope), \
+             patch.object(rules, "load_config", return_value=object()), \
+             patch.object(rules, "resolve_rule", return_value=rules.ResolvedCommentRule(True, "allowlist", frozenset(), "top")), \
+             patch.object(rules, "has_wiki_keys", return_value=False), \
+             patch.object(rules, "is_user_allowed", return_value=True), \
+             patch.object(fc, "query_document_meta", AsyncMock(return_value={"title": "T", "url": "u"})), \
+             patch.object(fc, "batch_query_comment", AsyncMock(return_value={"is_whole": False, "quote": ""})), \
+             patch.object(fc, "_local_comment_prompt", AsyncMock(return_value="prompt")), \
+             patch.object(fc, "_run_comment_agent", _fake_agent):
+            asyncio.run(fc.handle_drive_comment_event(object(), event, self_open_id="ou_bot"))
+    finally:
+        set_multiplex_active(False)
+
+    assert seen["turn"] == ("routed", "launch-value")
 
 
 def test_ws_client_thread_and_its_loop_callbacks_carry_the_adapter_profile_scope(routed_scope, monkeypatch):

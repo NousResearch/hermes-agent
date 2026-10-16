@@ -79,7 +79,7 @@ def test_go_native_preserves_controls_and_request_headers(monkeypatch, stream):
 
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
     with make_go_gemini_client(
-        "https://opencode.ai/inference/go/v1?fixture=preserved", api_key=lambda: key[0],
+        "https://opencode.ai/inference/go/v1?fixture=preserved&route=&tag=a&tag=b", api_key=lambda: key[0],
         default_headers={"x-opencode-session": "default-session"},
     ) as client:
         for value in ["first-key", "second-key"]:
@@ -95,6 +95,8 @@ def test_go_native_preserves_controls_and_request_headers(monkeypatch, stream):
     assert [r.headers["x-goog-api-key"] for r in seen] == ["first-key", "second-key"]
     for request in seen:
         assert request.url.params["fixture"] == "preserved"
+        assert request.url.params["route"] == ""
+        assert request.url.params.get_list("tag") == ["a", "b"]
         assert request.headers["x-opencode-session"] == "request-session"
         config = json.loads(request.content)["generationConfig"]
         assert config["maxOutputTokens"] == 123

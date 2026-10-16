@@ -879,10 +879,10 @@ class GeminiNativeClient:
         if not callable(api_key) and not (api_key or "").strip():
             raise RuntimeError(self.MISSING_KEY_ERROR)
         self.api_key, self.is_closed = api_key, False
-        from urllib.parse import parse_qsl, urlsplit, urlunsplit
+        from urllib.parse import urlsplit, urlunsplit
         parsed = urlsplit(base_url or DEFAULT_GEMINI_BASE_URL)
         self.base_url = normalize_gemini_base_url(urlunsplit(parsed._replace(query="", fragment="")))
-        self._default_query = {**dict(parse_qsl(parsed.query)), **(default_query or {})}
+        self._default_query = httpx.QueryParams(parsed.query).merge(default_query or {})
         self._default_headers = dict(default_headers or {})
         self._request_timeout = timeout
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
@@ -951,7 +951,7 @@ class GeminiNativeClient:
         return translate_gemini_response(merge_hop_responses(hops) if len(hops) > 1 else hops[0], model=model)
 
     def _generate(self, url: str, request: dict[str, Any], timeout: Any, extra_headers=None, extra_query=None) -> dict[str, Any]:
-        query = {**self._default_query, **(extra_query or {})}
+        query = self._default_query.merge(extra_query or {})
         response = self._http.post(url, json=request, headers={**self._headers(), **(extra_headers or {})},
                                    timeout=timeout, **({"params": query} if query else {}))
         if response.status_code != 200:
@@ -964,7 +964,7 @@ class GeminiNativeClient:
             ) from exc
 
     def _stream_completion(self, model: str, url: str, request: dict[str, Any], timeout: Any, extra_headers=None, extra_query=None) -> Iterator[_GeminiStreamChunk]:
-        query = {**self._default_query, **(extra_query or {})}
+        query = self._default_query.merge(extra_query or {})
         tool_call_indices: dict[str, dict[str, Any]] = {}  # shared across hops: they form one model turn
         hop_usage: list[dict[str, Any]] = []
         max_hops = long_decode_hops(request["generationConfig"].get("maxOutputTokens")) + 1
@@ -976,7 +976,7 @@ class GeminiNativeClient:
             try:
                 headers = {**self._headers(), "Accept": "text/event-stream", **(extra_headers or {})}
                 with self._http.stream("POST", url, json=body, headers=headers,
-                                       timeout=timeout, **({"params": {**query, "alt": "sse"}} if query else {})) as response:
+                                       timeout=timeout, **({"params": query.set("alt", "sse")} if query else {})) as response:
                     if response.status_code != 200:
                         raise self._http_error(response, read_streaming_error_body(response))
                     for event in _iter_sse_events(response):

@@ -491,6 +491,21 @@ def host_lock_is_held(role: str) -> Optional[bool]:
     return _probe_lock_file(handle)
 
 
+def record_names_live_owner(record: HostRecord) -> bool:
+    """True when ``record``'s incarnation is proven AND its host lock is not observed free.
+
+    The publisher holds the host lock for its whole life and the OS drops it on death, so a free
+    flock falsifies a record whose pid merely looks alive (recycle, start-tick collision after a
+    reboot — #138343, #133744). Every reader that trusts a record as a running owner uses this.
+    """
+    if not liveness_is_proven(record):
+        return False
+    if host_lock_is_held(record.role) is False:
+        logger.debug("host %s record names pid %s but the host lock is free", record.role, record.pid)
+        return False
+    return True
+
+
 def publish_record(
     role: str,
     *,

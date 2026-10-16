@@ -207,6 +207,54 @@ async def test_an_admission_queued_during_a_reload_commit_keeps_the_old_servers(
         store.close_all_db_handles()
 
 
+def _state_bytes(store):
+    path = store._db.db_path
+    return b''.join(p.read_bytes() for p in (path, path.with_name(path.name + '-wal')) if p.exists())
+
+
+@pytest.mark.asyncio
+async def test_a_rotated_mcp_secret_commits_a_generation_with_the_new_value(tmp_path, monkeypatch):
+    """An edit that only rotates a server's ``env`` token leaves the redacted config as it was. The refresh
+    compares the private values' fingerprints too: ``reload.mcp`` and a resume (also after an owner restart)
+    commit it, and the next turn's worker gets the new token, which never reaches state.db."""
+    from gateway.session_authority import initialize_session_authority
+    from hermes_state_local import local_receipt
+    home = _home(monkeypatch)
+    (home / 'config.yaml').write_text(ADDED)
+    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    store, authority = await _owner_authority(home)
+    _reloadable(authority, monkeypatch)
+    owner = _connect(authority)
+    cold = viewer = None
+    try:
+        sid = (await _call(owner, 'session.create', request_id='a', source='cli', cwd=str(tmp_path)))['session_id']
+        other = (await _call(owner, 'session.create', request_id='b', source='cli', cwd=str(tmp_path)))['session_id']
+        generations = {key: _generation(store, key) for key in (sid, other)}
+        ref = local_receipt(store._db, sid)['policy']['config_secret_ref']
+        (home / 'config.yaml').write_text(ADDED.replace('FIXT_TOKEN: sekret', 'FIXT_TOKEN: rotated-sekret'))
+        result = await _call(owner, 'reload.mcp', session_id=sid, confirm=True)
+        assert result['session'] == 'applied' and _generation(store, sid) == generations[sid] + 1, result
+        assert local_receipt(store._db, sid)['policy']['config_secret_ref'] != ref
+        servers, _ = _worker_servers(_worker_frame(authority, sid, monkeypatch), monkeypatch)
+        assert servers['fixt']['env'] == {'FIXT_TOKEN': 'rotated-sekret'}
+        # Nothing else moved: the next reload commits nothing.
+        assert (await _call(owner, 'reload.mcp', session_id=sid, confirm=True))['session'] == 'unchanged'
+        await owner.close()
+        # An owner restart has no cached values: the stored reference still names the old token.
+        cold = await initialize_session_authority(_runner(store), profile_id=str(home), instance_id='restarted')
+        viewer = _connect(cold)
+        await _call(viewer, 'session.resume', session_id=other)
+        assert _generation(store, other) == generations[other] + 1
+        servers, _ = _worker_servers(_worker_frame(cold, other, monkeypatch), monkeypatch)
+        assert servers['fixt']['env'] == {'FIXT_TOKEN': 'rotated-sekret'}
+        assert b'rotated-sekret' not in _state_bytes(store)
+    finally:
+        await owner.close()
+        if viewer is not None:
+            await viewer.close()
+        store.close_all_db_handles()
+
+
 @pytest.mark.asyncio
 async def test_a_server_that_fails_to_start_is_unavailable_on_every_reload(tmp_path, monkeypatch):
     """A stdio server whose ``command`` is missing parks after its first connect: discovery keeps the parked

@@ -35,6 +35,16 @@ def config_reference(authority, session_id, policy, secrets):
         sort_keys=True)
 
 
+def secrets_moved(ref, secrets, sections):
+    """Whether *secrets* (the private values of *sections*, as the profile has them now) differ from the ones
+    the durable reference *ref* froze there, by fingerprint. Unknown for an in-memory reference: False."""
+    if ref is not None and not ref.startswith(PREFIX):
+        return False
+    entries = json.loads(ref[len(PREFIX):])['entries'] if ref else []
+    frozen = {tuple(path): fingerprint for path, fingerprint in entries if path[0] in sections}
+    return frozen != {path: _fingerprint(value) for path, value in secrets.items()}
+
+
 def recover_config_secrets(authority, policy, skip=None):
     """The frozen config secrets; entries under a *skip* section are neither re-read nor checked. Every
     caller of a following session skips its followed sections: the live profile supplies them, so a key

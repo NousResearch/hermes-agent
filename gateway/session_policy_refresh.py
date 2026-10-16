@@ -29,8 +29,9 @@ def refreshed_policy(policy, live, terminal, *, picked=(), mcp_only=False):
     config) and *terminal* (its terminal scope), or only its MCP servers (*mcp_only*); explicit picks (launch
     flags, the *picked* policy edits) stay. *secrets* are the refreshed sections' private values, *replaced*
     the sections (``None``: terminal) whose stored private values they supersede. *policy* itself when
-    nothing moved."""
+    nothing moved; a rotated private value alone (its redacted tree unchanged) moves it."""
     from gateway.session_policy import _extract_config_secrets, present_sections
+    from gateway.session_policy_credentials import secrets_moved
     old, config = json.loads(policy.config_json), json.loads(policy.config_json)
     live, secrets, replaced = present_sections(live), {}, set()
     if mcp_only:
@@ -41,7 +42,8 @@ def refreshed_policy(policy, live, terminal, *, picked=(), mcp_only=False):
         _extract_config_secrets(terminal, secrets, (None,))
         replaced.add(None)
     toolsets = _mcp_servers(policy, config, live, toolsets, secrets, replaced)
-    if config == old and toolsets == policy.toolsets and terminal == json.loads(policy.terminal_json):
+    if (config == old and toolsets == policy.toolsets and terminal == json.loads(policy.terminal_json)
+            and not secrets_moved(policy.config_secret_ref, secrets, replaced)):
         return policy, {}, set()
     policy = replace(policy, toolsets=toolsets, config_json=json.dumps(config), terminal_json=json.dumps(terminal))
     return policy, secrets, replaced
@@ -128,16 +130,17 @@ def _prepare(authority, session_id, mcp_only=False):
     terminal = {} if mcp_only else build_profile_terminal_scope(home)
     policy, secrets, replaced = refreshed_policy(old, _load_gateway_config(home / 'config.yaml'), terminal,
                                                  picked=policy_picks(authority.db, session_id), mcp_only=mcp_only)
-    return None if policy == old else (stored, old, policy, secrets, replaced, generation)
+    return None if policy is old else (stored, old, policy, secrets, replaced, generation)
 
 
 def _rebind(authority, session_id, old, policy, fresh, replaced):
     """Re-bind the private values like a policy mutation: policy identity covers config and terminal, and the
-    refreshed sections' private values are the profile's current ones."""
-    from gateway.session_policy import bind_launch_key, launch_key
+    refreshed sections' private values are the profile's current ones (the stored ones there are neither
+    re-read nor checked: a rotated key is what the refresh picks up, not a revoked credential)."""
+    from gateway.session_policy import FOLLOW_SECTIONS, bind_launch_key, launch_key
     from gateway.session_policy_credentials import recover_config_secrets
-    secrets = recover_config_secrets(authority, old) if old.config_secret_ref else {}
-    secrets = {path: value for path, value in secrets.items() if path[0] not in replaced}
+    skip = (*(FOLLOW_SECTIONS if old.follows_profile else ()), *replaced)
+    secrets = recover_config_secrets(authority, old, skip) if old.config_secret_ref else {}
     secrets.update(fresh)
     return bind_launch_key(authority, session_id, policy, launch_key(authority, old), config_secrets=secrets)
 

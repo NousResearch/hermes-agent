@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from hermes_cli.local_runtime.context_policy import (
     RUNTIME_OVERHEAD_BYTES, fit_to_free_memory, launch_args, plan_launch, ub_logits_bytes)
@@ -215,7 +217,8 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
     return footprint_bytes(plan.profile, plan.decision.window, overhead_bytes=plan.overhead_bytes)
 
 
-def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configured: int) -> int:
+def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configured: int,
+                             *, extra_dirs: Sequence[Path] = ()) -> int:
     """How many models the card may hold resident at once: priced against the budget, not a count.
 
     Residency used to be bounded by a count alone, so a second model was admitted against an
@@ -230,12 +233,12 @@ def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configure
     number is honoured), and an unpriceable input (no usable device memory, no readable model)
     keeps today's behaviour.
     """
-    from hermes_cli.local_runtime.bootstrap import staged_in
+    from hermes_cli.local_runtime.bootstrap import staged_across
 
     if configured <= 1 or budget.usable_vram_bytes <= 0:
         return configured
     largest = 0
-    for gguf in staged_in(models_dir):
+    for gguf in staged_across(models_dir, extra_dirs):
         need = _launch_footprint(gguf, budget)
         if need:
             largest = max(largest, need)
@@ -245,21 +248,33 @@ def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configure
 
 
 def plan_presets(models_dir: Path, budget: HardwareBudget, mtp_capable: set[str] | None = None,
-                 *, live: HardwareBudget | None = None) -> list[PresetEntry]:
-    """The launch decision for every staged model; unreadable headers are skipped."""
-    from hermes_cli.local_runtime.bootstrap import staged_in
+                 *, live: HardwareBudget | None = None, extra_dirs: Sequence[Path] = (),
+                 overrides: Mapping[str, Mapping[str, Any]] | None = None) -> list[PresetEntry]:
+    """The launch decision for every staged model (``models_dir`` then ``extra_dirs``); unreadable
+    headers are skipped. ``overrides`` (``local_runtime.model_overrides``) maps a model id to
+    llama-server preset keys laid over the policy's — the user's explicit choice wins."""
+    from hermes_cli.local_runtime.bootstrap import staged_across
 
-    entries = (preset_for_model(gguf, budget, mtp_capable or set(), live=live)
-               for gguf in staged_in(models_dir))
-    return [entry for entry in entries if entry is not None]
+    entries = []
+    for gguf in staged_across(models_dir, extra_dirs):
+        entry = preset_for_model(gguf, budget, mtp_capable or set(), live=live)
+        if entry is None:
+            continue
+        override = (overrides or {}).get(entry.model_id)
+        if entry.keys is not None and isinstance(override, Mapping):
+            entry.keys.update({str(k): str(v) for k, v in override.items()})
+        entries.append(entry)
+    return entries
 
 
 def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path,
                      mtp_capable: set[str] | None = None, *,
-                     live: HardwareBudget | None = None) -> list[PresetEntry]:
+                     live: HardwareBudget | None = None, extra_dirs: Sequence[Path] = (),
+                     overrides: Mapping[str, Mapping[str, Any]] | None = None) -> list[PresetEntry]:
     """Plan every staged model and write one INI. Refused models get no section (the picker
     surfaces the refusal from the returned entries)."""
-    entries = plan_presets(models_dir, budget, mtp_capable, live=live)
+    entries = plan_presets(models_dir, budget, mtp_capable, live=live, extra_dirs=extra_dirs,
+                           overrides=overrides)
     write_presets(entries, preset_path)
     return entries
 

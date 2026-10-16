@@ -83,7 +83,7 @@ def test_boot_hands_the_router_the_derived_cap(tmp_path, monkeypatch, configured
     monkeypatch.setattr(bs, "models_dir", lambda: mdir)
     monkeypatch.setattr(hardware, "probe_budget", probe)
     monkeypatch.setattr(bs, "_SUPERVISOR", None)
-    monkeypatch.setattr(bs, "_generate_presets", lambda mdir, preset_path: None)
+    monkeypatch.setattr(bs, "_generate_presets", lambda mdir, preset_path, section=None: None)
     monkeypatch.setattr(bs, "_detect_gpu_vendor", lambda: None)
     monkeypatch.setattr(binaries, "installed_engine",
                         lambda backend="auto", **k: binaries.Engine("cpu", "build-1", tmp_path / "install" / "llama-server"))

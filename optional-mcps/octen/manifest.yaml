@@ -1,0 +1,41 @@
+manifest_version: 1
+
+name: octen
+description: Web and news search, multi-query research, and URL extraction.
+source: https://github.com/Octen-Team/octen-mcp
+
+transport:
+  type: http
+  url: https://mcp.octen.ai/mcp
+
+# Hermes stores the Octen API key in its profile and sends it as a Bearer
+# header, which the hosted endpoint accepts. No credential goes in the URL.
+auth:
+  type: api_key
+  env:
+    - name: MCP_OCTEN_API_KEY
+      prompt: Octen API key (get one at https://octen.ai)
+      required: true
+      secret: true
+
+# Image and video search require Beta access and are not preselected.
+tools:
+  default_enabled:
+    - search
+    - news_search
+    - broad_search
+    - extract
+
+suggest:
+  keywords:
+    - octen
+  hosts:
+    - octen.ai
+
+post_install: |
+  Start a new Hermes session to load the selected tools. Calls use your
+  Octen account and API quota; an API key from https://octen.ai is required.
+
+  Search, news search, broad search, and URL extraction are selected by
+  default. Run `hermes mcp configure octen` to change the selection.
+  Image and video search require separate Beta access from Octen.

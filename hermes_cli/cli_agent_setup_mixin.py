@@ -634,6 +634,8 @@ class CLIAgentSetupMixin:
         try:
             self._ensure_gateway_session()
         except Exception as e:  # health: allow BLE001 -- any session.create/resume failure is main's agent-init failure copy, never a traceback
+            from hermes_cli.gateway_chat import exit_on_resume_refusal
+            exit_on_resume_refusal(e)  # -q: a changed flag on --resume is interactive startup's `Error:` + exit 2
             ChatConsole().print(f"[bold red]{_escape(agent_init_failure_message(e))}[/]")
             return False
         if (
@@ -675,6 +677,8 @@ class CLIAgentSetupMixin:
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id, platform="cli", session_db=self._session_db,
                 clarify_callback=clarify_callback, connection_callback=connection_callback,
+                # The gateway's model-guard refusal is asked like main's own guard; -q cannot answer it.
+                model_confirm_callback=None if single_query_mode else self._confirm_owner_model_switch,
                 reasoning_callback=self._current_reasoning_callback(),
                 fallback_model=self._fallback_model, thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,

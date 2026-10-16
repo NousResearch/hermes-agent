@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
 import type { SubmissionDestination } from '../app/submissionDestination.js'
+import { sessionCwd } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { t } from '../i18n/runtime.js'
 
@@ -36,7 +37,7 @@ function imageFormat(bytes: Buffer): { mime: string; ext: string } {
 }
 
 // Match an existing whole path first, so unquoted filenames with spaces survive.
-async function resolveImagePath(raw: string): Promise<{ path: string; remainder: string }> {
+async function resolveImagePath(raw: string, base: string): Promise<{ path: string; remainder: string }> {
   const value = raw.trim()
   const quoted = /^(["'])(.*?)\1(?:\s+([\s\S]*))?$/.exec(value)
 
@@ -51,7 +52,7 @@ async function resolveImagePath(raw: string): Promise<{ path: string; remainder:
     if (path.startsWith('file://')) { path = fileURLToPath(path) }
 
     if (path.startsWith('~/')) { path = join(homedir(), path.slice(2)) }
-    path = resolve(path)
+    path = resolve(base, path)
 
     try {
       const info = await stat(path)
@@ -96,16 +97,19 @@ export async function stageClipboardImage(
 }
 
 export async function stageImagePath(raw: string, gw: GatewayClient, destination: SubmissionDestination): Promise<StagedImage> {
-  const source = await resolveImagePath(raw)
+  // Explicit URL attachments may target another machine, even a loopback SSH
+  // tunnel. Only discovery-owned local connections share our profile filesystem.
+  const remote = Boolean(process.env.HERMES_TUI_GATEWAY_URL?.trim())
+  // A remote session's folder names the owner's filesystem; the bytes are read here.
+  const base = (remote ? process.env.HERMES_CWD : sessionCwd()) || process.cwd()
+  const source = await resolveImagePath(raw, base)
   const bytes = await readFile(source.path)
 
   if (bytes.length > MAX_IMAGE_BYTES) { throw new Error(t('canonical.images.tooLarge')) }
   const { mime, ext } = imageFormat(bytes)
   const name = basename(source.path)
 
-  // Explicit URL attachments may target another machine, even a loopback SSH
-  // tunnel. Only discovery-owned local connections share our profile filesystem.
-  if (process.env.HERMES_TUI_GATEWAY_URL?.trim()) {
+  if (remote) {
     const result = await gw.request<{ path?: string }>('image.attach_bytes', {
       session_id: destination.sid, filename: `${randomUUID()}${ext}`, content_base64: bytes.toString('base64')
     })

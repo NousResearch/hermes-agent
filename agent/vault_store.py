@@ -52,6 +52,9 @@ REQUIRED_FIELDS = {"payment": ("card_number", "exp_month", "exp_year", "cvc"),
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
+# Chrome extension IDs: 32 chars from a-p (a hex SHA-256 prefix mapped 0-f -> a-p).
+_EXTENSION_ID_RE = re.compile(r"[a-p]{32}")
+
 _LOCK = threading.Lock()
 
 # fcntl is Unix-only; Windows locks a byte range with msvcrt (same shape as tools/skill_usage.py).
@@ -129,6 +132,8 @@ def normalize_origin(url_or_origin: str) -> str:
 
     Default ports (80 for http, 443 for https) are stripped so that
     ``https://example.com`` and ``https://example.com:443`` compare equal.
+    ``chrome-extension`` origins are accepted only as an exact extension ID
+    (32 chars ``a``-``p``, no userinfo/port/escapes) and are never rewritten.
     Raises :class:`VaultError` for values without a scheme + host.
     """
     value = (url_or_origin or "").strip()
@@ -138,6 +143,11 @@ def normalize_origin(url_or_origin: str) -> str:
         raise VaultError(f"origin must include a scheme (got {value!r})")
     parts = urlsplit(value)
     scheme = (parts.scheme or "").lower()
+    if scheme == "chrome-extension":
+        # urlsplit silently drops tab/CR/LF, so control characters are rejected on the raw value.
+        if any(ord(c) < 32 or ord(c) == 127 for c in value) or not _EXTENSION_ID_RE.fullmatch(parts.netloc):
+            raise VaultError("invalid chrome-extension origin: expected chrome-extension://<32-char extension id>")
+        return f"chrome-extension://{parts.netloc}"
     host = (parts.hostname or "").lower()
     if not scheme or not host:
         raise VaultError(f"could not parse origin from {value!r}")

@@ -205,6 +205,22 @@ def _cmd_show(args) -> int:
     return 0
 
 
+def _cmd_terminal(args) -> int:
+    """Gate the terminal surfaces only (Ink TUI + legacy CLI pane); the desktop
+    mascot keeps rendering from ``pet.info`` while the pixelated terminal pet
+    is hidden. Writes ``display.pet.terminal_enabled``."""
+    from utils import is_truthy_value
+
+    wanted = not args.off
+    _update_pet_config(terminal_enabled=wanted)
+    cfg = _pet_config()
+    shown = is_truthy_value(cfg.get("terminal_enabled"), default=True)
+    where = "hidden" if not shown else "shown"
+    print(f"✓ terminal pet {where} (display.pet.terminal_enabled={str(wanted).lower()})"
+          " — desktop pet is untouched (display.pet.enabled)")
+    return 0
+
+
 def _cmd_doctor(args) -> int:
     """Report install state, active pet, config, and terminal capability."""
     from agent.pet import store
@@ -225,6 +241,8 @@ def _cmd_doctor(args) -> int:
     print(f"  display.pet.slug:        {configured_slug or '(unset)'}")
     print(f"  active (resolved):       {active.slug if active else '(none)'}")
     print(f"  display.pet.render_mode: {mode_cfg}")
+    print(f"  display.pet.terminal_enabled: {is_truthy_value(cfg.get('terminal_enabled'), default=True)}"
+          " (terminal surfaces only; desktop uses display.pet.enabled)")
     print(f"  detected graphics:       {detect_terminal_graphics()}")
     print(f"  effective mode (TTY):    {resolve_mode(mode_cfg)}")
 
@@ -405,6 +423,9 @@ _SUBCOMMANDS = (
         (("--scale",), dict(type=float, default=0, help="Override scale (0 = config)")),
     )),
     ("off", "Disable the pet display", _cmd_off, ()),
+    ("terminal", "Show/hide the pet on terminal surfaces only (desktop keeps it)", _cmd_terminal, (
+        (("--off",), dict(action="store_true", help="Hide the terminal pet (default: show)")),
+    )),
     ("scale", "Resize the pet everywhere (display.pet.scale)", _cmd_scale, (
         (("factor",), dict(help="Scale factor, e.g. 0.5 (clamped 0.1–3.0)")),
     )),

@@ -57,3 +57,27 @@ def test_set_pet_scale_writes_clamped_value(empty_home):
     assert set_pet_scale(0) == (MIN_SCALE, None)
 
 
+def test_terminal_subcommand_toggles_terminal_only_gate(empty_home):
+    """``hermes pets terminal [--off]`` writes display.pet.terminal_enabled without
+    touching display.pet.enabled — the desktop pet must keep rendering."""
+    import argparse
+
+    from hermes_cli.pets import _cmd_terminal, _pet_config
+
+    enabled_before = _pet_config().get("enabled")
+
+    args = argparse.Namespace(off=False)
+    assert _cmd_terminal(args) == 0
+    assert _pet_config()["terminal_enabled"] is True
+
+    args = argparse.Namespace(off=True)
+    assert _cmd_terminal(args) == 0
+    assert _pet_config()["terminal_enabled"] is False
+    # The gate must not have touched the desktop-facing display.pet.enabled.
+    assert _pet_config().get("enabled") is enabled_before
+
+    # And back on.
+    assert _cmd_terminal(argparse.Namespace(off=False)) == 0
+    assert _pet_config()["terminal_enabled"] is True
+
+

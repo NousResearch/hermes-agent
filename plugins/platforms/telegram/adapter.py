@@ -6205,7 +6205,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return dataclasses.replace(event, channel_prompt=channel_prompt)
         return dataclasses.replace(
             event, text=self._telegram_group_observe_attributed_text(event),
-            source=self._telegram_group_observe_shared_source(event.source), channel_prompt=channel_prompt)
+            source=self._telegram_group_observe_shared_source(event.source), channel_prompt=channel_prompt,
+            # The shared source is sender-less by design, but the CURRENT inbound message still has a
+            # trusted sender: keep it on the live event so the gateway can bind the turn's actor for
+            # actor-bound tools (#140059). Never inferred from text — it is the Telegram update's sender.
+            user_id=event.source.user_id, user_name=event.source.user_name)
 
     def _media_message_type(self, msg: Message) -> MessageType:
         """Classify a Telegram media message into a MessageType (first present attachment wins)."""

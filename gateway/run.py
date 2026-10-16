@@ -3992,15 +3992,19 @@ class GatewayRunner(
         from gateway.session_api_turn import api_session_vars
         _api_vars = api_session_vars()
         _history_delivery = _api_vars.pop("session_history_delivery", None)
+        # A sender-less shared source (observe-mode group) still has a turn actor: the current
+        # message's trusted sender rides the event, so actor-bound tools can identify the
+        # invoker (#140059). Fallback only — a sourced user_id keeps today's behavior.
+        _actor = context.turn_actor or {}
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
             chat_type=str(context.source.chat_type) if context.source.chat_type else "",
             chat_name=context.source.chat_name or "",
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
-            user_id=str(context.source.user_id) if context.source.user_id else "",
+            user_id=str(context.source.user_id or _actor.get("id")) if (context.source.user_id or _actor.get("id")) else "",
             user_id_alt=str(context.source.user_id_alt) if context.source.user_id_alt else "",
-            user_name=str(context.source.user_name) if context.source.user_name else "",
+            user_name=str(context.source.user_name or _actor.get("name")) if (context.source.user_name or _actor.get("name")) else "",
             scope_id=str(getattr(context.source, "scope_id", "") or ""),
             parent_chat_id=str(getattr(context.source, "parent_chat_id", "") or ""),
             session_key=context.session_key,

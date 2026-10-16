@@ -236,6 +236,13 @@ async def execute_admission(authority, ref, row):
     from gateway.session_results import execution_result
     is_api = live.source.platform == Platform.API_SERVER
     author = event.metadata.get('turn_author')
+    if author is None:
+        # Who wrote the admitted input when no producer left a stamp: the event's own sender
+        # (admission-envelope field, adapter-set from the platform update). A sender-less shared
+        # source (observe-mode group) still needs this — memory attribution and turn_author would
+        # otherwise lose the triggering sender entirely (#140059).
+        from gateway.session import turn_actor_from_event
+        author = turn_actor_from_event(event)
     author_token = admission_author.set(author if author is not None else row_turn_author(local_policy, row))
     api_token = api_execution.set(None)
     captured = {}

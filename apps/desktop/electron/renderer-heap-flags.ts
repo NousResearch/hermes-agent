@@ -15,6 +15,10 @@ export interface DesktopLaunchConfig {
   rendererAccessibility?: boolean
   /** `desktop.ssh_path`: explicit Windows ssh client (#103288); unset when absent. */
   sshPath?: string
+  /** `desktop.allowed_link_schemes`: user-opted custom URL schemes for external
+   *  links (e.g. `obsidian`, `linear`), additive on top of the built-in web
+   *  allowlist (#129813). Empty when absent. */
+  allowedLinkSchemes: string[]
 }
 
 export interface PlannedSwitch {
@@ -34,7 +38,7 @@ export interface PlannedSwitch {
  * is documented in `website/docs/user-guide/desktop.md`.
  */
 export function readDesktopLaunchConfig(yamlText: string): DesktopLaunchConfig {
-  const out: DesktopLaunchConfig = { electronFlags: [], rendererMaxOldSpaceMb: 0 }
+  const out: DesktopLaunchConfig = { electronFlags: [], rendererMaxOldSpaceMb: 0, allowedLinkSchemes: [] }
   const lines = String(yamlText ?? '').split(/\r?\n/)
   const start = lines.findIndex(line => /^desktop:\s*(#.*)?$/.test(line))
 
@@ -47,6 +51,32 @@ export function readDesktopLaunchConfig(yamlText: string): DesktopLaunchConfig {
   const blockLines: string[] = []
 
   const splitFlow = (raw: string) => raw.slice(1, -1).split(',').map(unquote).filter(Boolean)
+
+  const readList = (value: string, lines: string[], i: number) => {
+    if (value.startsWith('[') && value.endsWith(']')) {
+      return { items: splitFlow(value), next: i }
+    }
+
+    if (value) {
+      return { items: [unquote(value)], next: i }
+    }
+
+    const items: string[] = []
+
+    let j = i + 1
+
+    for (; j < lines.length; j += 1) {
+      const item = /^ {4}- (.*)$/.exec(lines[j])
+
+      if (!item) {
+        break
+      }
+
+      items.push(unquote(item[1]))
+    }
+
+    return { items, next: j - 1 }
+  }
 
   for (let i = start + 1; i < lines.length; i += 1) {
     const line = lines[i]
@@ -106,6 +136,10 @@ export function readDesktopLaunchConfig(yamlText: string): DesktopLaunchConfig {
 
         out.electronFlags = items.filter(Boolean)
       }
+    } else if (key === 'allowed_link_schemes') {
+      const { items, next } = readList(value, lines, i)
+      out.allowedLinkSchemes = items
+      i = next
     }
   }
 

@@ -227,7 +227,7 @@ Then switch to it with:
 /personality codereviewer
 ```
 
-Your selection is stored as a name in `display.personality`. Personalities never touch `agent.system_prompt` — that field is reserved for a manual system prompt you write yourself, and it applies only when no personality is selected.
+Your selection is stored as a name in `display.personality`. Personalities never write to `agent.system_prompt` — that field is reserved for a manual, standing instruction you write yourself. If both are set, Hermes includes the manual prompt first, followed by a blank line and the selected personality in the ephemeral overlay. Clearing the personality leaves the manual prompt in effect. An explicit `HERMES_EPHEMERAL_SYSTEM_PROMPT` (when supported by the caller) or a gateway channel `system_prompt` override still replaces this global overlay rather than composing with it.
 
 ## Resetting to the default
 

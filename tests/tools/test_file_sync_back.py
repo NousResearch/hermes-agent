@@ -34,19 +34,25 @@ def _dead_pid() -> int:
     proc.wait()
     return proc.pid
 
-def _make_tar(files: dict[str, bytes], dest: Path):
-    """Write a tar archive containing the given arcname->content pairs."""
+def _make_tar(files: dict[str, bytes], dest: Path, *, mtime: float | None = None):
+    """Write a tar archive containing the given arcname->content pairs.
+
+    Entries default to the current wall clock: a real remote tar always carries a
+    real mtime, and sync_back's stale-leftover gate compares against it (a
+    default-0 TarInfo mtime would look older than every session)."""
+    stamp = time.time() if mtime is None else mtime
     with tarfile.open(dest, "w") as tar:
         for arcname, content in files.items():
             info = tarfile.TarInfo(name=arcname)
             info.size = len(content)
+            info.mtime = int(stamp)
             tar.addfile(info, io.BytesIO(content))
 
 
-def _make_download_fn(files: dict[str, bytes]):
+def _make_download_fn(files: dict[str, bytes], *, mtime: float | None = None):
     """Return a bulk_download_fn that writes a tar of the given files."""
     def download(dest: Path):
-        _make_tar(files, dest)
+        _make_tar(files, dest, mtime=mtime)
     return download
 
 
@@ -224,6 +230,38 @@ class TestSyncBackNewRemoteFile:
         expected_host_path = tmp_path / "host" / "skills" / "new_skill.py"
         assert expected_host_path.exists()
         assert expected_host_path.read_bytes() == new_remote_content
+
+
+class TestSyncBackStaleLeftover:
+    """#140024: a file an earlier session pushed whose host copy was deleted between sessions is
+    never removed on the remote (deletions don't propagate), so sync_back used to infer a host
+    path for it and resurrect the deletion. Its remote mtime predates this manager, so the
+    inferred-path branch skips it; a file genuinely created on the remote this session (fresh
+    mtime) is still applied."""
+
+    def test_stale_leftover_not_resurrected(self, tmp_path):
+        existing_host = _write_file(tmp_path / "host" / "skills" / "existing.py", b"existing")
+        mapping = [(str(existing_host), "/root/.hermes/skills/existing.py")]
+        stale = time.time() - 3600  # pushed by the previous session, before this manager existed
+        download_fn = _make_download_fn(
+            {"root/.hermes/skills/deleted_on_host/SKILL.md": b"zombie"}, mtime=stale)
+
+        mgr = _make_manager(tmp_path, file_mapping=mapping, bulk_download_fn=download_fn)
+        mgr.sync_back(hermes_home=tmp_path / ".hermes")
+
+        assert not (tmp_path / "host" / "skills" / "deleted_on_host").exists()
+
+    def test_fresh_remote_creation_still_applied(self, tmp_path):
+        existing_host = _write_file(tmp_path / "host" / "skills" / "existing.py", b"existing")
+        mapping = [(str(existing_host), "/root/.hermes/skills/existing.py")]
+        download_fn = _make_download_fn(
+            {"root/.hermes/skills/new_on_remote.py": b"created during this session"})
+
+        mgr = _make_manager(tmp_path, file_mapping=mapping, bulk_download_fn=download_fn)
+        mgr.sync_back(hermes_home=tmp_path / ".hermes")
+
+        applied = tmp_path / "host" / "skills" / "new_on_remote.py"
+        assert applied.read_bytes() == b"created during this session"
 
 
 class TestSyncBackConflict:

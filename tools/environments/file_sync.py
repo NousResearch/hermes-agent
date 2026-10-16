@@ -212,6 +212,11 @@ class FileSyncManager:
         self._upload_only_host_paths: set[str] = set()
         self._last_sync_time: float = 0.0  # monotonic; 0 ensures first sync runs
         self._sync_interval = sync_interval
+        # Wall clock at manager birth (one per environment/session): sync_back's
+        # stale-leftover gate needs a real-time reference, unlike _last_sync_time.
+        # Floor to whole seconds — tar mtimes are integer-second, so a fractional
+        # baseline would classify a file created in this same second as stale.
+        self._created_wall_time = int(time.time())
 
     def sync(self, *, force: bool = False) -> None:
         """Run a sync cycle: upload changed files, delete removed files. Rate-limited to once
@@ -461,6 +466,21 @@ class FileSyncManager:
             host_path = self._infer_host_path(remote_path, file_mapping, upload_only_host_paths=upload_only_host_paths)
             if host_path is None:
                 logger.debug("sync_back: skipping %s (no host mapping)", remote_path)
+                return 0
+            # A path only reachable by inference was never pushed by this manager and has no
+            # host copy. It is either a file the remote side created during this session (fresh
+            # mtime — the download tar preserves it) or a leftover an earlier session pushed
+            # whose host copy was deleted in between: deletions never propagate to the remote
+            # (_plan_sync only removes what it itself pushed in-memory), and copying that
+            # leftover back resurrects the host-side deletion (#140024).
+            try:
+                predates_session = os.path.getmtime(staged_file) < self._created_wall_time
+            except OSError:
+                predates_session = False
+            if predates_session:
+                logger.debug(
+                    "sync_back: skipping %s (remote mtime predates this session — stale leftover, not a remote edit)",
+                    remote_path)
                 return 0
 
         if self._is_upload_only_host_path(host_path, upload_only_host_paths):

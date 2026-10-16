@@ -43,6 +43,8 @@ version: "0.1.0"
 requires_hermes: ">=0.22.2"
 docs_url: https://github.com/onkanat/hermes-offpeak-bekci#readme
 platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/onkanat/hermes-offpeak-bekci/15dcd63e45326d98b7a3a99caaa87c4be3269023/docs/rozet.png
 capabilities:
   provides_tools: []
   provides_hooks:

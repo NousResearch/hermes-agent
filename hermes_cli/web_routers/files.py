@@ -393,9 +393,19 @@ async def proxy_remote_media(url: str, request: Request):
 
     import httpx
 
+    async def _check_proxy_destination(request: httpx.Request) -> None:
+        # httpx runs request hooks for redirects too, before contacting the next host.
+        if request.url.scheme not in ("http", "https") or not _media_proxy_host_allowed(request.url.host):
+            raise HTTPException(status_code=403, detail="Image host not allowed")
+
     try:
-        async with httpx.AsyncClient(timeout=_MEDIA_PROXY_TIMEOUT_S, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=_MEDIA_PROXY_TIMEOUT_S, follow_redirects=True,
+            event_hooks={"request": [_check_proxy_destination]},
+        ) as client:
             response = await client.get(url)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Image fetch failed: {exc}")
 

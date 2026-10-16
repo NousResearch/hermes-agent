@@ -541,3 +541,43 @@ def test_prologue_forwards_the_submit_title_preview_to_the_titler():
               "display_metadata": {"title_preview": "Pasted 5000 chars"}}],
         )
     assert titler.call_args.kwargs["title_preview"] == "Pasted 5000 chars"
+
+
+def test_reuse_current_user_message_appends_nothing():
+    """A caller that persisted this turn's user row already passes it as the history tail."""
+    agent = _FakeAgent()
+    history = [{"role": "user", "content": "hello", "timestamp": 1.0}]
+    ctx = _build(agent, conversation_history=history, persist_user_display_kind="notice",
+                 reuse_current_user_message=True)
+    assert ctx.messages == history
+    assert ctx.current_turn_user_idx == 0
+    assert "display_kind" not in ctx.messages[0]
+
+
+def _durable_prefix_leftover(agent, messages):
+    """Rows a turn-start rotation flush would write: it passes ``messages[:anchor]`` as the
+    durable prefix (``_publish_rotated_compaction``); ``None`` anchor means no prefix."""
+    from agent.session_persistence import _db_flush_collect
+
+    for attr, value in (("session_id", "s"), ("_flushed_db_message_session_id", "s"),
+                        ("_last_flushed_db_idx", 0), ("_flushed_db_message_ids", set())):
+        setattr(agent, attr, value)
+    anchor = agent._persist_user_message_idx
+    prefix = messages[:anchor] if isinstance(anchor, int) and 0 <= anchor <= len(messages) else None
+    return [row["content"] for row in _db_flush_collect(agent, messages, prefix)[0]]
+
+
+def test_reuse_current_user_message_anchors_the_persist_boundary_past_the_durable_tail():
+    """The reused user row was persisted by the caller, so the durable-prefix readers must cover
+    it: a turn-start rotation flush writes nothing."""
+    history = [{"role": "user", "content": "a"}, {"role": "assistant", "content": "b"},
+               {"role": "user", "content": "hello"}]
+    agent = _FakeAgent()
+    ctx = _build(agent, conversation_history=[dict(m) for m in history], reuse_current_user_message=True)
+    assert agent._persist_user_message_idx == len(ctx.messages)
+    assert _durable_prefix_leftover(agent, ctx.messages) == []
+
+    # Positive control: the default path appends a fresh user row, and exactly that row is un-persisted.
+    agent = _FakeAgent()
+    ctx = _build(agent, conversation_history=[dict(m) for m in history[:2]])
+    assert _durable_prefix_leftover(agent, ctx.messages) == ["hello"]

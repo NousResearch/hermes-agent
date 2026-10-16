@@ -7,7 +7,7 @@ at runtime via ``/skill-name``, ``skills_list``, or ``skill_view`` and don't
 need to live in the system prompt.
 
 ``added`` and ``removed`` are lists of ``{"name": str, "description": str}``
-dicts. Descriptions are truncated to 60 chars.
+dicts. Descriptions are truncated to ``SKILL_PROMPT_DESC_LIMIT`` chars.
 """
 
 import shutil

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
-from gateway.agent_cache_release import codex_release_barrier
+from agent.codex_lifecycle import codex_retirements
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
@@ -94,7 +94,7 @@ class GatewaySessionAgentMixin:
         evicted = self._runner._agent_cache.pop(self._ctx.session_key, None)
         agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
         if agent is not None and agent is not _AGENT_PENDING_SENTINEL:
-            codex_release_barrier(self._runner).track(self._ctx.session_key, agent)
+            codex_retirements(self._runner).track(agent)
             return agent
         return None
 
@@ -225,10 +225,10 @@ class GatewaySessionAgentMixin:
         if found.evicted is not None:
             self._release_evicted_agent(found.evicted)
         if agent is None:
-            codex_release_barrier(runner).wait(ctx.session_key)
             agent = self._build_fresh_agent(
                 turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr, skip_context_files,
             )
+            agent._codex_retirements = codex_retirements(runner)
             if cache_lock and cache is not None:
                 with cache_lock:
                     # Record the snapshot's session_id with message_count so the cross-process guard

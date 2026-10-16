@@ -476,9 +476,8 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
 
 def _close_codex_session(agent) -> None:
     """Drop the session so the next turn respawns codex instead of reusing a dead client."""
-    with suppress(Exception):
-        agent._codex_session.close()
-    agent._codex_session = None
+    from agent.codex_lifecycle import close_codex_session
+    close_codex_session(agent)
 
 
 def _consume_user_interrupt(agent, active: bool = True) -> tuple[bool, Any]:
@@ -610,8 +609,9 @@ def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -
         # The provider is fixed per thread (turn/start can switch the model, not the provider), so an
         # in-place switch to or from a named custom provider retires the thread too.
         recorded = getattr(agent, "_codex_session_prompt", None)
-        if recorded is None or (recorded == developer_instructions
-                                and getattr(agent, "_codex_session_model_provider", None) == model_provider):
+        if not getattr(agent._codex_session, "_closed", False) and (recorded is None or (
+                recorded == developer_instructions
+                and getattr(agent, "_codex_session_model_provider", None) == model_provider)):
             return
         _close_codex_session(agent)
     resume_thread_id = None if getattr(agent, "_codex_session_prompt", None) is not None else _stored_codex_thread_id(agent)
@@ -733,6 +733,10 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
     _ensure_codex_session(agent, messages)
+    from agent.codex_lifecycle import wait_for_codex_writer
+    # Retirement failure is not a failed provider turn: keep this unstarted resume
+    # candidate intact, so retry cannot silently drop the durable thread binding.
+    wait_for_codex_writer(agent)
     try:
         _start_codex_thread(agent)
         wire_model = _codex_wire_model(agent, getattr(agent, "_codex_session_model_provider", None))

@@ -206,7 +206,7 @@ def _extract_thread_id(result: dict) -> Optional[str]:
 
 
 class CodexAppServerSession:
-    """One Codex thread per Hermes session, lifetime owned by AIAgent. Not thread-safe: one caller at a time."""
+    """One Codex thread per Hermes session, lifetime owned by AIAgent. Turns are serial; close is safe to join concurrently."""
 
     def __init__(
         self, *, cwd: Optional[str] = None, codex_bin: str = "codex",
@@ -222,6 +222,8 @@ class CodexAppServerSession:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
         self._codex_home = codex_home
+        from agent.codex_lifecycle import codex_writer_key
+        self._writer_home = codex_writer_key(None, codex_home)[0]
         # A codex thread id persisted by an earlier process for this Hermes session: the first
         # ``ensure_started`` issues ``thread/resume`` for it instead of ``thread/start``.
         self._resume_thread_id = resume_thread_id
@@ -257,11 +259,18 @@ class CodexAppServerSession:
         # approval params don't carry the changeset, so this feeds the prompt summary.
         self._pending_file_changes: dict[str, str] = {}
         self._closed = False
+        self._close_lock = threading.Lock()
 
     def ensure_started(self) -> str:
         """Spawn, handshake, and ``thread/start`` (or ``thread/resume`` for a stored id); idempotent, returns
         the codex thread id. A failed resume raises :class:`CodexThreadResumeError` once; the next call
         starts a fresh thread on the same handshaken client."""
+        with self._close_lock:
+            return self._ensure_started()
+
+    def _ensure_started(self) -> str:
+        if self._closed:
+            raise RuntimeError("codex app-server session is closing")
         if self._thread_id is not None:
             return self._thread_id
         if self._client is None:
@@ -313,16 +322,24 @@ class CodexAppServerSession:
             raise CodexThreadResumeError(wanted, f"app-server answered with thread {str(thread_id)[:8]!r}")
         return wanted
 
+    @property
+    def writer_key(self):
+        return self._writer_home, self._thread_id or self._resume_thread_id
+
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        with self._active_turn_lock:
-            self._active_turn_id = None
-        if self._client is not None:
-            self._client.close()
-        self._client = None
-        self._thread_id = None
+        if not self._close_lock.acquire(timeout=30):
+            raise TimeoutError("codex app-server session close is still in progress")
+        try:
+            self._closed = True
+            with self._active_turn_lock:
+                self._active_turn_id = None
+            if self._client is not None:
+                self._client.close()
+            # Retain the client and thread identity on failure so the same owner is retryable.
+            self._client = None
+            self._thread_id = None
+        finally:
+            self._close_lock.release()
 
     def request_interrupt(self) -> None:
         """Idempotent: signal the active turn loop to issue turn/interrupt and unwind."""

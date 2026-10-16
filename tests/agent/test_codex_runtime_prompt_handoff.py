@@ -139,3 +139,34 @@ def test_runtime_gives_no_approval_callback_when_nobody_can_answer(monkeypatch):
         set_approval_callback(None)
     assert interactive._codex_session._approval_callback is panel
     assert single_query._codex_session._approval_callback is None
+
+
+def test_failed_retirement_retries_the_same_unstarted_resume(monkeypatch):
+    import pytest
+    from agent.codex_lifecycle import CodexRetirements
+    old = sess_mod.CodexAppServerSession()
+    old._thread_id = 't1'
+    old._client = _FakeClient()
+    def fail_close():
+        raise TimeoutError('synthetic owner still alive')
+    old._client.close = fail_close
+    owner = SimpleNamespace(_codex_session=old)
+    retirements = CodexRetirements()
+    retirements.track(owner)
+    client = _FakeClient()
+    monkeypatch.setattr(sess_mod, 'CodexAppServerClient', lambda **kw: client)
+    agent = _agent(_codex_retirements=retirements, session_id='synthetic',
+        _session_db=SimpleNamespace(get_session_model_config_value=lambda *_: 't1'),
+        _interrupt_requested=False, _interrupt_message=None)
+    kwargs = dict(user_message='hi', original_user_message='hi', messages=[], effective_task_id='t')
+    with pytest.raises(TimeoutError, match='synthetic owner still alive'):
+        codex_runtime.run_codex_app_server_turn(agent, **kwargs)
+    candidate = agent._codex_session
+    assert candidate._resume_thread_id == 't1' and not client.requests
+    old._client.close = lambda: None
+    def stop_after_resume(**kwargs):
+        raise RuntimeError('synthetic turn boundary')
+    monkeypatch.setattr(candidate, 'run_turn', stop_after_resume)
+    codex_runtime.run_codex_app_server_turn(agent, **kwargs)
+    assert [method for method, _ in client.requests] == ['thread/resume']
+    assert owner._codex_session is None

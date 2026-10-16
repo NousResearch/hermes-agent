@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
-from gateway.agent_cache_release import codex_release_barrier
+from agent.codex_lifecycle import codex_retirements
 from gateway.config import Platform
 from gateway.session import SessionSource, build_session_context_prompt
 from gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
@@ -314,7 +314,13 @@ class GatewayAgentCacheMixin:
                     logger.debug("Failed to release active session slot", exc_info=True)
             # One structured reset instead of a drifting pop-list. Turn-lease tokens are deliberately NOT
             # cleared here — _release_turn_lease owns them.
+            agent = state.turn.agent
             state.turn.clear()
+            if agent is not None and "_cache_evict_after_turn" in vars(agent):
+                boundary = agent._cache_evict_after_turn
+                del agent._cache_evict_after_turn
+                if self._cached_agent_for(session_key) is agent:
+                    self._evict_cached_agent(session_key, commit_memory=boundary)
         # Turn boundary: a running-agent slot was just released; persist the new (lower) in-flight count
         # so the dashboard readout stays current. Preserves gateway_state (see _persist_active_agents).
         self._persist_active_agents()
@@ -833,21 +839,27 @@ class GatewayAgentCacheMixin:
         # present ``_agent_cache`` is read directly (an initialized runner always has it).
         _lock = getattr(self, "_agent_cache_lock", None)
         evicted = None
-        running_ids = self._running_agent_ids()
+        def pop_idle():
+            cached = self._agent_cache.get(session_key)
+            agent = _first_agent(cached)
+            if agent is None or agent is _AGENT_PENDING_SENTINEL:
+                self._agent_cache.pop(session_key, None)
+                return None
+            if id(agent) in self._running_agent_ids():
+                # Keep the owner in the cache until the running slot is released. Never
+                # register a retirement and then abandon it after a second running snapshot.
+                agent._cache_evict_after_turn = commit_memory or getattr(agent, "_cache_evict_after_turn", False)
+                return None
+            codex_retirements(self).track(agent)
+            return self._agent_cache.pop(session_key, None)
+
         if _lock:
             with _lock:
-                evicted = self._agent_cache.pop(session_key, None)
-                if id(_first_agent(evicted)) not in running_ids:
-                    codex_release_barrier(self).track(session_key, _first_agent(evicted))
-        else:
-            _cache = getattr(self, "_agent_cache", None)
-            if _cache is not None:
-                evicted = _cache.pop(session_key, None)
-                if id(_first_agent(evicted)) not in running_ids:
-                    codex_release_barrier(self).track(session_key, _first_agent(evicted))
+                evicted = pop_idle()
+        elif getattr(self, "_agent_cache", None) is not None:
+            evicted = pop_idle()
         agent = _first_agent(evicted)
-        # Never tear down an agent that's mid-turn — its client, sandbox and child subagents are in use.
-        if agent is None or agent is _AGENT_PENDING_SENTINEL or id(agent) in self._running_agent_ids():
+        if agent is None:
             return
         if commit_memory:
             target, args = self._commit_then_release_soft, (agent, session_key, True)
@@ -928,7 +940,7 @@ class GatewayAgentCacheMixin:
     def _commit_then_release_soft(self, agent: Any, key: str, boundary: bool = False) -> None:
         """Commit end-of-session memory (if warranted), then soft-release — on the daemon eviction
         thread. Order matters: commit needs the live memory manager before ``release_clients``."""
-        codex_release_barrier(self).release(agent)
+        codex_retirements(self).release(agent)
         try:
             self._commit_memory_before_soft_evict(agent, key, boundary)
         finally:
@@ -939,7 +951,7 @@ class GatewayAgentCacheMixin:
         resume, so terminal sandbox, browser daemon and bg processes outlive the AIAgent instance."""
         if agent is None:
             return
-        codex_release_barrier(self).release(agent)
+        codex_retirements(self).release(agent)
         with suppress(Exception):
             if hasattr(agent, "release_clients"):
                 agent.release_clients()
@@ -1027,7 +1039,7 @@ class GatewayAgentCacheMixin:
                 protect_recent=bounds.protect_recent,
             )
             for key, agent in plan:
-                codex_release_barrier(self).track(key, agent)
+                codex_retirements(self).track(agent)
                 _cache.pop(key, None)
         if not plan:
             _mid_turn = sum(1 for _, a in ordered if a is not None and id(a) in running_ids)
@@ -1065,6 +1077,13 @@ class GatewayAgentCacheMixin:
         """Release a pressure-evicted batch sequentially on one daemon thread, then ``malloc_trim`` so
         RSS actually falls. The plan is drained (``pop`` + ``del``), not iterated, so no local
         reference pins evicted agents during ``gc.collect`` + trim (else the valve over-evicts)."""
+        # Retire all writers before any provider's synchronous memory extraction. Successors
+        # can also help via CodexRetirements.wait; a failed owner remains retryable there.
+        for key, agent in plan:
+            try:
+                codex_retirements(self).release(agent)
+            except Exception as exc:
+                logger.debug("Codex retirement failed for %s: %s", key, exc, exc_info=True)
         while plan:
             key, agent = plan.pop(0)  # FIFO — evict LRU-first order preserved
             try:
@@ -1096,7 +1115,7 @@ class GatewayAgentCacheMixin:
         candidates = [(key, _tuple_agent(_cache.get(key))) for key in list(_cache.keys())[:max(0, len(_cache) - cap)]]
         evict_plan = [(key, agent) for key, agent in candidates if agent is None or id(agent) not in running_ids]
         for key, agent in evict_plan:
-            codex_release_barrier(self).track(key, agent)
+            codex_retirements(self).track(agent)
             _cache.pop(key, None)
         remaining_over_cap = len(_cache) - cap
         if remaining_over_cap > 0:
@@ -1134,7 +1153,7 @@ class GatewayAgentCacheMixin:
                     continue
                 to_evict.append((key, agent))
             for key, agent in to_evict:
-                codex_release_barrier(self).track(key, agent)
+                codex_retirements(self).track(agent)
                 _cache.pop(key, None)
         for key, agent in to_evict:
             logger.info("Agent cache idle-TTL evict: session=%s (idle=%.0fs)", key, now - getattr(agent, "_last_activity_ts", now))

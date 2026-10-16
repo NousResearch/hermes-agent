@@ -154,9 +154,9 @@ def test_validate_moa_payload_agrees_with_clean_slot():
     assert cfg["presets"]["p"]["aggregator"] == payload["presets"]["p"]["aggregator"]
 
 
-def test_print_config_marks_aggregator_as_billed_and_warns_on_provider_mismatch(capsys):
-    """#112359: the aggregator is the acting model billed for the run; when it sits on a
-    different provider than the main model, ``hermes moa list``/``configure`` say so."""
+def test_print_config_names_aggregator_and_warns_on_provider_mismatch(capsys):
+    """#112359: the aggregator is the acting model; when it sits on a different provider
+    than the main model, ``hermes moa list``/``configure`` say so."""
     from hermes_cli import moa_cmd
 
     moa_cmd._print_config({"model": {"provider": "openai-codex"}})

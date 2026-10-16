@@ -49,8 +49,8 @@ class TestFormatSessionInfo:
         assert "localhost:11434" in info
         assert "8K" in info
 
-    def test_moa_preset_names_the_billed_aggregator(self, runner, tmp_path):
-        """#112359: the preset name hides who pays; /model must name the acting aggregator."""
+    def test_moa_preset_names_the_aggregator(self, runner, tmp_path):
+        """#112359: the preset name hides the serving model; /model must name the acting aggregator."""
         p1, p2, p3 = _patch_info(tmp_path, "model:\n  default: review\n  provider: moa\n",
                                   "review", {"provider": "moa", "base_url": "", "api_key": ""})
         moa_cfg = {"moa": {"presets": {"review": {

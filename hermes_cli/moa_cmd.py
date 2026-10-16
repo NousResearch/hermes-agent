@@ -86,8 +86,9 @@ def _provider_mismatch_notice(
     ):
         return None
     return (
-        f"Aggregator is on {agg_provider}; the whole tool loop will be billed there, "
-        f"not to {main_provider}."
+        f"Aggregator is on {agg_provider}; its tool-loop steps are billed there, "
+        f"while reference calls are billed on their own providers (and their outputs "
+        f"increase the aggregator's input), not to {main_provider}."
     )
 
 
@@ -103,7 +104,7 @@ def _print_config(config: dict[str, Any]) -> None:
             print(f"    {idx}. {_format_slot(slot)}")
         agg_slot = preset["aggregator"]
         print(
-            f"  Aggregator: {_format_slot(agg_slot)} (acting model — runs every step and carries almost all of the cost)"
+            f"  Aggregator: {_format_slot(agg_slot)} (acting model — runs every step; most spend lands on its provider)"
         )
         notice = _provider_mismatch_notice(config, agg_slot)
         if notice:
@@ -140,7 +141,7 @@ def _cmd_configure(cfg: dict, args) -> None:
             break
     print("Configure aggregator model.")
     print(
-        "The aggregator is the acting model: it runs every tool-loop step, and almost all of the run's cost lands on its provider."
+        "The aggregator is the acting model: it runs every tool-loop step, so most spend lands on its provider. Reference calls are billed on their own providers, and their outputs increase the aggregator's input tokens."
     )
     current = dict(current)
     current["reference_models"] = refs

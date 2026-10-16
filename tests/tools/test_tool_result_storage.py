@@ -357,6 +357,16 @@ class TestEnforceTurnBudget:
 class TestPerToolThresholds:
     """Verify registry wiring for per-tool thresholds."""
 
+    def test_terminal_threshold(self):
+        from tools.registry import registry
+        # Trigger import of terminal_tool to register the tool
+        try:
+            from tools.terminal_tool import TERMINAL_PROVIDER_RESULT_CAP_CHARS
+            val = registry.get_max_result_size("terminal")
+            assert val == TERMINAL_PROVIDER_RESULT_CAP_CHARS == 8_000
+        except ImportError:
+            pytest.skip("terminal_tool not importable in test env")
+
     def test_read_file_registry_cap_is_finite(self):
         """read_file must keep a finite registry cap (Layer 2 safety net)."""
         from tools.registry import registry

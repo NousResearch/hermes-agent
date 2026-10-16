@@ -516,6 +516,8 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
     _STATUS_MESSAGE_IDS_MAX = 2000
+    # Whether the non-numeric-anchor warning has fired (once per process; see _safe_message_id).
+    _NON_NUMERIC_ANCHOR_WARNED = False
 
     MAX_MESSAGE_LENGTH = 4096
     supports_code_blocks = True  # MarkdownV2 renders fenced code blocks
@@ -1004,9 +1006,28 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         return str(topic_id) if topic_id is not None else None
 
     @classmethod
+    def _safe_message_id(cls, value: Any) -> Optional[int]:
+        """A reply anchor Telegram can actually quote: numeric, or None (send unanchored).
+
+        Telegram message ids are strictly numeric; a non-numeric anchor is a synthetic producer
+        identity (``["kanban-wake", ...]`` from a route wake) or stale metadata persisted before
+        it, and raw ``int()`` would fail the whole send and poison every retry (#139611). A reply
+        with no quote is strictly better than a failed send, so warn once and drop it."""
+        if value is None:
+            return None
+        text = str(value).strip()
+        if text.isdigit():
+            return int(text)
+        if not TelegramAdapter._NON_NUMERIC_ANCHOR_WARNED:
+            TelegramAdapter._NON_NUMERIC_ANCHOR_WARNED = True
+            logger.warning("[Telegram] Dropping non-numeric reply anchor %r; sending unanchored instead",
+                           text[:80])
+        return None
+
+    @classmethod
     def _metadata_reply_to_message_id(cls, metadata: Optional[dict[str, Any]]) -> Optional[int]:
         reply_to = (metadata or {}).get("telegram_reply_to_message_id")
-        return int(reply_to) if reply_to is not None else None
+        return cls._safe_message_id(reply_to)
 
     @staticmethod
     def _dm_topic_fallback(metadata: Optional[dict[str, Any]]) -> bool:
@@ -1029,7 +1050,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
     def _reply_to_message_id_for_send(
         cls, reply_to: Optional[str], metadata: Optional[dict[str, Any]] = None, reply_to_mode: Optional[str] = None) -> Optional[int]:
         if reply_to:
-            return int(reply_to)
+            return cls._safe_message_id(reply_to)
         if cls._dm_topic_fallback(metadata) and reply_to_mode != "off":
             return cls._metadata_reply_to_message_id(metadata)
         return None
@@ -1432,7 +1453,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             should_thread = reply_to_source is not None and self._reply_to_mode != "off"
         else:
             should_thread = self._should_thread_reply(reply_to_source, index)
-        reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
+        reply_to_id = self._safe_message_id(reply_to_source) if should_thread and reply_to_source else None
         return private_dm_topic_send, dm_topic_reply_to_off, reply_to_id
 
     def _compute_single_send_routing(

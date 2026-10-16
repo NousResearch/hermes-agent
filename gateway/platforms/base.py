@@ -2075,13 +2075,10 @@ class BasePlatformAdapter(ABC):
         from gateway.stream_events import ToolCallChunk
         if not isinstance(event, ToolCallChunk):
             return None
-        from agent.display import get_tool_emoji, prepare_tool_preview
+        from agent.display import get_tool_emoji, prepare_tool_preview, verbose_tool_args_text
         emoji, tool = get_tool_emoji(event.tool_name, default='⚙️'), event.tool_name
         if mode == "verbose" and event.args:
-            import json
-            args_str = json.dumps(event.args, ensure_ascii=False, default=str)
-            if preview_max_len > 0 and len(args_str) > preview_max_len:
-                args_str = args_str[:preview_max_len - 3] + "..."
+            args_str = verbose_tool_args_text(event.args, preview_max_len, self.supports_code_blocks)
             return t("gateway.progress.tool_verbose", emoji=emoji, tool=tool, keys=list(event.args.keys()), args=args_str)
         if not event.preview:
             return t("gateway.progress.tool_pending", emoji=emoji, tool=tool)

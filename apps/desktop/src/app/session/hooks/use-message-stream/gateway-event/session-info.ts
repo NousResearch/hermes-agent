@@ -1,3 +1,5 @@
+import { usageFromTick } from '@hermes/shared'
+
 import { finalizeInterruptedMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
@@ -31,7 +33,6 @@ import {
   setYoloActive
 } from '@/store/session'
 import { reportInstallMethodWarning } from '@/store/updates'
-import type { UsageStats } from '@/types/hermes'
 
 import {
   applySessionInfoStatePatch,
@@ -41,106 +42,6 @@ import {
 } from '../utils'
 
 import type { GatewayEventContext } from './types'
-
-function finiteCount(value: number | null | undefined): number | undefined {
-  return value !== null && value !== undefined && Number.isFinite(value) ? value : undefined
-}
-
-function firstPositiveOrDefined(
-  primary: number | null | undefined,
-  fallback: number | null | undefined
-): number | undefined {
-  const first = finiteCount(primary)
-  const second = finiteCount(fallback)
-
-  return (first || second) ?? first
-}
-
-function canonicalContextUsage(payload: NonNullable<GatewayEventContext['payload']>): Partial<UsageStats> {
-  const contextMax = finiteCount(payload.context_length)
-
-  if (contextMax === undefined) {
-    return {}
-  }
-
-  const compressionCount = finiteCount(payload.compression_count)
-  const fields: Partial<UsageStats> = compressionCount === undefined ? {} : { compressions: compressionCount }
-  const contextUsed = finiteCount(payload.last_prompt_tokens)
-
-  if (!contextUsed || contextUsed <= 0 || contextMax <= 0) {
-    return fields
-  }
-
-  const clamped = Math.min(contextUsed, contextMax)
-  const source = payload.context_source || 'provider_usage'
-
-  return {
-    ...fields,
-    context_estimated: source !== 'provider_usage',
-    context_max: contextMax,
-    context_percent: Math.max(0, Math.min(100, Math.round((clamped / contextMax) * 100))),
-    context_source: source,
-    context_used: clamped
-  }
-}
-
-function canonicalRateUsage(payload: NonNullable<GatewayEventContext['payload']>): Partial<UsageStats> {
-  const fields: Partial<UsageStats> = {}
-  const prompt = finiteCount(payload.prompt_tokens)
-  const cacheRead = finiteCount(payload.cache_read_tokens)
-  const tokensPerSecond = finiteCount(payload.tokens_per_s)
-
-  if (prompt !== undefined && prompt > 0 && cacheRead !== undefined && cacheRead > 0) {
-    fields.cache_hit_pct = Math.max(0, Math.min(100, Math.round((cacheRead / prompt) * 100)))
-  }
-
-  if (tokensPerSecond !== undefined) {
-    fields.avg_tps = Math.round(tokensPerSecond * 10) / 10
-  }
-
-  return fields
-}
-
-function canonicalCounterUsage(payload: NonNullable<GatewayEventContext['payload']>): Partial<UsageStats> {
-  const usage: Partial<UsageStats> = {}
-  const input = firstPositiveOrDefined(payload.input_tokens, payload.prompt_tokens)
-  const output = firstPositiveOrDefined(payload.output_tokens, payload.completion_tokens)
-  const total = finiteCount(payload.total_tokens)
-  const calls = finiteCount(payload.api_calls)
-
-  if (input !== undefined) {
-    usage.input = input
-  }
-
-  if (output !== undefined) {
-    usage.output = output
-  }
-
-  if (total !== undefined) {
-    usage.total = total
-  }
-
-  if (calls !== undefined) {
-    usage.calls = calls
-  }
-
-  return usage
-}
-
-/** Normalize canonical top-level counters; legacy ticker frames stay nested. */
-function canonicalUsage(payload: GatewayEventContext['payload']): Partial<UsageStats> | undefined {
-  if (!payload || payload.usage) {
-    return payload?.usage
-  }
-
-  const usage: Partial<UsageStats> = {
-    ...canonicalCounterUsage(payload),
-    ...canonicalContextUsage(payload),
-    ...canonicalRateUsage(payload)
-  }
-
-  return Object.keys(usage).length > 0 ? usage : undefined
-}
 
 /**
  * Whether a `session.info` payload's `stored_session_id` may be treated as the
@@ -639,7 +540,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // Live usage tick emitted while a turn is mid-flight (see tui_gateway
     // _start_usage_ticker) so the status-bar context window tracks growth
     // during the turn instead of only jumping at message.complete.
-    const usage = canonicalUsage(payload)
+    const usage = usageFromTick(payload)
 
     if (usage && sessionId) {
       // Per-session twin first: a focused secondary tile reads this cache,

@@ -579,8 +579,8 @@ function handleErrorEvent(
 /** Live usage tick while a turn runs (see tui_gateway _start_usage_ticker): keeps the status-bar
  *  context window current mid-turn instead of only at message.complete. The session filter at the
  *  top of the handler already dropped ticks for non-focused sessions. */
-function applyUsageTick(payload: unknown): void {
-  const usage = usageFromTick(payload as Parameters<typeof usageFromTick>[0]) // canonical: the owner's counters at the top level
+function applyUsageTick(payload: Extract<AnyGatewayEvent, { type: 'session.usage' }>['payload']): void {
+  const usage = usageFromTick(payload) // canonical: the owner's counters at the top level
 
   if (usage) {
     patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))

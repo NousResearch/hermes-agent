@@ -376,7 +376,9 @@ class AuthorityConnection:
                 sid = local_identity(self.authority.profile_id, self.actor.subject, params['request_id'])
                 if self.authority.db.get_session(sid) is None:
                     skills_prompt = await asyncio.to_thread(render_launch_skills, params, sid)
-            ref = stage_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt)
+            # Host-bound client values apply only over the gateway's own ticketed attach (run_api).
+            ref = stage_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt,
+                                      client_local=self.native_owner)
             if isinstance(ref, dict):
                 # The creation commit runs off the owner loop: a held writer must not freeze
                 # every session behind one new chat (N50).

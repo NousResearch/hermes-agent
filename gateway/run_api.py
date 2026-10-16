@@ -279,12 +279,16 @@ class GatewayRuntimeAPI:
             return await self.app(scope, receive, send)
         original_receive = receive
         allow_draining = False
+        admitted_in_wait = False
         from gateway.drain_control import restart_wait_open
 
         async def receive_admitted():
             message = await original_receive()
+            # Only a socket admitted INTO the restart wait (to answer a parked prompt) outlives it. One
+            # opened before the wait is cut as before: its client reconnects to the next owner, and a
+            # held one (a kanban worker polling its card) would otherwise pin the drain to its cap.
             if ((descriptor['state'] != 'ready' or self.runner._draining) and not allow_draining
-                    and not restart_wait_open(self.runner)):
+                    and not (admitted_in_wait and restart_wait_open(self.runner))):
                 return {'type': 'websocket.disconnect', 'code': 1013}
             return message
 
@@ -322,10 +326,11 @@ class GatewayRuntimeAPI:
                     return
                 return await self.app(scope, receive, send)
         allow_draining = not operator
+        admitted_in_wait = restart_wait_open(self.runner)
         # A restart's after-turn wait still owns its turns: an interactive client attaches to answer
         # a parked approval/clarify (#139041); stop() closes this window.
         if ((descriptor['state'] != 'ready' or self.runner._draining) and not allow_draining
-                and not restart_wait_open(self.runner)):
+                and not admitted_in_wait):
             await ws.close(code=1013)
             return
         from gateway.session_authorities import authority_for_profile_id

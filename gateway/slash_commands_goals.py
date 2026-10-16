@@ -72,9 +72,10 @@ class GatewayGoalCommandsMixin:
     ) -> None:
         """Enqueue *text* as the next turn through the adapter FIFO (the post-turn judge's path).
 
-        A kickoff keeps the triggering message id / channel prompt; a resume continuation carries
-        none. Best-effort: failures only logged. A local ``slash.exec`` returns the turn to the
-        client as its ``send`` directive instead (the client submits it with its own input id).
+        A kickoff keeps the triggering message id / channel prompt / bound skills; a resume
+        continuation carries none. Best-effort: failures only logged. A local ``slash.exec`` returns
+        the turn to the client as its ``send`` directive instead (the client submits it with its own
+        input id).
         """
         from gateway.session_command_sink import active_sink
         if (sink := active_sink()) is not None:
@@ -91,6 +92,8 @@ class GatewayGoalCommandsMixin:
                     source=event.source,
                     message_id=event.message_id if kickoff else None,
                     channel_prompt=event.channel_prompt if kickoff else None,
+                    auto_skill=event.auto_skill if kickoff else None,
+                    inherit_channel_pin=not kickoff,
                 )
                 self._enqueue_fifo(quick_key, turn, adapter)
         except Exception as exc:

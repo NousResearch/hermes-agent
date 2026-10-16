@@ -47,6 +47,7 @@ export const zhHantDiagnostics = {
       codeSkewRestartRequired: '更新後此後端仍在執行舊程式碼。請重新啟動以載入新程式碼。'
     },
     voice: {
+      echoDropped: '已忽略播放回音。請再試著說一次。',
       configureSpeechToText: '設定語音轉文字後即可使用語音模式。',
       couldNotStartSession: '無法啟動語音工作階段',
       microphoneAccessDenied: '麥克風存取被拒絕。',

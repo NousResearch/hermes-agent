@@ -111,6 +111,70 @@ class TestWecomCallbackRouting:
         assert calls["json"]["agentid"] == 2002
         assert "tok-b" in calls["url"]
 
+    @pytest.mark.asyncio
+    async def test_send_targets_official_api_by_default(self):
+        """No api_base configured: requests go to the official qyapi host."""
+        adapter = WecomCallbackAdapter(_config())
+        adapter._access_tokens["test-app"] = {"token": "tok", "expires_at": 9999999999}
+        adapter._user_app_map["ww1234567890:alice"] = "test-app"
+
+        urls = []
+
+        class _Client:
+            async def post(self, url, json):
+                urls.append(url)
+                return type("R", (), {"json": lambda self: {"errcode": 0, "msgid": "m"}})()
+
+        adapter._http_client = _Client()
+        result = await adapter.send("ww1234567890:alice", "hello")
+
+        assert result.success is True
+        assert urls and urls[0].startswith("https://qyapi.weixin.qq.com/cgi-bin/message/send")
+
+    @pytest.mark.asyncio
+    async def test_send_and_token_refresh_honor_configured_api_base(self):
+        """extra.api_base routes message/send AND gettoken through a reverse proxy
+        (static egress IP for WeCom's trusted-IP allowlist); a trailing slash is tolerated."""
+        config = PlatformConfig(
+            enabled=True,
+            extra={
+                "mode": "callback",
+                "host": "127.0.0.1",
+                "port": 0,
+                "api_base": "https://proxy.example.com/",
+                "apps": [_app()],
+            },
+        )
+        adapter = WecomCallbackAdapter(config)
+        adapter._user_app_map["ww1234567890:alice"] = "test-app"
+
+        urls = []
+
+        class _Client:
+            async def get(self, url, params=None):
+                urls.append(("get", url))
+                return type("R", (), {"json": lambda self: {"errcode": 0, "access_token": "tok", "expires_in": 7200}})()
+
+            async def post(self, url, json):
+                urls.append(("post", url))
+                return type("R", (), {"json": lambda self: {"errcode": 0, "msgid": "m"}})()
+
+        adapter._http_client = _Client()
+        result = await adapter.send("ww1234567890:alice", "hello")
+
+        assert result.success is True
+        assert ("get", "https://proxy.example.com/cgi-bin/gettoken") in urls
+        assert any(kind == "post" and url.startswith("https://proxy.example.com/cgi-bin/message/send") for kind, url in urls)
+
+    def test_blank_api_base_falls_back_to_official_host(self):
+        """Whitespace-only api_base must not produce 'https://'/'' request URLs."""
+        config = PlatformConfig(
+            enabled=True,
+            extra={"mode": "callback", "host": "127.0.0.1", "port": 0, "api_base": "  ", "apps": [_app()]},
+        )
+        adapter = WecomCallbackAdapter(config)
+        assert adapter._api_base == "https://qyapi.weixin.qq.com"
+
 
 class TestWecomCallbackSendTokenRefresh:
     @pytest.mark.asyncio

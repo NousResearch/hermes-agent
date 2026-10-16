@@ -28,6 +28,19 @@ def session_auxiliary_scope(auxiliary):
         _SESSION_AUXILIARY.reset(token)
 
 
+class AuthoritativeAuxiliaryTask(str):
+    """A task name that keeps the task's non-route policy (timeout, concurrency, extra_body, fallback
+    chain) but strips its route fields, so a one-shot fallback naming a complete route never inherits
+    an unset endpoint/key/wire mode from the route that just failed (#113322, #130895)."""
+
+    __slots__ = ()
+    route_authoritative = True
+
+
+def authoritative_auxiliary_task(task: str | None) -> str:
+    return task if isinstance(task, AuthoritativeAuxiliaryTask) else AuthoritativeAuxiliaryTask(str(task or ""))
+
+
 def _get_auxiliary_task_config(task: str, _seen: frozenset = frozenset()) -> dict[str, Any]:
     """Config dict for auxiliary.<task>, or {} when unavailable. Plugin-registered tasks get their
     declared defaults layered under user config (user wins); built-in defaults live in DEFAULT_CONFIG.
@@ -36,6 +49,13 @@ def _get_auxiliary_task_config(task: str, _seen: frozenset = frozenset()) -> dic
     until the user pins a route on the task itself. ``_seen`` guards re-registration cycles."""
     if not task:
         return {}
+    config = _task_config(str(task), _seen)
+    if getattr(task, "route_authoritative", False):
+        return {key: value for key, value in config.items() if key not in _AUX_ROUTE_KEYS}
+    return config
+
+
+def _task_config(task: str, _seen: frozenset) -> dict[str, Any]:
     aux = _SESSION_AUXILIARY.get()
     if aux is None:
         try:

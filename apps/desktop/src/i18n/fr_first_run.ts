@@ -3,7 +3,7 @@ import type { FirstRunCopy } from './types_first_run'
 export const frFirstRun: FirstRunCopy = {
   beats: {
     name: 'Nom',
-    theme: 'Couleur d\'accent',
+    theme: "Couleur d'accent",
     layout: 'Disposition',
     connectors: 'Applications',
     plugins: 'Plugins',
@@ -40,9 +40,9 @@ export const frFirstRun: FirstRunCopy = {
     plan: 'Configurons tout pour vous. Ensuite, nous ferons quelque chose de génial.'
   },
   rerun: {
-    title: 'Relancer l\'accueil',
+    title: "Relancer l'accueil",
     description: 'Ouvre un nouveau chat de configuration qui reprend les premières étapes avec votre modèle actuel.',
     action: 'Relancer',
-    failed: 'Impossible de lancer l\'accueil'
+    failed: "Impossible de lancer l'accueil"
   }
 }

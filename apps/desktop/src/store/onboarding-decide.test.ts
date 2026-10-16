@@ -31,7 +31,7 @@ function slowBackend() {
   const firstState = new Promise<{ eligible: boolean; run: boolean }>(resolve => (answer = resolve))
   let stateReads = 0
 
-  const request: OnboardingRequest = <T,>(
+  const request: OnboardingRequest = <T>(
     method: string,
     _params?: Parameters<OnboardingRequest>[1],
     timeoutMs?: number

@@ -29,10 +29,12 @@ describe('SetupBeatTool', () => {
     cleanup()
   })
 
-  it('draws the words typed while the card waited as the user\'s bubble', () => {
+  it("draws the words typed while the card waited as the user's bubble", () => {
     renderRow({ beat: 'theme', said: 'look around and suggest one for me :D' })
 
-    expect(screen.getByText('look around and suggest one for me :D').closest('[data-slot="typed-answer"]')).not.toBeNull()
+    expect(
+      screen.getByText('look around and suggest one for me :D').closest('[data-slot="typed-answer"]')
+    ).not.toBeNull()
   })
 
   it('draws nothing for a refusal meant for the model', () => {

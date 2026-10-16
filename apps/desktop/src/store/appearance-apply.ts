@@ -37,8 +37,7 @@ export interface AppliedAppearance {
 }
 
 export type AppearanceAnswer =
-  | { applied: AppliedAppearance; success: true }
-  | { available: string[]; error: string; success: false }
+  { applied: AppliedAppearance; success: true } | { available: string[]; error: string; success: false }
 
 const listedLayoutIds = (): string[] =>
   registry

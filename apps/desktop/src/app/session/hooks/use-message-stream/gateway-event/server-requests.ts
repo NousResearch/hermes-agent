@@ -107,7 +107,14 @@ type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
  * would win the race, so the tool reports "no preview tab / no terminal" while
  * the owner's pane is open (#113348).
  */
-const WINDOW_OWNED_REQUESTS = new Set(['preview.act', 'preview.read', 'terminal.read', 'theme.apply', 'window.read', 'tour'])
+const WINDOW_OWNED_REQUESTS = new Set([
+  'preview.act',
+  'preview.read',
+  'terminal.read',
+  'theme.apply',
+  'window.read',
+  'tour'
+])
 
 /**
  * A window not hosting the session declines instead of staying silent. The

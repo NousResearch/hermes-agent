@@ -580,9 +580,7 @@ export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
   // the making, and a credential probe that fires meanwhile would drop the
   // provider picker over it; onboarding hands over to the picker
   // itself when the account fails.
-  afterOnboardingSurfaceClear(() =>
-    patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true })
-  )
+  afterOnboardingSurfaceClear(() => patch({ reason: reason.trim() || DEFAULT_ONBOARDING_REASON, requested: true }))
 }
 
 /** Credential warning delivered passively (session create/activate/resume

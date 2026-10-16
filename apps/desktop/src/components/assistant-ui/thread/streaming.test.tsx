@@ -706,12 +706,21 @@ describe('assistant-ui streaming renderer', () => {
 
   it('keeps streaming reasoning collapsed in the onboarding chat', () => {
     $activeSessionId.set('onboarding-chat')
-    $onboardingSession.set({ connectionId: null, runId: 'run-1', runtimeId: 'onboarding-chat', storedId: 'stored-onboarding' })
+    $onboardingSession.set({
+      connectionId: null,
+      runId: 'run-1',
+      runtimeId: 'onboarding-chat',
+      storedId: 'stored-onboarding'
+    })
     $onboardingPhase.set('shown')
 
     const { container } = render(<RunningReasoningHarness />)
 
-    expect(within(container).getByRole('button', { name: /thinking/i }).getAttribute('aria-expanded')).toBe('false')
+    expect(
+      within(container)
+        .getByRole('button', { name: /thinking/i })
+        .getAttribute('aria-expanded')
+    ).toBe('false')
     expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
   })
 

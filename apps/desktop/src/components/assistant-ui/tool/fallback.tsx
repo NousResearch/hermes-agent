@@ -1081,11 +1081,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   const toolNameKey = useAuiState(state =>
     state.message.parts
       .slice(Math.max(0, startIndex), endIndex + 1)
-      .map(part =>
-        part.type === 'tool-call'
-          ? toolGroupKey(part.toolName, part.args)
-          : ''
-      )
+      .map(part => (part.type === 'tool-call' ? toolGroupKey(part.toolName, part.args) : ''))
       .join('\u0000')
   )
 

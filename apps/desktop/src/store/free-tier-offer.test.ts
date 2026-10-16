@@ -4,11 +4,7 @@ import { $freeTierStatus, type FreeTierRequester } from '@/store/free-tier'
 import { $freeTierSignIn, closeFreeTierSignIn, stopFreeTierOffer, syncFreeTierOffer } from '@/store/free-tier-sign-in'
 import { activeGatewayProfileKey, ensureGatewayForProfile } from '@/store/gateway'
 import { $localModelOfferPending } from '@/store/local-model-offer'
-import {
-  $onboardingDecided,
-  markOnboardingDecided,
-  setOnboardingSurfaceActive
-} from '@/store/onboarding-presence'
+import { $onboardingDecided, markOnboardingDecided, setOnboardingSurfaceActive } from '@/store/onboarding-presence'
 import type { FreeTierStatus } from '@/types/hermes'
 
 const status = (nudge_due_in: null | number, available = true): FreeTierStatus => ({

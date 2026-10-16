@@ -31,7 +31,7 @@ function backend(state: { eligible: boolean; run: boolean }, runId: null | strin
   const started = { resumed: false, run_id: 'run-1', session_id: 'rt-1', stored_session_id: 'st-1' }
   const read = { ...state, run_id: runId, session_id: runId && 'st-1' }
 
-  const request = async <T,>(method: string, params?: Parameters<OnboardingRequest>[1]): Promise<T> => {
+  const request = async <T>(method: string, params?: Parameters<OnboardingRequest>[1]): Promise<T> => {
     calls.push(method)
 
     if (method === 'onboarding.start') {
@@ -146,9 +146,9 @@ describe('onboarding run', () => {
     await startOnboarding(request, resume, { ensureProfile })
 
     // SAFETY: the fakes answer onboarding.state with its contract result shape.
-    const open = async <T,>(): Promise<T> => ({ eligible: true, run: true, run_id: 'run-1', session_id: 'st-1' }) as T
+    const open = async <T>(): Promise<T> => ({ eligible: true, run: true, run_id: 'run-1', session_id: 'st-1' }) as T
     // SAFETY: as above.
-    const reread = async <T,>(): Promise<T> => ({ eligible: true, run: false, run_id: null, session_id: null }) as T
+    const reread = async <T>(): Promise<T> => ({ eligible: true, run: false, run_id: null, session_id: null }) as T
 
     await reconcileOnboarding(open)
     expect($onboardingPhase.get()).toBe('shown')
@@ -161,7 +161,7 @@ describe('onboarding run', () => {
     await startOnboarding(request, resume, { ensureProfile })
 
     // SAFETY: the fake answers onboarding.state with its contract result shape.
-    const noRun = async <T,>(): Promise<T> => ({ eligible: true, run: false, run_id: null, session_id: null }) as T
+    const noRun = async <T>(): Promise<T> => ({ eligible: true, run: false, run_id: null, session_id: null }) as T
 
     setPrimaryGatewayConnectionId('homelab')
     await reconcileOnboarding(noRun)
@@ -208,7 +208,13 @@ describe('onboarding run', () => {
 
   it('releases the boot hold when the user takes the way out while the start is still pending', async () => {
     let exit: () => void = () => undefined
-    const intro = { failed: vi.fn(), opened: vi.fn(), started: vi.fn(), starting: (leave: () => void) => (exit = leave) }
+
+    const intro = {
+      failed: vi.fn(),
+      opened: vi.fn(),
+      started: vi.fn(),
+      starting: (leave: () => void) => (exit = leave)
+    }
 
     const request = (method: string) =>
       method === 'onboarding.start' ? new Promise<never>(() => undefined) : Promise.reject(new Error(method))
@@ -227,7 +233,7 @@ describe('onboarding run', () => {
     await startOnboarding(request, resume, { ensureProfile })
 
     // The backend withdraws the old card while the rerun's start is still answering.
-    const rerun = async <T,>(method: string): Promise<T> => {
+    const rerun = async <T>(method: string): Promise<T> => {
       if (method === 'onboarding.start') {
         noteOnboardingEnded({ outcome: 'replaced', run_id: 'run-1', stored_session_id: 'st-1' })
       }
@@ -245,7 +251,7 @@ describe('onboarding run', () => {
   it('asks for a fresh-install run only on a --fresh-install launch, and never on a rerun', async () => {
     const sent: boolean[] = []
 
-    const request = async <T,>(method: string, params?: OnboardingStartParams): Promise<T> => {
+    const request = async <T>(method: string, params?: OnboardingStartParams): Promise<T> => {
       if (method === 'onboarding.start') {
         sent.push(params !== undefined && 'assume_fresh' in params)
       }

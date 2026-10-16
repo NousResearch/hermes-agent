@@ -271,7 +271,11 @@ function answerClarifyText(sessionId: string, text: string): null | Promise<bool
   return lockTypedAnswer(request, text)
 }
 
-registerParkedCardAnswer('clarify', { $requests: $clarifyRequests, answer: answerClarifyText, waiting: hasClarifyRequest })
+registerParkedCardAnswer('clarify', {
+  $requests: $clarifyRequests,
+  answer: answerClarifyText,
+  waiting: hasClarifyRequest
+})
 
 /** The choice typed text names (any case, as the messaging path matches labels), else the words themselves. */
 function typedAnswer(question: ClarifyQuestion, text: string): string {

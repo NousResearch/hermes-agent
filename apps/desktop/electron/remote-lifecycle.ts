@@ -1283,14 +1283,7 @@ async function scrapeReadyPort(ssh, logPath, { timeoutMs = resolveReadyTimeoutMs
 
 async function spawnRemoteDashboard(
   ssh,
-  {
-    hermesPath,
-    profile,
-    token,
-    ownershipId,
-    hermesHome = '~/.hermes',
-    assertInstallClear = async () => {}
-  }
+  { hermesPath, profile, token, ownershipId, hermesHome = '~/.hermes', assertInstallClear = async () => {} }
 ) {
   if (!(await remoteSupportsSshOwnership(ssh, hermesPath))) {
     const err: any = new Error(

@@ -232,7 +232,11 @@ export function decideOnboarding(
   return decision
 }
 
-async function readAndStart(request: OnboardingRequest, resume: OnboardingResume, options?: StartOptions): Promise<void> {
+async function readAndStart(
+  request: OnboardingRequest,
+  resume: OnboardingResume,
+  options?: StartOptions
+): Promise<void> {
   // Continue on the boot overlay released this launch: a late answer opens nothing, and onboarding
   // stays due on the backend for the next launch or Settings' Run onboarding again.
   let released = false

@@ -43,7 +43,12 @@ describe('parked card answers', () => {
 
   it('reports an answer that failed to send, so the composer can restore the draft', async () => {
     const onFailed = vi.fn()
-    unregister.push(registerParkedCardAnswer('test-fails', kind(() => Promise.resolve(false))))
+    unregister.push(
+      registerParkedCardAnswer(
+        'test-fails',
+        kind(() => Promise.resolve(false))
+      )
+    )
 
     expect(answerParkedCard('session-a', 'hello', onFailed)).toBe(true)
     await vi.waitFor(() => expect(onFailed).toHaveBeenCalledTimes(1))
@@ -51,7 +56,9 @@ describe('parked card answers', () => {
 
   it('takes typed text for an onboarding-only card in the onboarding chat, and leaves every other chat alone', () => {
     const takes = vi.fn<ParkedCardAnswer>(() => Promise.resolve(true))
-    unregister.push(registerParkedCardAnswer('test-onboarding', { ...kind(takes), onboardingOnly: true, waiting: () => true }))
+    unregister.push(
+      registerParkedCardAnswer('test-onboarding', { ...kind(takes), onboardingOnly: true, waiting: () => true })
+    )
     const $waiting = sessionOnboardingCardWaiting('session-a')
 
     expect(answerParkedCard('session-a', 'hello')).toBe(false)

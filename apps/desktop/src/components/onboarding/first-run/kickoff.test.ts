@@ -11,7 +11,14 @@ import { $introCopy } from './intro'
 import { firstRunIntro } from './kickoff'
 
 const size = vi.fn()
-const started: OnboardingStartResult = { resumed: false, run_id: 'run-1', session_id: 'rt-1', stored_session_id: 'st-1' }
+
+const started: OnboardingStartResult = {
+  resumed: false,
+  run_id: 'run-1',
+  session_id: 'rt-1',
+  stored_session_id: 'st-1'
+}
+
 const ensureProfile = async (): Promise<void> => undefined
 
 // SAFETY: the fake answers onboarding.start with its contract result; nothing else reads the answer.
@@ -74,11 +81,15 @@ describe('first-run kickoff', () => {
     let answer: () => void = () => {}
 
     // A cold start that answers late.
-    const slow: OnboardingRequest = async <T>(...[method, params, timeoutMs]: Parameters<OnboardingRequest>): Promise<T> => {
+    const slow: OnboardingRequest = async <T>(
+      ...[method, params, timeoutMs]: Parameters<OnboardingRequest>
+    ): Promise<T> => {
       calls.push([method, params, timeoutMs])
 
       // SAFETY: the fake answers onboarding.start with its contract result; the skip's answer is unread.
-      return method === 'onboarding.start' ? new Promise<T>(resolve => (answer = () => resolve(started as T))) : ({} as T)
+      return method === 'onboarding.start'
+        ? new Promise<T>(resolve => (answer = () => resolve(started as T)))
+        : ({} as T)
     }
 
     const opening = startOnboarding(slow, adopt, { ensureProfile, intro: firstRunIntro() })
@@ -91,7 +102,10 @@ describe('first-run kickoff', () => {
     answer()
 
     expect(await opening).toBe(false)
-    expect(calls.map(([method, , timeout]) => [method, timeout])).toEqual([['onboarding.start', 0], ['onboarding.skip', undefined]])
+    expect(calls.map(([method, , timeout]) => [method, timeout])).toEqual([
+      ['onboarding.start', 0],
+      ['onboarding.skip', undefined]
+    ])
     expect(calls[1][1]).toEqual({ session_id: 'rt-1' })
     expect(adopt).not.toHaveBeenCalledWith('st-1', true)
   })

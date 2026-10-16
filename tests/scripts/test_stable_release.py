@@ -15,8 +15,9 @@ from tests.scripts.test_release_r2 import r2_server as r2_server  # noqa: PLC041
 from scripts.releases.draft_warning import (
     WARNING_CLOSE, WARNING_OPEN, strip_draft_warning,
 )
+from scripts.releases import lanes as lane_set
 from scripts.releases.stable import (
-    check_claim, ensure_final_tag, plan_receipt_transitions, plan_transitions, read_manifest,
+    check_claim, ensure_final_tag, gate_expectations, plan_receipt_transitions, plan_transitions, read_manifest,
     require_stable_identity, require_success, validate_candidates, validate_receipt,
 )
 from scripts.releases.versioning import tag_record
@@ -69,8 +70,7 @@ def test_gate_requires_every_success_including_real_cli(tmp_path):
                 require_success(needs, required)
     summary = tmp_path / "summary.md"
     env = {**os.environ, "RELEASE_NEEDS": json.dumps(success), "GITHUB_STEP_SUMMARY": str(summary), "PYTHONPATH": str(ROOT),
-           "SKIP_BUNDLES": "false", "SKIP_TESTS": "false",
-           "INCLUDE_MACOS_INTEL": "false", "INCLUDE_TERMUX": "false"}
+           "LANES": json.dumps(lane_set.flags(lane_set.DEFAULT))}
     argv = [sys.executable, "-m", "scripts.releases.stable", "gate", *required]
     assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, check=False).returncode == 0
     empty = subprocess.run(argv[:4], cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", check=False)
@@ -82,35 +82,35 @@ def test_gate_requires_every_success_including_real_cli(tmp_path):
     assert "publication=cancelled" in result.stderr
 
 
-@pytest.mark.parametrize("skip_bundles,skip_tests", [(True, False), (False, True), (True, True)])
-def test_gate_requires_every_flag_removed_job_to_have_skipped(tmp_path, skip_bundles, skip_tests):
-    from scripts.releases.stable import SKIPPED_BY, gate_expectations
-
-    required = ["admit", "docker", "publish-docker", *SKIPPED_BY]
-    expected = gate_expectations(required, skip_bundles=skip_bundles, skip_tests=skip_tests,
-                                 include_macos_intel=True, include_termux=True)
-    # The flags remove jobs; they never remove admission or the Docker image.
-    assert expected["admit"] == expected["docker"] == expected["publish-docker"] == "success"
-    assert expected["transitions-win32"] == expected["pm-bundle"] == "skipped"
+@pytest.mark.parametrize("lanes", [
+    lane_set.select(without=lane_set.BUNDLES),
+    lane_set.select(without=lane_set.NAMES[5:]),
+    lane_set.select(only=["windows", "docker"]),
+    lane_set.select(only=[]),
+])
+def test_gate_requires_every_lane_removed_job_to_have_skipped(tmp_path, lanes):
+    required = ["admit", *lane_set.JOB_LANES]
+    expected = gate_expectations(required, lanes)
+    # Lanes never remove admission.
+    assert expected["admit"] == "success"
+    assert {name for name, result in expected.items() if result == "success"} - {"admit"} == \
+        {job for job, runs in lane_set.jobs_to_run(lanes).items() if runs}
     needs = {name: {"result": result} for name, result in expected.items()}
     env = {**os.environ, "RELEASE_NEEDS": json.dumps(needs), "PYTHONPATH": str(ROOT),
-           "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
-           "SKIP_BUNDLES": "true" if skip_bundles else "false",
-           "SKIP_TESTS": "true" if skip_tests else "false",
-           "INCLUDE_MACOS_INTEL": "true", "INCLUDE_TERMUX": "true"}
+           "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"), "LANES": json.dumps(lane_set.flags(lanes))}
     argv = [sys.executable, "-m", "scripts.releases.stable", "gate", *required]
     assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, check=False).returncode == 0
-    # A removed job that ran anyway blocks the release, and so does an unflagged gate.
+    # A removed job that ran anyway blocks the release, and so does a different lane set.
     removed = next(name for name, result in expected.items() if result == "skipped")
     env["RELEASE_NEEDS"] = json.dumps({**needs, removed: {"result": "success"}})
     ran = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", check=False)
     assert ran.returncode != 0 and f"{removed}=success (expected skipped)" in ran.stderr
     env["RELEASE_NEEDS"] = json.dumps(needs)
-    env["SKIP_BUNDLES"] = env["SKIP_TESTS"] = "false"
+    env["LANES"] = json.dumps(lane_set.flags(lane_set.NAMES))
     assert subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, check=False).returncode != 0
-    del env["SKIP_TESTS"]
+    del env["LANES"]
     missing = subprocess.run(argv, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8", check=False)
-    assert missing.returncode != 0 and "SKIP_TESTS must be" in missing.stderr
+    assert missing.returncode != 0 and "lanes must be" in missing.stderr
 
 
 def test_validate_candidates_keys_the_archive_by_the_attempt_ref():
@@ -218,13 +218,23 @@ def test_an_unknown_receipt_is_refused():
                          manifest["releaseEpoch"], archive="rc.2-v1.2.4")
 
 
-def test_validate_candidates_still_refuses_a_missing_target():
+def test_a_manifest_must_carry_exactly_the_targets_its_claims_lanes_build():
     commit = "b" * 40
     manifest = candidates("v1.2.4", commit, "2" * 64, archive="rc.2-v1.2.4")
-    with pytest.raises(ValueError, match="both architectures"):
-        validate_candidates(_receipt_rows(manifest, {"macos/arm64", "windows/arm64"}),
-                            manifest["tag"], commit, BASE, manifest["releaseEpoch"],
-                            archive="rc.2-v1.2.4")
+    # A release may build any subset of the lanes, so a partial manifest is a valid manifest.
+    windows_only = _receipt_rows(manifest, {"windows/x64", "windows/arm64"})
+    windows_only["smoke_results"] = {**manifest["smoke_results"], "smoke-darwin-arm64": {"result": "skipped"},
+                                     "smoke-darwin-x64": {"result": "skipped"}}
+    assert validate_candidates(windows_only, manifest["tag"], commit, BASE, manifest["releaseEpoch"],
+                               archive="rc.2-v1.2.4").keys() == {"windows/x64", "windows/arm64"}
+    from scripts.releases.stable import require_targets_match_claim
+    require_targets_match_claim(windows_only, ["windows"])
+    for wrong in (lane_set.DEFAULT, ["windows", "macos-arm64"], []):
+        with pytest.raises(ValueError, match="differ from the claim"):
+            require_targets_match_claim(windows_only, wrong)
+    with pytest.raises(ValueError, match="no packages"):
+        validate_candidates(_receipt_rows(manifest, set()), manifest["tag"], commit, BASE,
+                            manifest["releaseEpoch"], archive="rc.2-v1.2.4")
 
 
 def test_plan_receipt_transitions_yields_only_the_receipts_rows():
@@ -253,10 +263,12 @@ def test_transitions_bind_all_arches_identity_version_and_archive():
     assert all(row["transition"]["new"]["commit"] == new["commit"] for row in transitions)
     assert all(row["transition"]["new"]["artifact"]["url"].startswith(f"{BASE}/releases/tag/{new['archive']}/")
                for row in transitions)
+    # A target the new release did not build has nothing to upgrade to.
     missing = copy.deepcopy(new)
     missing["packages"].pop()
-    with pytest.raises(ValueError, match="both architectures"):
-        plan_transitions(old, missing, BASE)
+    missing["smoke_results"]["smoke-darwin-arm64"] = {"result": "skipped"}
+    assert {row["target"] for row in plan_transitions(old, missing, BASE)} == \
+        {"windows-x64", "windows-arm64", "macos-x64"}
     with pytest.raises(ValueError, match="identity"):
         validate_candidates(new, new["tag"], old["commit"], BASE, archive=new["archive"])
     for key, value in [("commit", old["commit"]), ("identity", "different"), ("publisher", "CN=Other"), ("version", "9.9.9.0")]:
@@ -362,12 +374,52 @@ def test_manifest_origin_checks_with_real_https(https_origin):
     assert server.requests == []
 
 
+# Stable runs from the default branch. GITHUB_SHA is main's tip, never the claim commit.
+CONTROLLER_ENV = {
+    "GITHUB_REPOSITORY": "example/hermes-agent",
+    "GITHUB_EVENT_NAME": "workflow_dispatch",
+    "GITHUB_REF": "refs/heads/main",
+    "GITHUB_WORKFLOW_REF": "example/hermes-agent/.github/workflows/stable-release.yml@refs/heads/main",
+    "GITHUB_SHA": "e" * 40,
+}
+
+
+def test_a_claim_run_is_found_by_its_run_name_on_main_or_by_its_tag_branch():
+    from scripts.releases.stable import claim_run_title, is_claim_run
+
+    tag, commit = "rc.1-v1.2.3", "a" * 40
+    assert claim_run_title(tag) == "Stable release rc.1-v1.2.3"
+
+    def match(**row):
+        return is_claim_run(**{"title": None, "head_branch": "main", "head_sha": "e" * 40, **row},
+                            claim_tag=tag, commit=commit)
+
+    assert match(title="Stable release rc.1-v1.2.3")
+    # Runs started before the controller moved sat on the tag at the claim commit.
+    assert match(head_branch=tag, head_sha=commit)
+    assert not match(title="Stable release rc.2-v1.2.3")
+    assert not match(head_branch=tag, head_sha="e" * 40)
+    assert not match()
+
+
+def test_claim_must_run_from_the_default_branch_controller():
+    base = {**CONTROLLER_ENV, "RELEASE_CLAIM_TAG": "rc.1-v1.2.3"}
+    for wrong in (
+        {"GITHUB_REF": "refs/tags/rc.1-v1.2.3"},
+        {"GITHUB_REF": "refs/heads/feature"},
+        {"GITHUB_EVENT_NAME": "workflow_run"},
+        {"GITHUB_WORKFLOW_REF": "example/hermes-agent/.github/workflows/other.yml@refs/heads/main"},
+        {"GITHUB_WORKFLOW_REF": "example/hermes-agent/.github/workflows/stable-release.yml@refs/tags/rc.1-v1.2.3"},
+    ):
+        with pytest.raises(ValueError, match="default-branch controller"):
+            check_claim({**base, **wrong}, lambda argv: pytest.fail("no git before the controller check"))
+
+
 def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkeypatch):
     commit = "a" * 40
     claim_object = "b" * 40
     ref = "refs/tags/rc.1-v1.2.3"
-    env = {"RELEASE_CLAIM_TAG": "rc.1-v1.2.3", "RELEASE_CLAIM_OBJECT": claim_object,
-           "GITHUB_SHA": commit, "GITHUB_REF": ref}
+    env = {**CONTROLLER_ENV, "RELEASE_CLAIM_TAG": "rc.1-v1.2.3", "RELEASE_CLAIM_OBJECT": claim_object}
     message = {"schema": 1, "version": "1.2.3", "attempt": 1, "commit": commit,
                "autopublish": False, "skipBundles": False, "skipTests": False,
                "claimEpoch": 1_790_000_000}
@@ -383,21 +435,22 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
             return claim_object if argv[-1] == ref else commit
         if argv[1] == "tag":
             return json.dumps(message)
+        if argv[1] == "for-each-ref":
+            return "refs/remotes/origin/release/1.2.3"
         return ""
 
     assert check_claim(env, git) == {
         "claim_tag": "rc.1-v1.2.3", "claim_object": claim_object,
         "tag": "v1.2.3", "version": "1.2.3", "attempt": 1, "commit": commit,
-        "autopublish": False, "skip_bundles": False, "skip_tests": False,
-        # A claim without the opt-in platform keys reads them as false.
-        "include_macos_intel": False, "include_termux": False,
+        # A claim cut before lanes existed reads as the lane set that gated the same jobs.
+        "autopublish": False, "lanes": lane_set.DEFAULT,
         "claim_epoch": 1_790_000_000,
     }
     # The metadata binds the attempt its ref names.
     for wrong in ({**message, "attempt": 2}, {k: v for k, v in message.items() if k != "attempt"}):
         with pytest.raises(ValueError, match="metadata is invalid"):
             check_claim(env, lambda argv, wrong=wrong: json.dumps(wrong) if argv[1] == "tag" else git(argv))
-    with pytest.raises(ValueError, match="moved"):
+    with pytest.raises(ValueError, match="tag moved"):
         check_claim(env, lambda argv: f"{'c' * 40}\t{ref}\n{commit}\t{ref}^{{}}"
                     if argv[1] == "ls-remote" else git(argv))
     with pytest.raises(ValueError, match="annotated"):
@@ -418,7 +471,7 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
     subprocess.run(["git", "remote", "add", "origin", str(remote)], check=True)
     metadata = json.dumps({
         "schema": 1, "version": "1.2.3", "attempt": 1, "commit": actual,
-        "autopublish": False, "skipBundles": False, "skipTests": False,
+        "autopublish": False, "lanes": sorted(lane_set.DEFAULT),
         "claimEpoch": 1_790_000_000,
     }, sort_keys=True, separators=(",", ":"))
     subprocess.run(
@@ -426,7 +479,7 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
         env={**os.environ, "GIT_COMMITTER_DATE": "@1790000000 +0000"},
     )
     subprocess.run(["git", "push", "origin", "main", "rc.1-v1.2.3"], check=True, capture_output=True)
-    env.update({"GITHUB_SHA": actual, "RELEASE_CLAIM_OBJECT": subprocess.check_output(
+    env.update({"RELEASE_CLAIM_OBJECT": subprocess.check_output(
         ["git", "rev-parse", ref], text=True, encoding="utf-8").strip()})
     claim = check_claim(env)
     assert claim["commit"] == actual
@@ -447,8 +500,8 @@ def test_claim_object_movement_and_lightweight_tags_fail_closed(tmp_path, monkey
         check_claim(env)
 
 
-def test_a_claim_cut_before_the_opt_in_platform_flags_still_parses():
-    """rc.1..rc.11 of v0.21.6/v0.21.7 carry no includeMacosIntel/includeTermux keys."""
+def test_a_claim_cut_before_lanes_existed_reads_as_the_lane_set_that_gated_the_same_jobs():
+    """rc.1..rc.11 of v0.21.6/v0.21.7 carry skipBundles/skipTests and no include keys."""
     from scripts.releases.stable import _claim_metadata, validate_claim
 
     commit = "a" * 40
@@ -457,35 +510,48 @@ def test_a_claim_cut_before_the_opt_in_platform_flags_still_parses():
            "claimEpoch": 1_790_000_000}
     raw = json.dumps(old, sort_keys=True, separators=(",", ":"))
     parsed = _claim_metadata(raw, version="0.21.7", attempt=11, commit=commit)
-    assert parsed == {**old, "includeMacosIntel": False, "includeTermux": False}
+    assert parsed == {**old, "lanes": lane_set.DEFAULT}
     assert old == json.loads(raw)  # the caller's record is not mutated
-    new = {**old, "includeMacosIntel": True, "includeTermux": False}
-    assert validate_claim(new, version="0.21.7", attempt=11, commit=commit) == new
-    # The keys stay optional, never loose: a non-boolean or an unknown key is refused.
-    for wrong in ({**old, "includeTermux": "yes"}, {**old, "includeLinux": True}):
+    both = {**old, "includeMacosIntel": True, "includeTermux": True}
+    assert validate_claim(both, version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset(lane_set.NAMES)
+    untested = {**old, "skipTests": True}
+    assert validate_claim(untested, version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset(
+        {"docker", "windows", "windows-store", "macos-arm64"})
+    # skipBundles built the image and nothing else a bundle touches, tests included.
+    bundleless = {**old, "skipBundles": True}
+    assert validate_claim(bundleless, version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset(
+        {"docker", "ci", "nix", "docker-tests", "windows-live", "install-e2e", "bootstrap-version", "termux-checks"})
+    # The keys stay exact, never loose: a non-boolean, an unknown key or a mix of shapes is refused.
+    new = {k: v for k, v in old.items() if not k.startswith("skip")}
+    # A lanes claim without a revision was cut when `windows` also meant the Store bundle (rc.2-v0.22.1).
+    assert validate_claim({**new, "lanes": ["docker", "windows"]}, version="0.21.7", attempt=11,
+                          commit=commit)["lanes"] == frozenset({"docker", "windows", "windows-store"})
+    assert validate_claim({**new, "lanes": ["docker", "windows"], "lanesRevision": lane_set.LANES_REVISION},
+                          version="0.21.7", attempt=11, commit=commit)["lanes"] == frozenset({"docker", "windows"})
+    for wrong in ({**old, "includeTermux": "yes"}, {**old, "includeLinux": True},
+                  {**new, "lanes": ["windows", "docker"]}, {**new, "lanes": ["linux"]},
+                  {**new, "lanes": "windows"}, {**old, "lanes": ["docker"]}):
         with pytest.raises(ValueError, match="metadata is invalid"):
             validate_claim(wrong, version="0.21.7", attempt=11, commit=commit)
 
 
-def test_a_default_claim_builds_no_macos_intel_or_termux_and_the_flags_restore_them(
+def test_a_default_claim_builds_no_macos_intel_or_termux_and_lanes_restore_them(
         tmp_path, r2_server, https_origin, monkeypatch):
     from scripts.releases import stable
 
-    opt_in = {"candidates-darwin-x64", "transitions-darwin-x64", "macos-packaged-x64",
-              "candidates-termux", "termux-checks"}
-    required = ["admit", "docker", *stable.SKIPPED_BY]
-    default = stable.gate_expectations(required, skip_bundles=False, skip_tests=False)
-    assert {name for name, result in default.items() if result == "skipped"} == opt_in
-    both = stable.gate_expectations(required, skip_bundles=False, skip_tests=False,
-                                    include_macos_intel=True, include_termux=True)
-    assert set(both.values()) == {"success"}
-    intel = stable.gate_expectations(required, skip_bundles=False, skip_tests=False,
-                                     include_macos_intel=True)
+    off = {"candidates-darwin-x64", "transitions-darwin-x64", "macos-packaged-x64",
+           "candidates-termux", "termux-checks"}
+    required = ["admit", *lane_set.JOB_LANES]
+    default = stable.gate_expectations(required, lane_set.DEFAULT)
+    assert {name for name, result in default.items() if result == "skipped"} == off
+    assert set(stable.gate_expectations(required, lane_set.NAMES).values()) == {"success"}
+    intel = stable.gate_expectations(required, lane_set.select(with_=["macos-intel"]))
     assert {name for name, result in intel.items() if result == "skipped"} == \
         {"candidates-termux", "termux-checks"}
-    # The skip flags still remove an opted-in platform's jobs.
-    assert stable.gate_expectations(["candidates-termux"], skip_bundles=True, skip_tests=False,
-                                    include_termux=True) == {"candidates-termux": "skipped"}
+    # A lane that is off removes its jobs even when its test lane is on.
+    assert stable.gate_expectations(["candidates-termux", "termux-checks"],
+                                    lane_set.select(without=["termux"])) == \
+        {"candidates-termux": "skipped", "termux-checks": "skipped"}
 
     # Only the default groups stage handoffs; the manifest is complete without
     # the x64 Mac and Termux rows and records the unbuilt smoke as skipped.
@@ -496,11 +562,8 @@ def test_a_default_claim_builds_no_macos_intel_or_termux_and_the_flags_restore_t
     _stage_windows_handoff(built, "x64")
     _stage_windows_handoff(built, "arm64")
     _stage_universal_bundle(built)
-    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(
-        include_macos_intel=False, include_termux=False))
-    calls = {call: {"result": "success"} for call in stable.CALL_SMOKE_JOBS
-             if call != "candidates-darwin-x64"}
-    calls["candidates-darwin-x64"] = {"result": "skipped"}
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lane_set.DEFAULT))
+    calls = _calls(lane_set.DEFAULT)
     env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(calls)}
     stable.main(["candidate-manifest"], env)
     stored, _ = r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
@@ -510,25 +573,148 @@ def test_a_default_claim_builds_no_macos_intel_or_termux_and_the_flags_restore_t
     assert manifest["smoke_results"]["smoke-darwin-x64"] == {"result": "skipped"}
     stable.validate_candidates(manifest, "v1.2.3", RECEIPT_COMMIT, https_origin.base,
                                RELEASE_EPOCH, archive=ATTEMPT)
-    stable.require_targets_match_claim(manifest, include_macos_intel=False, include_termux=False)
-    with pytest.raises(ValueError, match="lacks macos/x64"):
-        stable.require_targets_match_claim(manifest, include_macos_intel=True, include_termux=False)
+    stable.require_targets_match_claim(manifest, lane_set.DEFAULT)
+    with pytest.raises(ValueError, match="differ from the claim"):
+        stable.require_targets_match_claim(manifest, lane_set.select(with_=["macos-intel"]))
     # A smoke that claims to have passed for a target nobody built is refused.
     forged = {**manifest, "smoke_results": {**manifest["smoke_results"],
                                             "smoke-darwin-x64": {"result": "success"}}}
     with pytest.raises(ValueError, match="did not build"):
         stable.validate_candidates(forged, "v1.2.3", RECEIPT_COMMIT, https_origin.base,
                                    RELEASE_EPOCH, archive=ATTEMPT)
-    # A claim that opted in needs the opt-in handoffs: a missing one leaves no manifest.
+    # A claim that built Termux needs its handoff: a missing one leaves no manifest.
     del r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
-    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(include_termux=True,
-                                                                       include_macos_intel=False))
+    termux = lane_set.select(with_=["termux"])
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=termux))
     with pytest.raises(Exception, match="handoff-termux"):
-        stable.main(["candidate-manifest"], env)
+        stable.main(["candidate-manifest"], {**env, "RELEASE_NEEDS": json.dumps(_calls(termux))})
     assert f"releases/tag/{ATTEMPT}/release-candidates.json" not in r2_server.store
 
 
-def _claim_fixture(tmp_path, *, tag, version, skip_bundles=False, skip_tests=False):
+def test_a_termux_only_claim_assembles_a_termux_only_manifest(
+        tmp_path, r2_server, https_origin, monkeypatch):
+    """--only termux: no desktop call exists, so there is no smoke to judge, only the Termux call."""
+    from scripts.releases import stable
+
+    https_origin.store = r2_server.store
+    built = tmp_path / "built"
+    built.mkdir()
+    _stage_termux_handoff(built)
+    lanes = lane_set.select(only=["termux", "docker"])
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lanes))
+    env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(_calls(lanes))}
+    stable.main(["candidate-manifest"], env)
+    manifest = json.loads(r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"][0])
+    assert {f"{row['platform']}/{row['arch']}" for row in manifest["packages"]} == {"termux/aarch64"}
+    stable.require_targets_match_claim(manifest, lanes)
+    # The Termux call is judged like any other: a failed one leaves no manifest.
+    del r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
+    failed = {**env, "RELEASE_NEEDS": json.dumps({"candidates-termux": {"result": "failure"}})}
+    with pytest.raises(ValueError, match="candidates-termux=failure"):
+        stable.main(["candidate-manifest"], failed)
+    assert f"releases/tag/{ATTEMPT}/release-candidates.json" not in r2_server.store
+
+
+def test_a_windows_only_claim_assembles_a_windows_only_manifest(
+        tmp_path, r2_server, https_origin, monkeypatch):
+    """--only windows,docker: no macOS handoff exists, so none is read and no macOS row appears."""
+    from scripts.releases import stable
+
+    https_origin.store = r2_server.store
+    built = tmp_path / "built"
+    built.mkdir()
+    _stage_windows_handoff(built, "x64")
+    _stage_windows_handoff(built, "arm64")
+    _stage_universal_bundle(built, store=False)
+    lanes = lane_set.select(only=["windows", "docker"])
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lanes))
+    calls = _calls(lanes)
+    env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(calls)}
+    stable.main(["candidate-manifest"], env)
+    manifest = json.loads(r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"][0])
+    assert {f"{row['platform']}/{row['arch']}" for row in manifest["packages"]} == {"windows/x64", "windows/arm64"}
+    # Nothing smoked: the claim has no smoke lane, so every smoke is recorded skipped.
+    assert manifest["smoke_results"] == {job: {"result": "skipped"} for job in stable.SMOKE_JOBS}
+    stable.require_smokes_match_claim(manifest, lanes)
+    stable.require_targets_match_claim(manifest, lanes)
+
+
+def test_a_store_only_claim_assembles_a_manifest_with_the_store_bundle_and_no_packages(
+        tmp_path, r2_server, https_origin, monkeypatch):
+    """--only windows-store: the per-arch handoffs carry unsigned Store MSIX and no metadata."""
+    from scripts.releases import stable
+
+    https_origin.store = r2_server.store
+    built = tmp_path / "built"
+    built.mkdir()
+    for arch in ("x64", "arm64"):
+        (built / f"Store-Product-1.2.3-win-{arch}.msix").write_bytes(f"store msix: {arch}".encode())
+        from scripts.releases import handoff
+        handoff.stage(ATTEMPT, RECEIPT_COMMIT, f"win32-{arch}", built, [f"Store-Product-1.2.3-win-{arch}.msix"])
+    _stage_universal_bundle(built, signed=False)
+    lanes = lane_set.select(only=["windows-store"])
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lanes))
+    env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(_calls(lanes))}
+    stable.main(["candidate-manifest"], env)
+    manifest = json.loads(r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"][0])
+    assert manifest["packages"] == []
+    assert [file["path"] for file in manifest["files"] if file["path"].endswith(".msixbundle")] == [
+        "Store-Product-1.2.3-win.msixbundle"]
+    stable.validate_candidates(manifest, "v1.2.3", RECEIPT_COMMIT, https_origin.base, RELEASE_EPOCH, archive=ATTEMPT)
+    stable.require_smokes_match_claim(manifest, lanes)
+    stable.require_targets_match_claim(manifest, lanes)
+
+
+def test_a_store_plus_macos_claim_records_only_the_macos_smoke(
+        tmp_path, r2_server, https_origin, monkeypatch):
+    """--without windows: the Windows candidate calls run for the Store bundle and succeed, but no
+    Windows package is smoked, so their success is not a smoke result."""
+    from scripts.releases import handoff, stable
+
+    https_origin.store = r2_server.store
+    built = tmp_path / "built"
+    built.mkdir()
+    _stage_darwin_handoff(built, "arm64")
+    for arch in ("x64", "arm64"):
+        (built / f"Store-Product-1.2.3-win-{arch}.msix").write_bytes(f"store msix: {arch}".encode())
+        handoff.stage(ATTEMPT, RECEIPT_COMMIT, f"win32-{arch}", built, [f"Store-Product-1.2.3-win-{arch}.msix"])
+    _stage_universal_bundle(built, signed=False)
+    lanes = lane_set.select(without=["windows"])
+    assert lane_set.runs_smokes(lanes) and "windows-store" in lanes
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lanes))
+    calls = _calls(lanes)
+    assert calls["candidates-win32-x64"] == {"result": "success"}
+    env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(calls)}
+    stable.main(["candidate-manifest"], env)
+    manifest = json.loads(r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"][0])
+    assert {f"{row['platform']}/{row['arch']}" for row in manifest["packages"]} == {"macos/arm64"}
+    assert manifest["smoke_results"]["smoke-darwin-arm64"] == {"result": "success"}
+    assert manifest["smoke_results"]["smoke-win32-x64"] == {"result": "skipped"}
+    stable.require_smokes_match_claim(manifest, lanes)
+    stable.require_targets_match_claim(manifest, lanes)
+
+
+def test_the_manifest_refuses_a_windows_bundle_the_claims_lanes_did_not_build(
+        tmp_path, r2_server, https_origin, monkeypatch):
+    """A signed bundle under a Store-only claim, or a missing Store bundle under `windows` + `windows-store`."""
+    from scripts.releases import stable
+
+    https_origin.store = r2_server.store
+    built = tmp_path / "built"
+    built.mkdir()
+    _stage_windows_handoff(built, "x64")
+    _stage_windows_handoff(built, "arm64")
+    _stage_universal_bundle(built, store=False)
+    for lanes, message in ((["windows", "windows-store"], "Store bundle"), (["windows-store"], "signed Windows bundle")):
+        lanes = lane_set.select(only=lanes)
+        monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lanes))
+        env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(_calls(lanes))}
+        with pytest.raises(ValueError, match=message):
+            stable.main(["candidate-manifest"], env)
+    assert f"releases/tag/{ATTEMPT}/release-candidates.json" not in r2_server.store
+
+
+def _claim_fixture(tmp_path, *, tag, version, lanes=lane_set.DEFAULT):
     """A real checkout + bare remote carrying one annotated attempt claim."""
     from scripts.releases.versioning import parse_attempt_ref
 
@@ -546,7 +732,7 @@ def _claim_fixture(tmp_path, *, tag, version, skip_bundles=False, skip_tests=Fal
     attempt = parse_attempt_ref(tag)[1]
     metadata = json.dumps({
         "schema": 1, "version": version, "attempt": attempt, "commit": commit,
-        "autopublish": False, "skipBundles": skip_bundles, "skipTests": skip_tests,
+        "autopublish": False, "lanes": sorted(lanes),
         "claimEpoch": epoch,
     }, sort_keys=True, separators=(",", ":"))
     subprocess.run(
@@ -581,7 +767,7 @@ def test_complete_writes_no_final_tag_and_leaves_the_draft_on_the_attempt_ref(tm
     monkeypatch.chdir(tmp_path / "repo")
     stable.complete({
         "RELEASE_CLAIM_TAG": "rc.1-v1.2.3", "RELEASE_CLAIM_OBJECT": tag_object,
-        "GITHUB_SHA": commit, "GITHUB_REF": "refs/tags/rc.1-v1.2.3",
+        **CONTROLLER_ENV,
         "RELEASE_TAG": "v1.2.3", "CANDIDATE_MANIFEST_SHA256": "c" * 64,
         "CLOUDFLARE_R2_PUBLIC_URL": BASE,
     })
@@ -614,11 +800,10 @@ def test_strip_refuses_an_unbalanced_fence(body):
         strip_draft_warning(body)
 
 
-def _publish_record(commit, tag_object, *, epoch, release_id=42, skip_bundles=False):
+def _publish_record(commit, tag_object, *, epoch, release_id=42, lanes=lane_set.DEFAULT):
     return {"claim_tag": "rc.2-v1.2.3", "claim_object": tag_object, "tag": "v1.2.3",
             "commit": commit, "version": "1.2.3", "attempt": 2, "release_id": release_id,
-            "autopublish": False, "skip_bundles": skip_bundles, "skip_tests": False,
-            "claim_epoch": epoch}
+            "autopublish": False, "lanes": frozenset(lanes), "claim_epoch": epoch}
 
 
 def test_publish_attempt_writes_the_receipt_retargets_and_copies_no_bytes(tmp_path, monkeypatch):
@@ -701,6 +886,55 @@ def test_publish_attempt_writes_the_receipt_retargets_and_copies_no_bytes(tmp_pa
     assert [tag for tag, _draft in patches] == ["v1.2.3", None]
     assert release["tag_name"] == "v1.2.3" and release["draft"] is False
     assert release["body"] == "## What's changed\n- x"
+
+
+@pytest.mark.parametrize("lanes,binds_manifest,binds_docker", [
+    (["windows"], True, False), (["docker"], False, True), ([], False, False)])
+def test_the_final_receipt_binds_only_what_the_claims_lanes_built(
+        tmp_path, monkeypatch, lanes, binds_manifest, binds_docker):
+    from scripts.releases import stable
+
+    commit, tag_object = _claim_fixture(tmp_path, tag="rc.2-v1.2.3", version="1.2.3", lanes=lanes)
+    monkeypatch.chdir(tmp_path / "repo")
+    epoch = tag_record(subprocess.check_output(
+        ["git", "tag", "-l", "rc.2-v1.2.3", "--format=%(contents)"],
+        text=True, encoding="utf-8"))["claimEpoch"]
+    release = {"id": 42, "tag_name": "rc.2-v1.2.3", "draft": True, "prerelease": False,
+               "body": "notes", "published_at": None}
+    archive_reads = []
+
+    def run(argv):
+        if argv[0] == "git":
+            return subprocess.check_output(argv, text=True, encoding="utf-8").strip()
+        if argv[:3] == ["docker", "buildx", "imagetools"]:
+            assert binds_docker, "a claim without the docker lane reads no image"
+            return json.dumps("sha256:" + "d" * 64)
+        if argv[:3] == ["gh", "api", "--method"]:
+            fields = dict(value.partition("=")[::2] for value in argv[6::2])
+            release.update({key: (raw == "true") if key in {"draft", "prerelease"} else raw
+                            for key, raw in fields.items() if key in {"tag_name", "draft", "prerelease", "body"}})
+            if release["draft"] is False:
+                release["published_at"] = "2026-09-22T00:00:00Z"
+            return "{}"
+        if argv[:2] == ["gh", "api"]:
+            return json.dumps(release)
+        raise AssertionError(argv)
+
+    digests = stable.publish_attempt(
+        _publish_record(commit, tag_object, epoch=epoch, lanes=lanes), repository="example/project",
+        run=run, read_archive=lambda key: archive_reads.append(key) or b"{}")
+    assert (digests["candidate_manifest_sha256"] is not None) == binds_manifest == bool(archive_reads)
+    assert (digests["docker_manifest_digest"] is not None) == binds_docker
+    final = tag_record(subprocess.check_output(["git", "tag", "-l", "v1.2.3", "--format=%(contents)"],
+                                               text=True, encoding="utf-8"))
+    claim = {"autopublish": False, "claimEpoch": epoch, "lanes": frozenset(lanes)}
+    stable.validate_final(final, version="1.2.3", commit=commit, claim_tag="rc.2-v1.2.3",
+                          claim_object=tag_object, claim=claim)
+    # The receipt of a different lane set is refused: a Docker digest the claim never built.
+    with pytest.raises(ValueError, match="differs from its claim"):
+        stable.validate_final(final, version="1.2.3", commit=commit, claim_tag="rc.2-v1.2.3",
+                              claim_object=tag_object,
+                              claim={**claim, "lanes": frozenset({"windows", "docker"} - set(lanes)) or frozenset({"docker"})})
 
 
 def test_publish_attempt_refuses_a_release_that_is_no_longer_a_draft(tmp_path, monkeypatch):
@@ -804,13 +1038,16 @@ WINDOWS_VERSION = "2026.5761.123.0"
 RELEASE_EPOCH = 1_787_965_323
 
 
-def _fake_stable_context(*, skip_tests=False, include_macos_intel=True, include_termux=True):
+def _calls(lanes=lane_set.NAMES):
+    """The candidate calls' results: success for each the claim built, skipped for the rest."""
+    runs = lane_set.jobs_to_run(lanes)
+    return {call: {"result": "success" if runs[call] else "skipped"} for call in lane_set.CANDIDATE_CALLS}
+
+
+def _fake_stable_context(*, lanes=lane_set.NAMES):
     def context(env):
         return "v1.2.3", RECEIPT_COMMIT, {"claim_tag": ATTEMPT, "claim_object": "0" * 40,
-                                          "claim_epoch": RELEASE_EPOCH, "skip_bundles": False,
-                                          "skip_tests": skip_tests,
-                                          "include_macos_intel": include_macos_intel,
-                                          "include_termux": include_termux}
+                                          "claim_epoch": RELEASE_EPOCH, "lanes": frozenset(lanes)}
     return context
 
 
@@ -846,16 +1083,18 @@ def _stage_windows_handoff(built, arch, *, with_metadata=True):
     handoff.stage(ATTEMPT, RECEIPT_COMMIT, f"win32-{arch}", built, includes)
 
 
-def _stage_universal_bundle(built):
+def _stage_universal_bundle(built, *, signed=True, store=True):
     from scripts.releases import handoff
 
-    bundle = built / "Product-1.2.3-win.msixbundle"
-    with zipfile.ZipFile(bundle, "w") as archive:
-        archive.writestr("AppxMetadata/AppxBundleManifest.xml",
-                         f'<Bundle><Identity Name="test.application" Publisher="CN=Test" Version="{WINDOWS_VERSION}"/>'
-                         '<Packages><Package Type="application" Architecture="arm64"/>'
-                         '<Package Type="application" Architecture="x64"/></Packages></Bundle>')
-    (built / "Store-Product-1.2.3-win.msixbundle").write_bytes(b"Store bundle transport fixture")
+    if signed:
+        bundle = built / "Product-1.2.3-win.msixbundle"
+        with zipfile.ZipFile(bundle, "w") as archive:
+            archive.writestr("AppxMetadata/AppxBundleManifest.xml",
+                             f'<Bundle><Identity Name="test.application" Publisher="CN=Test" Version="{WINDOWS_VERSION}"/>'
+                             '<Packages><Package Type="application" Architecture="arm64"/>'
+                             '<Package Type="application" Architecture="x64"/></Packages></Bundle>')
+    if store:
+        (built / "Store-Product-1.2.3-win.msixbundle").write_bytes(b"Store bundle transport fixture")
     handoff.stage(ATTEMPT, RECEIPT_COMMIT, "windows-universal", built, ["*.msixbundle"])
 
 
@@ -1077,13 +1316,12 @@ def test_gate_excuses_an_upgrade_arm_only_for_its_planners_no_baseline_output():
     needs = {name: {"result": "skipped"} for name in PACKAGED_BY}
     needs.update({name: {"result": "success", "outputs": {"baseline": "none"}}
                   for name in PACKAGED_BY.values()})
-    require_gate(needs, required, skip_bundles=False, skip_tests=False, include_macos_intel=True)
+    require_gate(needs, required, lanes=lane_set.NAMES)
     for packaged, planner in PACKAGED_BY.items():
         for planned in ({"result": "success", "outputs": {"baseline": "published"}},
                         {"result": "success"}, {"result": "failure", "outputs": {"baseline": "none"}}):
             with pytest.raises(ValueError, match=packaged):
-                require_gate({**needs, planner: planned}, required, skip_bundles=False, skip_tests=False,
-                             include_macos_intel=True)
+                require_gate({**needs, planner: planned}, required, lanes=lane_set.NAMES)
 
 
 def test_candidate_manifest_needs_every_call_and_stages_the_archive_manifest(
@@ -1101,8 +1339,7 @@ def test_candidate_manifest_needs_every_call_and_stages_the_archive_manifest(
     _stage_termux_handoff(built)
     monkeypatch.setattr(stable, "stable_context", _fake_stable_context())
     env = {**_receipt_env(tmp_path, https_origin.base),
-           "RELEASE_NEEDS": json.dumps({call: {"result": "success"}
-                                        for call in stable.CALL_SMOKE_JOBS})}
+           "RELEASE_NEEDS": json.dumps(_calls())}
     stable.main(["candidate-manifest"], env)
 
     stored, _ = r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
@@ -1120,9 +1357,7 @@ def test_candidate_manifest_needs_every_call_and_stages_the_archive_manifest(
     # A candidate call that did not succeed (a failed smoke behind it) leaves
     # no accepted manifest in the archive.
     failed = dict(env)
-    failed["RELEASE_NEEDS"] = json.dumps({**{call: {"result": "success"}
-                                             for call in stable.CALL_SMOKE_JOBS},
-                                          "candidates-darwin-x64": {"result": "failure"}})
+    failed["RELEASE_NEEDS"] = json.dumps({**_calls(), "candidates-darwin-x64": {"result": "failure"}})
     del r2_server.store[f"releases/tag/{ATTEMPT}/release-candidates.json"]
     (tmp_path / "output").unlink()
     with pytest.raises(ValueError, match="smoke-darwin-x64"):
@@ -1130,7 +1365,7 @@ def test_candidate_manifest_needs_every_call_and_stages_the_archive_manifest(
     assert f"releases/tag/{ATTEMPT}/release-candidates.json" not in r2_server.store
 
 
-def test_a_claim_that_skipped_tests_records_skipped_smokes_never_passed(
+def test_a_claim_without_the_smoke_lane_records_skipped_smokes_never_passed(
         tmp_path, r2_server, https_origin, monkeypatch):
     from scripts.releases import stable
 
@@ -1143,8 +1378,8 @@ def test_a_claim_that_skipped_tests_records_skipped_smokes_never_passed(
     _stage_windows_handoff(built, "arm64")
     _stage_universal_bundle(built)
     _stage_termux_handoff(built)
-    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(skip_tests=True))
-    calls = {call: {"result": "success"} for call in stable.CALL_SMOKE_JOBS}
+    monkeypatch.setattr(stable, "stable_context", _fake_stable_context(lanes=lane_set.select(only=lane_set.NAMES, without=["smoke"])))
+    calls = _calls()
     env = {**_receipt_env(tmp_path, https_origin.base), "RELEASE_NEEDS": json.dumps(calls)}
     # A build call that failed still leaves no manifest, even with the smokes off.
     failed = {**env, "RELEASE_NEEDS": json.dumps({**calls, "candidates-win32-x64": {"result": "failure"}})}
@@ -1159,9 +1394,9 @@ def test_a_claim_that_skipped_tests_records_skipped_smokes_never_passed(
     assert manifest["smoke_results"] == {job: {"result": "skipped"} for job in stable.SMOKE_JOBS}
     stable.validate_candidates(manifest, "v1.2.3", RECEIPT_COMMIT, https_origin.base,
                                RELEASE_EPOCH, archive=ATTEMPT)
-    stable.require_smokes_match_claim(manifest, skip_tests=True)
+    stable.require_smokes_match_claim(manifest, lane_set.select(without=["smoke"]))
     with pytest.raises(ValueError, match="test policy"):
-        stable.require_smokes_match_claim(manifest, skip_tests=False)
+        stable.require_smokes_match_claim(manifest, lane_set.DEFAULT)
 
 
 def test_the_final_tag_push_authenticates_with_gh_token_without_persisted_credentials():

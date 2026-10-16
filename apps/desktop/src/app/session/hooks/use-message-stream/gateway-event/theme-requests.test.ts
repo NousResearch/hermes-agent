@@ -67,7 +67,10 @@ describe('set_theme requests', () => {
 
     expect(elsewhere.decline).toHaveBeenCalled()
     expect(elsewhere).not.toHaveBeenCalled()
-    expect(JSON.parse(onScreen.mock.calls[0][0].value)).toMatchObject({ success: false, error: 'Unknown layout "cockpit".' })
+    expect(JSON.parse(onScreen.mock.calls[0][0].value)).toMatchObject({
+      success: false,
+      error: 'Unknown layout "cockpit".'
+    })
     expect($pendingSkinApply.get()).toBeNull()
   })
 })

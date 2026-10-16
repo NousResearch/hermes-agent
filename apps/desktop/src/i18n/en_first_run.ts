@@ -22,7 +22,7 @@ export const enFirstRun: FirstRunCopy = {
   tours: {
     quick: 'Quick tour',
     full: 'Show me everything',
-    skip: 'Skip, let\'s build something'
+    skip: "Skip, let's build something"
   },
   skippedAll: 'Setup skipped',
   skip: 'Skip setup',
@@ -35,8 +35,8 @@ export const enFirstRun: FirstRunCopy = {
     notNow: 'Not now'
   },
   intro: {
-    greeting: 'Hi, I\'m Hermes.',
-    plan: 'Let\'s set things up for you. Then we\'ll get something cool done.'
+    greeting: "Hi, I'm Hermes.",
+    plan: "Let's set things up for you. Then we'll get something cool done."
   },
   rerun: {
     title: 'Run onboarding again',

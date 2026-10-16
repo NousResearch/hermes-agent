@@ -15,11 +15,7 @@ import {
 } from '@/components/ui/dialog'
 import { useI18n } from '@/i18n'
 import { readKey, writeKey } from '@/lib/storage'
-import {
-  $localModelOfferPending,
-  LOCAL_MODEL_OFFERED_KEY,
-  LOCAL_MODEL_PENDING_KEY
-} from '@/store/local-model-offer'
+import { $localModelOfferPending, LOCAL_MODEL_OFFERED_KEY, LOCAL_MODEL_PENDING_KEY } from '@/store/local-model-offer'
 import { readConnectedLocalSetupEligibility, readLocalSetupEligibility } from '@/store/local-setup-offer'
 import { $onboardingSettleFrom } from '@/store/onboarding-run'
 import { requestRoute } from '@/store/recovery-requests'

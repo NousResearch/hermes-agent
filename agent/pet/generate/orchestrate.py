@@ -10,6 +10,7 @@ gives each UI a natural preview/loading point.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import logging
 import time
 from collections import Counter
@@ -86,12 +87,14 @@ def _run_parallel(fn, items, *, cancelled, on_cancel_log: str) -> Iterator:
     """Fan *fn* over *items* in a pool, yielding results in completion order.
 
     ``as_completed`` runs on the caller's thread, so result callbacks inherit the
-    request's bound transport (workers don't). Once *cancelled* trips, queued work
-    is cancelled and in-flight results dropped.
+    request's bound transport (workers don't) — each task therefore re-enters through
+    a copy of the caller's context, or the worker's per-call credential reads would
+    hit the multiplexed fail-closed ``get_secret`` (#130450). Once *cancelled* trips,
+    queued work is cancelled and in-flight results dropped.
     """
     workers = max(1, min(len(items), _MAX_PARALLEL_GENERATIONS))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(fn, item) for item in items]
+        futures = [pool.submit(contextvars.copy_context().run, fn, item) for item in items]
         for fut in as_completed(futures):
             if cancelled():
                 logger.info(on_cancel_log)

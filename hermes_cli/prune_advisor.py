@@ -55,7 +55,7 @@ class Advice:
     retention_days: int
     prunable_sessions: int
     total_sessions: int
-    reclaim_bytes: int  # estimate: the prunable share of messages times the file size
+    reclaim_bytes: int  # estimate: the prunable share of stored message bytes times the file size
     estimate_ok: bool = True  # False when state.db could not be read (counts are unknown, not zero)
     vacuum_after_prune: bool = True
 
@@ -156,25 +156,41 @@ def advise(home: Optional[Path] = None) -> Optional[Advice]:
     # profile without entering its scope. Only an explicit key differs from the defaults here.
     sessions = _effective_sessions(home) or {}
     retention = _retention_days(sessions)
-    prunable = total = prunable_msgs = total_msgs = 0
+    prunable = total = prunable_bytes = total_bytes = 0
     estimate_ok = True
     try:
         from hermes_state import SessionDB
         db = SessionDB(db_path=_home(home) / "state.db", read_only=True)
         try:
             where, params = db._prune_where(retention, None, {}, whole_lineages=True)
-            prunable, prunable_msgs = tuple(db._read_one(
-                f"SELECT COUNT(*), COALESCE(SUM(s.message_count), 0) FROM sessions s WHERE {where}", params) or (0, 0))
-            total, total_msgs = tuple(db._read_one(
-                "SELECT COUNT(*), COALESCE(SUM(message_count), 0) FROM sessions", []) or (0, 0))
+            prunable, total = tuple(db._read_one(
+                f"SELECT (SELECT COUNT(*) FROM sessions s WHERE {where}), (SELECT COUNT(*) FROM sessions)",
+                params) or (0, 0))
+            if prunable:
+                # Weight by stored bytes, not message_count: old messages are far smaller than recent
+                # ones, and message_count skips the soft-archived rows a prune also deletes.
+                row_bytes = _row_bytes_sql(db)
+                prunable_bytes = (db._read_one(
+                    f"SELECT COALESCE(SUM({row_bytes}), 0) FROM messages m WHERE m.session_id IN "
+                    f"(SELECT s.id FROM sessions s WHERE {where})", params) or (0,))[0]
+                total_bytes = (db._read_one(
+                    f"SELECT COALESCE(SUM({row_bytes}), 0) FROM messages m", []) or (0,))[0]
         finally:
             db.close()
     except (sqlite3.Error, OSError, RuntimeError, ValueError) as exc:  # a busy/damaged store: no estimate
         logger.debug("auto-prune advice: reclaim estimate unavailable: %s", exc)
         estimate_ok = False
-    reclaim = int(snap.db_bytes * prunable_msgs / total_msgs) if total_msgs else 0
+    reclaim = int(snap.db_bytes * prunable_bytes / total_bytes) if total_bytes else 0
     return Advice(snap, retention, int(prunable), int(total), reclaim, estimate_ok,
                   bool(sessions.get("vacuum_after_prune", True)))
+
+
+def _row_bytes_sql(db) -> str:
+    """Stored size of one ``messages`` row: the byte length of every text/blob column (read from
+    the live schema, so a column added later is counted without touching this)."""
+    cols = [r[1] for r in db._read_all("PRAGMA table_info(messages)", [])
+            if str(r[2]).upper() in {"TEXT", "BLOB", ""}]
+    return " + ".join(f'COALESCE(LENGTH(CAST(m."{c}" AS BLOB)), 0)' for c in cols) or "0"
 
 
 def _gb(n: int) -> str:
@@ -208,9 +224,10 @@ def advice_lines(advice: Advice, *, command_prefix: str = "/") -> list[str]:
         lines.append(f"Pruning would remove about {_gb(advice.reclaim_bytes)} of history "
                      f"({advice.prunable_sessions} of {_sessions(advice.total_sessions)}).")
     if advice.estimate_ok and advice.prunable_sessions:
-        lines.append("The file shrinks when state.db is next compacted (VACUUM), which needs other Hermes "
-                     "windows closed." if advice.vacuum_after_prune else
-                     "sessions.vacuum_after_prune is off, so state.db keeps its size until you run a VACUUM.")
+        # Automatic compaction runs only past a free-page threshold most prunes never reach, so the
+        # disk gets the space back reliably only from an explicit VACUUM.
+        lines.append("Deleted history frees space inside state.db; to give it back to the disk, run "
+                     "`hermes sessions optimize` with other Hermes windows closed.")
     p = command_prefix
     lines.append(f"{p}autoprune on to enable, {p}autoprune off to keep everything (never asked again), "
                  f"{p}autoprune later to be reminded in a week.")
@@ -304,11 +321,14 @@ def run_command(args: str, home: Optional[Path] = None) -> str:
 def offer_interactive(*, cprint, ask=input) -> Optional[bool]:
     """Classic-CLI startup offer (TTY only). Returns the decision, or None when nothing was asked
     or the user chose later."""
+    if should_ask() is None:
+        return None
+    # The byte estimate reads every message row: seconds on a cold multi-GB store. Say so.
+    cprint("\n☤ Low disk space: checking how much session history pruning could free…")
     advice = advise()
     if advice is None:
         return None
-    cprint("")
-    cprint("☤ " + advice_lines(advice)[0])
+    cprint("  " + advice_lines(advice)[0])
     for line in advice_lines(advice)[1:-1]:
         cprint(f"  {line}")
     try:

@@ -136,3 +136,43 @@ def test_local_notice_is_neither_re_asked_after_an_answer_nor_spent_on_nobody(ho
     monkeypatch.setattr(prune_advisor, "advise", advise_then_answer)
     asyncio.run(rhd.publish_local_auto_prune_notice(authority, ref))
     assert events.sequence == 1  # nothing re-asked
+
+
+def test_estimate_weights_by_stored_bytes_not_message_count(tmp_path, monkeypatch):
+    """Old sessions hold many small messages, recent ones few large ones: a message-count share
+    overstates what pruning frees (and flips "will not fix this disk"). The estimate must track
+    the bytes a real prune + VACUUM gives back."""
+    import sqlite3
+    from hermes_state import SessionDB
+    h = tmp_path / "skewed"
+    h.mkdir()
+    db = SessionDB(db_path=h / "state.db")
+    old = time.time() - 200 * 86400
+    for i in range(40):  # old: 40 x 20 tiny messages
+        db.create_session(f"old{i}", source="cli")
+        for _ in range(20):
+            db.append_message(f"old{i}", role="user", content="ok")
+        db.end_session(f"old{i}", "user_exit")
+    for i in range(4):  # recent: 4 x 5 large messages
+        db.create_session(f"new{i}", source="cli")
+        for _ in range(5):
+            db.append_message(f"new{i}", role="assistant", content="x" * 40_000)
+        db.end_session(f"new{i}", "user_exit")
+    db.close()
+    with sqlite3.connect(h / "state.db") as conn:
+        conn.execute("UPDATE sessions SET started_at=?, ended_at=?, last_activity_at=? WHERE id LIKE 'old%'",
+                     (old, old, old))
+        conn.execute("UPDATE messages SET timestamp=? WHERE session_id LIKE 'old%'", (old,))
+    _disk(monkeypatch, free_gb=1)
+    advice = prune_advisor.advise(h)
+    assert advice.prunable_sessions == 40
+    before = (h / "state.db").stat().st_size
+    db = SessionDB(db_path=h / "state.db")
+    db.prune_sessions(older_than_days=90)
+    db.vacuum()
+    db.close()
+    shrink = before - (h / "state.db").stat().st_size
+    # message share says ~89% of the file; the bytes really freed are a small fraction of it
+    assert advice.reclaim_bytes < before * 0.25
+    assert abs(advice.reclaim_bytes - shrink) < max(shrink, 64 * 1024) * 1.0
+    assert "hermes sessions optimize" in "\n".join(prune_advisor.advice_lines(advice))

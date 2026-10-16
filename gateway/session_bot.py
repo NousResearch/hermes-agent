@@ -124,19 +124,27 @@ async def _scan_owner_receipts(authority, home):
     pins, barrier = [], None
     root, records = await scan_receipts(home, pins)
     for path, record, mtime in pins:
-        key, age = record['delivery_id'], time.time() - mtime
+        key, age, legacy = record['delivery_id'], time.time() - mtime, 'owner' in record
         if (record['profile_home'] != str(home)
                 or _admission_at(authority, record['session_id'], 'bot:' + key) is not None):
             _warn_malformed(path, _record_shape_error(path, record))
             continue
-        if (age < _PIN_GRACE_SECONDS
-                or not await (_requeue(home, key, path, records) if 'owner' in record else withdraw_pin(home, key))):
-            if 'owner' in record:
-                barrier = min(_legacy_order(path, record), barrier or _legacy_order(path, record))
+        cleared = False
+        if age >= _PIN_GRACE_SECONDS and legacy:
+            ticket = await requeue_pin(home, key)
+            cleared = ticket is not None and _record_shape_error(path, ticket) is None
+            if cleared:
+                records.append((path, ticket))
+        elif age >= _PIN_GRACE_SECONDS:
+            cleared = await withdraw_pin(home, key)
+        if not cleared:
+            if legacy:
+                order = _legacy_order(path, record)
+                barrier = order if barrier is None else min(barrier, order)
             _warn_malformed(path, _record_shape_error(path, record))
             continue
         logging.getLogger(__name__).info('%s Bot delivery %s pre-admission pin (age %ds): nothing was admitted',
-                                         'Requeued' if 'owner' in record else 'Withdrew', key, age)
+                                         'Requeued' if legacy else 'Withdrew', key, age)
     return root, records, barrier
 
 
@@ -145,15 +153,6 @@ def _legacy_order(path, record):
     fields). A pin without an integer order holds every legacy ticket until it resolves."""
     order = record.get('sequence', record.get('created_at'))
     return (order, path.name) if isinstance(order, int) and not isinstance(order, bool) else (float('-inf'), '')
-
-
-async def _requeue(home, key, path, records):
-    """Requeue a legacy pin and hand the ticket to this scan's records, as if it had been read so."""
-    ticket = await requeue_pin(home, key)
-    if ticket is None or _record_shape_error(path, ticket) is not None:
-        return False
-    records.append((path, ticket))
-    return True
 
 
 def _home(authority, actor, profile):

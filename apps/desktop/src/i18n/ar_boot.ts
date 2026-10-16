@@ -55,6 +55,12 @@ export const arBoot = {
       identityProvider: 'مزود الهوية'
     }
   },
+  keepAwakeOffer: {
+    title: 'دخل جهاز الكمبيوتر في وضع السكون أثناء عمل Hermes',
+    message:
+      'يمكن لـ Hermes إبقاء جهازك مستيقظًا أثناء تشغيل مهمة. ستنطفئ الشاشة كالمعتاد، وقد يدخل الجهاز في وضع السكون عند العمل بالبطارية.',
+    action: 'إبقاء الجهاز مستيقظًا أثناء العمل'
+  },
   remoteDisplayBanner: {
     message: reason => `العرض البرمجي نشط — تم اكتشاف شاشة بعيدة (${reason}). تم تعطيل تسريع GPU لمنع الوميض.`
   },
@@ -339,5 +345,5 @@ export const arBoot = {
   }
 } satisfies Pick<
   TranslationOverrides,
-  'boot' | 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'updates' | 'install' | 'onboarding'
+  'boot' | 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer' | 'updates' | 'install' | 'onboarding'
 >

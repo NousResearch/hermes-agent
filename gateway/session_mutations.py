@@ -305,7 +305,10 @@ def retire_live_sessions(authority, session_ids):
         store.retire_runtime_sessions(session_ids)
     from gateway.session_policy import release_launch_secrets
     release_launch_secrets(authority, session_ids)
+    from tools.async_delegation import allow_for_session
     for sid in session_ids:
+        # A closed session's refusal of new delegations (session_viewer_close) goes with its live state.
+        allow_for_session((authority.profile_id, sid))
         candidate = authority.sessions.pop(sid, None)
         if candidate is not None:
             evict = getattr(authority.runner, '_evict_cached_agent', None)
@@ -313,3 +316,5 @@ def retire_live_sessions(authority, session_ids):
                 evict(candidate.route)
     from gateway.session_local_mcp import release_editor_mcp
     release_editor_mcp(authority, session_ids)
+    from gateway.session_worker_construct import release_session_prefill
+    release_session_prefill(authority, session_ids)

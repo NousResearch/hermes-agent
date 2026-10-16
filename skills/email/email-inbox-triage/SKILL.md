@@ -1,7 +1,7 @@
 ---
 name: email-inbox-triage
 description: "Triage an inbox: prioritize threads, draft replies safely."
-version: 0.2.0
+version: 0.3.0
 author: Ben Barclay (benbarclay), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -52,14 +52,14 @@ Extract sender request, deadline, commitments already made, attachments, and mis
 
 ### 4. Calibrate the user's voice, then draft replies in thread context
 
-Before drafting the first reply of a run, calibrate on evidence instead of guessing tone — study the user's own past replies before writing:
+Before drafting the first reply of a run, calibrate on evidence instead of guessing tone. If the user keeps a written voice profile (a `VOICE.md` or similar named in memory or a local overlay skill), read it first: it outranks anything inferred from Sent, and the Sent sample below only fills gaps it leaves (per-recipient greetings, typical length). Otherwise study the user's own past replies before writing:
 
 - Sample: pull a bounded set of the user's recent sent replies via the connector skill — 20-50 where available, preferring replies to the same recipients or thread types being drafted. Truncated excerpts (roughly the first 40 lines of each message) carry the style facts; do not load full threads and let calibration crowd out inbox coverage.
 - Extract: greeting and sign-off habits (and per-audience differences), typical reply length, formality and warmth, sentence rhythm, emoji/exclamation use, and how the user says no or pushes back.
 - Record: keep the calibration as working notes for this run.
 - Fallback: if the Sent folder is empty or inaccessible, say so and fall back to matching the incoming thread's register.
 
-Then draft: answer every material question, match the calibrated voice (not a generic-professional one), avoid invented commitments, and state uncertainty. Resolve attachment/link facts before referencing them. Done when each sentence can be checked against the thread or an explicit user preference, and each draft's tone can be traced to the calibration notes.
+Then draft: answer every material question, match the calibrated voice (not a generic-professional one), avoid invented commitments (no date, delivery or guarantee the user hasn't made), and state uncertainty. If a prose-check skill is installed (an AI-tell or slop checker), run every draft through it before it reaches the user, because AI tells under the user's name are the first thing a recipient notices. Resolve attachment/link facts before referencing them. Done when each sentence can be checked against the thread or an explicit user preference, and each draft's tone can be traced to the calibration notes.
 
 ### 5. Present an approval batch
 
@@ -67,7 +67,7 @@ For each proposed mutation show account, recipient/thread, action, draft summary
 
 ### 6. Apply and verify
 
-Send, label, archive, or create follow-ups only within approval. For ambiguous send errors, inspect Sent before retrying — SMTP may have succeeded while save-to-Sent failed, and a blind retry duplicates the mail. Read back message/draft/label state and provide provider-confirmed results. Done when each approved action is verified or explicitly failed.
+Replies end as provider drafts in the right thread unless the user explicitly approved sending that message. "Handle my inbox" or "take care of it" is not send approval. If the user has a standing never-send rule, it overrides any in-session approval. Send, label, archive, or create follow-ups only within approval. Verify each draft by reading it back (draft id, thread id, recipients, body). For ambiguous send errors, inspect Sent before retrying — SMTP may have succeeded while save-to-Sent failed, and a blind retry duplicates the mail. Read back message/draft/label state and provide provider-confirmed results. Done when each approved action is verified or explicitly failed.
 
 ## Output Shape
 
@@ -86,12 +86,15 @@ Send, label, archive, or create follow-ups only within approval. For ambiguous s
 - Treating a missing `Sent` folder as inaccessible: providers name it `Sent`, `Sent Messages`, `[Gmail]/Sent Mail`, or a localized name — list folders before declaring the fallback.
 - Retrying after SMTP succeeded but save-to-Sent failed, causing duplicate mail.
 - Claiming inbox zero when pagination or another folder was omitted.
+- Reading "handle it" as permission to send. It means: prepare the draft and stop.
+- Drafting from Sent alone when a voice profile exists: Sent mail mixes the user's voice with delegated and template mail.
 
 ## Verification
 
 - [ ] The requested folders and time window were fully covered, or gaps are stated.
 - [ ] Every disposition has a reason traceable to thread content.
 - [ ] Drafts were calibrated against the user's sent replies, or the fallback was stated.
-- [ ] No send/delete/archive happened outside the approved batch.
+- [ ] Nothing was sent without explicit per-message approval; drafts were read back. No delete/archive happened outside the approved batch.
+- [ ] Drafts follow the voice profile when one exists, and passed any installed prose check.
 - [ ] Every approved mutation was read back from the provider.
 - [ ] The final response separates completed actions, drafts awaiting approval, and blockers.

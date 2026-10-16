@@ -73,8 +73,10 @@ output_path, exit_code_path, cmd = sys.argv[1], sys.argv[2], sys.argv[3:]
 env = dict(os.environ, PYTHONUNBUFFERED="1")
 with open(output_path, "wb") as f:
     rc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env).wait(timeout=3600)
-with open(exit_code_path, "w", encoding="utf-8") as f:
+# Temp + replace: the gateway watcher polls the exit code and reads an empty file as failure.
+with open(exit_code_path + ".tmp", "w", encoding="utf-8") as f:
     f.write(str(rc))
+os.replace(exit_code_path + ".tmp", exit_code_path)
 """.strip()
 
 
@@ -145,7 +147,9 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
         f" > {shlex.quote(str(output_path))} 2>&1; "
         # Avoid `status=$?`: `status` is read-only in zsh and this template is reused in
         # macOS/zsh operator wrappers, so keep it zsh-safe even though bash runs it here.
-        f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}")
+        # Temp + mv: the gateway watcher polls the exit code and reads an empty file as failure.
+        f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path) + '.tmp')}"
+        f" && mv -f {shlex.quote(str(exit_code_path) + '.tmp')} {shlex.quote(str(exit_code_path))}")
     # Preferred: setsid creates a new session, fully detached; fallback start_new_session=True
     # calls os.setsid() in the child.
     setsid_bin = shutil.which("setsid")
@@ -226,11 +230,15 @@ class GatewaySlashCommandsMixin(
         from gateway.run import _telegramize_command_mentions
         return _telegramize_command_mentions(text, getattr(getattr(event, "source", None), "platform", None))
 
-    def _checkpoint_manager(self):
-        """A CheckpointManager from gateway config, or None when checkpoints are disabled."""
+    def _checkpoint_manager(self, source=None):
+        """A CheckpointManager from a local session's frozen policy, else gateway config; None when disabled."""
         from gateway.run import _checkpoint_agent_kwargs, _load_gateway_config
+        from gateway.session_authorities import active_authority
+        from gateway.session_policy import policy_for_source
         from tools.checkpoint_manager import CheckpointManager
-        cp = _checkpoint_agent_kwargs(_load_gateway_config())
+        policy = policy_for_source(self, source) if source is not None else None
+        cp = _checkpoint_agent_kwargs(policy.config(active_authority(self), secrets=False) if policy
+                                      else _load_gateway_config())
         if not cp["checkpoints_enabled"]:
             return None
         # AIAgent kwargs are ``checkpoint_<field>``; CheckpointManager takes the bare field names.
@@ -426,6 +434,7 @@ class GatewaySlashCommandsMixin(
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        await self._hm_stop_owner_turn(session_key)  # also between turns, before the next claim (N53)
 
         async def _stop(key: str, invalidation_reason: str) -> None:
             await self._interrupt_and_clear_session(
@@ -713,7 +722,7 @@ class GatewaySlashCommandsMixin(
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
         from tools.checkpoint_manager import format_checkpoint_list
-        mgr = self._checkpoint_manager()
+        mgr = self._checkpoint_manager(event.source)
         if mgr is None:
             return t("gateway.rollback.not_enabled")
         cwd = self._terminal_cwd()
@@ -764,7 +773,7 @@ class GatewaySlashCommandsMixin(
         cwd = self._terminal_cwd()
         if mode == "session":
             # Cumulative checkpoint-baseline diff.
-            mgr = self._checkpoint_manager()
+            mgr = self._checkpoint_manager(event.source)
             if mgr is None:
                 return t("gateway.diff.not_enabled")
             if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree
@@ -953,20 +962,28 @@ class GatewaySlashCommandsMixin(
         *current platform*, saved to ``display.platforms.<platform>.tool_progress``. Gated by
         ``display.tool_progress_command`` (default off)."""
         from gateway.run import _load_gateway_config
+        from gateway.session_setting_commands import local_live
         config_path, platform_key = self._display_config_target(event)
+        live = local_live(self, event.source)
         try:
             user_config = _load_gateway_config()
             gate_enabled = is_truthy_value(cfg_get(user_config, "display", "tool_progress_command"),
                                            default=False)
         except Exception:
-            gate_enabled = False
-        if not gate_enabled:
+            user_config, gate_enabled = {}, False
+        # The opt-in gate is for messaging chats; a local session always owned /verbose.
+        if not gate_enabled and live is None:
             return t("gateway.verbose.not_enabled")
-        # Cycle mode (per-platform), reading the current effective mode via the resolver.
+        # Cycle mode (per-platform), reading the current effective mode via the resolver. ``log``
+        # (tool calls to a log file instead of the chat) is a messaging mode: a local client renders
+        # every tool event itself.
         from gateway.display_config import resolve_display_setting
-        cycle = ["off", "new", "all", "verbose", "log"]
-        current = resolve_display_setting(user_config, platform_key, "tool_progress", "all")
+        cycle = ["off", "new", "all", "verbose"] + ([] if live is not None else ["log"])
+        current = (getattr(live, "tool_progress_mode", None) if live is not None else None) or \
+            resolve_display_setting(user_config, platform_key, "tool_progress", "all")
         new_mode = cycle[(cycle.index(current if current in cycle else "all") + 1) % len(cycle)]
+        if live is not None:
+            live.tool_progress_mode = new_mode  # what ``config.get verbose`` and the next tool event read
         description = t(f"gateway.verbose.mode_{new_mode}")
         try:
             _write_raw_config_leaf(config_path, ("display", "platforms", platform_key, "tool_progress"), new_mode)
@@ -977,9 +994,11 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_busy_command(self, event: MessageEvent) -> str | EphemeralReply:
         """Handle /busy — control what happens when messaging while Hermes is working."""
+        from gateway.session_setting_commands import local_live, session_busy_mode
         arg = event.get_command_args().strip().lower()
+        live = local_live(self, event.source)
         if not arg or arg == "status":
-            mode = self._effective_busy_input_mode(event.source)
+            mode = session_busy_mode(self, live) if live is not None else self._effective_busy_input_mode(event.source)
             behavior = t(_BUSY_MODE_BEHAVIOR.get(mode, _BUSY_MODE_BEHAVIOR["interrupt"])[0])
             return EphemeralReply(t("gateway.busy.status", mode=mode, behavior=behavior))
         if arg not in _BUSY_MODE_BEHAVIOR:
@@ -989,6 +1008,8 @@ class GatewaySlashCommandsMixin(
         from cli import save_config_value
         if not save_config_value("display.busy_input_mode", arg):
             return EphemeralReply(t("gateway.busy.save_failed"))
+        if live is not None:
+            live.busy_input_mode = arg  # the frozen session does not re-read config.yaml
         profile_name = self._busy_profile_name_for_source(event.source)
         if profile_name:
             from gateway.run import _load_gateway_config
@@ -1009,14 +1030,7 @@ class GatewaySlashCommandsMixin(
         from gateway.run import _load_gateway_config, _resolve_gateway_model
         from gateway.runtime_footer import format_runtime_footer, resolve_footer_config
         config_path, platform_key = self._display_config_target(event)
-        arg = ""
-        try:
-            text = (getattr(event, "message", None) or "").strip()
-            if text.startswith("/"):
-                parts = text.split(None, 1)
-                arg = parts[1].strip().lower() if len(parts) > 1 else ""
-        except Exception:
-            arg = ""
+        arg = event.get_command_args().strip().lower()
         try:
             user_config: dict = _load_gateway_config()
         except Exception as e:
@@ -1156,26 +1170,6 @@ class GatewaySlashCommandsMixin(
             lines += [t("gateway.bundles.item", slug=info["slug"], desc=desc, count=len(skills))] + [f"    · {s}" for s in skills]
         return "\n".join(lines + ["", t("gateway.bundles.invoke_hint")])
 
-    async def _hm_cmd_initiate_setup(self, event, source, _quick_key):
-        from agent.initiate_setup_prompt import build_initiate_setup_prompt
-        from gateway.run import _load_gateway_config, _platform_config_key
-        from hermes_cli.setup_profile import primary_profile
-        from hermes_constants import get_hermes_home
-        from model_tools import get_tool_definitions
-
-        def build() -> str:
-            with self._profile_scope_for_source(source):
-                enabled, disabled = self._resolve_turn_toolsets(
-                    _load_gateway_config(), source, _platform_config_key(source.platform))
-                tools = get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True,
-                                             skip_tool_search_assembly=True)
-                return build_initiate_setup_prompt(
-                    source.platform.value, [tool["function"]["name"] for tool in tools],
-                    primary_profile(get_hermes_home()))
-
-        return await self._hm_rewrite_turn_to_prompt(
-            event, source, "initiate-setup", t("gateway.initiate_setup.ack"), build)
-
     def _blocking_approval_or_stale(self, event: MessageEvent, stale_key: str, none_key: str):
         """``(session_key, None)`` when an agent thread is blocked on approval, else the reply to send.
         A pending-approvals entry with no blocked thread is a stale prompt: drop it and say so."""
@@ -1233,6 +1227,28 @@ class GatewaySlashCommandsMixin(
         key = "gateway.deny.denied" + ("_reason" if reason else "") + ("_plural" if count > 1 else "_singular")
         confirmation_text = t(key, count=count, reason=reason)
         return await self._deliver_approval_confirmation(event, confirmation_text, "deny")
+
+    async def _handle_curator_command(self, event: MessageEvent) -> str:
+        """Handle /curator — the ``hermes curator`` handler set (status by default), as main's CLI ran
+        it in-process; its printed report is the reply. Runs in the executor with the session's
+        context so the profile's skills tree and curator state are the ones read and written."""
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        from hermes_cli.curator import cli_main
+        tokens = shlex.split(event.get_command_args() or "") or ["status"]
+
+        def _run() -> str:
+            out = io.StringIO()
+            with redirect_stdout(out), redirect_stderr(out):
+                try:
+                    cli_main(tokens)
+                except SystemExit:
+                    pass  # argparse exits on --help/usage errors; its text is the reply
+                except Exception as exc:  # health: allow BLE001 -- main's CLI handler: the failure line is the reply
+                    print(t("cli.commands.curator.failed", error=exc))
+            return out.getvalue().rstrip()
+
+        return await self._run_in_executor_with_context(_run)
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
         """Handle /debug — upload ONLY the summary (system info + log tails), never full logs, to

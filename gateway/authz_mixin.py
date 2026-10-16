@@ -35,6 +35,9 @@ _ALLOWED_USERS_ENV = {Platform(k): v for k, v in _PLATFORM_ALLOWLIST_ENV.items()
 _ALLOW_ALL_ENV = {p: v.replace("_ALLOWED_USERS", "_ALLOW_ALL_USERS") for p, v in _ALLOWED_USERS_ENV.items()}
 _GROUP_USER_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS"}
 _GROUP_CHAT_ENV = {Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS", Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS"}
+# Group-scoped SENDER allowlists: admit a person inside allowed groups without granting them
+# platform-wide (DM) access. Signal's SIGNAL_GROUP_ALLOWED_USERS gates group IDs; this gates senders.
+_GROUP_SENDER_ENV = {Platform.SIGNAL: "SIGNAL_GROUP_ALLOWED_SENDERS"}
 _ALLOW_BOTS_ENV = {
     # Bots admitted by {PLATFORM}_ALLOW_BOTS bypass the human allowlist (#4466). Checked before the
     # no-user-id guard below: some platforms deliver bot/automation traffic with no user_id at all -- e.g.
@@ -684,6 +687,13 @@ class GatewayAuthorizationMixin:
             # Telegram group traffic authorized by chat ID (TELEGRAM_GROUP_ALLOWED_USERS gates the sender).
             if group_chat_allowlist and _allows(_coerce_allow_set(group_chat_allowlist), source.chat_id):
                 return True
+            # Group-scoped sender allowlist (SIGNAL_GROUP_ALLOWED_SENDERS): admits the sender inside
+            # the already-allowed groups only — never for DMs (this rung is gated on is_group_or_forum).
+            group_sender_env = _GROUP_SENDER_ENV.get(source.platform, "")
+            if group_sender_env:
+                group_sender_allowlist = _auth_env(group_sender_env)
+                if group_sender_allowlist and _allows(_coerce_allow_set(group_sender_allowlist), user_id):
+                    return True
             if (
                 source.platform == Platform.TELEGRAM and group_user_allowlist
                 and self._legacy_telegram_chat_grant(source, group_user_allowlist)

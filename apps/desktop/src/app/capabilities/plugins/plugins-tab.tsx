@@ -182,12 +182,13 @@ function KindBadge({ kind }: { kind: PackageKind }) {
 function ProvenancePill({ pkg }: { pkg: PluginPackage }) {
   const { t } = useI18n()
   const p = t.skills.plugins
+  const tierLabel = t.assistant.catalogInstall.tier
 
   if (pkg.agent?.catalog_name) {
     return (
       <Tip label={p.catalogProvenance(pkg.agent.installed_sha?.slice(0, 8) ?? '')}>
         <span>
-          <Pill>{pkg.agent.catalog_tier === 'official' ? p.tierOfficial : p.tierCommunity}</Pill>
+          <Pill>{tierLabel[pkg.agent.catalog_tier as keyof typeof tierLabel] ?? tierLabel.community}</Pill>
         </span>
       </Tip>
     )

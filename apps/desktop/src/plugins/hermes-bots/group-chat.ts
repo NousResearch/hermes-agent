@@ -12,7 +12,7 @@
 import { atom, host } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
-import { boundedThreadTitles } from './group-thread-titles'
+import { boundedThreadTitles, mergeThreadTitleEdits } from './group-thread-titles'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
 import { displayName } from './labels'
 import { botRosterMeta } from './routing'
@@ -84,6 +84,7 @@ interface GroupChatSyncSnapshot {
 
 /** A queued publish for one gateway, coalesced while the debounce runs. */
 interface GroupChatSyncJob {
+  titleEdits?: Record<string, string[]>
   allowEmpty?: boolean
   changedRooms?: string[]
   connectionId: string
@@ -400,6 +401,7 @@ export function groupChatSyncSnapshot(
 
     while (compact.log.length > 1 && groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
       compact.log.shift()
+      compact.threadTitles = boundedThreadTitles(compact.threadTitles, compact.log)
       noteGroupChatSyncOmitted(compact, room.log.length)
     }
 
@@ -463,8 +465,9 @@ export function mergeGroupChatSyncSnapshots(
   {
     changedRooms = [],
     deletedRooms = [],
-    writeRevision = 0
-  }: { changedRooms?: string[]; deletedRooms?: string[]; writeRevision?: number } = {}
+    writeRevision = 0,
+    titleEdits = {}
+  }: { changedRooms?: string[]; deletedRooms?: string[]; writeRevision?: number; titleEdits?: Record<string, string[]> } = {}
 ) {
   const remoteNorm = normalizeGroupChatSyncSnapshot(remote)
   const localNorm = normalizeGroupChatSyncSnapshot(local)
@@ -592,9 +595,16 @@ export function mergeGroupChatSyncSnapshots(
         return byTime || groupChatSyncEntryKey(left).localeCompare(groupChatSyncEntryKey(right))
       }),
       holdDetection,
-      threadTitles: localRevision >= remoteRevision
-        ? { ...remoteRoom?.threadTitles, ...localRoom?.threadTitles }
-        : { ...localRoom?.threadTitles, ...remoteRoom?.threadTitles },
+      // A fresh room write is not fresh title intent. Use the cached title
+      // authority, then override only explicitly edited keys (including resets).
+      threadTitles: {
+        ...(Number(localRoom?.revision || 0) >= remoteRevision
+          ? { ...remoteRoom?.threadTitles, ...localRoom?.threadTitles }
+          : { ...localRoom?.threadTitles, ...remoteRoom?.threadTitles }),
+        ...Object.fromEntries((titleEdits[key] || []).flatMap(id =>
+          Object.prototype.hasOwnProperty.call(localRoom?.threadTitles || {}, id)
+            ? [[id, localRoom!.threadTitles![id]]] : []))
+      },
       members,
       revision: Math.max(remoteRevision, localRevision),
       ...(omitted > 0
@@ -662,6 +672,7 @@ function groupChatSyncEnvelope(
 
     while ((room.log?.length || 0) > 1 && groupChatGatewayJsonSize(envelope) > GROUP_CHAT_SYNC_MAX_BYTES) {
       room.log.shift()
+      room.threadTitles = boundedThreadTitles(room.threadTitles, room.log)
       room.omitted = (room.omitted || 0) + 1
     }
 
@@ -1076,6 +1087,7 @@ function mergeGroupChatSyncJobs(existing: GroupChatSyncJob | undefined, incoming
 
   return {
     connectionId: incoming.connectionId,
+    titleEdits: mergeThreadTitleEdits(existing.titleEdits, incoming.titleEdits),
     allowEmpty: Boolean(existing.allowEmpty || incoming.allowEmpty),
     changedRooms: [...new Set([...(existing.changedRooms || []), ...(incoming.changedRooms || [])])],
     deletedRooms: [...new Set([...(existing.deletedRooms || []), ...(incoming.deletedRooms || [])])]
@@ -1152,6 +1164,7 @@ async function flushGroupChatServerSync(connectionId?: string) {
 
     const snapshot = mergeGroupChatSyncSnapshots(remoteState.snapshot, local, {
       changedRooms: job.changedRooms,
+      titleEdits: job.titleEdits,
       deletedRooms: job.deletedRooms,
       writeRevision
     })
@@ -1296,8 +1309,9 @@ export function scheduleGroupChatServerSync(
   {
     allowEmpty = false,
     changedRooms = [],
-    deletedRooms = []
-  }: { allowEmpty?: boolean; changedRooms?: string[]; deletedRooms?: string[] } = {}
+    deletedRooms = [],
+    titleEdits = {}
+  }: { allowEmpty?: boolean; changedRooms?: string[]; deletedRooms?: string[]; titleEdits?: Record<string, string[]> } = {}
 ) {
   // Browser shells provide timers; source-level VM tests and older embedded
   // hosts may not. Room persistence must never break the surrounding gateway
@@ -1337,6 +1351,7 @@ export function scheduleGroupChatServerSync(
       id,
       mergeGroupChatSyncJobs(groupChatSyncPendingByConnection.get(id), {
         connectionId: id,
+        titleEdits: mergeThreadTitleEdits(coalesced?.titleEdits, titleEdits),
         allowEmpty: Boolean(allowEmpty || coalesced?.allowEmpty),
         changedRooms: [...new Set([...(coalesced?.changedRooms || []), ...changedRooms])],
         deletedRooms: [...new Set([...(coalesced?.deletedRooms || []), ...deletedRooms])]
@@ -1600,6 +1615,8 @@ export function updateGroupChat(
     running: false
   }
 
+  const previousTitles = { ...current.threadTitles }
+
   const next = mutate({
     ...current,
     log: [...current.log],
@@ -1667,7 +1684,11 @@ export function updateGroupChat(
 
   if (sync) {
     scheduleGroupChatServerSync(all, {
-      changedRooms: [group]
+      changedRooms: [group],
+      titleEdits: {
+        [groupChatRoomKey(group, next)]: Object.keys(next.threadTitles || {}).filter(id =>
+          next.threadTitles![id] !== previousTitles[id])
+      }
     })
   }
 

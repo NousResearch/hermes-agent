@@ -2,7 +2,7 @@ import { Button, Codicon, Input, useI18n } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
 import { updateGroupChat } from './group-chat'
-import { GROUP_THREAD_TITLE_CHARS } from './group-thread-titles'
+import { boundedThreadTitle, GROUP_THREAD_TITLE_CHARS } from './group-thread-titles'
 import { useBots } from './i18n'
 import { stripPreviewMarkdown } from './labels'
 
@@ -22,7 +22,7 @@ export function GroupThreadHeader({ group, thread, rootText, customTitle, collap
   const { t } = useI18n()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
-  const title = customTitle?.trim() || stripPreviewMarkdown(rootText).trim().slice(0, GROUP_THREAD_TITLE_CHARS) || b.group.threadFallback
+  const title = boundedThreadTitle(customTitle || '') || boundedThreadTitle(stripPreviewMarkdown(rootText)) || b.group.threadFallback
 
   return (
     <div className="flex min-w-0 items-center gap-2 pt-2 text-xs text-(--ui-text-secondary)">
@@ -43,7 +43,7 @@ export function GroupThreadHeader({ group, thread, rootText, customTitle, collap
             event.preventDefault()
             updateGroupChat(group, room => ({
               ...room,
-              threadTitles: { ...room.threadTitles, [thread]: draft.trim().slice(0, GROUP_THREAD_TITLE_CHARS) }
+              threadTitles: { ...room.threadTitles, [thread]: boundedThreadTitle(draft) }
             }))
             setEditing(false)
           }}
@@ -51,7 +51,7 @@ export function GroupThreadHeader({ group, thread, rootText, customTitle, collap
           <Input
             aria-label={b.sections.rename}
             autoFocus
-            maxLength={GROUP_THREAD_TITLE_CHARS}
+            maxLength={GROUP_THREAD_TITLE_CHARS * 2}
             onChange={event => setDraft(event.target.value)}
             onKeyDown={event => {
               if (event.key === 'Escape') {

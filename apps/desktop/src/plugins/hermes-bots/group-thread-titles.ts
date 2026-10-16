@@ -2,6 +2,23 @@ import type { GroupMessage } from './types'
 
 export const GROUP_THREAD_TITLE_CHARS = 120
 
+export function boundedThreadTitle(title: string): string {
+  // Unicode-mode matching replaces only lone surrogates, never an astral pair.
+  return Array.from(title.trim()).slice(0, GROUP_THREAD_TITLE_CHARS).join('').replace(/[\uD800-\uDFFF]/gu, '\uFFFD')
+}
+
+/** Publish intent is queued per room/thread, not inferred from a new room
+ * revision. Union keys across debounce, retry and gateway fan-out; values come
+ * from the latest local snapshot so a retry never reinstates an older edit. */
+export function mergeThreadTitleEdits(
+  earlier: Record<string, string[]> = {},
+  later: Record<string, string[]> = {}
+): Record<string, string[]> {
+  return Object.fromEntries([...new Set([...Object.keys(earlier), ...Object.keys(later)])].map(key => [
+    key, [...new Set([...(earlier[key] || []), ...(later[key] || [])])]
+  ]))
+}
+
 /** Carry only titles whose real thread ids are represented in this log window.
  * Missing keys are not deletions; an explicit empty title resets the override. */
 export function boundedThreadTitles(titles: unknown, log: GroupMessage[]): Record<string, string> {
@@ -15,6 +32,6 @@ export function boundedThreadTitles(titles: unknown, log: GroupMessage[]): Recor
   return Object.fromEntries([...ids].flatMap(id => {
     const title = Object.prototype.hasOwnProperty.call(source, id) ? source[id] : undefined
 
-    return typeof title === 'string' ? [[id, title.trim().slice(0, GROUP_THREAD_TITLE_CHARS)]] : []
+    return typeof title === 'string' ? [[id, boundedThreadTitle(title)]] : []
   }))
 }

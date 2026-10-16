@@ -28,6 +28,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/i18n'
 
 import type * as DataModule from './data'
+import type * as GroupChatModule from './group-chat'
 import type * as RoutingModule from './routing'
 
 const mocks = vi.hoisted(() => ({
@@ -69,13 +70,11 @@ vi.mock('./roster-pane', () => ({
   selectedRosterBot: () => null,
   sessionOwnsWorkspace: mocks.sessionOwnsWorkspace
 }))
-vi.mock('./group-chat', async () => {
-  const { atom: nanoAtom } = await import('nanostores')
+vi.mock('./group-chat', async importOriginal => {
+  const original = await importOriginal<typeof GroupChatModule>()
 
   return {
-    $groupChats: nanoAtom({}),
-    $groupChatWorkspace: nanoAtom(null),
-    assignLegacyThreads: (log: unknown[]) => log,
+    ...original,
     handleSessionsGatewayTransition: vi.fn(),
     pullGroupChatServerState: async () => false,
     scheduleGroupChatServerSync: vi.fn(),
@@ -169,6 +168,79 @@ afterEach(() => {
 })
 
 describe('thread title hydration', () => {
+  it('preserves a surviving room title through disband and cold hydration without sync', async () => {
+    paneStores()
+    const { $groupChats } = await import('./group-chat')
+    const { disbandGroupChat } = await import('./group-chat-view')
+    const harness = recordingContext()
+    const saved = new Map<string, unknown>()
+    const titles = { keep: 'Saved survivor title' }
+
+    vi.spyOn(harness.ctx.storage, 'set').mockImplementation(async (key, value) => { saved.set(key, structuredClone(value)) })
+    plugin.register(harness.ctx)
+
+    try {
+      await settle()
+      $groupChats.set({
+        Gone: { log: [], watermarks: {} },
+        Keep: { log: [{ id: 'keep', thread: 'keep', at: 1, from: { kind: 'user', name: 'You' }, text: 'Keep' }], watermarks: {}, threadTitles: titles }
+      })
+      await disbandGroupChat('Gone', [])
+      expect(saved.get('group-chats')).toMatchObject({ Keep: { threadTitles: titles } })
+      expect(saved.get('group-chats')).not.toHaveProperty('Gone')
+    } finally {
+      harness.dispose()
+      $groupChats.set({})
+    }
+
+    const reopened = recordingContext()
+
+    vi.spyOn(reopened.ctx.storage, 'get').mockImplementation(async (key, fallback) => saved.get(key) ?? fallback)
+    plugin.register(reopened.ctx)
+
+    try {
+      await settle()
+      expect($groupChats.get().Keep.threadTitles).toEqual(titles)
+      expect($groupChats.get().Gone).toBeUndefined()
+    } finally {
+      reopened.dispose()
+      $groupChats.set({})
+    }
+  })
+
+  it('keeps legacy thread titles across cold hydration and subsequent persistence', async () => {
+    paneStores()
+    const { $groupChats, persistGroupChatRooms } = await import('./group-chat')
+    const harness = recordingContext()
+    const titles = { 'legacy-0': 'First topic', 'legacy-1': 'Second topic' }
+
+    const stored = { Room: {
+      log: [
+        { at: 1, from: { kind: 'user', name: 'You' }, text: 'First' },
+        { at: 2, from: { kind: 'member', name: 'Bot' }, text: 'Reply' },
+        { at: 16 * 60 * 1000, from: { kind: 'user', name: 'You' }, text: 'Second' }
+      ],
+      watermarks: {}, threadTitles: titles
+    } }
+
+    const save = vi.spyOn(harness.ctx.storage, 'set')
+
+    $groupChats.set({})
+    vi.spyOn(harness.ctx.storage, 'get').mockImplementation(async (key, fallback) => key === 'group-chats' ? stored : fallback)
+    plugin.register(harness.ctx)
+
+    try {
+      await settle()
+      expect($groupChats.get().Room.log.map(entry => entry.thread)).toEqual(['legacy-0', 'legacy-0', 'legacy-1'])
+      expect($groupChats.get().Room.threadTitles).toEqual(titles)
+      await persistGroupChatRooms()
+      expect(save).toHaveBeenCalledWith('group-chats', expect.objectContaining({ Room: expect.objectContaining({ threadTitles: titles }) }))
+    } finally {
+      harness.dispose()
+      $groupChats.set({})
+    }
+  })
+
   it('restores persisted title overrides during plugin registration', async () => {
     paneStores()
     const { $groupChats } = await import('./group-chat')

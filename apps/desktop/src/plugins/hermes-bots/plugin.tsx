@@ -281,11 +281,12 @@ export default {
 
             for (const [name, room] of Object.entries(value)) {
               if (room && Array.isArray(room.log)) {
+                // Use the same synthetic ids for both the log and saved titles.
+                const log = assignLegacyThreads(room.log)
+
                 rooms[name] = {
-                  // Pre-thread entries get synthetic thread ids on hydrate so
-                  // every UI/engine path can assume entry.thread exists.
-                  log: assignLegacyThreads(room.log),
-                  threadTitles: boundedThreadTitles(room.threadTitles, room.log),
+                  log,
+                  threadTitles: boundedThreadTitles(room.threadTitles, log),
                   watermarks: room.watermarks && typeof room.watermarks === 'object' ? room.watermarks : {},
                   sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
                   sessionOwners: room.sessionOwners && typeof room.sessionOwners === 'object' ? room.sessionOwners : {},

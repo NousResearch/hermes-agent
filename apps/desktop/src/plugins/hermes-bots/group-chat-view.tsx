@@ -214,6 +214,7 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
       if (name !== group && Array.isArray(room.log)) {
         durable[name] = {
           log: room.log,
+          threadTitles: room.threadTitles,
           watermarks: room.watermarks,
           sessions: room.sessions || {},
           sessionOwners: room.sessionOwners || {},

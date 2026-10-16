@@ -44,6 +44,23 @@ vi.mock('./group-chat-parts', () => ({
 }))
 afterEach(cleanup)
 
+it('keeps an astral character intact when saving and projecting a 120-code-point title', async () => {
+  Element.prototype.scrollIntoView = vi.fn()
+  const { $groupChats, groupChatSyncSnapshot, durableGroupChatRooms } = await import('./group-chat')
+  const { GroupChatWorkspace } = await import('./group-chat-view')
+  const title = 'a'.repeat(119) + '😀'
+
+  $groupChats.set({ Room: { log: [{ id: 'root', thread: 'topic', at: 1, from: { kind: 'user', name: 'You' }, text: 'Root' }], watermarks: {} } })
+  const view = render(<GroupChatWorkspace group="Room" members={[]} />)
+
+  fireEvent.click(await view.findByRole('button', { name: 'Rename…: Root' }))
+  fireEvent.change(view.getByRole('textbox', { name: 'Rename…' }), { target: { value: title } })
+  fireEvent.click(view.getByRole('button', { name: 'Save' }))
+  expect(durableGroupChatRooms().Room.threadTitles?.topic).toBe(title)
+  expect(groupChatSyncSnapshot($groupChats.get()).rooms['name:Room'].threadTitles?.topic).toBe(title)
+  expect(view.getByRole('button', { name: `Collapse this thread: ${title}` })).toBeDefined()
+})
+
 it('names and explicitly collapses one thread without hiding other topics or changing arrival order', async () => {
   Element.prototype.scrollIntoView = vi.fn()
   const { $groupChats } = await import('./group-chat')
@@ -111,6 +128,10 @@ it('keeps every public member reply readable in room arrival order across interl
 
   for (const entry of log) {
     const index = text.indexOf(entry.text)
+    const node = container.querySelector(`[data-group-entry="${entry.id}"]`)
+
+    expect(node).not.toBeNull()
+    expect(node!.closest('[hidden]')).toBeNull()
     expect(index, `${entry.from.name}: ${entry.text} must remain visible in arrival order`).toBeGreaterThan(previous)
     expect(text.split(entry.text)).toHaveLength(2)
     previous = index

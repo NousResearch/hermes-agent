@@ -65,6 +65,90 @@ beforeEach(() => {
 })
 
 describe('thread titles', () => {
+  it('retains coalesced title edits and explicit resets through a CAS retry', async () => {
+    deferTimers()
+
+    const stale: GroupChat = {
+      log: ['A', 'B', 'C'].map((thread, at) => ({ id: thread, thread, at, from: { kind: 'user', name: 'You' }, text: thread })),
+      watermarks: {}, syncRevision: 1, threadTitles: { A: 'Old A', B: 'Old B', C: 'Old C' }
+    }
+
+    const room = await loadRoom({ conflictOnce: { key: 'hermes-bots-groups', value: {
+      version: 3, rooms: { 'name:Room': { ...stale, revision: 2, threadTitles: { ...stale.threadTitles, A: 'New A' } } }
+    } } })
+
+    const { chat, gateway } = room
+
+    gateway.uiMeta['hermes-bots-groups'] = chat.groupChatSyncSnapshot({ Room: stale })
+    gateway.uiMetaRevisions['hermes-bots-groups'] = 1
+    chat.$groupChats.set({ Room: structuredClone(stale) })
+    chat.updateGroupChat('Room', value => ({ ...value, threadTitles: { ...value.threadTitles, B: 'Temporary B' } }))
+    chat.updateGroupChat('Room', value => ({ ...value, threadTitles: { ...value.threadTitles, B: '', C: 'New C' } }))
+    chat.appendGroupChatEntry('Room', { kind: 'user', name: 'You' }, 'Unrelated', 'C')
+    await drain(() => (gateway.uiMetaRevisions['hermes-bots-groups'] || 0) < 3, 60)
+    expect(gateway.rpcFor('profiles.configure')).toHaveLength(2)
+    expect(published(room)).toMatchObject({ rooms: { 'name:Room': { threadTitles: { A: 'New A', B: '', C: 'New C' } } } })
+    chat.stopGroupChatServerSync()
+  })
+
+  it.each(['initial', 'merged'])('keeps title keys within the final %s projection window', async path => {
+    const { chat } = await loadRoom()
+    let snapshot: ReturnType<typeof chat.groupChatSyncSnapshot> = { version: 3, rooms: {} }
+
+    for (let batch = 0; batch < (path === 'initial' ? 1 : 4); batch++) {
+      const log: GroupMessage[] = Array.from({ length: 16 }, (_, i) => ({
+        id: `m${batch}-${i}`, thread: `t${batch}-${i}`, at: batch * 16 + i,
+        from: { kind: 'user', name: 'You' }, text: path === 'initial' ? '界'.repeat(1200) : 'Short message'
+      }))
+
+      const next = chat.groupChatSyncSnapshot({ Room: {
+        log, watermarks: {}, syncRevision: batch + 1,
+        members: Array.from({ length: 6 }, (_, i) => ({ name: `member-${i}`, connectionId: `gateway-${i}`, connectionLabel: `Gateway ${i}` })),
+        threadTitles: Object.fromEntries(log.map(entry => [entry.thread!, '界'.repeat(120)]))
+      } })
+
+      expect(next.rooms['name:Room']).toBeDefined()
+      snapshot = path === 'initial' ? next : chat.mergeGroupChatSyncSnapshots(snapshot, next)
+    }
+
+    const retained = snapshot.rooms['name:Room']
+
+    expect(retained).toBeDefined()
+    expect(retained.log.length).toBeGreaterThan(0)
+    expect(retained.log.length).toBeLessThan(path === 'initial' ? 16 : 64)
+    expect(Object.keys(retained.threadTitles || {}).sort()).toEqual([...new Set(retained.log.map(entry => entry.thread))].sort())
+    expect(chat.groupChatGatewayJsonSize(snapshot)).toBeLessThanOrEqual(48000)
+  })
+
+  it.each(['independent rename', 'message after reset'])('publishes %s without promoting unrelated stale titles', async scenario => {
+    const room = await loadRoom()
+    const { chat, gateway } = room
+
+    const stale: GroupChat = {
+      log: ['A', 'B'].map((thread, at) => ({ id: thread, thread, at, from: { kind: 'user', name: 'You' }, text: thread })),
+      watermarks: {}, syncRevision: 1, threadTitles: { A: 'Old A', B: 'Old B' }
+    }
+
+    const remoteTitles = { A: scenario === 'independent rename' ? 'New A' : '', B: 'Old B' }
+
+    gateway.uiMeta['hermes-bots-groups'] = chat.groupChatSyncSnapshot({ Room: { ...stale, syncRevision: 2, threadTitles: remoteTitles } })
+    gateway.uiMetaRevisions['hermes-bots-groups'] = 2
+    chat.$groupChats.set({ Room: structuredClone(stale) })
+
+    if (scenario === 'independent rename') {
+      chat.updateGroupChat('Room', value => ({ ...value, threadTitles: { ...value.threadTitles, B: 'New B' } }))
+    } else {
+      chat.appendGroupChatEntry('Room', { kind: 'user', name: 'You' }, 'Unrelated message', 'B')
+    }
+
+    await drain(() => gateway.rpcFor('profiles.configure').length < 1, 50)
+    expect(gateway.rpcFor('profiles.configure')).toHaveLength(1)
+    expect(published(room)).toMatchObject({ rooms: { 'name:Room': { threadTitles: {
+      A: remoteTitles.A, B: scenario === 'independent rename' ? 'New B' : 'Old B'
+    } } } })
+    chat.stopGroupChatServerSync()
+  })
+
   it('bounds projected titles to visible threads without dropping a room or rolling back newer titles', async () => {
     const { chat } = await loadRoom()
 

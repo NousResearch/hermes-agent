@@ -519,7 +519,7 @@ class TestSpillover:
         import time as _time
 
         import tools.tool_result_storage as trs
-        from gateway.run import _housekeeping_media_caches
+        from gateway.run_housekeeping_disk import housekeeping_media_caches
         spill_dir = get_spillover_dir()
         spill_dir.mkdir(parents=True, exist_ok=True)
         recent, orphan = spill_dir / "recent.txt", spill_dir / "orphan.txt"
@@ -529,7 +529,7 @@ class TestSpillover:
             os.utime(path, (stale, stale))
 
         monkeypatch.setattr(trs, "_spillover_retention_hours", lambda: 90 * 24)
-        _housekeeping_media_caches()
+        housekeeping_media_caches()
 
         assert recent.exists()
         assert not orphan.exists()

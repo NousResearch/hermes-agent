@@ -133,6 +133,8 @@ async def _new(view, rest):
     # The frozen request never holds the launch key; the one this terminal supplied rides along.
     if getattr(view, "launch_api_key", None) and "api_key" in accepted:
         request["api_key"] = view.launch_api_key
+    from hermes_cli.gateway_chat import client_env_policy
+    request.update(client_env_policy(accepted))  # never in launch_request: this shell's, sent afresh
     snapshot = await view.client.rpc("session.create", request_id=uuid.uuid4().hex, **request)
     await view.adopt(snapshot)
     print(t("cli.session.new_session"))

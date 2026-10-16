@@ -6,6 +6,8 @@ export const zhSessionCommands = {
   undidOther: (count: string) => `已撤销 ${count} 条消息 — 被移除的消息已放回输入框`,
   retryNothing: '没有可重试的内容',
   retryUnsupported: '/retry：无法重试包含媒体或未知内容的消息',
+  busy: (command: string) =>
+    `会话忙碌中 — Hermes 仍在回复。请先停止当前回复（Stop 按钮，或在终端中按 Ctrl+C），然后再运行 /${command}。`,
   steerUsage: '用法：/steer <提示>',
   steerQueued: (preview: string) => `引导已排队 — 将在下一次工具调用后送达：“${preview}”`,
   steerNoActiveTurn: (preview: string) => `当前没有进行中的回合 — 已排队到下一回合：“${preview}”`,

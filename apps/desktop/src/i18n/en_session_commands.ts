@@ -8,6 +8,8 @@ export const enSessionCommands: SessionCommandNotices = {
   undidOther: (count: string) => `undid ${count} messages — the removed message is in the composer`,
   retryNothing: 'nothing to retry',
   retryUnsupported: '/retry: retry does not support media or unknown content parts',
+  busy: (command: string) =>
+    `session busy — Hermes is still replying. Stop the current reply first (Stop button, or Ctrl+C in a terminal), then run /${command}.`,
   steerUsage: 'usage: /steer <prompt>',
   steerQueued: (preview: string) => `steer queued — arrives after next tool call: "${preview}"`,
   steerNoActiveTurn: (preview: string) => `no active turn — queued for next: "${preview}"`,

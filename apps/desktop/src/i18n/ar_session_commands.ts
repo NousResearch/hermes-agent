@@ -6,6 +6,8 @@ export const arSessionCommands = {
   undidOther: (count: string) => `تم التراجع عن ${count} رسائل — الرسالة المحذوفة موجودة في مربع الكتابة`,
   retryNothing: 'لا يوجد ما يمكن إعادة محاولته',
   retryUnsupported: '/retry: لا يمكن إعادة محاولة الوسائط أو أجزاء المحتوى غير المعروفة',
+  busy: (command: string) =>
+    `الجلسة مشغولة — ما زال Hermes يرد. أوقف الرد الحالي أولاً (زر الإيقاف، أو Ctrl+C في الطرفية)، ثم شغّل /${command}.`,
   steerUsage: 'الاستخدام: /steer <الطلب>',
   steerQueued: (preview: string) => `أُضيف التوجيه إلى قائمة الانتظار — يصل بعد استدعاء الأداة التالي: "${preview}"`,
   steerNoActiveTurn: (preview: string) => `لا يوجد دور نشط — أُضيف إلى قائمة الانتظار للدور التالي: "${preview}"`,

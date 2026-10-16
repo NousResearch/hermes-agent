@@ -6,6 +6,8 @@ export const ruSessionCommands = {
   undidOther: (count: string) => `отменено сообщений: ${count} — удалённое сообщение в поле ввода`,
   retryNothing: 'нечего повторять',
   retryUnsupported: '/retry: нельзя повторить медиа или неизвестные части содержимого',
+  busy: (command: string) =>
+    `сеанс занят — Hermes ещё отвечает. Сначала остановите текущий ответ (кнопка «Стоп» или Ctrl+C в терминале), затем выполните /${command}.`,
   steerUsage: 'использование: /steer <запрос>',
   steerQueued: (preview: string) => `уточнение в очереди — придёт после следующего вызова инструмента: «${preview}»`,
   steerNoActiveTurn: (preview: string) => `нет активного хода — поставлено в очередь на следующий: «${preview}»`,

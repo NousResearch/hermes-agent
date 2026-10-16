@@ -427,6 +427,38 @@ async def test_a_branch_keeps_the_reasoning_and_workspace_its_parent_picked(tmp_
         store.close_all_db_handles()
 
 
+@pytest.mark.asyncio
+async def test_a_branch_stored_before_receipts_carried_picks_keeps_its_lineages_picks(tmp_path, monkeypatch):
+    """A branch stored before its receipt recorded ``picks`` takes them from its lineage: the parent's pick
+    receipts committed before the branch, and the parent's own inherited picks, walking up. A pick the parent
+    committed after the branch is not the branch's."""
+    from hermes_state_local import POLICY_PREFIX
+    from hermes_state_mutation_prepared import policy_picks
+    home = _home(monkeypatch)
+    store, authority = await _owner_authority(home)
+    owner, later = _connect(authority), _connect(authority)
+    try:
+        sid = (await _call(owner, 'session.create', request_id='p', source='cli', cwd=str(tmp_path)))['session_id']
+        await _mutate(owner, store, sid, 'pick', 'reasoning', {'effort': 'medium'})
+        child = (await _mutate(owner, store, sid, 'fork', 'branch', {}))['branched_session_id']
+        grandchild = (await _mutate(owner, store, child, 'fork-again', 'branch', {}))['branched_session_id']
+        (tmp_path / 'project').mkdir()
+        await _mutate(owner, store, sid, 'move', 'workspace', {'cwd': str(tmp_path / 'project')})
+        for branch in (child, grandchild):  # the receipt shape before this field existed
+            store._db._execute_write(lambda conn, key=POLICY_PREFIX + branch: conn.execute(
+                "UPDATE state_meta SET value=json_remove(value, '$.picks') WHERE key=?", (key,)))
+        (home / 'config.yaml').write_text(AFTER)
+        for branch in (child, grandchild):
+            assert policy_picks(store._db, branch) == {'reasoning'}, branch
+            await _call(later, 'session.resume', session_id=branch)
+            policy = _policy(authority, branch)
+            assert (policy.max_turns, policy.reasoning_config.get('effort')) == (7, 'medium'), branch
+    finally:
+        for connection in (owner, later):
+            await connection.close()
+        store.close_all_db_handles()
+
+
 class _Sandbox:
     cleaned = False
 

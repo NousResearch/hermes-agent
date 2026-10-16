@@ -83,17 +83,30 @@ POLICY_HANDLERS = {'model': model_in_transaction, 'reasoning': reasoning_in_tran
                    'workspace': workspace_in_transaction, 'editor_mcp': editor_mcp_in_transaction}
 
 
-def picks_on(conn, session_id):
-    """The policy edits (``reasoning``, ``workspace``) a ``session.mutate`` ever committed for *session_id*:
-    their receipts (kept for exact retries, also past deletion) are the durable record of the user's pick.
-    A branch copied its parent's policy, picks included, under its own id: its local receipt's ``picks``."""
+_RECEIPTS = "FROM state_meta WHERE key GLOB 'gateway.mutation.v1.*' AND json_valid(value) "
+
+
+def picks_on(conn, session_id, before=None):
+    """The policy edits (``reasoning``, ``workspace``) a ``session.mutate`` committed for *session_id* (below
+    revision *before*): their receipts (kept for exact retries, also past deletion) are the durable record of
+    the user's pick. A branch copied its parent's policy, picks included, under its own id: its local
+    receipt's ``picks``; a branch stored before that field has its parent's as they stood at its branch."""
+    bound = '' if before is None else " AND json_extract(value, '$.result.revision')<?"
     picked = {row[0] for row in conn.execute(
-        "SELECT DISTINCT json_extract(value, '$.result.operation') FROM state_meta "
-        "WHERE key GLOB 'gateway.mutation.v1.*' AND json_valid(value) "
+        "SELECT DISTINCT json_extract(value, '$.result.operation') " + _RECEIPTS +
         "AND json_extract(value, '$.result.operation') IN ('reasoning', 'workspace') "
-        "AND json_extract(value, '$.result.session_id')=?", (session_id,))}
+        "AND json_extract(value, '$.result.session_id')=?" + bound, (session_id, *(() if before is None else (before,))))}
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?', (POLICY_PREFIX + session_id,)).fetchone()
-    return picked | set(json.loads(saved[0]).get('picks', ())) if saved else picked
+    if saved is None:
+        return picked
+    if 'picks' in (receipt := json.loads(saved[0])):
+        return picked | set(receipt['picks'])
+    # The parent's branch receipt names this session and the parent's revision the branch committed at.
+    branched = conn.execute(
+        "SELECT json_extract(value, '$.result.session_id'), json_extract(value, '$.result.revision') " + _RECEIPTS +
+        "AND json_extract(value, '$.result.operation')='branch' "
+        "AND json_extract(value, '$.result.branched_session_id')=?", (session_id,)).fetchone()
+    return picked | picks_on(conn, *branched) if branched else picked
 
 
 def policy_picks(db, session_id):

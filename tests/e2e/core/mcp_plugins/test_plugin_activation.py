@@ -69,9 +69,6 @@ KNOWN: dict[str, tuple[str, str]] = {
     "test_portable_mcp_env_placeholder_is_interpolated": (
         r"^the portable plugin's server received the literal placeholder: ENV:NO-CANARY:\$\{E2E_PORTABLE_KEY\}",
         "#120526 portable mcp.json env ${VAR} reaches the server literally"),
-    "test_enabled_portable_plugin_server_is_not_reported_as_an_unknown_toolset": (
-        r"^`hermes chat` warned about the enabled plugin's MCP server: \[.*Unknown toolsets: .*\bplug\b",
-        "#119457 startup 'Unknown toolsets' warning names a plugin-provided MCP server"),
     "test_same_name_backup_dir_does_not_shadow_the_live_plugin": (
         r"^(`hermes plugins list` shows the backup copy instead of plugins/foo \(v2\.0\.0\)"
         r"|a real turn ran the backup dir's MCP server, not plugins/foo's)",

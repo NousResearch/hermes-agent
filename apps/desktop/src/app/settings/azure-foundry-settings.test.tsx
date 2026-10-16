@@ -76,7 +76,7 @@ it('offers CLI within Entra and sends account selectors to the same bot for test
   expect(screen.getByLabelText('Subscription name or ID')).toHaveProperty('disabled', false)
   fireEvent.change(screen.getByLabelText('Subscription name or ID'), { target: { value: 'my-subscription' } })
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Test' })))
-  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save and use' })))
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save' })))
 
   const payload = {
     base_url: saved.base_url,
@@ -97,7 +97,7 @@ it('keeps a saved API key private and preserves the draft after a failed save', 
   render(surface())
   await screen.findByPlaceholderText('Leave blank to keep current key')
   fireEvent.change(screen.getByLabelText('Deployment name'), { target: { value: 'edited-deployment' } })
-  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save and use' })))
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save' })))
   expect(calls.save.mock.calls[0]?.[0].auth).toEqual({ kind: 'api_key', api_key: undefined })
   expect(screen.getByDisplayValue('edited-deployment')).toBeTruthy()
   expect(calls.notifyError).toHaveBeenCalled()
@@ -190,7 +190,7 @@ it('preserves automatic credentials and permits manual deployment entry when lis
     expect.objectContaining({ kind: 'warning', message: expect.stringContaining('Enter a deployment name') })
   )
   fireEvent.change(screen.getByLabelText('Deployment name'), { target: { value: 'manual-deployment' } })
-  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save and use' })))
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save' })))
   expect(calls.save).toHaveBeenCalledWith(
     expect.objectContaining({
       model: 'manual-deployment',

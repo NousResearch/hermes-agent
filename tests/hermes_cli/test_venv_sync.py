@@ -9,7 +9,9 @@ publication belong to PM, not this CLI entry point.
 
 from __future__ import annotations
 
+import ast
 import json
+import re
 import subprocess
 import sys
 import textwrap
@@ -179,3 +181,19 @@ class TestCliContract:
 
         assert proc.returncode == 1
         assert json.loads(proc.stdout)["state"] == "failed"
+
+
+def test_relaunch_resolves_bare_launcher_via_path(monkeypatch, tmp_path):
+    launcher = tmp_path / "hermes"
+    launcher.write_text("#!/usr/bin/env python3\n")
+    monkeypatch.setattr(venv_sync.shutil, "which", lambda name: str(launcher))
+
+    command = venv_sync.relaunch_command(
+        Path("/managed/python"), tmp_path, ["hermes", "gateway", "status"],
+        ["python", "-m", "hermes_cli.main", "gateway", "status"], None,
+    )
+
+    match = re.search(r"run_path\((.+?), run_name", command[-1])
+    assert match is not None
+    assert ast.literal_eval(match.group(1)) == str(launcher)
+    assert "runpy.run_path" in command[-1]

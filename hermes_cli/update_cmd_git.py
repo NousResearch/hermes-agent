@@ -6,6 +6,7 @@ test patches on ``update_cmd`` stay effective).
 """
 
 import logging
+import os
 from contextlib import suppress
 import subprocess
 import sys
@@ -464,7 +465,10 @@ def _portable_git_candidates() -> list:
     from hermes_constants import get_default_hermes_root, get_hermes_home
     candidates = []
     with suppress(Exception):
-        candidates += [root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe" for root in (get_default_hermes_root(), Path(get_hermes_home()))]
+        roots = [get_default_hermes_root(), Path(get_hermes_home())]
+        for root in roots:
+            for arch in ("mingw64", "ucrt64", "clangarm64"):
+                candidates.append(root / "git" / arch / "libexec" / "git-core" / "git.exe")
     return candidates
 
 
@@ -477,9 +481,12 @@ def _locate_real_git() -> Optional[Path]:
     re-exec git-core, while the real binary at ``mingw64\\libexec\\git-core\\git.exe`` (≈4.4MB) works when
     invoked directly (#87876). Git for Windows 2.56.0 moved that binary to ``ucrt64\\libexec\\git-core``.
     """
+    bases = [Path(r"C:\Program Files"), Path(r"C:\Program Files (x86)")]
+    if local_app_data := os.environ.get("LOCALAPPDATA"):
+        bases.append(Path(local_app_data) / "Programs")
     candidates = [
-        Path(base) / "Git" / arch / "libexec" / "git-core" / "git.exe"
-        for base in (r"C:\Program Files", r"C:\Program Files (x86)")
+        base / "Git" / arch / "libexec" / "git-core" / "git.exe"
+        for base in bases
         for arch in ("clangarm64", "ucrt64", "mingw64", "mingw32")
     ] + _portable_git_candidates()
     return next((c for c in candidates if c.exists() and _probe_fork_bomb([str(c)]) is False), None)

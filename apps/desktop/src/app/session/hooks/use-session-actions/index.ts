@@ -159,7 +159,12 @@ import type {
 
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
-import { pinStoredSessionForOwner, releaseStoredSessionPins, sessionContextDrift } from '../session-context-drift'
+import {
+  pinStoredSessionForOwner,
+  releaseStoredSessionPins,
+  routeTargetFromToken,
+  sessionContextDrift
+} from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
 
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
@@ -1313,10 +1318,17 @@ export function useSessionActions({
       resumeRequestRef.current = requestId
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
 
-      const isCurrentResume = () =>
-        resumeRequestRef.current === requestId &&
-        selectedStoredSessionIdRef.current === storedSessionId &&
-        getRouteToken() === routeToken
+      // Navigation may commit after this resume captures its token; landing on
+      // this session is still current, while a different route remains an abort.
+      const isCurrentResume = () => {
+        const currentRouteToken = getRouteToken()
+
+        return (
+          resumeRequestRef.current === requestId &&
+          selectedStoredSessionIdRef.current === storedSessionId &&
+          (currentRouteToken === routeToken || routeTargetFromToken(currentRouteToken) === storedSessionId)
+        )
+      }
 
       // A reconnect re-resumes the runtime this view is streaming. Let its
       // replay land while that runtime still owns the view. Otherwise the REST
@@ -2923,7 +2935,13 @@ export function useSessionActions({
         // (the #69750 focus-stealing bug, reintroduced if this fires
         // unconditionally). resumeSession reuses the runtime warm-cached above
         // (ensureSessionState/updateSessionState) instead of an extra resume RPC.
-        if (parentStoredId !== null && selectedStoredSessionIdRef.current === parentStoredId) {
+        const routedStoredSessionId = getRoutedStoredSessionId()
+        const routedParent = parentStoredId !== null && routedStoredSessionId === parentStoredId
+
+        if (
+          parentStoredId !== null &&
+          (selectedStoredSessionIdRef.current === parentStoredId || routedParent)
+        ) {
           navigate(sessionRoute(routedSessionId), { replace: true })
           await resumeSession(routedSessionId)
         } else {
@@ -2984,7 +3002,9 @@ export function useSessionActions({
       copy,
       creatingSessionRef,
       ensureSessionState,
+      getRoutedStoredSessionId,
       navigate,
+      releaseCreatingSessionGuard,
       requestGateway,
       resumeSession,
       selectedStoredSessionIdRef,

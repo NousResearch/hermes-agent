@@ -222,7 +222,8 @@ function* walkFiles(dir) {
  *
  * PortableGit carries .NET AnyCPU/MSIL assemblies (Git Credential Manager:
  * Avalonia.*, Atlassian.*, Microsoft.*, System.*, etc.) across mingw64/bin,
- * mingw64/lib, and mingw64/libexec/git-core. Their PE machine field is 0x14c
+ * mingw64/lib, ucrt64/bin, ucrt64/lib, and mingw64/libexec/git-core,
+ * ucrt64/libexec/git-core. Their PE machine field is 0x14c
  * (ia32) because .NET assemblies are format-neutral — the CLR JITs them to
  * the native arch at load time. It also ships usr/libexec/getprocaddr32.exe,
  * a 32-bit MSYS2 helper. The staging script already PE-probes cmd/git.exe
@@ -235,7 +236,7 @@ const EXEMPT_PATTERNS = [
   // Live under the payload python store entry AND the relocatable venv.
   /agent-payload[/\\](tools[/\\]python-[^/\\]+[/\\](Lib|lib[/\\]python[\d.]+)|venv[/\\](Lib|lib[/\\]python[\d.]+))[/\\]site-packages[/\\](setuptools|pip[/\\]_vendor[/\\]distlib)[/\\]/i,
   // PortableGit internals under the payload tool store.
-  /agent-payload[/\\]tools[/\\]git(-[^/\\]+)?[/\\](mingw64|clangarm64|usr|cmd)[/\\]/i,
+  /agent-payload[/\\]tools[/\\]git(-[^/\\]+)?[/\\](mingw64|clangarm64|ucrt64|usr|cmd)[/\\]/i,
   // discord.py ships x64 and x86 opus; opus.py loads by bitness.
   /agent-payload[/\\]venv[/\\](Lib|lib[/\\]python[\d.]+)[/\\]site-packages[/\\]discord[/\\]bin[/\\]libopus-0\.(x64|x86)\.dll$/i,
   // pvporcupine ships one native lib per OS/arch in the same wheel.

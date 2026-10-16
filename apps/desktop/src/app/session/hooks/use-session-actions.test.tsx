@@ -1721,6 +1721,7 @@ describe('resumeSession failure recovery', () => {
   afterEach(() => {
     cleanup()
     setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
     setResumeFailedSessionId(null)
     setSessionStartedAt(null)
     setMessages([])
@@ -1744,6 +1745,67 @@ describe('resumeSession failure recovery', () => {
     await waitFor(() => expect(resume).not.toBeNull())
     await resume!('stored-1', true)
   }
+
+  it('continues a resume when the route settles on the session being resumed', async () => {
+    const storedMessages = [
+      { content: 'branch question', role: 'user', timestamp: 1 },
+      { content: 'branch answer', role: 'assistant', timestamp: 2 }
+    ]
+
+    const storedSessionId = 'stored-branch'
+
+    setSessions([storedSession({ id: storedSessionId, message_count: storedMessages.length })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: storedMessages,
+      session_id: storedSessionId
+    } as never)
+
+    let routeToken = `${sessionRoute('stored-parent')}::`
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: storedMessages.length,
+          messages: storedMessages,
+          resumed: storedSessionId,
+          running: false,
+          session_id: 'runtime-branch',
+          session_key: storedSessionId
+        } as never
+      }
+
+      return {} as never
+    })
+
+    render(
+      <ResumeHarness
+        getRouteToken={() => routeToken}
+        onReady={action => (resume = action)}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="stored-parent"
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    let pending!: Promise<unknown>
+
+    act(() => {
+      pending = resume!(storedSessionId, true)
+      routeToken = `${sessionRoute(storedSessionId)}::`
+    })
+
+    await act(async () => {
+      await pending
+    })
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.resume',
+      expect.objectContaining({ session_id: storedSessionId })
+    )
+    expect($activeSessionId.get()).toBe('runtime-branch')
+  })
 
   it('does not resume a tombstoned session after delete', async () => {
     $removedSessionIds.set(new Set(['stored-1']))
@@ -2965,6 +3027,7 @@ describe('resumeSession warm switch away from a streaming session (#89696)', () 
 
 function BranchHarness({
   activeSessionId = null,
+  routedStoredSessionId = null,
   navigate = vi.fn(),
   onCurrentReady,
   onLoadedReady,
@@ -2976,6 +3039,7 @@ function BranchHarness({
 }: {
   activeSessionId?: string | null
   navigate?: ReturnType<typeof vi.fn>
+  routedStoredSessionId?: string | null
   onCurrentReady?: (branchCurrentSession: (messageId?: string) => Promise<boolean>) => void
   onLoadedReady?: (branchLoadedSession: ReturnType<typeof useSessionActions>['branchLoadedSession']) => void
   onReady: (branchStoredSession: (storedSessionId: string, sessionProfile?: string | null) => Promise<boolean>) => void
@@ -3000,7 +3064,7 @@ function BranchHarness({
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
     getRouteToken: () => 'token',
-    getRoutedStoredSessionId: () => null,
+    getRoutedStoredSessionId: () => routedStoredSessionId,
     navigate: navigate as never,
     requestGateway,
     resetViewSync: vi.fn(),
@@ -3093,6 +3157,53 @@ describe('branchStoredSession desktop source tagging', () => {
     expect(navigate).toHaveBeenCalledWith(sessionRoute('branch-stored'), { replace: true })
     // It must not ALSO exist as a tile: a session is either the main thread or
     // a tile, never both (resumeSession closes any tile with the same id).
+    expect($sessionTiles.get().some(tile => tile.storedSessionId === 'branch-stored')).toBe(false)
+  })
+
+  it('uses the routed parent when selected-session state has not caught up', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create' || method === 'session.branch_stored') {
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 0,
+          messages: [],
+          resumed: 'branch-stored',
+          session_id: 'branch-runtime',
+          session_key: 'branch-stored'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    setSessions([storedSession({ id: 'stored-parent', message_count: 1 })])
+    setSelectedStoredSessionId('stored-other')
+    vi.mocked(getAllSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    const navigate = vi.fn()
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        navigate={navigate}
+        onReady={branch => (branchStoredSession = branch)}
+        requestGateway={requestGateway}
+        routedStoredSessionId="stored-parent"
+        selectedStoredSessionId="stored-other"
+      />
+    )
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    expect($selectedStoredSessionId.get()).toBe('branch-stored')
+    expect(navigate).toHaveBeenCalledWith(sessionRoute('branch-stored'), { replace: true })
     expect($sessionTiles.get().some(tile => tile.storedSessionId === 'branch-stored')).toBe(false)
   })
 

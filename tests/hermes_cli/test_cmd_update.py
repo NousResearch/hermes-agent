@@ -121,12 +121,26 @@ class TestGitTrampolineSelfHeal:
         monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: profile_home)
 
         candidates = _portable_git_candidates()
-        assert candidates[0] == (
-            root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
-        )
-        assert candidates[1] == (
-            profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
-        )
+        shared = [i for i, path in enumerate(candidates) if path.is_relative_to(root / "git")]
+        profile = [i for i, path in enumerate(candidates) if path.is_relative_to(profile_home / "git")]
+        assert shared and profile
+        assert max(shared) < min(profile)
+
+    def test_portable_git_candidates_includes_ucrt64_and_clangarm64(self, tmp_path, monkeypatch):
+        import hermes_constants
+        from hermes_cli.update_cmd_git import _portable_git_candidates
+
+        root = tmp_path / "root"
+        profile_home = root / "profiles" / "foo"
+
+        monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: root)
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: profile_home)
+
+        candidates = _portable_git_candidates()
+        assert (root / "git" / "ucrt64" / "libexec" / "git-core" / "git.exe") in candidates
+        assert (profile_home / "git" / "ucrt64" / "libexec" / "git-core" / "git.exe") in candidates
+        assert (root / "git" / "clangarm64" / "libexec" / "git-core" / "git.exe") in candidates
+        assert (profile_home / "git" / "clangarm64" / "libexec" / "git-core" / "git.exe") in candidates
 
     def test_locate_real_git_finds_ucrt64_layout(self, monkeypatch):
         # Git for Windows 2.56.0 moved the real binary from mingw64\libexec\git-core
@@ -150,3 +164,33 @@ class TestGitTrampolineSelfHeal:
 
         assert update_cmd_git._locate_real_git() == ucrt
         assert probed == [[str(ucrt)]]
+
+    def test_locate_real_git_finds_localappdata_layout(self, monkeypatch):
+        from pathlib import Path
+
+        from hermes_cli import update_cmd_git
+
+        present = set()
+
+        class FakePath(type(Path())):
+            def exists(self, *, follow_symlinks=True):
+                return str(self) in present
+
+        monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\tester\AppData\Local")
+        git_exe = (
+            FakePath(r"C:\Users\tester\AppData\Local")
+            / "Programs"
+            / "Git"
+            / "ucrt64"
+            / "libexec"
+            / "git-core"
+            / "git.exe"
+        )
+        present.add(str(git_exe))
+        probed = []
+        monkeypatch.setattr(update_cmd_git, "Path", FakePath)
+        monkeypatch.setattr(update_cmd_git, "_portable_git_candidates", lambda: [])
+        monkeypatch.setattr(update_cmd_git, "_probe_fork_bomb", lambda argv: probed.append(argv) or False)
+
+        assert update_cmd_git._locate_real_git() == git_exe
+        assert probed == [[str(git_exe)]]

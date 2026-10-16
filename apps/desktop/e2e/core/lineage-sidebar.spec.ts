@@ -132,6 +132,7 @@ test('lineage: a branch child is its own titled row and switching never leaks tu
         })
         .toBeGreaterThan(0)
       await expect.poll(() => currentSessionId(page), { timeout: 60_000 }).not.toBe(parentId)
+      await waitForInteractive(app, page)
       await turn(5, 'only on the branch')
       branchId = storedSessionForMarker(sandbox, 'default', U(5)) ?? ''
       expect(branchId).not.toBe('')

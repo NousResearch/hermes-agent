@@ -9,6 +9,7 @@ session as an API conversation (``run_api_turn``) would be a second writer and i
 (``permission_denied``) by design. Without an authority the legacy live-owner mailbox applies.
 """
 import asyncio
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 import uuid
@@ -16,7 +17,71 @@ import uuid
 from gateway.session_contract import Principal
 from hermes_state_runtime import RuntimeStoreError
 
+logger = logging.getLogger(__name__)
+
 _PENDING = ('queued', 'claimed')
+# Owner of a Bot Chat the gateway mints for a peer's create-if-missing (no native client asked).
+_PEER_SUBJECT = 'api-peer'
+# The whole body ``hermes peer dm`` sends (``hermes_cli/subcommands/peer.py::_ensure_bot_chat``).
+_PEER_CREATE_FIELDS = frozenset({'title', 'source'})
+
+
+def _authority(runner):
+    from gateway.session_authorities import active_authority
+    return active_authority(runner) if getattr(runner, 'session_authority', None) is not None else None
+
+
+async def create_peer_bot_chat(adapter, body):
+    """``POST /api/sessions`` titled "Bot Chat" (``hermes peer dm``'s create-if-missing) under session
+    authority: the owner mints the chat through the step a first ``bot_relay.deliver`` takes
+    (``session_bot._create_bot_chat``), so a headless gateway's Bot Chat is a LOCAL session its FIFO
+    owns, not an API row no remote sender can ever bind (#139370). None when the ordinary handler
+    answers: no authority, another title, an explicit id, or the chat exists (its title conflict).
+    The owner mints on the profile's own policy, so a create carrying anything else (a model
+    lock, route, options, system prompt) is refused by name before anything is written."""
+    from tools.bot_mode_probe import BOT_CHAT_TITLE
+    authority = _authority(adapter.gateway_runner)
+    if (authority is None or str(body.get('title') or '').strip() != BOT_CHAT_TITLE
+            or body.get('id') or body.get('session_id')):
+        return None
+    from aiohttp import web
+    from gateway.platforms.api_server import _error_response
+    if unsupported := sorted(set(body) - _PEER_CREATE_FIELDS):
+        return _error_response(
+            f"Bot Chat creation refused: bot_chat_parameters_unsupported ({', '.join(unsupported)}); "
+            "the Bot Chat is created with the profile's own model and prompt", 400,
+            code='bot_chat_parameters_unsupported')
+    from gateway.session_bot import _create_bot_chat
+    from gateway.session_runtime_workers import track_mutation
+    actor = Principal(_PEER_SUBJECT, authority.profile_id,
+                      frozenset({'session:create', 'session:read', 'session:submit'}), 'api-peer-dm')
+    try:
+        authority._require_admission_open()
+        ref = await asyncio.shield(track_mutation(authority, _create_bot_chat(authority, actor)))
+    except RuntimeStoreError as exc:
+        return _error_response(f'Bot Chat creation refused: {exc.reason}', 503, code=exc.reason)
+    if ref is None:
+        return None
+    row = await asyncio.to_thread(authority.db.get_session, ref.session_id)
+    return web.json_response({'object': 'hermes.session', 'session': adapter._session_response(row)}, status=201)
+
+
+def _refusal(authority, tip, exc):
+    """``(reason, error)`` for a refused peer turn. A ``not_found`` on a Bot Chat that is no local
+    chat is named: a remote sender never binds unowned history, so a bare code would leave the
+    peer nothing to act on. The full clause stays in gateway.log."""
+    reason = exc.reason
+    if reason == 'not_found' and not str(tip.get('chat_id') or '').startswith('local-'):
+        from hermes_state_local_migration import validate_legacy_row
+        try:
+            validate_legacy_row(authority.db, tip)
+            reason, hint = 'bot_chat_unbound', 'open it once with `hermes chat -c "Bot Chat"` on that host'
+        except RuntimeStoreError:
+            reason, hint = 'bot_chat_not_local', "it is an API conversation; rename or delete it there"
+        logger.warning('Peer DM into Bot Chat %s refused: %s (not_found: field=%s detail=%s)',
+                       tip['id'], reason, exc.field, exc.detail)
+        return reason, f"Bot Chat admission refused: {reason} (this profile's 'Bot Chat' is not a local chat; {hint})"
+    return reason, f'Bot Chat admission refused: {reason}'
 
 
 def bot_chat_tip(authority, session_id):
@@ -31,11 +96,14 @@ def bot_chat_tip(authority, session_id):
     return db.get_session(tip)
 
 
-async def admit_peer_turn(authority, session_id, message, author):
+async def admit_peer_turn(runner, session_id, message, author):
     """``(profile home, receipt)`` when *session_id* is the Bot Chat and the turn was admitted to its
     FIFO; None when the target is any other session (the caller runs it as an API turn)."""
     from gateway.session_authorities import served_profile_name
     from gateway.session_bot import deliver
+    authority = _authority(runner)
+    if authority is None:
+        return None
     tip = bot_chat_tip(authority, session_id)
     if tip is None:
         return None
@@ -51,17 +119,15 @@ async def admit_peer_turn(authority, session_id, message, author):
     try:
         record = await deliver(SimpleNamespace(authority=authority, actor=actor), params)
     except RuntimeStoreError as exc:
-        record = {'status': 'failed', 'delivery_id': key, 'reason': exc.reason,
-                  'error': f'Bot Chat admission refused: {exc.reason}'}
+        reason, error = _refusal(authority, tip, exc)
+        record = {'status': 'failed', 'delivery_id': key, 'reason': reason, 'error': error}
     return home, record
 
 
 async def await_live_delivery(adapter, home, record, timeout, *, should_stop=None):
     """Wait for a live Bot Chat receipt through whichever door admitted it: the authority FIFO
     (in-process waiter) or the legacy owner mailbox (``await_delivery_async``)."""
-    from gateway.session_authorities import active_authority
-    authority = active_authority(adapter.gateway_runner) if getattr(
-        adapter.gateway_runner, 'session_authority', None) is not None else None
+    authority = _authority(adapter.gateway_runner)
     if authority is not None and record.get('admission_id'):
         return await await_peer_receipt(authority, record, timeout, should_stop=should_stop)
     from tools.bot_live_delivery import await_delivery_async

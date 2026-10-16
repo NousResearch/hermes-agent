@@ -598,17 +598,23 @@ export function useComposerQueue({
   // never churns, so a change there is a real session switch and must NOT
   // migrate; only the runtime-derived key (queueSessionKey falsy → key is
   // sessionId) churns on a backend bounce/resume of the same conversation.
+  // Both sides must be runtime keys: leaving a stored chat for a fresh draft
+  // is a switch too, and must not carry that chat's queue along (#139190).
+  const runtimeKeyed = !queueSessionKey && activeQueueSessionKey === sessionId
+  const prevRuntimeKeyedRef = useRef(runtimeKeyed)
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const prev = prevQueueKeyRef.current
+    const prevRuntimeKeyed = prevRuntimeKeyedRef.current
     prevQueueKeyRef.current = activeQueueSessionKey
+    prevRuntimeKeyedRef.current = runtimeKeyed
 
-    if (queueSessionKey || !prev || !activeQueueSessionKey || prev === activeQueueSessionKey) {
+    if (!prevRuntimeKeyed || !runtimeKeyed || !prev || !activeQueueSessionKey || prev === activeQueueSessionKey) {
       return
     }
 
     migrateQueuedPrompts(prev, activeQueueSessionKey)
-  }, [activeQueueSessionKey, queueSessionKey])
+  }, [activeQueueSessionKey, runtimeKeyed])
 
   // Queued turns flow whenever the session is idle — on the busy→false settle
   // edge, on mount/reconnect, and after a re-key — so a swallowed edge can't

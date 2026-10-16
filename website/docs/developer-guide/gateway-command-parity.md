@@ -26,13 +26,14 @@ narrower routes (`hermes_cli/gateway_chat_commands.py`).
 setting to this local session (its next turn and `config.get`), saving config.yaml only where the
 handler does; `client-local (cli_only)` commands are terminal/UI features of a client.
 
-102 registry commands: 28 control, 18 read, 56 refused.
+103 registry commands: 29 control, 18 read, 56 refused.
 
 | Command | Gateway (`slash.exec`) | Classic CLI | Ink | Desktop | ACP | Notes |
 |---|---|---|---|---|---|---|
 | `/agents` (/tasks) | refused | HermesCLI._handle_agents_command | delegation.pause | slash.exec: refused | refused | gateway-wide: lists every chat's running agents and the process's async jobs |
 | `/approvals` | control | HermesCLI._handle_approvals_command | slash.exec | slash.exec | refused | per-session setting (gateway handler) |
 | `/approve` | control | messaging-only: unknown command | slash.exec | slash.exec | refused | messaging-only |
+| `/autoprune` | control | HermesCLI._handle_autoprune_command | slash.exec | slash.exec | refused |  |
 | `/battery` | refused | HermesCLI._handle_battery_command | sidecar: system.battery (preference not saved) | slash.exec: refused | refused | client-local (cli_only) |
 | `/bg` | refused | HermesCLI._handle_background_command | prompt.background | action: background | refused |  |
 | `/blueprint` (/bp) | control | HermesCLI._handle_blueprint_command | slash.exec | slash.exec | refused |  |

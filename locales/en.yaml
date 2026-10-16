@@ -851,6 +851,8 @@ gateway:
     task_status_error: "error"
     task_line: "- {title} - {status}"
     task_card_title: "Hermes is working"
+    thinking_card_title: "{name} is thinking"
+    thinking_card_row_title: "Narration"
 
   pairing:
     validity_hour: "{hours} hour"

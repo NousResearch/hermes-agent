@@ -323,6 +323,8 @@ class _NativeTaskCardStream:
     thread_ts: str
     stream_ts: str = ""
     stopped: bool = False
+    thinking_rows_sent: int = 0
+    thinking_rows: List[Dict[str, Any]] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -1113,7 +1115,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._active_status_threads: dict[tuple[str, str, str], dict[str, Any]] = {}
         # Native progress streams; each owns a lock so concurrent start/append/stop
         # can't create duplicates or append after finalization.
-        self._native_task_card_streams: dict[tuple[str, str, str], _NativeTaskCardStream] = {}
+        self._native_task_card_streams: dict[tuple[str, str, str, str], _NativeTaskCardStream] = {}
         # Guard: set the Slack AI thread title once per DM thread, not per reply.
         self._titled_assistant_threads: set = set()
         # Slash-command contexts so send() can route the first reply ephemerally. Keyed
@@ -2054,14 +2056,28 @@ class SlackAdapter(BasePlatformAdapter):
                 return self._truthy_config(value)
         return False
 
+    def thinking_cards_enabled(self) -> bool:
+        """Return whether the per-turn thinking card is explicitly enabled (plan-option-a).
+
+        Opt-in beside ``native_task_cards``; the thinking card shares the same stream
+        machinery, keyed with slot "thinking" beside the tool card's "tools"."""
+        extra = self.config.extra if isinstance(self.config.extra, dict) else {}
+        for scope in (extra,):
+            value = scope.get("thinking_cards", scope.get("thinkingCards"))
+            if value is not None:
+                return self._truthy_config(value)
+        return False
+
     def _native_task_card_key(
-        self, chat_id: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]]
-    ) -> Optional[tuple[str, str, str]]:
+        self, chat_id: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]],
+        slot: str = "tools",
+    ) -> Optional[tuple[str, str, str, str]]:
         thread_ts = self._resolve_thread_ts(reply_to, metadata)
         if not thread_ts:
             return None
-        return self._workspace_thread_key(
+        key = self._workspace_thread_key(
             self._metadata_team_id(metadata), chat_id, str(thread_ts))
+        return (*key, slot) if key else None
 
     def native_task_card_destination_supported(
         self, chat_id: str, *, reply_to: Optional[str] = None,
@@ -2100,39 +2116,52 @@ class SlackAdapter(BasePlatformAdapter):
                 # chunks-only: Slack rejects markdown_text alongside chunks
                 # (cannot_provide_both_markdown_text_and_chunks, #87743); the gateway owns
                 # the editable-text fallback rail that fallback_text feeds when this call fails.
-                try:
-                    await client.api_call(
-                        "chat.appendStream", json={"channel": chat_id, "ts": stream.stream_ts, "chunks": chunks})
-                except Exception as exc:
-                    if not _slack_error_is(exc, "message_not_in_streaming_state"):
-                        raise
-                    # Slack seals a native stream server-side after a few minutes of a long
-                    # turn (live-observed at ~5m20s, 2026-09-16; the lifetime is not
-                    # documented). The sealed message is a regular message now, so reopen a
-                    # fresh card in the same thread. Every frame already carries the FULL
-                    # visible projection, so nothing is lost; the user sees the card
-                    # continue instead of degrading to text bubbles. One reopen per update:
-                    # a second rejection is a real failure.
-                    logger.info(
-                        "[Slack] Native task-card stream %s expired (message_not_in_streaming_state); "
-                        "reopening a fresh card in thread %s", stream.stream_ts, stream.thread_ts)
-                    stream.stream_ts = ""
-                    await self._start_native_task_card_stream(client, stream, metadata)
-                    await client.api_call(
-                        "chat.appendStream", json={"channel": chat_id, "ts": stream.stream_ts, "chunks": chunks})
+                await self._append_stream_chunks(client, stream, chunks, chat_id, metadata)
                 return SendResult(success=True, message_id=stream.stream_ts)
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.error("[Slack] Native task-card progress error: %s", exc, exc_info=True)
                 return SendResult(success=False, error=str(exc), retryable=True)
 
+    async def _append_stream_chunks(
+        self, client, stream: "_NativeTaskCardStream", chunks: List[Dict[str, Any]],
+        chat_id: str, metadata: Optional[Dict[str, Any]],
+        reopen_chunks: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        """chat.appendStream chunks, reopening a sealed stream once.
+
+        Slack seals a native stream server-side after a few minutes of a long
+        turn (live-observed at ~5m20s, 2026-09-16; the lifetime is not
+        documented). The sealed message is a regular message now, so reopen a
+        fresh card in the same thread. ``reopen_chunks`` is the FULL visible
+        projection (required for delta-frame senders: a fresh stream carries no
+        history, so it must be seeded with every row). One reopen per update:
+        a second rejection is a real failure.
+        """
+        try:
+            await client.api_call(
+                "chat.appendStream", json={"channel": chat_id, "ts": stream.stream_ts, "chunks": chunks})
+        except Exception as exc:
+            if not _slack_error_is(exc, "message_not_in_streaming_state"):
+                raise
+            logger.info(
+                "[Slack] Native task-card stream %s expired (message_not_in_streaming_state); "
+                "reopening a fresh card in thread %s", stream.stream_ts, stream.thread_ts)
+            stream.stream_ts = ""
+            await self._start_native_task_card_stream(client, stream, metadata)
+            await client.api_call(
+                "chat.appendStream", json={
+                    "channel": chat_id, "ts": stream.stream_ts,
+                    "chunks": reopen_chunks if reopen_chunks is not None else chunks})
+
     @staticmethod
     async def _start_native_task_card_stream(
-        client, stream: _NativeTaskCardStream, metadata: Optional[dict[str, Any]]
+        client, stream: _NativeTaskCardStream, metadata: Optional[dict[str, Any]],
+        task_display_mode: str = "plan",
     ) -> None:
-        """chat.startStream a plan-mode card in ``stream``'s thread; sets ``stream.stream_ts``."""
+        """chat.startStream a card in ``stream``'s thread; sets ``stream.stream_ts``."""
         start_payload: dict[str, Any] = {
             "channel": stream.channel, "thread_ts": stream.thread_ts,
-            "task_display_mode": "plan"}
+            "task_display_mode": task_display_mode}
         md = metadata or {}
         recipients = (
             ("recipient_team_id", ("recipient_team_id", "team_id", "slack_team_id")),
@@ -2158,7 +2187,7 @@ class SlackAdapter(BasePlatformAdapter):
             "status": status}
 
     async def _stop_native_task_card_stream(
-        self, key: tuple[str, str, str], stream: _NativeTaskCardStream) -> None:
+        self, key: tuple[str, str, str, str], stream: _NativeTaskCardStream) -> None:
         async with stream.lock:
             if stream.stopped:
                 return
@@ -2183,6 +2212,119 @@ class SlackAdapter(BasePlatformAdapter):
         stream = self._native_task_card_streams.get(key)
         if stream is not None:
             await self._stop_native_task_card_stream(key, stream)
+
+    async def _bot_title_name(self, chat_id: str, team_id: str) -> str:
+        """Display name of whichever bot serves this card (``Ji Youyan is thinking``).
+
+        Resolved through the shared users.info path (display name, workspace-scoped);
+        falls back to the auth handle, then ``Hermes``. Never raises: a title must not
+        break a send."""
+        bot_id = self._team_bot_user_ids.get(team_id) or self._bot_user_id
+        if bot_id:
+            name = await self._resolve_user_name(bot_id, chat_id, team_id)
+            if name and name != bot_id:
+                return name
+        return (self._team_bot_names.get(team_id) or self._bot_display_name or "Hermes")
+
+    async def send_thinking_card_progress(
+        self, chat_id: str, bursts: List[str], *, title: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        fallback_text: Optional[str] = None) -> SendResult:
+        """Start or update the per-turn thinking card: one ``task_update`` row per
+        narration burst (own bullet + own toggle in the plan UI). Plan mode keeps the
+        card title visible after the turn seals (live-verified, probe P; timeline mode
+        folds the header away) and rows expand per-row behind their own toggle.
+
+        Delta contract: a burst's row is appended EXACTLY ONCE, carrying its
+        ``details`` on that first frame only. Slack CONCATENATES ``details`` when a
+        row is re-sent across frames (live-proven: the probe card's duplicated rows
+        and the canary feed garble), so re-sending details is what duplicates text.
+        The reopen path re-seeds the full projection into the FRESH stream, where
+        there is no concat history. ``fallback_text`` is accepted for signature
+        parity with the tool-card sender; the gateway owns the editable-text
+        fallback rail."""
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+        if not [b for b in bursts if str(b or "").strip()]:
+            return SendResult(success=False, error="No feed")
+        key = self._native_task_card_key(chat_id, reply_to, metadata, slot="thinking")
+        if key is None:
+            return SendResult(success=False, error="No Slack thread target")
+        stream = self._native_task_card_streams.get(key)
+        if stream is None or stream.stopped:
+            stream = _NativeTaskCardStream(team_id=key[0], channel=chat_id, thread_ts=key[2])
+            self._native_task_card_streams[key] = stream
+        async with stream.lock:
+            if stream.stopped:
+                return SendResult(success=False, error="Progress stream already stopped")
+            try:
+                client = self._get_client(chat_id, team_id=stream.team_id)
+                if not stream.stream_ts:
+                    await self._start_native_task_card_stream(
+                        client, stream, metadata, task_display_mode="plan")
+                if title is None:
+                    title = t("gateway.progress.thinking_card_title",
+                              name=await self._bot_title_name(chat_id, key[0]))
+                plan = {"type": "plan_update", "title": str(title)[:256]}
+                new_rows = [self._thinking_burst_chunk(burst, idx)
+                            for idx, burst in enumerate(bursts[stream.thinking_rows_sent:], start=stream.thinking_rows_sent)
+                            if str(burst or "").strip()]
+                if new_rows:
+                    await self._append_stream_chunks(
+                        client, stream, [plan, *new_rows], chat_id, metadata,
+                        reopen_chunks=[plan, *(self._thinking_burst_chunk(b, i)
+                                                for i, b in enumerate(bursts) if str(b or "").strip())])
+                    stream.thinking_rows_sent = len(bursts)
+                    stream.thinking_rows.extend(new_rows)
+                return SendResult(success=True, message_id=stream.stream_ts)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error("[Slack] Thinking-card progress error: %s", exc, exc_info=True)
+                return SendResult(success=False, error=str(exc), retryable=True)
+
+    @staticmethod
+    def _thinking_burst_chunk(burst: str, idx: int) -> Dict[str, Any]:
+        """One narration burst = one task_update row, appended exactly once.
+
+        Label = the burst's first 256 characters (Slack's title cap), ellipsized
+        when cut (approved mockup) -- the whole paragraph lives in ``details``
+        behind the row's toggle."""
+        text = str(burst)
+        label = text.strip()
+        if len(label) > 256:
+            label = label[:255] + "…"
+        return {
+            "type": "task_update", "id": f"thinking-{idx}",
+            "title": label,
+            "status": "in_progress", "details": text,
+        }
+
+    async def stop_thinking_card_progress(
+        self, chat_id: str, *, reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Seal the thinking card. Rows arrive ``in_progress`` so the card's aggregate
+        icon reads in-progress for the whole turn (fhu's nit); sealing flips every row to
+        ``complete`` via a DETAILS-LESS re-send -- live-proven (status probe 3, Row B):
+        a re-send without ``details`` updates the row and keeps its text, while one with
+        ``details`` CONCATENATES (Row A: 'A-DETAILS-ONEA-DETAILS-ONE'). Then
+        ``stopStream`` exactly once."""
+        key = self._native_task_card_key(chat_id, reply_to, metadata, slot="thinking")
+        if key is None:
+            return
+        stream = self._native_task_card_streams.get(key)
+        if stream is None:
+            return
+        if self._app and stream.stream_ts and stream.thinking_rows and not stream.stopped:
+            flip = [{"type": "task_update", "id": row["id"], "title": row["title"],
+                     "status": "complete"} for row in stream.thinking_rows]
+            try:
+                async with stream.lock:
+                    if not stream.stopped and stream.stream_ts:
+                        await self._get_client(stream.channel, team_id=stream.team_id).api_call(
+                            "chat.appendStream", json={
+                                "channel": stream.channel, "ts": stream.stream_ts, "chunks": flip})
+            except Exception:  # pragma: no cover - final flip is best-effort
+                logger.debug("[Slack] Thinking-card completion flip failed", exc_info=True)
+        await self._stop_native_task_card_stream(key, stream)
 
     def _suppressed_ignored(self, chat_id: str, what: str, *, level: int = logging.WARNING) -> bool:
         """True (after logging) when ``chat_id`` is a configured ignored channel."""

@@ -1109,6 +1109,14 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
                 _native_slack_task_cards = bool(adapter.native_task_cards_enabled())
             except Exception:
                 logger.debug("Slack native task-card config check failed", exc_info=True)
+        # Thinking card (plan-option-a): opt-in beside native_task_cards; same card machinery,
+        # one per-turn card carrying narration instead of per-segment replies.
+        _native_slack_thinking_cards = False
+        if _native_slack_task_cards and hasattr(adapter, "thinking_cards_enabled"):
+            try:
+                _native_slack_thinking_cards = bool(adapter.thinking_cards_enabled())
+            except Exception:
+                logger.debug("Slack thinking-card config check failed", exc_info=True)
         return self._RunAgentDisplay(
             user_config=user_config, platform_key=platform_key, enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets, resolve_display_setting=resolve_display_setting,
@@ -1119,6 +1127,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             log_queue=queue.Queue() if log_mode_enabled else None,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
             _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
+            _native_slack_thinking_cards=_native_slack_thinking_cards,
+            thinking_queue=queue.Queue() if _native_slack_thinking_cards else None,
             needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
             _generic_status_phrase=_generic_status_phrase,
         )
@@ -1129,6 +1139,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         "progress_grouping", "tool_progress_enabled", "log_queue", "resolve_display_setting",
         "user_config", "enabled_toolsets", "disabled_toolsets", "log_mode_enabled",
         "interim_assistant_messages_enabled", "needs_progress_queue", "_native_slack_task_cards",
+        "_native_slack_thinking_cards", "thinking_queue",
     )
 
     def _run_agent_build_turn_context(
@@ -2018,10 +2029,11 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
     async def _run_agent_cleanup_turn_tasks(
         self, turn_ctx: TurnContext, *, progress_task: Any, log_task: Any, interrupt_monitor: asyncio.Task,
         _notify_task: asyncio.Task, tracking_task: asyncio.Task, stream_task: Any,
+        thinking_task: Any = None,
     ) -> None:
         """``finally`` half of a turn: cancel background tasks, flush stream, release the session slot."""
         stream_consumer_holder, session_key = turn_ctx.stream_consumer_holder, turn_ctx.session_key
-        for task in (progress_task, log_task, interrupt_monitor, _notify_task):
+        for task in (progress_task, log_task, interrupt_monitor, _notify_task, thinking_task):
             if task:
                 task.cancel()
 
@@ -2050,7 +2062,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         if self._draining:
             self._update_runtime_status("draining")
 
-        for task in (progress_task, log_task, interrupt_monitor, tracking_task, _notify_task):
+        for task in (progress_task, log_task, interrupt_monitor, tracking_task, _notify_task, thinking_task):
             if task:
                 try:
                     await task
@@ -2372,6 +2384,10 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         # Progress sender drains BOTH tool-progress lines and thinking bubbles (needs_progress_queue).
         spawn = asyncio.create_task
         progress_task = spawn(turn_runner.send_progress_messages()) if disp.needs_progress_queue else None
+        # Thinking card (plan-option-a): one per-turn card carrying narration instead of replies.
+        thinking_task = (
+            spawn(turn_runner.send_thinking_card_messages()) if disp._native_slack_thinking_cards else None
+        )
         log_task = spawn(self._run_agent_write_tool_log(disp.log_queue)) if disp.log_mode_enabled else None
         # The stream consumer is created inside run_sync; this task polls for it.
         stream_task = spawn(self._run_agent_stream_consumer_task(turn_ctx.stream_consumer_holder))
@@ -2407,6 +2423,7 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             await self._run_agent_cleanup_turn_tasks(
                 turn_ctx, progress_task=progress_task, log_task=log_task, interrupt_monitor=interrupt_monitor,
                 _notify_task=_notify_task, tracking_task=tracking_task, stream_task=stream_task,
+                thinking_task=thinking_task,
             )
 
         await self._run_agent_mark_streamed_delivery(response, turn_ctx)

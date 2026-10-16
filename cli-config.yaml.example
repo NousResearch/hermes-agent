@@ -1036,8 +1036,9 @@ group_sessions_per_user: true
 # =============================================================================
 # ~/.hermes/state.db keeps every session, message, and tool call, plus the
 # FTS5 search indexes. Since #54189, auto-pruning is ON by default so the file
-# stays bounded: at CLI/gateway/cron startup (at most once per
-# min_interval_hours) Hermes deletes ENDED sessions whose last activity is
+# stays bounded: at CLI/gateway startup and on the Desktop backend's
+# (`hermes serve`) maintenance tick, at most once per min_interval_hours,
+# Hermes deletes ENDED sessions whose last activity is
 # older than retention_days. Open, pinned, and in-progress sessions are never
 # deleted. Stale automation sessions (cron/kanban/subagent/one-shot CLI) whose
 # process died without closing them are first *closed*, then aged through a

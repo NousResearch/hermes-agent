@@ -114,28 +114,42 @@ class TestSingleWriterSink:
 class TestSingleWriterLoop:
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_consume_loop_stops_when_superseded_mid_stream(self, _close, mock_create):
-        """The real streaming loop bails out the moment a newer attempt claims
-        the sink, so a superseded stream cannot interleave into the turn."""
+    def test_superseded_stream_keeps_final_tail_but_fences_live_deltas(self, _close, mock_create):
+        """A newer writer owns live output; the old provider stream still assembles
+        its complete terminal response instead of returning a truncated prefix."""
         agent = _make_agent()
         delivered = []
-        agent.stream_delta_callback = lambda t: delivered.append(t)
+        agent.stream_delta_callback = delivered.append
         agent._stream_callback = None
+        first_consumed = threading.Event()
+        superseded = threading.Event()
+
+        def claim_new_writer():
+            assert first_consumed.wait(timeout=2)
+            agent._claim_stream_writer()
+            superseded.set()
 
         def stream_gen():
             yield _chunk(content="first")
-            # A concurrent retry supersedes this stream between chunks.
-            agent._claim_stream_writer()
-            yield _chunk(content="-stale-tail", finish_reason="stop", model="m")
+            # The generator resumes only after the first chunk reached the parser.
+            first_consumed.set()
+            assert superseded.wait(timeout=2)
+            yield _chunk(content="-preserved-tail")
+            yield _chunk(finish_reason="stop", model="m")
 
+        claimant = threading.Thread(target=claim_new_writer)
+        claimant.start()
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = stream_gen()
         mock_create.return_value = mock_client
 
-        agent._interruptible_streaming_api_call({})
+        response = agent._interruptible_streaming_api_call({})
+        claimant.join(timeout=3)
 
+        assert not claimant.is_alive()
         assert "".join(delivered) == "first"
-        assert "-stale-tail" not in "".join(delivered)
+        assert response.choices[0].message.content == "first-preserved-tail"
+        assert response.choices[0].finish_reason == "stop"
 
     def test_chat_parser_failure_closes_managed_stream(self):
         agent = _make_agent()

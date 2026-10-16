@@ -18,6 +18,38 @@ from tools.approval_context import _normalize_approval_mode
 from tools.approval_smart import _smart_approve
 
 
+@pytest.mark.parametrize("command, dangerous", [
+    ("git push --force-with-lease=refs/heads/task/example: origin {sha}:refs/heads/task/example", False),
+    ('git push --force-with-lease="refs/heads/fix/example:" origin "{sha}:refs/heads/fix/example"', False),
+    ("git push '--force-with-lease=refs/heads/task/example:' origin '{sha}:refs/heads/task/example'", False),
+    ("git push --force-with-lease=refs/heads/task/example: origin " + "b" * 64 + ":refs/heads/task/example", False),
+    ("git push --force origin {sha}:refs/heads/task/example", True),
+    ("git push -f origin {sha}:refs/heads/task/example", True),
+    ("git push --force-with-lease origin {sha}:refs/heads/task/example", True),
+    ("git push --force-with-lease=refs/heads/task/example origin {sha}:refs/heads/task/example", True),
+    ("git push --force-with-lease=refs/heads/task/example:{sha} origin {sha}:refs/heads/task/example", True),
+    ("git push --force-with-lease=refs/heads/task/other: origin {sha}:refs/heads/task/example", True),
+    ("git push --force-with-lease=refs/heads/task/example: origin +{sha}:refs/heads/task/example", True),
+    ("git push --force-with-lease=refs/heads/task/example: origin HEAD:refs/heads/task/example", True),
+    ("git push --force-with-lease=refs/heads/task/example: origin {sha}:refs/heads/task/example --force", True),
+    ("git push --force-with-lease=refs/heads/task/example: origin {sha}:refs/heads/task/example --mirror", True),
+    ("git push --force-with-lease=refs/heads/task/example: origin {sha}:refs/heads/task/example --all", True),
+    ("git push --force-with-lease=refs/heads/task/example: origin {sha}:refs/heads/task/example --delete", True),
+    ("git push --force-with-lease=refs/heads/task/example: origin {sha}:refs/heads/task/example {sha}:refs/heads/task/other", True),
+    ("git push --force-with-lease=refs/heads/task/example: origin {sha}:refs/heads/task/example; git push -f origin main", True),
+    ("git push --force-with-lease=refs/heads/task/example: origin {sha}:refs/heads/task/example && rm -rf /tmp/build", True),
+    ('git push --force-with-lease=refs/heads/task/example: "$(echo origin)" {sha}:refs/heads/task/example', True),
+    ('git push --force-with-lease=refs/heads/task/example: origin {sha}:refs/heads/task/example\\\n --force', True),
+    ("git push --force-with-lease=refs/heads/task/example: origin {sha}:refs/heads/task/example --push-option=run-hook", True),
+    ('git push --force-with-lease=refs/heads/task/example: "$REMOTE" {sha}:refs/heads/task/example', True),
+    ('git push --force-with-lease=refs/heads/task/example: origin "{sha}:refs/heads/task/example', True),
+    ('bash -c "git push --force-with-lease=refs/heads/task/example: origin {sha}:refs/heads/task/example"', True),
+])
+def test_only_literal_atomic_branch_creation_avoids_force_approval(command, dangerous):
+    """Empty leases cannot replace a branch; broader push forms retain approval."""
+    assert detect_dangerous_command(command.format(sha="a" * 40))[0] is dangerous
+
+
 class TestPackageManagerUninstallApproval:
     """Package-manager removal verbs remove software outside the project (#10199)."""
 

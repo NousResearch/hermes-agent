@@ -62,25 +62,56 @@ def show_reasoning(turn) -> bool:
     return getattr(live, "show_reasoning", None) is True
 
 
+def _is_active_session_subagent(turn, session_id: str, payload: dict) -> bool:
+    subagent_id = payload.get("subagent_id")
+    if not isinstance(subagent_id, str) or not subagent_id:
+        return False
+    import sys
+    registry = sys.modules.get("tools.delegate_tool_registry")
+    if registry is None:
+        return False
+    ctx = getattr(turn, "_ctx", None)
+    holder = getattr(ctx, "agent_holder", None)
+    turn_agent = holder[0] if isinstance(holder, list) and holder else None
+    target_sid = getattr(ctx, "session_id", None) or session_id
+    with registry._active_subagents_lock:
+        record = registry._active_subagents.get(subagent_id)
+        if record is None:
+            return False
+        if turn_agent is not None and registry._is_descendant_of(record.get("agent"), turn_agent):
+            return True
+        return bool(target_sid and record.get("owner_agent_session_id") == target_sid)
+
+
 def _publish_subagent(turn, event_type, payload) -> None:
     owner = getattr(turn, "_approval_owner", None)
     if owner is not None:
         authority, session_id, generation = owner
         executing = getattr(authority, "executing", None)
         if isinstance(executing, dict) and executing.get(session_id) != generation:
-            # A background delegate_task outlives the spawning turn's running claim.
-            live = authority.sessions.get(session_id)
-            if live is not None and hasattr(live, "event_stream"):
-                live.event_stream.publish(session_id, payload, event_type=event_type)
+            if not _is_active_session_subagent(turn, session_id, payload):
                 return
+            # A background delegate_task outlives the spawning turn's running claim; publish without borrowing a later turn's execution identity.
+            live = authority.sessions.get(session_id)
+            stream = getattr(live, "event_stream", None)
+            if stream is not None:
+                import contextlib
+                lock = getattr(stream, "lock", None)
+                with lock if lock is not None else contextlib.nullcontext():
+                    saved = getattr(stream, "execution", None)
+                    if isinstance(saved, dict):
+                        stream.execution = {}
+                    try:
+                        stream.publish(session_id, payload, event_type=event_type)
+                    finally:
+                        if isinstance(saved, dict):
+                            stream.execution = saved
+            return
     turn._publish_execution(event_type, payload)
 
 
 def publish_progress(turn, event_type, name, preview, kwargs) -> None:
-    """``subagent.*``, ``reasoning.available`` and the MoA facade events from the agent's progress
-    callback. A classic CLI renders MoA references whatever its reasoning display (main's
-    ``_on_tool_progress``); other viewers get them, like the TUI gateway's own emitters, only with
-    reasoning shown."""
+    """``subagent.*``, ``reasoning.available`` and the MoA facade events from the agent's progress callback; a classic CLI renders MoA references whatever its reasoning display (main's ``_on_tool_progress``), while other viewers get them only with reasoning shown."""
     if isinstance(event_type, str) and event_type.startswith("subagent."):
         if event_type == "subagent.text":
             return

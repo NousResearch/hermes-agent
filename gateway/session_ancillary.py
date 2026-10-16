@@ -321,7 +321,9 @@ def _owner_objects(authority, ref, *, include_fallback_evicted=False):
         raise RuntimeStoreError('unsupported_projection')
     agent = authority.agent(ref)
     session_id = physical_target(authority, ref) if include_fallback_evicted else None
-    return agent, subagent_records(agent, session_id=session_id, include_fallback_evicted=include_fallback_evicted)
+    route = authority.sessions[ref.session_id].route if include_fallback_evicted else None
+    return agent, subagent_records(
+        agent, session_id=session_id, route=route, include_fallback_evicted=include_fallback_evicted)
 
 
 def physical_target(authority, ref):
@@ -363,7 +365,7 @@ def control_snapshot(authority, ref):
             'updated_at': _snapshot_updated_at(*states)}
 
 
-def _has_fallback_evicted_ancestor(agent, target_sid, registry):
+def _has_fallback_evicted_ancestor(agent, target_sid, expected_db, route, registry):
     if not target_sid:
         return False
     current = agent
@@ -372,23 +374,31 @@ def _has_fallback_evicted_ancestor(agent, target_sid, registry):
         current = ref() if callable(ref) else None
         if current is None:
             return False
-        if getattr(current, '_evicted_on_fallback', False) is True and getattr(current, 'session_id', None) == target_sid:
-            return True
+        marker = getattr(current, '_evicted_on_fallback', False)
+        if not (marker is True or (isinstance(marker, str) and bool(marker))):
+            continue
+        if getattr(current, 'session_id', None) != target_sid:
+            continue
+        if expected_db is not None and getattr(current, '_session_db', None) is not expected_db:
+            continue
+        if route is not None and isinstance(marker, str) and marker != route:
+            continue
+        return True
     return False
 
 
-def subagent_records(parent, session_id=None, *, include_fallback_evicted=True):
+def subagent_records(parent, session_id=None, *, session_db=None, route=None, include_fallback_evicted=True):
     registry = sys.modules.get('tools.delegate_tool_registry')
     target_sid = (session_id or getattr(parent, 'session_id', None)) if include_fallback_evicted else None
     if registry is None or (parent is None and not target_sid):
         return []
+    expected_db = session_db if session_db is not None else getattr(parent, '_session_db', None)
+    effective_route = route if route is not None else getattr(parent, 'gateway_session_key', None)
     with registry._active_subagents_lock:
-        # Deliberately no unconditional durable-ID fallback: equal IDs cannot transfer a live
-        # old parent's transcript or control to a replacement execution object. Only a parent
-        # evicted by this session's own fallback keeps its children visible in the read-only roster.
+        # Deliberately no unconditional durable-ID fallback: only a parent evicted by this session's own fallback keeps its children visible in the read-only roster.
         return [dict(record) for record in registry._active_subagents.values()
                 if (parent is not None and registry._is_descendant_of(record.get('agent'), parent))
-                or _has_fallback_evicted_ancestor(record.get('agent'), target_sid, registry)]
+                or _has_fallback_evicted_ancestor(record.get('agent'), target_sid, expected_db, effective_route, registry)]
 
 
 def subagent_tail(records, subagent_id):

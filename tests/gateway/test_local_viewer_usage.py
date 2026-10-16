@@ -148,9 +148,7 @@ def test_turn_end_publishes_the_agents_banner_info():
 
 @pytest.mark.asyncio
 async def test_local_viewer_admission_settles_with_tui_usage_on_message_complete(tmp_path, monkeypatch):
-    """End-to-end through ``session_ingress``: ``publish_usage(record=True)`` writes
-    ``captured['session_usage']`` during the turn, and the admission packing must carry it
-    into ``pending_results`` so ``completion_payload`` attaches ``usage`` to ``message.complete``."""
+    """End-to-end through ``session_ingress``: ``publish_usage(record=True)`` writes ``captured['session_usage']`` during the turn, and the admission packing carries it into ``pending_results`` so ``completion_payload`` attaches ``usage`` to ``message.complete``."""
     from gateway.session_controls import AuthorityConnection
     from gateway.session_usage import publish_usage
     from tests.gateway.test_surface_admission import _authority

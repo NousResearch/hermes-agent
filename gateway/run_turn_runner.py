@@ -1315,13 +1315,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             **usage,
             **({"persisted_turn": persisted_turn} if persisted_turn else {}),
         }
-        was_delivered = getattr(agent, "_interim_text_was_delivered", None)
-        previewed = bool(result.get("response_previewed") or (
-            callable(was_delivered) and bool(final_response) and was_delivered(final_response) is True))
-        viewer_meta = {
-            **({"billing_block": result["billing_block"]} if isinstance(result.get("billing_block"), dict) else {}),
-            **({"warning": result["warning"]} if isinstance(result.get("warning"), str) and result["warning"] else {}),
-        }
+        previewed = bool(result.get("response_previewed"))
+        viewer_meta = {}
+        if local_sinks is not None:
+            was_delivered = getattr(agent, "_interim_text_was_delivered", None)
+            previewed = bool(previewed or (callable(was_delivered) and bool(final_response) and was_delivered(final_response) is True))
+            viewer_meta = {
+                **({"billing_block": result["billing_block"]} if isinstance(result.get("billing_block"), dict) else {}),
+                **({"warning": result["warning"]} if isinstance(result.get("warning"), str) and result["warning"] else {}),
+            }
         if not final_response:
             final_response = _normalize_empty_agent_response(result, final_response or "", history_len=len(agent_history))
             final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)

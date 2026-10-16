@@ -125,8 +125,7 @@ export type GatewayEventPayload = {
   install_warning?: string
   personality?: string
   usage?: Partial<UsageStats>
-  // Canonical session.usage ticks carry cumulative counters at the payload
-  // top level; older ticker frames nest the desktop Usage shape above.
+  // Canonical session.usage ticks carry cumulative counters at the payload top level; older ticker frames nest the desktop Usage shape above.
   api_calls?: number | null
   cache_read_tokens?: number | null
   completion_tokens?: number | null

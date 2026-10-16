@@ -298,8 +298,7 @@ async def test_service_tier_is_a_session_scoped_fast_override(tmp_path, monkeypa
 
 
 def test_completion_payload_forwards_billing_failure_and_response_flags():
-    """TUI-6: ``message.complete`` carries ``billing``, ``failure_reason``, ``warning``,
-    ``response_previewed`` and ``response_transformed`` from the turn result."""
+    """TUI-6: ``message.complete`` carries ``billing``, ``failure_reason``, ``warning``, ``response_previewed`` and ``response_transformed`` from the turn result."""
     from gateway.session import SessionSource
     from gateway.session_results import execution_result
     from gateway.session_settlement_recovery import completion_payload
@@ -342,9 +341,10 @@ def test_completion_payload_forwards_billing_failure_and_response_flags():
 
 
 def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
-    """TUI-4: ``_ChildProgressRelay`` events reach the viewer stream on ``Platform.LOCAL``
-    (including after the spawning turn's generation settles) and never on messaging platforms."""
+    """TUI-4: ``_ChildProgressRelay`` events reach the viewer stream on ``Platform.LOCAL`` (including registered background children after the spawning turn settles, without borrowing a later turn's execution identity) and never on messaging platforms."""
+    from gateway.session_events import SessionEvents
     from tools.delegate_tool_progress import _build_child_progress_callback
+    from tools.delegate_tool_registry import _register_subagent, _unregister_subagent
     from tui_gateway.contracts.registry import EVENTS
 
     published = []
@@ -385,13 +385,24 @@ def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
     assert published[4][1]['text'] == 'visible chain of thought'
     assert published[6][1]['status'] == 'completed' and published[6][1]['summary'] == 'all clear'
 
-    # Background delegation outliving the spawning turn's running claim still publishes to the stream.
-    stream_events = []
-    live.event_stream = SimpleNamespace(
-        publish=lambda sid, payload, *, event_type='message.complete': stream_events.append((sid, event_type, payload)))
+    # Registered background child outliving the spawning turn publishes without borrowing the next turn's execution identity; unregistered stale callbacks are rejected.
+    stream_frames = []
+    live.event_stream = SessionEvents()
+    live.event_stream.execution = {'admission_id': 'turn-b', 'execution_generation': 2}
+    live.event_stream.observers.add(stream_frames.append)
     turn._approval_owner[0].executing = {'s': 2}
-    relay('subagent.complete', status='completed', summary='late finish')
-    assert len(stream_events) == 1 and stream_events[0][1] == 'subagent.complete'
+    stale_relay = _build_child_progress_callback(0, 'stale goal', parent, subagent_id='sa-stale')
+    stale_relay('subagent.complete', status='completed', summary='stale finish')
+    assert stream_frames == []
+    _register_subagent({'subagent_id': 'sa-0-abc12345', 'agent': SimpleNamespace(), 'owner_agent_session_id': 's'})
+    try:
+        relay('subagent.complete', status='completed', summary='late finish')
+    finally:
+        _unregister_subagent('sa-0-abc12345')
+    assert len(stream_frames) == 1
+    params = stream_frames[0]['params']
+    assert params['type'] == 'subagent.complete' and 'admission_id' not in params and 'execution_generation' not in params
+    assert live.event_stream.execution == {'admission_id': 'turn-b', 'execution_generation': 2}
 
     # Messaging routes never publish subagent.* viewer frames.
     msg_published = []
@@ -405,9 +416,7 @@ def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
 
 
 def test_subagent_roster_retains_running_child_after_fallback_evicts_parent():
-    """TUI-4 fallback roster: when ``_run_agent_evict_on_fallback`` evicts the parent after a
-    successful provider fallback, ``subagent_records`` keeps the child visible for the read-only
-    roster without transferring control/tail ownership to an unrelated replacement object."""
+    """TUI-4 fallback roster: when ``_run_agent_evict_on_fallback`` evicts the parent after a successful provider fallback, ``subagent_records`` keeps the child visible for the owning profile and route without transferring control/tail ownership or leaking across profiles."""
     import weakref
     from gateway.run_turn import GatewayTurnMixin
     from gateway.session_ancillary import subagent_records
@@ -416,22 +425,35 @@ def test_subagent_roster_retains_running_child_after_fallback_evicts_parent():
     class Parent:
         pass
 
+    db_a, db_b = object(), object()
     original = Parent()
     original.session_id = 'same-parent'
-    original._session_db = None
+    original._session_db = db_a
+    original.gateway_session_key = 'route'
     original.model = 'fallback-model'
     original._provider_fallback_active = True
 
     replacement = Parent()
     replacement.session_id = original.session_id
-    replacement._session_db = None
+    replacement._session_db = db_a
+    replacement.gateway_session_key = 'route'
+
+    foreign_parent = Parent()
+    foreign_parent.session_id = original.session_id
+    foreign_parent._session_db = db_b
+    foreign_parent.gateway_session_key = 'foreign-route'
+    foreign_parent.model = 'fallback-model'
+    foreign_parent._provider_fallback_active = True
 
     unevicted = Parent()
     unevicted.session_id = original.session_id
+    unevicted._session_db = db_a
 
     child = SimpleNamespace(_delegate_parent_ref=weakref.ref(original))
+    foreign_child = SimpleNamespace(_delegate_parent_ref=weakref.ref(foreign_parent))
     stale_child = SimpleNamespace(_delegate_parent_ref=weakref.ref(unevicted))
     _register_subagent({'subagent_id': 'fallback-child', 'agent': child, 'owner_agent_session_id': original.session_id})
+    _register_subagent({'subagent_id': 'foreign-child', 'agent': foreign_child, 'owner_agent_session_id': foreign_parent.session_id})
     _register_subagent({'subagent_id': 'stale-child', 'agent': stale_child, 'owner_agent_session_id': unevicted.session_id})
     try:
         assert [r['subagent_id'] for r in subagent_records(original)] == ['fallback-child']
@@ -440,13 +462,18 @@ def test_subagent_roster_retains_running_child_after_fallback_evicts_parent():
             SimpleNamespace(_evict_cached_agent=evicted.append),
             SimpleNamespace(session_key='route', agent_holder=[original], result_holder=[{'failed': False}]),
         )
-        assert evicted == ['route']
-        # After a replacement parent is built, and while no resident parent is cached, the fallback
-        # child stays in the read-only roster; the un-evicted same-ID object's child never does.
+        GatewayTurnMixin._run_agent_evict_on_fallback(
+            SimpleNamespace(_evict_cached_agent=evicted.append),
+            SimpleNamespace(session_key='foreign-route', agent_holder=[foreign_parent], result_holder=[{'failed': False}]),
+        )
+        assert evicted == ['route', 'foreign-route']
+        # After a replacement parent is built, and while no resident parent is cached, only this profile/route's fallback child stays in the read-only roster.
         assert [r['subagent_id'] for r in subagent_records(replacement)] == ['fallback-child']
-        assert [r['subagent_id'] for r in subagent_records(None, session_id=original.session_id)] == ['fallback-child']
+        assert [r['subagent_id'] for r in subagent_records(None, session_id=original.session_id, session_db=db_a, route='route')] == ['fallback-child']
+        assert [r['subagent_id'] for r in subagent_records(None, session_id=original.session_id, session_db=db_b, route='foreign-route')] == ['foreign-child']
         # Control and tail require exact resident-parent identity.
         assert subagent_records(replacement, include_fallback_evicted=False) == []
     finally:
         _unregister_subagent('fallback-child')
+        _unregister_subagent('foreign-child')
         _unregister_subagent('stale-child')

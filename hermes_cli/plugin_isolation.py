@@ -70,6 +70,7 @@ HOST_OBJECT_BASES: dict[str, str] = {
 # callback receives placeholders for those fields, so a plugin that uses them needs in-process.
 HOST_DEGRADED_HOOKS: dict[str, str] = {
     "pre_gateway_dispatch": "receives the live gateway runner and session store",
+    "pre_prompt_submit": "receives an ask callable bound to the live session",
 }
 
 

@@ -13,6 +13,7 @@ import logging
 import re
 import ssl
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 from gateway.platforms._shared import (
@@ -320,8 +321,9 @@ class IRCAdapter(BasePlatformAdapter):
             return
         source = self.build_source(
             chat_id=chat_id, chat_name=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_name)
+        # Native admission deduplicates by message ID; distinct lines can arrive in one millisecond.
         await self.handle_message(MessageEvent(text=text, message_type=MessageType.TEXT, source=source,
-                                               message_id=_ms_id(), timestamp=datetime.datetime.now()))
+                                               message_id=uuid.uuid4().hex, timestamp=datetime.datetime.now()))
 
 
 # ── Plugin registration ──────────────────────────────────────────────────────

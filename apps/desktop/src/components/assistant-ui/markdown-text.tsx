@@ -21,9 +21,9 @@ import { useMediaImage } from '@/hooks/use-media-image'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
-import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
+import { useMathPlugin } from '@/lib/math-plugin-loader'
 import {
   downloadGatewayMediaFile,
   isFileMediaPath,
@@ -48,19 +48,15 @@ import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } fro
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
 
-// Math rendering plugin (KaTeX). Configured once at module scope — the
-// plugin is stateless beyond its internal cache so re-creating per-render
-// would needlessly thrash. We use a memoizing wrapper around rehype-katex
-// (see lib/katex-memo.ts) so that during streaming we re-katex only the
-// equations whose source actually changed since the last token. With the
-// stock @streamdown/math plugin every equation re-renders on every token,
-// which throttles UI updates badly for math-heavy responses; the memoized
-// plugin keeps the steady-state work proportional to "new equations
-// arriving" rather than "equations × tokens-per-second".
-//
-// `singleDollarTextMath: true` enables `$x^2$` for inline math (de-facto
-// LLM convention). The default false-setting only accepts `$$...$$`.
-const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
+// Math rendering plugin (KaTeX) — loaded lazily via `useMathPlugin`
+// (`@/lib/math-plugin-loader`), same grace as the `@streamdown/code` plugin
+// below: katex is ~250–350KB and must never sit on the entry graph. Until it
+// lands, `$x$` renders as source text and upgrades in place. The plugin object
+// itself is shared (module-level cache in the loader), so this keeps the
+// previous module-scope semantics — one memoized instance with
+// `singleDollarTextMath: true` for the `$x^2$` LLM convention — without the
+// static import. See lib/katex-memo.ts for why the memoized wrapper matters
+// during streaming.
 
 // `@streamdown/code` statically imports ALL of shiki (every grammar + theme —
 // the single largest chunk in the renderer), so it must never sit on the
@@ -631,7 +627,12 @@ function MarkdownTextSurface({
   // `SyntaxHighlighter` below when `isStreaming` is true, and the code plugin
   // itself arrives async (useCodePlugin) so shiki never blocks cold start.
   const code = useCodePlugin()
-  const plugins = useMemo(() => (code ? { math: mathPlugin, code } : { math: mathPlugin }), [code])
+  const math = useMathPlugin()
+
+  const plugins = useMemo(
+    () => ({ ...(math ? { math } : null), ...(code ? { code } : null) }),
+    [code, math]
+  )
 
   const components = useMemo(
     () =>

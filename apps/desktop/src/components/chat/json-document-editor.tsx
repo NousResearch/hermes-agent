@@ -1,7 +1,8 @@
 import type * as React from 'react'
 import { type RefObject, useRef } from 'react'
 
-import { CodeEditor, type CodeEditorApi } from '@/components/chat/code-editor'
+import type { CodeEditorApi } from '@/components/chat/code-editor'
+import { LazyCodeEditor as CodeEditor } from '@/components/chat/code-editor-lazy'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import { EditorView } from '@codemirror/view'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
@@ -125,6 +125,11 @@ it.each(['connection', 'profile', 'local', 'api-route'] as const)(
       )
 
       fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+      // The editor loads async (CodeMirror stays off the entry graph behind
+      // a lazy boundary), so wait for its content DOM before driving it.
+      await waitFor(() => {
+        expect(rendered.container.querySelector('.cm-content')).not.toBeNull()
+      })
       const editor = EditorView.findFromDOM(rendered.container.querySelector('.cm-content')!)!
       act(() => editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: 'draft for origin' } }))
       fireEvent.click(screen.getByRole('button', { name: /Save/ }))

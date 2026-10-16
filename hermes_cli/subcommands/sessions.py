@@ -28,6 +28,18 @@ def _add_rename_and_discard(sessions_subparsers) -> None:
     add_discard_parser(sessions_subparsers)
 
 
+def _add_browse_parser(sessions_subparsers) -> None:
+    sessions_browse = sessions_subparsers.add_parser(
+        "browse", help="Interactive session picker — browse, search, and resume sessions")
+    sessions_browse.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
+    sessions_browse.add_argument(
+        "--limit", type=int, default=500, help="Max sessions to load (default: 500)")
+    add_json_flag(sessions_browse, "Print session metadata as JSON array to stdout instead of launching TUI")
+    sessions_browse.add_argument(
+        "--format", choices=["text", "json"], default=None,
+        help="Output format: 'text' (default, interactive picker) or 'json'")
+
+
 def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     """Attach the ``sessions`` subcommand to ``subparsers``."""
     sessions_parser = subparsers.add_parser(
@@ -309,11 +321,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_retitle.add_argument(
         "--limit", type=int, default=200, help="Maximum sessions to examine (default: 200)")
 
-    sessions_browse = sessions_subparsers.add_parser(
-        "browse", help="Interactive session picker — browse, search, and resume sessions")
-    sessions_browse.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
-    sessions_browse.add_argument(
-        "--limit", type=int, default=500, help="Max sessions to load (default: 500)")
+    _add_browse_parser(sessions_subparsers)
 
     sessions_import = sessions_subparsers.add_parser(
         "import", help="Import a Claude Code or Codex CLI session into Hermes",

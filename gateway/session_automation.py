@@ -110,6 +110,18 @@ def _route_identity(source):
     return {key: value for key, value in source.to_dict().items() if key != 'message_id'}
 
 
+def committed_route_envelope(authority, entry):
+    """The route's last committed native envelope with connector provenance (what a producer turn
+    borrows), or ``None`` while no human message was admitted there."""
+    from hermes_state_runtime import list_session_admissions
+    # Admissions belong to the logical root; ``entry.session_id`` is only the transcript tip.
+    prior = list_session_admissions(authority.db, session_id=authority.logical_owner(entry.session_id),
+                                    pending_only=False)
+    envelope = next((r['payload']['native_text_v1'] for r in reversed(prior)
+                     if 'native_text_v1' in r['payload']), None)
+    return envelope if envelope is not None and 'provenance' in envelope else None
+
+
 def snapshot_automation(authority, adapter, event, identity):
     runner = authority.runner
     if (not event.internal or event.message_type != MessageType.TEXT or event.is_command()
@@ -122,13 +134,9 @@ def snapshot_automation(authority, adapter, event, identity):
     if event.source.platform == Platform.LOCAL:
         return snapshot_local_automation(authority, adapter, event, identity, entry)
     from gateway.session_envelope import restore_native
-    from hermes_state_runtime import list_session_admissions
-    # Admissions belong to the logical root; ``entry.session_id`` is only the transcript tip.
     owner = authority.logical_owner(entry.session_id)
-    prior = list_session_admissions(authority.db, session_id=owner, pending_only=False)
-    envelope = next((r['payload']['native_text_v1'] for r in reversed(prior)
-                     if 'native_text_v1' in r['payload']), None)
-    if envelope is None or 'provenance' not in envelope:
+    envelope = committed_route_envelope(authority, entry)
+    if envelope is None:
         raise RuntimeStoreError('not_found')
     # Persisted origins deliberately omit relay trust. Borrow only an exact
     # committed source's private proof, revalidated against the live connector.
@@ -403,12 +411,8 @@ async def admit_route_wake(runner, adapter, source, text, producer, metadata=Non
         await authority.admit_automation(adapter, event, identity)
         return True
     from gateway.session_envelope import restore_native
-    from hermes_state_runtime import list_session_admissions
-    prior = list_session_admissions(authority.db, session_id=authority.logical_owner(entry.session_id),
-                                    pending_only=False)
-    envelope = next((r['payload']['native_text_v1'] for r in reversed(prior)
-                     if 'native_text_v1' in r['payload']), None)
-    if envelope is None or 'provenance' not in envelope:
+    envelope = committed_route_envelope(authority, entry)
+    if envelope is None:
         return False
     # The route's committed source, which ``snapshot_automation`` re-derives and compares.
     restored = restore_native({'text': text, 'native_text_v1': {

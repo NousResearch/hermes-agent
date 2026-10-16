@@ -52,3 +52,17 @@ it('carries `hermes --tui --ignore-rules` (HERMES_IGNORE_RULES) onto session.cre
   expect(localCreationOptions({ HERMES_IGNORE_RULES: '0' } as NodeJS.ProcessEnv)).not.toHaveProperty('ignore_rules')
   expect(localCreationOptions({} as NodeJS.ProcessEnv)).not.toHaveProperty('ignore_rules')
 })
+
+it('sends the launcher\'s client environment (LC-8, T3) only to a gateway that takes it', () => {
+  const options = localCreationOptions({ HERMES_TUI_CLIENT_ENV: JSON.stringify({ PATH: '/client/bin' }) } as NodeJS.ProcessEnv)
+  expect(options.client_env).toEqual({ PATH: '/client/bin' })
+  const takes = { sources: ['tui'], parameters: ['request_id', 'source', 'client_env'] }
+  expect(canonicalRequest('session.create', { request_id: 'r', ...options }, takes).params.client_env).toEqual({ PATH: '/client/bin' })
+  // An older gateway has no such field: the launch goes ahead without it rather than failing.
+  const older = { sources: ['tui'], parameters: ['request_id', 'source'] }
+  expect(canonicalRequest('session.create', { request_id: 'r', ...options }, older).params).not.toHaveProperty('client_env')
+
+  for (const raw of ['not json', '[]', '{"PATH": 1}']) {
+    expect(localCreationOptions({ HERMES_TUI_CLIENT_ENV: raw } as NodeJS.ProcessEnv)).not.toHaveProperty('client_env')
+  }
+})

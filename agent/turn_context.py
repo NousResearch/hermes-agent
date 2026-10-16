@@ -642,6 +642,10 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
                     "issue — cleaned up automatically. Proceeding with fresh "
                     "connection."
                 )
+    # A stale streak against a local server that has since recovered must not fail this turn on arrival.
+    with suppress(Exception):
+        from agent.chat_completion_local import retry_recovered_local_server
+        retry_recovered_local_server(agent)
     # Replay compression warning through status_callback for gateway platforms.
     if agent._compression_warning:
         agent._replay_compression_warning()
@@ -1328,6 +1332,11 @@ def build_api_messages(
         # 'reasoning_details' is shaped by the replay policy above on chat_completions and
         # left intact for the native adapters (anthropic/bedrock rebuild signed blocks from it).
         api_messages.append(api_msg)
+
+    # Rows rebuilt from the session DB carry ``[screenshot]`` lines: re-attach the newest retained
+    # images on this wire copy (vision.replay_recent_images; native image input only).
+    from agent.image_replay import replay_for_agent
+    replay_for_agent(agent, api_messages)
 
     # A provider-rejected Anthropic signature is suppressed outside canonical history and
     # survives fresh request construction / process resume via session model_config.

@@ -199,6 +199,10 @@ def row_turn_author(policy, row):
 
 
 async def execute_admission(authority, ref, row):
+    from gateway.session_completion_notes import note_if_unviewed
+    noted = await note_if_unviewed(authority, ref, row)  # #134889 LC-7: no viewer, no turn
+    if noted is not None:
+        return noted
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if policy is not None and policy.source == 'cron':

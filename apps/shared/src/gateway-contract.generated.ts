@@ -1080,7 +1080,7 @@ export interface ConnectionTargetEnvField {
   default: string
   prompt?: string | null
 }
-export type CatalogTier = 'official' | 'community'
+export type CatalogTier = 'official' | 'verified' | 'community'
 /** The catalog's security scan of the pinned commit; read-only on the card. */
 export interface CatalogScan {
   status: CatalogScanStatus
@@ -4594,6 +4594,7 @@ export interface CanonicalSessionInfo {
   api_mode?: string | null
   tool_count?: number | null
   credential_hint?: string | null
+  config_warning?: string | null
   [key: string]: unknown
 }
 export interface SessionStatsParams {
@@ -4881,6 +4882,7 @@ export interface CanonicalCreateParams {
   cwd_explicit?: boolean | null
   run_budget?: number | null
   verbose?: boolean
+  client_env?: Record<string, string> | null
 }
 export interface CanonicalSnapshot {
   session_id: string
@@ -4958,6 +4960,7 @@ export interface CanonicalSnapshotInfo {
   api_mode?: string | null
   tool_count?: number | null
   credential_hint?: string | null
+  config_warning?: string | null
 }
 export interface CanonicalResumeParams {
   profile?: string | null

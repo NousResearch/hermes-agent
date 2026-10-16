@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from agent.image_eviction_policy import outbound_image_retire_count
+from agent.image_eviction_policy import images_all_within_many_image_limit, latched_retire_count, outbound_image_retire_count, outbound_retired_image_ids
 from agent.compression_marker import (
     ELISION_MARKER_MAX_LEN,
     _elision_marker,
@@ -1484,33 +1484,32 @@ def _retire_stale_tool_result_images(
     return pruned
 
 
-def _image_payload(msg: dict[str, Any]) -> tuple[int, int]:
-    """``(blocks, bytes)`` of image payload in a message.
+def _image_payload(msg: dict[str, Any]) -> list[str]:
+    """Data URL / base64 string of each image block in a message (``""`` when unmeasurable).
 
-    The provider counts BLOCKS: one ``tool_result`` carrying three screenshots is three against
-    the per-request limit. Bytes are the data-URL / base64 length — the payload is ASCII and the
-    JSON framing around it is noise against a 24 MB budget, so no per-request re-serialization.
+    The provider counts BLOCKS (one ``tool_result`` with three screenshots is three), so the
+    block count is the list length. Bytes are the summed string lengths: the payload is ASCII and
+    the JSON framing around it is noise against a 24 MB budget. The strings also let the caller
+    read dimensions from headers only, without a second walk or a full decode.
     """
     parts = _tool_result_parts(msg.get("content"))
     if not isinstance(parts, list):
-        return 0, 0
-    blocks = payload = 0
+        return []
+    sources: list[str] = []
     for p in parts:
         if not _is_image_part(p):
             continue
-        blocks += 1
         image_url = p.get("image_url")
         source = p.get("source")
         data = (
             (image_url.get("url") if isinstance(image_url, dict) else image_url)
             or (source.get("data") if isinstance(source, dict) else None)
-            or ""
         )
-        payload += len(data) if isinstance(data, str) else 0
-    return blocks, payload
+        sources.append(data if isinstance(data, str) else "")
+    return sources
 
 
-def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]]) -> int:
+def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]], retired_ids: Optional[set[str]] = None) -> int:
     """Drop stale screenshot/vision payloads from the per-call API copy.
 
     Compression's keep-newest pass only runs when prune/compress fires, and the Anthropic
@@ -1520,29 +1519,28 @@ def evict_stale_outbound_tool_images(api_messages: list[dict[str, Any]]) -> int:
     sanitization (#89296). Do not pass persisted history — the rewrite is send-path only.
 
     Eviction is driven by the provider limit, counted in image BLOCKS, with user uploads
-    reserved against the ceiling but never rewritten — policy and rationale in
-    :mod:`agent.image_eviction_policy`. Returns the number of messages rewritten.
+    reserved against the ceiling but never rewritten; the block ceiling depends on the
+    request's image dimensions — policy and rationale in :mod:`agent.image_eviction_policy`.
+    Returns the number of messages rewritten.
+    ``retired_ids`` latches the frontier per session: see :func:`latched_retire_count`.
     """
-    carriers: list[tuple[int, tuple[int, int]]] = []
-    reserved_blocks = reserved_bytes = 0
+    carriers: list[tuple[int, list[str]]] = []  # (index, image sources), newest first
+    reserved: list[str] = []
     for i in range(len(api_messages) - 1, -1, -1):
         msg = api_messages[i]
-        if not isinstance(msg, dict):
-            continue
-        blocks, size = _image_payload(msg)
-        if not blocks:
-            continue
-        if msg.get("role") == "tool":
-            carriers.append((i, (blocks, size)))
+        sources = _image_payload(msg) if isinstance(msg, dict) else []
+        if sources and msg.get("role") == "tool":
+            carriers.append((i, sources))
         else:
-            reserved_blocks += blocks
-            reserved_bytes += size
+            reserved.extend(sources)
     retire = outbound_image_retire_count(
-        [blocks for _, (blocks, _) in carriers],
-        reserved_blocks,
-        carrier_bytes_newest_first=[size for _, (_, size) in carriers],
-        reserved_bytes=reserved_bytes,
+        [len(sources) for _, sources in carriers],
+        len(reserved),
+        carrier_bytes_newest_first=[sum(map(len, sources)) for _, sources in carriers],
+        reserved_bytes=sum(map(len, reserved)),
+        many_image_safe=images_all_within_many_image_limit([*reserved, *(x for _, ss in carriers for x in ss)]),
     )
+    retire = latched_retire_count(retire, [api_messages[i].get("tool_call_id") for i, _ in carriers], retired_ids)
     pruned = 0
     for i, _ in carriers[len(carriers) - retire:]:
         new_msg = _strip_images_from_tool_msg(api_messages[i])
@@ -4909,8 +4907,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         last_visible_role = _last_template_visible_role(compressed)
         if self._has_merged_inflight_replay(inflight):
-            # Never copy a summary carrier (metadata would mark the replay
-            # synthetic): restate as a plain user row.
+            # Never copy a summary carrier (its metadata marks it synthetic): restate as a plain user row.
             replay = {"role": "user", "content": task_text}
         else:
             replay = _fresh_compaction_message_copy(inflight)
@@ -4937,7 +4934,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         # occurrence of it. When the original survived in the protected head,
         # retaining it gives the durable transcript two active rows with the
         # same message_uid and renders the request twice after reload.
-        from agent.message_metadata import MESSAGE_UID, message_uid_or_none, record_absorbed_message
+        from agent.message_metadata import MESSAGE_UID, mark_inflight_restatement, message_uid_or_none, record_absorbed_message
+        mark_inflight_restatement(replay)  # only the standalone row: the merged layout is already a summary
 
         if replay_uid := message_uid_or_none(replay):
             before = len(compressed)

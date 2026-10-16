@@ -1,25 +1,25 @@
 name: blackbox
 repo: https://github.com/umanitek/agent-blackbox
-sha: 22cb7e62d3b680a6581987ba51f1ee5495525ef1
+sha: 7d697683e0d56608cfe3fee374d6a6866702058a
 subdir: plugins/blackbox
 title: Agent Blackbox
 description: 'Security for agents: checks every tool call and model request before it runs against a
   curated, verifiable threat graph (prompt injection, dangerous commands, malicious packages, unsafe
   skills, phishing and drainer indicators) and local rules that keep an agent away from wallet stores,
-  seed phrases, private keys and exchange API keys. Audit mode records; block mode refuses. Shares
-  privacy-safe threat reports with an open community graph by default (one command turns it off);
-  community findings only ever flag. Hooks only: no tools, no middleware.'
+  seed phrases, private keys and exchange API keys. Audit mode records; block mode refuses. Can share
+  privacy-safe threat reports with an open community graph once the user turns sharing on (off by
+  default); community findings only ever flag. Hooks only: no tools, no middleware.'
 maintainer: Umanitek
 tier: community
 category: tools
 version: "1.0.0"
 requires_hermes: ">=0.21.7"
-docs_url: https://github.com/umanitek/agent-blackbox/tree/22cb7e62d3b680a6581987ba51f1ee5495525ef1/plugins/blackbox
-image: https://raw.githubusercontent.com/umanitek/agent-blackbox/22cb7e62d3b680a6581987ba51f1ee5495525ef1/docs/catalog/banner.png
+docs_url: https://github.com/umanitek/agent-blackbox/tree/7d697683e0d56608cfe3fee374d6a6866702058a/plugins/blackbox
+image: https://raw.githubusercontent.com/umanitek/agent-blackbox/7d697683e0d56608cfe3fee374d6a6866702058a/docs/catalog/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/umanitek/agent-blackbox/22cb7e62d3b680a6581987ba51f1ee5495525ef1/docs/catalog/dashboard.png
-  - https://raw.githubusercontent.com/umanitek/agent-blackbox/22cb7e62d3b680a6581987ba51f1ee5495525ef1/docs/catalog/trader-shield.png
-  - https://raw.githubusercontent.com/umanitek/agent-blackbox/22cb7e62d3b680a6581987ba51f1ee5495525ef1/docs/catalog/threat-tiers.png
+  - https://raw.githubusercontent.com/umanitek/agent-blackbox/7d697683e0d56608cfe3fee374d6a6866702058a/docs/catalog/dashboard.png
+  - https://raw.githubusercontent.com/umanitek/agent-blackbox/7d697683e0d56608cfe3fee374d6a6866702058a/docs/catalog/trader-shield.png
+  - https://raw.githubusercontent.com/umanitek/agent-blackbox/7d697683e0d56608cfe3fee374d6a6866702058a/docs/catalog/threat-tiers.png
 readme: true
 platforms: []
 known_issues:

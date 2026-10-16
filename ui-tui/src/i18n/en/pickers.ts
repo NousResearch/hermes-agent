@@ -49,7 +49,7 @@ export const pickersEn = {
       },
       provider: {
         title: 'Select provider (step 1/3)',
-        subtitle: 'Full model IDs on the next step · Enter to continue',
+        subtitle: 'Type a model ID to switch directly · Enter to continue',
         // {0} = current model id (or the `unknown` leaf below).
         current: (model: string) => `Current: ${model}`,
         unknown: '(unknown)',
@@ -61,7 +61,7 @@ export const pickersEn = {
         // {0} = provider warning text from the backend.
         warning: (warning: string) => `warning: ${warning}`,
         noMatches: 'no providers match',
-        hint: '↑/↓ select · Enter choose · ^d disconnect · Esc clear/back · q close'
+        hint: '↑/↓ select · Enter choose · ^d disconnect · Esc clear/back'
       },
       persist: {
         // {0} = one of `scopeGlobal` / `scopeSession`.
@@ -84,8 +84,8 @@ export const pickersEn = {
         unknownProvider: '(unknown provider)',
         noMatches: 'no models match filter',
         noneListed: 'no models listed for this provider',
-        hint: '↑/↓ select · Enter next · Esc clear/back · q close',
-        emptyHint: 'Esc back · q close'
+        hint: '↑/↓ select · Enter next · Esc clear/back',
+        emptyHint: 'Esc back'
       }
     },
     session: {

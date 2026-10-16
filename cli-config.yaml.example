@@ -1469,6 +1469,13 @@ platform_toolsets:
 #       # Route scripts default to a 30 second timeout. Scripts must live under
 #       # the active profile's scripts directory and receive webhook JSON on stdin.
 #       script_timeout_seconds: 30
+#   yuanbao:
+#     extra:
+#       # Answer a HAND-TYPED @botname in a group, not only the @mention picked from
+#       # Yuanbao's member list. Default false: a typed mention is recorded as group
+#       # context but not answered. Only the bot's own group nickname / name card
+#       # resolves, and a cold or stale member list keeps the message observed-only.
+#       text_mention_fallback: false
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

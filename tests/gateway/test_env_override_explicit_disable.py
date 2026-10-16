@@ -119,6 +119,27 @@ def test_env_credentials_still_populate_extra_when_yaml_disables(tmp_path, monke
     # marker never leaks out of config load
     assert "_enabled_explicit" not in cfg.extra
 
+def test_yuanbao_text_mention_fallback_env_reaches_extra(tmp_path, monkeypatch):
+    """``YUANBAO_TEXT_MENTION_FALLBACK`` is an opt-in adapter knob: the env form must land in
+    ``platforms.yuanbao.extra`` next to dm/group policy, and the literal "false" must stay falsy."""
+    hermes_home = _isolate(monkeypatch, tmp_path, {**CRED_ENV["yuanbao"], "YUANBAO_TEXT_MENTION_FALLBACK": "true"})
+    (hermes_home / "config.yaml").write_text("platforms: {}\n", encoding="utf-8")
+
+    config = load_gateway_config()
+
+    assert config.platforms[Platform.YUANBAO].extra.get("text_mention_fallback") == "true"
+
+def test_yuanbao_text_mention_fallback_yaml_passes_through(tmp_path, monkeypatch):
+    """The config.yaml form (a real bool) is what the middleware reads; it must not be dropped."""
+    hermes_home = _isolate(monkeypatch, tmp_path, CRED_ENV["yuanbao"])
+    (hermes_home / "config.yaml").write_text(
+        "platforms:\n  yuanbao:\n    extra:\n      text_mention_fallback: true\n", encoding="utf-8"
+    )
+
+    config = load_gateway_config()
+
+    assert config.platforms[Platform.YUANBAO].extra.get("text_mention_fallback") is True
+
 @pytest.fixture()
 def _fresh_warn_dedup(monkeypatch):
     """The explicit-disable notice is one-time per process; start each test clean."""

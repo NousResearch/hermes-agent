@@ -35,6 +35,13 @@ _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_c
                    display_metadata, display_identity, message_uid, absorbed_message_uids, tool_call_uids,
                    tool_call_uid)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+# Rows of a session and of the parents it was compressed from; a detached result's match condition follows.
+_LINEAGE_MATCH_SQL = """WITH RECURSIVE lineage(id) AS (SELECT ? UNION
+    SELECT s.parent_session_id FROM sessions s JOIN lineage l ON s.id = l.id
+    JOIN sessions p ON p.id = s.parent_session_id WHERE p.end_reason = 'compression'
+) SELECT m.id FROM messages m JOIN lineage l ON m.session_id = l.id WHERE """
+_DELEGATION_DELIVERY_MATCH = ("m.display_kind IN ('async_delegation_complete', 'hidden') AND json_extract(m.display_metadata, "
+                              "'$.delegation_id') = ? AND coalesce(json_extract(m.display_metadata, '$.delivery_notice'), '') = ?")
 # Every column this module knows how to read: the ones it writes plus the three SQLite/compaction
 # owns. `_row_to_message_dict` drops raw bytes ONLY outside this set — a schema column keeps its
 # key (and its typed decoder) even when a row holds a BLOB, so no reader ever loses msg["content"].
@@ -421,35 +428,36 @@ class SessionMessagesMixin:
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def append_delegation_delivery(self, session_id: str, content: str, metadata: dict[str, Any]) -> int:
-        """Record a detached API result once, between client turns, including replay after rotation.
-
-        The event's unit id, not its text or active flag, is the identity. Check and insert
-        share the writer transaction, so independent gateway processes cannot duplicate it.
-        """
+        """Record a detached API result once, keyed by the event's unit id (not its text or active flag)."""
         delegation_id = metadata.get("delegation_id")
         if not delegation_id:
             raise ValueError("Delegation delivery requires a stable delegation_id")
-        msg = {"content": content,
-               "display_kind": "hidden" if metadata.get("presentation_suppressed") else "async_delegation_complete",
-               "display_metadata": metadata}
+        kind = "hidden" if metadata.get("presentation_suppressed") else "async_delegation_complete"
+        return self._append_detached_result(session_id, content, kind, metadata, _DELEGATION_DELIVERY_MATCH,
+                                            (delegation_id, metadata.get("delivery_notice", "")))
+
+    def append_completion_note(self, session_id: str, admission_id: str, content: str, display_kind: str,
+                               metadata: dict[str, Any]) -> int:
+        """Record an unviewed completion's note once, keyed by its admission (stored as ``completion_admission``)."""
+        return self._append_detached_result(
+            session_id, content, display_kind, {**metadata, "completion_admission": admission_id},
+            "json_extract(m.display_metadata, '$.completion_admission') = ?", (admission_id,))
+
+    def _append_detached_result(self, session_id: str, content: str, display_kind: str, metadata: dict[str, Any],
+                                match_sql: str, params: tuple) -> int:
+        """Record a result that arrived between turns as a user row once, including replay after rotation: a row
+        ``match_sql`` (a condition on ``m``) finds in the compression lineage is returned instead. Check and insert
+        share the writer transaction, so independent gateway processes cannot duplicate it; a live turn refuses it."""
+        msg = {"content": content, "display_kind": display_kind, "display_metadata": metadata}
         stamp_message_uid(msg)  # a fresh occurrence: mint its durable id
-        params = self._message_row_params(session_id, "user", msg, None, time.time(), keep_reasoning=True)
+        row = self._message_row_params(session_id, "user", msg, None, time.time(), keep_reasoning=True)
 
         def _do(conn):
-            existing = conn.execute(
-                """WITH RECURSIVE lineage(id) AS (
-                    SELECT ? UNION
-                    SELECT s.parent_session_id FROM sessions s JOIN lineage l ON s.id = l.id
-                    JOIN sessions p ON p.id = s.parent_session_id WHERE p.end_reason = 'compression'
-                ) SELECT m.id FROM messages m JOIN lineage l ON m.session_id = l.id
-                WHERE m.display_kind IN ('async_delegation_complete', 'hidden')
-                AND json_extract(m.display_metadata, '$.delegation_id') = ?
-                AND coalesce(json_extract(m.display_metadata, '$.delivery_notice'), '') = ? LIMIT 1""",
-                (session_id, delegation_id, metadata.get("delivery_notice", ""))).fetchone()
+            existing = conn.execute(_LINEAGE_MATCH_SQL + match_sql + " LIMIT 1", (session_id, *params)).fetchone()
             if existing is not None:
                 return existing[0]
             self._check_transcript_write_guards(conn, session_id, None, reject_active_turn_lease=True)
-            msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
+            msg_id = conn.execute(_INSERT_MESSAGE_SQL, row).lastrowid
             self._bump_session_counters(conn, session_id, 1, 0, unit=True)
             return msg_id
 

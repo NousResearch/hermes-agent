@@ -63,6 +63,31 @@ class GatewayNotificationOwnershipMixin:
         )
         return "terminal", None
 
+    async def _closed_local_target(
+        self, session_db: Any, entry: Optional[SessionEntry], pinned_session_id: str, pinned_row: Optional[dict],
+    ) -> str:
+        """The closed (/new, exit) physical session of a local conversation a completion is noted on
+        (#134889 LC-7, ``session_completion_notes``), else ``""``. The pinned session, or the compression
+        tip it rotated to, must be the one the conversation's route still names: a local /new opens a new
+        route, so the replacement never matches, and messaging routes never qualify. Only a close ends a
+        local tip (``session.detach {end_reason}`` stamps the client's own reason: ``cli_close``,
+        ``tui_close``, ``tui_shutdown``...), so any end but compression is one."""
+        from gateway.config import Platform
+        if entry is None or entry.platform != Platform.LOCAL or pinned_row is None:
+            return ""
+        target, row = pinned_session_id, pinned_row
+        if row.get("end_reason") == "compression":
+            try:
+                target = await session_db.get_compression_tip(pinned_session_id)
+                row = await session_db.get_session(target) if target == entry.session_id else None
+            except Exception:
+                logger.debug("Closed local tip lookup failed for %s", pinned_session_id, exc_info=True)
+                return ""  # the compression path below defers it
+        if (target != entry.session_id or row is None or not row.get("ended_at")
+                or row.get("end_reason") == "compression"):
+            return ""
+        return target
+
     async def _lookup_completion_owner(self, session_id: str, current_session_id: str = ""):
         """Nonmutating delegation proof shared by preflight and route resolution.
 

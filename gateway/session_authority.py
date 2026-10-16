@@ -220,6 +220,8 @@ class SessionAuthority:
                                  if member == actor), None) or uuid.uuid4().hex
             live.subscribers[subscription] = actor
             self.pending_closes.pop(ref.session_id, None)
+            from tools.async_delegation import allow_for_session
+            allow_for_session((self.profile_id, ref.session_id))  # a closed session's work may start again
             transport = self.events.get(actor.transport_id)
             if transport is not None:
                 live.event_stream.fanout.attach(transport)
@@ -805,7 +807,9 @@ class SessionAuthority:
                 # tracked so retirement and the shutdown close gate count it.
                 from gateway.session_local_recovery import reopen_local_session
                 from gateway.session_runtime_workers import tracked_write
-                await tracked_write(self, partial(reopen_local_session, self, ref))
+                from gateway.session_completion_notes import noted_completion
+                if not noted_completion(first):  # a note leaves a closed row closed (session_completion_notes)
+                    await tracked_write(self, partial(reopen_local_session, self, ref))
             if first is not None and 'native_text_v1' in first['payload']:
                 from gateway.session_envelope import check_native_route
                 await check_native_route(self.runner, first['payload'], self.physical_target(ref), live.source,

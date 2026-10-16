@@ -692,3 +692,129 @@ class TestCliEnrolAndForget:
         args = type("A", (), {"all_credentials": False, "label": "", "credential_id": ""})()
         with pytest.raises(SystemExit):
             dashboard_webauthn.cmd_webauthn_forget(args)
+
+
+# ---------------------------------------------------------------------------
+# CLI setup — the pre-enrolment wizard for the dashboard.webauthn block
+# ---------------------------------------------------------------------------
+
+
+class TestCliSetup:
+    @staticmethod
+    def _args(**overrides):
+        base = {"rp_id": "", "rp_name": "", "origin": None, "force": False}
+        base.update(overrides)
+        return type("A", (), base)()
+
+    def test_setup_flags_write_config_and_resolve(self, hermes_home, capsys):
+        from hermes_cli import dashboard_webauthn
+        from plugins.dashboard_auth._shared import load_config_section
+        import logging
+
+        args = self._args(rp_id="dash.example.com", rp_name="",  # rp_name default = rp_id
+                          origin=["https://dash.example.com"])
+        dashboard_webauthn.cmd_webauthn_setup(args)
+        out = capsys.readouterr().out
+        assert "✓ dashboard.webauthn written" in out
+        assert "resolves cleanly" in out
+        section = load_config_section(logging.getLogger("t"), "t",
+                                      "dashboard", "webauthn")
+        assert section["rp_id"] == "dash.example.com"
+        assert section["rp_name"] == "dash.example.com"  # default applied
+        assert section["origins"] == ["https://dash.example.com"]
+        # the surrounding config keeps other sections: write and re-read round-trip
+        from hermes_cli.config import cfg_get, load_config
+
+        assert cfg_get(load_config(), "dashboard", "webauthn", "rp_id") == "dash.example.com"
+
+    def test_setup_rejects_unpairable_origin(self, hermes_home, capsys):
+        from hermes_cli import dashboard_webauthn
+
+        args = self._args(rp_id="dash.example.com", rp_name="Dash",
+                          origin=["https://other.example.com"])
+        with pytest.raises(SystemExit):
+            dashboard_webauthn.cmd_webauthn_setup(args)
+        out = capsys.readouterr().out
+        assert "does not pair with rp_id" in out
+
+    def test_setup_rejects_plain_http_origin(self, hermes_home, capsys):
+        from hermes_cli import dashboard_webauthn
+
+        args = self._args(rp_id="dash.example.com", rp_name="Dash",
+                          origin=["http://dash.example.com"])
+        with pytest.raises(SystemExit):
+            dashboard_webauthn.cmd_webauthn_setup(args)
+        assert "plain http" in capsys.readouterr().out
+
+    def test_setup_accepts_localhost_tunnel(self, hermes_home, capsys):
+        from hermes_cli import dashboard_webauthn
+        from plugins.dashboard_auth._shared import load_config_section
+        import logging
+        from plugins.dashboard_auth.webauthn import _settings
+
+        args = self._args(rp_id="localhost", rp_name="Local",
+                          origin=["http://localhost:9119"])
+        dashboard_webauthn.cmd_webauthn_setup(args)
+        out = capsys.readouterr().out
+        assert "resolves cleanly" in out
+        section = load_config_section(logging.getLogger("t"), "t",
+                                      "dashboard", "webauthn")
+        assert section["rp_id"] == "localhost"
+        assert _settings()["origins"] == ("http://localhost:9119",)
+
+    def test_setup_rp_id_change_requires_force(self, hermes_home, capsys):
+        from hermes_cli import dashboard_webauthn
+
+        _write_webauthn_config(hermes_home)  # rp_id = dash.example.com
+        store = hermes_home / "dashboard_webauthn.json"
+        store.write_text(json.dumps({
+            "version": 1, "rp_id": RP_ID,
+            "credentials": [{"credential_id": "abc", "label": "phone",
+                             "created_at": 0}],
+            "pending_enrolments": {}}), encoding="utf-8")
+        # without --force: refuses to switch
+        args = self._args(rp_id="elsewhere.example.com", rp_name="Dash",
+                          origin=["https://elsewhere.example.com"], force=False)
+        with pytest.raises(SystemExit):
+            dashboard_webauthn.cmd_webauthn_setup(args)
+        assert "unusable" in capsys.readouterr().out
+        # with --force: proceeds and rewrites the block
+        args = self._args(rp_id="elsewhere.example.com", rp_name="Dash",
+                          origin=["https://elsewhere.example.com"], force=True)
+        dashboard_webauthn.cmd_webauthn_setup(args)
+        out = capsys.readouterr().out
+        assert "proceeding (--force given)" in out
+        assert "✓ dashboard.webauthn written" in out
+
+    def test_setup_interactive_defaults(self, hermes_home, capsys, monkeypatch):
+        import logging
+
+        from hermes_cli import dashboard_webauthn
+        from plugins.dashboard_auth._shared import load_config_section
+
+        # pytest's stdin isn't a tty; fake one so the wizard runs its prompt path.
+        class _FakeTty:
+            @staticmethod
+            def isatty():
+                return True
+
+        monkeypatch.setattr(dashboard_webauthn.sys, "stdin", _FakeTty())
+        # rp_id, rp_name (blank -> default), confirm origin, decline www, no extras,
+        # confirm the write
+        answers = iter(["dash.example.com", "", "y", "n", "", "y"])
+        monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+        args = self._args()
+        dashboard_webauthn.cmd_webauthn_setup(args)
+        out = capsys.readouterr().out
+        assert "✓ dashboard.webauthn written" in out
+        section = load_config_section(logging.getLogger("t"), "t",
+                                      "dashboard", "webauthn")
+        assert section["origins"] == ["https://dash.example.com"]
+
+    def test_enrol_hints_setup_when_unconfigured(self, hermes_home, capsys):
+        from hermes_cli import dashboard_webauthn
+
+        args = type("A", (), {"origin": "", "label": ""})()
+        with pytest.raises(SystemExit):
+            dashboard_webauthn.cmd_webauthn_enrol(args)
+        assert "webauthn setup" in capsys.readouterr().out

@@ -75,7 +75,8 @@ def build_serve_parser(
 
 def build_dashboard_parser(
     subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable,
-    cmd_webauthn_enrol: Callable | None = None, cmd_webauthn_forget: Callable | None = None) -> None:
+    cmd_webauthn_enrol: Callable | None = None, cmd_webauthn_forget: Callable | None = None,
+    cmd_webauthn_setup: Callable | None = None) -> None:
     """Attach ``dashboard`` (browser UI) and ``serve`` (headless backend the desktop spawns)."""
     dashboard_parser = subparsers.add_parser(
         "dashboard", help="Start the web UI dashboard",
@@ -128,7 +129,8 @@ def build_dashboard_parser(
     # `webauthn` is nested like `register` so bare `hermes dashboard` keeps
     # launching the server: enrol/forget manage passkey credentials (first
     # credential for a headless box / removal of lost ones).
-    if cmd_webauthn_enrol is not None and cmd_webauthn_forget is not None:
+    if cmd_webauthn_enrol is not None and cmd_webauthn_forget is not None \
+            and cmd_webauthn_setup is not None:
         dashboard_webauthn_parser = dashboard_subparsers.add_parser(
             "webauthn", help="Manage dashboard passkey (WebAuthn) credentials",
             description="Enrol or forget dashboard passkeys. Passkeys only work on "
@@ -161,3 +163,31 @@ def build_dashboard_parser(
         webauthn_forget_parser.add_argument("--credential-id", dest="credential_id", default="",
             help="Forget the credential with this base64url rawId")
         webauthn_forget_parser.set_defaults(func=cmd_webauthn_forget)
+        # `setup` = the pre-enrolment wizard for the three values that must be
+        # decided before the first credential (rp_id binds forever). Works
+        # non-interactively with flags so scripts/provisioning can drive it.
+        webauthn_setup_parser = webauthn_subparsers.add_parser(
+            "setup",
+            help="Configure dashboard.webauthn (rp_id/rp_name/origins) before enrolling",
+            description="Writes the dashboard.webauthn block to config.yaml: rp_id "
+                "(registrable domain — passkeys bind to it FOREVER), rp_name (the "
+                "label the browser's passkey UI shows) and the exact origins the "
+                "browser will present. Interactive when run without flags; flags "
+                "make it scriptable.")
+        webauthn_setup_parser.add_argument(
+            "--rp-id", dest="rp_id", default="",
+            help="Registrable domain of every origin (e.g. dash.example.com, or "
+                "'localhost' for the SSH-tunnel-only setup). A pasted URL is reduced "
+                "to its host. A change that strands enrolled credentials needs "
+                "--force (or a typed YES interactively)")
+        webauthn_setup_parser.add_argument(
+            "--rp-name", dest="rp_name", default="",
+            help="Label shown in the browser's passkey UI (default: the rp_id)")
+        webauthn_setup_parser.add_argument(
+            "--origin", action="append", default=None,
+            help="Exact origin the browser presents (scheme://host[:port]); "
+                "repeat for several")
+        webauthn_setup_parser.add_argument(
+            "--force", action="store_true",
+            help="Allow switching rp_id even though the credential store is not empty")
+        webauthn_setup_parser.set_defaults(func=cmd_webauthn_setup)

@@ -115,6 +115,7 @@ export type BotsMessages = {
     statusUnknown: string
     unavailable: string
     retryNow: string
+    loadingGatewayBots: string
     rosterUnavailable: (reason: string) => string
     waitingForGateway: string
   }

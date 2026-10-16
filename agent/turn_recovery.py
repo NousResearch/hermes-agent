@@ -25,7 +25,8 @@ from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
-    _strip_images_from_messages, _strip_non_ascii, close_interrupted_tool_sequence, record_reasoning_field_rejection,
+    _strip_images_from_messages, _strip_non_ascii, close_interrupted_tool_sequence,
+    record_reasoning_field_rejection,
 )
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
 from agent.vision_message_prep import _provider_model_key
@@ -1332,7 +1333,8 @@ def abort_turn_on_interrupt(
     _vlines(agent, f"⚡ {abort_message}")
     # Empty-response recovery can leave a synthetic assistant+nudge pair after an
     # already-executed tool result. Strip only that request-local scaffold before
-    # closing, so this exit owner can persist its specific interrupt reason.
+    # closing, so this exit owner persists its specific interrupt reason on the real
+    # tool tail rather than the scaffold.
     agent._drop_trailing_empty_response_scaffolding(messages)
     close_interrupted_tool_sequence(messages, interrupt_text)
     agent._persist_session(messages, conversation_history)

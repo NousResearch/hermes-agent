@@ -1,7 +1,7 @@
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
 
 import type { GatewayEndpoint } from './local-gateway'
-import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
+import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, mintLocalGatewayTicket, nativeGatewayHttpHeaders, redialLocalGateway, routedTicketEndpoint, runGatewayEnsure } from './local-gateway'
 import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
 const localGatewayDials = createLocalGatewayDials()
 configurePythonGatewayTicketClient(createGatewayTicketResolver(
@@ -7904,7 +7904,7 @@ async function freshGatewayWsUrl(profile, webContentsId) {
       use: async current => {
         // A shared-primary descriptor answers for a sibling profile too: the socket's
         // ticket must name THAT profile's home or its sessions are another owner's.
-        const ticket = await mintLocalGatewayTicket(routedGatewayEndpoint(current.gatewayEndpoint, String(profile ?? ''), HERMES_HOME))
+        const ticket = await mintLocalGatewayTicket(await routedTicketEndpoint(current.gatewayEndpoint, String(profile ?? ''), HERMES_HOME))
 
         return localGatewayDials.prepare(current.baseUrl, ticket, webContentsId)
       }
@@ -15430,7 +15430,7 @@ ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
         ensure: () => ensureRegistryBackend(payload?.connectionId, payload?.profile),
         forget: () => forgetRegistryLocalGatewayDescriptor(payload?.connectionId, payload?.profile),
         use: async (current: typeof connection) => {
-          const ticket = await mintLocalGatewayTicket(routedGatewayEndpoint(current.gatewayEndpoint, String(payload?.profile ?? ''), HERMES_HOME))
+          const ticket = await mintLocalGatewayTicket(await routedTicketEndpoint(current.gatewayEndpoint, String(payload?.profile ?? ''), HERMES_HOME))
 
           return localGatewayDials.prepare(current.baseUrl, ticket, _event.sender.id)
         }

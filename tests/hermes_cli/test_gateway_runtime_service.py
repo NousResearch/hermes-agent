@@ -136,20 +136,9 @@ def test_loaded_launchd_identity_is_independent_of_disk(configured, command, rea
         verify_launchd_loaded(output, home, uid=123, username="owner")
 
 
-@pytest.mark.parametrize("case,reason", [
-    ("bound", None), ("utf16", None), ("wrong_home", "profile_mismatch"),
-    ("wrong_user", "service_account_mismatch"), ("missing_user", "service_identity_unverified"),
-    ("extra_action", "service_identity_unverified"), ("disabled", "service_disabled"),
-    ("unknown_script", "service_identity_unverified"), ("malformed_xml", "service_identity_unverified"),
-])
-def test_task_xml_binds_actual_action_and_principal(case, reason, tmp_path):
-    from hermes_cli.gateway_runtime_service_identity import verify_windows_task
-    from hermes_cli.gateway_windows import _build_scheduled_task_xml
-    home = tmp_path / 'requested'
-    home.mkdir()
+def _installed_vbs(home, configured):
+    """The current installed launcher grammar; no script is executed."""
     script = home / 'gateway.vbs'
-    configured = str(home if case != 'wrong_home' else tmp_path / 'other')
-    # The current installed launcher grammar; no script is executed.
     script.write_text("\n".join([
         "' Hermes Agent Gateway", "Option Explicit", "Dim sh, env, existing_pp",
         'Set sh = CreateObject("WScript.Shell")', 'Set env = sh.Environment("PROCESS")',
@@ -162,8 +151,38 @@ def test_task_xml_binds_actual_action_and_principal(case, reason, tmp_path):
         f'sh.CurrentDirectory = "{home}"',
         f'sh.Run "{sys.executable} -m hermes_cli.main gateway run", 0, False',
     ]) + "\n", encoding='utf-8')
+    return script
+
+
+def _as_schtasks_exports(xml):
+    """``schtasks /Query /XML`` omits elements holding the Windows default (seen on a real host)."""
+    return xml.replace('<RunLevel>LeastPrivilege</RunLevel>', '').replace('<Enabled>true</Enabled>\n    <Hidden>', '<Hidden>')
+
+
+@pytest.mark.parametrize("case,reason", [
+    ("bound", None), ("utf16", None), ("wrong_home", "profile_mismatch"),
+    ("wrong_user", "service_account_mismatch"), ("missing_user", "service_identity_unverified"),
+    ("extra_action", "service_identity_unverified"), ("disabled", "service_disabled"),
+    ("unknown_script", "service_identity_unverified"), ("malformed_xml", "service_identity_unverified"),
+    ("schtasks_export", None), ("elevated", "service_identity_unverified"),
+    ("empty_run_level", "service_identity_unverified"), ("empty_enabled", "service_disabled"),
+])
+def test_task_xml_binds_actual_action_and_principal(case, reason, tmp_path):
+    from hermes_cli.gateway_runtime_service_identity import verify_windows_task
+    from hermes_cli.gateway_windows import _build_scheduled_task_xml
+    home = tmp_path / 'requested'
+    home.mkdir()
+    script = _installed_vbs(home, str(home if case != 'wrong_home' else tmp_path / 'other'))
     user = 'DOMAIN\\owner'
     xml = _build_scheduled_task_xml('Hermes_Gateway', script, user)
+    if case == 'schtasks_export':
+        xml = _as_schtasks_exports(xml)
+    if case == 'elevated':  # an explicit non-default value is still refused
+        xml = xml.replace('<RunLevel>LeastPrivilege</RunLevel>', '<RunLevel>HighestAvailable</RunLevel>')
+    if case == 'empty_run_level':  # present but empty is not "absent": still refused
+        xml = xml.replace('<RunLevel>LeastPrivilege</RunLevel>', '<RunLevel></RunLevel>')
+    if case == 'empty_enabled':
+        xml = xml.replace('<Enabled>true</Enabled>\n    <Hidden>', '<Enabled></Enabled>\n    <Hidden>')
     if case == 'wrong_user':
         xml = xml.replace(user, 'DOMAIN\\other')
     if case == 'missing_user':
@@ -330,7 +349,7 @@ def test_windows_startup_folder_entry_still_restarts_a_stopped_owner(tmp_path, m
     (startup / f"Hermes_Gateway_{service.service_suffix(home)}.vbs").write_text("' fallback\r\n")
     monkeypatch.setattr(gateway_windows, "_startup_dir", lambda: startup)
     queries, spawned = [], []
-    monkeypatch.setattr(service, "_run", lambda argv, *a, **k: queries.append(argv) or SimpleNamespace(returncode=0, stdout=""))
+    monkeypatch.setattr(service, "_run", lambda argv, *a, **k: queries.append(argv) or SimpleNamespace(returncode=0, stdout=b""))
     monkeypatch.setattr(service.sys, "platform", "win32")
     monkeypatch.setattr(runtime, "discover_gateway_endpoint", lambda *a, **k: runtime.GatewayDiscovery("absent"))
     monkeypatch.setattr(start, "spawn_unmanaged_gateway", lambda target, **k: spawned.append(Path(target)))
@@ -338,3 +357,39 @@ def test_windows_startup_folder_entry_still_restarts_a_stopped_owner(tmp_path, m
     assert result.reason_code != "startup_service_requires_login"
     assert spawned == [home.resolve()]
     assert all(argv[:2] == ["schtasks.exe", "/Query"] for argv in queries)  # nothing installed or run
+
+
+@pytest.mark.platforms("windows")
+def test_task_discovery_reads_localized_schtasks_output(tmp_path, monkeypatch):
+    """A localized host (zh-CN, console cp936) with Python in UTF-8 mode: schtasks and whoami write
+    cp936 bytes, and /XML declares UTF-16 over them with the defaults elided (#139083, #139013).
+    The installed task must still be verified, not refused as service_identity_unverified."""
+    from types import SimpleNamespace
+    from hermes_cli import gateway_runtime_service as service, gateway_windows
+    from hermes_cli.gateway_windows import _build_scheduled_task_xml
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    script = _installed_vbs(home, str(home))
+    name = "Hermes_Gateway_" + service.service_suffix(home)
+    account, sid = "DESKTOP-1\\\u65b9\u821f", "S-1-5-21-123"
+    # whoami first: it is queried with /FO CSV too.
+    out = {"whoami.exe": f'"{account}","{sid}"\r\n', "/XML": _as_schtasks_exports(
+        _build_scheduled_task_xml(name, script, account)), "/FO": f'"\\{name}","N/A","\u5c31\u7eea"\r\n'}
+    # The console code page this host would report; the bytes below are what such a console writes.
+    monkeypatch.setattr(gateway_windows, "_windows_console_encodings", lambda: ["cp936"])
+
+    def run(argv, *_args, encoding=None, **_kwargs):
+        # Windows subprocess decodes text in a reader thread: a decode error there leaves stdout None
+        # (main then read an empty task list and fell through to an unmanaged spawn), it does not raise.
+        data = next(text for key, text in out.items() if key in argv).encode("cp936")
+        if encoding:
+            try:
+                data = data.decode(encoding)
+            except UnicodeDecodeError:
+                data = None
+        return SimpleNamespace(returncode=0, stdout=data)
+
+    monkeypatch.setattr(service, "_run", run)
+    found = service.discover_existing_gateway_service(home, deadline=time.monotonic() + 5)
+    assert found is not None and found.start_argv == ("schtasks.exe", "/Run", "/TN", name)

@@ -1194,6 +1194,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         from hermes_cli.gateway_setting_commands import run as run_gateway_setting
         if run_gateway_setting(self, canonical, cmd_original):
             return True  # a per-session setting the gateway's handler applied
+        from hermes_cli.gateway_cli_commands import run as run_gateway_command
+        if run_gateway_command(self, canonical, cmd_original):
+            return True  # state the gateway session owns (checkpoints, .env, handoff)
         method_name, pass_arg = entry
         handler = getattr(self, method_name)
         result = handler(cmd_original) if pass_arg else handler()
@@ -1504,7 +1507,8 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
         for t in toolsets:
             toolsets_list.extend([x.strip() for x in t.split(",")] if isinstance(t, str) else [str(t)])
     elif not toolsets:
-        # Coding posture inside a code workspace, else the shared platform resolver.
+        # Coding posture inside a code workspace, else the shared platform resolver. Neither is a
+        # pick: the gateway resolves both from the session's cwd, so this list only feeds the display.
         try:
             from agent.coding_context import coding_selection
             toolsets_list = coding_selection(platform="cli", config=CLI_CONFIG)
@@ -1540,6 +1544,10 @@ def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url
         if emit_partial_update_hint(e):
             sys.exit(1)
         raise
+    if not toolsets:
+        cli._explicit_toolsets = False  # the gateway resolves the default and coding posture itself
+    # Only a typed -t is checked against a resumed session's frozen toolsets.
+    cli._typed_toolsets = toolsets_list if toolsets else None
 
     # skills.auto_load rides the same background preload as -s; --ignore-rules skips it with
     # the rest of the auto-injected context. Resolved here (not lazily in the agent) so the
@@ -1738,16 +1746,7 @@ def main(
     if _join_worktree is not None and not wt_info:
         return
 
-    # Inject worktree context into agent's system prompt
-    if wt_info:
-        wt_note = (
-            f"\n\n[System note: You are working in an isolated git worktree at "
-            f"{wt_info['path']}. Your branch is `{wt_info['branch']}`. "
-            f"Changes here do not affect the main working tree or other agents. "
-            f"Remember to commit and push your changes, and create a PR if appropriate. "
-            f"The original repo is at {wt_info['repo_root']}.]"
-        )
-        cli.system_prompt = (cli.system_prompt or "") + wt_note
+    # The worktree note is rendered by the gateway from the session's folder (agent/coding_context.py).
 
     if list_tools or list_toolsets:
         cli.show_banner()

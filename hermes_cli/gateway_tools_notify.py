@@ -49,11 +49,22 @@ def queue_admitted_turn(cli, store) -> None:
         except queue.Empty:
             return
         if isinstance(frame, Exception):
+            from hermes_cli.gateway_connection import lost_before
+            if lost_before(frame, getattr(connection, "epoch", None)):
+                continue  # a connection a reconnect already replaced
             events.put(frame)  # the disconnect belongs to the next turn
             return
         params = frame.get("params") if isinstance(frame, dict) else None
-        if (not isinstance(params, dict) or params.get("session_id") != session_id
-                or params.get("type") != "message.start" or not params.get("admission_id")):
+        if not isinstance(params, dict) or params.get("session_id") != session_id:
+            continue
+        if params.get("type") == "review.summary":
+            # The background review (/refine, the post-turn review) reports after its turn settled.
+            from hermes_cli.gateway_agent import review_summary_line
+            line = review_summary_line(params.get("payload"))
+            if line:
+                cli._agent_status_print(line)
+            continue
+        if params.get("type") != "message.start" or not params.get("admission_id"):
             continue
         card = _card(params)
         if card is None:

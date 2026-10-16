@@ -2638,7 +2638,7 @@ export const jaOverrides = {
       heartbeatEveryHours: hours => `${hours}時間ごと`,
       heartbeatEverySeconds: seconds => `${seconds}秒ごと`,
       heartbeatNext: time => `次回 ${time}`,
-      heartbeatDueWaitingForIdle: '期限到来 — アイドル待ち',
+      dueWaitingForIdle: '期限到来 — アイドル待ち',
       heartbeatActions: 'ハートビートのアクション',
       pauseHeartbeat: 'ハートビートを一時停止',
       resumeHeartbeat: 'ハートビートを再開',

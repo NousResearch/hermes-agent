@@ -84,6 +84,22 @@ class TestBranchCommandCLI:
         row = session_db.get_session(original)
         assert row["end_reason"] is None and row["ended_at"] is None
 
+    def test_gateway_refusal_is_reported_and_leaves_the_session(self, cli_instance, session_db, capsys):
+        """A gateway /branch step that fails (e.g. the child's YOLO could not be set, CLI-20) prints
+        main's branch error and keeps the user on the original session, never a traceback."""
+        from cli import HermesCLI
+        from hermes_cli.gateway_client import GatewayClientError
+
+        def refused(now, **kw):
+            raise GatewayClientError("Gateway did not answer config.set")
+        cli_instance._new_session_id = refused
+        original = cli_instance.session_id
+        HermesCLI._handle_branch_command(cli_instance, "/branch")
+
+        assert cli_instance.session_id == original
+        assert "Gateway did not answer config.set" in capsys.readouterr().out
+        assert session_db.get_session(original)["end_reason"] is None
+
     def test_branch_copies_history(self, cli_instance, session_db):
         """Branching should copy all messages to the new session."""
         from cli import HermesCLI

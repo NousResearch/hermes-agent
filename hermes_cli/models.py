@@ -2719,9 +2719,9 @@ def probe_api_models(
 
         probed = []
         for item in data.get("data", []):
-            if isinstance(item, dict) and note_catalog_item(item):
+            if not isinstance(item, dict) or note_catalog_item(item):
                 continue
-            probed.append(item.get("id", ""))
+            probed.append(item["id"])
         return _probe_result(
             probed, url, candidate_base.rstrip("/"),
             alternate_base if alternate_base != candidate_base else normalized, is_fallback)

@@ -1,8 +1,9 @@
 """Admit only chat models into shared chat catalogs.
 
 Generation models are identified by the capability type or name shape the
-catalog already publishes. Missing, malformed, or unknown metadata fails open.
-No single model id is special-cased.
+catalog already publishes. Rows the provider marks shut down or scheduled for
+removal leave too, as do rows without a usable id. A missing or unknown
+``status`` fails open. No single model id is special-cased.
 """
 
 from __future__ import annotations
@@ -94,10 +95,35 @@ def catalog_item_is_generation(item: Any) -> bool:
     return False
 
 
+# Statuses a provider uses to mark a catalog row shut down or scheduled for
+# removal. Matched case-insensitively. Absent or unknown statuses stay listed.
+UNAVAILABLE_CATALOG_STATUSES = frozenset({"shutdown", "retiring", "retired"})
+
+
+def catalog_item_is_unavailable(item: Any) -> bool:
+    """Whether this row must leave the chat catalog: no usable id, or a
+    status the provider uses for shut-down or scheduled-for-removal models.
+
+    Rows that are not a dict, or whose ``id`` is missing or empty, are dropped
+    as malformed.
+    ``Retiring`` rows can still serve requests, so this is a product choice,
+    not a liveness probe. Absent or unknown statuses must never hide a
+    working model.
+    """
+    if not isinstance(item, dict) or not item.get("id"):
+        return True
+    status = item.get("status")
+    return isinstance(status, str) and status.strip().lower() in UNAVAILABLE_CATALOG_STATUSES
+
+
 def note_catalog_item(item: Any) -> bool:
-    """Remember a generation row and report whether it must leave the chat catalog."""
+    """Remember a generation row and report whether it must leave the chat catalog.
+
+    True for a generation row, a row the provider declares unavailable, or a row
+    without a usable id.
+    """
     if not catalog_item_is_generation(item):
-        return False
+        return catalog_item_is_unavailable(item)
     if isinstance(item, dict):
         note_generation_model(item.get("id"))
     return True
@@ -123,7 +149,7 @@ def without_generation_models(models):
 
 
 def chat_catalog_ids(items: Any) -> list[str]:
-    """Model ids from a ``/models`` payload, minus generation rows."""
+    """Model ids from a ``/models`` payload, minus generation rows and rows declared unavailable."""
     if not isinstance(items, list):
         return []
     ids: list[str] = []

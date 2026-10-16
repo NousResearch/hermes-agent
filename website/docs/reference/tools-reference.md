@@ -312,6 +312,49 @@ the meantime.
 |------|-------------|----------------------|
 | `vision_analyze` | Analyze images using AI vision. On vision-capable main models, returns the raw image pixels as a multimodal tool result so the model sees them natively on its next turn. On text-only main models, falls back to an auxiliary vision model that describes the image and returns the description as text. Tool signature is identical either way. | — |
 
+## `audio` toolset
+
+`audio_analyze(audio_url, question)` sends audio to an explicitly configured audio-capable
+model and returns text analysis. Use it for instruments, timbre, music, ambient sounds or
+questions about speech that a transcript cannot answer. It does not require an audio-capable
+main chat model, and raw audio is not embedded in the main conversation history.
+
+Enable **Audio Analysis** in `hermes tools`, which opens the auxiliary model picker, or use
+`hermes model` → auxiliary models → **Audio**. Start a new session after changing toolsets.
+The toolset is off by default and requires an explicit provider and model; `auto` disables it.
+For example, with an existing Gemini credential and an audio-capable model selected:
+
+```yaml
+auxiliary:
+  audio:
+    provider: gemini
+    model: YOUR_AUDIO_CAPABLE_MODEL_ID
+    timeout: 180
+```
+
+Supported routes are Gemini native (`gemini`), OpenAI Chat Completions (`openai`),
+OpenRouter (`openrouter`), and an explicit OpenAI-compatible endpoint (`custom`, with
+`base_url`). Choose a model that accepts audio input and text output. Existing provider
+credentials and profile scope apply; keep API keys in the profile's secret configuration.
+Responses/Codex and Anthropic transports are not supported. Requests stay on the selected
+route: there is no automatic model/provider fallback, and `fallback_chain` is rejected.
+Provider errors and empty responses return errors rather than a transcription fallback.
+
+`audio_url` accepts local paths, HTTP(S) URLs and base64 data URLs through the shared media
+resolver, including its credential-file, URL-policy, size and sandbox restrictions. WAV and
+MP3 are sent directly. Gemini native also receives M4A, AAC, FLAC and Ogg without transcoding,
+so a compressed music file need not expand to PCM. Other format/route combinations require
+**ffmpeg** on the Hermes host and decode to WAV, preserving sample rate and channel count.
+MP4/WebM must contain an audio stream. Limits are 50 MiB at ingest, 14 MiB after preparation and 90 seconds for
+conversion. Trim larger recordings first; a size-limited conversion is never analyzed as
+though it were the complete file. Provider-specific duration limits still apply.
+
+Voice notes retain automatic STT. Audio files are attachments, not implicit dictation:
+Weixin voice items enter STT, while audio sent as a file remains available for analysis.
+Mixed and queued attachments retain that distinction individually. This tool does not
+change CLI voice mode, repair failed downloads, or automatically reroute voice notes.
+Analysis of musical keys, instruments or timestamps remains model inference, not ground truth.
+
 ## `video` toolset
 
 Opt-in toolset (not loaded in the default `hermes-cli` set). Add via `--toolsets video` or include `video` in your `toolsets:` config.

@@ -912,6 +912,14 @@ prompt_caching:
 #                            # compression at "low" and vision at "none" to cut
 #                            # side-task latency/cost on reasoning models.
 #
+#   # Native audio analysis (enable the opt-in audio toolset in `hermes tools`).
+#   # Explicit provider/model required; raw audio stays on this route, without fallback.
+#   # Reuses provider credentials; choose a model that accepts audio and returns text.
+#   audio:
+#     provider: "gemini"     # or openai, openrouter, custom (requires base_url)
+#     model: "YOUR_AUDIO_CAPABLE_MODEL_ID"
+#     timeout: 180
+#
 #   # Web page scraping / summarization + browser page text extraction
 #   web_extract:
 #     provider: "auto"

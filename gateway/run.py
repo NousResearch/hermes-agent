@@ -2515,10 +2515,7 @@ def _event_media_is_audio(event, index: int) -> bool:
 
 def _event_media_is_stt_input(event, index: int) -> bool:
     """True when an audio attachment should enter the automatic STT pipeline."""
-    message_type = getattr(event, "message_type", None)
-    if message_type in {MessageType.AUDIO, MessageType.DOCUMENT}:
-        return False
-    return message_type == MessageType.VOICE or _event_media_type_at(event, index).startswith("audio/")
+    return event.is_voice_attachment(index)
 
 
 def _event_media_is_video(event, index: int) -> bool:

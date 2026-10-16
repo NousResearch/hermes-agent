@@ -101,6 +101,9 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # Per-attachment voice intent. Empty means use the adapter's message-level type.
+    # Snapshot before merging events: MIME describes encoding, not whether the user dictated.
+    media_is_voice: list[bool] = field(default_factory=list)
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
@@ -111,6 +114,31 @@ class MessageEvent:
         """One turn now answers *other* too: an addressed message wins, then an unknown one."""
         if self.reply_expected is not True and other.reply_expected is not False:
             self.reply_expected = other.reply_expected
+
+    def is_voice_attachment(self, index: int) -> bool:
+        mime = self.media_types[index] if index < len(self.media_types) else ""
+        if mime and not mime.startswith("audio/"):
+            return False
+        if index < len(self.media_is_voice):
+            return self.media_is_voice[index]
+        return self.message_type == MessageType.VOICE
+
+    def _attachment_types(self) -> list[str]:
+        # Materialize the old message-level fallback before another event changes its type.
+        fallback = {MessageType.VOICE: "audio/", MessageType.AUDIO: "audio/",
+                    MessageType.PHOTO: "image/", MessageType.VIDEO: "video/"}.get(self.message_type, "")
+        return [(self.media_types[i] if i < len(self.media_types) else "") or fallback
+                for i in range(len(self.media_urls))]
+
+    def extend_media(self, other: "MessageEvent") -> None:
+        """Merge attachments without losing their original message's voice/file intent."""
+        self.media_is_voice = ([self.is_voice_attachment(i) for i in range(len(self.media_urls))]
+                               + [other.is_voice_attachment(i) for i in range(len(other.media_urls))])
+        self.media_types = self._attachment_types() + other._attachment_types()
+        left, right = list(self.media_text_inlined), list(other.media_text_inlined)
+        self.media_text_inlined = (left + [None] * (len(self.media_urls) - len(left))
+                                  + right + [None] * (len(other.media_urls) - len(right)))
+        self.media_urls.extend(other.media_urls)
 
     def _command_text(self) -> str:
         """Return the message text with leading Desktop attachment refs stripped.

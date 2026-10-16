@@ -71,6 +71,7 @@ CONFIGURABLE_TOOLSETS = [
     ("file",            "📁 File Operations",           "read, write, patch, search"),
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
+    ("audio",           "🎧 Audio Analysis",            "audio_analyze (requires audio-capable model)"),
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text/image/reference)"),
@@ -107,7 +108,7 @@ def gui_toolset_label(label: str) -> str:
 # OFF by default for new installs (still in _HERMES_CORE_TOOLS; the checklist won't pre-select them). x_search
 # auto-enables when xAI creds exist; its check_fn still gates the schema. ``spotify`` and ``a2a`` are plugin
 # toolsets (catalog / bundled plugin) that stay opt-in once installed.
-_DEFAULT_OFF_TOOLSETS = {"spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "a2a", "kanban"}
+_DEFAULT_OFF_TOOLSETS = {"spotify", "discord", "discord_admin", "audio", "video", "video_gen", "x_search", "a2a", "kanban"}
 
 # Config-only capabilities: provider setup in `hermes tools` (TOOL_CATEGORIES) but not model toolsets — zero
 # schemas, own switch (``stt.enabled``), never in ``platform_toolsets`` or the per-platform checklist.
@@ -190,7 +191,7 @@ def _cfg_section(config: dict, key: str) -> dict:
 
 def _is_configurable(ts_key: str) -> bool:
     """True when the toolset has provider options or simple env-var requirements to prompt for."""
-    return bool(TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key))
+    return ts_key == "audio" or bool(TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key))
 
 
 def _toolset_label(ts_key: str) -> str:
@@ -765,6 +766,9 @@ def _toolset_has_keys(
     """Check if a toolset's required API keys are configured."""
     if config is None:
         config = load_config()
+    if ts_key == "audio":
+        from tools.audio_tools import check_audio_requirements
+        return check_audio_requirements()
     if ts_key == "vision":
         try:
             from agent.auxiliary_client import resolve_vision_provider_client

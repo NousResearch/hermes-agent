@@ -1123,6 +1123,10 @@ def _configure_simple_requirements(ts_key: str, *, reconfigure: bool = False):
     single-key prompt (which would re-ask for OPENROUTER_API_KEY)."""
     from hermes_cli.tools_config import TOOLSET_ENV_REQUIREMENTS, _toolset_has_keys, _toolset_label
 
+    if ts_key == "audio":
+        from hermes_cli.main_provider_setup import _aux_select_for_task
+        _aux_select_for_task("audio")
+        return
     if ts_key == "vision":
         if reconfigure or not _toolset_has_keys("vision"):
             _configure_vision_backend()

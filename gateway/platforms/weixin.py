@@ -552,7 +552,7 @@ def _extract_text(item_list: list[dict[str, Any]]) -> str:
     return ""
 
 
-_MIME_PREFIX_TYPES = (("image/", MessageType.PHOTO), ("video/", MessageType.VIDEO), ("audio/", MessageType.VOICE))
+_MIME_PREFIX_TYPES = (("image/", MessageType.PHOTO), ("video/", MessageType.VIDEO), ("audio/", MessageType.AUDIO))
 
 
 def _message_type_from_media(media_types: list[str], text: str) -> MessageType:
@@ -891,16 +891,19 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             await self._token_store.set(self._account_id, sender_id, context_token)
         if self._poll_session and self._token and not self._typing_cache.get(sender_id):
             asyncio.create_task(self._fetch_typing_ticket(self._poll_session, sender_id, context_token or None, "getConfig failed"))
-        media_paths, media_types = [], []  # type: List[str], List[str]
+        media_paths, media_types, voice_flags = [], [], []
         for item in item_list:
             ref_item = (item.get("ref_msg") or {}).get("message_item")
             for candidate in (item, ref_item) if isinstance(ref_item, dict) else (item,):
+                before = len(media_paths)
                 await self._collect_media(candidate, media_paths, media_types)
+                voice_flags.extend([candidate.get("type") == ITEM_VOICE] * (len(media_paths) - before))
         if not text and not media_paths:
             return
         source = self.build_source(chat_id=effective_chat_id, chat_type=chat_type, user_id=sender_id, user_name=sender_id)
         event = MessageEvent(
-            text=text, message_type=_message_type_from_media(media_types, text), source=source, raw_message=message,
+            text=text, message_type=MessageType.VOICE if any(voice_flags) else _message_type_from_media(media_types, text),
+            source=source, raw_message=message, media_is_voice=voice_flags,
             message_id=message_id or None, media_urls=media_paths, media_types=media_types, timestamp=datetime.now())
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
         if event.message_type == MessageType.TEXT:

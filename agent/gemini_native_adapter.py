@@ -315,6 +315,9 @@ def _multimodal_part(item: Any) -> Optional[dict[str, Any]]:
     text = _text_of(item)
     if text or isinstance(item, str):
         return {"text": text}
+    if isinstance(item, dict) and item.get("type") == "input_audio":
+        from agent.native_audio import gemini_audio_part
+        return gemini_audio_part(item)
     return _inline_data_part(item) if isinstance(item, dict) else None
 
 

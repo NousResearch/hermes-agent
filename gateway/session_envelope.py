@@ -31,7 +31,7 @@ _WHATSAPP_METADATA = frozenset({'whatsapp_native_type', 'whatsapp_native', 'what
 _WHATSAPP_NATIVE_KEYS = frozenset({'video', 'audio', 'sticker', 'location', 'contact', 'contacts',
                                    'reaction', 'poll', 'pollUpdate'})
 _WHATSAPP_NATIVE_MAX_BYTES = 16 * 1024
-_MEDIA_FIELDS = ('media_urls', 'media_types', 'media_text_inlined')
+_MEDIA_FIELDS = ('media_urls', 'media_types', 'media_text_inlined', 'media_is_voice')
 
 
 def _native_metadata(event):
@@ -87,6 +87,10 @@ def _media_clause(event):
         return 'media_types_length'
     if len(inlined) not in (0, len(urls)):
         return 'media_text_inlined_length'
+    if not isinstance(event.media_is_voice, list) or not all(type(item) is bool for item in event.media_is_voice):
+        return 'media_is_voice'
+    if len(event.media_is_voice) not in (0, len(urls)):
+        return 'media_is_voice_length'
     return None
 
 
@@ -205,6 +209,8 @@ def _snapshot_native(runner, event, provenance, fresh_roles=False, encoded_sourc
         envelope['media'] = media if media is not None else capture_native_media(event.media_urls)
         envelope['event'].update(media_types=list(event.media_types),
                                  media_text_inlined=list(event.media_text_inlined))
+        if event.media_is_voice:
+            envelope['event']['media_is_voice'] = list(event.media_is_voice)
     # Keep the private dispatch key so previously committed text-only rows recover
     # under the same authority; optional media/context fields extend that envelope.
     payload = {'text': event.text, 'native_text_v1': envelope}

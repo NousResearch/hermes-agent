@@ -173,11 +173,32 @@ def auto_migration_blockers(plan: MigrationPlan) -> list[str]:
 # --------------------------------------------------------------------------- opt-out
 
 
+def _default_unit_masked(default_home: Path) -> bool:
+    """The default profile's systemd unit (either scope) is masked: a symlink to ``/dev/null``.
+
+    ``systemctl mask`` is how an operator says "this gateway never runs here" — the shape of a host
+    that deliberately runs per-profile standalone gateways. The fold would have to ``enable`` that
+    unit, which systemd refuses ("Unit file ... is masked"), so the update hook used to print a
+    migration plan and end an otherwise-successful update on a refusal (#139324)."""
+    from hermes_cli import gateway as gw
+    from hermes_cli.gateway_migrate import _home_env
+    with _home_env(default_home):
+        if not gw.supports_systemd_services():
+            return False
+        paths = [gw.get_systemd_unit_path(system=system) for system in (False, True)]
+    return any(path.is_symlink() and os.path.realpath(path) == os.devnull for path in paths)
+
+
 def auto_migration_opted_out(default_home: Path) -> bool:
     """``gateway.auto_multiplex_migration: false`` in the DEFAULT profile's EFFECTIVE config: the same
     ``load_config`` the rest of the CLI reads (``DEFAULT_CONFIG`` + config.yaml + the managed overlay), so
     an administrator's managed ``false`` wins over a user's ``true`` and a YAML string ``"false"`` is
-    false, not truthy. Only the nested key counts, there is no top-level alias."""
+    false, not truthy. Only the nested key counts, there is no top-level alias.
+
+    A masked default unit is the same opt-out expressed to the service manager (see
+    :func:`_default_unit_masked`); the explicit ``hermes gateway migrate`` still decides for itself."""
+    if _default_unit_masked(default_home):
+        return True
     from hermes_cli.config import load_config_readonly
     from hermes_cli.gateway_migrate import _home_env
     from utils import is_truthy_value

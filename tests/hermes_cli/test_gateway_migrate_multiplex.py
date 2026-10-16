@@ -555,6 +555,30 @@ def test_auto_multiplex_migration_false_opts_out_of_the_update_hook_but_not_the_
     assert _config_flag(fleet.root) is True and not (fleet.root / gm.MANIFEST_NAME).exists()
 
 
+def test_masked_default_unit_opts_out_of_the_update_hook(fleet, capsys, monkeypatch):
+    """A masked default unit (``systemctl mask`` = symlink to /dev/null) is the operator's opt-out, told
+    to the service manager: ``hermes update`` leaves the fleet alone instead of printing a plan and then
+    refusing on ``systemctl enable`` ("Unit file ... is masked") (#139324). A real unit file is not."""
+    from hermes_cli import gateway as gw
+    from hermes_cli.gateway_migrate_guards import auto_migration_opted_out
+    monkeypatch.setattr(gw, "supports_systemd_services", lambda: True)
+    fleet.services["default"] = ("systemd", False)
+    assert gm.build_migration_plan().eligible_for_migration()  # would migrate but for the mask
+    unit = gw.get_systemd_unit_path(system=False)
+    unit.parent.mkdir(parents=True, exist_ok=True)
+    unit.symlink_to(os.devnull)
+
+    gm.maybe_auto_migrate_after_update()
+    assert capsys.readouterr().out == ""
+    assert fleet.ops == [] and _config_flag(fleet.root) is None
+    assert fleet.pids == {"coder": 4101, "ops": 4102}
+    assert not (fleet.root / gm.MANIFEST_NAME).exists()
+
+    unit.unlink()
+    unit.write_text("[Service]\nExecStart=hermes gateway run\n", encoding="utf-8")
+    assert auto_migration_opted_out(fleet.root) is False
+
+
 def test_explicit_migrate_with_no_standalone_secondaries_still_flips_flag_and_restarts_default(fleet, capsys, monkeypatch):
     """The user typed --multiplex: 'nothing to migrate' + flag left off was a no-op the user did not ask
     for. The update hook keeps its no-op (previous test); the explicit command proceeds."""

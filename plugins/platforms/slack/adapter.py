@@ -56,6 +56,10 @@ try:  # sibling module; support both package and flat plugin-dir import
     from .block_kit import render_blocks, sanitize_blocks
 except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
+try:
+    from .adapter_slash_relay import SlackSlashRelayMixin
+except ImportError:  # pragma: no cover - plugin loaded outside package context
+    from adapter_slash_relay import SlackSlashRelayMixin  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -1003,7 +1007,7 @@ def _extra_or_env_channel_set_getter(
     return getter
 
 
-class SlackAdapter(BasePlatformAdapter):
+class SlackAdapter(SlackSlashRelayMixin, BasePlatformAdapter):
     """Slack bot adapter (Socket Mode).
     Needs SLACK_BOT_TOKEN (xoxb-, API calls) and SLACK_APP_TOKEN (xapp-, Socket Mode). DMs +
     mention-gated channels, threads, attachments, slash commands, status text."""
@@ -1507,8 +1511,9 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             async with aiohttp.ClientSession(trust_env=gateway_trust_env()) as session:
                 for idx, chunk in enumerate(chunks):
-                    # Only the first chunk replaces the ack.
-                    payload = {"response_type": "ephemeral", "replace_original": idx == 0, "text": chunk}
+                    # Only the first chunk replaces the ack (a relayed slash's silent ack has none).
+                    payload = {"response_type": "ephemeral", "text": chunk,
+                               "replace_original": idx == 0 and ctx.get("replace_original", True)}
                     async with session.post(
                         ctx["response_url"], json=payload, timeout=aiohttp.ClientTimeout(total=10)
                     ) as resp:
@@ -1522,30 +1527,6 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         except Exception as e:
             logger.warning("[Slack] response_url POST failed: %s", e)
-            return SendResult(success=False, error=str(e))
-
-    async def _post_ephemeral_fallback(
-        self, chat_id: str, ctx: dict[str, Any], content: str) -> SendResult:
-        """Deliver a slash reply via ``chat.postEphemeral`` when ``response_url`` fails.
-        Keeps the reply private (a public channel post must never happen for an ephemeral reply).
-        Cannot ``replace_original``, so the ack stays; no 5-POST cap applies here.
-
-        See #19688.
-        """
-        user_id = ctx.get("user_id", "")
-        if not user_id:
-            return SendResult(success=False, error="no user_id in slash context for postEphemeral")
-        chunks = self._format_chunks(content)
-        try:
-            client = self._get_client(chat_id)
-            for chunk in chunks:
-                result = await client.chat_postEphemeral(channel=chat_id, user=user_id, text=chunk)
-                payload = _slack_response_payload(result)
-                if not payload.get("ok"):
-                    err = payload.get("error", "unknown_error") if payload else "unexpected_response"
-                    return SendResult(success=False, error=f"chat.postEphemeral failed: {err}")
-            return SendResult(success=True, message_id=None)
-        except Exception as e:
             return SendResult(success=False, error=str(e))
 
     def _warn_if_missing_group_dm_scopes(self, auth_response, team_name: str) -> None:
@@ -1827,6 +1808,7 @@ class SlackAdapter(BasePlatformAdapter):
                 self._start_socket_mode_handler()
                 self._running = True
                 self._ensure_socket_watchdog()
+                self._ensure_slash_relay_task()
             except Exception:
                 self._running = False
                 try:
@@ -1901,6 +1883,7 @@ class SlackAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Slack."""
         self._running = False
+        await self._stop_slash_relay()
         # Seal dangling native streams so no live-typing indicator survives a restart.
         for key, stream in list(self._active_streams.items()):
             await self._seal_stream(key, stream)
@@ -2311,6 +2294,8 @@ class SlackAdapter(BasePlatformAdapter):
         """Ephemeral slash reply replacing the "Running /cmd…" ack: response_url, then
         chat.postEphemeral, NEVER a public post (a private reply must not leak because a path
         failed). Ephemerals don't auto-clear the Assistant status, so clear it here."""
+        if slash_ctx.get("via_bot"):  # relayed from another profile's app
+            return await self._send_relayed_slash_reply(chat_id, slash_ctx, content, metadata)
         ephemeral_result = await self._send_slash_ephemeral(slash_ctx, content)
         if ephemeral_result.success:
             await self._clear_thread_status_quietly(chat_id, metadata)
@@ -6047,6 +6032,8 @@ class SlackAdapter(BasePlatformAdapter):
     async def _handle_hermes_command(self, ack, command: dict) -> None:
         """Bolt listener for every native slash: ack within 3s, then run. A gated channel gets a
         bare ack, never a "Running /x" promise the gate in _handle_slash_command will break."""
+        if await self._maybe_relay_slash(ack, command):  # another profile's channel
+            return
         if self._slash_channel_gated(command.get("channel_id", "")):
             await ack()
         else:
@@ -6054,7 +6041,7 @@ class SlackAdapter(BasePlatformAdapter):
             await ack(response_type="ephemeral", text=t("platform.slack.slash.running", command=slash))
         await self._handle_slash_command(command)
 
-    async def _handle_slash_command(self, command: dict) -> None:
+    async def _handle_slash_command(self, command: dict, *, relayed: bool = False) -> None:
         """Slash commands: native ``/<command> [args]`` for every COMMAND_REGISTRY entry, or
         ``/hermes <subcommand> [args]``; other text after ``/hermes`` is a regular message."""
         user_id = command.get("user_id", "")
@@ -6084,7 +6071,7 @@ class SlackAdapter(BasePlatformAdapter):
         # events only: free-form "/hermes <question>" replies must stay public.
         response_url = command.get("response_url", "")
         if response_url and user_id and channel_id and text.startswith("/"):
-            self._stash_slash_context(team_id, channel_id, user_id, response_url)
+            self._stash_slash_context(team_id, channel_id, user_id, response_url, relayed=relayed)
         # ContextVar lets send() match the right response_url under
         # concurrent slashes from multiple users.
         _slash_user_id_token = _slash_user_id.set(user_id or None)
@@ -6128,7 +6115,8 @@ class SlackAdapter(BasePlatformAdapter):
         return None
 
     def _stash_slash_context(
-        self, team_id: str, channel_id: str, user_id: str, response_url: str) -> None:
+        self, team_id: str, channel_id: str, user_id: str, response_url: str, *,
+        relayed: bool = False) -> None:
         """Remember a slash ``response_url`` (+ user for the postEphemeral fallback),
         bounded: TTL-purge then oldest-first eviction, since contexts whose reply
         never happens are otherwise never looked up."""
@@ -6138,6 +6126,8 @@ class SlackAdapter(BasePlatformAdapter):
             else (str(channel_id), str(user_id)))
         self._slash_command_contexts[context_key] = {
             "response_url": response_url, "user_id": user_id, "ts": time.monotonic()}
+        if relayed:
+            self._mark_relayed_slash_context(self._slash_command_contexts[context_key], team_id)
         if len(self._slash_command_contexts) <= self._SLASH_CTX_MAX:
             return
         self._purge_stale_slash_contexts()
@@ -6895,6 +6885,7 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS", "csv"),
     ("reaction_triggers", "SLACK_REACTION_TRIGGERS", "csv"), ("reaction_trigger_target", "SLACK_REACTION_TRIGGER_TARGET", "str"),
     ("allowed_channels", "SLACK_ALLOWED_CHANNELS", "csv"), ("ignored_channels", "SLACK_IGNORED_CHANNELS", "csv"),
+    ("slash_relay", "SLACK_SLASH_RELAY", "lower"),
 )
 
 
@@ -6924,7 +6915,7 @@ def register(ctx) -> None:
         # YAML→env bridge: config.yaml slack: keys → SLACK_* env vars read via os.getenv().
         # YAML→env config bridge — owns the translation of config.yaml slack: keys (require_mention,
         # strict_mention, ignore_other_user_mentions, thread_require_mention, allow_bots,
-        # free_response_channels, reactions, disable_dms, allowed_channels, ignored_channels) into SLACK_*
+        # free_response_channels, reactions, disable_dms, allowed_channels, ignored_channels, slash_relay) into SLACK_*
         # env vars that the adapter reads via os.getenv(). Replaces the hardcoded block in
         # gateway/config.py. Hook contract: #24849.
         apply_yaml_config_fn=_apply_yaml_config,

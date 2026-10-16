@@ -1477,6 +1477,55 @@ class TestSendSignalChunking:
         # Only the existing file made it into the RPC
         params = fake.calls[0]["payload"]["params"]
         assert len(params["attachments"]) == 1
+        assert "voiceNote" not in params
+
+
+    def test_voice_media_sets_voice_note_flag(self, tmp_path, monkeypatch):
+        """A voice-tagged attachment must carry signal-cli's voiceNote flag (#89831)."""
+        audio = tmp_path / "reply.ogg"
+        audio.write_bytes(b"OggS" + b"\x00" * 16)
+
+        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        _install_signal_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+155****4567"},
+                "+155****4321",
+                "spoken reply",
+                media_files=[(str(audio), True)],
+            )
+        )
+
+        assert result["success"] is True
+        params = fake.calls[0]["payload"]["params"]
+        assert params["attachments"] == [str(audio)]
+        assert params["voiceNote"] is True
+
+
+    def test_mixed_voice_and_non_voice_batch_omits_voice_note(self, tmp_path, monkeypatch):
+        """voiceNote is per-send: a mixed batch must not claim it, or Signal bubbles an image."""
+        audio = tmp_path / "reply.ogg"
+        audio.write_bytes(b"OggS" + b"\x00" * 16)
+        image = tmp_path / "chart.png"
+        image.write_bytes(b"\x89PNG" + b"\x00" * 16)
+
+        fake = _FakeSignalHttp([{"result": {"timestamp": 1}}])
+        _install_signal_http(monkeypatch, fake)
+
+        result = asyncio.run(
+            _send_signal(
+                {"http_url": "http://localhost:8080", "account": "+155****4567"},
+                "+155****4321",
+                "both",
+                media_files=[(str(audio), True), (str(image), False)],
+            )
+        )
+
+        assert result["success"] is True
+        params = fake.calls[0]["payload"]["params"]
+        assert len(params["attachments"]) == 2
+        assert "voiceNote" not in params
 
 
 # ── _send_via_adapter standalone fallback ────────────────────────────────

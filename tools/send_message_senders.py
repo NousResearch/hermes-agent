@@ -457,9 +457,12 @@ async def _send_signal(extra, chat_id, message, media_files=None):
             return {"error": "Signal account not configured"}
         valid_media = media_files or []
         attachment_paths = []
-        for media_path, _is_voice in valid_media:
+        voice_paths = set()
+        for media_path, is_voice in valid_media:
             if os.path.exists(media_path):
                 attachment_paths.append(media_path)
+                if is_voice:
+                    voice_paths.add(media_path)
             else:
                 logger.warning("Signal media file not found, skipping: %s", media_path)
         # No attachments still means one (text-only) batch; text rides on batch #0 only.
@@ -475,6 +478,10 @@ async def _send_signal(extra, chat_id, message, media_files=None):
                     text_styles[0] if len(text_styles) == 1 else text_styles)
             if attachments:
                 params["attachments"] = attachments
+                # voiceNote is per-send, so a batch mixing voice and non-voice files must not claim
+                # it — Signal would render the whole batch as voice bubbles.
+                if all(path in voice_paths for path in attachments):
+                    params["voiceNote"] = True
             payload = {"jsonrpc": "2.0", "method": "send", "params": params,
                        "id": f"{id_prefix}_{int(time.time() * 1000)}"}
             async with httpx.AsyncClient(timeout=timeout) as client:

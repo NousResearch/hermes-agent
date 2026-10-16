@@ -160,13 +160,23 @@ The adapter supports sending and receiving media in both directions.
 The agent can send media files via `MEDIA:` tags in responses. The following delivery methods are supported:
 
 - **Images** — `send_multiple_images` and `send_image_file` send PNG, JPEG, GIF, WebP as native Signal attachments
-- **Voice** — `send_voice` sends audio files (OGG, MP3, WAV, M4A, AAC) as attachments
+- **Voice** — `send_voice` sends audio as a native Signal voice note (see below)
 - **Video** — `send_video` sends MP4 video files
 - **Documents** — `send_document` sends any file type (PDF, ZIP, etc.)
 
-All outgoing media goes through Signal's standard attachment API. Unlike some platforms, Signal does not distinguish between voice messages and file attachments at the protocol level.
+All other outgoing media goes through Signal's standard attachment API. Media sent alongside a voice note still rides as a regular attachment rather than rendering as a voice bubble.
 
 Attachment size limit: **100 MB** (both directions).
+
+### Voice Notes
+
+Audio is delivered as a native tap-to-play voice note: signal-cli's `send` RPC carries the `voiceNote` flag, and the audio is AAC in an `.m4a` container, which is the only combination the official Signal clients render inline.
+
+Hermes' TTS output for Signal is Ogg/Opus, so `send_voice` transcodes with **ffmpeg** when the input is not already M4A/AAC. Whenever ffmpeg is unavailable, or the transcode fails or times out, the original file is sent as a plain audio attachment — a reply is never lost over the rendering.
+
+:::info
+A batch that mixes a voice note with another file (an image, say) is sent without `voiceNote`, because the flag is per-message and Signal would bubble every attachment in the batch.
+:::
 :::warning
 **Signal servers will rate-limit attachment uploads**, the adapter uses a scheduler for multiple image sending that batches images in groups of 32 and throttles uploads to match the Signal server policy.
 :::

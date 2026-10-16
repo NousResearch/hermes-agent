@@ -82,6 +82,21 @@ def test_packaged_gateway_bootstrap_boots_the_root_it_is_given_or_names_why_it_c
     assert "unavailable" not in booted.stderr
 
 
+def test_unreadable_install_state_is_retried_not_terminal():
+    """An I/O error on the install state can be one-off: it takes the ordinary failure path the
+    client retries, never the terminal verdict that ends the TUI's gateway for its lifetime."""
+    import pm.environments
+
+    state = pm.environments.install_state_dir(_ROOT)
+    (state / ".install.lock").mkdir(parents=True)  # os.open(O_RDWR) on a directory: OSError
+
+    child = _ink_child("gateway_bootstrap.py", "--start")
+
+    assert child.returncode == 1
+    assert "gateway unavailable" not in child.stderr, child.stderr
+    assert "Traceback" not in child.stderr, child.stderr
+
+
 @pytest.mark.platforms("linux")
 def test_clipboard_image_converts_wayland_jpeg_with_the_generations_pillow(tmp_path):
     """A non-PNG Wayland clipboard image is converted with Pillow, a core dependency; ImageMagick

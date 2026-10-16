@@ -37,7 +37,7 @@ def failure_message(receipt) -> str:
 
 
 def bootstrap(start: bool, recover: bool = False) -> dict:
-    from pm.environments import activate_dependencies
+    from pm.environments import NoCommittedEnvironment, activate_dependencies
 
     # Ink runs this on HERMES_PYTHON with PYTHONPATH=<root> only. On a source install that is PM's
     # store Python, which owns no packages, and the no-owner discovery fallback already imports one
@@ -45,7 +45,10 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
     # hermes_bootstrap does for every other entry point.
     try:
         activate_dependencies(python_root())
-    except (RuntimeError, OSError) as exc:  # no committed generation / unreadable install state
+    except NoCommittedEnvironment as exc:
+        # Only a missing generation is terminal. An I/O error reading the install state (OSError)
+        # or a damaged record (RuntimeError) reaches the ordinary failure path below, which the
+        # client retries: a one-off read error must not end the TUI's gateway for its lifetime.
         raise ImportError(f"dependency environment unavailable: {exc}") from exc
     from hermes_constants import get_hermes_home
     from hermes_cli.gateway_runtime import (attachable, control_home_for, discover_gateway_endpoint,

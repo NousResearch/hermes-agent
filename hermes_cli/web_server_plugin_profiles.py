@@ -49,6 +49,10 @@ _HOSTED_REQUEST_THREADS = 4
 # has no cancel, so the host may still finish the abandoned handler; the gateway's thread is freed.
 HOSTED_REQUEST_TIMEOUT_SECS = 60.0
 _hosted_executors: dict[str, ThreadPoolExecutor] = {}
+# A name a secondary profile lacks rescans its plugin dirs (it may be newly installed), then not again
+# for this long, so 404 probes can't force a disk scan per request. An explicit rescan clears it.
+_UNKNOWN_PLUGIN_RESCAN_SECS = 10.0
+_unknown_plugins: dict[tuple[str, str], float] = {}
 
 
 def secondary_profile_home() -> Optional[Path]:
@@ -68,6 +72,9 @@ def profile_dashboard_plugins(home: Path, force_rescan: bool = False) -> list:
     from hermes_constants import hermes_home_key
     key = hermes_home_key(home)
     with _profile_plugins_lock:
+        if force_rescan:
+            for unknown in [k for k in _unknown_plugins if k[0] == key]:
+                del _unknown_plugins[unknown]
         cached = _profile_plugins.get(key)
         if cached is None or force_rescan or any(not Path(p["_dir"]).is_dir() for p in cached):
             bundled, own = get_bundled_plugins_dir(), Path(home) / "plugins"
@@ -80,6 +87,23 @@ def profile_dashboard_plugins(home: Path, force_rescan: bool = False) -> list:
 
 def _named(plugins: list, name: str) -> Optional[dict]:
     return next((p for p in plugins if p.get("name") == name), None)
+
+
+def rescanned_plugin(home: Path, name: str) -> Optional[dict]:
+    """The profile at ``home``'s entry for ``name`` after a rescan, or None; a name found missing
+    within the last :data:`_UNKNOWN_PLUGIN_RESCAN_SECS` is answered without one."""
+    from hermes_constants import hermes_home_key
+    key, now = (hermes_home_key(home), name), time.monotonic()
+    with _profile_plugins_lock:
+        if _unknown_plugins.get(key, now) > now:
+            return None
+    plugin = _named(profile_dashboard_plugins(home, force_rescan=True), name)
+    if plugin is None:
+        with _profile_plugins_lock:
+            for expired in [k for k, until in _unknown_plugins.items() if until <= now]:
+                del _unknown_plugins[expired]
+            _unknown_plugins[key] = now + _UNKNOWN_PLUGIN_RESCAN_SECS
+    return plugin
 
 
 def plugin_api_path(plugin: Optional[dict]) -> Optional[Path]:

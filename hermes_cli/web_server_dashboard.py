@@ -865,10 +865,11 @@ def _plugin_api_request_refused(name: str) -> bool:
     counts as a user plugin (safe default: refused).
     """
     from hermes_cli.web_server import _get_dashboard_plugins
-    from hermes_cli.web_server_plugin_profiles import secondary_profile_home
+    from hermes_cli.web_server_plugin_profiles import rescanned_plugin, secondary_profile_home
     plugin = next((p for p in _get_dashboard_plugins() if p.get("name") == name), None)
-    if plugin is None and secondary_profile_home() is not None:  # installed since the last scan
-        plugin = next((p for p in _get_dashboard_plugins(force_rescan=True) if p.get("name") == name), None)
+    home = secondary_profile_home()
+    if plugin is None and home is not None:  # installed since the last scan (rate-limited per name)
+        plugin = rescanned_plugin(home, name)
     return _plugin_consent_withheld(plugin or {"name": name, "source": "user"})
 
 

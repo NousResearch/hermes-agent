@@ -19,6 +19,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qsl, urljoin
 
 import pytest
@@ -538,3 +539,29 @@ def test_launch_profiles_hosted_mount_answers_504_too(daemon, monkeypatch):
 
     assert response.status_code == 504 and homes == [daemon.launch]
 
+
+def test_unknown_plugin_names_do_not_rescan_the_profile_on_every_request(daemon, monkeypatch):
+    """A 404 probe rescans a secondary profile's plugin dirs once per short window, not on every
+    request; an explicit rescan, or the end of the window, still finds a plugin installed meanwhile."""
+    from hermes_cli import web_server_dashboard, web_server_plugin_profiles
+    _beta_plugin(daemon)
+    _plugins(daemon.beta, enabled=[NAME, "later", "latest"])
+    selected = {"params": {"profile": "beta"}, "headers": daemon.owner}
+    status = lambda name: daemon.client.get(f"/api/plugins/{name}/ping", **selected).status_code
+    assert status(NAME) == 200
+    scans, discover, clock = [], web_server_dashboard._discover_dashboard_plugins, [1000.0]
+    monkeypatch.setattr(web_server_dashboard, "_discover_dashboard_plugins",
+                        lambda *a, **k: scans.append(1) or discover(*a, **k))
+    monkeypatch.setattr(web_server_plugin_profiles, "time", SimpleNamespace(monotonic=lambda: clock[0]),
+                        raising=False)
+
+    assert [status("later") for _ in range(3)] == [404] * 3
+    assert len(scans) == 1
+    _install(daemon.beta, "later")
+    daemon.client.get("/api/dashboard/plugins/rescan", **selected)
+    assert status("later") == 200
+
+    assert status("latest") == 404
+    _install(daemon.beta, "latest")
+    clock[0] += 60
+    assert status("latest") == 200

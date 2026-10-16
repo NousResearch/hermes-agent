@@ -3553,11 +3553,7 @@ class GatewayRunner(
     exit_reason = property(lambda self: self._exit_reason)
     exit_code = property(lambda self: self._exit_code)
 
-    def _resolve_session_isolation_for_source(
-        self, source: SessionSource
-    ) -> tuple[bool, bool]:
-        """Resolve the store's effective scope, with a bare-runner config fallback."""
-        return resolve_runner_session_isolation(self, source)
+    _resolve_session_isolation_for_source = resolve_runner_session_isolation
 
     def _session_key_for_source(self, source: SessionSource) -> str:
         """Resolve the current session key for a source, honoring gateway config when available."""
@@ -3590,10 +3586,7 @@ class GatewayRunner(
         group_per_user, thread_per_user = self._resolve_session_isolation_for_source(source)
         return build_session_key(
             dm_thread_key_source(source, telegram_extra_for(source, config), self._sync_session_db),
-            group_sessions_per_user=group_per_user,
-            thread_sessions_per_user=thread_per_user,
-            profile=_profile,
-        )
+            group_sessions_per_user=group_per_user, thread_sessions_per_user=thread_per_user, profile=_profile)
 
     # Telegram General topic in forum-enabled private chats: clients omit message_thread_id or send "1"; both = root.
     _TELEGRAM_GENERAL_TOPIC_IDS = frozenset({"", "1"})

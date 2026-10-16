@@ -427,7 +427,23 @@ async def test_synthetic_goal_turn_keeps_pins_and_effective_prompt(monkeypatch, 
     await _drive(runner, ((False, human),), channel_prompt="Channel hint.")
     synthetic = _synthetic_turn(runner, human, kind)
     assert not synthetic.internal and synthetic.channel_prompt is None
-    await runner._handle_message_with_agent(synthetic, synthetic.source, KEY, 1)
+    if kind == "goal-continuation":
+        # A continuation queued behind the running turn drains through the in-band follow-up.
+        runner._run_agent_deliver_first_response = AsyncMock()
+        runner._refresh_agent_cache_message_count = AsyncMock()
+        runner._session_key_for_source = lambda _source: KEY
+        adapter = MagicMock(_active_sessions={}, _pending_messages={KEY: synthetic})
+        adapter.get_pending_message = lambda key: adapter._pending_messages.pop(key, None)
+        result = {"final_response": "done", "messages": []}
+        pending_event, pending = await runner._run_agent_drain_pending(result, adapter, human, KEY)
+        assert pending_event is synthetic
+        first = calls[0]
+        turn_ctx = TurnContext(source=first["source"], context_prompt=first["context_prompt"],
+                               channel_prompt=first["channel_prompt"], session_key=KEY,
+                               session_id=first["session_id"], run_generation=1, history=[])
+        await runner._run_agent_queued_followup(turn_ctx, adapter, pending, pending_event, "done", result, None)
+    else:
+        await runner._handle_message_with_agent(synthetic, synthetic.source, KEY, 1)
     assert runner._peek_session_state(KEY).conversation.channel_pin[0] == "Channel hint."
     await _drive(runner, ((False, human),), channel_prompt="Channel hint.")
 
@@ -435,6 +451,48 @@ async def test_synthetic_goal_turn_keeps_pins_and_effective_prompt(monkeypatch, 
     eph = [_effective_ephemeral(runner, kw) for kw in calls]
     assert "Channel hint." in eph[0] and "Parent persona." in eph[0]
     assert eph[0] == eph[1] == eph[2], "synthetic turn toggled the effective ephemeral prompt"
+
+
+@pytest.mark.asyncio
+async def test_goal_continuation_keeps_channel_pin_through_session_authority(tmp_path, monkeypatch):
+    """The default runtime admits adapter turns through the native session envelope; a goal
+    continuation must arrive at the handler still asking to reuse the pins (#126109)."""
+    import gateway.run as gr
+    from gateway.platforms.base import SendResult
+    from gateway.session_authority import initialize_session_authority
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from tests.waiting import async_wait_until
+
+    chat = "15551234567@s.whatsapp.net"
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
+    monkeypatch.setattr(gr, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"})
+    runner = gr.GatewayRunner(GatewayConfig(sessions_dir=tmp_path / "sessions"))
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={
+        "text_batch_delay_seconds": 0, "session_path": str(tmp_path / "wa")}))
+    adapter.gateway_runner, runner.adapters = runner, {Platform.WHATSAPP: adapter}
+    authority = await initialize_session_authority(runner, profile_id="default", instance_id="pins")
+    runner._wire_adapter_handlers(adapter)
+    calls: list[dict] = []
+    _capture(runner, calls)
+    monkeypatch.setattr(adapter, "send", AsyncMock(return_value=SendResult(success=True, message_id="s")))
+    source = adapter.build_source(chat_id=chat, user_id=chat, chat_type="dm")
+    turns = (
+        MessageEvent(text="hi", source=source, message_id="h1", channel_prompt="Channel hint."),
+        runner._synthetic_prompt_event(source, "[Continuing toward your standing goal]\nGoal: x"),
+        MessageEvent(text="hi again", source=source, message_id="h2", channel_prompt="Channel hint."),
+    )
+    try:
+        for index, event in enumerate(turns):
+            await adapter.handle_message(event)
+            await async_wait_until(
+                lambda: len(calls) > index and not adapter._background_tasks and not adapter._session_tasks,
+                timeout=60, what=f"turn {index}")
+    finally:
+        authority.db.close()
+
+    assert [kw["channel_prompt"] for kw in calls] == ["Channel hint."] * 3
+    pin = runner._peek_session_state(runner._session_key_for_source(source)).conversation.channel_pin
+    assert pin[0] == "Channel hint."
 
 
 @pytest.mark.asyncio

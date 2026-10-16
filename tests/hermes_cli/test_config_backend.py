@@ -65,6 +65,17 @@ class TestFileBackend:
         with pytest.raises(FileNotFoundError):
             cb.read_config_doc(path)
 
+    def test_version_or_none_and_token(self, home):
+        path = home / "config.yaml"
+        assert cb.config_version_or_none(path) is None
+        assert cb.version_token(None) == 0
+        path.write_text("a: 1\n", encoding="utf-8")
+        version = cb.config_version_or_none(path)
+        assert version == cb.config_version(path)
+        assert cb.version_token(version) == version[0] / 1_000_000_000 > 0
+        # An opaque non-file version still yields a stable non-zero number.
+        assert cb.version_token(("etag-1",)) == cb.version_token(("etag-1",)) != 0
+
     def test_read_version_and_bom(self, home):
         path = home / "config.yaml"
         path.write_bytes("\ufeffmodel:\n  default: x\n".encode("utf-8"))

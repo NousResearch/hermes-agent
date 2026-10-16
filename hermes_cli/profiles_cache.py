@@ -3,7 +3,6 @@
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli.config_backend import config_version
 
 
 # (path, kind) -> (file signature, the small derived value). `list_profiles` re-reads three YAML
@@ -24,15 +23,6 @@ def _profile_file_signature(path: Path) -> Optional[tuple]:
     except OSError:
         return None
     return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
-
-
-def _config_version_or_none(path: Path) -> Optional[tuple]:
-    """The config backend's version of a profile's config.yaml (None when absent): the user layer
-    changes through the backend, not necessarily on local disk."""
-    try:
-        return config_version(path)
-    except OSError:
-        return None
 
 
 def _cached_profile_read(path: Path, kind: str, compute, signature_of=_profile_file_signature):

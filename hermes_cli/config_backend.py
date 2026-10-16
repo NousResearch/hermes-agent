@@ -227,6 +227,25 @@ def config_version(config_path: PathLike) -> tuple[Any, ...]:
     return backend.version(home)
 
 
+def config_version_or_none(config_path: PathLike) -> Optional[tuple[Any, ...]]:
+    """:func:`config_version`, or None when the config is absent or cannot be stat'ed."""
+    try:
+        return config_version(config_path)
+    except OSError:
+        return None
+
+
+def version_token(version: Optional[tuple[Any, ...]]) -> float:
+    """A number that changes with a backend ``version`` (0 = no config), for clients that only
+    compare successive values: the file backend's version leads with ``st_mtime_ns``, kept as seconds."""
+    if not version:
+        return 0
+    if isinstance(version[0], int):
+        return version[0] / 1_000_000_000
+    import zlib
+    return float(zlib.crc32(repr(version).encode("utf-8")) or 1)
+
+
 def probe_config_readable(config_path: PathLike) -> None:
     """Raise ``OSError`` while a local config file cannot be opened; no parse. A non-file user
     layer has no local read to fail."""

@@ -88,11 +88,11 @@ def test_the_raw_config_reader_keeps_its_uncached_contract(profile_dir):
 
 def test_config_model_cache_is_keyed_on_the_backend_version_not_the_local_file(profile_dir, monkeypatch):
     """The user layer changes through the config backend, which need not touch the local file."""
-    from hermes_cli import config_backend, profiles_cache
+    from hermes_cli import config_backend
 
     assert profiles._read_config_model(profile_dir) == ("gpt-4o", "openai")
     version = [("v2",)]
-    monkeypatch.setattr(profiles_cache, "config_version", lambda path: version[0])
+    monkeypatch.setattr(config_backend, "config_version", lambda path: version[0])
     monkeypatch.setattr(config_backend.FileBackend, "read_user_layer", lambda self, home: config_backend.UserLayer(
         doc={"model": {"provider": "anthropic", "default": "claude-opus-4.6"}}, version=version[0]))
 

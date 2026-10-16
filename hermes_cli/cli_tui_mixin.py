@@ -1817,7 +1817,7 @@ class CLITuiMixin:
 
     def _tui_init_run_state(self):
         """Reset the per-run REPL state (queues, modal states, voice state, config watcher)."""
-        from hermes_cli.config_backend import config_exists, config_version
+        from hermes_cli.config_backend import config_version_or_none
         self._agent_running = False
         self._pending_input = queue.Queue()     # normal input (commands + new queries)
         self._interrupt_queue = queue.Queue()   # messages typed while the agent is running
@@ -1837,7 +1837,7 @@ class CLITuiMixin:
         # Config file watcher — detect mcp_servers changes and auto-reload.
         from hermes_cli.config import get_config_path as _get_config_path
         _cfg_path = _get_config_path()
-        self._config_sig: tuple | None = config_version(_cfg_path) if config_exists(_cfg_path) else None
+        self._config_sig: tuple | None = config_version_or_none(_cfg_path)
         self._config_mcp_servers: dict = self.config.get("mcp_servers") or {}
         self._last_config_check: float = 0.0  # monotonic time of last check
 

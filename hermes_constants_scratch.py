@@ -98,6 +98,8 @@ def subtree_touched_since(path: Path, cutoff: float) -> bool:
     Stops at the first recent entry, so a live tree costs one hit and only a truly idle
     tree pays for the full walk (once, right before it is deleted). Symlinks are never
     followed: a link into the repo would make the target's activity keep the entry alive.
+    For the same reason a hardlinked file (``st_nlink > 1``) does not count: its mtime is the
+    inode's, and ``git clone --local`` hardlinks packs that git freshens from the source repo.
     An unreadable entry is kept: an incomplete scan cannot establish that it is idle.
     """
     try:
@@ -113,9 +115,10 @@ def subtree_touched_since(path: Path, cutoff: float) -> bool:
             with os.scandir(stack.pop()) as it:
                 for child in it:
                     try:
-                        if child.stat(follow_symlinks=False).st_mtime >= cutoff:
-                            return True
+                        st = child.stat(follow_symlinks=False)
                     except OSError:
+                        return True
+                    if st.st_mtime >= cutoff and not (st.st_nlink > 1 and child.is_file(follow_symlinks=False)):
                         return True
                     if child.is_dir(follow_symlinks=False):
                         stack.append(child.path)
@@ -209,7 +212,7 @@ def _linked_worktree_repos(entry: Path) -> set[str]:
                 for child in it:
                     if child.name == ".git" and child.is_file(follow_symlinks=False):
                         try:
-                            line = Path(child.path).read_text(encoding="utf-8", errors="replace").strip()
+                            line = Path(child.path).read_text(encoding="utf-8-sig", errors="replace").strip()
                         except OSError:
                             continue
                         if line.startswith("gitdir:"):

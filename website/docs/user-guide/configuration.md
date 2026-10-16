@@ -258,7 +258,8 @@ directory. Hermes only sets these when they are not already set — a `TMPDIR` e
 by you or by the OS (macOS `/var/folders`, Windows `%TEMP%`) is left alone. Entries are
 pruned at startup (at most once per hour) once they have been **idle for 24 hours**: an entry
 stays as long as anything anywhere inside it was written in the last day, and goes a day after
-the last write. Before an idle entry is deleted, Hermes also stops any process still running
+the last write. Hardlinked files do not count as writes (a `git clone --local` shares pack files
+with its source repo, whose activity would otherwise keep the clone forever). Before an idle entry is deleted, Hermes also stops any process still running
 with its working directory inside that entry (or inside a scratch path that no longer exists,
 such as a headless browser left behind by a test run) and drops any `git worktree`
 registration that pointed into it. `hermes doctor` reports the directory and its size, and

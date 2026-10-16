@@ -67,6 +67,25 @@ def test_prune_removes_idle_entries_and_keeps_trees_written_deep_inside(tmp_path
     assert not idle.exists() and live.exists() and fresh.exists()
 
 
+@pytest.mark.platforms("posix")  # DirEntry.stat() reports st_nlink only on POSIX
+def test_prune_ignores_freshened_hardlinks_shared_with_a_live_repo(tmp_path):
+    """``git clone --local`` hardlinks packs into a scratch clone; when git freshens the source
+    repo's copy the shared inode's mtime moves, which must not keep the idle clone alive."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    live_pack = tmp_path / "live-repo" / "pack-1.pack"
+    live_pack.parent.mkdir()
+    live_pack.write_bytes(b"P" * 64)
+    clone = scratch / "clone" / ".git" / "objects" / "pack"
+    clone.mkdir(parents=True)
+    os.link(live_pack, clone / "pack-1.pack")
+    ancient = time.time() - 30 * 3600
+    for path in (clone, clone.parent, clone.parent.parent, scratch / "clone"):
+        os.utime(path, (ancient, ancient))
+    os.utime(live_pack)  # the live repo freshens its pack: the shared inode is "recent"
+    assert prune_scratch_dir(scratch) == 1
+    assert not (scratch / "clone").exists() and live_pack.read_bytes() == b"P" * 64
+
+
 @pytest.mark.platforms("posix")  # POSIX directory modes
 class TestScratchDirPermissionPolicy:
     """get_scratch_dir must honor the home permission policy instead of a blanket 0700:

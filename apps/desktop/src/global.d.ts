@@ -1540,7 +1540,7 @@ export interface HermesPreviewTarget {
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'directory' | 'html' | 'image' | 'missing' | 'pdf' | 'text'
+  previewKind?: 'binary' | 'directory' | 'document' | 'html' | 'image' | 'missing' | 'pdf' | 'presentation' | 'spreadsheet' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
   url: string
@@ -1725,4 +1725,20 @@ export interface HermesSelectPathsOptions {
 export interface BackendExit {
   code: number | null
   signal: string | null
+}
+
+declare module 'cfb' {
+  interface CfbEntry {
+    content?: Uint8Array | number[]
+  }
+
+  interface CfbContainer {}
+
+  interface Cfb {
+    read(data: Uint8Array, options: { type: 'array' }): CfbContainer
+    find(container: CfbContainer, name: string): CfbEntry | null
+  }
+
+  const CFB: Cfb
+  export default CFB
 }

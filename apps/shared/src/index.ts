@@ -99,6 +99,7 @@ export {
   type WebSocketLike
 } from './json-rpc-gateway'
 export { modelSearchText } from './model-search-text'
+export { officePreviewKind, type OfficePreviewKind, officePreviewKindFromPath } from './preview-kind'
 export {
   DEFAULT_REASONING_EFFORT,
   isReasoningEffort,

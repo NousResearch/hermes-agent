@@ -94,4 +94,33 @@ describe('persisted preview migration', () => {
 
     expect(restored?.target.previewKind).toBe('text')
   })
+
+  it.each([
+    ['/work/notes.docx', 'document'],
+    ['/work/notes.odt', 'document'],
+    ['/work/book.xlsx', 'spreadsheet'],
+    ['/work/book.ods', 'spreadsheet'],
+    ['/work/legacy.xls', 'spreadsheet'],
+    ['/work/people.csv', 'spreadsheet'],
+    ['/work/deck.pptx', 'presentation']
+  ])('upgrades a persisted binary %s tab', (source, previewKind) => {
+    const [restored] = decodePreviewTabs(
+      JSON.stringify([
+        {
+          id: `file:file://${source}`,
+          target: {
+            binary: true,
+            kind: 'file',
+            label: source.split('/').pop(),
+            path: source,
+            previewKind: 'binary',
+            source,
+            url: `file://${source}`
+          }
+        }
+      ])
+    )
+
+    expect(restored?.target.previewKind).toBe(previewKind)
+  })
 })

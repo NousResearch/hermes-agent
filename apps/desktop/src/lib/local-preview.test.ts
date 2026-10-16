@@ -229,3 +229,29 @@ describe('PDF previews', () => {
     expect(readDesktopFileDataUrl).not.toHaveBeenCalled()
   })
 })
+
+describe('Office previews', () => {
+  it.each([
+    ['/tmp/notes.docx', 'document'],
+    ['/tmp/notes.odt', 'document'],
+    ['/tmp/book.xlsx', 'spreadsheet'],
+    ['/tmp/book.ods', 'spreadsheet'],
+    ['/tmp/legacy.xls', 'spreadsheet'],
+    ['/tmp/people.csv', 'spreadsheet'],
+    ['/tmp/deck.pptx', 'presentation']
+  ])('classifies %s as %s', (path, previewKind) => {
+    expect(localPreviewTarget(path)).toMatchObject({ path, previewKind })
+  })
+
+  it('does not UTF-8-enrich remote office files before loading their bytes', async () => {
+    vi.clearAllMocks()
+    window.hermesDesktop = {
+      normalizePreviewTarget: vi.fn(async () => null)
+    } as never
+
+    await expect(normalizeOrLocalPreviewTarget('/remote/notes.docx')).resolves.toMatchObject({
+      previewKind: 'document'
+    })
+    expect(readDesktopFileDataUrl).not.toHaveBeenCalled()
+  })
+})

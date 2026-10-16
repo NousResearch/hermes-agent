@@ -27,7 +27,8 @@ import { useSearchParams } from "react-router";
 
 import { ChatWorkspacePicker } from "@/components/ChatWorkspacePicker";
 import { useI18n } from "@/i18n";
-import { api, type SessionInfo } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { SessionInfo } from "@/lib/api-types";
 import { cn, timeAgo } from "@/lib/utils";
 
 const SESSION_LIMIT = 30;

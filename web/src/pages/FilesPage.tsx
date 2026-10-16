@@ -35,7 +35,7 @@ import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { api } from "@/lib/api";
-import type { ManagedFileEntry, ManagedFilesResponse } from "@/lib/api";
+import type { ManagedFileEntry, ManagedFilesResponse } from "@/lib/api-types";
 import { PluginSlot } from "@/plugins";
 import { errorMessage } from "@/lib/api-error";
 

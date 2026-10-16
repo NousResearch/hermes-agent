@@ -6,7 +6,7 @@ import type {
   ToolsetConfig,
   ToolsetInfo,
   ToolsetProvider,
-} from "@/lib/api";
+} from "@/lib/api-types";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@nous-research/ui/ui/components/input";

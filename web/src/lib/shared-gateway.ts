@@ -1,4 +1,4 @@
-import type { StatusResponse } from "@/lib/api";
+import type { StatusResponse } from "@/lib/api-types";
 import { ApiError } from "@/lib/api-error";
 
 /** Profiles a gateway restart would blip when the managed profile is carried by the shared

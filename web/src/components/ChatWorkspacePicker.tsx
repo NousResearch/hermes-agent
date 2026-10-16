@@ -21,7 +21,8 @@ import { FolderGit2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useI18n } from "@/i18n";
-import { api, type ChatWorkspacesResponse } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { ChatWorkspacesResponse } from "@/lib/api-types";
 import { abbreviateHomePath, workspaceOptions } from "@/lib/chat-workspaces";
 import { cn } from "@/lib/utils";
 

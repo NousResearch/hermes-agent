@@ -15,7 +15,7 @@ import type {
   McpServerCreate,
   SkillInfo,
   SkillHubResult,
-} from "@/lib/api";
+} from "@/lib/api-types";
 import {
   buildMcpServerCreate,
   emptyMcpServerDraft,

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { BarChart3, X } from "lucide-react";
-import { api, type SharedMetricsConsent } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { SharedMetricsConsent } from "@/lib/api-types";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { useI18n } from "@/i18n";
 

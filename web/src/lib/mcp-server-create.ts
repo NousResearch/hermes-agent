@@ -1,4 +1,4 @@
-import type { McpHttpAuth, McpServerCreate } from "@/lib/api";
+import type { McpHttpAuth, McpServerCreate } from "@/lib/api-types";
 
 export type McpTransport = "http" | "stdio";
 

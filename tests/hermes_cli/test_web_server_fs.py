@@ -621,6 +621,19 @@ def test_fs_download_profile_uses_that_profiles_sandbox(client, monkeypatch, tmp
     assert default.content == b"DEFAULT"
 
 
+def test_fs_reads_accept_profile_current_for_host_files(client, tmp_path):
+    """``profile=current`` means the request's own profile, as elsewhere in the dashboard."""
+    target = tmp_path / "plain.txt"
+    target.write_text("host", encoding="utf-8")
+
+    for selector in ("current", "", "CURRENT"):
+        read = client.get("/api/fs/read-text", params={"path": str(target), "profile": selector})
+        listing = client.get("/api/fs/list", params={"path": str(tmp_path), "profile": selector})
+        assert read.status_code == 200, (selector, read.text)
+        assert read.json()["text"] == "host"
+        assert listing.status_code == 200, (selector, listing.text)
+
+
 def test_fs_read_plain_host_path_logs_no_docker_media_warning(client, docker_volumes, tmp_path, caplog):
     """fs routes see ordinary host paths constantly; misses are not MEDIA warnings."""
     plain = tmp_path / "plain.txt"

@@ -260,3 +260,23 @@ async def test_admission_reserved_on_the_old_route_commits_on_the_fresh_session(
     await authority._drain(SessionRef(authority.profile_id, new))
     assert executed == [("A", old.session_id), ("B", new), ("C", new), ("D", new)]
     assert [r["request_id"] for r in list_session_admissions(db, session_id=old.session_id, pending_only=False)] == ["A"]
+
+
+@pytest.mark.asyncio
+async def test_exhaustion_reset_keeps_the_adapter_queue_for_the_fresh_session(native):
+    """A /queue chain deferred behind the exhausted turn (head in the adapter slot, rest in the
+    overflow) survives the reset's conversation-scope clear, in order, for the post-handler drain."""
+    runner, adapter, source = native.runner, native.adapter, native.source
+    _, receipt = await _admit(native, "A")
+    session_key = runner.session_store.lookup_by_session_key(
+        native.authority.sessions[receipt.ref.session_id].route).session_key
+    head, second = (MessageEvent(text=t, source=source, message_id=t) for t in ("Q1", "Q2"))
+    runner._enqueue_fifo(session_key, head, adapter)
+    runner._enqueue_fifo(session_key, second, adapter)
+    entry = runner.session_store.lookup_by_session_key(session_key)
+    result = {"failed": True, "compression_exhausted": True, "messages": []}
+    _, new_entry = await runner._hmwa_compression_exhaustion_reset(
+        result, "context exhausted", entry, session_key, source)
+    assert new_entry.session_id != entry.session_id
+    assert adapter._pending_messages[session_key] is head
+    assert runner._overflow_queue(session_key) == [second]

@@ -22,18 +22,52 @@ export interface CrashForensicsOptions {
 /** Render a thrown value for the log, preferring a stack over a bare message. */
 export function describeCrashReason(reason: unknown): string {
   if (reason instanceof Error) {
-    return reason.stack || reason.message || reason.name || 'Error'
+    return truncateForensics(reason.stack || reason.message || reason.name || 'Error')
   }
 
   if (typeof reason === 'string') {
-    return reason
+    return truncateForensics(reason)
   }
 
+  // A rejection can carry an arbitrarily large body (a fetched payload, a
+  // window's state dump): stringify circular-safe and truncate, so the crash
+  // path itself can't block the dying process serializing megabytes — and a
+  // circular object degrades to a marked placeholder instead of the useless
+  // "[object Object]" the old String() fallback produced.
   try {
-    return JSON.stringify(reason) ?? String(reason)
+    const seen = new Set<unknown>()
+
+    return truncateForensics(
+      JSON.stringify(reason, (_key, value: unknown) => {
+        if (typeof value === 'object' && value !== null) {
+          if (seen.has(value)) {
+            return '[circular]'
+          }
+
+          seen.add(value)
+        }
+
+        return value
+      }) ?? String(reason)
+    )
   } catch {
-    return String(reason)
+    try {
+      return truncateForensics(String(reason))
+    } catch {
+      return '[unprintable crash reason]'
+    }
   }
+}
+
+// Forensics is a hint, not a dump: cap what one fault can append.
+const CRASH_REASON_MAX_CHARS = 5_000
+
+function truncateForensics(text: string): string {
+  if (text.length <= CRASH_REASON_MAX_CHARS) {
+    return text
+  }
+
+  return `${text.slice(0, CRASH_REASON_MAX_CHARS)}\n# forensics truncated: ${text.length - CRASH_REASON_MAX_CHARS} chars omitted`
 }
 
 /** Property stamped on intentional app-transition sentinel errors. */

@@ -173,6 +173,25 @@ class TurnExplainersMixin:
             kind = _file_mutation_error_kind(preview)
             for path in targets:
                 identity = _file_mutation_identity(path, task_id)
+                if kind == "apply_failed":
+                    # Promote on the on-disk target, the same identity the success path clears by,
+                    # so a real failure replaces the shape error even under another spelling.
+                    promoted = next(
+                        (key for key, info in state.items()
+                         if info.get("kind") == "args_missing"
+                         and info.get("identity", _file_mutation_identity(key, task_id)) == identity),
+                        None,
+                    )
+                    if promoted is not None:
+                        # Re-record from the real attempt: the fresh ``stat`` is what
+                        # ``_file_mutations_still_failed`` re-checks at turn end, and the shape
+                        # error's stale one would hide the real failure whenever anything else
+                        # wrote the file between the two calls.
+                        state[promoted] = {
+                            "tool": tool_name, "error_preview": preview, "kind": kind,
+                            "identity": identity, "stat": _file_stat_signature(identity),
+                        }
+                        continue
                 state.setdefault(path, {
                     "tool": tool_name, "error_preview": preview, "kind": kind,
                     "identity": identity, "stat": _file_stat_signature(identity),

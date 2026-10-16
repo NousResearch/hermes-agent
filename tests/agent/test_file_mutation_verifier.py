@@ -134,6 +134,86 @@ class TestRecordFileMutationResult:
         assert state["/tmp/a.md"]["kind"] == "args_missing"
         assert AIAgent._format_file_mutation_failure_footer(state) == ""
 
+    def test_args_missing_promoted_by_later_apply_failed(self):
+        """A later real attempt replaces the shape error, preview included."""
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": "/tmp/a.md"},
+            json.dumps({"success": False, "error": "old_string and new_string required"}),
+            is_error=True,
+        )
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": "/tmp/a.md", "old_string": "x", "new_string": "y"},
+            json.dumps({"success": False, "error": "Could not find old_string"}),
+            is_error=True,
+        )
+
+        state = agent._turn_failed_file_mutations
+        assert state["/tmp/a.md"]["kind"] == "apply_failed"
+        assert "Could not find old_string" in state["/tmp/a.md"]["error_preview"]
+        footer = AIAgent._format_file_mutation_failure_footer(state)
+        assert footer
+        assert "/tmp/a.md" in footer
+
+    def test_promotion_takes_a_fresh_stat_snapshot(self, tmp_path):
+        """The promoted entry carries the real attempt's stat.
+
+        ``_file_mutations_still_failed`` drops entries whose file changed since the recorded
+        snapshot. Keeping the shape error's stat would hide the real failure whenever anything
+        else (a terminal redirect, execute_code) wrote the file between the two calls.
+        """
+        import os
+
+        target = tmp_path / "notes.md"
+        target.write_text("v1\n")
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": str(target)},
+            json.dumps({"success": False, "error": "old_string and new_string required"}),
+            is_error=True,
+        )
+        before = dict(agent._turn_failed_file_mutations[str(target)])
+
+        st = target.stat()
+        target.write_text("v2 rewritten outside the file tools\n")
+        os.utime(target, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
+
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": str(target), "old_string": "x", "new_string": "y"},
+            json.dumps({"success": False, "error": "Could not find old_string"}),
+            is_error=True,
+        )
+        promoted = agent._turn_failed_file_mutations[str(target)]
+        assert promoted["kind"] == "apply_failed"
+        assert promoted["stat"] != before["stat"]
+
+        still_failed = agent._file_mutations_still_failed(agent._turn_failed_file_mutations)
+        assert list(still_failed) == [str(target)]
+        assert AIAgent._format_file_mutation_failure_footer(still_failed)
+
+    def test_promotion_matches_the_resolved_target_across_spellings(self, tmp_path, monkeypatch):
+        """The shape error recorded as ``notes.md`` is promoted by the real failure on the
+        absolute path; one entry survives and it renders."""
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        task = "fmv-promotion-task"
+        agent = _bare_agent()
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": "notes.md"},
+            json.dumps({"success": False, "error": "old_string and new_string required"}),
+            is_error=True, task_id=task,
+        )
+        resolved = str(tmp_path / "notes.md")
+        agent._record_file_mutation_result(
+            "patch", {"mode": "replace", "path": resolved, "old_string": "x", "new_string": "y"},
+            json.dumps({"success": False, "error": "Could not find old_string"}),
+            is_error=True, task_id=task,
+        )
+
+        state = agent._turn_failed_file_mutations
+        assert list(state) == ["notes.md"]
+        assert state["notes.md"]["kind"] == "apply_failed"
+        assert "Could not find old_string" in state["notes.md"]["error_preview"]
+
     def test_success_removes_prior_failure(self):
         agent = _bare_agent()
         # First attempt fails

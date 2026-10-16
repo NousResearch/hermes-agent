@@ -39,6 +39,32 @@ def test_terminal_run_env_starts_from_the_sessions_toolchain(daemon_env):
     assert '/daemon/bin' in _parts(env) and 'NVM_DIR' not in env
 
 
+def test_tool_envs_carry_the_behaviour_values_the_session_uses(daemon_env, monkeypatch, tmp_path):
+    """A shell client's session reads its client's behaviour values, so the daemon's own (an operator's
+    ephemeral prompt) never reach its tool subprocesses; a remote client's session still uses the
+    daemon's host values (prefill file), and an unbound session (messaging, cron) all of them."""
+    import sys
+    from agent.session_client_env import BEHAVIOUR_ENV, client_env_scope
+    from tools.code_execution_env import _build_child_env
+    from tools.environments.local import _make_run_env
+    from tools.process_registry import ProcessRegistry
+    daemon = {name: f'daemon-{name}' for name in BEHAVIOUR_ENV}
+    for name, value in daemon.items():
+        monkeypatch.setenv(name, value)
+
+    def envs():
+        return (_make_run_env({}), ProcessRegistry._spawn_env({}),
+                _build_child_env(rpc_endpoint='sock', rpc_token='t', tmpdir=str(tmp_path), child_python=sys.executable))
+    with client_env_scope({**CLIENT, 'HERMES_EPHEMERAL_SYSTEM_PROMPT': 'client prompt'}):
+        for env in envs():
+            assert not set(BEHAVIOUR_ENV) & set(env), env
+    with client_env_scope(CLIENT, local=False):
+        terminal = envs()[0]
+        assert 'HERMES_EPHEMERAL_SYSTEM_PROMPT' not in terminal and 'HERMES_INFERENCE_PROVIDER' not in terminal
+        assert terminal['HERMES_PREFILL_MESSAGES_FILE'] == daemon['HERMES_PREFILL_MESSAGES_FILE']
+    assert envs()[0]['HERMES_EPHEMERAL_SYSTEM_PROMPT'] == daemon['HERMES_EPHEMERAL_SYSTEM_PROMPT']
+
+
 def test_background_process_env_starts_from_the_sessions_toolchain(daemon_env):
     from agent.session_client_env import client_env_scope
     from tools.process_registry import ProcessRegistry

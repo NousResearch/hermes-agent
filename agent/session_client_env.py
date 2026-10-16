@@ -150,10 +150,17 @@ def toolchain_environ(base=None) -> dict[str, str]:
     session: its toolchain replaces the gateway's, and every toolchain name it did not export (built-in,
     or configured for its profile when the session was created) is unset, as in main's process: one
     client's venv or GEM_HOME never reaches another's session through the daemon it started. PATH is
-    the exception: a client that sent none runs with the gateway's."""
+    the exception: a client that sent none runs with the gateway's. A shell client's session also drops
+    the gateway's own behaviour values it reads from its client (:func:`session_env`): tools never see
+    the daemon's ephemeral prompt or provider request in place of the session's."""
     env = dict(os.environ if base is None else base)
     bound = _BOUND.get()
-    if bound is None or not bound[1]:
+    if bound is None:
+        return env
+    for name in BEHAVIOUR_ENV:
+        if bound[1] or name not in HOST_BEHAVIOUR:
+            env.pop(name, None)
+    if not bound[1]:
         return env
     rules = bound[2] or {'names': TOOL_ENV, 'prefixes': TOOL_ENV_PREFIXES, 'secret': None}
     names = {name for name in rules['names'] if _travels(name, rules['secret'])}

@@ -135,6 +135,23 @@ describe('busy composer Enter preference', () => {
     expect(getQueuedPrompts(SESSION)).toEqual([])
   })
 
+  it('queues a text-and-image draft when the plugin steer chord cannot carry attachments', async () => {
+    const onSteer = vi.fn(async () => true)
+    const onSubmit = vi.fn(async () => true)
+    const editor = openComposer({ onSteer, onSubmit })
+    const image = { id: 'image-fixture', kind: 'image' as const, label: 'shot.png', path: 'fixture-shot.png' }
+    await act(async () => mainComposerScope.$attachments.set([image]))
+
+    await pressEnter(editor, 'describe this image', { ctrlKey: true })
+
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(getQueuedPrompts(SESSION)).toEqual([
+      expect.objectContaining({ text: 'describe this image', attachments: [image] })
+    ])
+    expect(mainComposerScope.$attachments.get()).toEqual([])
+  })
+
   it('shows the Ctrl+Enter steer hint while steerable with a payload', async () => {
     const onSteer = vi.fn(async () => true)
     const view = render(<Harness onSteer={onSteer} />)
@@ -145,6 +162,8 @@ describe('busy composer Enter preference', () => {
       editor.focus()
       editor.textContent = 'draft text'
       fireEvent.input(editor)
+      // Native input mirrors into composer state on the next animation frame.
+      await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()))
     })
 
     expect(view.container.querySelector('[data-slot="composer-steer-hint"]')).toBeTruthy()
@@ -159,6 +178,8 @@ describe('busy composer Enter preference', () => {
       editor.focus()
       editor.textContent = 'draft text'
       fireEvent.input(editor)
+      // Native input mirrors into composer state on the next animation frame.
+      await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()))
     })
 
     expect(view.container.querySelector('[data-slot="composer-steer-hint"]')).toBeNull()

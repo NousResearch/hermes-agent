@@ -3835,7 +3835,6 @@ export const frOverrides = {
     queueMessage: "Mettre le message en file d'attente",
     steer: "Diriger l'exécution en cours",
     redirect: "Rediriger l'exécution en cours",
-    steerKeyHint: "Diriger l'exécution en cours (Ctrl+Entrée)",
     stop: 'Arrêter',
     send: 'Envoyer',
     speaking: 'Parle',

@@ -107,7 +107,9 @@ describe('native next-prompt key ownership', () => {
     })
     expect(suggestion.decide).not.toHaveBeenCalled()
     await act(async () => {
-      fireEvent.keyDown(editor, { key: 'Escape' })
+      const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+      fireEvent(editor, escape)
+      expect(escape.defaultPrevented).toBe(true)
     })
     expect(suggestion.decide).toHaveBeenCalledWith('dismissed')
     expect(submit).not.toHaveBeenCalled()

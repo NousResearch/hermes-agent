@@ -2633,7 +2633,6 @@ export const ruOverrides = {
     queueMessage: 'Вставить сообщение в очередь',
     steer: 'Направить текущий запуск',
     redirect: 'Перенаправить текущий запуск',
-    steerKeyHint: 'Направить текущий запуск (Ctrl+Enter)',
     stop: 'Стоп',
     send: 'Отправить',
     speaking: 'Говорит',

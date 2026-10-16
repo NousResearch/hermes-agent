@@ -3021,28 +3021,6 @@ describe('usePromptActions redirectPrompt', () => {
     })
   })
 
-  it('sends explicit composer steering through session.steer without an interrupt bubble', async () => {
-    const requestGateway = vi.fn(async () => ({ status: 'queued' }) as never)
-    let handle: HarnessHandle | null = null
-    const capturedStates: Record<string, unknown>[] = []
-    await actRender(
-      <Harness
-        onReady={h => (handle = h)}
-        onSeedState={state => capturedStates.push(state)}
-        refreshSessions={async () => undefined}
-        requestGateway={requestGateway}
-      />
-    )
-
-    expect(await handle!.steerPrompt('  steer safely  ', 'steer')).toBe(true)
-    expect(requestGateway).toHaveBeenCalledWith('session.steer', {
-      session_id: RUNTIME_SESSION_ID,
-      text: 'steer safely'
-    })
-    expect(requestGateway).not.toHaveBeenCalledWith('session.redirect', expect.anything())
-    expect(capturedStates).toEqual([])
-  })
-
   it('reports rejection so the caller queues when the turn already ended', async () => {
     const requestGateway = vi.fn(async () => ({ status: 'rejected' }) as never)
 

@@ -1,11 +1,12 @@
-import { useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
+import { triggerHaptic } from '@/lib/haptics'
 import { $activeGatewayRoute } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 
-import { getActiveComposer, getVisibleComposerSurfaceId } from '../focus'
+import { getActiveComposer, getVisibleComposerSurfaceId, onComposerAttachImagesRequest } from '../focus'
 import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
@@ -23,6 +24,25 @@ export function useComposerScreenshot({ sessionKey, focusKey, onAttachImageBlob 
   const { t } = useI18n()
   const latest = useRef({ onAttachImageBlob, copy: t.settings.screenshot })
   latest.current = { onAttachImageBlob, copy: t.settings.screenshot }
+
+  // Paste-to-focus shares the same scoped image ingestion as screenshots.
+  useEffect(() => {
+    if (!onAttachImageBlob) {
+      return undefined
+    }
+
+    return onComposerAttachImagesRequest(({ blobs, target }) => {
+      if (target !== scope.target) {
+        return
+      }
+
+      triggerHaptic('selection')
+
+      for (const blob of blobs) {
+        void onAttachImageBlob(blob)
+      }
+    })
+  }, [onAttachImageBlob, scope.target])
 
   useLayoutEffect(() => {
     const api = window.hermesDesktop?.screenshot

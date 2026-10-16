@@ -3827,7 +3827,6 @@ export const deOverrides = {
     queueMessage: 'Nachricht einreihen',
     steer: 'Laufenden Lauf steuern',
     redirect: 'Laufenden Lauf umleiten',
-    steerKeyHint: 'Laufenden Lauf steuern (Ctrl+Enter)',
     stop: 'Stopp',
     send: 'Senden',
     speaking: 'Spricht',

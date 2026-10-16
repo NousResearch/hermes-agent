@@ -214,7 +214,7 @@ describe('ComposerControls shortcut tooltips', () => {
     expect(tooltip.textContent).toContain('Queue message')
     expect(tooltip.textContent).toContain('Steer')
     // Native policy: Ctrl+Enter queues first, Enter steers second.
-    expect(tooltip.textContent?.startsWith('Ctrl+↵Queue')).toBe(true)
+    expect(tooltip.textContent?.startsWith('Ctrl↵Queue')).toBe(true)
   })
 
   it('hides Queue while idle even if the composer has a payload', () => {

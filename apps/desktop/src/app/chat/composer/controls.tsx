@@ -37,6 +37,27 @@ interface ConversationProps {
   onToggleMute: () => void
 }
 
+export function voiceControlsProps(
+  conversation: Pick<ConversationProps, 'level' | 'muted' | 'status'> & {
+    stopTurn: () => void
+    toggleMute: () => void
+  },
+  active: boolean,
+  onStart: () => void,
+  onEnd: () => void
+): ConversationProps {
+  return {
+    active,
+    level: conversation.level,
+    muted: conversation.muted,
+    onEnd,
+    onStart,
+    onStopTurn: conversation.stopTurn,
+    onToggleMute: conversation.toggleMute,
+    status: conversation.status
+  }
+}
+
 export function ComposerControls({
   autoSpeak,
   busy,

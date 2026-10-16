@@ -3391,7 +3391,6 @@ export const en: Translations = {
     queueMessage: 'Queue message',
     steer: 'Steer the current run',
     redirect: 'Redirect the current run',
-    steerKeyHint: 'Steer the running turn',
     stop: 'Stop',
     send: 'Send',
     speaking: 'Speaking',

@@ -535,8 +535,8 @@ class _KanbanNotification:
     async def advance(self) -> None:
         await _to_thread_process_service(self.runner._kanban_advance, self.sub, self.d["cursor"], self.board_slug)
 
-    async def unsub(self) -> None:
-        await _to_thread_process_service(self.runner._kanban_unsub, self.sub, self.board_slug)
+    async def unsub(self, reason: str) -> None:
+        await _to_thread_process_service(self.runner._kanban_unsub, self.sub, self.board_slug, reason)
 
     def clear_failures(self) -> None:
         self.sub_fail_counts.pop(self.sub_key, None)
@@ -548,7 +548,7 @@ class _KanbanNotification:
         logger.warning(fmt, *prefix, fails, MAX_SEND_FAILURES, exc, exc_info=exc_info)
         if fails >= MAX_SEND_FAILURES:
             logger.warning(drop_fmt, self.task_id, self.platform_str, fails)
-            await self.unsub()
+            await self.unsub(f"send_failures:{fails}")
             self.clear_failures()
         else:
             await self.rewind()
@@ -818,4 +818,4 @@ class _KanbanNotification:
             self.clear_failures()
         # Unsubscribe only on archive; ``done`` is reversible.
         if self.task and self.task.status == "archived":
-            await self.unsub()
+            await self.unsub("archived")

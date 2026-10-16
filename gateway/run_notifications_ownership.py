@@ -12,9 +12,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 from typing import Any, Optional, Sequence, cast
 
 from gateway.session import SessionEntry
+from hermes_state_errors import StateDbReplacedError
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -80,7 +82,7 @@ class GatewayNotificationOwnershipMixin:
             try:
                 target = await session_db.get_compression_tip(pinned_session_id)
                 row = await session_db.get_session(target) if target == entry.session_id else None
-            except Exception:
+            except (sqlite3.Error, StateDbReplacedError):
                 logger.debug("Closed local tip lookup failed for %s", pinned_session_id, exc_info=True)
                 return ""  # the compression path below defers it
         if (target != entry.session_id or row is None or not row.get("ended_at")

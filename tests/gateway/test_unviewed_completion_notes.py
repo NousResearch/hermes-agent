@@ -374,3 +374,27 @@ async def test_closed_tip_note_needs_the_route_to_name_it(tmp_path, monkeypatch)
         assert (await runner._classify_completion_owner(ancestor, route))[0] != 'deliver'
     finally:
         authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_closed_tip_lookup_defers_only_a_failed_read():
+    """A state read that fails leaves the completion to the compression path, which defers it; any
+    other error is a bug and surfaces instead of being logged at debug."""
+    import sqlite3
+    from types import SimpleNamespace
+    from typing import Any
+    from gateway.config import Platform
+    from gateway.run_notifications_ownership import GatewayNotificationOwnershipMixin
+    from hermes_state_errors import StateDbReplacedError
+    entry: Any = SimpleNamespace(platform=Platform.LOCAL, session_id='lc7-tip')
+
+    def db(error):
+        async def tip(_session_id):
+            raise error
+        return SimpleNamespace(get_compression_tip=tip)
+
+    lookup = GatewayNotificationOwnershipMixin()._closed_local_target
+    for error in (sqlite3.OperationalError('database is locked'), StateDbReplacedError('replaced')):
+        assert await lookup(db(error), entry, 'lc7-root', {'end_reason': 'compression'}) == ''
+    with pytest.raises(AttributeError):
+        await lookup(db(AttributeError('bug')), entry, 'lc7-root', {'end_reason': 'compression'})

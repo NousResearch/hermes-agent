@@ -20,7 +20,7 @@ from gateway import local_desktop_ui
 logger = logging.getLogger(__name__)
 
 # Attributes ``wire`` may overwrite on the cached agent for one local-viewer turn.
-_TURN_ATTRS = ("tool_gen_callback", "_print_fn", "thinking_callback", "reaction_callback", "reasoning_callback",
+_TURN_ATTRS = ("tool_gen_callback", "_print_fn", "thinking_callback", "reaction_callback", "reasoning_callback", "status_callback", "compaction_callback",
                *local_desktop_ui.CALLBACK_ATTRS)
 # Private key in ``wire``'s return value: the desktop window bridge registration ``restore`` releases.
 _DESKTOP_UI_TOKEN = "__desktop_ui_token__"
@@ -35,6 +35,10 @@ def wire(turn, agent) -> dict:
     """Install this turn's local-viewer sinks on ``agent``; returns what ``restore`` needs."""
     previous = {name: getattr(agent, name, None) for name in _TURN_ATTRS}
     publish = turn._publish_execution
+    from gateway.session_compaction_events import CompactionProgress
+    compaction = CompactionProgress(lambda update: publish('context.compaction', update))
+    compaction.install(agent)
+    previous['__compaction_progress__'] = compaction
     agent.tool_gen_callback = lambda name: publish("tool.generating", {"name": str(name or "")})
 
     def print_fn(*args, **kwargs):
@@ -91,6 +95,9 @@ def publish_progress(turn, event_type, name, preview, kwargs) -> None:
 def restore(agent, previous: dict | None) -> None:
     if not previous:
         return
+    compaction = previous.pop('__compaction_progress__', None)
+    if compaction is not None:
+        compaction.close(agent)
     token = previous.pop(_DESKTOP_UI_TOKEN, None)
     if token is not None:
         local_desktop_ui.release(token)

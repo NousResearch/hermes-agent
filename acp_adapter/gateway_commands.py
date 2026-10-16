@@ -69,11 +69,19 @@ async def _steer(agent, session_id, text):
 
 
 async def _mutate(agent, client, session_id, command, arg):
+    from acp_adapter.compaction import manual_compaction
+    async with manual_compaction(agent, session_id, enabled=command == 'compress') as compaction:
+        return await _mutate_command(agent, client, session_id, command, arg, compaction)
+
+
+async def _mutate_command(agent, client, session_id, command, arg, compaction):
     from hermes_cli.gateway_mutations import slash_mutation
     operation, payload = ('reset', {}) if command == 'new' else slash_mutation('/' + command, arg)
     confirm = agent._model_confirmer(session_id) if operation == 'model' else None
     result = await agent._mutations.apply(client, session_id, operation, payload, confirm=confirm)
     status = result.get('status')
+    if compaction is not None and status == 'cancelled':
+        compaction['status'] = 'cancelled'
     if status == 'cancelled':
         from agent.i18n import t
         reply = t('cli.model.switch_cancelled')

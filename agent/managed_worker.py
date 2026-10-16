@@ -359,6 +359,9 @@ def execute(frame, channel):
                 tool_start_callback=lambda call_id, name, args: channel.send('tool.start', **tool_frame(call_id, name, args)),
                 tool_complete_callback=lambda call_id, name, args, result: channel.send('tool.complete',
                                                                                          **tool_frame(call_id, name, args, result)))
+            from gateway.session_compaction_events import CompactionProgress
+            compaction = CompactionProgress(lambda update: channel.send('compaction', update=update))
+            compaction.install(agent)
             controls.agent = agent
             if controls.stopped.is_set():
                 from agent.interrupt_compat import request_hard_interrupt
@@ -379,6 +382,7 @@ def execute(frame, channel):
             result = run_worker_turns(agent, frame, history)
             result['_turn_input_tokens'] = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
             result['_turn_output_tokens'] = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
+            compaction.close(agent)
             retire_agent(agent)
             agent = None
             # The auto-title thread bills through this store from a daemon thread; a title landing
@@ -396,6 +400,9 @@ def execute(frame, channel):
     finally:
         unregister_gateway_notify(frame['route'])
         if agent is not None:
+            progress = getattr(agent, 'compaction_callback', None)
+            if callable(progress):
+                progress('cancelled' if controls.stopped.is_set() else 'failed')
             retire_agent(agent)
         try:
             store.close()

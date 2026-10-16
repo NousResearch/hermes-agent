@@ -28,6 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
+from agent.compaction_lifecycle import _CompactionLifecycle
 from agent.auxiliary_client import AuxiliaryExplicitCancellation
 from agent.context_compressor_summary import _accepts_keyword_argument
 from agent.context_engine import automatic_compaction_status_message, sanitize_memory_context
@@ -2573,26 +2574,6 @@ def finalize_context_engine_compression_notification(agent: Any, *, committed: b
     return bool(pending())
 
 
-class _CompactionLifecycle:
-    """Owns the one-shot terminal edge of the compaction status lifecycle.
-    ``commit_status`` is rebound to "committed" only on success and read at ``complete()`` time, so abort
-    paths keep the terminal edge suppressed."""
-
-    def __init__(self, agent: Any, status_emitted: bool) -> None:
-        self._agent = agent
-        self.status_emitted = status_emitted
-        self._done_emitted = False
-        self.commit_status = "aborted"
-
-    def complete(self, *, force_terminal: bool = False) -> None:
-        if self._done_emitted:
-            return
-        self._done_emitted = True
-        # Suppressed start → no terminal edge. Non-compacting aborts (lock contender,
-        # cancelled fence) opt in via force_terminal so clients can retire their phase.
-        # Failure warnings go through _emit_warning and are never suppressed here.
-        if self.status_emitted and (self.commit_status == "committed" or force_terminal):
-            _emit_compaction_done(self._agent)
 
 
 class _CompressionLease:

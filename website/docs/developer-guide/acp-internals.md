@@ -206,3 +206,24 @@ ACP temporarily installs an approval callback on the terminal tool during prompt
 - `toolsets.py` — `hermes-acp` toolset definition
 - `hermes_cli/main.py` — `hermes acp` CLI subcommand
 - `pyproject.toml` — `[acp]` optional dependency + `hermes-acp` script
+
+### Opt-in compaction lifecycle
+
+Normal ACP sessions observe gateway-owned execution. An object-valued
+`clientCapabilities.session.compaction` (including `{}`) enables
+`compaction_update`; missing, null and boolean values do not.
+`acp_adapter/protocol_updates.py` retains raw capabilities through the pinned
+SDK's public observer and ordered sender factory.
+
+`gateway/session_compaction_events.py` publishes stable operation IDs, progress
+heartbeats and core outcomes through the generation-fenced canonical stream.
+It is wired to both in-process local turns and managed-worker frames. The core
+one-shot outcome observer lives in `agent/compaction_lifecycle.py`, including
+Codex-native completion, failure and interruption. Viewer detach does not
+cancel an owner operation. No internal summary, framing or error text is sent.
+
+Gateway `/compress` emits completion after its durable mutation and viewer
+refresh return; failed/cancelled scopes close accordingly. Explicitly injected
+legacy SessionManager sessions retain their own lifecycle bridge. Transport
+observers are best-effort and cannot undo compression. Historical replay of
+summary content and live GUI/model-provider validation are outside this change.

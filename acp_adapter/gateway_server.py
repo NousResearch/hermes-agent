@@ -124,6 +124,8 @@ def _tools_changed_notice(payload):
 
 class GatewayACPAgent(acp.Agent):
     def __init__(self):
+        from acp_adapter.protocol_updates import SessionUpdateTransport
+        self.session_updates = SessionUpdateTransport()
         self._conn = None
         self._gateway = None
         self._connection = None
@@ -715,6 +717,9 @@ class GatewayACPAgent(acp.Agent):
         kind, payload = event.get("type"), event.get("payload", {})
         sid, editor_id = event["session_id"], self._editor_id(event["session_id"])
         aid = event.get("admission_id")
+        from acp_adapter.compaction import project_compaction
+        if await project_compaction(self, kind, payload, editor_id):
+            return
         if kind in {"session.info", "session.updated", "session.usage", "session.tools_changed"}:
             await self._project_session_state(kind, sid, editor_id, payload)
             return

@@ -55,8 +55,9 @@ def _compress_context_via_codex_app_server(
     """Route compaction to Codex app-server for Codex-owned threads.
     Rewriting the local transcript would not shrink the Codex thread, so Codex compacts its own thread and
     Hermes' transcript is left unchanged. Every exit, raising ones included, logs one attempt record."""
+    from agent.compaction_lifecycle import _CompactionLifecycle
     from agent.conversation_compression import (
-        COMPACTION_STATUS, _CompressionActivityHeartbeat, _emit_compaction_done, _existing_system_prompt,
+        COMPACTION_STATUS, _CompressionActivityHeartbeat, _existing_system_prompt,
         _reset_read_dedup_caches, _swallow,
     )
 
@@ -94,6 +95,7 @@ def _compress_context_via_codex_app_server(
     logger.info("codex app-server compaction started: session=%s messages=%d tokens=~%s", _sid, len(messages), _tokens)
     with contextlib.suppress(Exception):
         agent._emit_status(COMPACTION_STATUS)
+    lifecycle = _CompactionLifecycle(agent, True)
     _activity_heartbeat = _CompressionActivityHeartbeat(agent, emit_client_status=True).start()
     try:
         result = codex_session.compact_thread()
@@ -101,6 +103,7 @@ def _compress_context_via_codex_app_server(
         _activity_heartbeat.stop("context compression failed")
         # Same class shape as the Hermes route's raising exits; the caller still gets the original error.
         _record("aborted", f"exception:{type(exc).__name__}")
+        lifecycle.complete()
         raise
     failed = bool(getattr(result, "interrupted", False) or getattr(result, "error", None))
     _activity_heartbeat.stop("context compression failed" if failed else "context compression completed")
@@ -115,6 +118,8 @@ def _compress_context_via_codex_app_server(
         # threshold. Without a brake the next turn retries immediately.
         _record_codex_compaction_failure(agent, str(getattr(result, "error", None) or "compaction interrupted"))
         _record("failed", "codex_compaction_failed")
+        lifecycle.cancelled = bool(getattr(result, "interrupted", False))
+        lifecycle.complete()
         return messages, _existing_system_prompt(agent, system_message)
     with _swallow('codex compaction bookkeeping failed', exc_info=True):
         from agent.codex_runtime import _record_codex_app_server_compaction, _record_codex_app_server_usage
@@ -132,5 +137,6 @@ def _compress_context_via_codex_app_server(
     _record("committed", None, method="provider")
     # Terminal edge only on success — failure/interrupt paths above return
     # without it, matching the main compress_context() gating.
-    _emit_compaction_done(agent)
+    lifecycle.commit_status = "committed"
+    lifecycle.complete()
     return messages, existing_prompt

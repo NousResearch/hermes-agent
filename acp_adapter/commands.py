@@ -249,6 +249,12 @@ class SlashCommandsMixin:
         return "Conversation history cleared."
 
     def _cmd_compress(self, args: str, state: SessionState) -> str:
+        from acp_adapter.compaction import CompactionEvents
+
+        with CompactionEvents(self.session_updates, state.session_id, state.cancel_event, defer_terminal=True).bind(state.agent):
+            return self._compress_command(args, state)
+
+    def _compress_command(self, args: str, state: SessionState) -> str:
         """``/compress [here [N] | <focus>] [--preview] [--aggressive]`` through the shared core."""
         from agent.conversation_compression import finalize_context_engine_compression_notification
         from agent.conversation_compression_manual import (

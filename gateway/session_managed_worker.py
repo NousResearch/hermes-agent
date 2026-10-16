@@ -451,7 +451,7 @@ def _interrupted_before_bootstrap(authority, row):
 
 
 async def execute_managed(authority, ref, row, policy):
-    from gateway.run_turn_progress import publish_worker_tool_event
+    from gateway.session_compaction_events import publish_worker_progress
     # This route never passes the inbound prepare step, so the worker would read ``@`` tokens as typed.
     from gateway.session_context_refs import managed_turn_text, refused_turn_result
     text, refusal = await managed_turn_text(authority, row, policy)
@@ -515,7 +515,7 @@ async def execute_managed(authority, ref, row, policy):
             if kind == 'delta' and set(frame) == {'type', 'text'} and isinstance(frame['text'], str):
                 authority.publish_execution(ref.session_id, row['generation'], 'message.delta', {'text': frame['text']})
                 continue
-            if publish_worker_tool_event(authority, ref.session_id, row['generation'], frame):
+            if publish_worker_progress(authority, ref.session_id, row['generation'], frame):
                 continue
             if kind == 'result' and set(frame) == {'type', 'result'} and accepted is None:
                 try:

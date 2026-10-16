@@ -34,6 +34,8 @@ from acp_adapter.events import (
 from acp_adapter.model_catalog import build_model_state, encode_model_choice
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
+from acp_adapter.compaction import CompactionEvents
+from acp_adapter.protocol_updates import SessionUpdateTransport
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool_args
 from agent.context_compressor import (COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor)
@@ -261,6 +263,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        self.session_updates = SessionUpdateTransport()
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -770,6 +773,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         auto-approve path (GHSA-96vc-wcxf-jjff)."""
         agent = state.agent
         with contextlib.ExitStack() as stack:
+            stack.enter_context(CompactionEvents(self.session_updates, session_id, state.cancel_event).bind(agent))
             # HERMES_SESSION_KEY scopes per-session caches (interactive sudo password) to this
             # session, not the reused thread. ``cwd`` pins what the system prompt reports as the
             # working directory — otherwise it advertises the Hermes workspace while tools are

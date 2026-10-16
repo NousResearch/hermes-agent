@@ -10151,6 +10151,8 @@ def test_config_set_model_requires_confirmation_for_expensive_model(monkeypatch)
 
 
 def test_config_set_model_global_persists(monkeypatch):
+    from hermes_cli.config import get_config_path, read_user_config_raw
+
     class _Agent:
         provider = "openrouter"
         model = "old/model"
@@ -10169,20 +10171,14 @@ def test_config_set_model_global_persists(monkeypatch):
         api_mode="anthropic_messages",
         warning_message="",
     )
-    seen = {}
-    saved_values = {}
-
-    def _switch_model(**kwargs):
-        seen.update(kwargs)
-        return result
+    switch = Mock(return_value=result)
+    config_path = get_config_path()
 
     server._sessions["sid"] = _session(agent=_Agent())
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch_model)
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", switch)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
-    # persist_model_selection uses targeted per-key writes (#48305) so it
-    # preserves sibling model.* keys instead of rewriting the whole block.
-    monkeypatch.setattr("utils.atomic_roundtrip_yaml_update", lambda path, key, value: saved_values.__setitem__(key, value))
+    config_path.write_text("model:\n  model_slots:\n    fast: keep\n", encoding="utf-8")
 
     resp = server.handle_request(
         {
@@ -10197,10 +10193,12 @@ def test_config_set_model_global_persists(monkeypatch):
     )
 
     assert resp["result"]["value"] == "anthropic/claude-sonnet-4.6"
-    assert seen["is_global"] is True
-    assert saved_values["model.default"] == "anthropic/claude-sonnet-4.6"
-    assert saved_values["model.provider"] == "anthropic"
-    assert saved_values["model.base_url"] == "https://api.anthropic.com"
+    assert switch.call_args.kwargs["is_global"] is True
+    saved_values = read_user_config_raw(config_path)["model"]
+    assert saved_values["default"] == "anthropic/claude-sonnet-4.6"
+    assert saved_values["provider"] == "anthropic"
+    assert saved_values["base_url"] == "https://api.anthropic.com"
+    assert saved_values["model_slots"] == {"fast": "keep"}
 
 
 def test_config_set_model_explicit_provider_skips_broken_default_init(monkeypatch):

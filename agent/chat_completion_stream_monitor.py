@@ -120,6 +120,10 @@ class StreamingWaitMonitor:
             if sleep_watch is not None:
                 self._skip_sleep(sleep_watch.slept())
             _hb_now = time.time()
+            from agent.run_budget import run_budget_expired
+            if run_budget_expired(self.agent):
+                self._kill_for_run_budget()
+                return
             if _is_local_base and self._poll_local_load_notice(_hb_now):
                 continue
             # Reasoning callbacks do not clear the classic CLI spinner. The empty

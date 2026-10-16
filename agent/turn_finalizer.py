@@ -148,27 +148,35 @@ def _resolve_budget_fallback(
                 agent._reused_response_text = final_response
             preserved_verification_fallback = True
         else:
-            # _handle_max_iterations makes one extra toolless request for a summary.
-            agent._emit_diagnostic_status(
-                f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
-                "— asking model to summarise"
-            )
-            if not agent.quiet_mode:
-                agent._safe_print(
-                    f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
-                    "— requesting summary...", diagnostic=True,
+            from agent.run_budget import run_budget_expired
+            if run_budget_expired(agent):
+                _turn_exit_reason = "run_budget_exhausted"
+                final_response = (
+                    f"The configured run time budget ({agent.run_budget_seconds:g}s) expired. "
+                    "Hermes stopped before requesting an iteration summary."
                 )
-            _summary_start = time.time()
-            try:
-                final_response = agent._handle_max_iterations(messages, api_call_count)
-            except InterruptedError:
-                # The turn ends interrupted, so the pending interrupt message is returned
-                # for requeue instead of being cleared behind a fallback summary. A redirect
-                # also ends it: the budget is spent, so there is no loop to restart into.
-                from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
-                interrupted = True
-                _turn_exit_reason = interrupted_during_api_call_reason(agent)
-                final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{time.time() - _summary_start:.1f}s elapsed)."
+            else:
+                # _handle_max_iterations makes one extra toolless request for a summary.
+                agent._emit_diagnostic_status(
+                    f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
+                    "— asking model to summarise"
+                )
+                if not agent.quiet_mode:
+                    agent._safe_print(
+                        f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
+                        "— requesting summary...", diagnostic=True,
+                    )
+                _summary_start = time.time()
+                try:
+                    final_response = agent._handle_max_iterations(messages, api_call_count)
+                except InterruptedError:
+                    # The turn ends interrupted, so the pending interrupt message is returned
+                    # for requeue instead of being cleared behind a fallback summary. A redirect
+                    # also ends it: the budget is spent, so there is no loop to restart into.
+                    from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+                    interrupted = True
+                    _turn_exit_reason = interrupted_during_api_call_reason(agent)
+                    final_response = f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{time.time() - _summary_start:.1f}s elapsed)."
 
     # A kanban worker must record a terminal outcome whether or not a fallback path
     # was eligible, so the dispatcher learns the worker could not complete. Only the
@@ -539,6 +547,8 @@ def finalize_turn(
         _pending_verification_response_previewed=_pending_verification_response_previewed,
         logger=logger,
     )
+    if _turn_exit_reason == "run_budget_exhausted":
+        failed = True
 
     # A non-interrupted turn that fell out of the loop after a tool result, with no
     # follow-up assistant text, is the Desktop/TUI "silent stop" (#55316, #54756): the

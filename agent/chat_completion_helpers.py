@@ -678,28 +678,25 @@ def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
 
 
 def cap_to_run_budget(agent, timeout: float) -> float:
-    """Cap an IMPLICIT stale timeout at half the remaining --run-budget (>= 60s), so one hung
-    call can't outlive the run and the wrap-up notice stays reachable (#97968). Shared by the
-    streaming and non-streaming resolvers; callers skip it for explicit user settings."""
-    run_budget = getattr(agent, "run_budget_seconds", None)
-    started = getattr(agent, "_run_budget_started_at", None)
-    if not run_budget or not started:
+    """Keep any request watchdog inside the remaining hard run deadline."""
+    from agent.run_budget import remaining_run_budget_seconds
+
+    remaining = remaining_run_budget_seconds(agent)
+    if remaining is None:
         return timeout
-    remaining = float(run_budget) - (time.time() - float(started))
-    return min(timeout, max(60.0, remaining * 0.5))
+    return min(timeout, remaining)
 
 
 def _cloud_stale_timeout_for(agent, api_kwargs: dict) -> float:
-    """An explicit ``providers.<id>.stale_timeout_seconds`` is the operator's deadline and
-    wins over every implicit floor — the context-size tier as well as the reasoning-model
-    floor — so it can SHORTEN patience for a hung stream (#115024). Only the 180s default
-    is scaled and floored."""
+    """Resolve stale patience from the explicit setting or scaled default, then bound it by
+    the outer run deadline when one is active."""
     explicit = get_provider_stale_timeout(agent.provider, agent.model)
     if explicit is not None:
-        return explicit
-    base, explicit_env = _stream_env_stale_base()
-    timeout = _cloud_stale_timeout(base, api_kwargs)
-    return timeout if explicit_env else cap_to_run_budget(agent, timeout)
+        timeout = explicit
+    else:
+        base, _explicit_env = _stream_env_stale_base()
+        timeout = _cloud_stale_timeout(base, api_kwargs)
+    return cap_to_run_budget(agent, timeout)
 
 
 def _bedrock_reasoning_stale_floor(model_id: object) -> float | None:
@@ -2724,6 +2721,7 @@ class _StreamingCall(StreamingWaitMonitor):
         # Shared by the socket read timeout (``_stream_timeouts``) and the stale
         # detector (``_resolve_stale_timeout``); None until resolved.
         self._stream_stale_timeout = None
+        self._run_budget_expired = False
         self.stream_attempt_lock = threading.Lock()
         self.stream_attempt_state = {"current": 0, "cancelled": set(), "discarded_chunks": 0, "discarded_bytes": 0}
         self._stale_counted_attempts: set[int] = set()  # breaker counts each attempt once
@@ -3758,6 +3756,9 @@ class _StreamingCall(StreamingWaitMonitor):
                     return  # success
                 except Exception as e:
                     self._close_managed_stream()
+                    if self._run_budget_expired:
+                        self.result["error"] = TimeoutError("Configured run budget expired during streaming API call")
+                        return
                     if not self._handle_stream_error(e, _stream_attempt, _max_stream_retries):
                         return
                     if self._route_switched_under_request():
@@ -3851,6 +3852,16 @@ class _StreamingCall(StreamingWaitMonitor):
         self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
         self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
 
+    def _kill_for_run_budget(self) -> None:
+        """Abort the active stream at the absolute turn deadline, even while chunks flow."""
+        self._run_budget_expired = True
+        _response = self._attempt_stream_response
+        with contextlib.suppress(Exception):
+            self._cancel_current_stream_attempt("run_budget_exhausted")
+            self.clients.close_once("run_budget_exhausted")
+        self._shutdown_stale_attempt_socket(_response)
+        self.last_chunk_time["t"] = time.time()
+
     def _abort_for_interrupt(self, stale_elapsed: float) -> None:
         """/stop seen by the monitor: mark cancelled, abort the request-local
         socket, wait for the worker, flag the interrupt."""
@@ -3887,7 +3898,9 @@ class _StreamingCall(StreamingWaitMonitor):
         floored for known reasoning models (else BrokenPipeError from the gateway)."""
         base = _configured_stale_base(self.agent)
         if base == 180.0 and self.agent.base_url and is_local_endpoint(self.agent.base_url):
-            self._stream_stale_timeout = _local_stream_stale_timeout_default()
+            self._stream_stale_timeout = cap_to_run_budget(
+                self.agent, _local_stream_stale_timeout_default()
+            )
             logger.debug("Local provider detected (%s) — stale stream timeout set to %.0fs",
                 self.agent.base_url, self._stream_stale_timeout)
             return

@@ -566,7 +566,8 @@ class AIAgent(
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
         base_url = getattr(self, "_base_url", None) or self.base_url or ""
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
-            return float("inf")
+            from agent.chat_completion_helpers import cap_to_run_budget
+            return cap_to_run_budget(self, float("inf"))
 
         from agent.chat_completion_helpers import _high_effort_silence_floor, cap_to_run_budget, estimate_request_context_tokens
         from agent.gemini_long_decode import long_decode_stale_multiplier
@@ -579,15 +580,11 @@ class AIAgent(
             timeout = max(timeout, _high_effort_silence_floor(self))
         if not explicit:
             timeout *= long_decode_stale_multiplier(api_payload)
-        # Run-budget cap: an implicit stale timeout is capped at half the remaining budget (>= 60s) so one
-        # hung call cannot eat the run. Never raises the timeout; explicit user config still wins.
-        if not explicit:
-            timeout = cap_to_run_budget(self, timeout)
-        return timeout
+        # A run budget is the outer deadline, even when the profile has a longer stale timeout.
+        return cap_to_run_budget(self, timeout)
 
     def _stale_timeout_is_explicit(self) -> bool:
-        """True when the user explicitly configured the stale timeout (config or env var); implicit values
-        (reasoning floors, the 90s default) yield to the run-budget cap, explicit ones never do."""
+        """True when the user explicitly configured a stale timeout (config or env var)."""
         return (get_provider_stale_timeout(self.provider, self.model) is not None
                 or os.getenv("HERMES_API_CALL_STALE_TIMEOUT") is not None)
 

@@ -51,13 +51,16 @@ class TestReapOrphanedBrowserSessions:
 
 
     def test_stale_dir_without_pid_file_is_removed(self, fake_tmpdir):
-        """Socket dir with no PID file is cleaned up."""
+        """Socket dir with no PID file and no bound daemon is cleaned up."""
         from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
         d = _make_socket_dir(fake_tmpdir, "h_abc1234567")
         assert d.exists()
         with patch(
             "tools.browser_tool_lifecycle._socket_dir_idle_seconds",
             return_value=10_000,
+        ), patch(
+            "tools.browser_tool_lifecycle._daemon_pid_bound_to_socket_dir",
+            return_value=None,
         ):
             _reap_orphaned_browser_sessions()
         assert not d.exists()
@@ -523,3 +526,132 @@ class TestPeriodicOrphanReap:
             bt._cleanup_running = orig_running
 
         assert len(reap_calls) > 1, "startup-only reap would give exactly 1"
+
+
+class TestPidlessDaemonRescue:
+    """#131822: attach-only lanes (real-profile) never get a ``<session>.pid`` file, so the
+    pidless branch used to rmtree the dir while the daemon — and its Chromium tree — kept
+    running; with the dir gone no later sweep could ever find the process again. The dir is
+    the only binding evidence: a daemon bound to it must die BEFORE the rmtree."""
+
+    class _FakeScanProc:
+        """process_iter() shape: identity attrs surfaced through ``.info``."""
+
+        def __init__(self, pid, name="agent-browser", cmdline=None, environ=None,
+                     raise_environ=False):
+            self.info = {"pid": pid, "name": name, "cmdline": cmdline or []}
+            self._environ = environ or {}
+            self._raise_environ = raise_environ
+
+        def environ(self):
+            if self._raise_environ:
+                import psutil
+                raise psutil.AccessDenied()
+            return self._environ
+
+    def test_real_profile_pidless_daemon_killed_before_rmtree(self, fake_tmpdir):
+        """End-to-end through the reaper, shaped like the #131822 incident: the real-profile
+        attach lane's dir has an owner_pid and never a .pid file. Once the owner is gone the
+        dir is reapable — the bound daemon must be tree-killed BEFORE the rmtree removes the
+        only binding evidence."""
+        import tools.browser_tool as bt
+        from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(fake_tmpdir, bt._REAL_PROFILE_SESSION, owner_pid=99999)
+        terminate_calls = []
+
+        def _pid_exists(pid):
+            return pid == 602  # owner (gateway) gone; only the daemon is alive
+
+        with patch("gateway.status._pid_exists", side_effect=_pid_exists), \
+             patch("tools.browser_tool_lifecycle._socket_dir_idle_seconds",
+                   return_value=10_000), \
+             patch("tools.browser_tool_lifecycle._daemon_pid_bound_to_socket_dir",
+                   return_value=602), \
+             patch("gateway.status.get_process_start_time", return_value=777), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=lambda pid, expected_start=None: terminate_calls.append(pid)):
+            _reap_orphaned_browser_sessions()
+
+        assert terminate_calls == [602]
+        assert not d.exists()
+
+    def test_unfingerprintable_pidless_daemon_keeps_the_dir(self, fake_tmpdir):
+        """No start-time fingerprint → refuse the kill and keep the dir: rmtree'ing it
+        would destroy the only lead to the still-running daemon."""
+        from tools.browser_tool_lifecycle import _reap_socket_dir
+
+        d = _make_socket_dir(fake_tmpdir, "h_pidless1234")
+        with patch("tools.browser_tool_lifecycle._socket_dir_idle_seconds",
+                   return_value=10_000), \
+             patch("tools.browser_tool_lifecycle._daemon_pid_bound_to_socket_dir",
+                   return_value=602), \
+             patch("gateway.status.get_process_start_time", return_value=None):
+            reaped = _reap_socket_dir(str(d), "h_pidless1234", tracked_names=set())
+
+        assert reaped is False
+        assert d.exists()
+
+    def test_pidless_daemon_vanishing_mid_kill_still_cleans_the_dir(self, fake_tmpdir):
+        """ProcessLookupError between scan and kill → nothing left to reap; the dir is
+        stale either way, so cleanup proceeds (best-effort, like the pid-file path)."""
+        from tools.browser_tool_lifecycle import _reap_socket_dir
+
+        d = _make_socket_dir(fake_tmpdir, "h_gone1234567")
+        with patch("tools.browser_tool_lifecycle._socket_dir_idle_seconds",
+                   return_value=10_000), \
+             patch("tools.browser_tool_lifecycle._daemon_pid_bound_to_socket_dir",
+                   return_value=602), \
+             patch("gateway.status.get_process_start_time", return_value=777), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=ProcessLookupError()):
+            reaped = _reap_socket_dir(str(d), "h_gone1234567", tracked_names=set())
+
+        assert reaped is False
+        assert not d.exists()
+
+    def test_scan_binds_agent_browser_daemon_via_environ(self, tmp_path):
+        """The scan finds a daemon by exact AGENT_BROWSER_SOCKET_DIR match while another
+        session's daemon (different dir) is skipped."""
+        from tools.browser_tool_lifecycle import _daemon_pid_bound_to_socket_dir
+
+        socket_dir = str(tmp_path / "agent-browser-hermes-real-profile")
+        mine = self._FakeScanProc(
+            602, name="agent-browser-darwin-arm64", cmdline=["agent-browser-darwin-arm64"],
+            environ={"AGENT_BROWSER_SOCKET_DIR": socket_dir})
+        other = self._FakeScanProc(
+            605, name="agent-browser-darwin-arm64", cmdline=["agent-browser-darwin-arm64"],
+            environ={"AGENT_BROWSER_SOCKET_DIR": "/tmp/agent-browser-h_OTHER999"})
+        unrelated = self._FakeScanProc(
+            7, name="sleep", cmdline=["/bin/sleep", "600"], environ={})
+
+        with patch("psutil.process_iter",
+                   side_effect=lambda attrs=None: iter([unrelated, other, mine])):
+            assert _daemon_pid_bound_to_socket_dir(socket_dir) == 602
+
+    def test_scan_refuses_when_environ_unreadable(self, tmp_path):
+        """Same-user environ() can still be denied; with no argv binding the daemon is
+        unfindable (fail closed — no kill) but never misidentified."""
+        from tools.browser_tool_lifecycle import _daemon_pid_bound_to_socket_dir
+
+        socket_dir = str(tmp_path / "agent-browser-h_x123456789")
+        denied = self._FakeScanProc(
+            602, cmdline=["agent-browser-darwin-arm64"], raise_environ=True)
+
+        with patch("psutil.process_iter", side_effect=lambda attrs=None: iter([denied])):
+            assert _daemon_pid_bound_to_socket_dir(socket_dir) is None
+
+    def test_scan_binds_via_full_path_argv_token(self, tmp_path):
+        """Argv binding uses the same full-path token rule as the pid-file verify."""
+        from tools.browser_tool_lifecycle import _daemon_pid_bound_to_socket_dir
+
+        socket_dir = str(tmp_path / "agent-browser-h_x123456789")
+        basename_only = self._FakeScanProc(
+            11, cmdline=["grep", "agent-browser-h_x123456789", "/var/log/syslog"])
+        bound = self._FakeScanProc(
+            12, cmdline=["agent-browser", "daemon", f"--socket-dir={socket_dir}/"],
+            environ={})
+
+        with patch("psutil.process_iter",
+                   side_effect=lambda attrs=None: iter([basename_only, bound])):
+            assert _daemon_pid_bound_to_socket_dir(socket_dir) == 12

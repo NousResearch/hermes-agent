@@ -639,8 +639,9 @@ export function filterDesktopSubcommandCompletions<T extends { text?: string }>(
   const secondTokenBoundary = argumentText.search(/\s/)
 
   // Once an allowed first argument is complete, the backend owns completion
-  // of its value (for example `approval on` or `approve <id>`). Keep refusing
-  // value completions for a hub mutation that the execution gate would block.
+  // of its value (for example `approval on` or `approve <id> <review-token>`:
+  // the whole argument string is forwarded). Keep refusing value completions
+  // for a hub mutation that the execution gate would block.
   if (secondTokenBoundary >= 0) {
     const first = argumentText.slice(0, secondTokenBoundary).toLowerCase()
 

@@ -11,6 +11,8 @@ through ``_gateway_config_home()`` like the reads do.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import hermes_yaml as yaml
 
@@ -84,6 +86,13 @@ async def test_slash_config_writes_hit_routed_profile_and_leave_default_untouche
     assert (default_home / "config.yaml").read_bytes() == default_before
 
 
+def _review_token(listing: str, pending_id: str) -> str:
+    """The review token ``pending`` shows for one record; ``approve <id>`` must echo it back."""
+    match = re.search(rf"^  {re.escape(pending_id)}\b[^\n]*\n(?:(?!^  \S).)*?^ +review token: ([0-9a-f]{{64}})$", listing, re.MULTILINE | re.DOTALL)
+    assert match, listing
+    return match[1]
+
+
 @pytest.mark.asyncio
 async def test_memory_and_skills_review_commands_use_routed_profile_from_dispatch(homes):
     """The dispatcher binds the routed runtime around the handlers (the ambient scope is the
@@ -109,14 +118,20 @@ async def test_memory_and_skills_review_commands_use_routed_profile_from_dispatc
             summary="routed-skill-approve", origin="foreground")
 
     with _profile_runtime_scope(default_home):
-        assert "routed-memory-approve" in await runner.slash("memory", "pending")
-        assert "Approved 1 memory write(s)." in await runner.slash("memory", f"approve {memory_approve['id']}")
+        memory_listing = await runner.slash("memory", "pending")
+        assert "routed-memory-approve" in memory_listing
+        memory_token = _review_token(memory_listing, memory_approve["id"])
+        assert "Approved 1 memory write(s)." in await runner.slash(
+            "memory", f"approve {memory_approve['id']} {memory_token}")
         assert "routed approved" in (routed_home / "memories" / "MEMORY.md").read_text()
         assert "Rejected pending memory write" in await runner.slash("memory", f"reject {memory_reject['id']}")
-        assert "routed-skill-reject" in await runner.slash("skills", "pending")
+        skills_listing = await runner.slash("skills", "pending")
+        assert "routed-skill-reject" in skills_listing
+        skill_token = _review_token(skills_listing, skill_approve["id"])
         assert "Pending skill write" in await runner.slash("skills", f"diff {skill_reject['id']}")
         assert "Rejected pending skills write" in await runner.slash("skills", f"reject {skill_reject['id']}")
-        assert "Approved 1 skills write(s)." in await runner.slash("skills", f"approve {skill_approve['id']}")
+        assert "Approved 1 skills write(s)." in await runner.slash(
+            "skills", f"approve {skill_approve['id']} {skill_token}")
         assert (routed_home / "skills" / "routed-approved-skill" / "SKILL.md").exists()
         assert "set to 'on'" in await runner.slash("memory", "approval on")
         assert "set to 'on'" in await runner.slash("skills", "approval on")

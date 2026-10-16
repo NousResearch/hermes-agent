@@ -54,6 +54,11 @@ def resolve_local_target(authority, actor, sid):
         from hermes_state_local_migration import LEGACY_PREFIX
         bound = conn.execute('SELECT 1 FROM state_meta WHERE key IN (?,?)',
             (POLICY_PREFIX + (row.get('chat_id') or sid), LEGACY_PREFIX + (row.get('chat_id') or sid))).fetchone()
+        if bound and row.get('chat_id'):
+            from hermes_state_local import local_lineage_owner
+            # A copied chat_id is not evidence that this row belongs to the owner's lineage.
+            if local_lineage_owner(conn, sid) != row['chat_id']:
+                raise RuntimeStoreError('storage_unavailable')
     if bound or str(row.get('chat_id') or '').startswith('local-'):
         ref = SessionRef(authority.profile_id, row['chat_id'])
         authority.authorize(actor, ref, 'session:read')

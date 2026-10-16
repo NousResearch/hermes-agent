@@ -818,6 +818,8 @@ Plugins do not change. They receive the same `ctx` and register tools, hooks, sl
 provider objects (image/video generation, web search, browser, TTS/STT, memory, context engines,
 model-provider profiles) exactly as before; Hermes registers matching entries on its side that call into
 the host. Dashboard plugin APIs are served by the host too. Bundled plugins keep running in-process.
+In-process dashboard API handlers share the gateway's event loop, so they must not block it (see
+[Don't block the event loop](extending-the-dashboard.md#dont-block-the-event-loop)).
 
 On a gateway serving several profiles, every profile other than the one the gateway started with runs
 its own dashboard plugins (installed under its own `plugins/` folder or the root `~/.hermes/plugins/`,

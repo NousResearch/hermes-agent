@@ -18,6 +18,7 @@ import { driver as driverFactory } from 'driver.js'
 
 import { runPreviewTour } from '@/app/chat/right-rail/preview-tour'
 import { revealDesktopPane } from '@/store/pane-focus'
+import type { PreviewOwner } from '@/store/preview-ownership'
 
 import { collectTourTargets } from './collect-targets'
 import {
@@ -67,10 +68,16 @@ const appHolder: TourHolder = {}
 
 /** Run one tour action on `surface`. Never throws — failures come back as
  *  `{success: false, error}` so a caller (or the agent) can recover. */
-export async function runTour(action: TourAction, surface: TourSurface = 'app'): Promise<TourResult> {
+export async function runTour(
+  action: TourAction,
+  surface: TourSurface = 'app',
+  /** The requesting session's stored id, for surface='preview': the tour runs
+   *  in that session's page (omitted = the focused session's). */
+  owner?: PreviewOwner
+): Promise<TourResult> {
   try {
     if (surface === 'preview') {
-      return await runPreviewTour(action)
+      return await runPreviewTour(action, owner)
     }
 
     const result = runTourEngine(driverFactory, appHolder, action, collectTourTargets, document, TOUR_STYLE, APP_HOST)

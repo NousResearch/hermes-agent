@@ -290,3 +290,41 @@ def test_assign_default_reaches_model_assignment(monkeypatch):
         lambda *a, **k: seen.append(a))
     lm._assign_default({}, "some-model")
     assert seen == [("main", "llamacpp", "some-model", "", "", "")]
+
+
+def test_quickstart_prices_after_installing_the_engine(client, monkeypatch):
+    """A Vulkan/HIP card's size comes from the installed engine's own device probe, so the model the
+    job downloads and makes default is the one priced AFTER the install, not the preflight guess."""
+    import hermes_cli.web_routers.local_models as lm
+    from hermes_cli.local_runtime.catalog import CATALOG, VariantChoice
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+
+    gib = 1 << 30
+    as_ram = HardwareBudget(usable_vram_bytes=50 * gib, total_device_bytes=50 * gib,
+                            ram_available_bytes=128 * gib, uma=True)
+    as_card = HardwareBudget(usable_vram_bytes=22 * gib, total_device_bytes=24 * gib,
+                             ram_available_bytes=128 * gib, uma=False)
+    guess, fit = CATALOG[0], CATALOG[1]
+    installed: list[str] = []
+    downloaded: list[str] = []
+    assigned: list[str] = []
+
+    monkeypatch.setattr(lm.hardware, "probe_budget", lambda **kw: as_card if installed else as_ram)
+    monkeypatch.setattr(lm.catalog, "recommended_entry",
+                        lambda budget, entries=None, backend="auto": (guess if budget is as_ram else fit, "best-fits"))
+    monkeypatch.setattr(lm.catalog, "select_variant", lambda entry, budget: VariantChoice(
+        variant=entry.variants[0], zero_spill=True, reason_key="best-fits"))
+    monkeypatch.setattr(lm, "_engine_too_old", lambda min_engine: False)
+    monkeypatch.setattr(lm, "_runtime_target", lambda backend=None: ("b1", "vulkan"))
+    monkeypatch.setattr(lm.binaries, "installed_engine", lambda *a, **k: None)
+    monkeypatch.setattr(lm.binaries, "ensure_engine", lambda backend, **kw: installed.append(backend))
+    monkeypatch.setattr(lm, "_run_download_plan", lambda job, plan, label: downloaded.append(label))
+    monkeypatch.setattr(lm, "_ensure_server", lambda *a, **k: None)
+    monkeypatch.setattr(lm, "_assign_default", lambda job, model_id: assigned.append(model_id))
+
+    r = client.post("/api/local-models/quickstart", json={})
+    assert r.status_code == 200
+    job = _wait_job(client, r.json()["job_id"])
+    assert job["status"] == "done", job["error"]
+    assert installed == ["vulkan"]
+    assert (job["model_id"], downloaded, assigned) == (fit.id, [fit.display_name], [fit.variants[0].model_id])

@@ -136,7 +136,8 @@ const SERVER_TONE = {
   no_interactive_session: 'warn',
   unknown: 'warn',
   version_too_old: 'destructive',
-  missing_app: 'destructive'
+  missing_app: 'destructive',
+  unsupported_gpu: 'destructive'
 } as const satisfies Record<AgentPluginServerState, 'destructive' | 'success' | 'warn'>
 
 function KindBadge({ kind }: { kind: PackageKind }) {

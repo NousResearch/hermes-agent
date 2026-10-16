@@ -5,6 +5,9 @@ stores."""
 
 from __future__ import annotations
 
+import os
+import shutil
+import stat
 import threading
 from pathlib import Path
 
@@ -235,11 +238,11 @@ def test_activation_trusts_a_recorded_entry_a_deliberate_install_repairs(pm_env,
     monkeypatch.setattr(ensure, "_entry_verified", verify)
     assert _install_names(["faketool"], verify=False) == 0
     assert checked == []
-    assert binary.read_text(encoding="utf-8") == "corrupt"
+    assert binary.read_text(encoding="utf-8-sig") == "corrupt"
 
     assert _install_names(["faketool"]) == 0
     assert "faketool" in checked
-    assert binary.read_text(encoding="utf-8") == "good"
+    assert binary.read_text(encoding="utf-8-sig") == "good"
 
 
 def test_warm_install_verifies_shared_dependencies_once_under_lock(pm_env, monkeypatch):
@@ -280,7 +283,7 @@ def test_warm_install_verifies_shared_dependencies_once_under_lock(pm_env, monke
     with Store(runtime).install_lock():
         binary.write_text("corrupt", encoding="utf-8")
     assert _install_names(["toptool"]) == 0
-    assert binary.read_text(encoding="utf-8") == "deptool"
+    assert binary.read_text(encoding="utf-8-sig") == "deptool"
 
 
 def test_standalone_warm_ensure_does_not_wait_for_unrelated_writer(pm_env):
@@ -326,7 +329,7 @@ def test_install_forgets_verification_when_state_operation_releases_lock(pm_env,
 
     monkeypatch.setattr(ensure, "sync_venv", sync)
     assert _install_names(["deptool", "venv", "toptool"]) == 0
-    assert binary.read_text(encoding="utf-8") == "deptool"
+    assert binary.read_text(encoding="utf-8-sig") == "deptool"
 
 
 def test_version_bump_selects_the_new_tool(pm_env):
@@ -468,6 +471,108 @@ def test_gc_keeps_used_removes_orphans(pm_env):
     assert any(p.name.startswith("faketool-1.0") for p in runtime.iterdir())
 
 
+def _hold(monkeypatch, *prefixes):
+    """Model a Windows hold (a running process mapping the old interpreter's
+    DLLs): removal under these names fails past every retry; rename still works."""
+    import pm.install as install
+
+    real_remove = install._remove_entry
+    held = {"on": True}
+
+    def remove(store, name, **kw):
+        if held["on"] and name.startswith(prefixes):
+            raise PermissionError(13, "Access is denied")
+        return real_remove(store, name, **kw)
+
+    monkeypatch.setattr(install, "_remove_entry", remove)
+    return held
+
+
+def test_held_replaced_entry_does_not_fail_reinstall_and_is_reclaimed(pm_env, monkeypatch):
+    """#124807: the replaced entry is garbage once the new one is published and
+    committed, so a hold on it must not fail the install, must not block the
+    next publish of the same entry, and is reclaimed once released."""
+    from pm.cli import cmd_gc
+    from pm.install import ensure
+
+    _, runtime, *_ = pm_env
+    ensure("faketool", base_env={})
+    entry_name = Facts(runtime / "facts.json").get("faketool")["entry"]
+    held = _hold(monkeypatch, ".previous-", ".reclaim-")
+    for _ in range(2):
+        (runtime / entry_name / "bin/faketool").unlink()
+        runner = ensure("faketool", base_env={})
+        assert entry_name in runner.env["PATH"]
+        assert (runtime / entry_name / "bin/faketool").read_bytes() == b"#!x"
+        assert not (runtime / f".previous-{entry_name}").exists()
+    assert len(list(runtime.glob(".reclaim-*"))) == 2
+
+    held["on"] = False
+    cmd_gc(None)
+    assert not list(runtime.glob(".reclaim-*"))
+    assert (runtime / entry_name / "bin/faketool").is_file()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores directory modes")
+def test_unremovable_replaced_entry_on_posix_is_set_aside_without_touching_outside(pm_env, tmp_path):
+    """A POSIX permission failure inside the replaced entry (an unreadable dir, an
+    unwritable dir holding a symlink) sets the tree aside as before; cleanup never
+    raises past that and never chmods the symlink's target outside the tree."""
+    from pm.install import ensure
+
+    _, runtime, *_ = pm_env
+    ensure("faketool", base_env={})
+    entry = runtime / Facts(runtime / "facts.json").get("faketool")["entry"]
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep", encoding="utf-8")
+    outside.chmod(0o644)
+    (entry / "sealed").mkdir()
+    (entry / "pinned").mkdir()
+    (entry / "pinned" / "link").symlink_to(outside)
+    (entry / "sealed").chmod(0)
+    (entry / "pinned").chmod(0o500)
+    try:
+        (entry / "bin/faketool").unlink()
+        ensure("faketool", base_env={})
+        assert (entry / "bin/faketool").read_bytes() == b"#!x"
+        assert stat.S_IMODE(outside.stat().st_mode) == 0o644
+        assert list(runtime.glob(".reclaim-*"))
+    finally:
+        for held in [*runtime.glob(".reclaim-*/*"), *runtime.glob(".previous-*/*")]:
+            held.chmod(0o700)
+
+
+def test_held_displacement_does_not_fail_restore_and_gc_spares_interrupted_one(pm_env, monkeypatch):
+    """A restore that succeeded leaves the displaced tree as garbage; a held one
+    must not fail the install. An interrupted restore's displacement is never
+    set aside, so gc keeps it."""
+    import pm.install as install
+    from pm.cli import cmd_gc
+
+    _, runtime, *_ = pm_env
+    install.ensure("faketool", base_env={})
+    entry_name = Facts(runtime / "facts.json").get("faketool")["entry"]
+    store = Store(runtime)
+    entry = store.entry(entry_name)
+    shutil.copytree(entry, store.entry(f".previous-{entry_name}"))
+    (entry / "corrupt.txt").write_text("bad publish", encoding="utf-8")
+    interrupted = store.entry(".displaced-" + "f" * 32)
+    interrupted.mkdir()
+
+    held = _hold(monkeypatch, ".displaced-", ".reclaim-")
+    install.ensure("faketool", explicit=True, base_env={})
+    assert not (entry / "corrupt.txt").exists()
+    assert not store.entry(f".previous-{entry_name}").exists()
+    assert len(list(runtime.glob(".reclaim-*"))) == 1
+
+    held["on"] = False
+    cmd_gc(None)
+    assert not list(runtime.glob(".reclaim-*"))
+    assert interrupted.is_dir()
+    assert (entry / "bin/faketool").is_file()
+
+
 def test_gc_removes_fetch_cache_archives(pm_env):
     """The fetch-<sha> download-cache dirs are install-time only — gc must
     drop them so a staged payload (and the CI cache that stores it) doesn't
@@ -582,7 +687,7 @@ def test_machine_matches_binary_pe_headers(tmp_path):
     arm = tmp_path / "arm.exe"
     arm.write_bytes(pe(0xAA64))
     script = tmp_path / "tool"
-    script.write_text("#!/bin/sh\n")
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
 
     assert machine_matches_binary(amd, "win32-x64") is True
     assert machine_matches_binary(amd, "win32-arm64") is False
@@ -692,7 +797,7 @@ def test_verify_missing_binary_reports_path_and_listing(tmp_path):
     entry actually contains — the diagnosis that exposes a bad pin."""
     entry = tmp_path / "entry"
     (entry / "bin").mkdir(parents=True)
-    (entry / "doc").write_text("x")
+    (entry / "doc").write_text("x", encoding="utf-8")
     reason = FakeTool().verify(entry, current_target())
     assert "bin/faketool" in reason
     assert "missing" in reason

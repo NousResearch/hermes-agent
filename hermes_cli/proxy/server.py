@@ -8,9 +8,11 @@ The one shim: after a *clean* upstream EOF, a ``text/event-stream`` response tha
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import signal
 from typing import Optional
+from urllib.parse import urlsplit
 
 try:
     import aiohttp
@@ -51,6 +53,72 @@ def _json_error(status: int, message: str, code: str = "proxy_error") -> "web.Re
     """OpenAI-style error JSON response."""
     body = {"error": {"message": message, "type": code, "code": code}}
     return web.json_response(body, status=status)
+
+
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+# Sec-Fetch-Site values a browser sends for a request no foreign page made (typed URL / own page).
+_UNFORGED_FETCH_SITES = frozenset({"none", "same-origin"})
+# On a wildcard bind a DNS-rebound page is same-origin with its Host, so only "none" is trusted.
+_WILDCARD_FETCH_SITES = frozenset({"none"})
+
+
+def _canonical_host(host: str) -> str:
+    # ``localhost.`` is the absolute form of ``localhost``, and ``[0:0::1]`` is ``[::1]``;
+    # a rebound name stays foreign either way.
+    host = host.lower().rstrip(".")
+    try:
+        return ipaddress.ip_address(host).compressed
+    except ValueError:
+        return host
+
+
+def _parse_authority(authority: str) -> Optional[tuple[str, int]]:
+    """(hostname, port) of a Host header or Origin authority; None when malformed (fails closed)."""
+    if not authority or any(c in authority for c in "@/\\?# \t"):
+        return None
+    try:
+        parts = urlsplit("//" + authority)
+        port = parts.port or 80  # an Origin omits the default port that a Host may spell out
+    except ValueError:
+        return None
+    return (_canonical_host(parts.hostname), port) if parts.hostname else None
+
+
+def _is_wildcard(bound: str) -> bool:
+    try:
+        return bound == "" or ipaddress.ip_address(bound).is_unspecified
+    except ValueError:
+        return False
+
+
+def _local_request_error(
+    host_header: str,
+    origin: Optional[str],
+    fetch_site: Optional[str],
+    *,
+    wildcard: bool,
+    allowed_hosts: frozenset,
+) -> Optional[str]:
+    """Why a request must be refused, or None. The proxy attaches the operator's subscription
+    credential to whatever reaches it, so a web page in the operator's browser must not be able
+    to drive it: a loopback/specific-IP bind accepts only its own Host names (a DNS-rebound
+    hostname fails), and any Origin other than the proxy's own is a cross-site browser request.
+    Browsers omit Origin on GET, but they always send ``Sec-Fetch-Site``, which a page cannot
+    forge, so it is judged too. Non-browser clients send neither and are unaffected. A wildcard
+    bind is an explicit LAN opt-in, so any Host name may reach it; it therefore has no origin of
+    its own to match, and a DNS-rebound page is same-origin with its Host, so every page-made
+    browser request is refused there."""
+    target = _parse_authority(host_header)
+    if target is None or (not wildcard and target[0] not in allowed_hosts):
+        return "host_not_allowed"
+    if origin is not None:
+        scheme, sep, rest = origin.strip().partition("://")
+        if wildcard or not sep or scheme.lower() != "http" or _parse_authority(rest) != target:
+            return "origin_not_allowed"
+    trusted_sites = _WILDCARD_FETCH_SITES if wildcard else _UNFORGED_FETCH_SITES
+    if fetch_site is not None and fetch_site.strip().lower() not in trusted_sites:
+        return "origin_not_allowed"
+    return None
 
 
 def _filter_headers(headers, drop: frozenset = _HOP_BY_HOP_HEADERS) -> dict:
@@ -123,7 +191,7 @@ async def _stream_back(request: "web.Request", session, upstream_resp) -> "web.S
     return resp
 
 
-def create_app(adapter: UpstreamAdapter) -> "web.Application":
+def create_app(adapter: UpstreamAdapter, bound_host: str = DEFAULT_HOST) -> "web.Application":
     """Build the aiohttp application bound to a specific upstream adapter.
 
     Every adapter method is synchronous and blocking (the Nous adapter takes the 15s cross-process
@@ -132,7 +200,29 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
     the single loop and every other in-flight streaming completion.
     """
     _require_aiohttp()
-    app = web.Application(client_max_size=MAX_REQUEST_BYTES)
+    # The bind address is fixed for the app's lifetime, so derive the Host policy once.
+    bound = _canonical_host(bound_host.strip("[]"))
+    wildcard = _is_wildcard(bound)
+    allowed_hosts = _LOOPBACK_HOSTS | {bound}
+
+    @web.middleware
+    async def local_only(request: "web.Request", handler):
+        refusal = _local_request_error(
+            request.headers.get("Host", ""),
+            request.headers.get("Origin"),
+            request.headers.get("Sec-Fetch-Site"),
+            wildcard=wildcard,
+            allowed_hosts=allowed_hosts,
+        )
+        if refusal:
+            return _json_error(
+                403,
+                "Request refused: browser requests and foreign Host names are not accepted by this proxy.",
+                code=refusal,
+            )
+        return await handler(request)
+
+    app = web.Application(client_max_size=MAX_REQUEST_BYTES, middlewares=[local_only])
     # AppKey: forward-compat with aiohttp versions that strip bare-string keys.
     app[web.AppKey("adapter", UpstreamAdapter)] = adapter
 
@@ -189,7 +279,7 @@ async def run_server(
 ) -> None:
     """Run the proxy in the current event loop until shutdown_event is set."""
     _require_aiohttp()
-    app = create_app(adapter)
+    app = create_app(adapter, bound_host=host)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host=host, port=port)

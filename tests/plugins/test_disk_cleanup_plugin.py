@@ -16,7 +16,9 @@ import importlib
 import itertools
 import json
 import os
+import shutil
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -98,9 +100,75 @@ class TestIsSafePath:
         p.write_text("x")
         assert dg.is_safe_path(p) is True
 
+    @pytest.mark.platforms("macos")
+    def test_track_accepts_tmp_hermes_path_after_platform_resolution(self, _isolate_env):
+        dg = _load_lib()
+        temporary = Path(tempfile.mkdtemp(prefix="hermes-disk-cleanup-", dir="/tmp"))
+        try:
+            assert dg.track(str(temporary), "temp", silent=True) is True
+        finally:
+            shutil.rmtree(temporary)
+
     def test_rejects_outside_hermes_home(self, _isolate_env):
         dg = _load_lib()
         assert dg.is_safe_path(Path("/etc/passwd")) is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX /tmp path contract")
+    def test_rejects_tmp_traversal_and_near_prefixes(self, _isolate_env):
+        dg = _load_lib()
+        assert dg.is_safe_path(Path("/tmp/hermes-safe/../not-hermes/file")) is False
+        assert dg.is_safe_path(Path("/tmp-near/hermes-safe/file")) is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink contract")
+    def test_rejects_final_and_nested_symlink_escapes(self, _isolate_env):
+        dg = _load_lib()
+        temporary = Path(tempfile.mkdtemp(prefix="hermes-disk-cleanup-", dir="/tmp"))
+        outside_dir = Path(tempfile.mkdtemp(prefix="disk-cleanup-outside-", dir="/tmp"))
+        outside_file = outside_dir / "file.txt"
+        outside_file.write_text("outside", encoding="utf-8")
+        try:
+            final_link = temporary / "final-link"
+            final_link.symlink_to(outside_file)
+            nested_link = temporary / "nested-link"
+            nested_link.symlink_to(outside_dir, target_is_directory=True)
+
+            assert dg.is_safe_path(final_link) is False
+            assert dg.is_safe_path(nested_link / outside_file.name) is False
+        finally:
+            shutil.rmtree(temporary)
+            shutil.rmtree(outside_dir)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlink contract")
+    def test_symlink_loop_fails_closed(self, _isolate_env, monkeypatch, tmp_path):
+        """Resolution failures must fail closed, never raise into the caller.
+
+        Non-strict ``Path.resolve()`` does not raise on a symlink loop on
+        every platform (ELOOP only surfaces under strict=True), so the loop
+        itself may resolve to a best-effort path. The fail-closed contract
+        added with #98854 is about resolution *errors*: when resolve()
+        raises OSError/RuntimeError, is_safe_path rejects and track()
+        declines without propagating.
+        """
+        dg = _load_lib()
+        loop_root = tmp_path / "loop"
+        loop_root.mkdir()
+        first = loop_root / "first"
+        second = loop_root / "second"
+        first.symlink_to(second)
+        second.symlink_to(first)
+
+        # Baseline: a loop resolves without raising, so both calls return a
+        # bool — never an exception into the plugin hook.
+        assert isinstance(dg.is_safe_path(first), bool)
+        assert isinstance(dg.track(str(first), "temp", silent=True), bool)
+
+        # Resolution errors are rejected fail-closed.
+        def _raise_resolve(self):
+            raise OSError("ELOOP: too many levels of symbolic links")
+
+        monkeypatch.setattr(Path, "resolve", _raise_resolve)
+        assert dg.is_safe_path(first) is False
+        assert dg.track(str(first), "temp", silent=True) is False
 
 
 class TestGuessCategory:

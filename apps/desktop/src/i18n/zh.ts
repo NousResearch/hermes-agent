@@ -1410,7 +1410,11 @@ export const zh = defineLocale({
       toolsetsWipeConfirm:
         '确定移除所有已启用的工具集吗？这将禁用记忆、终端、网络搜索、委派以及大多数其他工具，直到你重新启用它们。',
       keepAwakeTitle: '保持电脑唤醒',
-      keepAwakeDesc: '阻止本机休眠，让长时间或通宵运行继续进行。屏幕仍可变暗。',
+      keepAwakeDesc:
+        '阻止本机休眠。“运行期间”仅在有回合进行时生效，通宵运行得以继续，又不会让笔记本整周保持唤醒。屏幕仍可变暗。',
+      keepAwakeOff: '关闭',
+      keepAwakeWhileWorking: '运行期间',
+      keepAwakeAlways: '始终',
       disableF12Title: '禁用 F12 开发者工具',
       disableF12Desc: '阻止 F12 打开开发者工具。Ctrl+Shift+I（Mac 上为 Cmd+Opt+I）仍然可用。',
       alwaysExternalLinksTitle: '始终在外部浏览器中打开链接',
@@ -2326,6 +2330,18 @@ export const zh = defineLocale({
         }
       }
     }
+  },
+
+  skillDeepLink: {
+    installTitle: (name: string) => `安装“${name}”？`,
+    installDescription: '此技能将在新会话中可用。请仅安装可信来源的内容。',
+    installTo: '安装到',
+    thisComputer: '此电脑',
+    installing: '正在安装…',
+    installComplete: (name: string) => `已安装“${name}”`,
+    destinationChanged: '安装目标已更改。请关闭此对话框并重新打开安装链接。',
+    installed: '已安装',
+    source: '来源'
   },
   skills: {
     tabSkills: '技能',
@@ -3703,7 +3719,7 @@ export const zh = defineLocale({
       '/init': '扫描仓库并生成或更新 AGENTS.md 项目指引',
       '/suggestions': '查看建议的自动化项目（接受或跳过）',
       '/blueprint': '使用 blueprint 模板设置自动化',
-      '/browser': '管理浏览器 CDP 连接 [connect|disconnect|status]（仅限本地 gateway）',
+      '/browser': '管理智能体浏览器 [connect|disconnect|status|use]',
       '/palette': '打开模糊搜索命令面板（也可使用 Ctrl+P）',
       '/usage': '显示 Token 用量与速率限制；`reset` 可兑换保留的 Codex 限额重置',
       '/subscription': '查看你的 Nous 方案，并在浏览器中更改',
@@ -4573,6 +4589,8 @@ export const zh = defineLocale({
   },
   preview: {
     tab: '预览',
+    pin: '固定到工作区',
+    unpin: '从工作区取消固定',
     closePane: '关闭预览面板',
     loading: '正在加载预览',
     unavailable: '预览不可用',

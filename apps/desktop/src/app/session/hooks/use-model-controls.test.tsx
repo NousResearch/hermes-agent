@@ -9,10 +9,12 @@ import {
   $activeSessionId,
   $currentModel,
   $currentProvider,
+  $currentReasoningEffortWire,
   getCurrentModelSource,
   setCurrentModel,
   setCurrentModelSource,
-  setCurrentProvider
+  setCurrentProvider,
+  setCurrentReasoningEffortWire
 } from '@/store/session'
 import * as SessionStates from '@/store/session-states'
 
@@ -21,6 +23,7 @@ import { deferred } from '../../../test/deferred'
 import { useModelControls } from './use-model-controls'
 
 const setGlobalModel = vi.fn()
+const tile = vi.hoisted(() => ({ delegate: null as unknown }))
 const confirmMock = vi.fn()
 const notify = vi.fn()
 const notifyError = vi.fn()
@@ -37,7 +40,7 @@ vi.mock('@/store/session-states', async importOriginal => {
 
   return {
     ...actual,
-    sessionTileDelegate: () => null
+    sessionTileDelegate: () => tile.delegate
   }
 })
 
@@ -431,6 +434,7 @@ describe('useModelControls', () => {
     $activeSessionId.set('session-1')
     setCurrentModel('fable-5')
     setCurrentProvider('nous')
+    setCurrentReasoningEffortWire('max')
 
     const requestGateway = vi.fn(async () => {
       throw new Error('no such model')
@@ -444,6 +448,8 @@ describe('useModelControls', () => {
 
     expect($currentModel.get()).toBe('fable-5')
     expect($currentProvider.get()).toBe('nous')
+    // The old route's clamp is true again once the switch is undone.
+    expect($currentReasoningEffortWire.get()).toBe('max')
     expect(notifyError).toHaveBeenCalled()
   })
 
@@ -712,6 +718,32 @@ describe('useModelControls', () => {
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: modelOptionsQueryKey('profile-b', 'runtime-b', 'connection-b')
     })
+  })
+
+  it("withdraws the old route's wire stamp when a tile switches model", async () => {
+    let tileState: Record<string, unknown> = {
+      model: 'gpt-6.1-sol',
+      provider: 'openai-codex',
+      reasoningEffortWire: 'max'
+    }
+
+    tile.delegate = {
+      updateSession: (_id: string, update: (state: Record<string, unknown>) => Record<string, unknown>) => {
+        tileState = update(tileState)
+      }
+    }
+    $activeSessionId.set('runtime-a')
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'gpt-6.1-luna' }) as never)
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
+
+    try {
+      await result.current.selectModel({ model: 'gpt-6.1-luna', provider: 'openai-codex', sessionId: 'runtime-b' })
+    } finally {
+      tile.delegate = null
+    }
+
+    // Until session.info re-stamps it, the tile pill must not present the old route's clamp.
+    expect(tileState).toMatchObject({ model: 'gpt-6.1-luna', reasoningEffortWire: '' })
   })
 
   it('rolls a failed focused-B selection back only in B cache', async () => {

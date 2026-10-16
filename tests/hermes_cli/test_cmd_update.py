@@ -127,3 +127,26 @@ class TestGitTrampolineSelfHeal:
         assert candidates[1] == (
             profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
         )
+
+    def test_locate_real_git_finds_ucrt64_layout(self, monkeypatch):
+        # Git for Windows 2.56.0 moved the real binary from mingw64\libexec\git-core
+        # to ucrt64\libexec\git-core; an install with only that layout must still be found.
+        from pathlib import Path
+
+        from hermes_cli import update_cmd_git
+
+        present = set()
+
+        class FakePath(type(Path())):
+            def exists(self, *, follow_symlinks=True):
+                return str(self) in present
+
+        ucrt = FakePath(r"C:\Program Files") / "Git" / "ucrt64" / "libexec" / "git-core" / "git.exe"
+        present.add(str(ucrt))
+        probed = []
+        monkeypatch.setattr(update_cmd_git, "Path", FakePath)
+        monkeypatch.setattr(update_cmd_git, "_portable_git_candidates", lambda: [])
+        monkeypatch.setattr(update_cmd_git, "_probe_fork_bomb", lambda argv: probed.append(argv) or False)
+
+        assert update_cmd_git._locate_real_git() == ucrt
+        assert probed == [[str(ucrt)]]

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import fcntl  # windows-footgun: ok — POSIX-only module by design (see docstring)
+import math
 import os
 import select
 import signal
@@ -61,6 +62,34 @@ class PtyUnavailableError(RuntimeError):
     """
 
 
+# Longer than the TUI gateway's own SIGHUP shutdown grace, so a helper that is saving state on
+# SIGHUP finishes before it is SIGKILLed.
+_HELPER_SHUTDOWN_GRACE_S = 1.5
+# Upper bound: PTY_REGISTRY.close_all() runs inside the backend's SIGTERM -> SIGKILL budget
+# (dashboard_procs._POSIX_TERM_GRACE_SECONDS), so a raised gateway grace cannot stretch it.
+_MAX_HELPER_SHUTDOWN_GRACE_S = 2.0
+
+
+def _helper_shutdown_grace() -> float:
+    # The gateway's grace is 1.0 s unless HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S raises it
+    # (tui_gateway/entry.py); the PTY child inherits that env. Read it here rather than import
+    # tui_gateway.entry, which installs signal handlers.
+    from utils import env_float
+
+    gateway = env_float("HERMES_TUI_GATEWAY_SHUTDOWN_GRACE_S", 1.0)
+    if not math.isfinite(gateway) or gateway <= 0:
+        gateway = 1.0
+    return min(max(_HELPER_SHUTDOWN_GRACE_S, gateway + 0.5), _MAX_HELPER_SHUTDOWN_GRACE_S)
+
+
+def _process_group_exists(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+    except OSError:
+        return False
+    return True
+
+
 class PtyBridge:
     """Thin wrapper around ``ptyprocess.PtyProcess`` for byte streaming. Not thread-safe: owned by
     the WebSocket handler that spawned it; reads run in an executor thread, writes are awaited on
@@ -72,6 +101,12 @@ class PtyBridge:
         self._proc = proc
         self._fd: int = proc.fd
         self._closed = False
+        # Recorded at spawn: once the leader is reaped getpgid() can no longer find its group,
+        # but the helpers it started still belong to it.
+        try:
+            self._pgid: Optional[int] = os.getpgid(proc.pid)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+        except OSError:
+            self._pgid = None
         os.set_blocking(self._fd, False)
 
     @classmethod
@@ -220,18 +255,35 @@ class PtyBridge:
         except OSError:
             pass
 
+    def _discard_output(self, timeout: float) -> None:
+        # Exiting children flush their pending terminal output first; on macOS a process stays in
+        # exit (and a SIGHUP save outlasts the grace) until someone drains the master. The drain
+        # task no longer consumes the output, so read and drop while waiting.
+        try:
+            readable, _, _ = select.select([self._fd], [], [], timeout)
+            if readable and os.read(self._fd, 65536):
+                return
+        except (OSError, ValueError):
+            pass
+        time.sleep(timeout)  # nothing read, EOF (b"") or EIO: don't spin on a readable dead fd
+
+    def _wait_for_group_exit(self, pgid: int, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        while _process_group_exists(pgid) and time.monotonic() < deadline:
+            self._discard_output(0.02)
+
     def close(self) -> None:
-        """Terminate the child (SIGHUP → SIGTERM → SIGKILL, 0.5s grace each), reap it so the
-        dashboard process never leaks zombies, and close fds. Idempotent.
+        """Terminate the child's process group (SIGHUP → SIGTERM → SIGKILL, 0.5s grace each while
+        the leader lives, then up to the helper grace for the rest of the group), reap the leader so
+        the dashboard never leaks zombies, and close fds. Idempotent; blocks, so call it off the
+        event loop.
         """
         if self._closed:
             return
         self._closed = True
 
-        try:
-            pgid = os.getpgid(self._proc.pid)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
-        except Exception:
-            pgid = None
+        pgid = self._pgid
+        leader_was_alive = self._proc.isalive()
 
         # Signal the whole process group, not just the PTY leader: the dashboard TUI starts helper
         # children (e.g. the Python slash worker) and killing only the leader strands them.
@@ -247,7 +299,26 @@ class PtyBridge:
                 pass
             deadline = time.monotonic() + 0.5
             while self._proc.isalive() and time.monotonic() < deadline:
-                time.sleep(0.02)
+                self._discard_output(0.02)
+
+        # Helpers can outlive the leader and keep the PTY slave open, so no EOF ever arrives (#76759):
+        # one that ignores SIGHUP, or any helper of a leader that died first (crash, OOM kill). When
+        # the group already got SIGHUP above, only wait: the TUI gateway saves its sessions on SIGHUP
+        # within its shutdown grace, and a second SIGHUP or an early SIGKILL would cut that short.
+        # The group id cannot be reused while any member is alive; if the group emptied after the
+        # leader was reaped, a pid wrap inside that window could hand it to a new group (killpg
+        # then hits that group). The reaper closes a dead session within one tick, so the window is short.
+        if pgid is not None:
+            grace = _helper_shutdown_grace()
+            sweep = (signal.SIGKILL,) if leader_was_alive else (signal.SIGHUP, signal.SIGKILL)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+            if leader_was_alive:
+                self._wait_for_group_exit(pgid, grace)
+            for sig in sweep:
+                try:
+                    os.killpg(pgid, sig)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+                except OSError:
+                    break  # ESRCH: the group is empty
+                self._wait_for_group_exit(pgid, grace if sig == signal.SIGHUP else 0.5)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
 
         try:
             self._proc.close(force=True)

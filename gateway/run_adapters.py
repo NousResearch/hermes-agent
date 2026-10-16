@@ -43,6 +43,15 @@ logger = logging.getLogger("gateway.run")
 _UNSET = object()  # "no per-profile human_delay snapshot": fall back to the primary's value
 
 
+def _adapter_unavailable_message(platform: Platform, *, retrying: bool = True) -> str:
+    """Actionable ``adapter_unavailable`` status text, shared by startup and the reconnect watcher so
+    ``hermes status`` keeps the plugin/deps/credentials hint after the first retry."""
+    message = (
+        f"No adapter available for enabled {platform.value}; check the plugin, dependencies, and credentials."
+    )
+    return f"{message} Retrying in the background." if retrying else message
+
+
 class _UnresolvedProfileHome:
     """A NAMED routed profile whose home does not resolve — never the same thing as ``None``
     ("this body is the launch profile's own work"). Overloading ``None`` for both let an inbound
@@ -235,7 +244,7 @@ class GatewayAdapterLifecycleMixin:
             **({"queued_at": now} if queued else {}),
             "credential_claim": self._adapter_credential_claim(platform, adapter),
             "listener_claim": self._adapter_listener_claim(platform, adapter),
-            "inbound_dedup": inbound_dedup_caches(adapter),
+            "inbound_dedup": inbound_dedup_caches(adapter) if adapter is not None else None,
         }
 
     def _queue_retryable_fatal_platform(self, adapter: BasePlatformAdapter) -> bool:
@@ -765,6 +774,21 @@ class GatewayAdapterLifecycleMixin:
         info["next_retry"] = time.monotonic() + backoff
         return backoff
 
+    def _adapter_may_heal(self, platform, platform_config) -> bool:
+        """Whether a platform whose ``_create_adapter`` returned None can heal without a config change.
+
+        Only an unregistered plugin can (a plugin load can fail transiently). A builtin whose probe fails
+        (missing deps/creds), a registered plugin returning None, or an empty bot credential needs a config
+        change: retrying it re-warns forever at the backoff cap (#5196 fleet nodes). Shared by startup and
+        the reconnect watcher so both classify the same platform the same way."""
+        from gateway.platform_registry import platform_registry
+        from gateway.run import _BUILTIN_ADAPTERS, _platform_has_bot_credential
+        return (
+            platform not in _BUILTIN_ADAPTERS
+            and not platform_registry.is_registered(platform.value)
+            and _platform_has_bot_credential(platform, platform_config)
+        )
+
     async def _reconnect_failed_platform(self, platform, now: float) -> None:
         """One watcher pass for a queued platform: gate, attempt, and record the outcome."""
         from gateway.run import _dispose_unused_adapter, _platform_has_bot_credential
@@ -788,7 +812,20 @@ class GatewayAdapterLifecycleMixin:
         try:
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
-                self._drop_from_reconnect_queue(platform, "adapter creation returned None")
+                if not self._adapter_may_heal(platform, platform_config):
+                    # Became builtin/registered-but-None: a config change is needed, so stop retrying.
+                    self._update_platform_runtime_status(
+                        platform.value, platform_state="fatal", error_code="adapter_unavailable",
+                        error_message=_adapter_unavailable_message(platform, retrying=False),
+                        needs_attention=True,
+                    )
+                    self._drop_from_reconnect_queue(platform, "adapter creation returned None")
+                    return
+                # Unregistered plugin: keep it queued so it heals once the plugin registers.
+                backoff = self._bump_reconnect_backoff(
+                    platform, info, attempt, "adapter_unavailable", _adapter_unavailable_message(platform),
+                )
+                logger.info("Reconnect %s: no adapter yet, next retry in %ds", platform.value, backoff)
                 return
             carry_inbound_dedup(info.get("inbound_dedup"), adapter)
             self._wire_adapter_handlers(adapter)

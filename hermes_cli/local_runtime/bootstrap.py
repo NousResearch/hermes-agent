@@ -20,18 +20,25 @@ from hermes_cli.local_runtime.gguf import SPLIT_PART_RE, model_id_from_stem
 logger = logging.getLogger(__name__)
 
 _SUPERVISOR = None  # process-wide singleton; one router per Hermes process
+# The engine that singleton runs (or is booting). Budgets price ITS devices: the server is shared by
+# every profile this process hosts, so another profile's ``local_runtime.backend`` must not resize it.
+_SERVING_ENGINE = None
 
 
 def _detect_gpu_vendor() -> str | None:
-    """Best-effort GPU vendor for backend selection. NVIDIA via nvidia-smi resolved by the hardware
-    probe's PATH-independent ladder (a stripped service PATH must not demote an NVIDIA box to
-    vulkan/cpu); anything else defers to select_backend's fallback ladder."""
+    """Best-effort GPU vendor for backend selection.
+
+    Preserve NVIDIA's detailed name when nvidia-smi is available, then use the
+    platform host facts so Intel and AMD do not silently demote ``auto`` to CPU.
+    """
     from hermes_cli.local_runtime.hardware import _cached_nvidia_gpu_query
+    from hermes_platform.host.facts import gpu_class
 
     query = _cached_nvidia_gpu_query()
     if query is not None and query.get("gpu_name"):
         return "nvidia " + query["gpu_name"]
-    return None
+    detected = gpu_class()
+    return detected if detected in {"nvidia", "amd", "intel"} else None
 
 
 def models_dir() -> Path:
@@ -374,7 +381,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
     """Idempotent boot of the managed runtime. Returns the supervisor (or None when
     disabled/unavailable). Never raises into a session start — failures log and return None; chat
     falls back to configured providers."""
-    global _SUPERVISOR
+    global _SUPERVISOR, _SERVING_ENGINE
     section = (config or {}).get("local_runtime") or {}
     if not force and not section.get("enabled"):
         return None
@@ -420,6 +427,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
             if engine is None:
                 logger.info("local runtime enabled but no PM engine installed; use the Local Models pane")
                 return None
+            _SERVING_ENGINE = engine
 
             mdir = models_dir()
             mdir.mkdir(parents=True, exist_ok=True)
@@ -442,21 +450,28 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
             _start_idle_sweeper(sup)
             return sup
         except Exception as exc:  # noqa: BLE001 — never break session start
+            _SERVING_ENGINE = None
             logger.warning("managed local runtime unavailable: %s", exc)
             return None
 
 
 def shutdown_local_runtime() -> None:
-    global _SUPERVISOR
+    global _SUPERVISOR, _SERVING_ENGINE
     if _SUPERVISOR is not None:
         _SUPERVISOR.stop()
         _SUPERVISOR = None
+    _SERVING_ENGINE = None
 
 
 def get_supervisor():
     """The process-local supervisor, or None (a server may still run under another process —
     check the state file)."""
     return _SUPERVISOR
+
+
+def serving_engine():
+    """The engine the process-local server runs or is booting, or None when there is none."""
+    return _SERVING_ENGINE
 
 
 _SWEEP_EVERY_S = 120

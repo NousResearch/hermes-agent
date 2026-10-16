@@ -19,6 +19,8 @@ const buildOverlayState = (): OverlayState => ({
   petPicker: false,
   pluginsHub: false,
   secret: null,
+  vaultCode: null,
+  vaultSaveLogin: null,
   vaultUnlock: null,
   sessions: false,
   skillsHub: false,
@@ -47,6 +49,8 @@ export const $isBlocked = computed(
     skillsHub,
     subscription,
     sudo,
+    vaultCode,
+    vaultSaveLogin,
     vaultUnlock,
     widget
   }) =>
@@ -67,6 +71,8 @@ export const $isBlocked = computed(
       skillsHub ||
       subscription ||
       sudo ||
+      vaultCode ||
+      vaultSaveLogin ||
       vaultUnlock ||
       widget
     )
@@ -136,6 +142,16 @@ export const hasFloatingPanel = (overlay: OverlayState): boolean =>
 export const $isStatusRuleOccluded = computed([$overlayState, $uiState], (overlay, ui) =>
   Boolean(overlay.widget || (ui.statusBar === 'top' && hasFloatingPanel(overlay)))
 )
+
+/**
+ * SINGLE SOURCE for the credential prompts (sudo, secret, the vault cards):
+ * Esc / Ctrl+C decline them, the tab title and pet read them as "waiting on
+ * you". Add new credential prompts HERE so no gate silently misses one.
+ */
+export const SENSITIVE_PROMPTS = ['sudo', 'secret', 'vaultUnlock', 'vaultSaveLogin', 'vaultCode'] as const
+
+export const hasSensitivePrompt = (overlay: Pick<OverlayState, (typeof SENSITIVE_PROMPTS)[number]>): boolean =>
+  SENSITIVE_PROMPTS.some(key => Boolean(overlay[key]))
 
 export const getOverlayState = () => $overlayState.get()
 

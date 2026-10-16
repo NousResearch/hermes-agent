@@ -436,6 +436,22 @@ class TestMemoryToolDispatcher:
         assert result["success"] is False
         assert "not available" in result["error"]
 
+    def test_missing_action_and_operations_returns_actionable_error(self, store):
+        # Neither the single-op 'action' nor the batch 'operations' was given:
+        # the call must say what is missing instead of the opaque
+        # "Unknown action 'None'" that invites blind retries (#64291).
+        result = json.loads(memory_tool(target="memory", store=store))
+        assert result["success"] is False
+        assert "Missing required parameter" in result["error"]
+        assert "action" in result["error"] and "operations" in result["error"]
+
+    def test_null_action_and_operations_is_also_rejected(self, store):
+        # Strict providers send JSON null for omitted optional fields.
+        result = json.loads(memory_tool(action=None, operations=None, store=store))
+        assert result["success"] is False
+        assert "Missing required parameter" in result["error"]
+
+
 
     def test_replace_missing_content_still_distinct_error(self, store):
         # When old_text IS present but content is missing, keep the original

@@ -23,6 +23,8 @@ _FAST_LIMIT_HEADERS = ("anthropic-fast-input-tokens-limit", "anthropic-fast-outp
 #: Tiers sent on every request of the session (OpenAI ``service_tier`` values; ``priority`` also
 #: selects Anthropic/xAI fast mode). Ultrafast is OpenAI-only and gated per model.
 STATIC_TIERS = frozenset({"priority", "ultrafast"})
+# Codex app-server names for wire tiers it accepts (turn/start.serviceTier); a tier missing here is not sent.
+CODEX_TIER_WORDS: dict[str, str] = {"priority": "fast"}
 NORMAL_TIER_WORDS = frozenset({"", "normal", "default", "standard", "off", "none"})
 # User/config word -> agent.service_tier. The single table every surface (config loaders, /fast
 # on CLI / gateway / TUI) parses through, so a new tier is one edit.

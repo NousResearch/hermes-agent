@@ -781,7 +781,7 @@ def test_cancelled_start_keeps_claim_until_model_restore_finishes(installed_runt
     identity = h.enqueue()
     attempt = _start_attempt(h, identity)
     admitted, release_admission, cleanup, release_cleanup = (threading.Event() for _ in range(4))
-    real_admit, real_finish = server._admit_prompt_turn, server._finish_turn
+    real_admit, real_finish = server._admit_prompt_turn, server._release_turn_scopes
     restore = {"model": "restored-test-model", "provider": "test"}
 
     def pause_after_admission(*args, **kwargs):
@@ -800,7 +800,7 @@ def test_cancelled_start_keeps_claim_until_model_restore_finishes(installed_runt
         return real_finish(sid, session, st)
 
     monkeypatch.setattr(server, "_admit_prompt_turn", pause_after_admission)
-    monkeypatch.setattr(server, "_finish_turn", pause_before_cleanup)
+    monkeypatch.setattr(server, "_release_turn_scopes", pause_before_cleanup)
     h.allow_build.set()
     h.execute(attempt)
     old_thread = None

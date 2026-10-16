@@ -872,15 +872,21 @@ describe('secondary stalled-dial budget', () => {
     reconnectSecondaryGateways()
     await vi.advanceTimersByTimeAsync(0)
 
-    // 20 polls inside ONE second of virtual time. The ladder's floor is 300ms,
-    // so a healthy scope dials at most a couple of times in that window; a
-    // storm dials once per poll.
+    // 20 polls inside ONE second of virtual time. How often the ladder itself
+    // dials depends on its full-jitter draws (a near-zero draw redials at once),
+    // so count only the dials a poll makes: timers never fire inside the awaited
+    // request, so every dial seen there is the poll's own, never the ladder's.
+    let pollDials = 0
+
     for (let index = 0; index < 20; index += 1) {
+      const before = getConnectionFor.mock.calls.length
       await requestGatewayForAgent('homelab', 'bot-a', 'session.control.read', {}).catch(() => undefined)
+      pollDials += getConnectionFor.mock.calls.length - before
       await vi.advanceTimersByTimeAsync(50)
     }
 
-    expect(getConnectionFor.mock.calls.length - dialsAfterOpen).toBeLessThanOrEqual(5)
+    expect(pollDials).toBe(0)
+    expect(getConnectionFor.mock.calls.length).toBeGreaterThan(dialsAfterOpen)
   })
 
   it('a foreground request still dials at once while background polls are cooling down (#121865)', async () => {

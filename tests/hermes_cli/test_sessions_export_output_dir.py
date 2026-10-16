@@ -11,8 +11,11 @@ class _FakeDB:
     def resolve_session_id(self, session_id):
         return "sess-123"
 
-    def export_session(self, session_id, include_compacted=False):
+    def export_session(self, session_id, **_projection):
         return {"id": "sess-123", "source": "cli", "messages": [{"role": "user", "content": "hi"}]}
+
+    def assert_exports_safe(self, session_ids, max_messages=None):
+        return None
 
     def close(self):
         pass

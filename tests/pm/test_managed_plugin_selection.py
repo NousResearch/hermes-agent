@@ -171,3 +171,58 @@ def test_managed_enabled_eviction_keeps_admin_values_out_of_raw_write(tmp_path, 
     change = PluginEviction([(plugin.parent, "pinned", plugin)], {plugin.resolve(): "incompatible"})
     proposed = fast_safe_load(change.edits[0][2].decode())
     assert proposed == {"plugins": {"disabled": ["pinned"]}}
+
+
+@pytest.mark.parametrize("incompatible", [False, True])
+def test_eviction_refuses_policy_change_during_discovery(tmp_path, monkeypatch, incompatible):
+    from types import SimpleNamespace
+    import pm.plugin_eviction as eviction
+    import pm.plugins_state as state
+    import pm.workspace as workspace
+    import pm.install as install
+    from pm import receipt
+
+    home, managed = tmp_path / "home", tmp_path / "managed"
+    home.mkdir()
+    managed.mkdir()
+    plugin = home / "plugins" / "old"
+    plugin.mkdir(parents=True)
+    policy = managed / "config.yaml"
+    policy.write_text("plugins:\n  enabled: [old]\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    monkeypatch.setattr(state, "dependency_homes", lambda: [home])
+    def discovered(**kwargs):
+        policy.write_text("plugins:\n  enabled: [new]\n", encoding="utf-8")
+        return [(plugin.parent, "old", plugin)]
+    monkeypatch.setattr(workspace, "enabled_plugin_entries", discovered)
+    monkeypatch.setattr(workspace, "_is_member_candidate", lambda path: True)
+    monkeypatch.setattr(eviction, "_interpreter_version", lambda: "3.14")
+    monkeypatch.setattr(eviction, "static_verdicts", lambda *args: (
+        {plugin.resolve(): "incompatible"} if incompatible else {}, {}
+    ))
+    monkeypatch.setattr(install, "_target_selection", lambda *a, **kw: ([], "stamp", kw["inputs"]))
+    monkeypatch.setattr(install, "_runtime_state_matches", lambda *a: True)
+    monkeypatch.setattr(receipt, "record_feature_list", lambda *a: None)
+    committed = []
+    monkeypatch.setattr(install, "_commit_selection", lambda *a, **kw: committed.append(kw))
+    with pytest.raises(ValueError, match="changed"):
+        eviction.sync_evicting(SimpleNamespace(), None, {}, extras=[], shipped=None, frozen=None, explicit=True)
+    assert committed == []
+
+
+def test_empty_eviction_still_fences_policy_without_writing(tmp_path, monkeypatch):
+    from pm.plugin_eviction import PluginEviction
+    import pm.plugins_state as state
+
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    monkeypatch.setattr(state, "dependency_homes", lambda: [])
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    change = PluginEviction([], {})
+    project = tmp_path / "not-created"
+    change.publish(project)
+    assert not project.exists()
+    (managed / "config.yaml").write_text("plugins:\n  enabled: [new]\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="changed"):
+        change.publish(project)
+    assert not project.exists()

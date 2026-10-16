@@ -870,7 +870,7 @@ class TestCliSetup:
         monkeypatch.setattr(dashboard_webauthn.sys, "stdin", _FakeTty())
         # rp_id, rp_name (blank -> default), confirm origin, decline www, no extras,
         # confirm the write
-        answers = iter(["dash.example.com", "", "y", "n", "", "y"])
+        answers = iter(["dash.example.com", "", "y", "n", "", "y", ""])
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
         args = self._args()
         dashboard_webauthn.cmd_webauthn_setup(args)
@@ -955,8 +955,8 @@ class TestSetupPreflight:
                             lambda extras, **k: (calls.append(list(extras)),
                                                  state.__setitem__("installed", True)))
         # prompts: preflight-confirm Y, rp_name (blank = default), include-origin Y,
-        # www N, extras blank, final write confirm Y
-        answers = iter(["y", "", "y", "n", "", "y"])
+        # www N, extras blank, final write confirm Y, proxy ask (blank = skip)
+        answers = iter(["y", "", "y", "n", "", "y", ""])
         monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
         args = self._args(rp_id="dash.example.com", rp_name="")  # rp_name asked after preflight
         dashboard_webauthn.cmd_webauthn_setup(args)
@@ -1064,3 +1064,91 @@ class TestSetupTopologyAdvisory:
                           origin=["http://localhost:9119"])
         dashboard_webauthn.cmd_webauthn_setup(args)
         assert "Deployment note" not in capsys.readouterr().out
+
+    def test_trusted_proxy_flag_writes_the_config(self, hermes_home, capsys):
+        """--trusted-proxy: non-interactive write of dashboard.trusted_proxies."""
+        import hermes_yaml as yaml
+
+        from hermes_cli import dashboard_webauthn
+
+        _write_webauthn_config(hermes_home)
+        args = self._args(rp_id="dash.example.com", rp_name="Dash",
+                          origin=["https://dash.example.com"],
+                          trusted_proxy="192.0.2.10")
+        dashboard_webauthn.cmd_webauthn_setup(args)
+        cfg = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+        assert cfg["dashboard"]["trusted_proxies"] == ["192.0.2.10/32"]
+        assert "✓ dashboard.trusted_proxies" in capsys.readouterr().out
+
+    def test_trusted_proxy_flag_rejects_wildcards(self, hermes_home, capsys):
+        """0.0.0.0/0 would let any LAN peer forge X-Forwarded-Proto: refused."""
+        from hermes_cli import dashboard_webauthn
+
+        _write_webauthn_config(hermes_home)
+        args = self._args(rp_id="dash.example.com", rp_name="Dash",
+                          origin=["https://dash.example.com"],
+                          trusted_proxy="0.0.0.0/0")
+        with pytest.raises(SystemExit):
+            dashboard_webauthn.cmd_webauthn_setup(args)
+        out = capsys.readouterr().out
+        assert "too broad" in out
+        import hermes_yaml as yaml
+
+        cfg = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+        assert "trusted_proxies" not in cfg["dashboard"]  # nothing written
+
+    def test_interactive_ask_confirms_detected_proxy(self, hermes_home, capsys, monkeypatch):
+        """Interactive: the detected candidate is the DEFAULT (Enter accepts),
+        the confirmed IP is written into the same save."""
+        from hermes_cli import dashboard_webauthn
+
+        class _FakeTty:
+            @staticmethod
+            def isatty():
+                return True
+
+        monkeypatch.setattr(dashboard_webauthn.sys, "stdin", _FakeTty())
+        _write_webauthn_config(hermes_home)
+        monkeypatch.setattr(dashboard_webauthn, "_proxy_candidates",
+                            lambda port=9119: ["192.0.2.10"])
+        # all three flags set → the write-confirm is skipped; the only prompt
+        # is the one-candidate trust ask, where Enter accepts the detection:
+        prompts: list[str] = []
+        answers = iter([""])
+
+        def fake_input(prompt="", *a, **k):
+            prompts.append(str(prompt))
+            return next(answers)
+
+        monkeypatch.setattr("builtins.input", fake_input)
+        args = self._args(rp_id="dash.example.com", rp_name="Dash",
+                          origin=["https://dash.example.com"])
+        dashboard_webauthn.cmd_webauthn_setup(args)
+        assert any("Trust the detected reverse proxy 192.0.2.10" in p for p in prompts)
+        assert "✓ dashboard.trusted_proxies: 192.0.2.10/32" in capsys.readouterr().out
+        import hermes_yaml as yaml
+
+        cfg = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+        assert cfg["dashboard"]["trusted_proxies"] == ["192.0.2.10/32"]
+
+    def test_interactive_ask_skip_leaves_it_unset(self, hermes_home, capsys, monkeypatch):
+        from hermes_cli import dashboard_webauthn
+
+        class _FakeTty:
+            @staticmethod
+            def isatty():
+                return True
+
+        monkeypatch.setattr(dashboard_webauthn.sys, "stdin", _FakeTty())
+        _write_webauthn_config(hermes_home)
+        monkeypatch.setattr(dashboard_webauthn, "_proxy_candidates", lambda port=9119: [])
+        answers = iter([""])  # the proxy ask: Enter skips (write-confirm skipped: flags set)
+        monkeypatch.setattr("builtins.input", lambda *a, **k: next(answers))
+        args = self._args(rp_id="dash.example.com", rp_name="Dash",
+                          origin=["https://dash.example.com"])
+        dashboard_webauthn.cmd_webauthn_setup(args)
+        import hermes_yaml as yaml
+
+        cfg = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+        assert "trusted_proxies" not in cfg["dashboard"]
+        assert "Deployment note" in capsys.readouterr().out  # the note still fires

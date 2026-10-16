@@ -1,6 +1,6 @@
 name: nvidia-broadcast
 repo: https://github.com/NousResearch/hermes-nvidia
-sha: 65bb8d89263f920e8599432823d2d4e05cc113e3
+sha: de75692b479dc88b95e428a9cb25091d3fb0e327
 subdir: nvidia-broadcast
 description: "NVIDIA Broadcast control through its local MCP gateway: camera, microphone and speaker
   effects, Studio Voice profiles, device selection, camera resolution, and effects on local media files.

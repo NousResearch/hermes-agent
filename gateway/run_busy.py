@@ -131,6 +131,76 @@ class GatewayBusySessionMixin:
         # else: no adapter — leave the head in place so we don't silently drop it.
         return pending_event
 
+    def _defer_past_exhaustion_reset(
+        self, result: Any, adapter: Any, source: SessionSource, session_key: str, pending_event: MessageEvent,
+    ) -> None:
+        """Leave the post-turn drain to the fresh session after a compression-exhausted turn.
+
+        The outer handler owns the reset: the exact queued event goes back in the head slot so the
+        adapter's post-handler drain starts it on the fresh session (never promoted or prepared on the
+        exhausted one). An accepted leftover /steer was already taken out of the agent's buffer, so it
+        keeps its usual place ahead of that event instead of vanishing.
+        """
+        leftover_steer = (result.get("pending_steer") or "").strip()
+        if leftover_steer:
+            steer_prompt, steer_source = self._pinned_channel_inputs(session_key, None, source, internal=True)
+            self._session_state(session_key).conversation.queued_events.insert(0, pending_event)
+            pending_event = MessageEvent(text=leftover_steer, source=steer_source, channel_prompt=steer_prompt)
+        adapter._pending_messages[session_key] = pending_event
+        logger.info("Deferring queued follow-up for session %s until after its compression-exhausted reset", session_key)
+
+    def _merge_leftover_steer(
+        self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str],
+        pending_event: Optional[MessageEvent], pending: Optional[str],
+    ) -> tuple[Optional[MessageEvent], Optional[str]]:
+        """Fold a leftover /steer (arrived after the last tool batch) into the post-turn drain:
+        the next user turn when nothing else is pending, otherwise ahead of / behind it in the FIFO."""
+        leftover_steer = (result.get("pending_steer") or "").strip() if result else None
+        if leftover_steer:
+            if not pending and not pending_event:
+                pending = leftover_steer
+                logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
+            elif pending_event and adapter and session_key:
+                # User steered during the turn, but a background event or queued message arrived.
+                # Deliver the user's steer first and restore the pending event to the head of the queue.
+                overflow = self._overflow_queue(session_key)
+                if hasattr(adapter, "_pending_messages") and isinstance(adapter._pending_messages, dict):
+                    promoted = adapter._pending_messages.get(session_key)
+                    if promoted is not None:
+                        if overflow is not None:
+                            overflow.insert(0, promoted)
+                        else:
+                            self._session_state(session_key).conversation.queued_events.insert(0, promoted)
+                    adapter._pending_messages[session_key] = pending_event
+                else:
+                    if overflow is not None:
+                        overflow.insert(0, pending_event)
+                    else:
+                        self._session_state(session_key).conversation.queued_events.insert(0, pending_event)
+                pending_event = None
+                pending = leftover_steer
+                logger.debug(
+                    "Delivering leftover /steer before queued event for session %s: '%s...'",
+                    session_key, pending[:40],
+                )
+            elif pending and not pending_event:
+                from gateway.platforms.base import MessageEvent
+                # A deferred steer continues the active channel context, just like an
+                # eventless follow-up. Reuse its pins without marking the user as internal.
+                steer_prompt, steer_source = self._pinned_channel_inputs(
+                    session_key, None, source, internal=True,
+                )
+                steer_event = MessageEvent(
+                    text=leftover_steer, source=steer_source, channel_prompt=steer_prompt,
+                )
+                if session_key:
+                    self._enqueue_fifo(session_key, steer_event, adapter)
+                logger.debug(
+                    "Enqueued leftover /steer behind pending message for session %s: '%s...'",
+                    session_key or "?", leftover_steer[:40],
+                )
+        return pending_event, pending
+
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
         depth = len(self._overflow_queue(session_key) or ())
@@ -856,10 +926,9 @@ class GatewayBusySessionMixin:
         _busy_state = self._peek_session_state(session_key)
         running_agent = _busy_state.turn.agent if _busy_state else None
         _steer = await self._resolve_busy_steer_or_redirect(event, session_key, effective_mode, running_agent)
-        effective_mode, redirected = _steer.effective_mode, _steer.redirected
         # Queue as the next turn — skipped after a successful steer/redirect (the text is already in
         # the run and must NOT replay). FIFO gives each text its own turn (raw merge would join them).
-        if not _steer.steered and not redirected:
+        if not _steer.steered and not _steer.redirected:
             self._queue_or_replace_pending_event(session_key, event)
         # Store the message so it's processed as the next turn after the current run finishes (or is
         # interrupted). Skip this for a successful steer — the text already landed inside the run and must
@@ -870,6 +939,14 @@ class GatewayBusySessionMixin:
         # messages sent while the agent was busy (interrupt mode, or a steer that fell back to queue)
         # arrived as one mashed-together turn (#43066 sub-bug 2). The FIFO path gives each text its own turn
         # in arrival order while still preserving photo-burst / album merge semantics for media.
+        await self._busy_interrupt_and_ack(event, session_key, adapter, _busy_state, running_agent, _steer)
+        return True
+
+    async def _busy_interrupt_and_ack(self, event, session_key, adapter, _busy_state, running_agent, _steer) -> None:
+        """Interrupt-mode abort (voice transcribed) and the busy ack, after the steer/redirect resolution.
+        Shared by the in-process busy handler and the session authority's busy preempt."""
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        effective_mode, redirected = _steer.effective_mode, _steer.redirected
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
         is_redirect_mode = effective_mode == "interrupt" and redirected
@@ -883,15 +960,15 @@ class GatewayBusySessionMixin:
         # stamps the "last ack" timestamp.
         if os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true":
             logger.debug("Busy ack suppressed for session %s", session_key)
-            return True  # input still processed, just no ack sent
+            return  # input still processed, just no ack sent
 
         # Debounce (30s) before the config-heavy display lookup.
         now = time.time()
         if now - (_busy_state.turn.busy_ack_ts if _busy_state else 0) < 30:
-            return True  # interrupt sent (if not queue), ack already delivered recently
+            return  # interrupt sent (if not queue), ack already delivered recently
 
         if is_steer_mode and not self._busy_steer_ack_enabled(event, session_key):
-            return True
+            return
 
         self._session_state(session_key).turn.busy_ack_ts = now
 
@@ -902,7 +979,6 @@ class GatewayBusySessionMixin:
             demoted_for_compression=_steer.demoted_for_compression,
         )
         await self._send_busy_ack_reply(event, adapter, message)
-        return True
 
     # Slash name → handler method is ``_handle_<name>_command`` (``-`` → ``_``) except these.
     _COMMAND_HANDLER_ALIASES = {"bg": "_handle_background_command", "sethome": "_handle_set_home_command"}
@@ -918,7 +994,7 @@ class GatewayBusySessionMixin:
         "approvals", "model", "codex-runtime", "personality", "suggestions", "save", "retry",
         "sethome", "compress", "usage", "topup", "insights", "reload-mcp", "reload-skills",
         "bundles", "debug", "title", "resume", "sessions", "branch", "rollback", "diff", "goal",
-        "loop", "refine", "review", "voice",
+        "loop", "refine", "review", "voice", "curator",
     )
 
     def _command_handler_table(self, names) -> dict[str, Any]:
@@ -935,6 +1011,10 @@ class GatewayBusySessionMixin:
 
     async def _send_command_ack(self, source, text: str, label: str) -> None:
         """Best-effort acknowledgment for a slash command that falls through to agent processing."""
+        from gateway.session_command_sink import active_sink
+        if (sink := active_sink()) is not None:
+            sink.notices.append(text)  # a local slash.exec: the ack rides the client's directive
+            return
         try:
             adapter = self._delivery_adapter_for(source)
             if adapter:

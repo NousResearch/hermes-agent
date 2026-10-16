@@ -13,7 +13,7 @@ async def test_primary_startup_connect_binds_awareness_and_background_worker_sco
 ):
     from agent import secret_scope
     from gateway.config import Platform, PlatformConfig
-    from gateway.platforms.signal import SignalAdapter
+    from plugins.platforms.signal.adapter import SignalAdapter
     import gateway.platforms.signal_reaction_awareness_runtime as awareness_runtime
     from gateway.run import _resolve_gateway_model, _resolve_runtime_agent_kwargs
     from gateway.run_startup import GatewayStartupMixin

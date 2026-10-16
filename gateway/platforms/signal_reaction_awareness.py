@@ -185,7 +185,7 @@ class ReactionAwarenessLane:
             note = _parse_note(result)
         except ToolCallRefused:
             return self._finish(row, "retry", attempt_number, result="tool_call_refused")
-        except Exception:
+        except Exception:  # health: allow BLE001 -- provider boundary retries silently without logging private reaction context
             return self._finish(row, "retry", attempt_number)
         self.db.execute("BEGIN IMMEDIATE")
         try:
@@ -312,7 +312,7 @@ def _valid_ts(value: Any) -> bool:
 class ConfiguredAIAgentModelClient:
     """Use the configured Gateway-resolved model runtime through Hermes' provider client."""
     @classmethod
-    def from_gateway_runner(cls, runner, source, user_config: dict) -> "ConfiguredAIAgentModelClient":
+    def from_gateway_runner(cls, runner, source, user_config: dict) -> ConfiguredAIAgentModelClient:
         """Inherit the exact model/provider route used by normal sessions, without a session turn."""
         model, runtime = runner._resolve_session_agent_runtime(source=source, user_config=user_config)
         turn_route = runner._resolve_turn_agent_config(

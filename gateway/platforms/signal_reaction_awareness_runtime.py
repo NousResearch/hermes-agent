@@ -30,7 +30,7 @@ _RETRY_MAX_SECONDS = 30.0
 _MAINTENANCE_INTERVAL_SECONDS = 3600.0
 
 # Adapter keys are weakly coupled to lifecycle; shutdown owns callback removal and workers.
-_services: dict[int, "_Runtime"] = {}
+_services: dict[int, _Runtime] = {}
 
 
 def _trusted_owner_ids(adapter: Any) -> frozenset[str]:
@@ -38,7 +38,7 @@ def _trusted_owner_ids(adapter: Any) -> frozenset[str]:
     configured = getattr(adapter, "dm_allow_from", None)
     if not isinstance(configured, (set, frozenset, list, tuple)):
         return frozenset()
-    from gateway.platforms.signal import _safe_reaction_identifier
+    from plugins.platforms.signal.adapter import _safe_reaction_identifier
     values = {value.strip() for value in configured
               if isinstance(value, str) and value.strip() and _safe_reaction_identifier(value)}
     if "*" in configured:

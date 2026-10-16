@@ -20,7 +20,7 @@ class FakeProvider:
 
 
 def test_signal_reaction_identifiers_require_protocol_shaped_values():
-    from gateway.platforms.signal import _safe_reaction_identifier
+    from plugins.platforms.signal.adapter import _safe_reaction_identifier
 
     synthetic_e164 = "+" + "0" * 7
     assert _safe_reaction_identifier(synthetic_e164) == synthetic_e164
@@ -52,7 +52,7 @@ async def test_authenticated_dm_reaction_completes_silently_and_is_profile_scope
 @pytest.mark.asyncio
 async def test_signal_adapter_reaction_is_silent_and_completed_note_reaches_later_dm(monkeypatch, tmp_path):
     from gateway.config import PlatformConfig
-    from gateway.platforms.signal import SignalAdapter
+    from plugins.platforms.signal.adapter import SignalAdapter
     import gateway.platforms.signal_reaction_awareness_runtime as runtime
     from hermes_constants import get_hermes_home
 
@@ -109,7 +109,7 @@ async def test_signal_adapter_reaction_is_silent_and_completed_note_reaches_late
 @pytest.mark.asyncio
 async def test_reaction_awareness_is_disabled_without_explicit_config(monkeypatch, tmp_path):
     from gateway.config import PlatformConfig
-    from gateway.platforms.signal import SignalAdapter
+    from plugins.platforms.signal.adapter import SignalAdapter
     import gateway.platforms.signal_reaction_awareness_runtime as runtime
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -133,7 +133,7 @@ async def test_reaction_awareness_is_disabled_without_explicit_config(monkeypatc
 async def test_runtime_prunes_expired_rows_on_startup_and_during_idle_maintenance(monkeypatch, tmp_path):
     import time
     from gateway.config import PlatformConfig
-    from gateway.platforms.signal import SignalAdapter
+    from plugins.platforms.signal.adapter import SignalAdapter
     from gateway.platforms.signal_reaction_awareness import ReactionAwarenessLane
     import gateway.platforms.signal_reaction_awareness_runtime as runtime
 
@@ -169,9 +169,11 @@ async def test_runtime_prunes_expired_rows_on_startup_and_during_idle_maintenanc
                                         author=owner, body="will expire without traffic")
     service.lane.db.execute("UPDATE awareness_targets SET created=? WHERE scope='idle'", (old,))
     service.lane.db.commit()
-    async with asyncio.timeout(1):
-        while service.lane.db.execute("SELECT COUNT(*) FROM awareness_targets WHERE scope='idle'").fetchone()[0]:
-            await asyncio.sleep(0.01)
+    from tests.waiting import async_wait_until
+    await async_wait_until(
+        lambda: service.lane.db.execute("SELECT COUNT(*) FROM awareness_targets WHERE scope='idle'").fetchone()[0] == 0,
+        timeout=2,
+    )
     assert provider.calls == []
     maintenance_task = service.maintenance_task
     assert maintenance_task is not None

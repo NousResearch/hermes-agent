@@ -117,6 +117,7 @@ def aux_probe_mode():
 
 
 from agent.credential_pool import load_pool
+from agent.error_classifier import FailoverReason, classify_api_error
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
 from hermes_cli.config_providers import _canonical_api_mode
@@ -3166,14 +3167,15 @@ _AUX_UNHEALTHY_PAYMENT_REASON = "payment / credit error"
 def _mark_provider_unhealthy(
     provider: str, ttl: Optional[float] = None, *, base_url: Optional[str] = None,
     reason: str = _AUX_UNHEALTHY_PAYMENT_REASON, level: int = logging.WARNING,
+    model: Optional[str] = None,
 ) -> None:
-    """Hide one provider endpoint until the TTL expires. ``reason`` is what the log says and what the
+    """Hide one provider endpoint or model until the TTL expires. ``reason`` is what the log says and what the
     skip line echoes: absent credentials are an expected state (DEBUG), a confirmed 402 is a fault
     (WARNING) — the old fixed payment wording sent local-only users chasing billing (#64144)."""
     label = _normalize_chain_label(provider)
     if not label:
         return
-    key = _unhealthy_cache_key(label, base_url)
+    key = _unhealthy_cache_key(label, base_url, model=model)
     ttl = _AUX_UNHEALTHY_TTL_SECONDS if ttl is None else ttl
     expires_at = time.time() + ttl
     _aux_unhealthy_until[key] = expires_at
@@ -3182,15 +3184,17 @@ def _mark_provider_unhealthy(
         level,
         "Auxiliary: marking %s unhealthy for %ds (%s). "
         "Subsequent auxiliary calls will skip it until %s.",
-        label, int(ttl), reason, time.strftime("%H:%M:%S", time.localtime(expires_at)),
+        f"{label} model {model}" if model else label, int(ttl), reason, time.strftime("%H:%M:%S", time.localtime(expires_at)),
     )
 
 
-def _is_provider_unhealthy(label: str, base_url: Optional[str] = None) -> bool:
-    """True iff this provider endpoint is unhealthy and unexpired; lazily evicts expired entries."""
+def _is_provider_unhealthy(label: str, base_url: Optional[str] = None, *, model: Optional[str] = None) -> bool:
+    """True iff the provider or selected model is unhealthy; lazily evicts expired entries."""
     if not label:
         return False
-    key = _unhealthy_cache_key(label, base_url)
+    if model and _is_provider_unhealthy(label, base_url):
+        return True
+    key = _unhealthy_cache_key(label, base_url, model=model)
     expires_at = _aux_unhealthy_until.get(key)
     if expires_at is None:
         return False
@@ -3203,11 +3207,13 @@ def _is_provider_unhealthy(label: str, base_url: Optional[str] = None) -> bool:
 
 
 def _log_skip_unhealthy(
-    label: str, task: Optional[str] = None, *, base_url: Optional[str] = None,
+    label: str, task: Optional[str] = None, *, base_url: Optional[str] = None, model: Optional[str] = None,
 ) -> None:
     """Log a skipped unhealthy provider at most once per minute per label."""
     now = time.time()
     key = _unhealthy_cache_key(label, base_url)
+    if model and key not in _aux_unhealthy_until:
+        key = _unhealthy_cache_key(label, base_url, model=model)
     if now - _aux_unhealthy_logged_at.get(key, 0.0) >= 60:
         _aux_unhealthy_logged_at[key] = now
         expires_at = _aux_unhealthy_until.get(key, now)
@@ -3230,12 +3236,8 @@ def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
     return any(kw in text for kw in needles)
 
 
-# Billing-body markers (credit exhaustion wrapped in 402/403/404/429 bodies). The main classifier's
-# ``_BILLING_PATTERNS`` is the single source (#107166: the two lists had drifted, so OpenRouter's org
-# "Budget limit exceeded" / "Key limit exceeded" 403s were billing for the main loop but not for the aux
-# ladder, and aux fallback never fired); the aux list only adds broader phrasings and daily/weekly quota
-# exhaustion (functionally credit exhaustion; "resource exhausted" is the Vertex/gRPC quota phrasing —
-# also serialized by SDK wrappers and NIM as RESOURCE_EXHAUSTED / ResourceExhausted / resource-exhausted).
+# Legacy plan access wording supplements the shared billing pattern table.
+# Shared rate/capacity verdicts take precedence over these broad message fragments.
 _PAYMENT_KEYWORDS = _BILLING_PATTERNS + (
     "credits", "insufficient funds", "can only afford", "billing",
     "isn't available on the free tier", "key limit exceeded", "budget limit",
@@ -3248,9 +3250,15 @@ _PAYMENT_KEYWORDS = _BILLING_PATTERNS + (
 
 
 def _is_payment_error(exc: Exception) -> bool:
-    """Payment/credit/quota exhaustion: HTTP 402, or a billing/quota body on 403/404/429/no-status."""
-    status = getattr(exc, "status_code", None)
-    return status == 402 or (
+    """Shared billing/throttle verdicts, with legacy plan-access wording as a fallback."""
+    classified = classify_api_error(exc)
+    # Google includes "billing details" even in temporary quota responses; rendered
+    # guidance and RESOURCE_EXHAUSTED are not proof of a payment failure.
+    if classified.reason in {FailoverReason.rate_limit, FailoverReason.upstream_rate_limit,
+                              FailoverReason.overloaded}:
+        return False
+    status = classified.status_code
+    return classified.reason == FailoverReason.billing or status == 402 or (
         status in {403, 404, 429, None} and _contains_any(str(exc).lower(), _PAYMENT_KEYWORDS)
     )
 
@@ -3265,14 +3273,6 @@ def _nous_portal_account_has_fresh_paid_access() -> bool:
         return False
 
 
-_RATE_LIMIT_KEYWORDS = (
-    "rate limit", "rate_limit", "too many requests", "try again", "retry after", "resets in"
-)
-_RATE_LIMIT_BILLING_KEYWORDS = (
-    "credits", "insufficient funds", "billing", "payment required", "can only afford",
-    "out of funds", "run out of funds", "balance_depleted", "no usable credits",
-    "model_not_supported_on_free_tier", "not available on the free tier", "isn't available on the free tier",
-)
 
 
 def _is_overloaded_error(exc: Exception) -> bool:
@@ -3282,18 +3282,11 @@ def _is_overloaded_error(exc: Exception) -> bool:
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
-    """429 rate limit (not billing/quota, which _is_payment_error owns).
-
-    OpenAI's RateLimitError may omit .status_code — matched by class name. A generic 429 without
-    billing keywords counts as a rate limit.
-    """
-    # (PR #8023 pattern)
-    if type(exc).__name__ == "RateLimitError":
-        return True
-    if getattr(exc, "status_code", None) != 429:
-        return False
-    err_lower = str(exc).lower()
-    return _contains_any(err_lower, _RATE_LIMIT_KEYWORDS) or not _contains_any(err_lower, _RATE_LIMIT_BILLING_KEYWORDS)
+    """Shared quota/capacity verdict, never inferred from payment-looking guidance."""
+    classified = classify_api_error(exc)
+    return classified.reason in {FailoverReason.rate_limit, FailoverReason.upstream_rate_limit} or (
+        classified.reason == FailoverReason.overloaded and classified.status_code in {None, 429}
+    )
 
 
 def _is_timeout_error(exc: Exception) -> bool:
@@ -3709,6 +3702,10 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     another process already rotated (current() would be None).
     """
     normalized = _normalize_aux_provider(provider)
+    classified = classify_api_error(exc, provider=normalized)
+    if classified.reason in {FailoverReason.upstream_rate_limit, FailoverReason.overloaded}:
+        # Match the main agent: a model/worker failure cannot exhaust the API key.
+        return False
     try:
         pool = load_pool(normalized)
     except Exception as load_exc:
@@ -3719,12 +3716,14 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
     status_code = getattr(exc, "status_code", None)
 
     def _rotate(fallback_status: int) -> bool:
-        error_context: dict[str, Any] = {"message": str(exc)}
+        from agent.agent_runtime_helpers import extract_api_error_context
+        error_context = extract_api_error_context(exc)
         if status_code is not None:
             error_context["status_code"] = status_code
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else fallback_status,
             error_context=error_context, api_key_hint=failed_api_key or None,
+            failure_reason=("billing_unverified" if classified.billing_unverified else classified.reason.value),
         )
         if next_entry is None:
             return False
@@ -4073,13 +4072,19 @@ def _plan_fallback_candidate(
 
 def _quarantine_fallback_candidate(
     task: Optional[str], fb_label: str, fb_provider: str, fb_err: Exception, *,
-    base_url: str = "", tag: str = "", reason: Optional[str] = None,
+    base_url: str = "", tag: str = "", reason: Optional[str] = None, model: Optional[str] = None,
 ) -> None:
     """The candidate cannot serve this walk (``reason`` = its ``_FALLBACK_REASONS`` capacity label,
     None = dead token): mark it unhealthy so the ordered re-walk skips it and the caller moves on to
     the next entry. Transient classes get a short hold, payment/quota and dead tokens the long one."""
+    classified = classify_api_error(fb_err, provider=fb_provider, model=model or "")
+    route_local = classified.reason in {FailoverReason.upstream_rate_limit, FailoverReason.overloaded}
+    scoped_model = model if route_local else None
+    ttl = fallback_candidate_quarantine_ttl(reason)
+    if scoped_model and classified.error_context.get("retry_after"):
+        ttl = max(ttl or _AUX_UNHEALTHY_TTL_SECONDS, classified.error_context["retry_after"])
     _mark_provider_unhealthy(
-        fb_provider or fb_label, ttl=fallback_candidate_quarantine_ttl(reason),
+        fb_provider or fb_label, ttl=ttl, model=scoped_model,
         base_url=base_url, reason=reason or "stale fallback credential")
     why = f"is out of capacity ({reason})" if reason else "has a stale/unrefreshable credential"
     logger.warning("Auxiliary %s%s: fallback candidate %s %s (%s) — skipping to next fallback",
@@ -4154,7 +4159,7 @@ def _call_fallback_candidate_sync(
                 raise
             _quarantine_fallback_candidate(
                 task, fb_label, destination.provider, fb_err, base_url=destination.base_url,
-                reason=capacity)
+                reason=capacity, model=destination.model)
             return None
         fb_provider, retry = _plan_fallback_auth_retry(
             destination, rebuild, async_mode=False, failed_api_key=getattr(fb_client, "api_key", ""))
@@ -4206,7 +4211,7 @@ async def _call_fallback_candidate_async(
                 raise
             _quarantine_fallback_candidate(
                 task, fb_label, destination.provider, fb_err, base_url=destination.base_url,
-                tag=" (async)", reason=capacity)
+                tag=" (async)", reason=capacity, model=destination.model)
             return None
         fb_provider, retry = _plan_fallback_auth_retry(
             destination, rebuild, async_mode=True, failed_api_key=getattr(fb_client, "api_key", ""))
@@ -4313,8 +4318,8 @@ def _try_main_agent_model_fallback(
             failed_provider, failed_model, failed_base_url=failed_base_url,
             failure_scope=failure_scope)(main_provider, main_model, main_base_url):
         return None, None, ""
-    if _is_provider_unhealthy(main_provider, main_base_url):
-        _log_skip_unhealthy(main_provider, task, base_url=main_base_url)
+    if _is_provider_unhealthy(main_provider, main_base_url, model=main_model):
+        _log_skip_unhealthy(main_provider, task, base_url=main_base_url, model=main_model)
         return None, None, ""
     try:
         client, resolved_model = resolve_provider_client(provider=main_provider, model=main_model)
@@ -4406,8 +4411,8 @@ def _try_configured_fallback_chain(
         fb_base_url = _custom_health_base_url(fb_provider, entry.get("base_url"))
         if skip(fb_provider, fb_model_raw, fb_base_url):
             continue
-        if _is_provider_unhealthy(fb_provider, fb_base_url):
-            _log_skip_unhealthy(fb_provider, task, base_url=fb_base_url)
+        if _is_provider_unhealthy(fb_provider, fb_base_url, model=fb_model_raw):
+            _log_skip_unhealthy(fb_provider, task, base_url=fb_base_url, model=fb_model_raw)
             tried.append(f"fallback_chain[{i}]({fb_provider}) (unhealthy)")
             continue
         fb_model = fb_model_raw or None
@@ -4499,8 +4504,8 @@ def _try_main_fallback_chain(
         if fb_norm == "auto" or skip(fb_provider, fb_model, fb_base_url):
             tried.append(f"{label} (skipped)")
             continue
-        if _is_provider_unhealthy(fb_norm, fb_base_url):
-            _log_skip_unhealthy(fb_norm, task, base_url=fb_base_url)
+        if _is_provider_unhealthy(fb_norm, fb_base_url, model=fb_model):
+            _log_skip_unhealthy(fb_norm, task, base_url=fb_base_url, model=fb_model)
             tried.append(f"{label} (unhealthy)")
             continue
         try:
@@ -4604,8 +4609,8 @@ def _try_main_provider_route(
         explicit_api_key = runtime_api_key
     # Skip if the main provider was recently 402'd (unhealthy TTL bounds the bypass).
     main_chain_label = _normalize_chain_label(resolved_provider)
-    if main_chain_label and _is_provider_unhealthy(main_chain_label, health_base_url):
-        _log_skip_unhealthy(main_chain_label, base_url=health_base_url)
+    if main_chain_label and _is_provider_unhealthy(main_chain_label, health_base_url, model=main_model):
+        _log_skip_unhealthy(main_chain_label, base_url=health_base_url, model=main_model)
         return None
     client, resolved = resolve_provider_client(
         resolved_provider, main_model, explicit_base_url=explicit_base_url,
@@ -7792,10 +7797,15 @@ def _ladder_credential_rungs(
     # unaccepted on purpose (a fresh key cannot fix an unreachable endpoint), so rotation
     # is skipped and ``first_err`` is handed to the provider-fallback chain as-is.
     if pool_provider and _credential_rung_accepts(first_err):
+        classified = classify_api_error(first_err, provider=pool_provider, model=route.final_model or "")
+        if classified.reason in {FailoverReason.upstream_rate_limit, FailoverReason.overloaded}:
+            return None, first_err
+        from agent.agent_runtime_helpers import extract_api_error_context
+        reset_at = extract_api_error_context(first_err).get("reset_at")
         recovery_err = first_err
-        # Skip the extra retry for clear payment/quota errors — the endpoint won't accept
-        # another request with the same exhausted key.
-        if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
+        # A provider minimum forbids this immediate same-key retry. Rotate eligible
+        # credentials or fall back instead; auxiliary tasks must not block on long waits.
+        if _is_rate_limit_error(first_err) and not _is_payment_error(first_err) and reset_at is None:
             resp, recovery_err = yield from _rung(
                 _LadderStep("call", (client, kwargs)), _credential_rung_accepts)
             if recovery_err is None:
@@ -7869,11 +7879,20 @@ def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     if reason is None or not (is_auto or is_capacity_error or explicit_auth_with_task_chain):
         return None
     if reason == "payment error":
-        # Mark the concrete backend (not the "auto" label) unhealthy so later aux calls skip
-        # it instead of paying another doomed RTT.
-        _mark_provider_unhealthy(
-            _recoverable_pool_provider(resolved_provider, route.client, main_runtime=route.main_runtime)
-            or resolved_provider, base_url=route.base_info)
+        payment = classify_api_error(
+            first_err, provider=_normalize_aux_provider(resolved_provider),
+            model=route.final_model or "",
+        )
+        # Ambiguous billing bodies still justify fallback for this request, but are
+        # not evidence that later requests should skip the endpoint for the full
+        # 600s payment-health TTL.
+        if not payment.billing_unverified:
+            _mark_provider_unhealthy(
+                _recoverable_pool_provider(
+                    resolved_provider, route.client, main_runtime=route.main_runtime
+                ) or resolved_provider,
+                base_url=route.base_info,
+            )
     if reason == "request timed out":
         # WARNING, naming the endpoint, the budget and the knob: the only other trace of a slow
         # local model is the fallback provider's complaint about a model it never had (#89445).

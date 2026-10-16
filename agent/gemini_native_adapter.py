@@ -21,8 +21,8 @@ import httpx
 
 from agent.bounded_response import read_streaming_error_body
 from agent.gemini_long_decode import continuation_token, long_decode_hops, merge_hop_responses, merge_hop_usage, split_stream_continuation
-from agent.retry_utils import parse_retry_after_seconds
 from agent.gemini_schema import prepare_gemini_tool_parameters, sanitize_gemini_tool_parameters
+from agent.gemini_quota import gemini_quota_context, gemini_retry_after_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +43,9 @@ VERTEX_EXPRESS_BASE_URL = "https://aiplatform.googleapis.com/v1beta1/publishers/
 GEMINI_DEFAULT_MAX_OUTPUT_TOKENS = 65535
 
 _FREE_TIER_GUIDANCE = (
-    "\n\nYour Google API key is on the free tier (a few hundred requests/day for Gemini Flash models). "
-    "Hermes typically makes 3-10 API calls per user turn, so the free tier is exhausted in a handful of "
-    "messages and cannot sustain an agent session. Enable billing on your Google Cloud project and "
-    "regenerate the key in a billing-enabled project: https://aistudio.google.com/apikey"
+    "\n\nGoogle reported a free tier quota limit for this request. Limits differ by model and "
+    "quota window; this does not by itself establish that the daily allowance or API key is exhausted. "
+    "Check the project's model quotas and billing: https://aistudio.google.com/apikey"
 )
 _STANDARD_KEY_GUIDANCE = (
     "\n\nGoogle Gemini rejected this API key's type — you do NOT need OAuth. Google began rejecting legacy "
@@ -228,7 +227,7 @@ def _response_text(response: Any) -> str:
 
 
 def is_free_tier_quota_error(error_message: str) -> bool:
-    """True when a Gemini 429 message indicates free-tier exhaustion."""
+    """True when a Gemini 429 message identifies a free-tier quota (not its reset window)."""
     return bool(error_message) and "free_tier" in error_message.lower()
 
 
@@ -278,10 +277,11 @@ class GeminiAPIError(Exception):
     """Error shape compatible with Hermes retry/error classification."""
 
     def __init__(self, message: str, *, code: str = "gemini_api_error", status_code: Optional[int] = None,
-                 response: Optional[httpx.Response] = None, retry_after: Optional[float] = None, details: Optional[dict[str, Any]] = None):
+                 response: Optional[httpx.Response] = None, retry_after: Optional[float] = None, details: Optional[dict[str, Any]] = None, body: Optional[dict[str, Any]] = None):
         super().__init__(message)
         self.code, self.status_code, self.response = code, status_code, response
         self.retry_after, self.details = retry_after, details or {}
+        self.body = body
 
 
 # ── OpenAI → Gemini request translation ──────────────────────────────────────
@@ -841,14 +841,15 @@ def gemini_http_error(
     err_obj = _error_object(body_text)
     err_status, err_message = (str(err_obj.get(k) or "").strip() for k in ("status", "message"))
     reason, metadata = _error_info(err_obj)
-    retry_after = parse_retry_after_seconds(response.headers)
+    retry_after = gemini_retry_after_seconds(err_obj, response.headers)
+    quota_context = gemini_quota_context(err_obj) if status == 429 else {}
     message = (
         f"Gemini HTTP {status} ({err_status or 'error'}): {err_message}" if err_message
         else f"Gemini returned HTTP {status}: {body_text[:500]}"
     )
-    # Users who bypassed the setup wizard (raw GOOGLE_API_KEY in .env) still need to learn the free
-    # tier cannot sustain an agent session; a legacy "Standard" key gets the real fix (Google's raw
-    # 401 asks for OAuth; after Sept 2026 the same AIza key is often a 400 API_KEY_INVALID).
+    # Quota scope/window is not a statement about the whole key or daily allowance.
+    if quota_context.get("quota_zero"):
+        message += "\n\nThis model has zero quota allowance for the project; a retry delay does not guarantee access. Choose an available model or check the project's quota tier."
     if key_guidance and status == 429 and is_free_tier_quota_error(err_message or body_text):
         message += _FREE_TIER_GUIDANCE
     if key_guidance and is_standard_key_auth_error(status, err_message or body_text, reason, api_key=api_key):
@@ -857,7 +858,8 @@ def gemini_http_error(
         message += wrong_gemini_surface_guidance(base_url, api_key, err_status)
     return GeminiAPIError(
         message, code=_HTTP_ERROR_CODES.get(status, f"gemini_http_{status}"), status_code=status, response=response,
-        retry_after=retry_after, details={"status": err_status, "reason": reason, "metadata": metadata, "message": err_message},
+        retry_after=retry_after, details={"status": err_status, "reason": reason, "metadata": metadata, "message": err_message, **quota_context},
+        body={**err_obj, "retry_after": retry_after},
     )
 
 

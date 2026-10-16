@@ -4,8 +4,8 @@ from typing import Any, Optional
 
 from hermes_cli.route_identity import normalize_route_base_url
 
-def _unhealthy_cache_key(provider: str, base_url: Optional[str] = None) -> Any:
-    """Provider-wide key, or endpoint-specific key for an explicit custom endpoint — prefixed with the
+def _unhealthy_cache_key(provider: str, base_url: Optional[str] = None, *, model: Optional[str] = None) -> Any:
+    """Provider/endpoint key, optionally narrowed to a model — prefixed with the
     active profile home: a 402 on profile A's account must not hide the provider from profile B's
     (differently funded) account in the same multiplexed process."""
     from agent.auxiliary_client import _normalize_chain_label
@@ -13,9 +13,8 @@ def _unhealthy_cache_key(provider: str, base_url: Optional[str] = None) -> Any:
     label = _normalize_chain_label(provider)
     endpoint = normalize_route_base_url(_custom_health_base_url(provider, base_url))
     home_key = hermes_home_key()
-    if endpoint:
-        return home_key, "custom-endpoint", endpoint
-    return home_key, label
+    key = (home_key, "custom-endpoint", endpoint) if endpoint else (home_key, label)
+    return (*key, "model", model) if model else key
 
 
 def _custom_health_base_url(provider: str, explicit_base_url: Optional[str] = None) -> str:

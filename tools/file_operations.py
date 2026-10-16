@@ -1501,7 +1501,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         preservation → LSP baseline snapshot → atomic write (content rides
         stdin: no ARG_MAX limit) → sha256 verification → lint delta → LSP
         diagnostics when syntax is clean. ``pre_content``: pre-edit content the
-        caller already has (skips the read); BOM detection always probes disk.
+        caller already has (skips the read; also the line-ending reference, so only
+        lines that differ from it take a new ending); BOM detection always probes disk.
         """
         path = self._expand_path(path)
         denied = get_write_denied_error(path)

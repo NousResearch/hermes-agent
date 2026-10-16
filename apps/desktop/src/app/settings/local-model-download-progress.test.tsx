@@ -233,6 +233,30 @@ describe('downloadStatusText', () => {
     expect(text).toBe('Paused · 1.0 GB of 4.0 GB')
   })
 
+  it.each(['retrying', 'waiting', 'verifying'])('a user pause replaces stale %s details', phase => {
+    const text = downloadStatusText(
+      job({
+        detail: 'Connection interrupted. Retrying in 4s',
+        done_bytes: 1 << 30,
+        phase,
+        status: 'paused',
+        total_bytes: 4 * (1 << 30)
+      }),
+      statusCopy
+    )
+
+    expect(text).toBe('Paused · 1.0 GB of 4.0 GB')
+  })
+
+  it('a pause before the first byte also replaces the retry detail', () => {
+    const text = downloadStatusText(
+      job({ detail: 'Retrying in 4s', done_bytes: 0, phase: 'retrying', status: 'paused', total_bytes: null }),
+      statusCopy
+    )
+
+    expect(text).toBe('Paused')
+  })
+
   it('a non-download phase shows the phase detail, not a byte counter', () => {
     const text = downloadStatusText(
       job({ detail: 'Starting the local server', kind: 'quickstart', phase: 'starting-server' }),

@@ -176,3 +176,63 @@ def test_estimate_weights_by_stored_bytes_not_message_count(tmp_path, monkeypatc
     assert advice.reclaim_bytes < before * 0.25
     assert abs(advice.reclaim_bytes - shrink) < max(shrink, 64 * 1024) * 1.0
     assert "hermes sessions optimize" in "\n".join(prune_advisor.advice_lines(advice))
+
+
+def test_cli_startup_never_reads_the_store_and_asks_from_the_stored_estimate(home, monkeypatch):
+    """The classic CLI asks only from a stored estimate: the first low-disk launch measures in the
+    background and asks nothing; the next launch asks at once from that measurement."""
+    import agent.memory_provider as mp
+    _disk(monkeypatch, free_gb=1)
+    started = []
+    monkeypatch.setattr(mp, "spawn_context_thread", lambda target, **kw: type(
+        "T", (), {"start": lambda self: started.append(target)})())
+    real_advise = prune_advisor.advise
+    def must_not_read(*_a, **_k):
+        raise AssertionError("startup read state.db")
+    monkeypatch.setattr(prune_advisor, "advise", must_not_read)
+    asked = []
+    assert prune_advisor.offer_interactive(cprint=lambda *_: None, ask=lambda q: asked.append(q) or "") is None
+    assert asked == [] and started == [must_not_read]  # measured off-thread, nothing asked
+    real_advise(home)  # what that background thread does
+    out = []
+    prune_advisor.offer_interactive(cprint=out.append, ask=lambda q: asked.append(q) or "")
+    assert len(asked) == 1 and any("Low disk space" in line for line in out)
+
+
+def test_full_scan_total_is_measured_once_and_reused(home, monkeypatch):
+    """The all-rows byte sum (a full scan) is cached; later estimates reuse it, scaled to the file."""
+    import sqlite3
+    _disk(monkeypatch, free_gb=1)
+    old = time.time() - 200 * 86400
+    with sqlite3.connect(home / "state.db") as conn:
+        conn.execute("UPDATE sessions SET started_at=?, ended_at=?, last_activity_at=?", (old, old, old))
+        conn.execute("UPDATE messages SET timestamp=?", (old,))
+    first = prune_advisor.advise(home)
+    measured = prune_advisor._read_estimate(home)
+    assert measured["total_bytes"] > 0
+    second = prune_advisor.advise(home)
+    assert prune_advisor._read_estimate(home)["total_bytes_at"] == measured["total_bytes_at"]  # no rescan
+    assert second.reclaim_bytes == first.reclaim_bytes
+    stale = dict(measured, total_bytes_at=time.time() - prune_advisor.TOTAL_BYTES_TTL - 1)
+    (home / prune_advisor._ESTIMATE_FILE).write_text(__import__("json").dumps(stale), encoding="utf-8")
+    prune_advisor.advise(home)
+    assert prune_advisor._read_estimate(home)["total_bytes_at"] > stale["total_bytes_at"]  # a week on: re-measured
+
+
+def test_cli_launches_further_apart_than_the_estimate_ttl_still_ask(home, monkeypatch):
+    """A stored estimate older than CLI_ADVICE_TTL still asks (and is refreshed in the background):
+    otherwise a user who launches every other day would never see the question."""
+    import json
+    import agent.memory_provider as mp
+    _disk(monkeypatch, free_gb=1)
+    prune_advisor.advise(home)
+    path = home / prune_advisor._ESTIMATE_FILE
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["advice_at"] = time.time() - prune_advisor.CLI_ADVICE_TTL - 3600
+    path.write_text(json.dumps(data), encoding="utf-8")
+    started = []
+    monkeypatch.setattr(mp, "spawn_context_thread", lambda target, **kw: type(
+        "T", (), {"start": lambda self: started.append(target)})())
+    asked = []
+    prune_advisor.offer_interactive(cprint=lambda *_: None, ask=lambda q: asked.append(q) or "")
+    assert len(asked) == 1 and len(started) == 1  # asked now, refreshed for next time

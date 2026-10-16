@@ -62,10 +62,54 @@ def show_reasoning(turn) -> bool:
     return getattr(live, "show_reasoning", None) is True
 
 
+def _is_active_session_subagent(turn, payload: dict, event_type: str = "") -> bool:
+    subagent_id = payload.get("subagent_id")
+    if not isinstance(subagent_id, str) or not subagent_id:
+        return False
+    import sys
+    registry = sys.modules.get("tools.delegate_tool_registry")
+    holder = getattr(getattr(turn, "_ctx", None), "agent_holder", None)
+    turn_agent = holder[0] if isinstance(holder, list) and holder else None
+    if registry is None or turn_agent is None:
+        return False
+    parent_id = payload.get("parent_id")
+    with registry._active_subagents_lock:
+        record = registry._active_subagents.get(subagent_id)
+        if record is None and event_type == "subagent.spawn_requested" and isinstance(parent_id, str):
+            # A queued grandchild is announced before it registers; its spawning parent must be a registered descendant.
+            record = registry._active_subagents.get(parent_id)
+        return record is not None and registry._is_descendant_of(record.get("agent"), turn_agent)
+
+
+def _publish_subagent(turn, event_type, payload) -> None:
+    owner = getattr(turn, "_approval_owner", None)
+    executing = getattr(owner[0], "executing", None) if owner is not None else None
+    if owner is None or not isinstance(executing, dict):
+        turn._publish_execution(event_type, payload)
+        return
+    authority, session_id, generation = owner
+    stream = getattr(authority.sessions.get(session_id), "event_stream", None)
+    lock = getattr(stream, "lock", None)
+    import contextlib
+    # The claim is stamped and cleared under this lock, so the in-turn/out-of-turn choice cannot race the turn's end.
+    with lock if lock is not None else contextlib.nullcontext():
+        if executing.get(session_id) == generation:
+            turn._publish_execution(event_type, payload)
+            return
+    if stream is not None and _is_active_session_subagent(turn, payload, event_type):
+        # A background delegate_task outlives the spawning turn's running claim; publish without borrowing a later turn's execution identity.
+        stream.publish(session_id, payload, event_type=event_type, execution={})
+
+
 def publish_progress(turn, event_type, name, preview, kwargs) -> None:
-    """``reasoning.available`` and the MoA facade events from the agent's progress callback. A
-    classic CLI renders MoA references whatever its reasoning display (main's ``_on_tool_progress``);
-    other viewers get them, like the TUI gateway's own emitters, only with reasoning shown."""
+    """``subagent.*``, ``reasoning.available`` and the MoA facade events from the agent's progress callback; a classic CLI renders MoA references whatever its reasoning display (main's ``_on_tool_progress``), while other viewers get them only with reasoning shown."""
+    if isinstance(event_type, str) and event_type.startswith("subagent."):
+        if event_type == "subagent.text":
+            return
+        from tui_gateway.tool_progress import _subagent_payload
+        _publish_subagent(turn, event_type, _subagent_payload(
+            event_type, name, preview, kwargs, show_reasoning=show_reasoning(turn)))
+        return
     if event_type != "reasoning.available" and event_type not in _MOA_KEYS:
         return
     from gateway.session_cli_turn import classic_cli_turn

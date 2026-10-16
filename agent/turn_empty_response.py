@@ -23,6 +23,25 @@ logger = logging.getLogger("agent.conversation_loop")
 
 _INLINE_THINK_RE = re.compile(r'<think>|<thinking>|<reasoning>', re.IGNORECASE)
 
+_NATIVE_CARRIER_SUFFIX = ".native_assistant"
+
+
+def _is_native_carrier(detail: Any) -> bool:
+    kind = detail.get("type") if isinstance(detail, dict) else getattr(detail, "type", None)
+    return isinstance(kind, str) and kind.endswith(_NATIVE_CARRIER_SUFFIX)
+
+
+def _model_reasoning_details(details: Any) -> bool:
+    """True when ``reasoning_details`` holds actual model reasoning. A provider-private
+    native-history carrier is replay data attached to EVERY response on its route, so a
+    carrier-only empty is NOT thinking-only — counting it burned two useless prefill calls
+    (the prefill stubs are dropped from the API copy) before each real retry."""
+    if not details:
+        return False
+    if isinstance(details, (list, tuple)):
+        return any(not _is_native_carrier(d) for d in details)
+    return not _is_native_carrier(details)
+
 
 @dataclass
 class EmptyResponseVerdict:
@@ -226,7 +245,7 @@ def recover_empty_response(
     _has_structured = bool(
         getattr(assistant_message, "reasoning", None)
         or getattr(assistant_message, "reasoning_content", None)
-        or getattr(assistant_message, "reasoning_details", None)
+        or _model_reasoning_details(getattr(assistant_message, "reasoning_details", None))
         or _has_inline_thinking
     )
     if _has_structured and agent._thinking_prefill_retries < 2:

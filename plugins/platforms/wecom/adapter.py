@@ -30,7 +30,10 @@ HTTPX_AVAILABLE = httpx is not None
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, bounded_put, send_chunks
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
-from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
+from gateway.platforms.base import (
+    gateway_trust_env, BasePlatformAdapter, SendResult,
+    _AUDIO_EXTS, _IMAGE_EXTS, _VIDEO_EXTS,
+)
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_float
 
@@ -47,6 +50,11 @@ from plugins.platforms.wecom.streaming import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_WS_URL = "wss://openws.work.weixin.qq.com"
+
+# Fire-and-forget frames (the 30s ping, the subscribe refresh) carry these req_id prefixes.
+# Their responses have no cmd, so they were logged as unrouted payloads (~1 line / 30s / bot).
+# Genuinely unknown payloads (a cmd, or a foreign req_id) are still logged.
+_FIRE_AND_FORGET_REQ_PREFIXES = ("ping-", "subscribe-")
 
 APP_CMD_SUBSCRIBE = "aibot_subscribe"
 APP_CMD_CALLBACK = "aibot_msg_callback"
@@ -348,7 +356,7 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
             if str((payload.get("body") or {}).get("event_type") or "") == "disconnected_event":
                 logger.warning("[%s] Kicked by server (another WS connection established). Suppressing reconnect to avoid mutual kicking. Check for duplicate gateway instances.", self.name)
                 self._running = False
-        elif cmd != APP_CMD_PING:
+        elif cmd != APP_CMD_PING and not req_id.startswith(_FIRE_AND_FORGET_REQ_PREFIXES):
             logger.info("[%s] Unrouted websocket payload dropped: cmd=%r req_id=%s body_keys=%s", self.name, cmd or "(empty)", req_id or "(none)", list(body_dict.keys()) if body_dict is not None else None)
 
     def _fail_pending_responses(self, exc: Exception) -> None:
@@ -707,8 +715,36 @@ def qr_scan_for_bot_info(*, timeout_seconds: int = _QR_POLL_TIMEOUT) -> Optional
     return None
 
 
-async def _send_via(adapter, chat_id, message, *, live: bool):
+async def _send_via(adapter, chat_id, message, *, live: bool, media_files=None, force_document=False):
     try:
+        if media_files:
+            # ``_standalone_send`` accepts ``media_files`` but never forwarded them, so CLI/cron
+            # sends with attachments reported success while delivering nothing.
+            import mimetypes
+            import os as _os
+            caption = message or None
+            result = None
+            for path_desc in media_files:
+                path = path_desc[0] if isinstance(path_desc, (list, tuple)) else path_desc
+                if not path or not _os.path.isfile(path):
+                    return send_error(f"WeCom media send failed: file not found: {path}")
+                ext = _os.path.splitext(str(path))[1].lower()
+                mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+                if force_document:
+                    result = await adapter.send_document(chat_id, str(path), caption=caption)
+                elif ext in _AUDIO_EXTS or mime.startswith("audio/"):
+                    result = await adapter.send_voice(chat_id, str(path), caption=caption)
+                elif ext in _IMAGE_EXTS or mime.startswith("image/"):
+                    result = await adapter.send_image_file(chat_id, str(path), caption=caption)
+                elif ext in _VIDEO_EXTS or mime.startswith("video/"):
+                    result = await adapter.send_video(chat_id, str(path), caption=caption)
+                else:
+                    result = await adapter.send_document(chat_id, str(path), caption=caption)
+                if not result.success:
+                    return send_error(f"WeCom media send failed: {result.error}")
+                caption = None  # the caption rides the first attachment only
+            return {"success": True, "platform": "wecom", "chat_id": chat_id,
+                    "message_id": getattr(result, "message_id", None), "media_delivered": True}
         result = await adapter.send(chat_id, message)
     except Exception as e:
         return send_error(f"WeCom live adapter send failed: {e}" if live else f"WeCom send failed: {e}")
@@ -728,7 +764,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     except Exception:
         adapter = None
     if adapter is not None:
-        return await _send_via(adapter, chat_id, message, live=True)
+        return await _send_via(adapter, chat_id, message, live=True, media_files=media_files, force_document=force_document)
     if not check_wecom_requirements():
         return send_error("WeCom requirements not met. Need aiohttp + WECOM_BOT_ID/SECRET.")
     try:
@@ -736,7 +772,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         if not await adapter.connect():
             return send_error(f"WeCom: failed to connect - {getattr(adapter, 'fatal_error_message', None) or 'unknown error'}")
         try:
-            return await _send_via(adapter, chat_id, message, live=False)
+            return await _send_via(adapter, chat_id, message, live=False, media_files=media_files, force_document=force_document)
         finally:
             await adapter.disconnect()
     except Exception as e:

@@ -429,9 +429,14 @@ class GatewaySessionCommandsMixin:
             return t("gateway.retry.failed_unchanged")
         session_entry.last_prompt_tokens = 0  # transcript was truncated
         self._record_model_friction("retry", source, session_entry.session_id)
-        return await self._handle_message(MessageEvent(
+        # The re-sent turn is the /retry event's own turn, built on its authenticated source: carry
+        # that event's native callback to it, or admission refuses it under multiplex (#139040).
+        from gateway.session_ingress_context import carry_callback
+        turn = MessageEvent(
             text=last_user_msg, message_type=MessageType.TEXT, source=source,
-            raw_message=event.raw_message, channel_prompt=event.channel_prompt))
+            raw_message=event.raw_message, channel_prompt=event.channel_prompt)
+        carry_callback(event, turn)
+        return await self._handle_message(turn)
 
     def _record_model_friction(self, signal: str, source, session_id: str, turns: int = 1) -> None:
         """Slash dispatch does not install the routed profile's scope, so a multiplexed runner

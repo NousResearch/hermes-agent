@@ -131,11 +131,9 @@ def apply_migration(
     Unless ``backup=False`` a copy goes to ``backups/config/`` (reason ``pre-migrate-xai``).
     """
     from ruamel.yaml import YAML  # local import — avoid hard dep at module load
-    from hermes_cli.config_backend import ConfigBackendUnavailable, supports_file_tooling
-    if not supports_file_tooling():
-        # A type-literal-preserving rewrite of the file itself; a non-file backend has no file.
-        raise ConfigBackendUnavailable("the xAI model migration rewrites the local config.yaml, and "
-                                       "this config backend has none")
+    from hermes_cli.config_backend import require_file_tooling
+    # A type-literal-preserving rewrite of the file itself; a non-file backend has no file.
+    require_file_tooling("The xAI model migration")
     config_path = Path(config_path)
     if not config_path.exists():  # config-reader: ok — file tooling, gated on supports_file_tooling()
         raise FileNotFoundError(config_path)

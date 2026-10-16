@@ -94,15 +94,21 @@ class TestReasoningEchoResolverE2E:
         copy_reasoning_content_for_api(agent, source, api_msg)
         assert api_msg["reasoning_content"] == "the model's chain of thought"
 
-    def test_flag_absent_strips(self, tmp_path, monkeypatch):
-        """No reasoning_echo -> flag False -> reasoning_content stripped on replay."""
+    def test_flag_absent_still_replays_but_never_pads(self, tmp_path, monkeypatch):
+        """No reasoning_echo -> flag False: real reasoning is still replayed (replay is the
+        default on every route that can read it), but a reasoning-less turn is not padded."""
         _write_home(tmp_path, monkeypatch, reasoning_echo=False)
         agent = _agent_with_init_flag()
         assert agent._reasoning_echo_flag is False
         assert agent._reasoning_echo_opt_in() is False
 
         source = {"role": "assistant", "content": "calling a tool",
-                  "reasoning_content": "should be stripped"}
+                  "reasoning_content": "the model's chain of thought"}
         api_msg = dict(source)
         copy_reasoning_content_for_api(agent, source, api_msg)
-        assert "reasoning_content" not in api_msg
+        assert api_msg["reasoning_content"] == "the model's chain of thought"
+
+        bare = {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]}
+        api_bare = dict(bare)
+        copy_reasoning_content_for_api(agent, bare, api_bare)
+        assert "reasoning_content" not in api_bare

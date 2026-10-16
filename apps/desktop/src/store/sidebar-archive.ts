@@ -1,8 +1,11 @@
+import { backendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
+import { $apiRequestScope } from '@/api/client'
 import { listAllProfileSessions } from '@/api/sessions'
 import type { SessionInfo } from '@/types/hermes'
 
+import { $sidebarShowArchived } from './layout'
 import { $sessions } from './session'
 
 const ARCHIVED_FETCH_PAGE_SIZE = 200
@@ -53,22 +56,68 @@ export async function listEveryArchivedSession(): Promise<SessionInfo[]> {
 export const $archivedSessions = atom<SessionInfo[]>([])
 export const $archivedSessionsLoading = atom(false)
 
+// Each load takes a generation; only the newest may publish or clear the
+// flag. The scope key pins it to the connection/profile it was issued on, so
+// a switch mid-load starts a fresh fetch and strands the previous one.
+let archiveGeneration = 0
+let loadingScope: null | string = null
+
+function archiveScopeKey(): string {
+  const { connectionId, profile } = $apiRequestScope.get()
+
+  return backendScopeKey(connectionId, profile)
+}
+
 export async function loadArchivedSessions(): Promise<void> {
-  if ($archivedSessionsLoading.get()) {
+  const scope = archiveScopeKey()
+
+  if ($archivedSessionsLoading.get() && loadingScope === scope) {
     return
   }
+
+  const generation = ++archiveGeneration
+  loadingScope = scope
 
   $archivedSessionsLoading.set(true)
 
   try {
-    $archivedSessions.set(await listEveryArchivedSession())
+    const sessions = await listEveryArchivedSession()
+
+    if (generation === archiveGeneration && archiveScopeKey() === scope) {
+      $archivedSessions.set(sessions)
+    }
   } catch {
     // A background refresh must not turn a usable Archived view into an empty
     // one when the backend is temporarily unavailable. Keep the last good set.
   } finally {
-    $archivedSessionsLoading.set(false)
+    if (generation === archiveGeneration) {
+      $archivedSessionsLoading.set(false)
+    }
   }
 }
+
+// Rows from another connection/profile must not linger (or be acted on), and
+// nothing else reloads on a switch: the sidebar effect watches only the
+// Archived toggle and background sync waits for a backend sessions.changed.
+// Clear on every real scope change; reload (superseding a load stranded on
+// the old scope) while Archived is showing. The keep-last-good fallback in
+// loadArchivedSessions is therefore per scope.
+let observedScope = archiveScopeKey()
+
+$apiRequestScope.listen(() => {
+  const scope = archiveScopeKey()
+
+  if (scope === observedScope) {
+    return
+  }
+
+  observedScope = scope
+  $archivedSessions.set([])
+
+  if ($sidebarShowArchived.get()) {
+    void loadArchivedSessions()
+  }
+})
 
 /** Spend on a session — provider-reported price when we have one, our own
  *  estimate otherwise. */

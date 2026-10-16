@@ -50,7 +50,7 @@ def _child_env() -> dict[str, str]:
 
 def _run(binary: str, *args: str, timeout: float) -> subprocess.CompletedProcess:
     return subprocess.run([binary, *args], capture_output=True, text=True, encoding='utf-8', errors='replace',
-                          timeout=timeout, env=_child_env(), stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+                          timeout=timeout, env=_child_env(), stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(), check=False)
 
 def _json_out(binary: str, *args: str, timeout: float) -> Any:
     """Run ``binary args`` and parse stdout as JSON (``None`` on empty output)."""
@@ -132,7 +132,7 @@ def request_permissions_grant(driver_cmd: Optional[str] = None) -> int:
     print("Requesting Accessibility + Screen Recording for CuaDriver.\n"
           f"macOS will show a dialog attributed to CuaDriver ({CUA_DRIVER_BUNDLE_ID}) — approve it, then return here.")
     try:
-        return int(subprocess.run([binary, "permissions", "grant"], env=_child_env(), stdin=subprocess.DEVNULL).returncode)
+        return int(subprocess.run([binary, "permissions", "grant"], env=_child_env(), stdin=subprocess.DEVNULL, check=False).returncode)
     except KeyboardInterrupt:  # pragma: no cover - interactive
         return 130
     except Exception as exc:  # pragma: no cover - defensive

@@ -17,7 +17,7 @@ import pytest
 
 from agent import compaction_events
 from agent.context_compressor import ContextCompressor
-from agent.conversation_compression import CompressionCheckpointUnavailable, compress_context
+from agent.conversation_compression import CompressionCheckpointUnavailable, CompressionCommitFence, compress_context
 from agent.transports.codex_app_server_session import TurnResult
 
 SECRET = "TOPSECRET_TRANSCRIPT_TEXT"
@@ -445,3 +445,42 @@ def test_a_split_that_fails_after_rewriting_history_is_still_a_compaction(publis
         "committed", "session_split_failed", "failed_not_indexed",
     )
     assert (payload["in_place"], payload["session_rotated"], payload["cache_break"]) == (None, None, True)
+
+
+def test_an_in_place_engine_whose_split_fails_after_the_archive_is_still_a_compaction(published):
+    """An engine may compact its input list in place, so the returned list IS the input. After the atomic
+    archive stored it, a later bookkeeping failure must still mark a compaction (freshness reset)."""
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    def _in_place(msgs, **_kwargs):
+        compressor = agent.context_compressor
+        compressor._active_compression_telemetry = compressor._last_compression_telemetry = (
+            compressor._begin_compression_telemetry(current_tokens=80_000)
+        )
+        compressor._active_compression_telemetry.update(messages_before=len(msgs), messages_after=999)
+        msgs[:] = [msgs[0], {"role": "assistant", "content": "SANITIZED SUMMARY"}, msgs[-1]]
+        return msgs
+
+    with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        db = SessionDB(db_path=Path(tmpdir) / "state.db")
+        db.create_session("in-place-engine", "cli", model="test/model")
+        agent = AIAgent(
+            api_key="test-key", base_url="https://openrouter.ai/api/v1", model="test/model", quiet_mode=True,
+            session_db=db, session_id="in-place-engine", skip_context_files=True, skip_memory=True,
+        )
+        agent.compression_in_place = True
+        messages = _messages()
+        with patch.object(type(agent.context_compressor), "compress", side_effect=_in_place), \
+                patch.object(SessionDB, "update_system_prompt", side_effect=OSError("disk full")):
+            # A caller-owned fence takes the direct path, where the engine mutates the caller's list itself.
+            compressed, _ = agent._compress_context(
+                messages, "sys", approx_tokens=80_000, trigger="pre_api", commit_fence=CompressionCommitFence(),
+            )
+        agent.close()
+
+    assert compressed is messages and len(compressed) < len(_messages())
+    [(_sid, name, payload)] = published
+    assert (name, payload["outcome"], payload["split_status"]) == ("compaction", "committed", "failed_not_indexed")
+    # The candidate's counts are replaced by the transcript that survived.
+    assert payload["messages_after"] == len(compressed)

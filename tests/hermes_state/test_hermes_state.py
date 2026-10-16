@@ -416,7 +416,7 @@ class TestConnectionLifecycle:
         read_only = SessionDB(db_path=db_path, read_only=True)
         try:
             assert read_only._fts_enabled is True
-            matches = read_only.search_messages("wal-race")
+            read_only.search_messages("wal-race")
         finally:
             read_only.close()
 
@@ -5131,7 +5131,7 @@ class TestListCronJobRuns:
     """
 
     def _seed_run(self, db, job_id: str, idx: int, started_at: float):
-        sid = f"cron_{job_id}_{idx:08d}"
+        sid = f"cron_{job_id}_20261011_{idx:06d}"  # the scheduler's cron_{job}_{YYYYmmdd_HHMMSS}
         db.create_session(session_id=sid, source="cron")
         db.append_message(sid, role="user", content=f"run {idx} for {job_id}")
         db.append_message(sid, role="assistant", content="done")

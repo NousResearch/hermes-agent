@@ -28,7 +28,7 @@ def main() -> int:
     command[3] = f"import runpy; runpy.run_path({str(capture)!r}); " + command[3]
     env = os.environ.copy()
     env["HERMES_E2E_CAPTURE_LAUNCH"] = spec
-    return subprocess.run(command, env=env).returncode
+    return subprocess.run(command, env=env, check=False).returncode
 
 
 if __name__ == "__main__":

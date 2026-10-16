@@ -28,7 +28,7 @@ _PROBE = f"import json,os;print(json.dumps({{k:os.environ.get(k) for k in {sorte
 
 def _seen_by_child(env: dict) -> set[str]:
     out = subprocess.run([sys.executable, "-c", _PROBE], env=env, capture_output=True,
-                         text=True, encoding="utf-8", errors="replace", timeout=60)
+                         text=True, encoding="utf-8", errors="replace", timeout=60, check=False)
     return {k for k, v in json.loads(out.stdout.strip().splitlines()[-1]).items() if v is not None}
 
 

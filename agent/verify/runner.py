@@ -96,7 +96,7 @@ def _run_phase_command(
 ) -> PhaseResult:
     started = time.monotonic()
     try:
-        proc = subprocess.run(command, cwd=str(root), timeout=timeout, **_SUBPROCESS_KW)
+        proc = subprocess.run(command, cwd=str(root), timeout=timeout, **_SUBPROCESS_KW, check=False)
         output, exit_code, timed_out = proc.stdout or "", proc.returncode, False
     except subprocess.TimeoutExpired as exc:
         raw = exc.output
@@ -198,6 +198,7 @@ def _compose_live_state_reason(root: Path) -> str | None:
         result = subprocess.run(
             ["docker", "compose", "ps", "--status", "running", "--format", "{{.Name}}"],
             cwd=root, capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+            check=False,
         )
     except FileNotFoundError:
         return None

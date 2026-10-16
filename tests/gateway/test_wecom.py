@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import logging
 import os
 import socket
 from types import SimpleNamespace
@@ -244,6 +245,54 @@ class TestCallbackDispatch:
         await adapter._dispatch_payload({"cmd": cmd, "headers": {"req_id": "req-1"}, "body": {}})
 
         adapter._on_message.assert_awaited_once()
+
+
+class TestHeartbeatAckDispatch:
+    @pytest.mark.asyncio
+    async def test_heartbeat_ack_stays_off_the_info_drop_line(self, caplog):
+        """The openws server answers _heartbeat_loop's ping with an ack whose cmd is empty and
+        whose req_id echoes our "ping-<hex>" prefix. That ack arrives every 30s on a healthy
+        connection and must not flood the INFO unrouted-drop line (#139554)."""
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+
+        with caplog.at_level(logging.INFO, logger="plugins.platforms.wecom.adapter"):
+            await adapter._dispatch_payload(
+                {
+                    "cmd": "",
+                    "headers": {"req_id": "ping-4ae1c108dfd84a47a94b66a19b924c93"},
+                    "body": {},
+                }
+            )
+
+        assert not any(
+            "Unrouted websocket payload dropped" in rec.message
+            for rec in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            # empty cmd under a non-ping req_id is NOT a heartbeat ack
+            {"cmd": "", "headers": {"req_id": "sub-abc123"}, "body": {}},
+            # an unknown real cmd stays visible
+            {"cmd": "some_new_cmd", "headers": {"req_id": "req-1"}, "body": {}},
+        ],
+    )
+    async def test_genuinely_unrouted_payloads_still_log_at_info(self, payload, caplog):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+
+        with caplog.at_level(logging.INFO, logger="plugins.platforms.wecom.adapter"):
+            await adapter._dispatch_payload(payload)
+
+        assert any(
+            "Unrouted websocket payload dropped" in rec.message
+            for rec in caplog.records
+        )
 
 
 class TestPolicyHelpers:

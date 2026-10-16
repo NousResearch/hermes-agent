@@ -1,7 +1,6 @@
 """One live notification poller per TUI session across agent rebuilds (#138806)."""
 
 import threading
-import time
 import types
 
 from tui_gateway import server
@@ -27,6 +26,9 @@ def test_session_rebuild_stops_previous_notification_poller(monkeypatch):
         server._start_session_services("sid_rebuild", "session-key", sess)
         first_stop = sess["_notif_stop"]
         assert not first_stop.is_set()  # a fresh session really starts its poller running
+        # Identify the first poller by its stop event now: once it exits, the rebuild may prune it
+        # and only the replacement would carry the shared thread name.
+        first_thread = next(thread for stop, thread in list(server._notification_pollers) if stop is first_stop)
 
         # Agent rebuild for the SAME session (in-session /model switch, resume, late MCP refresh).
         server._start_session_services("sid_rebuild", "session-key", sess)
@@ -35,13 +37,7 @@ def test_session_rebuild_stops_previous_notification_poller(monkeypatch):
         assert first_stop.is_set()  # the previous poller was stopped, not orphaned
 
         # The old loop wakes at most every 0.5s; give it its real deadline to exit.
-        first_thread = next(
-            thread
-            for _stop, thread in list(server._notification_pollers)
-            if thread.name == "tui-notif-poller-sid_rebuild")
-        deadline = time.time() + 3.0
-        while first_thread.is_alive() and time.time() < deadline:
-            time.sleep(0.05)
+        first_thread.join(timeout=3.0)
         assert not first_thread.is_alive(), "the stopped previous poller never exited"
         live = [
             thread

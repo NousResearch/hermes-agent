@@ -172,7 +172,14 @@ def build_profile_terminal_scope(
             raise TerminalPolicyUnavailable(f"cannot parse {config_path}: {exc}") from exc
         raw_terminal = raw.get("terminal") if isinstance(raw, dict) else None
         if isinstance(raw_terminal, dict):
-            _apply_terminal_mapping(scope, raw_terminal)
+            # The file is parsed raw here, so any ${VAR} / ${env:VAR} reference
+            # in terminal: keys is still literal. Expand with the same resolver
+            # the startup config load uses: _env_ref_lookup honors the active
+            # profile's secret scope (installed before this per-turn scope), so
+            # a multiplexed turn resolves against THIS profile's .env (#101659).
+            from hermes_cli.config import _expand_env_vars
+
+            _apply_terminal_mapping(scope, _expand_env_vars(raw_terminal))
             image_pinned = image_pinned or "docker_image" in raw_terminal
     scope["TERMINAL_DOCKER_IMAGE_PINNED"] = "1" if image_pinned else "0"
     _resolve_scope_cwd_placeholder(scope)

@@ -2,37 +2,91 @@
 import asyncio
 import json
 from dataclasses import asdict, replace
+from typing import NamedTuple
 
+from gateway.session_route_identity import ROUTE_BOUND_KEYS
 from hermes_state_runtime import RuntimeStoreError
 
 
+class _Route(NamedTuple):
+    provider: str
+    model: str
+    base_url: str
+    api_key: object  # a callable bearer (Azure Entra) stays callable
+
+
+def _current_route(authority, live, old):
+    """``(config, route)`` the session runs now, both from ONE read of the owning profile.
+
+    A following session runs the profile's current route, so its frozen creation endpoint beside
+    the current key would send that key to a host the profile left. Main switched from the live
+    runtime's whole tuple (``tui_gateway.model_switch._current_model_runtime``). The provider is
+    the configured name: a named ``providers:`` entry resolves to the bare ``custom`` class, and a
+    pick on the same entry must not read as a route change. Only the session's own route counts:
+    a fallback is where a turn lands, not what the user switches from. A route that cannot
+    authenticate here must not block leaving it: like main's agent-less ``--provider`` path, the
+    pick then switches from the configured provider alone and resolves its own target.
+    """
+    from gateway.session_policy import profile_read_scope
+    from hermes_cli.auth import AuthError
+    with profile_read_scope(old, authority):
+        config = old.config(authority)
+        block = config.get('model') or {}
+        try:
+            model, runtime = authority.runner._resolve_session_agent_runtime(
+                source=live.source, session_key=live.route, fallback=False)
+        except AuthError:
+            return config, _Route(block.get('provider') or '', old.current_model(authority) or '',
+                                  block.get('base_url') or '', '')
+    return config, _Route(block.get('provider') or runtime.get('provider') or '', model or '',
+                          runtime.get('base_url') or '', runtime.get('api_key') or '')
+
+
 async def prepare_model(authority, live, payload, prepared):
-    from gateway.session_policy import restore_policy, launch_key, bind_launch_key
+    from gateway.session_policy import restore_policy, bind_launch_key, bound_route_holds, route_launch_key
     from gateway.session_policy_credentials import recover_config_secrets
-    from hermes_cli.model_switch import apply_model_selection, selection_route_changed, switch_model
+    from hermes_cli.model_switch import apply_model_selection, switch_model
     from hermes_cli.config import get_compatible_custom_providers
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
-    config = old.config(authority)
-    _, runtime = authority.runner._resolve_session_agent_runtime(source=live.source, session_key=live.route)
+    config, current = _current_route(authority, live, old)
 
     def switch(**kwargs):
         result = switch_model(**kwargs)
         return result, _alias_credential(authority, result)
     result, alias_credential = await asyncio.to_thread(switch, raw_input=payload['model'],
-        current_provider=old.provider, current_model=old.model, current_base_url=old.base_url or '',
-        current_api_key=runtime.get('api_key') or '', explicit_provider=payload.get('provider', ''),
+        current_provider=current.provider, current_model=current.model, current_base_url=current.base_url,
+        current_api_key=current.api_key, explicit_provider=payload.get('provider', ''),
         is_global=False, user_providers=config.get('providers'),
         custom_providers=get_compatible_custom_providers(config))
     if not result.success:
         raise RuntimeStoreError('model_resolution_failed')
-    refusal = await _selection_guard_refusal(authority, live, payload, prepared['snapshot'], old, result, runtime)
+    refusal = await _selection_guard_refusal(authority, live, payload, prepared['snapshot'], current, result)
     if refusal is not None:
         return refusal
     frozen = old.config()
+    if old.follows_profile:
+        # A following session switches FROM the profile's current route: measured from its creation
+        # endpoint, a pick on the current one read as a route change and dropped its key_env pointer.
+        followed = config.get('model') or {}
+        # An inline key (or an alias key's pointer) authenticates the route it was picked on: once the
+        # followed route moved, the same-route cleanup below would keep it for the new endpoint.
+        held = bound_route_holds(frozen.get('model'), frozen, followed, config)
+        # Every other route-bound key follows the profile's current route.
+        kept = ('api_key', 'api', 'api_key_from') if held else ()
+        moved = tuple(k for k in ROUTE_BOUND_KEYS if k not in kept)
+        frozen['model'] = {k: v for k, v in (frozen.get('model') or {}).items() if k not in moved}
+        # The profile's inline key and its private-secret pointer are not copied into the receipt:
+        # its secrets stay at the profile's own path, never re-committed under this session.
+        frozen['model'].update({k: followed[k] for k in moved
+                                if k in followed and k not in ('api_key', 'api', 'api_key_from')})
     # The one selection shape config.yaml gets (#25106): api_mode follows the target, a context pin
     # and the endpoint-bound credential fields (inline key, key_env/api_key_env) drop on a route change.
     # Off-loop: the context-pin check can do cold-start disk I/O.
     frozen['model'] = await asyncio.to_thread(apply_model_selection, frozen.get('model'), result)
+    if 'reasoning' in payload:
+        # The level picked with the model lands in the same commit (as prepare_reasoning writes it).
+        from gateway.session_policy import pin_reasoning_effort
+        pin_reasoning_effort(frozen, payload['reasoning'])
     if old.follows_profile:
         # A committed /model holds while the profile still targets what it targets now (main's
         # composer_override_profile); a later profile edit supersedes it.
@@ -65,9 +119,11 @@ async def prepare_model(authority, live, payload, prepared):
     # Re-fingerprint frozen config references because policy identity includes model.
     # An explicit launch key belongs to the endpoint it authenticated, not to a provider name:
     # custom -> custom on another base_url must not carry it (same route identity as config keys).
-    key = launch_key(authority, old)
-    current = {'provider': old.provider, 'base_url': old.base_url or runtime.get('base_url') or ''}
-    if selection_route_changed(current, result):
+    # Measured on resolved routes (a respelled provider on one endpoint is one route; a named entry
+    # whose base_url moved is another): the key survives only while it still authenticates the route
+    # the session runs now and the pick stays on that route.
+    key = route_launch_key(authority, old, config)
+    if key is None or not bound_route_holds(config.get('model'), config, frozen['model'], config):
         policy = replace(policy, credential_ref=None)
         key = None
     policy = bind_launch_key(authority, prepared['snapshot']['receipt']['session_id'], policy, key,
@@ -107,15 +163,15 @@ def _alias_credential(authority, result):
     return None, None, None
 
 
-def _persisted_selection_context(authority, snapshot, old):
+def _persisted_selection_context(authority, snapshot, current):
     from agent.usage_anchor import persisted_anchor_tokens
     from hermes_cli.model_selection_guards import SelectionContext
     target = snapshot.get('target') or snapshot['receipt']['session_id']
     tokens = persisted_anchor_tokens(authority.db, target, authority.db.get_messages_as_conversation(target))
-    return SelectionContext(context_tokens=tokens, current_model=old.model or None) if tokens else None
+    return SelectionContext(context_tokens=tokens, current_model=current.model or None) if tokens else None
 
 
-async def _selection_guard_refusal(authority, live, payload, snapshot, old, result, runtime):
+async def _selection_guard_refusal(authority, live, payload, snapshot, current, result):
     """The shared selection-guard registry (cost, data-policy, large-context switch) runs before the
     commit. A flagged target is refused with ``status: confirmation_required`` and a ``confirm``
     token bound to the resolved target, the selection it replaces and the session revision; nothing
@@ -133,17 +189,17 @@ async def _selection_guard_refusal(authority, live, payload, snapshot, old, resu
         # No resident agent (evicted by the previous switch, or an owner restart): the session's
         # persisted usage anchor still measures the context at stake, so the large-context guard
         # does not go quiet on exactly the switch that follows another one.
-        context = await asyncio.to_thread(_persisted_selection_context, authority, snapshot, old)
+        context = await asyncio.to_thread(_persisted_selection_context, authority, snapshot, current)
     # Off-loop: pricing lookups may hit models.dev on a cache miss.
     warnings = await asyncio.to_thread(
         selection_warnings, result.new_model, provider=result.target_provider,
-        base_url=result.base_url or old.base_url or '', api_key=result.api_key or runtime.get('api_key') or '',
+        base_url=result.base_url or current.base_url, api_key=result.api_key or current.api_key,
         model_info=result.model_info, selection_context=context)
     if not warnings:
         return None
     binding = {'target': [result.new_model, result.target_provider, normalize_route_base_url(result.base_url),
                           result.api_mode or ''],
-               'current': [old.model, old.provider or '', normalize_route_base_url(old.base_url)],
+               'current': [current.model, current.provider, normalize_route_base_url(current.base_url)],
                'session': [snapshot['target'], snapshot['target_revision']],
                'guards': sorted(w.kind for w in warnings)}
     token = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()

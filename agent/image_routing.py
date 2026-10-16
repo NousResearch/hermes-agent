@@ -318,12 +318,31 @@ def _probe_ollama(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> O
     return query_ollama_supports_vision(model, base_url, api_key=api_key)
 
 
+def _probe_llamacpp(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> Optional[bool]:
+    """llama.cpp ``/props`` ``modalities`` verdict for LOCAL endpoints — the server loaded with
+    ``--mmproj`` is the authority on whether it can see, but a local GGUF is also invisible to
+    models.dev, so without this probe a vision-capable llama-server reads as text-only and its
+    own screenshots detour to a cloud auxiliary (#135837). Same LOCAL-only boundary as the
+    Ollama probe: fingerprinting a remote OpenAI-compatible endpoint 404s at best."""
+    base_url = _resolve_inference_base_url(cfg, provider)
+    if not base_url:
+        return None
+    from agent.model_metadata import is_local_endpoint
+
+    if not is_local_endpoint(base_url):
+        return None
+    from agent.model_metadata_llamacpp import query_llamacpp_supports_vision
+
+    return query_llamacpp_supports_vision(base_url, api_key=_resolve_inference_api_key(cfg, provider))
+
+
 # Capability probes after the config override, in priority order; each returns
 # True/False or None (unknown → next probe). Exceptions are logged and treated as None.
 _VISION_PROBES: tuple[tuple[str, Callable[..., Optional[bool]]], ...] = (
     ("managed-runtime caps lookup", _probe_managed_runtime),
     ("caps lookup", _probe_models_dev),
     ("ollama vision probe", _probe_ollama),
+    ("llama.cpp props vision probe", _probe_llamacpp),
 )
 
 

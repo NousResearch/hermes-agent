@@ -20,6 +20,7 @@ from agent.async_utils import consume_detached_task_result
 from contextvars import Context
 from datetime import datetime, timedelta, timezone, UTC
 from gateway.config import (
+    DISCORD_CONNECT_TIMEOUT_SECS_DEFAULT as _DISCORD_CONNECT_TIMEOUT_SECS_DEFAULT,
     ON_ALL_ADAPTERS_DOWN_POLICIES,
     SHARED_LISTENER_MIRROR_PLATFORMS,
     Platform,
@@ -160,7 +161,9 @@ class GatewayAdapterLifecycleMixin:
 
     def _platform_connect_timeout_secs(self, platform=None, *, initial: bool = False) -> float:
         """Per-platform connect timeout. Telegram's full 180s is NOT spent at cold start (it would
-        hold the gateway out of ``running``); the watcher retries with the full budget.
+        hold the gateway out of ``running``); the watcher retries with the full budget. Discord gets
+        a 90s full budget (slash-command registration walks the skill catalog on disk — #132033)
+        under the same split: the cold-start attempt keeps the 30s global cap.
 
         ``initial=True`` marks the cold-start connect awaited before the gateway reaches ``running``. The
         cold-start wait is capped and the platform is handed to the reconnect watcher, which retries with
@@ -173,6 +176,8 @@ class GatewayAdapterLifecycleMixin:
         override = self._env_timeout_override("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT")
         if override is not None:
             return override
+        if platform == Platform.DISCORD:
+            return _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT if initial else _DISCORD_CONNECT_TIMEOUT_SECS_DEFAULT
         if platform != Platform.TELEGRAM:
             return _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT
         return _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT if initial else _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT

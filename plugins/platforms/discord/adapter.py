@@ -697,7 +697,12 @@ def _discord_ready_timeout_seconds() -> float:
             return max(0.0, float(raw))
         except ValueError:
             logger.warning("Ignoring invalid HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT=%r", raw)
-    return 30.0
+    from gateway.config import DISCORD_CONNECT_TIMEOUT_SECS_DEFAULT
+    # No explicit override: the ready-wait includes slash-command registration, which walks the
+    # skill catalog on disk (#110707) and regularly exceeds the 30s global connect default on
+    # reconnects (#132033). Match the gateway's Discord reconnect budget; the cold-start attempt
+    # is still bounded externally by the 30s initial cap.
+    return DISCORD_CONNECT_TIMEOUT_SECS_DEFAULT
 
 
 class VoiceReceiver:

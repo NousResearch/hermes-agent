@@ -944,3 +944,16 @@ async def test_skill_catalog_scan_runs_off_the_event_loop(monkeypatch):
     adapter._skill_entries = []
     assert await _scan_leaves_loop_free(adapter.refresh_skill_group)
     await adapter.disconnect()
+
+
+def test_ready_wait_default_covers_slash_command_registration(monkeypatch):
+    """No env override: the ready wait follows the Discord connect budget (90s), so
+    reconnects with many slash commands to register aren't killed at the 30s global
+    default (#132033)."""
+    monkeypatch.delenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
+    assert discord_platform._discord_ready_timeout_seconds() == 90.0
+
+
+def test_ready_wait_env_override_still_wins(monkeypatch):
+    monkeypatch.setenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "12")
+    assert discord_platform._discord_ready_timeout_seconds() == 12.0

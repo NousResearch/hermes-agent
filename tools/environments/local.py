@@ -273,13 +273,44 @@ def _filter_secret_env(
             out[key] = value
 
 
+def _strip_hermes_venv_bins_from_path(env: dict) -> None:
+    """Remove pm-managed venv bin dirs (installs/<key>/environments/<gen>/venv/bin)
+    from PATH. These leak from the gateway's activated env into every child; a bare
+    ``python3`` then resolves to a rotated-generation venv interpreter whose deps
+    drift arbitrarily (mac8 2026-10-16). The checkout's .hermes/bin (bare ``hermes``)
+    is re-prepended elsewhere and is not an environments/ venv, so it survives."""
+    from tools.environments.local_pythonpath import _hermes_environments_roots, _path_under_roots
+    path_key = "PATH"
+    p = env.get(path_key)
+    if not p:
+        return
+    roots = _hermes_environments_roots(env)
+    if not roots:
+        return
+    kept = []
+    for e in p.split(os.pathsep):
+        if not e:
+            continue
+        try:
+            pe = Path(e)
+            if pe.name in ("bin", "Scripts") and pe.parent.name == "venv" and _path_under_roots(e, roots, ("bin", "Scripts")):
+                continue
+        except Exception:
+            pass
+        kept.append(e)
+    env[path_key] = os.pathsep.join(kept)
+
+
 def _finalize_child_env(env: dict) -> dict:
     """Guards shared by every spawn surface: profile-home propagation, session-context
     bridging, Hermes-owned PYTHONPATH + venv-marker strip, MSYS defaults, delegate_task
     Kanban scrub. Returns the (possibly new) dict."""
+    if os.environ.get("HERMES_KEEP_ENV"):
+        return env  # explicit opt-in: keep the inherited (activated) environment as-is
     _apply_profile_home(env)
     _inject_session_context_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)
+    _strip_hermes_venv_bins_from_path(env)
     _apply_windows_msys_bash_env_defaults(env)
     from agent.delegation_context import delegated_child_subprocess_env
     return delegated_child_subprocess_env(env)

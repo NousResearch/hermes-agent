@@ -1,11 +1,11 @@
-"""A resumed local session re-reads its config-derived settings (CFG-2).
+"""A resumed local session re-reads its config-derived settings (CFG-2); its MCP servers change the same way (CFG-3).
 
-Main's ``hermes -c`` was a new process: toolsets, ``terminal.backend``, ``max_turns``, checkpoints and the
-reasoning default came from the config it started with, while the stored session kept its model/provider.
-The owner keeps that line on ``session.resume``: it re-derives exactly those fields from the session
-profile's current config and commits them as a new policy generation. The creation flags (request_json),
-the model route and a committed ``/reasoning`` pick stay; a session with a turn running or queued keeps the
-policy that turn was admitted under.
+Main's ``hermes -c`` was a new process: toolsets, MCP servers, ``terminal.backend``, ``max_turns``, checkpoints
+and the reasoning default came from the config it started with, while the stored session kept its model/provider.
+The owner keeps that line on ``session.resume``: it re-derives exactly those fields from the session profile's
+current config and commits them as a new policy generation. ``reload.mcp`` commits the MCP part alone for the
+calling session. The creation flags (request_json), the model route and a committed ``/reasoning`` or workspace
+pick stay; a session with a turn running or queued keeps the policy that turn was admitted under.
 """
 import asyncio
 import json
@@ -24,15 +24,33 @@ def _follow(target, live, key):
         target.pop(key, None)
 
 
-def refreshed_policy(policy, live, terminal, *, picked=()):
-    """``(policy, terminal_secrets)``: *policy* with its config-derived fields from *live* (the profile's
-    config) and *terminal* (its terminal scope); explicit picks (launch flags, the *picked* policy edits)
-    stay. *policy* itself when nothing moved."""
-    from gateway.session_policy import (_extract_config_secrets, _resolve_toolsets, present_sections,
-                                        terminal_uses_host_cwd)
-    request = json.loads(policy.request_json)
+def refreshed_policy(policy, live, terminal, *, picked=(), mcp_only=False):
+    """``(policy, secrets, replaced)``: *policy* with its config-derived fields from *live* (the profile's
+    config) and *terminal* (its terminal scope), or only its MCP servers (*mcp_only*); explicit picks (launch
+    flags, the *picked* policy edits) stay. *secrets* are the refreshed sections' private values, *replaced*
+    the sections (``None``: terminal) whose stored private values they supersede. *policy* itself when
+    nothing moved."""
+    from gateway.session_policy import _extract_config_secrets, present_sections
     old, config = json.loads(policy.config_json), json.loads(policy.config_json)
-    live = present_sections(live)
+    live, secrets, replaced = present_sections(live), {}, set()
+    if mcp_only:
+        toolsets, terminal = policy.toolsets, json.loads(policy.terminal_json)
+    else:
+        toolsets = _settings(policy, config, live, picked)
+        terminal = _terminal(policy, terminal, picked)
+        _extract_config_secrets(terminal, secrets, (None,))
+        replaced.add(None)
+    toolsets = _mcp_servers(policy, config, live, toolsets, secrets, replaced)
+    if config == old and toolsets == policy.toolsets and terminal == json.loads(policy.terminal_json):
+        return policy, {}, set()
+    policy = replace(policy, toolsets=toolsets, config_json=json.dumps(config), terminal_json=json.dumps(terminal))
+    return policy, secrets, replaced
+
+
+def _settings(policy, config, live, picked):
+    """Follow the config-derived settings into *config*; the toolsets they select."""
+    from gateway.session_policy import _resolve_toolsets
+    request = json.loads(policy.request_json)
     live_agent = live.get('agent') or {}
     agent = dict(config.get('agent') or {})
     keys = [] if 'max_turns' in request else ['max_turns']
@@ -53,18 +71,46 @@ def refreshed_policy(policy, live, terminal, *, picked=()):
         section = config.get('checkpoints')
         section = dict(section) if isinstance(section, dict) else {'enabled': bool(section)} if section else {}
         config['checkpoints'] = {**section, 'enabled': True}
-    terminal, secrets = dict(terminal), {}
+    return toolsets
+
+
+def _terminal(policy, terminal, picked):
+    from gateway.session_policy import terminal_uses_host_cwd
+    terminal, request = dict(terminal), json.loads(policy.request_json)
     # The session's own folder, where it now is, under build_policy's rule; a committed Move to project is
     # the user's pick on every backend (it rewrote the policy, never the launch request).
     if request.get('cwd_explicit') is True or 'workspace' in picked or terminal_uses_host_cwd(terminal):
         terminal['TERMINAL_CWD'] = policy.cwd
-    _extract_config_secrets(terminal, secrets, (None,))
-    if config == old and toolsets == policy.toolsets and terminal == json.loads(policy.terminal_json):
-        return policy, {}
-    return replace(policy, toolsets=toolsets, config_json=json.dumps(config), terminal_json=json.dumps(terminal)), secrets
+    return terminal
 
 
-def _prepare(authority, session_id):
+def _mcp_servers(policy, config, live, toolsets, secrets, replaced):
+    """The profile's MCP servers as this session's own selection takes them now (its explicit pick or platform
+    allowlist, ``no_mcp`` and disabled entries respected): their definitions into *config*, private values split
+    off as build_policy does (a managed worker binds this config, so it connects exactly these), and their
+    names into the returned toolsets. An editor-MCP session keeps its frozen servers."""
+    from gateway.session_policy import _extract_config_secrets, _resolve_toolsets
+    from hermes_cli.tools_config import enabled_mcp_server_names
+    from hermes_state_runtime import RuntimeStoreError
+    if policy.editor_mcp_json is not None:
+        return toolsets
+    request = json.loads(policy.request_json)
+    try:
+        selected = _resolve_toolsets({'toolsets': request['toolsets']} if 'toolsets' in request else {},
+                                     json.loads(json.dumps(live)), policy.source, policy.safe_mode, policy.coding_posture)
+    except RuntimeStoreError:
+        return toolsets  # the launch pick no longer validates against the profile: keep the frozen servers
+    sections = [section if isinstance(section, dict) else {} for section in (config.get('mcp_servers'), live.get('mcp_servers'))]
+    if 'mcp_servers' in live:
+        config['mcp_servers'] = json.loads(json.dumps(live['mcp_servers']))
+        _extract_config_secrets(config['mcp_servers'], secrets, ('mcp_servers',))
+    else:
+        config.pop('mcp_servers', None)
+    replaced.add('mcp_servers')
+    return tuple(sorted((set(toolsets) - set(sections[0]) - set(sections[1])) | (selected & enabled_mcp_server_names(live))))
+
+
+def _prepare(authority, session_id, mcp_only=False):
     """Off the owner loop: the stored policy, its refresh from this profile home's files, and the generation
     it was derived at. None when the session takes no refresh or nothing moved."""
     from gateway.run import _load_gateway_config
@@ -79,41 +125,48 @@ def _prepare(authority, session_id):
     if old.ignore_user_config or old.source not in SURFACES:
         return None
     home = Path(authority.db.db_path).resolve().parent
-    policy, secrets = refreshed_policy(old, _load_gateway_config(home / 'config.yaml'),
-                                       build_profile_terminal_scope(home),
-                                       picked=policy_picks(authority.db, session_id))
-    return None if policy == old else (stored, old, policy, secrets, generation)
+    terminal = {} if mcp_only else build_profile_terminal_scope(home)
+    policy, secrets, replaced = refreshed_policy(old, _load_gateway_config(home / 'config.yaml'), terminal,
+                                                 picked=policy_picks(authority.db, session_id), mcp_only=mcp_only)
+    return None if policy == old else (stored, old, policy, secrets, replaced, generation)
 
 
-def _rebind(authority, session_id, old, policy, terminal_secrets):
-    """Re-bind the private values like a policy mutation: policy identity covers config and terminal, and
-    the terminal's own secrets are the profile's current ones."""
+def _rebind(authority, session_id, old, policy, fresh, replaced):
+    """Re-bind the private values like a policy mutation: policy identity covers config and terminal, and the
+    refreshed sections' private values are the profile's current ones."""
     from gateway.session_policy import bind_launch_key, launch_key
     from gateway.session_policy_credentials import recover_config_secrets
     secrets = recover_config_secrets(authority, old) if old.config_secret_ref else {}
-    secrets = {path: value for path, value in secrets.items() if path[0] is not None}
-    secrets.update(terminal_secrets)
+    secrets = {path: value for path, value in secrets.items() if path[0] not in replaced}
+    secrets.update(fresh)
     return bind_launch_key(authority, session_id, policy, launch_key(authority, old), config_secrets=secrets)
+
+
+async def commit_refresh(authority, ref, *, mcp_only=False):
+    """Commit an idle local session's refresh as its next policy generation: True when one was committed,
+    False when nothing moved. Raises the store's refusal (``session_busy`` while a turn runs or waits)."""
+    from gateway.session_runtime_workers import tracked_write
+    from hermes_state_mutation_prepared import commit_refreshed_policy
+    prepared = await asyncio.to_thread(_prepare, authority, ref.session_id, mcp_only)
+    if prepared is None:
+        return False
+    stored, old, policy, secrets, replaced, generation = prepared
+    policy = _rebind(authority, ref.session_id, old, policy, secrets, replaced)
+    # Compare-and-swap against the receipt as stored (JSON lists), not its restored tuple form. The
+    # publication is the commit's own shielded follow-up: a caller cancelled mid-commit cannot leave the
+    # stored policy ahead of the live one (restore_local_session refuses that pair).
+    await tracked_write(authority, partial(commit_refreshed_policy, authority.db, epoch=authority.epoch,
+                                           session_id=ref.session_id, old=stored, new=asdict(policy),
+                                           generation=generation),
+                        then=lambda _generation: _publish(authority, ref))
+    return True
 
 
 async def refresh_resumed_policy(authority, ref):
     """Commit the config refresh of an idle local session before it is attached. Never fails the resume:
     a busy session, a revoked launch credential or an unreadable profile keeps the stored policy."""
-    from gateway.session_runtime_workers import tracked_write
-    from hermes_state_mutation_prepared import commit_refreshed_policy
     try:
-        prepared = await asyncio.to_thread(_prepare, authority, ref.session_id)
-        if prepared is None:
-            return
-        stored, old, policy, secrets, generation = prepared
-        policy = _rebind(authority, ref.session_id, old, policy, secrets)
-        # Compare-and-swap against the receipt as stored (JSON lists), not its restored tuple form. The
-        # publication is the commit's own shielded follow-up: a caller cancelled mid-commit cannot leave the
-        # stored policy ahead of the live one (restore_local_session refuses that pair).
-        await tracked_write(authority, partial(commit_refreshed_policy, authority.db, epoch=authority.epoch,
-                                               session_id=ref.session_id, old=stored, new=asdict(policy),
-                                               generation=generation),
-                            then=lambda _generation: _publish(authority, ref))
+        await commit_refresh(authority, ref)
     except Exception as exc:  # health: allow BLE001 -- a refresh is best-effort; the resume itself must proceed
         logger.info('Session %s keeps its stored policy on resume: %s', ref.session_id,
                     getattr(exc, 'reason', None) or type(exc).__name__)

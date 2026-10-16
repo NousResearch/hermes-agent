@@ -128,13 +128,26 @@ class ReloadMcpStatus(WireEnum):
     reloaded = "reloaded"
 
 
+class ReloadMcpSession(WireEnum):
+    applied = "applied"
+    unchanged = "unchanged"
+    busy = "busy"
+
+
 class ReloadMcpResult(Result):
+    """``session``: what the calling local session's MCP servers did (a new policy generation, nothing to
+    change, or deferred while a turn runs or waits); ``unavailable``: configured servers that did not connect
+    beside what did apply; ``session_servers``: the MCP servers that session's committed policy runs."""
+
     status: ReloadMcpStatus
     message: str | None = None
     loaded_rev: str | None = None
     coalesced: bool | None = None
     turn_isolation: bool | None = None
     host_ack: JsonValue | None = None
+    session: ReloadMcpSession | None = None
+    unavailable: list[str] | None = None
+    session_servers: list[str] | None = None
 
 
 method("reload.mcp", params=ReloadMcpParams, result=ReloadMcpResult,

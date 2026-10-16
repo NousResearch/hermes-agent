@@ -13,6 +13,12 @@ export interface NoticeTranslations {
   promptNotices: {
     /** An explicit retry of a send whose identityless (legacy) acknowledgement was lost. */
     legacySendUnconfirmed: string
+    /** reload.mcp left the chat's servers as they were: a turn was running or waiting. */
+    mcpReloadDeferred: string
+    /** A reloaded MCP server the chat does not run (no_mcp, an explicit pick, a platform allowlist). */
+    mcpReloadNotInChat: (server: string) => string
+    /** Configured MCP servers that did not connect on reload. */
+    mcpReloadUnavailable: (servers: string) => string
     /** Typed /undo /retry /steer /queue lines (the Ink TUI's wording on the same gateway). */
     sessionCommands: SessionCommandNotices
   }

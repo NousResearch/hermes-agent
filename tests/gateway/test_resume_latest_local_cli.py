@@ -223,3 +223,32 @@ async def test_worker_create_after_peer_refresh_still_resumes(tmp_path, monkeypa
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+def _listed(db, source, capsys):
+    from argparse import Namespace
+    from hermes_cli.sessions_cmd import _cmd_list
+    _cmd_list(db, Namespace(limit=20, source=source, workspace=None))
+    return capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('surface', 'labels'), [('gui', ('gui', 'desktop')), ('acp', ('acp',))])
+async def test_gui_and_acp_list_under_the_policy_label_and_the_agent_surface(
+        tmp_path, monkeypatch, capsys, surface, labels):
+    """session.create stamps the agent surface (gui is desktop). --source accepts
+    either name, before the peer refresh and after the row is stored as local."""
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        created = await _call(owner, 'session.create', request_id=surface, source=surface,
+                              cwd=str(tmp_path), toolsets=[], model='m')
+        sid = created['session_id']
+        for label in labels:
+            assert sid in _listed(authority.db, label, capsys), (surface, label, 'before peer')
+        live = authority.sessions[sid]
+        store._record_gateway_session_peer(sid, live.route, live.source)
+        for label in labels:
+            assert sid in _listed(authority.db, label, capsys), (surface, label, 'after peer')
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

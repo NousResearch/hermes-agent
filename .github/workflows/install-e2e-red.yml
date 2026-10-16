@@ -40,14 +40,14 @@ jobs:
   track:
     name: Update the install-e2e-red tracker
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 5
     permissions:
       contents: read
       actions: read
       issues: write
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           sparse-checkout: tests/install/e2e-assets/red-tracker.mjs
           sparse-checkout-cone-mode: false

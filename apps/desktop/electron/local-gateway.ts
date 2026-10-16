@@ -343,6 +343,24 @@ export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: s
   return { ...endpoint, profile_id: home, control_home: endpoint.control_home || endpoint.profile_id }
 }
 
+/** `routedGatewayEndpoint` bound to the home the gateway reserved for the routed profile. It serves
+ *  `profiles/<name>` at that directory's resolved home, so a symlinked or junction-linked named
+ *  profile mints for its target; the gateway still refuses a home it does not serve. */
+export async function routedTicketEndpoint(endpoint: GatewayEndpoint, urlOrProfile: string, launchHome: string): Promise<GatewayEndpoint> {
+  const routed = routedGatewayEndpoint(endpoint, urlOrProfile, launchHome)
+
+  // The endpoint's own home and the root it was routed from are advertised: they keep their checks.
+  if (routed.profile_id === endpoint.profile_id || routed.profile_id === routed.control_home) {return routed}
+
+  const home = await reservedHome(routed.profile_id).catch(error => {
+    // Not stale: re-ensuring the shared connection cannot bring a deleted profile back.
+    if (isMissingNodeError(error)) {throw new Error(`Profile '${path.basename(routed.profile_id)}' does not exist: no directory at ${routed.profile_id}`)}
+    throw error
+  })
+
+  return { ...routed, profile_id: home }
+}
+
 /** What a native grant is minted for: the URL's own profile selector or, when it names none, a
  *  JSON body's `profile`. The gateway checks both against the grant, and a session write such as
  *  `PATCH /api/sessions/<id>` names its owner in the body alone. */
@@ -361,7 +379,7 @@ export async function nativeGatewayHttpHeaders(descriptor: { gatewayEndpoint: Ga
   const purpose = method.toUpperCase() === 'POST' && new URL(url).pathname.replace(/\/$/, '') === '/api/profiles'
     ? 'native-profile-create' : 'native-http'
 
-  return { 'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(routedGatewayEndpoint(descriptor.gatewayEndpoint, nativeGrantRoute(url, body), launchHome), purpose) }
+  return { 'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(await routedTicketEndpoint(descriptor.gatewayEndpoint, nativeGrantRoute(url, body), launchHome), purpose) }
 }
 
 // The installed runtime's own ticket client: every Windows mint (SID-validated pipe), and a POSIX
@@ -389,6 +407,51 @@ function isMissingNodeError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException)?.code
 
   return code === 'ENOENT' || code === 'ENOTDIR'
+}
+
+/** Python's `posixpath.realpath`: each ordinary component keeps the spelling it was given, and a
+ *  symlink is replaced by its target text, joined onto the prefix resolved so far (an absolute
+ *  target restarts from `/`). Unlike Python it throws for a missing component instead of keeping it. */
+async function posixRealpath(dir: string): Promise<string> {
+  const rest = dir.split('/').reverse()
+  let resolved = dir.startsWith('/') ? '/' : process.cwd()
+  let links = 0
+
+  while (rest.length) {
+    const name = rest.pop()
+
+    if (!name || name === '.') {continue}
+
+    if (name === '..') {
+      resolved = resolved.slice(0, resolved.lastIndexOf('/')) || '/'
+
+      continue
+    }
+
+    const next = resolved === '/' ? `/${name}` : `${resolved}/${name}`
+
+    if (!(await fs.lstat(next)).isSymbolicLink()) {
+      resolved = next
+
+      continue
+    }
+
+    if (++links > 40) {throw Object.assign(new Error(`Too many levels of symbolic links: ${dir}`), { code: 'ELOOP' })}
+    const target = await fs.readlink(next)
+
+    if (target.startsWith('/')) {resolved = '/'}
+    rest.push(...target.split('/').reverse())
+  }
+
+  return resolved
+}
+
+/** The home the gateway reserves for `dir`: its `Path.resolve()`. On POSIX that keeps the given
+ *  spelling of every ordinary component, where macOS realpath(3) answers a case-insensitive volume
+ *  in its stored letter case (#138754). Windows mints through the runtime bridge, whose
+ *  `Path.resolve()` is the final on-disk path, as Node's realpath is. */
+export async function reservedHome(dir: string): Promise<string> {
+  return process.platform === 'win32' ? fs.realpath(dir) : posixRealpath(dir)
 }
 
 async function resolveControlSocket(home: string): Promise<string> {
@@ -434,7 +497,8 @@ export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose:
   const groupWritable: string[] = []
 
   for (const dir of new Set([home, controlHome])) {
-    if (await fs.realpath(dir) !== dir) {throw new Error('Noncanonical gateway profile')}
+    // Identity, not spelling: an advertised home is refused only when it leads somewhere else.
+    if (await reservedHome(dir) !== dir) {throw new Error('Noncanonical gateway profile')}
 
     if (await privateNode(dir, 'home')) {groupWritable.push(dir)}
   }

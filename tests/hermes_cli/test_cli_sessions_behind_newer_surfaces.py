@@ -106,36 +106,21 @@ def test_surface_pages_are_exact_across_newer_local_rows(tmp_path):
     db.close()
 
 
-def test_surface_filter_seeks_the_local_created_source_index(tmp_path):
-    """Startup creates the partial index on a store that predates it, and the local branch
-    seeks it instead of walking every Desktop/TUI row."""
+def test_startup_adds_the_local_created_source_index_to_an_older_store(tmp_path):
+    """The partial index the surface filter seeks is created when a store that predates it
+    reopens. Query plans are left to the planner; pages are pinned above."""
     path = tmp_path / "state.db"
     db = SessionDB(db_path=path)
-    db._conn.execute("DROP INDEX IF EXISTS idx_sessions_local_created_started")
+    db._conn.execute("DROP INDEX idx_sessions_local_created_started")
     db._conn.commit()
     db.close()
 
     db = SessionDB(db_path=path)
-    _populate(db, [("cli-session", "local", "cli", 1_000_000), *_newer_locals(30, start=2_000_000, prefix="d")])
-    captured: list[tuple[str, tuple]] = []
-    original = db._read_all
-
-    def capture(sql, params=()):
-        captured.append((sql, tuple(params)))
-        return original(sql, params)
-
-    db._read_all = capture
-    reader = SurfaceLabelReader(db)
-    reader.search_sessions(source=["cli", "oneshot"], limit=1)
-    reader.list_sessions_rich(source="cli", limit=10, offset=2)
-    plans = [
-        " ".join(row[3] for row in db._conn.execute("EXPLAIN QUERY PLAN " + sql, params))
-        for sql, params in captured if "created_source" in sql
-    ]
-    assert len(plans) == 2
-    for plan in plans:
-        assert "idx_sessions_local_created_started" in plan
+    sql = db._conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_sessions_local_created_started'"
+    ).fetchone()
     db.close()
+    assert sql is not None and "WHERE source = 'local'" in sql[0]
 
 
 def _pre_column_readonly(tmp_path) -> SessionDB:

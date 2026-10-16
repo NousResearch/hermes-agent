@@ -660,6 +660,32 @@ class TestReconnectFastPath:
         return adapter, app, events
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("install_fails", [False, True], ids=["installed", "refused"])
+    async def test_preflight_prepares_missing_node_off_event_loop(self, live_bridge, monkeypatch, install_fails):
+        import threading
+        import pm
+        from plugins.platforms.whatsapp import adapter as whatsapp
+
+        adapter, _, _ = live_bridge
+        prepared = []
+        monkeypatch.setattr(whatsapp, "find_node_executable", lambda name: None)
+        def ensure(name):
+            assert threading.current_thread() is not threading.main_thread()
+            prepared.append(name)
+            if install_fails:
+                raise pm.InstallError(name, "installation refused")
+        monkeypatch.setattr(pm, "ensure", ensure)
+
+        assert await asyncio.to_thread(adapter._preflight) is not install_fails
+        assert prepared == ["node"]
+        if install_fails:
+            assert adapter.fatal_error_code == "whatsapp_node_missing"
+            assert adapter.fatal_error_retryable is False
+            assert "installation refused" in adapter.fatal_error_message
+        else:
+            assert adapter.fatal_error_code is None
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("port_was_free", [False, True])
     async def test_secondary_reconnect_never_probes_unowned_bridge(self, live_bridge, monkeypatch, port_was_free):
         from aiohttp import web

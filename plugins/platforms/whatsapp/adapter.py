@@ -658,6 +658,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     def _preflight(self) -> bool:
         """Node + bridge script + creds.json + aiohttp present, else a named fatal error (an unpaired bridge only prints QR codes; retries would pay 30s each)."""
+        if find_node_executable("node") is None:
+            import pm
+
+            try:
+                pm.ensure("node")
+            except pm.InstallError as exc:
+                self._set_fatal_error("whatsapp_node_missing", str(exc), retryable=False)
+                return False
         bridge_path = Path(self._bridge_script)
         creds_path = self._session_path / "creds.json"
         checks = (
@@ -690,14 +698,6 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         On a reconnect, first try a matching live bridge before cold startup.
         """
-        if find_node_executable("node") is None:
-            import pm
-
-            try:
-                await asyncio.to_thread(pm.ensure, "node")
-            except pm.InstallError as exc:
-                self._set_fatal_error("whatsapp_node_missing", str(exc), retryable=False)
-                return False
         secondary = bool(getattr(self, "_runtime_status_platform_key", ""))
         prior_bridge_is_ours = False
         if secondary:

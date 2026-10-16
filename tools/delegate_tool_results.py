@@ -8,6 +8,8 @@ import threading
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
+from tools.delegation_output_schema import revalidate_entry
+
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
 def _stringify_tool_content(content: Any) -> str:
@@ -397,6 +399,9 @@ def _finalize_child_results(
     with _parent_finalization_lock(parent_agent):
         _apply_summary_budget(results, parent_agent)
         child_by_index = {index: child for index, _task, child in children}
+        for entry in results:  # truncation turns a valid structured answer into head/tail text: re-check what the parent gets
+            if isinstance(entry, dict) and entry.get("summary_truncated"):
+                revalidate_entry(entry, getattr(child_by_index.get(entry.get("task_index", -1)), "_delegate_output_schema", None))
         _notify_memory_manager(results, task_list, child_by_index, parent_agent)
         _rollup_children_cost(parent_agent, _fire_subagent_stop_hooks(results, child_by_index, parent_agent))
 

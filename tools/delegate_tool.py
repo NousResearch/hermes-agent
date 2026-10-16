@@ -56,6 +56,7 @@ from tools.delegate_tool_toolsets import (
 from tools.delegate_tool_results import (
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
 )
+from tools.delegation_output_schema import revalidate_entry
 
 _ROLES = frozenset({"leaf", "orchestrator"})
 
@@ -389,6 +390,7 @@ def _run_single_child(
         duration = run.elapsed()
         entry = _build_result_entry(child, result, task_index, duration, schema)
         run.append_sibling_write_reminder(entry)
+        revalidate_entry(entry, schema.schema)  # the steer / sibling-write notes above changed what the parent receives
         run.account_background_processes(entry)
         run.emit_complete(result, entry, duration)
         return run.attach_worktree(entry)

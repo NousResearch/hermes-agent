@@ -113,3 +113,35 @@ def build_retry_message(errors: list[str]) -> str:
             "validator. Validation errors:\n" f"{error_block}\n\n"
             "Reply with ONLY the corrected JSON object matching the OUTPUT "
             "CONTRACT schema from your task context. No prose, no explanations.")
+
+
+def revalidate_entry(entry: dict[str, Any], output_schema: Any) -> None:
+    """Re-check ``entry["schema_valid"]`` against the ``summary`` the parent will actually receive.
+
+    The verdict is first computed from the child's raw final text, but the host then changes the delivered
+    summary: head/tail truncation to fit the parent's context budget, or an appended steer / sibling-write note
+    (whose brackets also break the JSON extraction of an array answer). Entries without ``schema_valid`` (schema-less
+    calls, failures) are left untouched so their wire shape does not change.
+    """
+    if not isinstance(entry, dict) or "schema_valid" not in entry or not isinstance(output_schema, dict):
+        return
+    was_valid = entry["schema_valid"] is True
+    summary = entry.get("summary")
+    try:
+        valid, errors = validate_output(summary if isinstance(summary, str) else "", output_schema)
+    except Exception as exc:  # health: allow BLE001 -- host-owned finalize step: a validator fault must not abort result delivery
+        logger.warning("output_schema re-validation failed: %s", exc, exc_info=True)
+        valid, errors = False, [f"Could not re-validate the delivered summary: {exc}"]
+    entry["schema_valid"] = valid
+    if valid:
+        entry.pop("schema_errors", None)
+        entry.pop("schema_note", None)
+        return
+    entry["schema_errors"] = errors
+    if was_valid:
+        full_path = entry.get("summary_full_path")
+        entry["schema_note"] = (
+            "The delivered `summary` was shortened or annotated after the child's answer was validated, so it no "
+            "longer parses against the declared output_schema"
+            + (f"; the complete answer is in {full_path}" if full_path else "") + "."
+        )

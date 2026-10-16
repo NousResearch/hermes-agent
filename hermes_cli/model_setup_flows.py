@@ -95,9 +95,8 @@ def _model_flow_ai_gateway(config, current_model=""):
     models_list = ai_gateway_model_ids(force_refresh=True)
     pricing = get_pricing_for_provider("ai-gateway", force_refresh=True)
     selected = _prompt_model_selection(models_list, current_model=current_model, pricing=pricing)
-    # Inline credentials are deliberately left untouched here (historical behavior).
     _finish_model(selected, "ai-gateway", f"Default model set to: {selected} (via Vercel AI Gateway)",
-                  base_url=AI_GATEWAY_BASE_URL, api_mode="chat_completions", clear_creds=False)
+                  base_url=AI_GATEWAY_BASE_URL, api_mode="chat_completions")
 
 
 def _model_flow_moa(config, current_model=""):

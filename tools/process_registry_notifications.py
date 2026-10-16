@@ -335,10 +335,15 @@ def async_delegation_display_text(evt: dict) -> str:
         goal = goals[index] if 0 <= index < len(goals) else result.get("goal", "")
         titles.append(" ".join(str(goal or "Background task").split()))
     if len(results) == 1:
-        return f"Subagent Task {labels[0]}: {titles[0]}"
+        return f"Subagent Task {labels[0]}: {_short_title(titles[0])}"
     outcome = labels[0] if len(set(labels)) == 1 else "Finished with Issues"
     title = " ".join(str(evt.get("group") or "").split()) or "; ".join(titles)
-    return f"Subagent Tasks {outcome}: {title} ({len(results)} tasks)"
+    return f"Subagent Tasks {outcome}: {_short_title(title)} ({len(results)} tasks)"
+
+
+def _short_title(title: str) -> str:
+    # A goal is free text: the card's title stays one line (and within an admission's display limit).
+    return title[:197] + "..." if len(title) > 200 else title
 
 
 PROCESS_COMPLETE_DISPLAY_KIND = "process_complete"

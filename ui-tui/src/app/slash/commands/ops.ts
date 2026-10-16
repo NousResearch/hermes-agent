@@ -779,11 +779,15 @@ export const opsCommands: SlashCommand[] = [
     help: 'enable or disable tools (client-side history reset on change)',
     name: 'tools',
     run: (arg, ctx, cmd) => {
-      if (ctx.sid && ctx.gateway.gw?.isCanonical) {
-        return canonicalTools(ctx)
-      }
-
       const [subcommand, ...names] = arg.trim().split(/\s+/).filter(Boolean)
+
+      if (ctx.sid && ctx.gateway.gw?.isCanonical) {
+        // The shared gateway freezes a session's toolsets at launch (the classic CLI refuses the
+        // same change): say so instead of answering enable/disable with the unchanged list.
+        return subcommand === 'disable' || subcommand === 'enable'
+          ? ctx.transcript.sys(t('canonical.controls.notAvailable', `tools ${subcommand}`))
+          : canonicalTools(ctx)
+      }
 
       if (subcommand !== 'disable' && subcommand !== 'enable') {
         ctx.gateway.gw

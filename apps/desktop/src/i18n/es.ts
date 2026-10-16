@@ -4148,7 +4148,7 @@ export const esOverrides = {
       heartbeatEveryHours: (hours: number) => `cada ${hours} h`,
       heartbeatEverySeconds: (seconds: number) => `cada ${seconds} s`,
       heartbeatNext: (time: string) => `próximo ${time}`,
-      heartbeatDueWaitingForIdle: 'pendiente: esperando inactividad',
+      dueWaitingForIdle: 'pendiente: esperando inactividad',
       heartbeatActions: 'Acciones del heartbeat',
       pauseHeartbeat: 'Pausar heartbeat',
       resumeHeartbeat: 'Reanudar heartbeat',

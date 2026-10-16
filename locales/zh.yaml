@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    （仅下一回合生效——一次响应后恢复）"
     switch_cancelled: "🟡 已取消切换模型。当前模型不变（{model}）。"
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_文字回退方式：回复 `{prefix}approve` 切换，或回复 `{prefix}cancel` 保留当前模型。_"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **活跃代理与任务**"
     active_agents: "**活跃代理：** {count}"

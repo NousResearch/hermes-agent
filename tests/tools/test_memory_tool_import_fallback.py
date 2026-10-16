@@ -15,6 +15,12 @@ def test_memory_tool_imports_without_fcntl(monkeypatch, tmp_path):
             raise ImportError("simulated missing fcntl")
         return original_import(name, globals, locals, fromlist, level)
 
+    import tools
+    import tools.memory_tool  # ensure the package attribute exists so teardown can restore it
+
+    # The re-import below rebinds the ``tools.memory_tool`` package attribute, which
+    # MemoryStore._file_lock reads; monkeypatch only restores sys.modules, so pin the attribute too.
+    monkeypatch.setattr(tools, "memory_tool", tools.memory_tool)
     registry.deregister("memory")
     monkeypatch.delitem(sys.modules, "tools.memory_tool", raising=False)
     monkeypatch.setattr(builtins, "__import__", fake_import)

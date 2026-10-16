@@ -26,6 +26,9 @@ def _refusal_data(exc: RuntimeStoreError) -> dict:
         value = getattr(exc, key, None)
         if value:
             data[key] = value
+    for key in ('revision', 'execution_generation'):
+        if isinstance(getattr(exc, key, None), int):
+            data[key] = getattr(exc, key)
     return data
 
 
@@ -595,6 +598,13 @@ class AuthorityConnection:
             # A live turn lease / compression lock is the same retryable busy verdict a
             # running admission gets (REST maps it to 409), not an internal error.
             raise RuntimeStoreError('session_busy') from exc
+        except RuntimeStoreError as exc:
+            if exc.reason in {'revision_conflict', 'stale_generation'}:
+                # The fresh fences ride on the refusal, so the client retries once without a re-read.
+                row = await asyncio.to_thread(self.authority.db.get_session, ref.session_id)
+                if row is not None:
+                    exc.revision, exc.execution_generation = row['runtime_revision'], row['runtime_generation']
+            raise
         # The branching viewer navigates straight into its new child; attach it
         # here (create parity) so the first submit is not refused as a stranger.
         child = result.get('branched_session_id') if isinstance(result, dict) else None

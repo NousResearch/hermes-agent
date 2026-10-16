@@ -12,6 +12,7 @@ the desktop stays on the gateway host (or refuses, per ``bot_desktop.placement``
 """
 from __future__ import annotations
 
+import os
 import shlex
 import socket
 import subprocess
@@ -73,6 +74,21 @@ def remote_argv(prefix: Sequence[str], argv: Sequence[str], *, env: Optional[dic
 def shell_joined(env: BaseEnvironment) -> bool:
     from tools.environments.ssh import SSHEnvironment
     return isinstance(env, SSHEnvironment)
+
+
+# What the backend CLIENT itself reads to reach its daemon or host: a non-default Docker/Podman socket or
+# context (rootless, colima, remote) and the ssh agent behind BatchMode key auth. The sandboxed program's
+# own env travels inside the exec script; these only make the local client land on the right sandbox.
+_CLIENT_CONNECTION_ENV = (
+    "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY",
+    "CONTAINER_HOST", "CONTAINER_CONNECTION", "XDG_RUNTIME_DIR", "SSH_AUTH_SOCK",
+)
+
+
+def client_connection_env() -> dict[str, str]:
+    """The set subset of :data:`_CLIENT_CONNECTION_ENV` for a client spawned with a minimal env, so it
+    reaches the same daemon/host the terminal backend's own (env-inheriting) client uses."""
+    return {k: v for k in _CLIENT_CONNECTION_ENV if (v := os.environ.get(k))}
 
 
 def remote_command(env: BaseEnvironment, argv: Sequence[str], *, child_env: Optional[dict] = None,

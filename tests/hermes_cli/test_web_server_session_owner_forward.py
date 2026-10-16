@@ -98,9 +98,11 @@ async def test_standalone_mutation_falls_back_to_offline_without_an_owner(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_owner_dial_failure_falls_back_to_the_offline_store(tmp_path, monkeypatch):
-    """An owner that dies between discovery and dial is not a refusal: the offline path
-    decides (and succeeds when the ownership lock really is free)."""
+async def test_owner_dial_failure_surfaces_a_retryable_error(tmp_path, monkeypatch):
+    """A dial that dies on an endpoint discovery just identified is not owner-less (a slow first
+    dial, not a stale endpoint): the offline reservation would only lose to that same owner and
+    answer with the bare 409 this forward exists to remove, so a retryable 503 is the honest
+    verdict — a later retry rediscovers and takes the offline store once the owner is really gone."""
     from hermes_cli import web_server_sessions
 
     request = _standalone_request(monkeypatch, tmp_path)
@@ -108,21 +110,21 @@ async def test_owner_dial_failure_falls_back_to_the_offline_store(tmp_path, monk
 
     @asynccontextmanager
     async def dying_connect(endpoint=None, subject=None):
-        raise FileNotFoundError('owner control socket vanished')
+        raise TimeoutError('first dial outlived its budget')
         yield  # pragma: no cover
 
     offline = []
     monkeypatch.setattr(web_server_sessions, '_mutate_offline_store',
-                        lambda profile, actor, params: offline.append(params) or
-                        {'session_id': 'session-3', 'operation': 'archive', 'revision': 0})
+                        lambda profile, actor, params: offline.append(params))
     monkeypatch.setattr('hermes_cli.gateway_client.connect_gateway', dying_connect)
 
-    result = await web_server_sessions._mutate_session_request(
-        request, None, 'session-3', request_id='req-3', expected_revision=0,
-        operation='archive', payload={})
-
-    assert result['ok'] is True
-    assert len(offline) == 1
+    with pytest.raises(HTTPException) as exc:
+        await web_server_sessions._mutate_session_request(
+            request, None, 'session-3', request_id='req-3', expected_revision=0,
+            operation='archive', payload={})
+    assert exc.value.status_code == 503
+    assert exc.value.detail == 'owner_unreachable'
+    assert offline == []
 
 
 @pytest.mark.asyncio

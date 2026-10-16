@@ -186,14 +186,20 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     dashboard`` is not the store owner, so the offline path's
     exclusive-maintenance reservation can never win and every write action
     dies on a bare 409 (#138915). The owner exposes the same revision-fenced
-    verb over the control socket; with no discoverable owner (or a dial that
-    died under us) return None so the caller falls back to the offline store.
+    verb over the control socket; with no discoverable owner return None so the
+    caller falls back to the offline store.
+
+    A dial or RPC that dies on an endpoint discovery just identified is not
+    owner-less (a slow first dial, not a stale endpoint): the offline
+    reservation would only lose to that same owner and answer with the bare 409
+    this forward exists to remove, so it surfaces a retryable 503 instead.
 
     The ticket is minted for the dashboard's authenticated principal, not the
     socket UID: ``authorize_history`` compares the actor subject against the
     row's stored owner, so a cold row owned by a dashboard account only takes
     the mutation when the forward acts as that account.
     """
+    from fastapi import HTTPException
     from hermes_cli.gateway_client import GatewayClientError, connect_gateway
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
     from hermes_cli.web_server_cron import _cron_profile_home
@@ -216,8 +222,8 @@ async def _mutate_via_gateway_owner(profile, actor, params):
             return await client.rpc('session.mutate', **call)
     except GatewayClientError:
         raise
-    except (OSError, TimeoutError):
-        return None
+    except (OSError, TimeoutError) as exc:
+        raise HTTPException(status_code=503, detail='owner_unreachable') from exc
 
 
 async def _mutate_session_request(request, profile, session_id, *, request_id,

@@ -216,7 +216,7 @@ class TestOsc11DrainGuard:
         fake_attrs = [0, 0, 0, 0, 0, 0, [b'\x00'] * 32]
         monkeypatch.setattr(termios, "tcgetattr", lambda fd: fake_attrs)
         monkeypatch.setattr(termios, "tcsetattr", lambda fd, when, attrs: None)
-        monkeypatch.setattr(_tty, "setcbreak", lambda fd: None)
+        monkeypatch.setattr(_tty, "setcbreak", lambda fd, when=None: None)
 
         # Make stdin.isatty / stdout.isatty return True
         monkeypatch.setattr(cli_mod.sys.stdin, "isatty", lambda: True, raising=False)
@@ -261,7 +261,7 @@ class TestOsc11DrainGuard:
         fake_attrs = [0, 0, 0, 0, 0, 0, [b'\x00'] * 32]
         monkeypatch.setattr(termios, "tcgetattr", lambda fd: fake_attrs)
         monkeypatch.setattr(termios, "tcsetattr", lambda fd, when, attrs: None)
-        monkeypatch.setattr(_tty, "setcbreak", lambda fd: None)
+        monkeypatch.setattr(_tty, "setcbreak", lambda fd, when=None: None)
         monkeypatch.setattr(cli_mod.sys.stdin, "isatty", lambda: True, raising=False)
         monkeypatch.setattr(cli_mod.sys.stdout, "isatty", lambda: True, raising=False)
         monkeypatch.setattr(cli_mod.sys.stdin, "fileno", lambda: read_fd, raising=False)
@@ -304,6 +304,7 @@ class TestOsc11DrainGuard:
 # the parent side.
 
 import os as _os
+from contextlib import suppress
 import sys as _sys
 
 
@@ -428,3 +429,46 @@ class TestOsc11Da1Fence:
         result, leftover = _run_osc11_child(lambda age: None, repo_root)
         assert result == "None"
         assert leftover == "b''"
+
+
+_TYPEAHEAD_CHILD_SRC = r"""
+import sys, os, time
+sys.path.insert(0, os.environ["HERMES_REPO"])
+time.sleep(0.3)  # the parent types now, while the tty is still in cooked mode
+import cli
+from hermes_cli.cli_render import take_startup_typeahead
+print("TYPED:" + repr(take_startup_typeahead()), flush=True)
+"""
+
+
+@pytest.mark.platforms("posix")  # POSIX PTY test
+def test_keystrokes_typed_during_startup_probe_reach_the_composer(repo_root):
+    """Text typed before/while the startup OSC 11 probe runs is kept for the composer (it used to
+    be flushed); the terminal's reply is stripped and Enter never rides along to submit it."""
+    import pty
+    import re as _re
+    import time as _time
+
+    env = dict(_os.environ, HERMES_REPO=str(repo_root))
+    for var in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "COLORFGBG", "HERMES_LIGHT",
+                "HERMES_TUI_LIGHT", "HERMES_TUI_THEME", "HERMES_TUI_BACKGROUND"):
+        env.pop(var, None)
+    pid, master = pty.fork()
+    if pid == 0:  # child
+        _os.execvpe(_sys.executable, [_sys.executable, "-c", _TYPEAHEAD_CHILD_SRC], env)
+    _os.set_blocking(master, False)
+    _os.write(master, b"fix tests\r")
+    out, answered, t0 = b"", False, _time.monotonic()
+    try:
+        while _time.monotonic() - t0 < 15 and not _re.search(rb"TYPED:[^\n]*\n", out):
+            with suppress(BlockingIOError, OSError):
+                out += _os.read(master, 1024)
+            if not answered and b"\x1b]11;?" in out:
+                _os.write(master, b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\\x1b[?62;22c")
+                answered = True
+            _time.sleep(0.005)
+    finally:
+        _os.close(master)
+        _os.waitpid(pid, 0)
+    line = next(ln for ln in out.decode("utf-8", "replace").splitlines() if "TYPED:" in ln)
+    assert line.split("TYPED:", 1)[1].strip() == "'fix tests'"

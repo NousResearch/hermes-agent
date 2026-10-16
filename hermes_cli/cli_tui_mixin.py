@@ -2209,7 +2209,7 @@ class CLITuiMixin:
     def _tui_build_input_area(self):
         """Multi-line prompt TextArea with slash completion, paste-collapse tracking and
         placeholder/password processors."""
-        from cli import _estimate_tui_input_height, get_skill_bundles, get_skill_commands
+        from cli import _estimate_tui_input_height, get_skill_bundles, get_skill_commands, seed_startup_typeahead
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
         from prompt_toolkit.completion import ThreadedCompleter
         cli_ref = self
@@ -2257,7 +2257,7 @@ class CLITuiMixin:
         input_area.window.height = _input_height
         # Paste collapsing state (large pastes are saved to a file and replaced by a placeholder).
         self._tui_paste_counter = 0
-        self._tui_prev_text_len = 0
+        self._tui_prev_text_len = seed_startup_typeahead(input_area.buffer)  # type-ahead during startup probe
         self._tui_prev_newline_count = 0
         self._tui_paste_just_collapsed = False
         self._skip_paste_collapse = False

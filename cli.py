@@ -126,6 +126,7 @@ from hermes_cli.cli_render import (
     _pt_app_is_running,
     _pt_print_ansi,
     _query_osc11_background,
+    seed_startup_typeahead,
     _record_output_history,
     _record_output_history_entry,
     _release_paints,

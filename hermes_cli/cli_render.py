@@ -134,6 +134,36 @@ def _luminance_from_hex(hex_str: str) -> float | None:
 
 
 _DA1_REPLY_RE = re.compile(rb"\x1b\[\?[0-9;]*c")
+# Terminal replies the probe can read: OSC (BEL/ST-terminated), CSI, and a trailing partial escape.
+_TERMINAL_REPLY_RE = re.compile(rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[^\x1b]*$")
+# Ordinary characters typed while the probe owned stdin; the composer starts with them.
+_STARTUP_TYPEAHEAD: list[str] = []
+
+
+def _keep_typeahead(raw: bytes) -> None:
+    """Record the printable text in *raw* once terminal replies are removed. Control bytes
+    (Enter, Ctrl+C) are dropped: a keystroke the user never saw land must not submit anything."""
+    text = _TERMINAL_REPLY_RE.sub(b"", raw).decode("utf-8", "ignore")
+    kept = "".join(ch for ch in text if ch.isprintable())
+    if kept:
+        _STARTUP_TYPEAHEAD.append(kept)
+
+
+def take_startup_typeahead() -> str:
+    """Pop the text typed during startup terminal probing (empty when none)."""
+    text = "".join(_STARTUP_TYPEAHEAD)
+    _STARTUP_TYPEAHEAD.clear()
+    return text
+
+
+def seed_startup_typeahead(buffer) -> int:
+    """Start the composer *buffer* with the startup type-ahead; returns the seeded length.
+    A document assignment, not ``insert_text()``: that schedules completion and no event loop runs yet."""
+    text = take_startup_typeahead()
+    if text:
+        from prompt_toolkit.document import Document
+        buffer.document = Document(text, len(text))
+    return len(text)
 
 
 def _query_osc11_background() -> str | None:
@@ -142,10 +172,9 @@ def _query_osc11_background() -> str | None:
     Fenced with a DA1 sentinel (``ESC[c``): terminals answer in order and virtually all
     answer DA1, so its reply proves our OSC 11 was processed — otherwise a late reply
     leaks into prompt_toolkit's stdin as typed text. Skipped over SSH (round-trip too
-    slow; a late BEL reads as Ctrl+G). A 50 ms drain after TCSAFLUSH catches stragglers.
-
-    After the main read + TCSAFLUSH, a short drain window (50 ms) catches late-arriving bytes that slipped
-    past the flush — a race observed on VPS and container terminals under load (#40250).
+    slow; a late BEL reads as Ctrl+G). After the main read a 50 ms drain catches late reply
+    bytes (#40250). Everything read is split: terminal replies are dropped, ordinary characters
+    the user typed meanwhile are kept for the composer (``take_startup_typeahead``).
     """
     from cli import _DA1_REPLY_RE
     if not sys.stdin.isatty() or not sys.stdout.isatty():
@@ -160,9 +189,11 @@ def _query_osc11_background() -> str | None:
         old = termios.tcgetattr(fd)
     except Exception:
         return None
+    buf = b""
     try:
         try:
-            tty.setcbreak(fd)
+            # TCSANOW: the default TCSAFLUSH would discard the line the user is already typing.
+            tty.setcbreak(fd, termios.TCSANOW)
         except Exception:
             return None
         try:
@@ -173,7 +204,6 @@ def _query_osc11_background() -> str | None:
             return None
         # Read until the DA1 fence closes; the 1s deadline only covers terminals ignoring DA1.
         deadline = time.monotonic() + 1.0
-        buf = b""
         while time.monotonic() < deadline:
             r, _, _ = select.select([fd], [], [], deadline - time.monotonic())
             if not r:
@@ -199,17 +229,21 @@ def _query_osc11_background() -> str | None:
         r, g, b = norm(m.group(1)), norm(m.group(2)), norm(m.group(3))
         return f"#{r:02X}{g:02X}{b:02X}"
     finally:
-        # TCSAFLUSH discards unread input, scrubbing a partial reply before prompt_toolkit reads it.
-        with suppress(Exception):
-            termios.tcsetattr(fd, termios.TCSAFLUSH, old)
+        # Read (never TCSAFLUSH) what is still queued: a partial reply must not reach prompt_toolkit,
+        # but keystrokes typed while the probe ran are the user's and go to the composer.
         try:
             drain_deadline = time.monotonic() + 0.05
             while time.monotonic() < drain_deadline:
                 r, _, _ = select.select([fd], [], [], drain_deadline - time.monotonic())
-                if not r or not os.read(fd, 64):
+                chunk = os.read(fd, 64) if r else b""
+                if not chunk:
                     break
+                buf += chunk
         except Exception:
             pass
+        with suppress(Exception):
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        _keep_typeahead(buf)
 
 
 def _heal_cooked_mode_drift(fd: int) -> bool:

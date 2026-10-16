@@ -219,8 +219,7 @@ Synchronous single-task delegation from an orchestrator runs directly without th
 ### Results that finish while the agent is busy
 
 By default a background result that finishes while the parent is mid-turn waits and arrives
-as its own turn once the current one ends. In the interactive CLI you can carry it into the
-running turn instead:
+as its own turn once the current one ends. You can carry it into the running turn instead:
 
 ```yaml
 delegation:
@@ -230,8 +229,8 @@ delegation:
 With `steer`, the finished report is appended to the parent's next tool result, marked as
 background evidence rather than a user request, so the parent can act on it before its next
 decision. Nothing is rewritten in past context. If the turn ends without another tool call,
-or is stopped, the result arrives as the next turn exactly as in `queue` mode. Messaging
-gateways keep `queue` behaviour.
+or is stopped, the result arrives as the next turn exactly as in `queue` mode. API-server
+sessions and per-task failure notices keep `queue` behaviour.
 
 ### Durable background completions
 

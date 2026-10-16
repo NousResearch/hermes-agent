@@ -41,6 +41,15 @@ logger = logging.getLogger(__name__)
 MAX_POST_ATTACH_RECONNECT_FAILURES = 5
 
 
+def _cdp_endpoint_gone(exc: BaseException) -> bool:
+    """True when the WebSocket handshake was answered with HTTP 404: the target (page) this
+    supervisor dials was closed, so every later dial is a guaranteed 404. websockets >= 14 raises
+    ``InvalidStatus`` (``.response.status_code``); older releases ``InvalidStatusCode`` (``.status_code``)."""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None) if response is not None else getattr(exc, "status_code", None)
+    return status == 404
+
+
 def _redact_cdp_error_text(exc: object) -> str:
     """Redact CDP endpoint credentials from an exception's (or URL's) string form.
     ``websockets`` bakes the raw URL (``?token=`` / ``user:pass@``) into its exception
@@ -381,6 +390,13 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 self._ws = await asyncio.wait_for(websockets.connect(self.cdp_url, **connect_kwargs), timeout=10.0)
             except Exception as e:
                 if self._fail_start(e):
+                    return
+                if _cdp_endpoint_gone(e):
+                    # Closed target: retrying cannot succeed. One INFO line, leave the registry (same
+                    # exit as an exhausted budget) instead of five WARNING dials.
+                    logger.info("CDP supervisor %s: target gone (HTTP 404); stopping without retries", self.task_id)
+                    if SUPERVISOR_REGISTRY.get(self.task_id) is self:
+                        SUPERVISOR_REGISTRY._pop(self.task_id)
                     return
                 reconnect_failures += 1
                 if self._reconnect_budget_spent(reconnect_failures, e):

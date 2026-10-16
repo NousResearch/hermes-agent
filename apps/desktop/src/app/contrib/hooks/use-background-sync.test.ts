@@ -17,14 +17,13 @@ import {
   setSessions
 } from '@/store/session'
 import {
-  $attentionSessionIds,
   $sessionTiles,
   $stalledSessionIds,
-  $workingSessionIds,
   clearAllSessionStates,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS
 } from '@/store/session-states'
+import { $attentionSessionIds, $workingSessionIds } from '@/store/session-states-status-sets'
 import { makeSessionInfo } from '@/test/session-info'
 
 import {

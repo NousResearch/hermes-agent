@@ -5,6 +5,7 @@ import {
   clearTranscriptTailPaging,
   recordTranscriptTail,
   rewindTranscriptTail,
+  selectTranscriptTail,
   transcriptTailState
 } from './transcript-tail'
 
@@ -191,5 +192,46 @@ describe('order-echo guard (#92508)', () => {
     recordTranscriptTail('s1', page(10))
 
     expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 10, possiblyTruncated: true })
+  })
+})
+
+describe('selectTranscriptTail (per-key useStoreSelector)', () => {
+  beforeEach(() => {
+    clearTranscriptTailPaging()
+  })
+
+  it('returns a stable ref across unrelated sessions writes', () => {
+    recordTranscriptTail('mine', page(5))
+    recordTranscriptTail('other', page(5))
+
+    const before = selectTranscriptTail($transcriptTailBySessionId.get(), 'mine')
+
+    recordTranscriptTail('other', page(7))
+
+    const after = selectTranscriptTail($transcriptTailBySessionId.get(), 'mine')
+
+    expect(after).toBe(before)
+  })
+
+  it('returns undefined for an unknown session and for an ambiguous one', () => {
+    expect(selectTranscriptTail($transcriptTailBySessionId.get(), 'unknown')).toBeUndefined()
+
+    recordTranscriptTail(
+      's1',
+      page(10),
+      { connectionId: 'c1', profile: 'work' },
+      { connectionId: 'c1', profile: 'work' }
+    )
+    recordTranscriptTail(
+      's1',
+      page(10),
+      { connectionId: 'c2', profile: 'work' },
+      { connectionId: 'c2', profile: 'work' }
+    )
+
+    expect(selectTranscriptTail($transcriptTailBySessionId.get(), 's1')).toBeUndefined()
+    expect(
+      selectTranscriptTail($transcriptTailBySessionId.get(), 's1', { connectionId: 'c1', profile: 'work' })
+    ).toMatchObject({ nextOffset: 10, possiblyTruncated: true })
   })
 })

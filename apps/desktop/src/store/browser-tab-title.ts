@@ -26,7 +26,8 @@ import { normalizeProfileKey } from './profile'
 import { $sessions, sessionMatchesStoredId } from './session'
 import { $unreadSessionCount } from './session-dot-state'
 import { $focusedStoredSessionId } from './session-focus'
-import { $attentionSessionIds, $sessionTiles, $workingSessionIds } from './session-states'
+import { $sessionTiles } from './session-states'
+import { $attentionSessionIds, $workingSessionIds } from './session-states-status-sets'
 
 const APP_NAME = 'Hermes'
 

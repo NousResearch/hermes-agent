@@ -304,9 +304,14 @@ def automation_display_metadata(metadata):
 # classic resolver (802fd5782f3, fd4e277c849). They are accepted and not persisted (a sibling set in the
 # fingerprint would make the same completion's retry a new identity); execute_admission re-stamps the
 # proof at execution from the target the pre-claim check validated, and the turn's resolver reads it.
+# notification_event_type is producer coalescing context (gateway-only, like notification_origin): a
+# completion wake carries it so the busy queue can join same-turn completions. It is accepted and not
+# persisted; rejecting it here turned a refused automation wake's code from admission_conflict into
+# invalid_params and dropped the wake entirely.
 _AUTOMATION_METADATA = frozenset({'gateway_session_key', 'gateway_session_id', 'automation_identities',
     'turn_author', 'notification_origin', 'original_trigger_message_id', 'notification_category',
-    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick'})
+    'display_kind', 'display_text', 'gateway_proven_session_id', 'gateway_completion_ids', 'heartbeat_tick',
+    'notification_event_type'})
 
 
 def admission_display(payload):

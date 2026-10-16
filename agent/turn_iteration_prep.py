@@ -116,7 +116,7 @@ class IterationPrep:
 # position is reproduced verbatim. The row is never dropped: removal can form
 # ``tool -> user`` (#48879) or ``user -> user``, which repair then merges —
 # losing the second row's checkpoint ``api_content``. Neutralise a copy instead.
-def _neutralise_replay_echo_ghosts(seq: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], int]:
+def _neutralise_replay_echo_ghosts(seq: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
     """(new list, neutralised); never mutates ``seq`` or its row dicts."""
     from agent.agent_runtime_helpers_placeholders import (
         _INTERRUPTED_PLACEHOLDER,
@@ -129,7 +129,7 @@ def _neutralise_replay_echo_ghosts(seq: List[Dict[str, Any]]) -> Tuple[List[Dict
     # neutralisation rewrites to, so the rewrite does not retrigger the filter).
     hazards = {_INTERRUPT_SCAFFOLD_MARKER, _LEGACY_INTERRUPTED_PLACEHOLDER}
     neutralised = 0
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for m in seq:
         if (
             m.get("display_kind") == "hidden" and m.get("role") == "assistant"

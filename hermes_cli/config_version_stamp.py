@@ -23,7 +23,7 @@ def _coerce_config_version(value) -> int:
     return max(version, 0)
 
 
-def read_config_version_stamp(*, raise_on_parse_error: bool = False) -> Tuple[Optional[int], int]:
+def read_config_version_stamp(*, raise_on_parse_error: bool = False) -> tuple[Optional[int], int]:
     """Single raw read behind ``check_config_version()``: ``(stamp, latest_version)`` where
     *stamp* is ``None`` when config.yaml parsed but carries no ``_config_version`` key (a
     never-stamped current-schema file, not an ancient install — ``migrate_config()`` gives it only
@@ -63,7 +63,7 @@ def read_config_version_stamp(*, raise_on_parse_error: bool = False) -> Tuple[Op
     return _coerce_config_version(config.get("_config_version")), latest
 
 
-def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, int]:
+def check_config_version(*, raise_on_parse_error: bool = False) -> tuple[int, int]:
     """Return ``(current_version, latest_version)`` from the raw on-disk config.
     Reads the raw file rather than ``load_config()``: the deep-merge would make a file lacking
     ``_config_version`` inherit the latest version, hiding that the schema was never migrated.

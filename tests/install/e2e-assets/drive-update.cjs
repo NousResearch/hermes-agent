@@ -4,7 +4,9 @@
 //
 // Run the current CI checkout's entrypoint with its locked driver deps:
 //
-//   node <this file> <path-to-Hermes.exe> <proof-dir> <old-sha> [--native-handoff]
+//   node <this file> <path-to-Hermes.exe> <proof-dir> <old-sha> <target-sha>
+//   node <this file> <path-to-Hermes.exe> <proof-dir> <old-sha> --native-handoff
+// <target-sha> is the staged Git main the source update must offer.
 // --native-handoff leaves the native UIA caller in charge of clicking Update.
 //
 // Exit codes: 0 = update hand-off started and the app quit (the detached
@@ -22,14 +24,16 @@ const { _electron } = require('@playwright/test')
 const { prepareWindowForInput } = require('./window-input.cjs')
 const { observeProcessClose } = require('./process-close.cjs')
 const { pickAppWindow, openAbout, readManualUpdateCommand, waitForUpdate } = require('./update-ui.cjs')
+const { installSourceBranchProbe, prepareSourceBranchEnvironment } = require('./source-branch-probe.cjs')
 
 const exePath = process.argv[2]
 const proofDir = process.argv[3]
 const oldSha = process.argv[4]
 const nativeHandoff = process.argv[5] === '--native-handoff'
+const targetSha = nativeHandoff ? undefined : process.argv[5]
 
-if (!exePath || !proofDir || !oldSha || !process.env.HERMES_E2E_MOCK_URL) {
-  console.error('usage: node drive-update.cjs <Hermes.exe> <proof-dir> <old-sha> [--native-handoff]; HERMES_E2E_MOCK_URL required')
+if (!exePath || !proofDir || !oldSha || !(nativeHandoff || targetSha) || !process.env.HERMES_E2E_MOCK_URL) {
+  console.error('usage: node drive-update.cjs <Hermes.exe> <proof-dir> <old-sha> (<target-sha> | --native-handoff); HERMES_E2E_MOCK_URL required')
   process.exit(1)
 }
 
@@ -64,7 +68,14 @@ async function main() {
   const { isolateUpdateWindowEnvironment, isolatedElectronArgs, updateWindowEnvironment } = await import('./smoke-env.mjs')
   const origin = nativeHandoff ? 'bundled' : 'source'
   const root = nativeHandoff ? path.join(path.dirname(exePath), 'resources', 'agent-payload') : path.join(process.env.HERMES_HOME, 'hermes-agent')
-  const launchEnv = isolateUpdateWindowEnvironment(updateWindowEnvironment(process.env, root, origin))
+  const capturedEnv = updateWindowEnvironment(process.env, root, origin)
+  const launchEnv = isolateUpdateWindowEnvironment(capturedEnv)
+  if (!nativeHandoff) {
+    // The app's update check asks api.github.com for main's tip first, so it would compare against the
+    // real GitHub main and never the staged serve.git. Point the check at the staged repo, the same
+    // way launch-from-spec.mjs does for the macOS and Linux source legs.
+    prepareSourceBranchEnvironment(root, targetSha, process.env.HERMES_E2E_REAL_GIT, capturedEnv, launchEnv)
+  }
   const userData = launchEnv.HERMES_DESKTOP_USER_DATA_DIR
   log(`launching ${exePath}`)
 
@@ -78,6 +89,7 @@ async function main() {
     env: launchEnv,
     timeout: 120_000
   })
+  if (!nativeHandoff) await installSourceBranchProbe(app)
   const child = app.process()
 
   const waitForProcessClose = observeProcessClose(child)

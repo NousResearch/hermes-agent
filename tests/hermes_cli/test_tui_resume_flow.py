@@ -361,3 +361,24 @@ def test_launch_tui_local_session_starts_in_launch_dir_not_terminal_cwd(monkeypa
     else:
         assert "HERMES_TUI_CWD" not in env
         assert Path(env["TERMINAL_CWD"]).resolve() == configured.resolve()
+
+
+@pytest.mark.parametrize("flag", ["HERMES_SAFE_MODE", "HERMES_IGNORE_USER_CONFIG"])
+def test_launch_tui_bypass_without_model_refuses_before_the_tui_starts(monkeypatch, main_mod, capsys, flag):
+    """`hermes --tui --safe-mode` (or an exported HERMES_IGNORE_USER_CONFIG=1) reads no profile
+    default model: the owner refuses session.create with bare invalid_params, so the launcher must
+    say "pass --model" before spawning the TUI, as classic chat does."""
+    monkeypatch.setenv(flag, "1")
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.setenv("HERMES_PYTHON", sys.executable)  # never resolve a python over the real PATH
+    monkeypatch.setattr(main_tui_launch, "_make_tui_argv",
+                        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")))
+    spawned = []
+    monkeypatch.setattr(main_mod.subprocess, "call", lambda argv, cwd=None, env=None: spawned.append(env) or 0)
+    with pytest.raises(SystemExit) as exc:
+        main_mod._launch_tui()
+    assert exc.value.code == 1 and spawned == []
+    assert "pass --model explicitly" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(model="stub-model")
+    assert spawned and spawned[-1][flag] == "1" and spawned[-1]["HERMES_MODEL"] == "stub-model"

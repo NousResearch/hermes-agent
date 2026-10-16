@@ -135,7 +135,7 @@ _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024  # one cap for dashboard, tools and CLI
 
 
-def _assert_not_delegated_child_mutation(path: "str | Path | None" = None) -> None:
+def _assert_not_delegated_child_mutation(path: str | Path | None = None) -> None:
     """Reject Kanban mutations from ``delegate_task`` child contexts.
 
     The tool/CLI fast-fail guards are UX, not a trust boundary (a child can shell
@@ -162,7 +162,7 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
         _log.debug("kanban lifecycle hook %s failed: %s", event, exc)
 
 
-def _fire_task_hook(event: str, task: Optional["Task"], task_id: str, run_id: Optional[int], **fields: Any) -> None:
+def _fire_task_hook(event: str, task: Optional[Task], task_id: str, run_id: Optional[int], **fields: Any) -> None:
     """Lifecycle hook for a task transition; ``assignee`` from the (possibly missing) row."""
     _fire_kanban_lifecycle_hook(
         event, task_id, board=get_current_board(),
@@ -192,7 +192,7 @@ def _kanban_observer_consumed(event: str) -> bool:
 
 
 def _fire_worker_spawned_hook(
-    conn: sqlite3.Connection, task: "Task", workspace_path: str, pid: Optional[int], *,
+    conn: sqlite3.Connection, task: Task, workspace_path: str, pid: Optional[int], *,
     board: Optional[str] = None,
 ) -> None:
     """``on_kanban_worker_spawned`` AFTER the PID is durably persisted; best-effort."""
@@ -240,7 +240,7 @@ _TICK_ACTIVITY_FIELDS = (
 
 
 def _fire_dispatch_tick_hook(
-    result: "DispatchResult", *, board: Optional[str] = None, dry_run: bool = False,
+    result: DispatchResult, *, board: Optional[str] = None, dry_run: bool = False,
 ) -> None:
     """``on_kanban_dispatch_tick`` — strictly AFTER ``_dispatch_tick_lock`` is
     released so a slow subscriber cannot stall a sibling dispatcher.
@@ -322,14 +322,6 @@ def _resolve_crash_grace_seconds() -> int:
 def _resolve_rate_limit_cooldown_seconds() -> int:
     """``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS`` (0 = next tick, for tests) else default."""
     return _env_int("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS)
-
-
-# build_worker_context() caps, sized for a ~100k-char prompt with headroom.
-_CTX_MAX_PRIOR_ATTEMPTS = 10      # most recent N prior runs shown in full
-_CTX_MAX_COMMENTS       = 30      # most recent N comments shown in full
-_CTX_MAX_FIELD_BYTES    = 4 * 1024   # per summary/error/metadata/result
-_CTX_MAX_BODY_BYTES     = 8 * 1024   # per task.body (opening post)
-_CTX_MAX_COMMENT_BYTES  = 2 * 1024   # per comment
 
 
 def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
@@ -458,7 +450,14 @@ def get_current_board() -> str:
             normed = _normalize_board_slug(candidate)
         except ValueError:
             return None
-        return normed if normed and board_exists(normed) else None
+        if not (normed and board_exists(normed)):
+            return None
+        # An archived board leaves a tombstone board.json; a stale `current`
+        # file or HERMES_KANBAN_BOARD pointing at one falls through to
+        # default rather than resurrecting it (#43243).
+        if read_board_metadata(normed).get("archived"):
+            return None
+        return normed
 
     for candidate in (
         (_CURRENT_BOARD_OVERRIDE.get() or "").strip(),
@@ -511,15 +510,13 @@ def board_dir(board: Optional[str] = None) -> Path:
 
 
 def board_exists(board: Optional[str] = None) -> bool:
-    """Board has ``board.json`` or ``kanban.db`` on disk; ``default`` always exists."""
+    """Board has a ``board.json`` on disk; ``default`` always exists."""
     slug = _slug_or_default(board)
     if slug == DEFAULT_BOARD:
         return True
     return _dir_holds_board(board_dir(slug))
 
 
-def _dir_holds_board(d: Path) -> bool:
-    return (d / "board.json").exists() or (d / "kanban.db").exists()
 
 
 def _explicit_board_slug(board: Optional[str]) -> Optional[str]:
@@ -611,156 +608,6 @@ def worker_logs_dir(board: Optional[str] = None) -> Path:
     return _board_path(None, board, ("kanban", "logs"), "logs")
 
 
-def board_metadata_path(board: Optional[str] = None) -> Path:
-    """``board.json`` path — display metadata only; the directory slug is the identity."""
-    return board_dir(_slug_or_default(board)) / "board.json"
-
-
-def _default_board_display_name(slug: str) -> str:
-    """``atm10-server`` -> ``Atm10 Server``."""
-    return " ".join(part.capitalize() for part in slug.replace("_", "-").split("-") if part) or slug
-
-
-def read_board_metadata(board: Optional[str] = None) -> dict:
-    """``board.json`` merged over defaults, plus ``slug`` and ``db_path``. Never
-    raises — a missing/malformed file yields the synthesized entry."""
-    slug = _slug_or_default(board)
-    meta: dict[str, Any] = {
-        "slug": slug,
-        "name": _default_board_display_name(slug),
-        "description": "",
-        "icon": "",
-        "color": "",
-        "default_workdir": None,
-        # Project scope: new tasks inherit it (deterministic worktree + branch).
-        "project_id": None,
-        "created_at": None,
-        "archived": False,
-    }
-    try:
-        p = board_metadata_path(slug)
-        if p.exists():
-            raw = json.loads(p.read_text(encoding="utf-8-sig"))
-            if isinstance(raw, dict):
-                # Never let the metadata file claim a different slug than
-                # its directory — trust the filesystem.
-                raw["slug"] = slug
-                meta.update(raw)
-    except (OSError, json.JSONDecodeError):
-        pass
-    meta["db_path"] = str(kanban_db_path(slug))
-    return meta
-
-
-def write_board_metadata(
-    board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
-    icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
-    default_workdir: Optional[str] = None, project_id: Optional[str] = None,
-) -> dict:
-    """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
-    set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
-    "" = clear (``project_id`` is not validated here)."""
-    _assert_not_delegated_child_mutation()
-    slug = _slug_or_default(board)
-    meta = read_board_metadata(slug)
-    # db_path is derived on every read; never persist it into board.json.
-    meta.pop("db_path", None)
-    if name is not None:
-        meta["name"] = str(name).strip() or _default_board_display_name(slug)
-    for key, value in (("description", description), ("icon", icon), ("color", color)):
-        if value is not None:
-            meta[key] = str(value)
-    if archived is not None:
-        meta["archived"] = bool(archived)
-    for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
-        if value is not None:
-            meta[key] = str(value) if value else None
-    if not meta.get("created_at"):
-        meta["created_at"] = int(time.time())
-    path = board_metadata_path(slug)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
-    )
-    meta["db_path"] = str(kanban_db_path(slug))
-    return meta
-
-
-def create_board(
-    slug: str, *, name: Optional[str] = None, description: Optional[str] = None,
-    icon: Optional[str] = None, color: Optional[str] = None, default_workdir: Optional[str] = None,
-    project_id: Optional[str] = None,
-) -> dict:
-    """Create board dir + DB + metadata (``mkdir -p`` semantics: existing board returns its metadata)."""
-    normed = _require_slug(slug)
-    meta = write_board_metadata(
-        normed, name=name, description=description, icon=icon, color=color,
-        default_workdir=default_workdir, project_id=project_id,
-    )
-    # Touch the DB so list_boards() sees it immediately.
-    init_db(board=normed)
-    return meta
-
-
-def list_boards(*, include_archived: bool = True) -> list[dict]:
-    """Metadata for every board: ``default`` first (always present), then
-    ``boards/<slug>/`` dirs holding a ``kanban.db`` or ``board.json``, sorted."""
-    entries = [read_board_metadata(DEFAULT_BOARD)]
-    seen = {DEFAULT_BOARD}
-    root = boards_root()
-    if root.is_dir():
-        for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
-            if not child.is_dir():
-                continue
-            try:
-                normed = _normalize_board_slug(child.name)  # skip junk dirs, don't raise
-            except ValueError:
-                continue
-            if not normed or normed in seen or not _dir_holds_board(child):
-                continue
-            meta = read_board_metadata(normed)
-            if meta.get("archived") and not include_archived:
-                continue
-            entries.append(meta)
-            seen.add(normed)
-    return entries
-
-
-def remove_board(slug: str, *, archive: bool = True) -> dict:
-    """Archive (to ``boards/_archived/<slug>-<ts>/``) or delete a board;
-    ``default`` cannot be removed. Returns ``{"slug", "action", "new_path"}``."""
-    _assert_not_delegated_child_mutation()
-    normed = _require_slug(slug)
-    if normed == DEFAULT_BOARD:
-        raise ValueError("the 'default' board cannot be removed")
-    d = board_dir(normed)
-    if not d.exists():
-        raise ValueError(f"board {normed!r} does not exist")
-
-    # If the user removed the currently-active board, revert to default.
-    if get_current_board() == normed:
-        clear_current_board()
-
-    # A concurrent connect() after the rename recreates an empty DB file; drop
-    # the init cache first so the schema pass re-runs on it.
-    _INITIALIZED_PATHS.discard(str((d / "kanban.db").resolve()))
-
-    if archive:
-        archive_root = boards_root() / "_archived"
-        archive_root.mkdir(parents=True, exist_ok=True)
-        ts = int(time.time())
-        target = archive_root / f"{normed}-{ts}"
-        suffix = 1
-        while target.exists():  # rapid double-archive
-            target = archive_root / f"{normed}-{ts}-{suffix}"
-            suffix += 1
-        d.rename(target)
-        return {"slug": normed, "action": "archived", "new_path": str(target)}
-    import shutil
-    shutil.rmtree(d)
-    return {"slug": normed, "action": "deleted", "new_path": ""}
-
-
 # --- Data classes ---
 
 @dataclass
@@ -774,7 +621,7 @@ class Task:
     status: str
     priority: int
     created_by: Optional[str]
-    created_at: int
+    created_at: Optional[int]  # None only for an unparseable stamp
     started_at: Optional[int]
     completed_at: Optional[int]
     workspace_kind: str
@@ -812,12 +659,13 @@ class Task:
     completion_contract: Optional[str] = None
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "Task":
-        g = lambda col, default=None: _lossy_text(_row_get(row, col, default))  # noqa: E731
+    def from_row(cls, row: sqlite3.Row) -> Task:
+        g = lambda col, default=None: _lossy_text(_row_get(row, col, default))
         parsed = _json_or(g("skills"))
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
         return cls(
             **{col: _lossy_text(row[col]) for col in _TASK_REQUIRED_COLUMNS},
+            **{col: _to_epoch(g(col)) for col in _TASK_EPOCH_COLUMNS},  # outside writers may store text: epoch or None
             **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS},
             **{col: g(col) or None for col in _TASK_EMPTY_IS_NULL_COLUMNS},
             # Pre-migration fallbacks (spawn_failures / last_spawn_error) are only
@@ -832,13 +680,14 @@ class Task:
 
 # Columns every schema version has (KeyError if the SELECT omitted them).
 _TASK_REQUIRED_COLUMNS = (
-    "id", "title", "body", "assignee", "status", "priority", "created_by", "created_at",
-    "started_at", "completed_at", "workspace_kind", "workspace_path", "claim_lock", "claim_expires",
+    "id", "title", "body", "assignee", "status", "priority", "created_by",
+    "workspace_kind", "workspace_path", "claim_lock",
 )
+_TASK_EPOCH_COLUMNS = ("created_at", "started_at", "completed_at", "claim_expires", "last_heartbeat_at")
 # Later-added columns read as NULL when absent from the row.
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
-    "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
+    "max_runtime_seconds", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "session_id", "completion_contract",
 )
 # Text columns where "" is stored/read as "not set".
@@ -870,17 +719,16 @@ class Run:
     error: Optional[str]
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "Run":
+    def from_row(cls, row: sqlite3.Row) -> Run:
         return cls(
             **{
                 col: _lossy_text(row[col]) for col in (
-                    "task_id", "profile", "step_key", "status", "claim_lock", "claim_expires",
-                    "worker_pid", "max_runtime_seconds", "last_heartbeat_at", "outcome", "summary", "error",
+                    "task_id", "profile", "step_key", "status", "claim_lock",
+                    "worker_pid", "max_runtime_seconds", "outcome", "summary", "error",
                 )
             },
-            id=int(row["id"]),
-            started_at=int(row["started_at"]),
-            ended_at=_opt_int(row["ended_at"]),
+            **{col: _to_epoch(row[col]) for col in ("claim_expires", "last_heartbeat_at", "ended_at")},
+            id=int(row["id"]), started_at=_to_epoch(row["started_at"]) or 0,
             metadata=_json_or(_lossy_text(row["metadata"])),
         )
 
@@ -894,10 +742,10 @@ class Comment:
     created_at: int
 
     @classmethod
-    def from_row(cls, r: sqlite3.Row) -> "Comment":
+    def from_row(cls, r: sqlite3.Row) -> Comment:
         return cls(
             id=r["id"], task_id=r["task_id"], author=_lossy_text(r["author"]),
-            body=_lossy_text(r["body"]), created_at=r["created_at"],
+            body=_lossy_text(r["body"]), created_at=_to_epoch(r["created_at"]) or 0,
         )
 
 
@@ -915,11 +763,11 @@ class Attachment:
     created_at: int
 
     @classmethod
-    def from_row(cls, r: sqlite3.Row) -> "Attachment":
+    def from_row(cls, r: sqlite3.Row) -> Attachment:
         return cls(
             id=r["id"], task_id=r["task_id"], filename=r["filename"],
             stored_path=r["stored_path"], content_type=r["content_type"],
-            size=r["size"] or 0, uploaded_by=r["uploaded_by"], created_at=r["created_at"],
+            size=r["size"] or 0, uploaded_by=r["uploaded_by"], created_at=_to_epoch(r["created_at"]) or 0,
         )
 
 
@@ -933,11 +781,12 @@ class Event:
     run_id: Optional[int] = None
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "Event":
+    def from_row(cls, row: sqlite3.Row) -> Event:
         run_id = _row_get(row, "run_id")
         return cls(
             id=row["id"], task_id=row["task_id"], kind=_lossy_text(row["kind"]),
-            payload=_json_or(_lossy_text(row["payload"])), created_at=row["created_at"], run_id=_opt_int(run_id),
+            payload=_json_or(_lossy_text(row["payload"])), created_at=_to_epoch(row["created_at"]) or 0,
+            run_id=_opt_int(run_id),
         )
 
 
@@ -2203,7 +2052,7 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     return "ready"
 
 
-def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
+def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) -> int:
     """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
     returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
 
@@ -2523,12 +2372,15 @@ def release_stale_claims(
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?", (now,),
     ).fetchall()
+    from hermes_cli.kanban_owner_recovery import owner_reclaim_paused
     for row in stale:
+        if owner_reclaim_paused(conn, row["id"]):
+            continue
         host_local = (row["claim_lock"] or "").startswith(host_prefix)
-        hb = row["last_heartbeat_at"]
+        hb = _to_epoch(row["last_heartbeat_at"])
         # Backstop: a heartbeat older than the max-stale threshold means no
         # observable progress — reclaim even if the PID is alive (logic loop).
-        heartbeat_stale = hb is not None and (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
+        heartbeat_stale = hb is not None and (now - hb) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
         started_at = _row_get(row, "worker_started_at")
         if (host_local and row["worker_pid"] and _worker_alive(row["worker_pid"], started_at)
                 and not heartbeat_stale):
@@ -2564,8 +2416,8 @@ def release_stale_claims(
                 payload={
                     "stale_lock": row["claim_lock"],
                     "worker_pid": _opt_int(row["worker_pid"]),
-                    "claim_expires": int(row["claim_expires"]),
-                    "last_heartbeat_at": _opt_int(row["last_heartbeat_at"]),
+                    "claim_expires": _to_epoch(row["claim_expires"]),
+                    "last_heartbeat_at": hb,
                     "now": now,
                     "host_local": host_local,
                     "heartbeat_stale": bool(heartbeat_stale),
@@ -2627,9 +2479,9 @@ def _extend_live_stale_claim(conn: sqlite3.Connection, row: sqlite3.Row, now: in
                 "reason": "pid_alive",
                 "worker_pid": int(row["worker_pid"]),
                 "claim_lock": row["claim_lock"],
-                "claim_expires_was": int(row["claim_expires"]),
+                "claim_expires_was": _to_epoch(row["claim_expires"]),
                 "claim_expires_now": new_expires,
-                "last_heartbeat_at": _opt_int(row["last_heartbeat_at"]),
+                "last_heartbeat_at": _to_epoch(row["last_heartbeat_at"]),
             },
             run_id=run_id,
         )
@@ -4068,6 +3920,10 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     task = get_task(conn, task_id)
     if not task:
         raise ValueError(f"unknown task {task_id}")
+    from hermes_cli.kanban_db_context import (
+        _ctx_attachments, _ctx_comments, _ctx_header, _ctx_parent_results, _ctx_prior_attempts,
+        _ctx_role_history,
+    )
     # One clock reading so every relative age in this rendering agrees.
     now = int(time.time())
     lines: list[str] = []
@@ -4078,198 +3934,6 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     _ctx_role_history(lines, conn, task, now)
     _ctx_comments(lines, list_comments(conn, task_id), now)
     return "\n".join(lines).rstrip() + "\n"
-
-
-def _ctx_cap(s: Optional[str], limit: int = _CTX_MAX_FIELD_BYTES) -> str:
-    """Truncate to ``limit`` chars with a visible ellipsis."""
-    if not s:
-        return ""
-    s = s.strip()
-    if len(s) <= limit:
-        return s
-    return s[:limit] + f"… [truncated, {len(s) - limit} chars omitted]"
-
-
-def _ctx_stamp(ts: int, now: int) -> str:
-    """``YYYY-MM-DD HH:MM`` plus a relative age when one is available."""
-    disp = time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
-    age = _relative_age(ts, now)
-    return f"{disp}, {age}" if age else disp
-
-
-def _ctx_metadata_line(metadata: Any) -> Optional[str]:
-    if not metadata:
-        return None
-    try:
-        return f"_metadata_: `{_ctx_cap(json.dumps(metadata, ensure_ascii=False, sort_keys=True))}`"
-    except Exception:
-        return None
-
-
-def _ctx_tail(items: list, cap: int, noun: str) -> tuple[list, Optional[str]]:
-    """Keep the newest ``cap`` items; describe the omitted head, if any."""
-    omitted = max(0, len(items) - cap)
-    if not omitted:
-        return items, None
-    return items[-cap:], (
-        f"_({omitted} earlier {noun}{'s' if omitted != 1 else ''} "
-        f"omitted; showing most recent {cap})_"
-    )
-
-
-def _ctx_header(lines: list[str], task: Task) -> None:
-    lines.append(f"# Kanban task {task.id}: {task.title}")
-    lines.append("")
-    lines.append(f"Assignee: {task.assignee or '(unassigned)'}")
-    lines.append(f"Status:   {task.status}")
-    if task.tenant:
-        lines.append(f"Tenant:   {task.tenant}")
-    lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")
-    if task.max_runtime_seconds is not None:
-        terminal_timeout = _worker_terminal_timeout_env(
-            task.max_runtime_seconds, os.environ.get("TERMINAL_TIMEOUT"),
-        )
-        effective_terminal_timeout = terminal_timeout or os.environ.get("TERMINAL_TIMEOUT")
-        lines.append(f"Max runtime: {task.max_runtime_seconds}s")
-        if effective_terminal_timeout:
-            lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
-    if task.branch_name:
-        lines.append(f"Branch:   {task.branch_name}")
-    lines.append("")
-    if task.body and task.body.strip():
-        lines.append("## Body")
-        lines.append(_ctx_cap(task.body, _CTX_MAX_BODY_BYTES))
-        lines.append("")
-
-
-def _ctx_attachments(lines: list[str], attachments: list[Attachment]) -> None:
-    """Absolute on-disk paths so the worker's file tools read them directly
-    (remote terminal backends need the attachments dir mounted)."""
-    if not attachments:
-        return
-    lines.append("## Attachments")
-    lines.append(
-        "Files attached to this task. Read them with the file/terminal "
-        "tools at the absolute paths below:"
-    )
-    for att in attachments:
-        size_kb = max(1, (att.size + 1023) // 1024) if att.size else 0
-        size_str = f", {size_kb} KB" if size_kb else ""
-        ctype = f", {att.content_type}" if att.content_type else ""
-        lines.append(f"- `{att.filename}`{ctype}{size_str} → `{att.stored_path}`")
-    lines.append("")
-
-
-def _ctx_prior_attempts(lines: list[str], conn: sqlite3.Connection, task_id: str, now: int) -> None:
-    """Closed runs on this task (the active run is this worker), newest
-    ``_CTX_MAX_PRIOR_ATTEMPTS`` in full, older ones as a one-line marker."""
-    all_prior = [r for r in list_runs(conn, task_id) if r.ended_at is not None]
-    shown, omitted_note = _ctx_tail(all_prior, _CTX_MAX_PRIOR_ATTEMPTS, "attempt")
-    if not shown:
-        return
-    first_shown_idx = len(all_prior) - len(shown) + 1
-    lines.append("## Prior attempts on this task")
-    if omitted_note:
-        lines.append(omitted_note)
-    for offset, run in enumerate(shown):
-        profile = run.profile or "(unknown)"
-        outcome = run.outcome or run.status
-        lines.append(
-            f"### Attempt {first_shown_idx + offset} — {outcome} ({profile}, {_ctx_stamp(run.started_at, now)})"
-        )
-        if run.summary and run.summary.strip():
-            lines.append(_ctx_cap(run.summary))
-        if run.error and run.error.strip():
-            lines.append(f"_error_: {_ctx_cap(run.error)}")
-        meta_line = _ctx_metadata_line(run.metadata)
-        if meta_line:
-            lines.append(meta_line)
-        lines.append("")
-
-
-def _ctx_parent_results(lines: list[str], conn: sqlite3.Connection, task_id: str, now: int) -> None:
-    """Done-parent handoffs: newest ``completed`` run's summary+metadata,
-    falling back to ``task.result`` for pre-runs-table data. Stamped with a
-    relative age so the worker re-verifies stale upstream results."""
-    parent_rows = conn.execute(
-        "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id", (task_id,),
-    ).fetchall()
-    wrote_header = False
-    for pid in (r["parent_id"] for r in parent_rows):
-        pt = get_task(conn, pid)
-        if not pt or pt.status != "done":
-            continue
-        runs = [r for r in list_runs(conn, pid) if r.outcome == "completed"]
-        runs.sort(key=lambda r: r.started_at, reverse=True)
-        run = runs[0] if runs else None
-        if not wrote_header:
-            lines.append("## Parent task results")
-            lines.append(
-                "_Handoffs from upstream tasks, captured when each parent "
-                "completed (see age below). These are point-in-time "
-                "snapshots, not live state — if a result drives your "
-                "current work and it's not recent, re-verify against the "
-                "source before acting on it as current._"
-            )
-            wrote_header = True
-        done_ts = run.ended_at if run is not None and run.ended_at else (pt.completed_at or None)
-        age = _relative_age(done_ts, now)
-        lines.append(f"### {pid}" + (f" (completed {age})" if age else ""))
-        if run is not None and run.summary and run.summary.strip():
-            lines.append(_ctx_cap(run.summary))
-        elif pt.result:
-            lines.append(_ctx_cap(pt.result))
-        else:
-            lines.append("(no result recorded)")
-        meta_line = _ctx_metadata_line(run.metadata) if run is not None else None
-        if meta_line:
-            lines.append(meta_line)
-        lines.append("")
-
-
-def _ctx_role_history(lines: list[str], conn: sqlite3.Connection, task: Task, now: int) -> None:
-    """The assignee's 5 most recent completed runs on OTHER tasks — implicit
-    role continuity without wiring anything into SOUL.md / MEMORY.md."""
-    if not task.assignee:
-        return
-    role_rows = conn.execute(
-        "SELECT t.id, t.title, r.summary, r.ended_at "
-        "FROM task_runs r JOIN tasks t ON r.task_id = t.id "
-        "WHERE r.profile = ? AND r.task_id != ? "
-        "  AND r.outcome = 'completed' "
-        "ORDER BY r.ended_at DESC LIMIT 5", (task.assignee, task.id),
-    ).fetchall()
-    if not role_rows:
-        return
-    lines.append(f"## Recent work by @{task.assignee}")
-    for row in role_rows:
-        first = _first_line(row["summary"], 200) or "(no summary)"
-        lines.append(
-            f"- {row['id']} — {row['title']} ({_ctx_stamp(int(row['ended_at']), now)}): {first}"
-        )
-    lines.append("")
-
-
-def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
-    """Newest ``_CTX_MAX_COMMENTS`` comments. The explicit "comment from
-    worker" framing stops an operator-controlled HERMES_PROFILE like
-    "hermes-system" being read as a system directive above an
-    attacker-influenceable body (defense-in-depth)."""
-    shown, omitted_note = _ctx_tail(comments, _CTX_MAX_COMMENTS, "comment")
-    if not shown:
-        return
-    lines.append("## Comment thread")
-    if omitted_note:
-        lines.append(omitted_note)
-    for c in shown:
-        # Render author with explicit "comment from worker" framing so operator-controlled HERMES_PROFILE
-        # values like "hermes-system" or "operator" can't be misread by the next worker as a system
-        # directive above the (attacker-influenceable) comment body. Defense-in-depth — the LLM-controlled
-        # author-forgery surface was already closed in #22435. See #22452.
-        safe_author = (c.author or "").replace("`", "")
-        lines.append(f"comment from worker `{safe_author}` at {_ctx_stamp(c.created_at, now)}:")
-        lines.append(_ctx_cap(c.body, _CTX_MAX_COMMENT_BYTES))
-        lines.append("")
 
 
 # --- Stats + SLA helpers ---
@@ -4330,7 +3994,7 @@ def _to_epoch(val) -> Optional[int]:
     # ISO-8601 fallback (e.g. '2026-05-10T15:00:00Z')
     try:
         from datetime import datetime
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(s)
         return int(dt.timestamp())
     except (ValueError, OSError):
         return None
@@ -4339,9 +4003,7 @@ def _to_epoch(val) -> Optional[int]:
 def task_age(task: Task) -> dict:
     """Return age metrics for a single task. All values are seconds or None."""
     now = int(time.time())
-    _c = _to_epoch(task.created_at)
-    _s = _to_epoch(task.started_at)
-    _co = _to_epoch(task.completed_at)
+    _c, _s, _co = task.created_at, task.started_at, task.completed_at  # from_row coerced
     return {
         "created_age_seconds": now - _c if _c is not None else None,
         "started_age_seconds": now - _s if _s is not None else None,
@@ -4559,18 +4221,28 @@ def current_run_started_ats(conn: sqlite3.Connection, task_ids: Iterable[str]) -
 
 
 # --- Split modules (imported at the tail: they import this module as ``_kb``) ---
-from hermes_cli.kanban_db_connect import (  # noqa: E402
+from hermes_cli.kanban_db_boards import (
+    _default_board_display_name,
+    _dir_holds_board,
+    board_metadata_path,
+    create_board,
+    list_boards,
+    read_board_metadata,
+    remove_board,
+    write_board_metadata,
+)
+from hermes_cli.kanban_db_connect import (
     _INITIALIZED_PATHS,
     init_db,
     write_txn,
 )
-from hermes_cli.kanban_db_workspace import (  # noqa: E402
+from hermes_cli.kanban_db_workspace import (
     _cleanup_workspace,
     _is_managed_scratch_path,
     _managed_scratch_path_info,
     _scratch_workspace,
 )
-from hermes_cli.kanban_db_dispatch import (  # noqa: E402
+from hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
     DispatchResult,

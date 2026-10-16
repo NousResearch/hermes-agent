@@ -1,21 +1,17 @@
 name: openviking
+title: OpenViking
 repo: https://github.com/volcengine/OpenViking
-sha: 3b65218eef43aba7a680cf143278ad4c153b0e9f
+sha: 9f150ece247ad683494ab172d738023bd6dc6170
 subdir: examples/hermes-plugin
-version: "2.0.1"
-description: OpenViking context-database memory provider — session-managed memory with automatic
-  extraction, tiered retrieval and filesystem-style knowledge browsing. Maintained by Volcengine; the
-  same provider that shipped in-tree. Disclosure — conversation turns, tool results and MEMORY.md /
-  USER.md edits are sent to the configured OpenViking server (local 127.0.0.1 by default; setup offers
-  a Volcengine cloud endpoint); when the local server is down it starts `openviking-server` from PATH
-  in the background, and at this pin that child inherits the full Hermes environment.
+version: "2.1.1"
+image: https://raw.githubusercontent.com/volcengine/OpenViking/9f150ece247ad683494ab172d738023bd6dc6170/docs/images/openviking-social.jpg
+description: "Long-term memory for Hermes. Capture conversations, recall useful facts across sessions and search your knowledge. Choose Quick Local, OpenViking Service (managed cloud) or your own server. Disclosure — conversation turns, tool results and MEMORY.md / USER.md edits are sent to the configured OpenViking server. Quick Local setup installs the newest OpenViking 0.4.x server release from PyPI at setup time (checked against PyPI's hash, not the version reviewed here; re-running setup upgrades it) plus a hash-pinned llama-cpp-python wheel and a local embedding model. It copies the active Hermes static LLM API key into a private file under the profile for extraction, and its localhost server keeps running after Hermes exits and after plugin removal (stop it with `hermes openviking local stop`). Extraction can use a remote LLM. Custom localhost connections can start openviking-server from PATH with the profile environment minus Hermes bot, gateway, GitHub and dashboard secrets; model and tool API keys still pass."
 maintainer: volcengine
 tier: community
 category: memory
-docs_url: https://github.com/volcengine/OpenViking/tree/main/examples/hermes-plugin#readme
+docs_url: https://github.com/volcengine/OpenViking/tree/9f150ece247ad683494ab172d738023bd6dc6170/examples/hermes-plugin#readme
 capabilities:
   provides_tools: []
-  provides_hooks:
-  - on_session_end
+  provides_hooks: []
   provides_middleware: []
   requires_env: []

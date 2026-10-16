@@ -46,7 +46,7 @@ _DISCOVERY_DOC = {
 
 
 @pytest.fixture(scope="module")
-def rsa_keypair() -> Dict[str, Any]:
+def rsa_keypair() -> dict[str, Any]:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     private_pem = key.private_bytes(
         encoding=serialization.Encoding.PEM,
@@ -68,7 +68,7 @@ def _fake_jwks_client(rsa_keypair) -> MagicMock:
 
 
 def _mint_token(
-    rsa_keypair: Dict[str, Any],
+    rsa_keypair: dict[str, Any],
     *,
     iss: str,
     aud: str,
@@ -82,7 +82,7 @@ def _mint_token(
 
 
 def _self_hosted_provider(rsa_keypair, *, leeway: float | None = None) -> Any:
-    kwargs: Dict[str, Any] = {"issuer": _ISSUER, "client_id": _CLIENT_ID}
+    kwargs: dict[str, Any] = {"issuer": _ISSUER, "client_id": _CLIENT_ID}
     if leeway is not None:
         kwargs["id_token_leeway"] = leeway
     p = oidc_plugin.SelfHostedOIDCProvider(**kwargs)
@@ -93,7 +93,7 @@ def _self_hosted_provider(rsa_keypair, *, leeway: float | None = None) -> Any:
 
 
 def _nous_provider(rsa_keypair, *, leeway: float | None = None) -> Any:
-    kwargs: Dict[str, Any] = {"client_id": "agent:inst123", "portal_url": _PORTAL}
+    kwargs: dict[str, Any] = {"client_id": "agent:inst123", "portal_url": _PORTAL}
     if leeway is not None:
         kwargs["token_leeway"] = leeway
     p = nous_plugin.NousDashboardAuthProvider(**kwargs)

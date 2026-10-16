@@ -13,7 +13,7 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from hermes_cli._subprocess_compat import windows_detach_flags
+from hermes_cli._subprocess_compat import windows_detach_flags, windows_detach_flags_without_breakaway
 from hermes_cli.config import get_hermes_home
 
 # Same logger the code used before extraction (record parity).
@@ -67,7 +67,7 @@ def _probe_gateway_health() -> tuple[bool, dict | None]:
 # ``platform-name -> (config port key, adapter default)`` for port-binding gateway platforms.
 # Mirrors PORT_BINDING_PLATFORM_VALUES (gateway/config.py) and each adapter's DEFAULT_PORT /
 # DEFAULT_WEBHOOK_PORT. Display-only data for the topology readout, not a bind source.
-_PORT_BINDING_PLATFORM_PORTS: Dict[str, Tuple[str, int]] = {
+_PORT_BINDING_PLATFORM_PORTS: dict[str, tuple[str, int]] = {
     "webhook": ("port", 8644), "api_server": ("port", 8642), "msgraph_webhook": ("port", 8646),
     "feishu": ("webhook_port", 8765), "wecom_callback": ("port", 8645), "bluebubbles": ("webhook_port", 8645),
     "sms": ("webhook_port", 8080), "whatsapp_cloud": ("webhook_port", 8090), "line": ("port", 8646),
@@ -78,7 +78,7 @@ _PORT_BINDING_PLATFORM_PORTS: Dict[str, Tuple[str, int]] = {
 _PLATFORM_DEAD_STATES = frozenset({"fatal", "disconnected", "stopped"})
 
 
-def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> Dict[str, int]:
+def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> dict[str, int]:
     """Best-effort ``platform -> host TCP port`` for one profile's live gateway.
 
     Ports come from the profile's own config.yaml (``gateway.platforms`` then top-level
@@ -94,7 +94,7 @@ def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> Dict
     if not active:
         return {}
 
-    blocks: Dict[str, dict] = {}
+    blocks: dict[str, dict] = {}
     try:
         # load_config() targets the ACTIVE profile's home; read the probed profile's file raw.
         from hermes_cli.config import read_user_config_raw
@@ -109,7 +109,7 @@ def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> Dict
     except Exception:
         blocks = {}
 
-    ports: Dict[str, int] = {}
+    ports: dict[str, int] = {}
     for name in active:
         port_key, default_port = _PORT_BINDING_PLATFORM_PORTS[name]
         block = blocks.get(name) or {}
@@ -158,7 +158,7 @@ def _owned_profile_platforms(writer_identity: Optional[tuple], platforms: dict) 
         and value.get("writer_start_time") == live_start}
 
 
-def _collect_profile_gateway_topology() -> Dict[str, Any]:
+def _collect_profile_gateway_topology() -> dict[str, Any]:
     """Enumerate profiles and the gateways serving them for ``/api/status``.
 
     Returns ``profiles`` (all profile names via the cheap ``profiles_to_serve(True)`` chokepoint),
@@ -175,8 +175,8 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
         _log.debug("profile/gateway topology enumeration failed", exc_info=True)
         return {"profiles": [], "gateway_mode": "unknown", "gateways": [], "profile_platforms": {}}
 
-    gateways: List[Dict[str, Any]] = []
-    profile_platforms: Dict[str, dict] = {}
+    gateways: list[dict[str, Any]] = []
+    profile_platforms: dict[str, dict] = {}
     multiplex = False
     standalone_reason: Optional[str] = None
     for name, home in homes:
@@ -204,7 +204,7 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
                 profile_platforms[name] = owned
         # Ports from the OWNED entries too: a platform entry a previous process left "connected"
         # reported a port the live gateway does not bind.
-        entry: Dict[str, Any] = {"profile": name, "ports": _profile_platform_ports(home, {"platforms": owned})}
+        entry: dict[str, Any] = {"profile": name, "ports": _profile_platform_ports(home, {"platforms": owned})}
         if served:
             entry["served_profiles"] = served
         gateways.append(entry)
@@ -233,18 +233,18 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
 # gets gateway.ready. A short TTL cache with a collapse lock keeps the scan to one per window.
 # The cache remembers which collector produced the entry: tests monkeypatch
 # _collect_profile_gateway_topology per case, and a swapped collector is a miss (no reset hook).
-_TOPOLOGY_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None, "fn": None}
+_TOPOLOGY_CACHE: dict[str, Any] = {"ts": 0.0, "data": None, "fn": None}
 _TOPOLOGY_CACHE_LOCK = threading.Lock()
 _TOPOLOGY_CACHE_TTL = 10.0
 
 
-def _topology_cache_get(fn: Any) -> Optional[Dict[str, Any]]:
+def _topology_cache_get(fn: Any) -> Optional[dict[str, Any]]:
     c = _TOPOLOGY_CACHE
     fresh = c["fn"] is fn and time.monotonic() - c["ts"] < _TOPOLOGY_CACHE_TTL
     return c["data"] if fresh and c["data"] is not None else None
 
 
-def _collect_profile_gateway_topology_cached() -> Dict[str, Any]:
+def _collect_profile_gateway_topology_cached() -> dict[str, Any]:
     fn = _collect_profile_gateway_topology
     cached = _topology_cache_get(fn)
     if cached is not None:
@@ -278,7 +278,7 @@ def _windows_build_number(version: str, platform_label: str) -> Optional[int]:
     return None
 
 
-def _display_system_platform(*, system: str, release: str, version: str, platform_label: str) -> Dict[str, str]:
+def _display_system_platform(*, system: str, release: str, version: str, platform_label: str) -> dict[str, str]:
     """Host OS fields for display; Windows 10 builds >= 22000 are relabelled Windows 11."""
     if system == "Windows" and release == "10":
         build = _windows_build_number(version, platform_label)
@@ -295,7 +295,7 @@ def _display_system_platform(*, system: str, release: str, version: str, platfor
 _ACTION_LOG_DIR: Path = get_hermes_home() / "logs"
 
 # Short ``name`` (from the URL) → log file name under _ACTION_LOG_DIR.
-_ACTION_LOG_FILES: Dict[str, str] = {
+_ACTION_LOG_FILES: dict[str, str] = {
     "gateway-restart": "gateway-restart.log",
     "gateway-start": "gateway-start.log",
     "gateway-stop": "gateway-stop.log",
@@ -309,11 +309,11 @@ _ACTION_LOG_FILES: Dict[str, str] = {
 }
 
 # ``name`` → most recent Popen handle / argv / action id, so ``status`` needs no ``ps``.
-_ACTION_PROCS: Dict[str, subprocess.Popen] = {}
-_ACTION_COMMANDS: Dict[str, Tuple[str, ...]] = {}
-_ACTION_IDS: Dict[str, str] = {}
+_ACTION_PROCS: dict[str, subprocess.Popen] = {}
+_ACTION_COMMANDS: dict[str, tuple[str, ...]] = {}
+_ACTION_IDS: dict[str, str] = {}
 # ``name`` → synthetic result for actions handled without a subprocess (e.g. unsupported Docker updates).
-_ACTION_RESULTS: Dict[str, Dict[str, Any]] = {}
+_ACTION_RESULTS: dict[str, dict[str, Any]] = {}
 
 
 def _terminate_desktop_managed_gateway() -> None:
@@ -328,7 +328,7 @@ def _terminate_desktop_managed_gateway() -> None:
         pass  # exited between poll() and terminate()
 
 
-def _named_profile_from_action(subcommand: List[str]) -> Optional[str]:
+def _named_profile_from_action(subcommand: list[str]) -> Optional[str]:
     """Return the named-profile selector that :func:`_profile_cli_args` puts in front of an action.
 
     Deliberately inspects only the leading selector: values after the real subcommand may
@@ -341,7 +341,7 @@ def _named_profile_from_action(subcommand: List[str]) -> Optional[str]:
     return None
 
 
-def _is_host_gateway_spawn(subcommand: List[str]) -> bool:
+def _is_host_gateway_spawn(subcommand: list[str]) -> bool:
     """True when *subcommand* starts the host multiplexer, not a named profile's own gateway.
 
     ``hermes gateway restart`` and ``hermes -p default gateway restart`` are the host.
@@ -360,8 +360,8 @@ def _is_host_gateway_spawn(subcommand: List[str]) -> bool:
 
 
 def _profile_action_environment(
-    subcommand: List[str], env_overrides: Optional[Dict[str, str]] = None,
-) -> Dict[str, str]:
+    subcommand: list[str], env_overrides: Optional[dict[str, str]] = None,
+) -> dict[str, str]:
     """Environment for a detached ``hermes <subcommand>`` action.
 
     The dashboard loads its own profile's ``.env`` into process-global ``os.environ``. Copying
@@ -436,7 +436,7 @@ def _profile_action_environment(
 _ROOT_REQUIRING_GATEWAY_VERBS = frozenset({"restart", "start", "stop"})
 
 
-def _action_targets_system_gateway(subcommand: List[str]) -> bool:
+def _action_targets_system_gateway(subcommand: list[str]) -> bool:
     """True when *subcommand* is a gateway lifecycle verb that resolves to the SYSTEM unit.
 
     Scope is decided by the CLI's own picker (``_select_systemd_scope``) evaluated for the profile
@@ -473,7 +473,7 @@ def _action_targets_system_gateway(subcommand: List[str]) -> bool:
 
 
 def _spawn_hermes_action(
-    subcommand: List[str], name: str, *, env_overrides: Optional[Dict[str, str]] = None
+    subcommand: list[str], name: str, *, env_overrides: Optional[dict[str, str]] = None
 ) -> subprocess.Popen:
     """Spawn ``hermes <subcommand>`` detached (via ``hermes_cli.main``) and record the handle."""
     from hermes_cli.web_server import PROJECT_ROOT
@@ -516,11 +516,36 @@ def _spawn_hermes_action(
     # Named-profile actions get a scrubbed, pinned environment so the child cannot inherit the
     # dashboard profile's credentials; see _profile_action_environment (also drops _HERMES_GATEWAY).
     action_env = _profile_action_environment(subcommand, env_overrides)
-    detach = {"creationflags": windows_detach_flags()} if sys.platform == "win32" else {"start_new_session": True}
-    proc = subprocess.Popen(
-        cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
-        env=action_env, **detach,
-    )
+
+    def _popen(**detach: Any) -> subprocess.Popen:
+        return subprocess.Popen(
+            cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+            env=action_env, **detach,
+        )
+
+    try:
+        if sys.platform == "win32":
+            try:
+                proc = _popen(creationflags=windows_detach_flags())
+            except OSError as exc:
+                # CREATE_BREAKAWAY_FROM_JOB is refused ("Access is denied") when the parent's job
+                # object forbids breakaway — an Electron/Tauri-launched dashboard, some Windows
+                # Terminal configs. The flag is best-effort by contract (windows_detach_flags);
+                # retry without it so the action still spawns, and record why for the status route.
+                if getattr(exc, "winerror", None) != 5:
+                    raise
+                log_file.write(
+                    f"{name}: breakaway spawn refused ({exc}); retrying without CREATE_BREAKAWAY_FROM_JOB\n".encode()
+                )
+                proc = _popen(creationflags=windows_detach_flags_without_breakaway())
+        else:
+            proc = _popen(start_new_session=True)
+    except OSError as exc:
+        # Without this the action log would hold only the started-header for a spawn that never
+        # happened; close the handle the child would have owned and let the endpoint report it.
+        log_file.write(f"{name}: spawn failed: {exc}\n".encode())
+        log_file.close()
+        raise
     log_file.close()  # child holds its own dup'd fd; keeping ours leaks one per action
     _ACTION_RESULTS.pop(name, None)
     _ACTION_COMMANDS[name] = tuple(subcommand)
@@ -546,7 +571,7 @@ def _own_profile_selector(profile: Optional[str]) -> Optional[str]:
     return profile_name_for_home(get_process_hermes_home()) or None
 
 
-def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
+def _gateway_subcommand(profile: Optional[str], verb: str) -> list[str]:
     """``hermes [-p X] gateway <verb>`` argv for a dashboard lifecycle action. A profile served by the
     live default multiplexer has no gateway of its own: ``restart`` targets the multiplexer (the process
     that actually serves X — a ``-p X gateway restart`` child only exits 78 into the action log while the
@@ -676,7 +701,7 @@ def _split_text_for_speak_stream(text: str, cap: int) -> list:
 _SESSION_LIST_HEAVY_FIELDS = ("system_prompt", "model_config")
 
 
-def _strip_session_list_rows(sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _strip_session_list_rows(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for s in sessions:
         for key in _SESSION_LIST_HEAVY_FIELDS:
             s.pop(key, None)

@@ -74,7 +74,7 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
     def _jwks_uri(self) -> str:
         return self._jwks_url
 
-    def _refresh_request(self, refresh_token: str) -> tuple[Dict[str, str], Optional[Dict[str, str]]]:
+    def _refresh_request(self, refresh_token: str) -> tuple[dict[str, str], Optional[dict[str, str]]]:
         # The RT goes in BOTH the body (Portal's request schema requires it) and the
         # ``x-nous-refresh-token`` header (Portal reconciles the two and keeps the value
         # out of body access logs). Header-only → 400.
@@ -83,7 +83,7 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
             {"x-nous-refresh-token": refresh_token})
 
     def _grant(
-        self, data: Dict[str, str], *, bad_request_exc: type[Exception], headers: Optional[Dict[str, str]] = None,
+        self, data: dict[str, str], *, bad_request_exc: type[Exception], headers: Optional[dict[str, str]] = None,
         previous_refresh_token: str = "",
     ) -> Session:
         access_token, payload = exchange_token(
@@ -94,7 +94,7 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         return self._session(access_token, refresh_token_from(payload), self._claims_for(access_token))
 
 
-    def _claims_for(self, access_token: str) -> Dict[str, Any]:
+    def _claims_for(self, access_token: str) -> dict[str, Any]:
         claims = verify_jwt(
             access_token, self._get_jwks_client(), algorithms=["RS256"],
             audience=self._client_id,  # contract C2: bare client_id
@@ -116,7 +116,7 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         return claims
 
 
-    def _session(self, access_token: str, refresh_token: str, claims: Dict[str, Any]) -> Session:
+    def _session(self, access_token: str, refresh_token: str, claims: dict[str, Any]) -> Session:
         # Contract C4: no email / display_name in tokens.
         return session_from_claims(
             self.name, claims, access_token=access_token, refresh_token=refresh_token, org_id=str(claims.get("org_id") or ""))

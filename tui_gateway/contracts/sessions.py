@@ -391,6 +391,8 @@ class SessionCloseParams(SessionParams):
 
 class SessionCloseResult(Result):
     closed: bool  # False when the runtime id was already gone
+    # Plugin ``on_session_finalize`` text for the user; shown out-of-band, never a model turn.
+    messages: list[str] = Field(default_factory=list)
 
 
 method("session.close", params=SessionCloseParams, result=SessionCloseResult,
@@ -775,3 +777,4 @@ class LlmOneshotResult(Result):
 
 method("llm.oneshot", params=LlmOneshotParams, result=LlmOneshotResult,
        doc="Stateless one-shot LLM completion (titles, ideas) on the session's or the task backend.")
+

@@ -281,14 +281,19 @@ async function refreshVerdict(
   }
 
   if (!previous || STILL_RUNNING.has(previous.verdict.kind) !== STILL_RUNNING.has(verdict.kind)) {
-    log?.(
-      `[updates] ${subject}: script helper says ${verdict.kind}${'pid' in verdict ? ` ${verdict.pid}` : ''}`
-    )
+    log?.(`[updates] ${subject}: script helper says ${verdict.kind}${'pid' in verdict ? ` ${verdict.pid}` : ''}`)
   }
 
   const errors = verdict.kind === 'error' ? (previous?.errors ?? 0) + 1 : 0
 
-  return { ...previous, verdict, at: now(), generation, errors, answered: previous?.answered || verdict.kind !== 'error' }
+  return {
+    ...previous,
+    verdict,
+    at: now(),
+    generation,
+    errors,
+    answered: previous?.answered || verdict.kind !== 'error'
+  }
 }
 
 /** The helper never answered for this body and has used its retries: proceed as main did for a dead marker. */
@@ -338,7 +343,13 @@ function helperSubject(
       return null
     }
 
-    return { holdId: ABSENT_HOLD_ID, absent: true, label: 'no update marker', ownerPid: null, run: { startedAt: null, runId: null } }
+    return {
+      holdId: ABSENT_HOLD_ID,
+      absent: true,
+      label: 'no update marker',
+      ownerPid: null,
+      run: { startedAt: null, runId: null }
+    }
   }
 
   if (inspection.state !== 'dead') {
@@ -411,7 +422,9 @@ export function liveMarkerProbe({
       if (await failedAfterV1Start(hermesHome, inspection.marker)) {
         if (!finishedLogged) {
           finishedLogged = true
-          log?.('[updates] latest update receipt records a failure after this v1 marker started; not parking the boot on it')
+          log?.(
+            '[updates] latest update receipt records a failure after this v1 marker started; not parking the boot on it'
+          )
         }
 
         return false

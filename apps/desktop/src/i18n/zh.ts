@@ -1,14 +1,21 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
+import { zhClarify } from './zh_clarify'
+import { zhConnectorCard } from './zh_connector_card'
+import { zhFirstRun } from './zh_first_run'
 import { zhLocalModels } from './zh_local_models'
 import { zhModelMenu } from './zh_model_menu'
 import { zhNotices } from './zh_notices'
+import { zhOnboarding } from './zh_onboarding'
+import { zhProjects } from './zh_projects'
 import { zhSharedMetrics } from './zh_shared_metrics'
+import { zhThemePicker } from './zh_theme_picker'
+import { zhUpdateChannel } from './zh_update_channel'
 
-export const zh = defineLocale({
+export const zhOverrides = {
   externalOpenFailed: {
     title: '无法打开此链接',
     message: '没有注册用于打开此地址的浏览器。请复制链接并手动打开。',
@@ -16,38 +23,9 @@ export const zh = defineLocale({
     close: '关闭'
   },
   sharedMetrics: zhSharedMetrics,
+  firstRun: zhFirstRun,
   intro: introZh,
-  connectors: {
-    title: '连接你的应用',
-    connect: '连接',
-    skip: '暂不连接',
-    cancel: '停止等待',
-    retry: '重试',
-    grant: '重新连接',
-    connected: '已连接',
-    skipped: '已跳过',
-    disabled: '不可用',
-    failed: '连接失败',
-    needsAuth: '授权已过期',
-    opening: '正在打开登录…',
-    waiting: '正在等待浏览器…',
-    notConnected: '未连接',
-    timeout: '仍在等待授权。',
-    refresh: '刷新状态',
-    connectError: '无法开始授权，请重试。',
-    connectErrorFor: app => `无法为 ${app} 开始授权。`,
-    unavailable: '此会话暂时无法使用连接器。',
-    ownerMissing: '请重新打开此对话以管理连接。',
-    search: '查找应用',
-    empty: '没有匹配的应用',
-    disclaimer: '连接为可选操作。请仅授权你希望 Hermes 使用的应用。',
-    execution: '连接器工具',
-    setup: server => `设置 ${server}`,
-    openInBrowser: '在浏览器中打开',
-    setupCancel: '取消',
-    authorizedToolsUnavailable: '已授权。工具不可用。',
-    required: '必填'
-  },
+  connectors: zhConnectorCard,
   sessionImport: {
     title: '从其他应用继续',
     subtitle: '将对话导入 Hermes，接着上次的进度继续。',
@@ -651,10 +629,6 @@ export const zh = defineLocale({
         profileLabel: '安装到配置文件',
         agentTargetLocal: (profile, dir) => `安装到 ${profile} 后端（${dir}）`,
         agentTargetRemote: profile => `安装到已连接的 ${profile} 后端`,
-        catalogPinned: (name, sha) =>
-          `Hermes 目录条目「${name}」— agent 部分将安装在经过审核的固定提交${sha ? ` ${sha}` : ''}，而不是分支最新代码。`,
-        reviewedHeading: '经过审核的目录条目',
-        reviewedIntro: '此条目已在其固定提交处经过人工审核。你仍可在下方检查确切代码。',
         toolsConnected: n => `已连接 ${n} 个工具`,
         skillsReady: names => (names.length === 1 ? `技能 ${names[0]} 已就绪` : `${names.length} 个技能已就绪`),
         nextChat: '更多工具将在下一次聊天中可用',
@@ -665,12 +639,10 @@ export const zh = defineLocale({
         desktopTargetFromPackage: '从上方的包加载到本应用 — 所有配置相同',
         desktopOnlyNote: '仅桌面包不会安装后端智能体插件。',
         insecureWarning: '此 URL 使用了不安全的本地 scheme。生产环境请优先使用 https:// 或 git@。',
-        securityHeading: '安装前须知',
         securityIntro: '请仅安装你信任的来源 — 如需了解将添加的内容，可先查看下方仓库。',
         sourceHeading: '源代码',
         viewRepository: '查看仓库',
         viewPluginFiles: '查看插件文件',
-        gitCloneLabel: 'Git 克隆地址',
         enableAgent: '安装后启用智能体插件',
         forceReinstall: '强制重装（替换已存在的安装）',
         pinToCommit: '固定到提交（可选）',
@@ -689,7 +661,17 @@ export const zh = defineLocale({
         agentFailed: '智能体插件安装失败',
         installUncertain: 'Hermes 已停止等待安装结果，但插件可能仍在安装。关闭此窗口并刷新插件列表，然后再尝试安装。',
         desktopFailed: '桌面插件安装失败',
-        missingEnv: (_name, vars) => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`
+        missingEnv: (_name, vars) => `缺少环境变量：${vars}。请在设置 → 密钥中添加。`,
+        verified: '已验证',
+        unverified: '未验证',
+        reviewedByNous: '已由 Nous 审核。',
+        installsAndEnables: profile => `安装到 ${profile}，并立即启用。`,
+        installsOnly: profile => `安装到 ${profile}。`,
+        advanced: '高级',
+        versionLabel: '版本',
+        reviewedPin: sha => (sha ? `已审核的固定提交 ${sha}` : '已审核的固定提交'),
+        latestCommit: '最新提交',
+        nothingToInstall: '此包在这里没有可安装的内容。'
       }
     },
     notifications: {
@@ -1215,12 +1197,6 @@ export const zh = defineLocale({
         }
       }
     },
-    poolLimits: {
-      warmBotBackendsAria: '预热机器人后端',
-      warmBotBackendsTitle: '预热机器人后端',
-      backendIdleTimeoutAria: '后端空闲超时（毫秒）',
-      backendIdleTimeoutTitle: '后端空闲超时（毫秒）'
-    },
     customEndpoints: {
       active: '已启用',
       apiKeySet: '已设置 API 密钥',
@@ -1267,9 +1243,7 @@ export const zh = defineLocale({
       screenRecording: '屏幕录制',
       driverHealth: '驱动健康状态'
     },
-    about: {
-      updates: '更新'
-    },
+    about: { updates: '更新', channel: zhUpdateChannel },
     config: {
       minimizeToTrayTitle: '最小化到托盘',
       minimizeToTrayDesc:
@@ -3011,6 +2985,7 @@ export const zh = defineLocale({
     last: '上次：',
     next: '下次：',
     noRuns: '尚无运行',
+    queuedRun: '排队中的运行',
     manage: '管理',
     showRuns: '显示运行记录',
     hideRuns: '隐藏运行记录',
@@ -3214,82 +3189,7 @@ export const zh = defineLocale({
     projectLoadFailed: '会话加载失败',
     noSessions: '暂无会话',
     noFilterMatches: '没有会话符合这些筛选条件',
-    projects: {
-      showAllSessions: '显示所有会话',
-      sectionLabel: '项目',
-      home: '主页',
-      autoDiscovered: '自动发现',
-      newButton: '新建项目',
-      createTitle: '新建项目',
-      createDesc: '为工作区命名并添加一个或多个文件夹。',
-      renameTitle: '重命名项目',
-      addFolderTitle: '添加文件夹',
-      namePlaceholder: '例如 Skunkworks',
-      foldersLabel: '文件夹',
-      ideaLabel: '想法',
-      ideaPlaceholder: '这个项目是关于什么的？（保存到 IDEA.md）',
-      ideaGenerate: '生成想法',
-      ideaGenerating: '生成中…',
-      ideaShuffle: '随机模板',
-      noFolders: '尚未添加文件夹。',
-      addFolder: '添加文件夹',
-      primaryBadge: '主',
-      removeFolder: '移除',
-      create: '创建',
-      menu: '操作',
-      menuRename: '重命名…',
-      menuAppearance: '外观',
-      noColor: '无颜色',
-      menuAddFolder: '添加文件夹',
-      menuSetActive: '设为活动',
-      menuDelete: '删除',
-      moveToProject: '移动到项目',
-      movedTo: name => `已移动到 ${name}`,
-      moveFailed: '无法移动会话',
-      moveNoFolder: '该项目没有可移入的文件夹',
-      moveNoProjects: '没有其他项目',
-      reveal: '在文件夹中显示',
-      copyPath: '复制路径',
-      removeFromSidebar: '从侧边栏移除',
-      createdInPreviousContext: '项目已在之前的连接或配置文件中创建。请切换回去；IDEA.md 尚未写入。',
-      createFailed: '无法创建项目',
-      staleBackend: '请更新 Hermes 后端以创建项目——当前后端比桌面应用旧（设置 → 更新 → 后端）。',
-      deleteConfirm: '这会从 Hermes 中移除已保存的项目。文件、git 仓库和工作树保持不变。',
-      startWork: '新建工作树',
-      newWorktreeTitle: '新建工作树',
-      newWorktreeDesc: '为这个工作树命名分支。',
-      branchPlaceholder: '例如 my-feature',
-      branchOff: () => ({ after: ' 分支', before: '从 ' }),
-      baseBranchPlaceholder: '搜索分支…',
-      baseBranchNone: '未找到分支',
-      startWorkFailed: '无法创建工作树',
-      worktreeStaleBackend: '请更新 Hermes 后端以在此远程连接上创建工作树 —— 该后端早于 git 工作树 API。',
-      worktreeProjectLabel: '项目',
-      worktreeProjectPlaceholder: '搜索项目…',
-      worktreeProjectNone: '没有包含文件夹的项目',
-      convertBranch: '转换分支…',
-      convertBranchTitle: '转换分支',
-      convertBranchDesc: '打开已检出的分支，或为可用分支创建工作树。',
-      convertBranchPlaceholder: '搜索分支…',
-      convertBranchInstead: '转换现有分支',
-      branchOpenExisting: '打开',
-      branchSwitchHome: '切回主检出',
-      branchCreateWorktree: '新工作树',
-      branchTrackRemote: '跟踪远程',
-      branchesLoading: '正在加载分支…',
-      noBranches: '未找到分支',
-      removeWorktree: '移除工作树',
-      removeWorktreeFailed: '无法移除工作树（存在未提交更改？）',
-      removeWorktreeConfirm:
-        '从 git 中移除（删除工作树目录，但保留分支），或仅从侧边栏隐藏该泳道并将工作树保留在磁盘上。',
-      removeWorktreeDirty: '此工作树有未提交的更改。强制移除（丢弃这些更改），或仅隐藏泳道并保留在磁盘上。',
-      forceRemove: '强制移除',
-      enter: label => `打开 ${label}`,
-      reorder: label => `重新排序 ${label}`,
-      toggle: (label, open) => `${open ? '展开' : '收起'} ${label} 会话`,
-      showAllCount: count => `显示全部 ${count} 个会话`,
-      back: '全部项目'
-    },
+    projects: zhProjects,
     newSessionIn: label => `在 ${label} 中新建会话`,
     showMoreIn: (count, label) => `在 ${label} 中再显示 ${count} 个`,
     loading: '加载中…',
@@ -3385,6 +3285,7 @@ export const zh = defineLocale({
     openDirective: '打开',
     queueMessage: '排队消息',
     steer: '引导当前运行',
+    redirect: '重新定向当前运行',
     stop: '停止',
     send: '发送',
     speaking: '讲话中',
@@ -3526,6 +3427,11 @@ export const zh = defineLocale({
     queueSteer: '引导 — 立即修正当前回合',
     queueSend: '发送',
     queueDelete: '删除',
+    queueLostNote: '重启期间该轮次已丢失',
+    restoreImageDraft: '恢复图片草稿',
+    queueCancelFailed: '无法移除排队的轮次',
+    queueLostDiscard: '丢弃',
+    queueLostDiscardTip: '网关在该轮次进行中重启，无法完成。丢弃后其后的排队轮次将继续执行。',
     queueResume: '继续',
     queueResumeTip: '已被停止操作暂停 — 继续发送排队的回合',
     queueStuckTitle: '排队消息未发送',
@@ -3703,7 +3609,7 @@ export const zh = defineLocale({
       heartbeatEveryHours: hours => `每 ${hours} 小时`,
       heartbeatEverySeconds: seconds => `每 ${seconds} 秒`,
       heartbeatNext: time => `下次 ${time}`,
-      heartbeatDueWaitingForIdle: '已到期，等待会话空闲',
+      dueWaitingForIdle: '已到期，等待会话空闲',
       heartbeatActions: '心跳操作',
       pauseHeartbeat: '暂停心跳',
       resumeHeartbeat: '恢复心跳',
@@ -3914,10 +3820,6 @@ export const zh = defineLocale({
     versionDetailsUncommittedChanges: '未提交的变更'
   },
 
-  guidedGreeting: {
-    line: '来了，进来吧。我是 Hermes。给我两分钟，把这里按你的习惯收拾一下，然后我们找件你真正想做的事来做。\n\n先说，我该怎么称呼你？',
-    nameSuggestion: (name: string) => `（如果你愿意，我也可以直接叫你 ${name}。）`
-  },
   install: {
     stageStates: {
       pending: '等待中',
@@ -3994,79 +3896,7 @@ export const zh = defineLocale({
     reloadRetry: '重新加载并重试'
   },
 
-  onboarding: {
-    headerTitle: '开始设置 Hermes Agent',
-    headerDesc: '连接模型提供方即可开始对话。大多数选项只需一次点击。',
-    preparingInstall: 'Hermes 正在完成安装。首次运行通常不到一分钟。',
-    starting: '正在启动 Hermes…',
-    lookingUpProviders: '正在查找提供方...',
-    collapse: '收起',
-    otherProviders: '其他提供方',
-    haveApiKey: '我有 API 密钥',
-    chooseLater: '稍后再选择提供方',
-    recommended: '推荐',
-    connected: '已连接',
-    featuredPitch: '一个订阅，300+ 前沿模型 — 运行 Hermes 的推荐方式',
-    fireworksPitch: '直接模型 API — Fireworks 托管的前沿模型',
-    localModelsTitle: '本地运行模型',
-    localModelsPitch: '无需账号——下载模型，在本机运行',
-    openRouterPitch: '一个密钥，数百个模型 — 稳妥的默认选择',
-    apiKeyOptions: {
-      fireworks: { short: '直接模型 API', description: '直接访问 Fireworks AI 托管的模型。' },
-      openrouter: { short: '一个密钥，多个模型', description: '用一个密钥访问数百个模型。适合新安装的默认选择。' },
-      openai: { short: 'GPT 级模型', description: '直接访问 OpenAI 模型。' },
-      gemini: { short: 'Gemini 模型', description: '直接访问 Google Gemini 模型。' },
-      xai: { short: 'Grok 模型', description: '直接访问 xAI Grok 模型。' },
-      local: {
-        short: '自托管',
-        description: '将 Hermes 指向本地或自托管的 OpenAI 兼容端点 (vLLM、llama.cpp、Ollama 等)。'
-      }
-    },
-    backToSignIn: '返回登录',
-    getKey: '获取密钥',
-    replaceCurrent: '替换当前值',
-    pasteApiKey: '粘贴 API 密钥',
-    localApiKeyPlaceholder: 'API 密钥（可选 — 仅当端点需要时填写）',
-    localModelNamePlaceholder: '模型名称（例如 command-a-plus-05-2026）',
-    couldNotSave: '无法保存凭据。',
-    connecting: '连接中',
-    update: '更新',
-    flowSubtitles: {
-      pkce: '打开浏览器登录，然后回到这里继续',
-      device_code: '在浏览器中打开验证页面 — Hermes 会自动连接',
-      external: '先在终端登录一次，然后回来继续对话'
-    },
-    startingSignIn: provider => `正在为 ${provider} 启动登录...`,
-    verifyingCode: provider => `正在通过 ${provider} 验证你的代码...`,
-    connectedProvider: provider => `${provider} 已连接`,
-    connectedPicking: provider => `${provider} 已连接。正在选择默认模型...`,
-    signInFailed: '登录失败，请重试。',
-    signInExpired:
-      '等待授权超时。通常是因为登录页面在打开的标签页中卡住（服务端问题）——请在该页面完成登录后重试。若仍失败，请改用 API 密钥或 CLI 方式。',
-    pickDifferentProvider: '选择其他提供方',
-    signInWith: provider => `使用 ${provider} 登录`,
-    openedBrowser: provider => `已在浏览器中打开 ${provider}。`,
-    authorizeThere: '请在那里授权 Hermes。',
-    copyAuthCode: '复制授权码并粘贴到下面。',
-    pasteAuthCode: '粘贴授权码',
-    reopenAuthPage: '重新打开授权页面',
-    autoBrowser: provider => `已在浏览器中打开 ${provider}。请在那里授权 Hermes，连接会自动完成，无需复制或粘贴。`,
-    reopenSignInPage: '重新打开登录页面',
-    waitingAuthorize: '等待你授权...',
-    externalPending: provider => `${provider} 通过自己的 CLI 登录。请在终端运行此命令，然后回来选择“我已登录”：`,
-    signedIn: '我已登录',
-    deviceCodeOpened: provider => `已在浏览器中打开 ${provider}。请在那里输入此代码：`,
-    reopenVerification: '重新打开验证页面',
-    copy: '复制',
-    defaultModel: '默认模型',
-    freeTier: '免费层',
-    pro: 'Pro',
-    free: '免费',
-    price: (input, output) => `${input} 输入 / ${output} 输出每 Mtok`,
-    change: '更改',
-    startChatting: '开始',
-    docs: provider => `${provider} 文档`
-  },
+  onboarding: zhOnboarding,
 
   // Not yet translated — English fallbacks so the free-tier surfaces stay
   // readable until a zh pass lands.
@@ -4110,7 +3940,13 @@ export const zh = defineLocale({
     retiredBody: '此免费层身份已被使用或已过期；下次启动时会重新设置。',
     errorBody: '登录未完成；请重试。',
     alreadySignedInHeading: '已登录。',
-    alreadySignedInBody: '此 Hermes 已登录 Nous 账户。'
+    alreadySignedInBody: '此 Hermes 已登录 Nous 账户。',
+    offer: {
+      heading: '继续使用 Hermes',
+      body: '你正在使用免费额度。继续使用 Hermes 的话，你会开始遇到限制。登录免费的 Nous 账户，即可获得更多额度。',
+      signIn: '登录',
+      notNow: '暂不'
+    }
   },
 
   modelPicker: {
@@ -4693,22 +4529,8 @@ export const zh = defineLocale({
         `这会将“${pattern}”模式加入永久允许列表 (~/.hermes/config.yaml)。Hermes 对类似命令将不再询问，包括当前会话和未来会话。`,
       alwaysAllow: '始终允许'
     },
-    clarify: {
-      notReady: '澄清请求尚未就绪',
-      gatewayDisconnected: 'Hermes 网关未连接',
-      sendFailed: '无法发送澄清响应',
-      loadingQuestion: '正在加载问题…',
-      other: '其他 (输入你的答案)',
-      placeholder: '输入你的答案…',
-      skip: '跳过',
-      skipped: '已跳过',
-      noAnswer: '未回答',
-      confirmAndContinueLabel: '确认并继续',
-      singleSelectHint: '选一个',
-      multiSelectHint: '可多选',
-      questionProgress: (answered, total) => `已回答 ${answered}/${total}`,
-      notDelivered: '此问题未送达应用，无法在此回答。请按停止结束本轮，然后在聊天中回复。'
-    },
+    clarify: zhClarify,
+    themePicker: zhThemePicker,
     catalogInstall: {
       preparing: '正在准备安装…',
       install: '安装',
@@ -5014,11 +4836,6 @@ export const zh = defineLocale({
         text: '更新运行本地模型的引擎。正在进行的本地请求可能会中断。',
         action: '立即更新'
       },
-      'local-setup': {
-        title: '这台电脑可以本地运行模型',
-        text: '你的硬件可以运行本地模型。对话不离开你的电脑，而且完全免费。',
-        action: '立即设置'
-      },
       'right-pane': {
         title: '工作面板',
         text: '文件、终端、审阅和内置浏览器都在侧边面板里。'
@@ -5056,4 +4873,6 @@ export const zh = defineLocale({
       toggle: open => `${open ? '显示' : '隐藏'}侧边栏`
     }
   }
-})
+} satisfies TranslationOverrides
+
+export const zh = defineLocale(zhOverrides)

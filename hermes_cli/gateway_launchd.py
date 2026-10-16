@@ -16,6 +16,9 @@ import sys
 import time
 from enum import Enum
 from xml.sax.saxutils import escape
+from datetime import UTC
+
+from hermes_cli import gateway_service_owner
 
 
 class LaunchdReload(Enum):
@@ -54,7 +57,7 @@ def _probe_launchd_domain_for_label(label: str) -> str:
     # Not loaded anywhere: Aqua → gui/<uid>; anything else (Background, loginwindow) → user/<uid>,
     # the pre-probing default and the recommended domain on macOS 26+.
     try:
-        result = subprocess.run(["launchctl", "managername"], timeout=5, **_gw()._CAPTURE_TEXT)
+        result = subprocess.run(["launchctl", "managername"], timeout=5, **_gw()._CAPTURE_TEXT, check=False)
         if "Aqua" in (result.stdout or ""):
             return gui_domain
     except launchctl_errors:
@@ -198,7 +201,7 @@ def _write_launchd_unsupported_marker() -> None:
     """Persist that launchd cannot supervise the gateway on this host."""
     from datetime import datetime, timezone
     payload = {
-        "written_at": datetime.now(timezone.utc).isoformat(),
+        "written_at": datetime.now(UTC).isoformat(),
         "reason": "launchd domain unsupported (exit 5/125)",
     }
     with contextlib.suppress(OSError):
@@ -547,9 +550,13 @@ def refresh_launchd_plist_if_needed() -> LaunchdReload:
     plist_path = _gw().get_launchd_plist_path()
     if not plist_path.exists() or _gw().launchd_plist_is_current():
         return LaunchdReload.NOT_NEEDED
+    # Runs on every gateway start/restart: a plist pinning another home is another install's gateway.
+    from hermes_cli.gateway_service_owner import definition_belongs_to_home
+    if not definition_belongs_to_home(plist_path, _gw().get_hermes_home(), "rewrite"):
+        return LaunchdReload.NOT_NEEDED
 
     new_plist = _gw().generate_launchd_plist()
-    if _gw()._refuse_temp_home_service_write(new_plist, "launchd plist"):
+    if gateway_service_owner.refuse_temp_home_service_write(new_plist, "launchd plist"):
         return LaunchdReload.FAILED
 
     _gw()._prepare_service_launcher()
@@ -607,14 +614,18 @@ def refresh_launchd_plist_if_needed() -> LaunchdReload:
     return LaunchdReload.REGISTERED
 
 
-def launchd_install(force: bool = False, *, start_now: bool = True):
+def launchd_install(force: bool = False, *, start_now: bool = True, force_unit_path: bool = False):
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
+    # A plist pinning another home is another install's gateway, --force included; --force-unit-path repoints.
+    from hermes_cli.gateway_service_owner import definition_belongs_to_home
+    if not force_unit_path and not definition_belongs_to_home(plist_path, _gw().get_hermes_home(), "overwrite"):
+        sys.exit(1)
     # Loading the plist starts the gateway (RunAtLoad), so a no-start install writes it without
     # loading it. A gateway that launchd already runs is still reloaded; this install did not start it.
     load = start_now or _gw()._launchctl_label_supervising_process(label)
 
-    if plist_path.exists() and not force:
+    if plist_path.exists() and not (force or force_unit_path):
         if _gw().launchd_plist_is_current():
             print(f"Service already installed at: {plist_path}")
             print("Use --force to reinstall")
@@ -637,7 +648,7 @@ def launchd_install(force: bool = False, *, start_now: bool = True):
 
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     new_plist = _gw().generate_launchd_plist()
-    if _gw()._refuse_temp_home_service_write(new_plist, "launchd plist"):
+    if gateway_service_owner.refuse_temp_home_service_write(new_plist, "launchd plist"):
         return
     print(f"Installing launchd service to: {plist_path}")
     _gw()._prepare_service_launcher()
@@ -692,7 +703,7 @@ def launchd_start():
     # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
     if not plist_path.exists():
         new_plist = _gw().generate_launchd_plist()
-        if _gw()._refuse_temp_home_service_write(new_plist, "launchd plist"):
+        if gateway_service_owner.refuse_temp_home_service_write(new_plist, "launchd plist"):
             sys.exit(1)
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
@@ -905,7 +916,7 @@ def launchd_status(deep: bool = False):
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
     try:
-        result = subprocess.run(["launchctl", "list", label], timeout=10, **_gw()._CAPTURE_TEXT)
+        result = subprocess.run(["launchctl", "list", label], timeout=10, **_gw()._CAPTURE_TEXT, check=False)
         service_listed = result.returncode == 0
         list_output = result.stdout
     except subprocess.TimeoutExpired:
@@ -963,4 +974,4 @@ def launchd_status(deep: bool = False):
         if log_file.exists():
             print()
             print("Recent logs:")
-            subprocess.run(["tail", "-20", str(log_file)], timeout=10)
+            subprocess.run(["tail", "-20", str(log_file)], timeout=10, check=False)

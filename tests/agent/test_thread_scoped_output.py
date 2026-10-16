@@ -55,7 +55,6 @@ def test_stderr_is_also_routed_per_thread():
 def test_many_concurrent_silenced_and_loud_threads():
     """Stress: interleaved silenced/loud threads keep their respective fates."""
     start = threading.Event()
-    results_lock = threading.Lock()
 
     def silenced(i):
         start.wait(timeout=2.0)

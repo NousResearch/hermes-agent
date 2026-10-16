@@ -119,7 +119,7 @@ async def test_cleanup_off_loop_times_out_gracefully(caplog):
     async def _instant_timeout(aw, timeout=None):
         if asyncio.iscoroutine(aw):
             aw.close()
-        raise asyncio.TimeoutError
+        raise TimeoutError
 
     import gateway.run as _run
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -189,7 +190,6 @@ class TestSendText:
         # At least 2 POST calls
         assert adapter._http_client.post.call_count >= 2
         # Second call should NOT have context (only first chunk gets reply_to)
-        first_call = adapter._http_client.post.call_args_list[0]
         second_call = adapter._http_client.post.call_args_list[1]
         # No reply_to passed → no context anywhere, but verify structure anyway
         assert "context" not in second_call.kwargs["json"]
@@ -815,8 +815,7 @@ class TestDownloadMedia:
         assert _os.path.exists(local_path)
         assert _os.path.basename(local_path).startswith("media_xyz")
         assert _os.path.basename(local_path).endswith(".jpg")
-        with open(local_path, "rb") as fh:
-            assert fh.read() == b"\xff\xd8\xff\xe0jpegdata"
+        assert await asyncio.to_thread(Path(local_path).read_bytes) == b"\xff\xd8\xff\xe0jpegdata"
 
     @pytest.mark.asyncio
     async def test_metadata_failure_returns_none(self):

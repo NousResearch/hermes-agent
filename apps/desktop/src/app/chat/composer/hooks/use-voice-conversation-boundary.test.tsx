@@ -129,6 +129,14 @@ it('speaks a sealed narration while busy and keeps the session open for the fina
   })
   expect(inputs).toEqual([])
   messages[0].pending = false
+  // The tool call that follows opens a fresh pending bubble holding only the
+  // tool row — the shape a real tool-using turn has while the tool runs.
+  messages.push({
+    id: 'tool',
+    role: 'assistant',
+    pending: true,
+    parts: [{ type: 'tool-call', toolCallId: 'call_1', toolName: 'terminal', args: {}, argsText: '{}' }]
+  } as unknown as ChatMessage)
   await act(async () => {
     await vi.advanceTimersByTimeAsync(300)
   })

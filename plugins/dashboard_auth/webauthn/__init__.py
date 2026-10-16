@@ -101,7 +101,8 @@ def _fido2_or_skip() -> None:
         raise SkipRegistration(
             "dashboard.webauthn is configured but the 'fido2' library is not "
             "installed. Install the optional extra: pip install 'hermes-agent[webauthn]' "
-            "(fido2>=2.2.1,<3).", level="warning") from exc
+            "(fido2>=2.2.1,<3), or restart the dashboard once — its start-up "
+            "provisions the extra from this block automatically.", level="warning") from exc
 
 
 def _resolve_origins(section: dict, rp_id: str) -> tuple:

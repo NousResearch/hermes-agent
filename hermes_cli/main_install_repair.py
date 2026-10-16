@@ -275,6 +275,24 @@ def _configured_features_missing_deps() -> list[tuple[str, str, str]]:
             missing.append(("MCP servers", "Run `hermes pm install` to install MCP support.", "mcp"))
     except Exception as exc:
         logger.debug("configured-MCP dependency check skipped: %s", exc)
+    try:
+        import importlib.util
+        from hermes_cli.config import load_config_readonly
+
+        # dashboard.webauthn configured after a fresh (base-extras) install is
+        # the same chicken-and-egg shape as the platforms above: the block
+        # activates the feature, whose dependency is the `webauthn` extra.
+        webauthn = ((load_config_readonly().get("dashboard") or {}).get("webauthn")) or {}
+        if (isinstance(webauthn, dict)
+                and str(webauthn.get("rp_id") or "").strip()
+                and str(webauthn.get("rp_name") or "").strip()
+                and webauthn.get("origins")
+                and importlib.util.find_spec("fido2") is None):
+            missing.append(("Dashboard passkeys (WebAuthn)",
+                            "Run `hermes pm install --extra webauthn` to install fido2.",
+                            "webauthn"))
+    except Exception as exc:
+        logger.debug("configured-dashboard-webauthn dependency check skipped: %s", exc)
     return missing
 
 

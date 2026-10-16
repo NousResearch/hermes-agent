@@ -2704,6 +2704,13 @@ def cmd_dashboard(args):
     _ssh_session_token = _read_ssh_session_token_file(_token_file) if _token_file else None
     _mcp_discovery_after_bind = _dashboard_prepare_runtime(args, _headless_backend)
 
+    # A dashboard.webauthn block configured after a fresh (base-extras) install
+    # needs fido2; union the extra before web_server's import graph registers
+    # providers (the update-repair path covers this across updates, #124228).
+    from hermes_cli.dashboard_webauthn_extra import maybe_sync_webauthn_extra
+
+    maybe_sync_webauthn_extra()
+
     from hermes_cli.dashboard_procs import BACKEND_LOCK_NAME
     from hermes_cli.web_server import start_server
 

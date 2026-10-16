@@ -45,41 +45,13 @@ def _resolve_policy_agent_runtime(runner, policy) -> tuple[str, dict]:
     tests that bind the method onto bare namespaces still reach it."""
     from gateway.run import _runtime_agent_kwargs
     from gateway.session_policy import launch_key
-    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_with_fallback
-    from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
+    from gateway.session_worker_construct import route_runtime
     from gateway.session_authorities import active_authority
     authority = active_authority(runner)
     # A follow_profile_config session's route is the profile's current one, model and endpoint from one read.
     frozen, model = policy.effective(authority)
     provider = (frozen.get('model') or {}).get('provider')
-    key = launch_key(authority, policy)
-    launch_url = json.loads(policy.request_json).get('base_url')
-    if launch_url:
-        # The creation request is immutable identity, not the current selection: once a canonical
-        # model mutation moved the route off the launch endpoint, the policy's selection wins.
-        from hermes_cli.route_identity import normalize_route_base_url
-        if normalize_route_base_url(launch_url) != normalize_route_base_url((frozen.get('model') or {}).get('base_url')):
-            launch_url = None
-    # Every rung reads the session's FROZEN config, never live config.yaml: a later
-    # ``model.base_url`` edit must not carry this route's frozen credential to the new host
-    # (R2-M2). The auth-store pool is not config, so refresh/rotation still applies.
-    with frozen_runtime_config(frozen):
-        runtime = _resolve_named_custom_runtime(requested_provider=provider,
-            explicit_api_key=key, explicit_base_url=launch_url,
-            target_model=model, config=frozen)
-        if runtime is None:
-            # Only a bound launch key is explicit: the frozen ``model.api_key`` is config, which the
-            # resolver already reads from the frozen scope, so a URL-matched credential pool still
-            # serves (and rotates on) the frozen endpoint.
-            # Same resolution-time walker the in-process one-shot used (#81209): an AuthError
-            # from the frozen primary (expired token, Portal down, exhausted pool) tries the
-            # route's own ``fallback_providers`` before the turn is refused. Only a launch URL is
-            # explicit (classic one-shot parity): the frozen ``model.base_url`` is resolved by
-            # the provider chain, which keeps the credential pool an explicit URL would drop.
-            runtime, fallback_entry = resolve_runtime_with_fallback(frozen, requested=provider,
-                explicit_api_key=key, explicit_base_url=launch_url, target_model=model)
-        else:
-            fallback_entry = None
+    runtime, fallback_entry = route_runtime(policy, frozen, model, launch_key(authority, policy))
     if fallback_entry is not None:
         from hermes_cli.fallback_config import pre_agent_fallback_notice
         runner._pre_agent_fallback_notice = pre_agent_fallback_notice(

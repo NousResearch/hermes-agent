@@ -23,8 +23,11 @@ Render text as large ASCII art banners. 571 built-in fonts.
 
 ### Setup
 
+Create an isolated Python environment first. Do not bypass the system Python's
+package protections.
+
 ```bash
-pip install pyfiglet --break-system-packages -q
+python -m pip install pyfiglet
 ```
 
 ### Usage
@@ -88,10 +91,8 @@ Classic tool that wraps text in a speech bubble with an ASCII character.
 
 ### Setup
 
-```bash
-sudo apt install cowsay -y    # Debian/Ubuntu
-# brew install cowsay         # macOS
-```
+If `cowsay` is missing, ask the user to install it through their operating
+system's package manager. Do not install system packages automatically.
 
 ### Usage
 
@@ -132,10 +133,8 @@ Draw decorative ASCII art borders/frames around any text. 70+ built-in designs.
 
 ### Setup
 
-```bash
-sudo apt install boxes -y    # Debian/Ubuntu
-# brew install boxes         # macOS
-```
+If `boxes` is missing, ask the user to install it through their operating
+system's package manager. Do not install system packages automatically.
 
 ### Usage
 
@@ -167,10 +166,8 @@ Like pyfiglet but with ANSI color effects and visual filters. Great for terminal
 
 ### Setup
 
-```bash
-sudo apt install toilet toilet-fonts -y    # Debian/Ubuntu
-# brew install toilet                      # macOS
-```
+If `toilet` or its fonts are missing, ask the user to install them through
+their operating system's package manager. Do not elevate privileges.
 
 ### Usage
 
@@ -198,9 +195,8 @@ Convert images (PNG, JPEG, GIF, WEBP) to ASCII art.
 ### Option A: ascii-image-converter (recommended, modern)
 
 ```bash
-# Install
-sudo snap install ascii-image-converter
-# OR: go install github.com/TheZoraiz/ascii-image-converter@latest
+# Install in a user-owned Go environment after reviewing the source and version
+go install github.com/TheZoraiz/ascii-image-converter@latest
 ```
 
 ```bash
@@ -216,10 +212,12 @@ ascii-image-converter image.png --save-txt out   # Save as text
 ### Option B: jp2a (lightweight, JPEG only)
 
 ```bash
-sudo apt install jp2a -y
 jp2a --width=80 image.jpg
 jp2a --colors image.jpg              # Colorized
 ```
+
+If `jp2a` is missing, ask the user to install it through their operating
+system's package manager. Do not install system packages automatically.
 
 ## Tool 7: Search Pre-Made ASCII Art
 

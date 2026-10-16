@@ -564,3 +564,32 @@ def test_unknown_plugin_names_do_not_rescan_the_profile_on_every_request(daemon,
     _install(daemon.beta, "latest")
     clock[0] += 60
     assert status("latest") == 200
+
+
+def test_alternating_unknown_names_each_rescan_once_per_window(daemon, monkeypatch):
+    """One name's miss rescan keeps another name's cached miss, so probes alternating two absent
+    names scan once per name per window; an explicit rescan, or expiry, finds a plugin installed meanwhile."""
+    from hermes_cli import web_server_dashboard, web_server_plugin_profiles
+    _beta_plugin(daemon)
+    _plugins(daemon.beta, enabled=[NAME, "absent-a", "absent-b"])
+    selected = {"params": {"profile": "beta"}, "headers": daemon.owner}
+    status = lambda name: daemon.client.get(f"/api/plugins/{name}/ping", **selected).status_code
+    assert status(NAME) == 200
+    scans, discover, clock = [], web_server_dashboard._discover_dashboard_plugins, [1000.0]
+    monkeypatch.setattr(web_server_dashboard, "_discover_dashboard_plugins",
+                        lambda *a, **k: scans.append(1) or discover(*a, **k))
+    monkeypatch.setattr(web_server_plugin_profiles, "time", SimpleNamespace(monotonic=lambda: clock[0]),
+                        raising=False)
+
+    assert [status(n) for n in ["absent-a", "absent-b"] * 3] == [404] * 6
+    assert len(scans) == 2, "an automatic miss rescan dropped the other name's cached miss"
+
+    _install(daemon.beta, "absent-b")
+    daemon.client.get("/api/dashboard/plugins/rescan", **selected)
+    assert status("absent-b") == 200
+
+    assert status("absent-a") == 404  # the explicit rescan cleared its miss: this one scans again
+    _install(daemon.beta, "absent-a")
+    assert status("absent-a") == 404  # cached until the window ends
+    clock[0] += 60
+    assert status("absent-a") == 200

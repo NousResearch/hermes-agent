@@ -62,17 +62,18 @@ def secondary_profile_home() -> Optional[Path]:
     return None if hermes_home_key(home) == hermes_home_key(get_process_hermes_home()) else Path(home)
 
 
-def profile_dashboard_plugins(home: Path, force_rescan: bool = False) -> list:
+def profile_dashboard_plugins(home: Path, force_rescan: bool = False, keep_misses: bool = False) -> list:
     """Dashboard plugins of the profile at ``home``, cached per home like the launch profile's list:
     its own ``plugins/``, then the root's (as a standalone ``hermes --profile <name> serve`` scanned
-    them; the profile's own copy wins a same-name conflict), then the bundled ones."""
+    them; the profile's own copy wins a same-name conflict), then the bundled ones. An explicit
+    rescan also forgets the profile's cached misses; ``keep_misses`` (a miss-driven rescan) keeps them."""
     from hermes_cli.plugins import get_bundled_plugins_dir
     from hermes_cli.profiles import _get_default_hermes_home
     from hermes_cli.web_server_dashboard import _discover_dashboard_plugins
     from hermes_constants import hermes_home_key
     key = hermes_home_key(home)
     with _profile_plugins_lock:
-        if force_rescan:
+        if force_rescan and not keep_misses:
             for unknown in [k for k in _unknown_plugins if k[0] == key]:
                 del _unknown_plugins[unknown]
         cached = _profile_plugins.get(key)
@@ -97,12 +98,15 @@ def rescanned_plugin(home: Path, name: str) -> Optional[dict]:
     with _profile_plugins_lock:
         if _unknown_plugins.get(key, now) > now:
             return None
-    plugin = _named(profile_dashboard_plugins(home, force_rescan=True), name)
-    if plugin is None:
-        with _profile_plugins_lock:
-            for expired in [k for k, until in _unknown_plugins.items() if until <= now]:
-                del _unknown_plugins[expired]
+    # Other names' unexpired misses survive this rescan, so probes alternating names can't defeat them.
+    plugin = _named(profile_dashboard_plugins(home, force_rescan=True, keep_misses=True), name)
+    with _profile_plugins_lock:
+        for expired in [k for k, until in _unknown_plugins.items() if until <= now]:
+            del _unknown_plugins[expired]
+        if plugin is None:
             _unknown_plugins[key] = now + _UNKNOWN_PLUGIN_RESCAN_SECS
+        else:
+            _unknown_plugins.pop(key, None)
     return plugin
 
 

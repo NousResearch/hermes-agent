@@ -203,6 +203,47 @@ async def test_provider_change_drops_the_launch_key_and_keeps_config_secrets(tmp
 
 
 @pytest.mark.asyncio
+async def test_model_pick_reads_current_provider_config_when_legacy_policy_lacks_it(tmp_path, monkeypatch):
+    """Regression for #139740: a Desktop pick can outlive a policy written without ``providers``."""
+    from dataclasses import asdict
+    from types import SimpleNamespace
+    from gateway.session_mutation_model import prepare_model
+    from gateway.session_policy import build_policy, restore_policy
+    from hermes_state import SessionDB
+    from hermes_cli import model_switch
+
+    (tmp_path / 'config.yaml').write_text(
+        'providers:\n'
+        '  inkstone:\n'
+        '    api: https://example.invalid/v1\n'
+        '    key_env: INKSTONE_API_KEY\n'
+        '    models: {glm-5.3: {context_length: 1048576}}\n')
+    seen = {}
+
+    def switch(**kwargs):
+        seen.update(kwargs)
+        return model_switch.ModelSwitchResult(
+            success=True, new_model='glm-5.3', target_provider='inkstone',
+            base_url='https://example.invalid/v1', api_mode='chat_completions')
+
+    monkeypatch.setattr(model_switch, 'switch_model', switch)
+    with SessionDB(tmp_path / 'state.db') as db:
+        authority = SimpleNamespace(instance_id='i', epoch=1, profile_id='p', db=db)
+        authority.runner = SimpleNamespace(_resolve_session_agent_runtime=lambda **k: (None, {}))
+        policy = build_policy({'cwd': str(tmp_path), 'model': 'old'}, {
+            'model': {'provider': 'deepseek', 'default': 'old'}})
+        prepared = {'snapshot': {'receipt': {'session_id': 'sid', 'policy': asdict(policy)}}}
+
+        committed = await prepare_model(authority, SimpleNamespace(source=None, route='r'), {
+            'model': 'glm-5.3', 'provider': 'inkstone'}, prepared)
+
+    assert seen['user_providers']['inkstone']['key_env'] == 'INKSTONE_API_KEY'
+    model = restore_policy(committed['policy']).config()['model']
+    assert model['provider'] == 'inkstone'
+    assert model['key_env'] == 'INKSTONE_API_KEY'
+
+
+@pytest.mark.asyncio
 async def test_committed_model_selection_is_the_next_resolved_runtime(tmp_path, monkeypatch):
     """custom -> custom on a new origin: the committed policy and the next resolved runtime agree on
     endpoint, protocol and credentials. The creation request's launch URL, the old endpoint's launch

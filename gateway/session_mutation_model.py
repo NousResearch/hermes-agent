@@ -13,6 +13,7 @@ async def prepare_model(authority, live, payload, prepared):
     from hermes_cli.config import get_compatible_custom_providers
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
     config = old.config(authority)
+    config = _provider_resolution_config(authority, config)
     _, runtime = authority.runner._resolve_session_agent_runtime(source=live.source, session_key=live.route)
 
     def switch(**kwargs):
@@ -47,6 +48,7 @@ async def prepare_model(authority, live, payload, prepared):
     # key is a private config secret at the alias entry's own path (what a restarted owner re-reads)
     # and the receipt keeps only a pointer to it, which config() projects into ``model.api_key``.
     key_env, source, alias_key = alias_credential
+    key_env = key_env or _selected_provider_key_env(config, result.target_provider)
     if key_env:
         frozen['model']['key_env'] = key_env
     if source:
@@ -73,6 +75,36 @@ async def prepare_model(authority, live, payload, prepared):
     policy = bind_launch_key(authority, prepared['snapshot']['receipt']['session_id'], policy, key,
                              config_secrets=secrets)
     return dict(prepared, policy=asdict(policy))
+
+
+def _provider_resolution_config(authority, config):
+    """Supply current provider declarations to a legacy policy only for resolving a pick.
+
+    Older local-session receipts can lack ``providers`` after their endpoint secrets were split out
+    of the frozen config.  The committed policy remains frozen; this read is only the same owning
+    profile config that a new session would use to resolve the requested provider.
+    """
+    if isinstance(config.get('providers'), dict) and config['providers']:
+        return config
+    from pathlib import Path
+    from gateway.run import _load_gateway_config
+    current = _load_gateway_config(Path(authority.db.db_path).resolve().parent / 'config.yaml')
+    if not isinstance(current, dict) or not current.get('providers'):
+        return config
+    resolved = dict(config)
+    for key in ('providers', 'custom_providers', 'model_aliases'):
+        if key in current:
+            resolved[key] = current[key]
+    return resolved
+
+
+def _selected_provider_key_env(config, provider):
+    """Return a selected ``providers.<slug>`` credential pointer, never its secret value."""
+    providers = config.get('providers')
+    entry = providers.get(provider) if isinstance(providers, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    return str(entry.get('key_env') or entry.get('api_key_env') or '').strip() or None
 
 
 def _alias_credential(authority, result):

@@ -92,3 +92,41 @@ export function readKeepAwakeMode(persisted: unknown): KeepAwakeMode {
 export function keepAwakeWanted(mode: KeepAwakeMode, working: boolean): boolean {
   return mode === 'always' || (mode === 'while-working' && working)
 }
+
+/**
+ * How long 'while-working' keeps holding the blocker after the live turn
+ * picture goes idle (#134434).
+ *
+ * On Windows the sleep idle-timer counts from the last user INPUT, not from
+ * the release of a power request. On an unattended overnight run the user has
+ * been idle far past the sleep timeout, so releasing the blocker at turn end
+ * lets the machine sleep within SECONDS — before the next follow-up turn
+ * (process_complete, bg-review, compression) can re-arm `busy`. `busy` only
+ * re-arms on `message.start`, which the backend emits after it accepts the
+ * follow-up, so a cold model request can spend tens of seconds in the gap.
+ * A grace hold after the last turn bridges every such gap.
+ */
+export const KEEP_AWAKE_RELEASE_GRACE_MS = 5 * 60_000
+
+/**
+ * Decide whether the blocker should be held, factoring the release grace.
+ *
+ * `withinGrace` is true while the hold-after-idle window from the last turn is
+ * still open. Any live work resets the window, so a follow-up turn that
+ * re-arms busy simply continues the hold (no stop/start churn on the native
+ * blocker).
+ *
+ * The grace only applies to 'while-working': 'always' never releases and
+ * 'off' never holds, so neither has a window to bridge.
+ */
+export function keepAwakeHeld(mode: KeepAwakeMode, working: boolean, withinGrace: boolean): boolean {
+  if (mode === 'off') {
+    return false
+  }
+
+  if (mode === 'always') {
+    return true
+  }
+
+  return working || withinGrace
+}

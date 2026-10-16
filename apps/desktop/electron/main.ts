@@ -472,6 +472,7 @@ import {
   hasPinnedRegistrySessionSource,
   isAllProfilesAggregateRequest,
   isAllProfilesSessionListRequest,
+  isRemoteSessionRequestPath,
   pathWithRemoteOwnerScope,
   type RegistrySessionSource,
   remoteProfileQueryScope,
@@ -15985,7 +15986,7 @@ ipcMain.handle('hermes:window:readBelow', async event => {
 // request.profile. Either way, a remote profile's session lives only on its
 // remote host, so the request must go there (where it serves its own state.db).
 //   GET    /api/profiles/sessions        → splice each remote profile's rows in
-//   GET    /api/sessions/{id}[/messages] → read from remote
+  //   GET    /api/sessions/{id}[/messages|/mutation-snapshot] → read from remote
 //   DELETE /api/sessions/{id}            → delete on remote
 //   PATCH  /api/sessions/{id}            → rename/archive on remote
 async function interceptSessionRequestForRemote(request, registryConnectionId = null) {
@@ -16075,7 +16076,7 @@ async function interceptSessionRequestForRemote(request, registryConnectionId = 
   //    param (it serves its own state.db natively).
   //  - global remote mode: ONE backend serves every profile via ?profile=, so
   //    route there and KEEP the profile param so it opens the right state.db.
-  if (/^\/api\/sessions\/[^/]+(\/messages)?$/.test(pathname)) {
+  if (isRemoteSessionRequestPath(pathname)) {
     let profile = (searchParams.get('profile') || request.profile || '').trim()
 
     if (!profile) {

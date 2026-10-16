@@ -14,6 +14,7 @@ import {
   hasPinnedRegistrySessionSource,
   isAllProfilesAggregateRequest,
   isAllProfilesSessionListRequest,
+  isRemoteSessionRequestPath,
   mergeProfileSessionWindow,
   pathWithRemoteOwnerScope,
   remoteProfileQueryScope,
@@ -23,6 +24,14 @@ import {
   tagRegistrySessionResponse,
   tagRemoteSessionRows
 } from './profile-session-routing'
+
+test('remote session routing includes the mutation snapshot read and no other child route', () => {
+  assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session'), true)
+  assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/messages'), true)
+  assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/mutation-snapshot'), true)
+  assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/timeline'), false)
+  assert.equal(isRemoteSessionRequestPath('/api/sessions/stored-session/mutation-snapshot/extra'), false)
+})
 
 test('all-profiles session routing is limited to read-only list endpoints', () => {
   assert.equal(isAllProfilesSessionListRequest('GET', '/api/profiles/sessions?profile=all'), true)

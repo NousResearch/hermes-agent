@@ -51,6 +51,11 @@ export function isAllProfilesSessionListRequest(method: string | undefined, path
   )
 }
 
+/** Paths whose session data must follow the legacy remote owner route. */
+export function isRemoteSessionRequestPath(pathname: string): boolean {
+  return /^\/api\/sessions\/[^/]+(?:\/(?:messages|mutation-snapshot))?$/.test(pathname)
+}
+
 function rowsOf(data: unknown): unknown[] {
   if (!data || typeof data !== 'object' || !('sessions' in data)) {
     return []

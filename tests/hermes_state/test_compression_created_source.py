@@ -79,3 +79,23 @@ def test_worker_usage_fills_a_null_compression_child(tmp_path):
         assert _created(db, kept) == "tui"
     finally:
         db.close()
+
+
+def test_desktop_worker_heals_gui_to_desktop(tmp_path):
+    """A managed Desktop worker's platform is the policy label ``gui``. The healed
+    column is ``desktop``, the same surface the in-process agent and the insert stamp."""
+    import hermes_state_runtime as rt
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        child = _compress(db, None, "desktop-child")
+        assert _created(db, child) is None
+        epoch = rt.begin_runtime_epoch(db, instance_id="owner")
+        scope = dict(epoch=epoch, execution_id="w", session_id=child, generation=0)
+        rt.register_worker_execution(db, **scope, kind="compute", adoption_secret="private")
+        rt.mutate_worker_execution(db, **scope, sequence=1, operation="usage.main", payload={
+            "input_tokens": 4, "output_tokens": 1, "api_call_count": 1, "model": "m",
+            "billing_provider": "p", "source": "gui"})
+        assert _created(db, child) == "desktop"
+    finally:
+        db.close()

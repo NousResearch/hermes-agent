@@ -6,6 +6,8 @@
 * :func:`run_bounded_async` / :func:`run_bounded_sync` — wall-clock deadlines driven by
   a daemon ``threading.Timer`` / worker thread, so a blocked event loop cannot disable them.
 * :func:`kill_process_tree` — portable whole-tree termination.
+* :func:`poll_until` — the one "check until it holds or the deadline passes" loop; use it
+  instead of hand-writing ``deadline = time.monotonic() + t; while ...: time.sleep(...)``.
 
 Invariants: operation exceptions propagate unchanged (only the *timeout* outcome is reified
 as :class:`BoundedResult`); a timeout here is OUR deadline, not the provider's (classify
@@ -25,7 +27,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional, Protocol
+from typing import Any, Awaitable, Callable, Optional, Protocol, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +37,13 @@ __all__ = [
     "DeadlineExpired",
     "clamp_timeout",
     "kill_process_tree",
+    "poll_until",
     "resolve_timeout",
     "run_bounded_async",
     "run_bounded_sync",
 ]
+
+_T = TypeVar("_T")
 
 # Upper bound for any timeout handed to platform wait primitives.
 #
@@ -130,6 +135,24 @@ def clamp_timeout(timeout: Optional[float]) -> Optional[float]:
         logger.warning("clamp_timeout: NaN timeout; treating as unbounded")
         return None
     return None if value <= 0 else min(value, MAX_SAFE_TIMEOUT_S)
+
+
+def poll_until(predicate: Callable[[], _T], timeout: float, interval: float) -> _T:
+    """Call ``predicate`` every ``interval`` s until it returns something truthy or ``timeout`` s
+    pass; return its last result (falsy on timeout).
+
+    The first check runs at once and the last sleep is cut to the time left, so a condition that
+    holds when the deadline arrives still counts. ``timeout <= 0`` means exactly one check.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        result = predicate()
+        if result:
+            return result
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return result
+        time.sleep(min(interval, remaining))
 
 
 # --- Timeout resolution: config ``timeouts:`` > legacy env var > default ------

@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
+from agent.deadline import poll_until
 from hermes_constants import get_hermes_home
 from tools.bot_desktop import placement
 
@@ -294,13 +295,13 @@ def _kill_group_then_wait(pgid: Optional[int], pid: int, grace: float = 2.0) -> 
         with contextlib.suppress(ChildProcessError, OSError):
             os.waitpid(pid, os.WNOHANG)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
 
-    _signal(signal.SIGTERM)
-    deadline = time.monotonic() + grace
-    while time.monotonic() < deadline:
+    def _gone() -> bool:
         _reap_if_ours()
-        if not _anything_left():
-            return
-        time.sleep(0.05)
+        return not _anything_left()
+
+    _signal(signal.SIGTERM)
+    if poll_until(_gone, grace, 0.05):
+        return
     _signal(signal.SIGKILL)  # windows-footgun: ok — Linux-only runtime (is_supported_host gates start/stop)
     time.sleep(0.1)
     _reap_if_ours()

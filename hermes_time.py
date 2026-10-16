@@ -89,8 +89,8 @@ def _resolve_timezone_name() -> str:
         # Prefer the shared cached effective-config loader (mtime-keyed + libyaml, managed overlay
         # included so an administrator can pin ``timezone``): a direct safe_load of a large
         # config.yaml costs ~100 ms and this ran inside the FIRST system prompt build. The bare
-        # parse (through the dependency-free config backend module) is the fallback when the
-        # effective loader cannot be imported.
+        # parse through the config backend is the fallback when the effective loader cannot be
+        # imported (any failure there lands in the outer except: no configured timezone).
         try:
             from hermes_cli.config_effective import load_user_config_effective
             cfg = load_user_config_effective(get_config_path())

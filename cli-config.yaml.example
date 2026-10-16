@@ -432,9 +432,11 @@ terminal:
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300
   # A `hermes` / `hermes --tui` session's local tools (terminal, background processes, execute_code)
-  # start with the launching shell's toolchain: PATH, VIRTUAL_ENV and CONDA_* / NODE_* / NVM_* /
+  # start with the launching shell's toolchain: PATH, an activated venv and CONDA_* / NODE_* / NVM_* /
   # PYENV_* (plus GOPATH, GOROOT, CARGO_HOME, RUSTUP_HOME, JAVA_HOME), for that session only, when
   # the client runs on the gateway's host (a remote client's session keeps the gateway's toolchain).
+  # As in the classic CLI, the venv reaches `terminal` through PATH (`which python`): VIRTUAL_ENV and
+  # CONDA_PREFIX themselves are unset there; execute_code sees them.
   # A toolchain name the client did not export is unset for its session's tools (PATH excepted).
   # List more non-secret names here (default: none); names execute_code treats as credentials (…TOKEN,
   # …KEY, …SECRET, …PASSWORD, …AUTH, …DSN, …WEBHOOK, …CREDS, …BEARER, …COOKIE) and HERMES_* names

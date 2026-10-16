@@ -1594,7 +1594,7 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
 
 
 def test_resolve_hermes_argv_module_actually_runs():
-    """The fallback module name must be importable + runnable (offline: the update check is not under test).
+    """The fallback module name must be importable + runnable.
 
     A unit test that pins the literal string is necessary but not
     sufficient — if `hermes_cli.main` ever loses `if __name__ == "__main__"`
@@ -1611,7 +1611,7 @@ def test_resolve_hermes_argv_module_actually_runs():
         os.environ.pop("HERMES_BIN", None)
         with mock.patch.object(shutil, "which", return_value=None):
             argv = kbd._resolve_hermes_argv()
-    offline = {**os.environ, "HTTPS_PROXY": "http://127.0.0.1:9", "https_proxy": "http://127.0.0.1:9", "NO_PROXY": ""}
+    offline = {**os.environ, "HTTPS_PROXY": "http://127.0.0.1:9", "https_proxy": "http://127.0.0.1:9", "NO_PROXY": "", "no_proxy": ""}
     r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30, check=False, env=offline)
     assert r.returncode == 0, (
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "

@@ -6259,11 +6259,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             event.media_types = []
             self._attach_cached(event, cached, cached.context_note(), "[Telegram] Cached observed group %s at %s")
 
-    def _attach_cached(self, event: MessageEvent, cached, note: str, log_fmt: str) -> None:
-        """Append a cached attachment to the event (message type follows the kind only for the first one)."""
+    def _attach_cached(self, event: MessageEvent, cached, note: str, log_fmt: str, *, retype: bool = True) -> None:
+        """Append a cached attachment to the event (with ``retype``, the first one's kind sets the message type)."""
         event.media_urls.append(cached.path)
         event.media_types.append(cached.media_type)
-        if len(event.media_urls) == 1 and cached.kind in self._CACHED_KIND_TO_MESSAGE_TYPE:
+        if retype and len(event.media_urls) == 1 and cached.kind in self._CACHED_KIND_TO_MESSAGE_TYPE:
             event.message_type = self._CACHED_KIND_TO_MESSAGE_TYPE[cached.kind]
         event.text = self._append_observed_note(event.text, note)
         logger.info(log_fmt, cached.kind, cached.path)
@@ -6275,9 +6275,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             return
         status, cached = await self._download_observed_media(reply_msg, "replied-to media")
         if status == "ok":
-            self._attach_cached(
-                event, cached, f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]",
-                "[Telegram] Cached replied-to %s at %s")
+            # A person's replied voice note keeps the reply's type (AUDIO skips STT, VOICE auto-TTSes a typed reply); a bot's own is never transcribed.
+            spoken = getattr(reply_msg, "voice", None) is not None and not getattr(getattr(reply_msg, "from_user", None), "is_bot", False)
+            self._attach_cached(event, cached, f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]" + " [Any transcript quoted above is that replied-to voice note, not this message.]" * spoken, "[Telegram] Cached replied-to %s at %s", retype=not spoken)
 
     def _observed_media_source(self, msg: Message):
         """Return (telegram_file_source, filename, mime, default_kind) or Nones."""

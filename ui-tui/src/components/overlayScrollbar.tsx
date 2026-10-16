@@ -1,5 +1,5 @@
 import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
-import { type RefObject, useState } from 'react'
+import { type RefObject, useEffect, useState } from 'react'
 
 import type { Theme } from '../theme.js'
 
@@ -21,8 +21,19 @@ export function OverlayScrollbar({
 }) {
   void tick
 
+  const [, setGeometryRevision] = useState(0)
   const [hover, setHover] = useState(false)
   const [grab, setGrab] = useState<null | number>(null)
+
+  useEffect(() => {
+    const scroll = scrollRef.current
+
+    if (!scroll) {
+      return
+    }
+
+    return scroll.subscribe(() => setGeometryRevision(v => v + 1))
+  }, [scrollRef])
 
   const s = scrollRef.current
   const vp = Math.max(0, s?.getViewportHeight() ?? 0)

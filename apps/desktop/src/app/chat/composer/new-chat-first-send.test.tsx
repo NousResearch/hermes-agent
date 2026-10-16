@@ -142,3 +142,75 @@ it('a new chat first send keeps its creation-time draft, queues on the new chat 
   expect(getQueuedPrompts('session-a').map(entry => entry.id)).toEqual(['for-a'])
   expect(getQueuedPrompts(freshDraftKey)).toEqual([])
 })
+
+it('a follow-up queued while session.create is in flight moves to the new chat and sends there', async () => {
+  setSessionsLoading(false)
+  const freshDraftKey = rotateFreshDraftKey()
+  const onSubmit = vi.fn<ChatBarProps['onSubmit']>(async () => true)
+  const latest: { current: Composer | null } = { current: null }
+
+  $sessionStates.set({ 'session-a': { storedSessionId: 'session-a' } as ClientSessionState })
+  enqueueQueuedPrompt('session-a', { attachments: [], id: 'for-a', text: 'for A' })
+
+  const view = render(
+    <Harness busy freshDraftKey={freshDraftKey} latest={latest} onSubmit={onSubmit} queueSessionKey={null} sessionId="session-a" />
+  )
+
+  const show = (scope: Scope) =>
+    act(() => view.rerender(<Harness freshDraftKey={freshDraftKey} latest={latest} onSubmit={onSubmit} {...scope} />))
+
+  expect(latest.current?.scope).toBe(freshDraftKey)
+
+  // session.create is in flight: the follow-up can only land under the chat's fresh draft key.
+  act(() => {
+    latest.current!.draftRef.current = 'follow-up'
+  })
+  await act(async () => {
+    await latest.current!.queueCurrentDraft()
+  })
+  expect(getQueuedPrompts(freshDraftKey).map(entry => entry.text)).toEqual(['follow-up'])
+
+  // Creation assigns the stored id: announce, bind the runtime, route onto it.
+  announceNewSessionDraftKey('stored-new')
+  $sessionStates.set({
+    'session-a': { storedSessionId: 'session-a' } as ClientSessionState,
+    'rt-new': { storedSessionId: 'stored-new' } as ClientSessionState
+  })
+  show({ busy: true, queueSessionKey: 'stored-new', sessionId: 'rt-new' })
+
+  expect(latest.current?.scope).toBe('stored-new')
+  expect(getQueuedPrompts('stored-new').map(entry => entry.text)).toEqual(['follow-up'])
+  expect(getQueuedPrompts(freshDraftKey)).toEqual([])
+
+  // The first turn settles: the follow-up drains into the new chat; A is untouched.
+  show({ busy: false, queueSessionKey: 'stored-new', sessionId: 'rt-new' })
+  await vi.waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+  expect(onSubmit.mock.calls[0]?.[0]).toBe('follow-up')
+  expect(onSubmit.mock.calls[0]?.[1]).toMatchObject({ sessionId: 'rt-new', storedSessionId: 'stored-new' })
+  expect(getQueuedPrompts('session-a').map(entry => entry.id)).toEqual(['for-a'])
+  expect(getQueuedPrompts(freshDraftKey)).toEqual([])
+})
+
+it('a session already claimed elsewhere never hands its queue to the new chat on creation', () => {
+  const freshDraftKey = rotateFreshDraftKey()
+  const latest: { current: Composer | null } = { current: null }
+  const onSubmit = vi.fn<ChatBarProps['onSubmit']>(async () => true)
+
+  $sessionStates.set({ 'session-a': { storedSessionId: 'session-a' } as ClientSessionState })
+  enqueueQueuedPrompt('session-a', { attachments: [], id: 'for-a', text: 'for A' })
+
+  const view = render(
+    <Harness busy freshDraftKey={freshDraftKey} latest={latest} onSubmit={onSubmit} queueSessionKey="session-a" sessionId="session-a" />
+  )
+
+  // A stale announcement naming another chat while A is routed: A's queue stays put.
+  announceNewSessionDraftKey('stored-new')
+  act(() =>
+    view.rerender(
+      <Harness busy freshDraftKey={freshDraftKey} latest={latest} onSubmit={onSubmit} queueSessionKey="stored-new" sessionId="rt-new" />
+    )
+  )
+
+  expect(getQueuedPrompts('session-a').map(entry => entry.id)).toEqual(['for-a'])
+  expect(getQueuedPrompts('stored-new')).toEqual([])
+})

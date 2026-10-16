@@ -669,7 +669,12 @@ _REASONING_CARRIER_ROUTES: tuple = (
     # Vendors that document reasoning_details replay next to reasoning_content.
     (frozenset({RC, RD}), frozenset({"novita", "tencent-tokenhub", "minimax", "minimax-cn"}),
      ("novita.ai", "tokenhub.tencentmaas.com", "tokenhub-intl.tencentcloudmaas.com", "minimax.io", "minimaxi.com")),
-    (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "custom", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
+    # Remote `custom` endpoints are NOT local: a strict host that aliases `reasoning` onto
+    # `reasoning_content` (Rust serde `#[serde(alias)]`) 400s a message carrying both keys
+    # ("duplicate field `reasoning_content`"). Drop `custom` here so those routes fall through
+    # to the `is_local_endpoint` branch below: local servers still get both carriers, remote
+    # custom endpoints get the de-facto-standard `reasoning_content` only.
+    (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
 )
 
 

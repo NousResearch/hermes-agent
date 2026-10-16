@@ -198,8 +198,7 @@ async def preview_restart(connection, ref, params):
             preview_cwd = preview_cwd if preview_cwd and os.path.isdir(preview_cwd) else ''
         except (OSError, ValueError):
             preview_cwd = ''
-        history = _preview_restart_history({'history': authority.db.get_messages_as_conversation(target)
-                                            if target else []})
+        history = _preview_restart_history(authority.db.get_messages_as_conversation(target) if target else [])
         prompt = '\n'.join(line for line in [
             'The desktop preview pane cannot load a local server URL.', f'Preview URL: {url.strip()}',
             f"Current working directory: {cwd or '(unknown)'}",

@@ -1642,6 +1642,8 @@ slash:
     description: "Profilübergreifendes Kollaborations-Board (Aufgaben, Links, Kommentare)"
   reload:
     description: ".env-Variablen in die laufende Sitzung neu laden"
+  discard:
+    description: "Einen beim Gateway-Neustart verlorenen Zug bestätigen, damit wartende Nachrichten wieder laufen"
   reload-mcp:
     description: "MCP-Server aus der Konfiguration neu laden"
   reload-skills:

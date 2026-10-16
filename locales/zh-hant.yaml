@@ -1642,6 +1642,8 @@ slash:
     description: "多設定檔協作看板（任務、連結、留言）"
   reload:
     description: "將 .env 變數重新載入到執行中的工作階段"
+  discard:
+    description: "確認閘道重新啟動時遺失的回合，讓佇列中的訊息重新執行"
   reload-mcp:
     description: "從設定重新載入 MCP 伺服器"
   reload-skills:

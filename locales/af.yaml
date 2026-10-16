@@ -1642,6 +1642,8 @@ slash:
     description: "Multiprofiel-samewerkingsbord (take, skakels, kommentaar)"
   reload:
     description: "Herlaai .env-veranderlikes in die lopende sessie"
+  discard:
+    description: "Erken 'n beurt wat by 'n gateway-herbegin verlore gegaan het sodat wagtende boodskappe weer loop"
   reload-mcp:
     description: "Herlaai MCP-bedieners vanaf konfigurasie"
   reload-skills:

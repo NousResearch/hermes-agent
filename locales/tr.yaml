@@ -1642,6 +1642,8 @@ slash:
     description: "Çok profilli iş birliği panosu (görevler, bağlantılar, yorumlar)"
   reload:
     description: ".env değişkenlerini çalışan oturuma yeniden yükle"
+  discard:
+    description: "Gateway yeniden başlarken kaybolan turu onayla; kuyruktaki mesajlar yeniden çalışsın"
   reload-mcp:
     description: "MCP sunucularını yapılandırmadan yeniden yükle"
   reload-skills:

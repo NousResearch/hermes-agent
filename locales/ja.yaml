@@ -1642,6 +1642,8 @@ slash:
     description: "マルチプロファイルの協業ボード（タスク、リンク、コメント）"
   reload:
     description: ".env の変数を実行中のセッションに再読み込み"
+  discard:
+    description: "ゲートウェイ再起動で失われたターンを確認し、キュー内のメッセージを再開する"
   reload-mcp:
     description: "設定から MCP サーバーを再読み込み"
   reload-skills:

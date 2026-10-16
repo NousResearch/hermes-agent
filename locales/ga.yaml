@@ -1642,6 +1642,8 @@ slash:
     description: "Clár comhoibrithe ilphróifíle (tascanna, naisc, tráchtanna)"
   reload:
     description: "Athlódáil athróga .env isteach sa seisiún atá ag rith"
+  discard:
+    description: "Admhaigh seal a cailleadh nuair a atosaíodh an geata ionas go rithfidh teachtaireachtaí sa scuaine arís"
   reload-mcp:
     description: "Athlódáil freastalaithe MCP ón gcumraíocht"
   reload-skills:

@@ -52,6 +52,8 @@ class SessionState:
         self.subscription_id = None
         self.execution_generation = None
         self.messages: list = []
+        # The session FIFO's non-terminal admissions (snapshot, then every ``session.info``).
+        self.pending: list = []
         self.usage: dict = {}
         # Called (loop thread) with each ``session.usage`` payload; GatewayAgent maps it onto main's
         # agent attributes, so a frame landing between turns is never dropped with the turn queue.
@@ -68,12 +70,15 @@ class SessionState:
         self.subscription_id = snapshot.get("subscription_id", self.subscription_id)
         self.execution_generation = snapshot.get("execution_generation", self.execution_generation)
         self.messages = list(snapshot.get("messages") or [])
+        self.pending = list(snapshot.get("pending") or [])
         if self.info.get("title"):
             self.title = self.info["title"]
 
     def apply_event(self, kind, payload):
         if kind in ("session.info", "session.updated") and isinstance(payload, dict):
             self.info.update({k: v for k, v in payload.items() if k != "session_id"})
+            if isinstance(payload.get("pending"), list):
+                self.pending = list(payload["pending"])
             if payload.get("title"):
                 self.title = payload["title"]
         elif kind == "todo.updated" and isinstance(payload, dict):

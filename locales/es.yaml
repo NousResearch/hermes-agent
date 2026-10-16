@@ -1642,6 +1642,8 @@ slash:
     description: "Tablero de colaboración multiperfil (tareas, enlaces, comentarios)"
   reload:
     description: "Recargar las variables de .env en la sesión en curso"
+  discard:
+    description: "Confirmar un turno perdido al reiniciar el gateway para que los mensajes en cola vuelvan a ejecutarse"
   reload-mcp:
     description: "Recargar los servidores MCP"
   reload-skills:

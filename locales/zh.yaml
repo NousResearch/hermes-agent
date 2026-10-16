@@ -1642,6 +1642,8 @@ slash:
     description: "多配置档协作看板（任务、链接、评论）"
   reload:
     description: "将 .env 变量重新加载到运行中的会话"
+  discard:
+    description: "确认网关重启时丢失的轮次，使排队消息重新运行"
   reload-mcp:
     description: "从配置重新加载 MCP 服务器"
   reload-skills:

@@ -1642,6 +1642,8 @@ slash:
     description: "다중 프로필 협업 보드 (작업, 링크, 댓글)"
   reload:
     description: ".env 변수를 실행 중인 세션에 다시 불러오기"
+  discard:
+    description: "게이트웨이 재시작으로 잃어버린 턴을 확인하여 대기 중인 메시지를 다시 실행"
   reload-mcp:
     description: "설정에서 MCP 서버 다시 불러오기"
   reload-skills:

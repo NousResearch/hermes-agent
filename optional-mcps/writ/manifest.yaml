@@ -1,0 +1,52 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: writ
+description: >-
+  Commit-time policy checks for AI agent writes: ALLOW, DENY, or STEP_UP
+  decisions, with an audit receipt for every outcome.
+source: https://github.com/withwrit/pywrit
+
+# PyPI-installed stdio server. Hermes spawns `uvx` with an exact version pin
+# (required by the catalog's version-lock CI check); uvx fetches and runs the
+# writ-mcp package on demand — no manual install step for the user.
+transport:
+  type: stdio
+  command: uvx
+  args:
+    - writ-mcp==0.1.3
+  env:
+    WRIT_API_KEY: "${WRIT_API_KEY}"
+    WRIT_SPONSOR_TOKEN: "${WRIT_SPONSOR_TOKEN}"
+
+auth:
+  type: api_key
+  env:
+    - name: WRIT_API_KEY
+      prompt: "Writ API key (starts with writ_ — free: POST /v1/keys with an email)"
+      required: true
+    - name: WRIT_SPONSOR_TOKEN
+      prompt: "Writ sponsor token (only needed for sponsor tools: grant, revoke, reinstate)"
+      required: false
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - writ
+    - audit log
+    - policy check
+    - guardrails
+  hosts:
+    - withwrit.com
+  examples:
+    - "Check a payment with Writ before sending it"
+    - "Show recent Writ audit receipts"
+
+post_install: |
+  Get a free API key: POST /v1/keys with an email (quickstart at
+  withwrit.com/docs). Or try it keyless first — the writ_sandbox tool
+  issues a free 90-second demo grant with no key needed.
+
+  The sponsor token is only required for writ_grant / writ_revoke /
+  writ_reinstate. Restart the session so tools load.

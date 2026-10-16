@@ -17,6 +17,11 @@
         "description": "Maximum number of results.",
         "type": "integer"
       },
+      "literal": {
+        "default": false,
+        "description": "Content search only: match pattern as exact text instead of regex.",
+        "type": "boolean"
+      },
       "offset": {
         "default": 0,
         "description": "Skip first N results for pagination.",
@@ -47,7 +52,7 @@
         "type": "string"
       },
       "pattern": {
-        "description": "Regex for content search; glob (e.g. '*.py', '*config*') for file search.",
+        "description": "Regex for content search (exact text with literal=true); glob (e.g. '*.py', '*config*') for file search.",
         "type": "string"
       },
       "target": {

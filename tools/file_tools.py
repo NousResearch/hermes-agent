@@ -1056,14 +1056,14 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str | None = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
                 order: str = "discovery",
-                task_id: str = "default") -> str:
+                task_id: str = "default", literal: bool = False) -> str:
     """Search for content or files."""
     try:
         offset, limit = normalize_search_pagination(offset, limit)
 
         # Pagination args (and order) are part of the key so paging through truncated
         # results doesn't trip the repeated-search guard.
-        search_key = ("search", pattern, target, str(path), file_glob or "", limit, offset, order)
+        search_key = ("search", pattern, target, str(path), file_glob or "", limit, offset, order, literal)
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0, "read_history": set()})
@@ -1103,7 +1103,8 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
 
         result = _get_file_ops(task_id).search(
             pattern=pattern, path=path, target=target, file_glob=file_glob,
-            limit=limit, offset=offset, output_mode=output_mode, context=context, order=order)
+            limit=limit, offset=offset, output_mode=output_mode, context=context, order=order,
+            **({"literal": True} if literal else {}))
         omitted = _filter_read_blocked_search_results(result, task_id)
         for m in getattr(result, "matches", None) or ():
             if getattr(m, "content", None):
@@ -1119,6 +1120,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
 
         # No early return on a cached miss — same rationale as the read path.
         _search_err = result_dict.get("error") or ""
+        if (literal and target == "content" and result_dict.get("total_count") == 0
+                and not _search_err and not omitted and not result_dict.get("truncated")):
+            result_dict["_hint"] = f"No matches for the exact text: {pattern}"
         if isinstance(_search_err, str) and _search_err.startswith("Path not found:"):
             _record_not_found("search", resolved_search_path, task_id, json.dumps(result_dict, ensure_ascii=False))
 
@@ -1301,7 +1305,8 @@ SEARCH_FILES_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "pattern": {"type": "string", "description": "Regex for content search; glob (e.g. '*.py', '*config*') for file search."},
+            "literal": {"type": "boolean", "default": False, "description": "Content search only: match pattern as exact text instead of regex."},
+            "pattern": {"type": "string", "description": "Regex for content search (exact text with literal=true); glob (e.g. '*.py', '*config*') for file search."},
             "target": {"type": "string", "enum": ["content", "files"], "description": "'content' searches inside files, 'files' finds files by name.", "default": "content"},
             "path": {"type": "string", "description": "Directory or file to search in.", "default": "."},
             "file_glob": {"type": "string", "description": "Content search only: filter files by pattern (e.g. '*.py')."},
@@ -1393,7 +1398,7 @@ def _handle_search_files(args, **kw):
         pattern=pattern, target=target, path=path,
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0),
-        order=args.get("order", "discovery"), task_id=tid)
+        order=args.get("order", "discovery"), task_id=tid, literal=args.get("literal", False))
 
 
 def _read_file_schema_overrides():

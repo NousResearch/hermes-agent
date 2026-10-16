@@ -52,9 +52,13 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
-try:  # sibling module; support both package and flat plugin-dir import
+try:  # sibling modules; support both package and flat plugin-dir import
+    from .adapter_inbound_text import (
+        _SLACK_MRKDWN_LINK_RE, _slack_link_text, _slack_text_for_agent, _unescape_slack_entities)
     from .block_kit import render_blocks, sanitize_blocks
 except ImportError:  # pragma: no cover - plugin loaded outside package context
+    from adapter_inbound_text import (  # type: ignore
+        _SLACK_MRKDWN_LINK_RE, _slack_link_text, _slack_text_for_agent, _unescape_slack_entities)
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
 
 
@@ -637,8 +641,6 @@ def _extract_text_from_slack_attachments(attachments: list) -> str:
     return "\n".join(line for line in lines if line).strip()
 
 
-#: Any ``<scheme:target|label>`` autolink (Slack is not limited to https/mailto).
-_SLACK_MRKDWN_LINK_RE = re.compile(r"<([a-zA-Z][a-zA-Z0-9+.\-]*:[^>|]+)(?:\|([^>]+))?>")
 #: Optional label Slack adds to a mention in flat text while blocks carry the bare id
 #: (``<@U…|name>``, ``<#C…|general>``, ``<!subteam^S…|@marketing>``, ``<!here|@here>``).
 _SLACK_ENTITY_LABEL_RE = re.compile(r"<([@#!][^>|]*)\|[^>]*>")
@@ -649,23 +651,10 @@ _SLACK_DATE_RE = re.compile(r"<!date\^([^>|]*)(?:\|([^>]*))?>")
 #: query differ between flat text and a ``channel_id``/``message_ts``-only payload).
 _SLACK_PERMALINK_RE = re.compile(r"https?://[^\s/]+/(archives/[A-Za-z0-9]+/p\d+)(?:\?[^\s)]*)?")
 _SLACK_INLINE_STYLE_RE = re.compile(r"([*_~])([^\n]+?)\1")
-_SLACK_HTML_ENTITY_RE = re.compile(r"&(amp|lt|gt);")
-_SLACK_HTML_ENTITIES = {"amp": "&", "lt": "<", "gt": ">"}
-
-
-def _unescape_slack_entities(text: str) -> str:
-    """Undo Slack's ``&``/``<``/``>`` escaping in flat ``text``.
-    ``blocks`` are raw, so text-vs-blocks comparison needs a common form (every "Copy link"
-    permalink carries ``?thread_ts=…&cid=…``)."""
-    return _SLACK_HTML_ENTITY_RE.sub(lambda match: _SLACK_HTML_ENTITIES[match.group(1)], text or "")
 
 
 def _normalize_slack_text_for_dedupe(text: str, bot_uid: str = "") -> str:
     """Normalize Slack text for comparison with rendered rich text."""
-
-    def _link(match: re.Match) -> str:
-        url, label = match.group(1), match.group(2)
-        return f"{label} ({url})" if label and label != url else url
 
     def _date(match: re.Match) -> str:
         # ``<!date^ts^format^url|fallback>`` → what rich-text renders: fallback, else URL.
@@ -679,7 +668,7 @@ def _normalize_slack_text_for_dedupe(text: str, bot_uid: str = "") -> str:
     # Order matters: unescape before links (same brackets/``&``); permalinks after links (bare
     # URL); labels after dates (dates carry a label); bot mention after labels (``<@U…|hermes>``).
     canonical = _unescape_slack_entities(canonical)
-    canonical = _SLACK_MRKDWN_LINK_RE.sub(_link, canonical)
+    canonical = _SLACK_MRKDWN_LINK_RE.sub(_slack_link_text, canonical)
     canonical = _SLACK_DATE_RE.sub(_date, canonical)
     canonical = _SLACK_PERMALINK_RE.sub(r"\1", canonical)
     canonical = _SLACK_ENTITY_LABEL_RE.sub(r"<\1>", canonical)
@@ -3217,7 +3206,7 @@ class SlackAdapter(BasePlatformAdapter):
             (r"~~(.+?)~~", lambda m: _ph(f"~{m.group(1)}~"), 0))
         for step in passes:
             if step is None:
-                text = _SLACK_HTML_ENTITY_RE.sub(lambda m: _SLACK_HTML_ENTITIES[m.group(1)], text)
+                text = _unescape_slack_entities(text)
                 text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             else:
                 pattern, fn, flags = step
@@ -4573,7 +4562,8 @@ class SlackAdapter(BasePlatformAdapter):
         if accepted is None:
             return
         event, dedup_team_id, channel_id = accepted
-        original_text = event.get("text", "")
+        # Mention routing reads the raw event; the agent and command parser get what was typed.
+        original_text = _slack_text_for_agent(event.get("text", ""))
         # Slack rejects slash commands inside threads, so a leading ``!`` is rewritten to ``/``
         # — only for known gateway commands, so "!nice work" passes through.
         command_probe_text = _rewrite_known_bang_command(original_text.lstrip())
@@ -5779,6 +5769,8 @@ class SlackAdapter(BasePlatformAdapter):
         markers = [_slack_file_marker(f) for f in files if isinstance(f, dict)]
         if markers:
             extras.append(" ".join(markers))
+        # Dedupe above compares Slack's own form; the agent reads the text as it was typed.
+        msg_text = _slack_text_for_agent(msg_text)
         if extras:
             addendum = "\n".join(extras)
             msg_text = (msg_text + "\n" + addendum).strip() if msg_text else addendum

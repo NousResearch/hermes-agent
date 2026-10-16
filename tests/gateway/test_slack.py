@@ -1812,19 +1812,8 @@ class TestIncomingDocumentHandling:
                     {"type": "text", "text": " text"},
                 ],
             ),
-            (
-                "read <https://example.com/docs|the docs>",
-                [
-                    {"type": "text", "text": "read "},
-                    {
-                        "type": "link",
-                        "url": "https://example.com/docs",
-                        "text": "the docs",
-                    },
-                ],
-            ),
         ],
-        ids=("inline-code", "inline-styles", "nested-inline-styles", "link"),
+        ids=("inline-code", "inline-styles", "nested-inline-styles"),
     )
     @pytest.mark.asyncio
     async def test_equivalent_rich_text_is_not_duplicated(

@@ -82,7 +82,8 @@ def _side_agent(authority, policy, live, task_id, **overrides):
     runner = authority.runner
     model, runtime = _resolve_runtime(authority, policy)
     config = policy.config(authority)
-    pr = getattr(runner, '_provider_routing', None) or {}
+    from gateway.session_worker_construct import session_routing
+    pr = session_routing(authority, policy)
     refresh_fallback = getattr(runner, '_refresh_fallback_model', None)
     kwargs = dict(
         model=model, **{key: runtime.get(key) for key in _RUNTIME_KEYS if key in runtime},

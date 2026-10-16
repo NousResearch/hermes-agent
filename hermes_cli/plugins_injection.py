@@ -21,6 +21,12 @@ def inject_plugin_message(
         queue_ = cli._interrupt_queue if getattr(cli, "_agent_running", False) else cli._pending_input
         queue_.put(msg)
         return True
+    if not session_key and origin is None:
+        # Main queued key-less text into the classic CLI REPL. That session's turns now run in the
+        # gateway, so a hook or tool running for it targets the session itself.
+        from hermes_cli.plugin_session import session_key as calling_session_key, session_surface
+        if session_surface() == "cli":
+            session_key = calling_session_key() or None
     if session_key and origin is not None:
         logger.warning("inject_message: pass session_key or origin, not both")
         return False
@@ -49,11 +55,12 @@ def inject_plugin_message(
     if not manager.has_gateway_message_injector:
         logger.warning("inject_message: no live gateway is available")
         return False
+    # The manager's immutable home is the plugin's profile: the gateway creates an origin's session
+    # there or nowhere, and a keyed local session must belong to it (never the ambient HERMES_HOME
+    # of whatever thread called us).
     if origin is None:
-        target: dict[str, Any] = {"session_key": session_key}
+        target: dict[str, Any] = {"session_key": session_key, "plugin_home": manager.home_path}
     else:
-        # The manager's immutable home is the plugin's profile: the gateway creates the session
-        # there or nowhere (never the ambient HERMES_HOME of whatever thread called us).
         target = {"origin": dict(origin), "plugin_home": manager.home_path}
     try:
         return bool(manager.inject_gateway_message(**target, content=msg, plugin_id=ctx.plugin_id))

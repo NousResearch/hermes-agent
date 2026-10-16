@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- pre_result_delivery seam registers one hook name plus its contract comment in VALID_HOOKS, the designated hook registry sibling plugins code against; the set-element addition cannot be offset within the facade without moving unrelated code
 """Hermes Plugin System — discovers, loads, and manages plugins.
 
 Sources, later overriding earlier on key collision: bundled ``<repo>/plugins/<name>/`` (``memory/``
@@ -190,7 +191,17 @@ VALID_HOOKS: set[str] = {
     # "thread_renamed". Each event type carries its own event-local additive payload contract (see
     # hooks.md). Other event types and hook names land here only together with real fire-sites and payload
     # contracts; no inert VALID_HOOKS surface is registered ahead of implementation.
-    "gateway_platform_event",
+    # pre_result_delivery: directive, fail-open, first valid directive wins. Fired for a composed
+    # cron run notice (cron/scheduler.py:_save_compose_deliver, success path only, inside the
+    # side-effect fence) and for a completed kanban task ping
+    # (gateway/kanban_watchers_notifier.py:_send_pings). Kwargs: source ("cron"|"kanban") plus
+    # cron: job_id, job_name, execution_id, session_id, scheduled_at, content (redacted), job
+    # (read-only copy), targets ([{platform, chat_id, thread_id}], may be empty); kanban: board,
+    # task_id, event_id, run_id, title, summary, run_metadata, artifacts, platform, chat_id.
+    # Return None or {"action": "deliver"} for the normal send; {"action": "handled", "receipt"} to
+    # skip it (cron records job["last_delivery_handled"]); {"action": "hold", "reason"} (cron only)
+    # to withhold it as "held". A raise or timeout falls back to a normal send.
+    "pre_result_delivery",
     # pre_command: BEFORE a recognized slash command's handler on CLI and gateway canonical dispatch;
     # returns IGNORED in v1. Deliberately NOT fired for the gateway's running-agent intercept path
     # (/stop, /approve, busy_policy) — a slow/hostile plugin must not touch the operator's escape

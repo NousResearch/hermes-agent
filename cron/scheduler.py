@@ -3059,8 +3059,124 @@ class _RunDelivery:
     agent_declared: bool = False
     incident_acked: bool = False
     failure_incident_id: Optional[str] = None
+    # Optional terminal classification (e.g. "cancelled", "interrupted") that must survive the
+    # generic success/failure mark; finish_completed_run writes it as the run's final status.
+    terminal_status: Optional[str] = None
     side_effect_ownership_lost: bool = False
+    # Cron agent session that produced this run (best-effort; None when unknown). Threaded to the
+    # pre_result_delivery hook so a plugin can attribute an externally posted card.
+    session_id: Optional[str] = None
 
+
+def _pre_result_delivery_directive(
+    d: _RunDelivery, fence: _FireOwnership, deliver_content: str,
+) -> Optional[tuple[str, str, Any]]:
+    """Fire ``pre_result_delivery`` for a composed success notice.
+
+    Returns ``(action, plugin, payload)`` with action ``"handled"`` or ``"hold"`` for the first
+ valid directive, else None for a normal send. Never raises for plugin behaviour (fail-open);
+    ``_FireClaimLostDuringSideEffect`` propagates so a stale fire cannot trigger an external post.
+    """
+    if not d.success:
+        return None
+    try:
+        from hermes_cli.lifecycle import has_hook
+        if not has_hook("pre_result_delivery"):
+            return None
+    except Exception:  # health: allow BLE001 -- fail-open hook gate: a broken gate must not break delivery
+        logger.debug("Job '%s': pre_result_delivery gate failed open", d.job.get("id"), exc_info=True)
+        return None
+    job = d.job
+    try:
+        from cron.scheduler_delivery import _redact_cron_payload
+        content = _redact_cron_payload(deliver_content, "delivery content")
+    except Exception:  # health: allow BLE001 -- best-effort redaction: any failure falls back to the unredacted content
+        logger.debug("Job '%s': pre_result_delivery redaction failed open", job.get("id"), exc_info=True)
+        content = deliver_content
+    try:
+        targets = [
+            {"platform": t.get("platform"), "chat_id": t.get("chat_id"),
+             "thread_id": t.get("thread_id")}
+            for t in (_resolve_delivery_targets(job, for_failure=not d.success) or [])
+        ]
+    except Exception:  # health: allow BLE001 -- best-effort target list: any failure falls back to no targets
+        logger.debug("Job '%s': pre_result_delivery targets failed open", job.get("id"), exc_info=True)
+        targets = []
+    payload = {
+        "source": "cron", "job_id": job.get("id"), "job_name": job.get("name") or job.get("id"),
+        "execution_id": job.get("execution_id"), "session_id": d.session_id,
+        "scheduled_at": job.get("_scheduled_instant"), "content": content,
+        "job": dict(job), "targets": targets,
+    }
+    try:
+        with fence.side_effect_fence() as owns_hook:
+            if not owns_hook:
+                raise _FireClaimLostDuringSideEffect
+            results = _invoke_pre_result_delivery(payload)
+    except _FireClaimLostDuringSideEffect:
+        raise
+    except Exception:  # health: allow BLE001 -- fail-open fire site: any plugin failure degrades to a normal send
+        logger.debug("Job '%s': pre_result_delivery failed open", job.get("id"), exc_info=True)
+        return None
+    for plugin, result in results:
+        if not isinstance(result, dict):
+            continue
+        action = result.get("action")
+        if action in (None, "deliver"):
+            continue
+        if action == "handled":
+            return ("handled", plugin, result.get("receipt"))
+        if action == "hold":
+            return ("hold", plugin, result.get("reason"))
+        logger.debug("Job '%s': ignoring unknown pre_result_delivery action %r", job.get("id"), action)
+    return None
+
+
+def _invoke_pre_result_delivery(payload: dict) -> list[tuple[str, Any]]:
+    """Invoke ``pre_result_delivery`` callbacks in order, fail-open per callback.
+
+    Returns ``[(plugin, result)]`` for non-None results. Mirrors
+    ``PluginManager.invoke_hook`` (timeout-bounded, isolated, first-party observers first) while
+    keeping the callback's plugin attribution for ``last_delivery_handled``. A raise, timeout or
+    skip degrades to no result (normal send), never to a veto.
+    """
+    from hermes_cli import plugins as _plugins_mod
+    from hermes_cli.lifecycle import _observe
+    from hermes_cli.plugins_dispatch import _HOOK_SKIPPED, _hook_uses_callback_timeout
+    try:
+        _observe("pre_result_delivery", **payload)
+    except Exception:  # health: allow BLE001 -- observer must not break the fan-out
+        logger.debug("pre_result_delivery observer failed", exc_info=True)
+    try:
+        manager = _plugins_mod.get_plugin_manager()
+    except Exception:  # health: allow BLE001 -- no plugin manager degrades to a normal send
+        logger.debug("pre_result_delivery: no plugin manager, failed open", exc_info=True)
+        return []
+    try:
+        timeout = _plugins_mod._resolve_hook_callback_timeout()
+    except Exception:  # health: allow BLE001 -- timeout resolution failure falls back to the default
+        logger.debug("pre_result_delivery: hook timeout unresolved, using default", exc_info=True)
+        timeout = 30.0
+    use_timeout = _hook_uses_callback_timeout("pre_result_delivery", timeout)
+    out: list[tuple[str, Any]] = []
+    for cb in manager.iter_hook_callbacks("pre_result_delivery"):
+        plugin = getattr(cb, "__module__", None) or "unknown"
+        try:
+            if use_timeout:
+                ret = manager._run_hook_callback_bounded("pre_result_delivery", cb, payload, timeout)
+                if ret is _HOOK_SKIPPED:
+                    continue
+            else:
+                ret = manager._invoke_hook_callback(cb, payload)
+        except (Exception, SystemExit) as exc:  # health: allow BLE001 -- executes third-party plugin code: any failure degrades to a normal send, never a veto
+            try:
+                manager._report_hook_failure("pre_result_delivery", cb, payload, exc)
+            except Exception:  # health: allow BLE001 -- failure reporting must not break the fail-open path
+                logger.debug("pre_result_delivery: failure report failed for %s", plugin, exc_info=True)
+            continue
+        if ret is not None:
+            out.append((plugin, ret))
+    return out
 
 def _save_compose_deliver(
     d: _RunDelivery, fence: _FireOwnership, final_response: str, output: str, *,
@@ -3120,6 +3236,21 @@ def _save_compose_deliver(
 
     if not d.should_deliver:
         return
+    # Plugin result-delivery gate (success notices only): a "handled" plugin posts the card itself,
+    # a "hold" withholds the send as "held" (not a failure, no streak). Target-less reminders still
+    # reach the hook (fork behaviour). Fires inside the side-effect fence via
+    # _pre_result_delivery_directive; a raise or timeout falls back to a normal send.
+    if d.success:
+        directive = _pre_result_delivery_directive(d, fence, deliver_content)
+        if directive is not None:
+            action, plugin, detail = directive
+            if action == "handled":
+                d.delivery_attempted = True
+                job["last_delivery_handled"] = {"plugin": plugin, "receipt": detail}
+                return
+            if action == "hold":
+                d.delivery_error = f"held:{plugin}:{detail or 'held'}"
+                return
     d.unresolved_origin = (
         _normalize_deliver_value(_delivery_lane_value(job, for_failure=not d.success)) == "origin"
         and not _resolve_delivery_targets(job, for_failure=not d.success)
@@ -3370,7 +3501,9 @@ def _run_one_job_body(
 
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
         # raise anywhere still tears the deferred agent down.
-        d = _RunDelivery(job=job, success=success, error=error, agent_declared=agent_declared)
+        _delivery_session_id = getattr(_deferred_agents[0], "session_id", None) if _deferred_agents else None
+        d = _RunDelivery(job=job, success=success, error=error, agent_declared=agent_declared,
+                         session_id=_delivery_session_id)
         try:
             _save_compose_deliver(
                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,

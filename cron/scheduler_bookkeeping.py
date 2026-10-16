@@ -32,6 +32,9 @@ def _classify_delivery_outcome(
     normalized_deliver: str, incident_acked: bool, success: bool,
     delivery_queued=None, notification_suppressed: bool = False,
 ) -> str:
+    if isinstance(delivery_error, str) and delivery_error.startswith("held:"):
+        # Plugin-withheld send (pre_result_delivery "hold"): not a failure, no streak.
+        return "held"
     if delivery_error:
         return "failed"
     if should_deliver and delivery_queued:
@@ -84,6 +87,8 @@ def finish_completed_run(d, fire_owner: Optional[str], execution_id: str, *, rec
         mark_kwargs["expected_fire_owner"] = fire_owner
     if d.blocked_config:
         mark_kwargs["status"] = "blocked_config"
+    elif d.terminal_status:
+        mark_kwargs["status"] = d.terminal_status
     # A run that removed its own record has nothing left to mark; the delivery above is its result.
     marked = scheduler.self_removal_delivery_allowed(job["id"]) or scheduler.mark_job_run(
         job["id"], d.success, d.error, **mark_kwargs)

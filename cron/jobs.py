@@ -2343,7 +2343,13 @@ def _record_run_outcome(
     job.pop("manual_run_at", None)
     # The transient manual-run context is single-fire: the run that just completed consumed it.
     job.pop("manual_run_prompt", None)
-    delivery_failed = isinstance(delivery_error, str) and bool(delivery_error.strip())
+    delivery_failed = (
+        isinstance(delivery_error, str)
+        and bool(delivery_error.strip())
+        and not delivery_error.strip().startswith("held:")
+    )
+    # A plugin-withheld send (pre_result_delivery "hold") is not a failure: no streak, no
+    # delivery_failed status. The "held:<plugin>:<reason>" marker stays in last_delivery_error.
     job["last_status"] = status or (
         "error" if not success else ("delivery_failed" if delivery_failed else "ok"))
     job["last_error"] = None if success else error

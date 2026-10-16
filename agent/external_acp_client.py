@@ -37,10 +37,6 @@ from tools.environments.local import hermes_subprocess_env
 ACP_MARKER_BASE_URL = "acp://external"
 logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT_SECONDS = 900.0
-# Stderr fingerprint of the deprecated `gh copilot` extension. Require BOTH the product name
-# AND a deprecation marker: the NEW `@github/copilot` CLI legitimately mentions "copilot-cli".
-_DEPRECATION_REQUIRED = ()
-_DEPRECATION_MARKERS = ()
 _ROLE_LABELS = {"system": "System", "user": "User", "assistant": "Assistant", "tool": "Tool", "context": "Context"}
 # Probe verdicts per binary path (~50ms --help paid once per process). Only definitive
 # True/False is cached, so a CLI installed mid-session is picked up.
@@ -56,29 +52,12 @@ _INITIALIZE_PARAMS = {
     "clientCapabilities": {"fs": {"readTextFile": True, "writeTextFile": True}},
     "clientInfo": {"name": "hermes-agent", "title": "Hermes Agent", "version": "0.0.0"},
 }
-_DEPRECATED_CLI_ERROR = (
-    "Hermes ACP mode requires the NEW GitHub External ACP CLI (github.com/github/copilot-cli), but the binary it just "
-    "spawned is the deprecated `gh copilot` extension.\n\n"
-    "Install the new CLI:\n  npm install -g @github/copilot\n  # then verify with: copilot --help\n\n"
-    "If `copilot` already resolves to the new CLI but you still see this,\npoint Hermes at it explicitly:\n"
-    "  export HERMES_COPILOT_ACP_COMMAND=/path/to/new/copilot\n\n"
-    "Alternative: use the `copilot` provider (no ACP, hits the External ACP API\ndirectly with a External ACP subscription "
-    "token) via `hermes setup`.\n\nOriginal error:\n"
-)
-
-
-def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
-    """True iff stderr looks like the deprecated gh-copilot extension's banner."""
-    lower = stderr_text.lower()
-    return any(req in lower for req in _DEPRECATION_REQUIRED) and any(m in lower for m in _DEPRECATION_MARKERS)
-
-
 def _resolve_command() -> str:
-    return os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip() or os.getenv("COPILOT_CLI_PATH", "").strip() or "copilot"
+    return os.getenv("HERMES_EXTERNAL_ACP_COMMAND", "").strip() or "external-acp"
 
 
 def _resolve_args() -> list[str]:
-    return shlex.split(os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()) or ["--acp", "--stdio"]
+    return shlex.split(os.getenv("HERMES_EXTERNAL_ACP_ARGS", "").strip()) or ["--acp", "--stdio"]
 
 
 def _acp_supported(command: str, args: list[str]) -> bool | None:
@@ -145,7 +124,7 @@ def _jsonrpc_error(message_id: Any, code: int, message: str) -> dict[str, Any]:
 
 
 def _enabled_id_list(entries: Any, key: str) -> list[str]:
-    """Ordered ids whose ``_meta.copilotEnablement`` is not ``disabled``."""
+    """Ordered ids whose ``_meta.enablement`` is not ``disabled``."""
     seen: set[str] = set()
     result: list[str] = []
     for entry in entries or []:
@@ -153,7 +132,7 @@ def _enabled_id_list(entries: Any, key: str) -> list[str]:
             continue
         value = str(entry.get(key) or "").strip()
         if (not value or value in seen
-                or str((entry.get("_meta") or {}).get("copilotEnablement") or "").strip().lower() == "disabled"):
+                or str((entry.get("_meta") or {}).get("enablement") or "").strip().lower() == "disabled"):
             continue
         seen.add(value)
         result.append(value)
@@ -435,8 +414,6 @@ class ExternalACPClient:
                 # it too early turned a dead CLI into a TimeoutError, which retries differently.
                 stderr_pump.join(timeout=1.0)
                 stderr_text = "\n".join(stderr_tail).strip()
-                if _is_gh_copilot_deprecation_message(stderr_text):
-                    raise RuntimeError(_DEPRECATED_CLI_ERROR + stderr_text)
                 raise RuntimeError(f"External ACP process exited early: {stderr_text or f'exit code {proc.returncode}'}")
             raise TimeoutError(f"Timed out waiting for External ACP response to {method}.")
 

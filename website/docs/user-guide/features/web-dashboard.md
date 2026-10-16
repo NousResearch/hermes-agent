@@ -860,6 +860,10 @@ curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'
 
 `basic` is just one implementation of an extension point. Any plugin can register a password provider: set `supports_password = True` on your `DashboardAuthProvider` subclass and implement `complete_password_login(*, username, password) -> Session` (raise `InvalidCredentialsError` on rejection, `ProviderError` if your backing store is down). The OAuth `start_login` / `complete_login` methods can be left as `NotImplementedError` stubs for a pure-password provider. This is the path for LDAP-bind, a credentials database, or any other non-redirect auth scheme — the framework handles the form, the route, the cookies, and refresh for you.
 
+#### Writing your own passkey (WebAuthn) provider
+
+Passkeys are the second capability flag on the same extension point: `supports_webauthn = True` plus `webauthn_offered_for_request(request)`, `webauthn_login_options(...)` and the assertion/registration completions let a plugin serve the ceremonies — see the bundled `plugins/dashboard_auth/webauthn` provider, which also shows the fail-closed origin gate (the provider withholds itself on origins it cannot serve rather than trusting a spoofable header). Like `supports_password`, this is additive: a plugin that doesn't set the flag is unaffected, and `/login` renders identically when no such provider registers.
+
 ### Self-hosted OIDC provider
 
 If you run your own identity provider, the bundled `plugins/dashboard_auth/self_hosted` plugin authenticates the dashboard against it using **standard OpenID Connect** — no per-IDP code, no Nous Portal involved. It's verified against and works with any conformant OIDC server:

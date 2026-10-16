@@ -26,6 +26,7 @@ import {
   normalizeConnectionInput,
   normalizeRegistry,
   parseRemoteProfileListing,
+  profileMetadataFromApiProfiles,
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   REGISTRY_VERSION,
@@ -911,6 +912,21 @@ test('roster: source profile metadata follows the connection-qualified row', () 
 
   assert.deepEqual(roster.find(agent => agent.connectionId === 'vps')?.profileMetadata, vpsMeta)
   assert.equal(roster.find(agent => agent.connectionId === 'local')?.profileMetadata, undefined)
+})
+
+test('remote API profile descriptions are retained for the roster, including an empty description', () => {
+  assert.deepEqual(
+    profileMetadataFromApiProfiles([
+      { name: 'builder', description: '  Personal project developer  ' },
+      { name: 'empty', description: '' },
+      { name: 'legacy', description: null }
+    ]),
+    {
+      builder: { description: 'Personal project developer' },
+      empty: { description: '' },
+      legacy: {}
+    }
+  )
 })
 
 test('rememberSshEnumeration: live list wins, cache then seed default', () => {

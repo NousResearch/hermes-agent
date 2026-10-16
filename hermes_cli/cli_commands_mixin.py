@@ -664,13 +664,13 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if diff and not stat_only:
             self._print_diff_body(diff, _t("diff.stat_hint"))
 
-    def _print_diff_body(self, diff: str, stat_hint: str, limit: int = 400) -> None:
-        """Print a diff, capped at ``limit`` lines with a pointer to the --stat form."""
+    def _print_diff_body(self, diff: str, stat_hint: str, limit: int = 400, total: int = 0) -> None:
+        """Print a diff, capped at ``limit`` lines (of ``total`` when its sender cut it) with a pointer to the --stat form."""
         print()
         diff_lines = diff.splitlines()
-        if len(diff_lines) > limit:
+        if (total := max(total, len(diff_lines))) > limit:
             self._print_diff_text("\n".join(diff_lines[:limit]))
-            print(f"\n  {_t('diff.more_lines', count=len(diff_lines) - limit, hint=stat_hint)}")
+            print(f"\n  {_t('diff.more_lines', count=total - limit, hint=stat_hint)}")
         else:
             self._print_diff_text(diff)
 
@@ -681,16 +681,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             return
         if reason := mgr.unsupported_backend_reason():  # host baseline is not this session's tree
             return print(f"  {reason}")
-        result = mgr.session_diff(cwd)
-        if not result.get("success"):
-            return print(f"  {result.get('error') or _t('shared.could_not_generate_diff')}")
-        stat, diff = result.get("stat", ""), result.get("diff", "")
-        if result.get("empty") or (not stat and not diff):
-            return print(f"  {_t('diff.no_session_changes')}")
-        if stat:
-            self._print_diff_text(f"\n{stat}")
-        if diff and not stat_only:
-            self._print_diff_body(diff, _t("diff.stat_hint_session"))
+        from hermes_cli.cli_commands_session_tools import print_session_diff
+        print_session_diff(self, mgr.session_diff(cwd), stat_only)
 
     def _print_diff_text(self, text: str) -> None:
         """Render diff/stat text with color when a rich console is present; plain print otherwise
@@ -760,9 +752,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             if not 1 <= idx <= len(snaps):
                 return print(f"  {_t('snapshot.invalid_number', max=len(snaps))}")
             snap_id = snaps[idx - 1]["id"]
-        # Close our SessionDB first so the restore doesn't contend with this process's live connection.
+        # Close our own SessionDB first (restore contention); an open gateway session's store must stay.
         local_session_db = getattr(self, "_session_db", None)
-        if local_session_db is not None:
+        if local_session_db is not None and not getattr(self, "_gateway_session_open", False):
             with suppress(Exception):
                 local_session_db.close()
                 self._session_db = None
@@ -1102,22 +1094,22 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         from gateway.slash_commands_branch_thread import parse_branch_args
         _, branch_name = parse_branch_args(_command_arg(cmd_original))
         now = datetime.now()
-        new_session_id = self._new_session_id(now, branch_of=self.session_id)  # the gateway's branch child
-        branch_title = branch_name or self._session_db.get_next_title_in_lineage(
-            self._session_db.get_session_title(self.session_id) or "branch")
-        parent_session_id = self.session_id
-        # Create the child BEFORE ending the parent: a failed create_session must leave the session the
-        # user is still on open, not ended with end_reason="branched" and no branch (#11030).
+        from tools.approval_yolo import transfer_session_yolo, with_session_yolo
+        # Create the child BEFORE ending the parent: a failed create_session or gateway branch (or its /yolo
+        # carry) must leave the session the user is still on open, not ended "branched" with no branch (#11030).
         # The stable ``_branched_from`` marker keeps the branch visible in /resume + /sessions even after the
         # parent is re-ended with a different end_reason; with_session_yolo keeps a live /yolo on the branch.
-        # The child sends the parent's exact system prompt: a row without one makes the branch's first turn rebuild
-        # (re-probing the workspace), losing the copied transcript's warm cache whenever the repo moved since.
-        parent_prompt = getattr(self.agent, "_cached_system_prompt", None)
-        if not isinstance(parent_prompt, str) or not parent_prompt:
-            with suppress(Exception):
-                parent_prompt = (self._session_db.get_session(parent_session_id) or {}).get("system_prompt")
-        from tools.approval_yolo import transfer_session_yolo, with_session_yolo
+        # The child sends the parent's exact system prompt: a row without one makes the branch's first turn
+        # rebuild (re-probing the workspace), losing the copied transcript's warm cache if the repo moved since.
         try:
+            new_session_id = self._new_session_id(now, branch_of=self.session_id)  # the gateway's branch child
+            branch_title = branch_name or self._session_db.get_next_title_in_lineage(
+                self._session_db.get_session_title(self.session_id) or "branch")
+            parent_session_id = self.session_id
+            parent_prompt = getattr(self.agent, "_cached_system_prompt", None)
+            if not isinstance(parent_prompt, str) or not parent_prompt:
+                with suppress(Exception):
+                    parent_prompt = (self._session_db.get_session(parent_session_id) or {}).get("system_prompt")
             self._session_db.create_session(
                 session_id=new_session_id, source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                 model=self.model, parent_session_id=parent_session_id, system_prompt=parent_prompt or None,

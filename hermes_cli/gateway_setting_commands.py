@@ -5,6 +5,8 @@ agent or config. Rewired, the session's agent lives in the gateway, so the gatew
 decides and applies the change (gateway/session_setting_commands.py; RULING §1: one behaviour per
 command, every surface) and the CLI prints its reply. Client-side state the CLI itself enforces
 (``/busy``: what Enter does while a turn runs) is mirrored locally after the owner accepts it.
+``/refine`` and ``/review`` take the same route: their background reviewer must run beside the
+session's agent in the gateway (as on messaging), where its result is delivered back to the session.
 """
 from __future__ import annotations
 
@@ -17,7 +19,8 @@ def _mirror_busy(cli, arg):
         cli.busy_input_mode = arg.lower()
 
 
-GATEWAY_SETTINGS = {"personality": None, "busy": _mirror_busy, "approvals": None, "footer": None, "fast": None}
+GATEWAY_SETTINGS = {"personality": None, "busy": _mirror_busy, "approvals": None, "footer": None, "fast": None,
+                    "refine": None, "review": None}
 
 
 def run(cli, canonical, cmd):

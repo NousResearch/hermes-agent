@@ -21,9 +21,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 
-from gateway.status import (
-    multiplexer_liveness_for_profile, profile_name_for_home, profile_platforms_from_multiplexer,
-    resolve_gateway_liveness, retained_gateway_state)
+from gateway.status import resolve_gateway_liveness, retained_gateway_state
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
 from hermes_constants import get_process_hermes_home
@@ -61,6 +59,7 @@ _gateway_subcommand = late("_gateway_subcommand", "hermes_cli.web_server_gateway
 _probe_gateway_health = late("_probe_gateway_health", "hermes_cli.web_server_gateway")
 get_running_pid_cached = late("get_running_pid_cached", "gateway.status")
 get_runtime_status_running_pid = late("get_runtime_status_running_pid", "gateway.status")
+served_profile_runtime = late("served_profile_runtime", "gateway.status_served")
 _GATEWAY_HEALTH_URL = LateState("_GATEWAY_HEALTH_URL")
 # Display labels for env vars not in OPTIONAL_ENV_VARS (bridge toggles, Twilio, Email, ...)
 # so the UI can still render a friendly label. Rows: (key, description, prompt, extra flags).
@@ -303,16 +302,7 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     # so the two surfaces cannot disagree. Unscoped, the profile is the process's own home (a pooled
     # ``hermes --profile X serve``).
     own_home = scoped_dir if scoped_dir is not None else get_process_hermes_home()
-    if (
-        runtime is None
-        or get_runtime_status_running_pid(runtime, expected_home=own_home) is None
-    ):
-        served = multiplexer_liveness_for_profile(own_home)
-        if served is not None:
-            # Fold on the profile NAME, not ``own_home.name``: the default root's basename is
-            # ``.hermes`` (or any custom HERMES_HOME), so its flat keys never matched (#123088).
-            served_name = profile_name_for_home(own_home) or "default"
-            runtime = {**served[1], "platforms": profile_platforms_from_multiplexer(served[1], served_name)}
+    runtime = served_profile_runtime(own_home, runtime) or runtime
     return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None, profile_home=scoped_dir)
             for entry in entries]
 

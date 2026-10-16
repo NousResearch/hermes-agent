@@ -80,8 +80,8 @@ def test_silent_editor_discovery_is_bounded_and_reaps_only_itself(server_spec, t
               'args': ['-c', 'import time; time.sleep(120)'], 'env': []}
     with policy_scope(healthy, authority=authority):
         started = time.monotonic()
-        with pytest.raises(RuntimeStoreError, match='acp_mcp_discovery_failed'):
-            policy(authority, 'silent', silent, tmp_path)
+        # Left out of its session's selection (#134889 ACP-8), never fatal to it.
+        assert json.loads(policy(authority, 'silent', silent, tmp_path).editor_mcp_json)['schemas'] == {}
         assert time.monotonic() - started < 25
         names = [n for n in registry.get_all_tool_names() if n.startswith('mcp__')]
         assert len(names) == 1

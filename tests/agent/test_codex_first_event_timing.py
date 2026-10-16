@@ -29,7 +29,15 @@ def _mock_monotonic(monkeypatch, *stamps):
     no real sleeps, no OS clock-tick races.
     """
     stamps_iter = iter(stamps)
-    monkeypatch.setattr("agent.codex_runtime.time.monotonic", lambda: next(stamps_iter))
+    # The test replaced the process-wide time.monotonic, so ambient users of the
+    # clock keep calling it after the test body: Windows proactor shutdown calls
+    # time.monotonic() while the conftest closes the loop during fixture
+    # teardown. An exhausted queue must not raise there — the clock repeats its
+    # last stamp instead of raising StopIteration.
+    monkeypatch.setattr(
+        "agent.codex_runtime.time.monotonic",
+        lambda: next(stamps_iter, stamps[-1] if stamps else 0.0),
+    )
 
 
 def _completed_events():

@@ -39,7 +39,7 @@ from plugins.platforms.signal.signal_rate_limit import (
     SIGNAL_BATCH_PACING_NOTICE_THRESHOLD, SIGNAL_MAX_ATTACHMENTS_PER_MSG, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
     SignalRateLimitError, _extract_retry_after_seconds, _format_wait, _is_signal_rate_limit_error,
     _signal_send_timeout, get_scheduler)
-from gateway.platforms._shared import env_is_connected, get_scoped_secret as _sig_secret
+from gateway.platforms._shared import get_scoped_secret as _sig_secret
 from utils import TRUTHY_STRINGS
 
 logger = logging.getLogger(__name__)
@@ -172,15 +172,6 @@ def validate_signal_config(config: PlatformConfig) -> bool:
     account = (extra.get("account", "") or _sig_secret("SIGNAL_ACCOUNT", "")).strip()
     return bool(http_url and account)
 
-
-_env_configured = env_is_connected("SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT")
-
-
-def _is_connected(config: PlatformConfig) -> bool:
-    """URL + account from config/scoped env, else ``.env``: a plain CLI process never loads ``.env``
-    into the environment, and the old static setup row read it, so a ``.env``-only profile stays
-    "configured" in ``hermes gateway setup``."""
-    return validate_signal_config(config) or _env_configured(config)
 
 
 class SignalAdapter(BasePlatformAdapter):
@@ -990,37 +981,3 @@ class SignalAdapter(BasePlatformAdapter):
         result = await self._rpc("getContact", {"account": self.account, "contactAddress": chat_id})
         name = (result.get("name") or result.get("profileName")) if isinstance(result, dict) else None
         return {"name": name or chat_id, "type": "dm", "chat_id": chat_id}
-
-
-def _validate_config(config: PlatformConfig) -> bool:
-    """``validate_config``: same warning the core instantiation path logged before the move."""
-    if validate_signal_config(config):
-        return True
-    logger.warning("Signal: SIGNAL_HTTP_URL or SIGNAL_ACCOUNT not configured")
-    return False
-
-
-async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
-    from plugins.platforms.signal.standalone import standalone_send
-    return await standalone_send(pconfig, chat_id, message, thread_id=thread_id, media_files=media_files,
-                                 force_document=force_document)
-
-
-def _interactive_setup() -> None:
-    from plugins.platforms.signal.setup import interactive_setup
-    interactive_setup()
-
-
-def register(ctx) -> None:
-    """Plugin entry point — called by the Hermes plugin system."""
-    ctx.register_platform(
-        name="signal", label="Signal", adapter_factory=SignalAdapter,
-        check_fn=check_signal_requirements, validate_config=_validate_config,
-        is_connected=_is_connected, required_env=["SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT"],
-        install_hint="Signal: runtime requirements not met", setup_fn=_interactive_setup,
-        allowed_users_env="SIGNAL_ALLOWED_USERS", allow_all_env="SIGNAL_ALLOW_ALL_USERS",
-        cron_deliver_env_var="SIGNAL_HOME_CHANNEL",
-        # Out-of-process sends speak raw JSON-RPC and bypass SignalAdapter.send()'s chunking, so
-        # send_message splits at the adapter's limit through this field.
-        standalone_sender_fn=_standalone_send, max_message_length=MAX_MESSAGE_LENGTH,
-        emoji="📡", pii_safe=True, allow_update_command=True)

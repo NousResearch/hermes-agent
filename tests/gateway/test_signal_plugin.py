@@ -8,9 +8,10 @@ from gateway.config import PlatformConfig
 
 def test_register_declares_the_former_core_wiring(monkeypatch):
     from plugins.platforms.signal import adapter
+    from plugins.platforms.signal.register import register
 
     captured = {}
-    adapter.register(SimpleNamespace(register_platform=lambda **kw: captured.update(kw)))
+    register(SimpleNamespace(register_platform=lambda **kw: captured.update(kw)))
 
     assert captured["name"] == "signal" and captured["label"] == "Signal" and captured["emoji"] == "📡"
     assert captured["adapter_factory"] is adapter.SignalAdapter

@@ -62,6 +62,35 @@ async def test_an_opted_in_session_is_told_project_plugins_do_not_load(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_session_create_carries_the_notice_through_its_strict_wire_contract(tmp_path, monkeypatch):
+    """The notice also rides the snapshot ``session.create`` returns: it must pass that method's declared
+    result contract (strict here, as under ``HERMES_TEST_ISOLATION``), for both session-start notices."""
+    from tui_gateway.contracts import registry
+    monkeypatch.setattr(registry, 'STRICT', True)
+    home, repo = tmp_path / 'home', tmp_path / 'repo'
+    home.mkdir()
+    (home / 'config.yaml').write_text(
+        'platform_toolsets: {cli: []}\nmodel: {provider: custom, default: m, base_url: http://x.invalid/v1}\n')
+    (repo / '.hermes' / 'plugins' / 'mine').mkdir(parents=True)
+    monkeypatch.delenv('HERMES_ENABLE_PROJECT_PLUGINS', raising=False)
+    owner, connection = await _owner(home, monkeypatch)
+
+    async def create(request_id, local):
+        connection.native_owner = local  # the gateway's own ticketed attach, or a remote client
+        reply = await connection.dispatch({'id': 1, 'method': 'session.create', 'params': {
+            'request_id': request_id, 'source': 'cli', 'cwd': str(repo), 'toolsets': [],
+            'client_env': {'HERMES_ENABLE_PROJECT_PLUGINS': '1'}}})
+        assert 'result' in reply, reply
+        return reply['result']['info'].get('config_warning') or ''
+    try:
+        assert 'not loaded' in await create('local', True)
+        assert 'not attached to this gateway locally' in await create('remote', False)
+    finally:
+        await connection.close()
+        owner.db.close()
+
+
+@pytest.mark.asyncio
 async def test_an_unlistable_plugins_folder_never_blocks_the_session(tmp_path, monkeypatch):
     """``is_dir`` can pass while listing fails (no read permission): the optional notice is skipped and
     the session is still created and described."""

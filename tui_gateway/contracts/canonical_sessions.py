@@ -118,6 +118,8 @@ class CanonicalSnapshotInfo(SessionInventoryFields):
     api_mode: str | None = None
     tool_count: int | None = None
     credential_hint: str | None = None
+    # ``session.info``'s session-start notice: ``session.create`` returns the same projection.
+    config_warning: str | None = None
 
 
 class CanonicalSnapshot(Result):

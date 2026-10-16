@@ -191,6 +191,35 @@ test('transcript oracle holds across every transition', async () => {
       await assertTranscriptOracle(page, ws, provider, sessionB, 'warm resume B + new turn')
     })
 
+    await test.step('paged tail: a >120-row tool turn keeps its omitted prompt before the hydrated reply', async () => {
+      // Isolate the pagination case in its own session so later cold-reload
+      // checks on A/B keep their smaller full transcripts. 61 sequential tool
+      // rounds produce >120 backend rows before the final assistant row.
+      await page.evaluate(() => {
+        window.location.hash = '#/'
+      })
+      await expect.poll(() => currentSessionId(page)).toBe('')
+
+      const toolRounds = Array.from({ length: 61 }, (_, index) => ({
+        toolCalls: [{ name: 'terminal', args: { command: `printf core-paged-${index}` } }]
+      }))
+
+      provider.script(U(14), [...toolRounds, { text: words(A(14), 'paged', 'tail', 'answer') }])
+      await send(page, `${U(14)} build a very long tool turn`, 'Enter', ws)
+      await finished(U(14), toolRounds.length)
+
+      const paged: OracleTarget = {
+        sessionId: await currentSessionId(page),
+        expectUserMarkers: [U(14)]
+      }
+
+      await assertTranscriptOracle(page, ws, provider, paged, 'paged tail before switch')
+      await openSession(page, sessionB.sessionId, A(7))
+      await openSession(page, paged.sessionId, A(14))
+      await assertTranscriptOracle(page, ws, provider, paged, 'paged tail warm resume')
+      await openSession(page, sessionA.sessionId, A(12))
+    })
+
     // From here on the primary socket dials through a loopback proxy the test
     // controls, so a network drop can be injected mid-stream.
     const backendPort = Number(new URL(ws.sockets[0]!.url).port)

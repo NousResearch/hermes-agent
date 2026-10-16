@@ -203,6 +203,43 @@ async def test_list_sessions_resurrects_bot_chat_off_the_event_loop(adapter, ses
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_honours_the_archived_query_parameter(adapter, session_db):
+    """`GET /api/sessions` must read `archived` (#139805): clients send `archived=exclude` for the
+    normal list and `archived=only` for the archive view, so without the parameter the archive is
+    write-only through this API — `PATCH` can archive a session no list call ever returns.
+    `only` is the recovery surface, so a row that is archived AND hidden (Bot Mode marks its own
+    rows hidden, #90946) must appear there; unknown values degrade to the default, never to a
+    wider view."""
+    live = session_db.create_session("live", "api_server")
+    archived = session_db.create_session("archived", "api_server")
+    assert session_db.set_session_archived(archived, True)
+    hidden_archived = session_db.create_session("hidden-archived", "api_server")
+    assert session_db.set_session_archived(hidden_archived, True)
+    assert session_db.set_session_hidden(hidden_archived, True)
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        async def listed(query: str = "") -> list:
+            response = await cli.get(f"/api/sessions{query}")
+            assert response.status == 200
+            return (await response.json())["data"]
+
+        default = await listed()
+        excluded = await listed("?archived=exclude")
+        only = await listed("?archived=only")
+        include = await listed("?archived=include")
+        unknown = await listed("?archived=everything")
+
+    assert {row["id"] for row in default} == {live}, default
+    assert {row["id"] for row in excluded} == {live}, excluded
+    assert {row["id"] for row in only} == {archived, hidden_archived}, only
+    assert all(row["archived"] is True for row in only), only
+    # include_archived widens the row set but still keeps the hidden rows off this client surface.
+    assert {row["id"] for row in include} == {live, archived}, include
+    assert {row["id"] for row in unknown} == {live}, unknown
+
+
+@pytest.mark.asyncio
 async def test_session_model_lock_persists_off_the_event_loop(adapter, session_db, monkeypatch):
     """POST /api/sessions/{id}/model writes the lock row through a worker thread: the same
     contended-write class as the Bot Chat resurrection, on a sibling handler."""

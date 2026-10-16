@@ -1,4 +1,5 @@
-"""Per-request ``model_options`` decoding, lifted from ``platforms/api_server.py``.
+"""Request decoding shared by ``platforms/api_server.py``: per-request ``model_options`` (lifted
+from the facade) and the ``GET /api/sessions`` query filters.
 
 Keeps the api_server facade under its frozen line cap (root AGENTS.md god-file
 guidance: move code into a topical sibling). ``api_server.py`` re-exports
@@ -7,7 +8,7 @@ are unaffected; the helpers those two read stay in the facade and are imported
 lazily (call time) to avoid an import cycle.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 
 def _request_reasoning_config(model_options: Any) -> Optional[dict[str, Any]]:
@@ -46,3 +47,13 @@ def _request_service_tier(model_options: Any) -> Any:
     if "fast" in model_options:
         return "priority" if _coerce_request_bool(model_options.get("fast"), default=False) else None
     return _REQUEST_OPTION_MISSING
+
+
+def _archived_list_filters(query: Any) -> dict[str, bool]:
+    """The archive view of ``GET /api/sessions`` from the request query's ``archived`` value
+    (#139805): ``only`` lists the archived rows — the recovery surface, so a row that is archived
+    AND hidden (Bot Mode marks its own rows hidden) is included there — and ``include`` widens the
+    listing to archived rows as well. An absent or unknown value keeps the historical non-archived
+    listing, so an existing client sees no change."""
+    mode = str(query.get("archived") or "").strip().lower()
+    return {"include_archived": mode in ("only", "include"), "archived_only": mode == "only"}

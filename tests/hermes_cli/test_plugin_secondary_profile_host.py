@@ -521,23 +521,22 @@ def test_hung_hosted_request_answers_504_and_the_host_serves_the_next(daemon, mo
 
 def test_launch_profiles_hosted_mount_answers_504_too(daemon, monkeypatch):
     """``plugins.isolation: host`` for the launch profile forwards through the same path."""
-    from hermes_cli import web_server_plugin_profiles
-    monkeypatch.setattr(web_server_plugin_profiles, "HOSTED_REQUEST_TIMEOUT_SECS", 0.2, raising=False)
     _install(daemon.launch, "launch-hosted")
     _plugins(daemon.launch, enabled=["launch-hosted"], isolation="host")
-    homes = []
+    calls = []
 
-    def slow(host, *args, timeout=None, **kwargs):
-        homes.append(host._home)
-        threading.Event().wait(timeout or 3)  # the channel's wait for a reply that never comes
-        if timeout:
-            raise TimeoutError
-        return {"status": 200, "headers": [], "body": b"{}"}
+    def unanswered(host, *args, timeout=None, **kwargs):
+        calls.append((host._home, timeout))
+        if timeout is None:  # no deadline: the gateway would wait on the host for good
+            return {"status": 200, "headers": [], "body": b"{}"}
+        raise TimeoutError  # what the channel raises when the deadline passes without a reply
 
-    monkeypatch.setattr(PluginHost, "asgi_request", slow)
+    monkeypatch.setattr(PluginHost, "asgi_request", unanswered)
     response = daemon.client.get("/api/plugins/launch-hosted/ping", headers=daemon.owner)
 
-    assert response.status_code == 504 and homes == [daemon.launch]
+    assert response.status_code == 504
+    ((home, timeout),) = calls
+    assert home == daemon.launch and 0 < timeout <= 60
 
 
 def test_unknown_plugin_names_do_not_rescan_the_profile_on_every_request(daemon, monkeypatch):

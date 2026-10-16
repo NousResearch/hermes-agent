@@ -305,6 +305,7 @@ class HostedRoomOwnerRPC(HostedRoomAuthorityRPC):
     """Driver-compatible producer; carries data, never a caller principal."""
     def __init__(self, *, home, source_home, room_id, member_id, profile):
         self.home = Path(home)
+        self.member_id = member_id
         self.binding = {'source_home': str(Path(source_home)),
                         'selector': dict(room_id=room_id, member_id=member_id, profile=profile)}
         self.callbacks = {}

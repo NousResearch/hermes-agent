@@ -14,6 +14,7 @@ Covers two residual bypasses addressed in the PR:
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import patch, AsyncMock
 
 import pytest
@@ -151,6 +152,35 @@ class TestPluginApiRuntimeGate:
         with patch.object(web_server, "_get_dashboard_plugins", return_value=[]), \
              patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set()), \
              patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set()):
+            response = await web_server._plugin_api_runtime_gate(request, call_next)
+
+        assert response.status_code == 404
+        call_next.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_middleware_blocks_disabled_plugin_for_native_ticket_request(self):
+        """Desktop authenticates with a native ticket (``native_http_principal``), not a
+        session token; a plugin disabled while the daemon runs must 404 for it too."""
+        from starlette.requests import Request
+        from starlette.responses import JSONResponse
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/plugins/hot/probe",
+            "query_string": b"",
+            "headers": [],
+            "state": {"native_http_principal": {"profile_id": "default", "purpose": "native-http"}},
+            # Local Desktop: loopback mode, no gated auth.
+            "app": SimpleNamespace(state=SimpleNamespace(auth_required=False)),
+        }
+        request = Request(scope)
+
+        call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
+
+        with patch.object(web_server, "_get_dashboard_plugins", return_value=[{"name": "hot", "source": "user"}]), \
+             patch("hermes_cli.plugins_cmd._get_enabled_set", return_value={"hot"}), \
+             patch("hermes_cli.plugins_cmd._get_disabled_set", return_value={"hot"}):
             response = await web_server._plugin_api_runtime_gate(request, call_next)
 
         assert response.status_code == 404

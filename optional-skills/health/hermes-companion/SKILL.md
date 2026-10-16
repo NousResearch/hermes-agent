@@ -48,28 +48,28 @@ Do not use this skill for a generic map, a route, or weather. Do not invent a pl
 - **Hermes CLI (`hermes`) in PATH**: Required for autonomous background replies via LaunchAgent (`/opt/homebrew/bin`, `~/.local/bin`, `~/.cargo/bin`, or `/Applications/Hermes.app/Contents/MacOS`).
 - **The Hermes Companion iPhone app**: Product page: [hermescompanion.funktional.dev](https://hermescompanion.funktional.dev). Source: [github.com/danielmain/hermes-companion](https://github.com/danielmain/hermes-companion). The skill has no data source other than that app.
 - **First-run sequence**: Open the iPhone app once and allow Location (upgrade to Always) so it seeds the iCloud container. Apple creates the local container on your Mac only after the phone writes its first file.
-- **Diagnostic tool**: Run `python3 ${HERMES_SKILL_DIR}/scripts/companion.py --doctor` to verify OS, iCloud access, CLI discovery, and permissions in seconds.
+- **Diagnostic tool**: Run `python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --doctor` to verify OS, iCloud access, CLI discovery, and permissions in seconds.
 
 If the skill config block names `hermes-companion.places_file` or `hermes-companion.icloud_dir`, pass those paths as `--places` and `--icloud-dir`. Otherwise the script uses its defaults, including an existing Hermes profile `state/places.json` when exactly one profile has that file. Places added in the iOS app (`Places` tab) synchronize directly into the iCloud container (`Documents/places.json`) and are automatically merged with any profile places.
 
 ## How to Run
 
-Run the bundled script with the `terminal` tool. `${HERMES_SKILL_DIR}` is the skill directory.
+Run the bundled script with the `terminal` tool. `${HERMES_SKILL_DIR}` is the skill directory (defaults to `$HOME/.hermes/skills/hermes-companion` when run manually in zsh/bash).
 
 ```bash
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --timeline
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --health
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --context
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --json
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --timeline
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --health
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --context
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --json
 ```
 
 Known places (can also be managed directly in the iOS app):
 
 ```bash
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --list
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --add --name "Home" --category home --lat LAT --lon LON --radius 120
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --remove home
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --list
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --add --name "Home" --category home --lat LAT --lon LON --radius 120
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --remove home
 ```
 
 Categories: `home`, `work`, `gym`, `cafe`, `outdoors`, `general`.
@@ -80,17 +80,17 @@ Hermes Post / Inbox (asynchronous letters and memos synchronized privately via i
 
 ```bash
 # Check inbox for letters or filter those awaiting agent response
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --inbox
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --inbox --pending
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --inbox
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --inbox --pending
 
 # Read full chronological letters in a thread
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --thread <thread_id>
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --thread <thread_id>
 
 # Post an agent reply letter to a thread
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --reply <thread_id> --message "..."
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --reply <thread_id> --message "..."
 
 # Create a new post/letter from the agent
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --new-post --subject "..." --message "..."
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --new-post --subject "..." --message "..."
 ```
 
 ### Multi-Profile Agent Registration
@@ -99,10 +99,10 @@ When Hermes runs with multiple profiles (e.g., `work`, `personal`), each profile
 
 ```bash
 # Run under a specific profile and filter letters for it
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --inbox --profile work --pending
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --inbox --profile work --pending
 
 # Create a letter addressed to a specific agent profile
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --new-post --to-profile work --subject "..." --message "..."
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --new-post --to-profile work --subject "..." --message "..."
 ```
 
 ### Background dispatch daemon
@@ -110,9 +110,9 @@ python3 ${HERMES_SKILL_DIR}/scripts/companion.py --new-post --to-profile work --
 `--install-service` installs and loads the macOS LaunchAgent `ai.hermes.companion-inbox`: a resident `companion.py --daemon` process that sweeps the thread container every 5 seconds and answers letters without being asked. `KeepAlive` plus `--daemon` is what makes the latency acceptable — a transient sweep exits in milliseconds and launchd throttles a job that does that, which is why a letter could sit for minutes.
 
 ```bash
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --install-service    # install or upgrade the agent
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --service-status     # launchctl state
-python3 ${HERMES_SKILL_DIR}/scripts/companion.py --dispatch-pending   # one sweep in the foreground
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --install-service    # install or upgrade the agent
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --service-status     # launchctl state
+python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py --dispatch-pending   # one sweep in the foreground
 ```
 
 Structured, timestamped logs land in `~/.hermes/logs/companion-inbox.error.log` and `companion-inbox.log`. Each answered letter logs its own latency: `answered thread '<id>' in Ns (letter was <age> old when the sweep started)`. That age is the phone side; if it reads minutes, the letter was late before the Mac ever saw it (compare the file's `mtime` against its `ctime`, see below).
@@ -189,4 +189,4 @@ Field notes live in `references/files.md`. Load that file only when a raw key is
 
 ## Verification
 
-Run `python3 ${HERMES_SKILL_DIR}/scripts/companion.py` again. The `place_name:` line matches the previous reading when they have not moved, and `source:` is a file under the iCloud container. For a code change, run `python3 ${HERMES_SKILL_DIR}/scripts/test_companion.py` and confirm `ok`.
+Run `python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/companion.py` again. The `place_name:` line matches the previous reading when they have not moved, and `source:` is a file under the iCloud container. For a code change, run `python3 ${HERMES_SKILL_DIR:-$HOME/.hermes/skills/hermes-companion}/scripts/test_companion.py` and confirm `ok`.

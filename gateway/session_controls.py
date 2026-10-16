@@ -1,5 +1,6 @@
 """Authenticated WS projection of the gateway authority; no TUI execution fallback."""
 import asyncio
+import logging
 import re
 from dataclasses import asdict
 from functools import partial
@@ -9,7 +10,52 @@ import uuid
 
 from gateway.config import Platform
 from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL, Principal, SessionRef, Submission
+from hermes_constants import profile_name_for_home
 from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger(__name__)
+
+
+# A refusal names the check that fired: the client prints ``field``/``detail`` beside the reason
+# code, and this log line is what a report can quote when the client's copy is not enough.
+def _refusal_data(exc: RuntimeStoreError) -> dict:
+    """The ``error.data`` for one ``RuntimeStoreError``: always the reason, plus the field and the
+    detail when the raiser named them."""
+    data = {'reason': exc.reason}
+    for key in ('field', 'detail'):
+        value = getattr(exc, key, None)
+        if value:
+            data[key] = value
+    return data
+
+
+def _profile_label(profile_id) -> str:
+    """The profile as a log line should carry it: a named profile by name, a root profile (keyed by its
+    home path) by its name, never the path itself."""
+    if not profile_id:
+        return 'default'
+    text = str(profile_id)
+    if '/' not in text and '\\' not in text:
+        return text
+    return profile_name_for_home(text) or 'default'
+
+
+def _log_refusal(profile, method, exc: RuntimeStoreError) -> None:
+    """One line per refusal, at the level its audience deserves.
+
+    A refusal that names the check that fired is a launch diagnostic (warning). A bare reason code is
+    the client's own state: ``permission_denied`` on a submit, ``not_found``, ``session_busy`` are
+    routine, and a retrying client must not be able to flood the gateway log, so those stay at debug
+    where they were silent before. The shape follows the gateway's own refusal log lines
+    (``gateway/run_notifications.py``): what was refused, for which profile, and why."""
+    line = '%s refused for profile=%s: %s%s%s'
+    args = (method, _profile_label(profile), exc.reason,
+            f' field={exc.field}' if getattr(exc, 'field', None) else '',
+            f' detail={exc.detail}' if getattr(exc, 'detail', None) else '')
+    if getattr(exc, 'field', None) or getattr(exc, 'detail', None):
+        logger.warning(line, *args)
+    else:
+        logger.debug(line, *args)
 
 
 # ``session.detach end_reason``: a short snake_case label, stored verbatim as ``sessions.end_reason``.
@@ -156,8 +202,9 @@ class AuthorityConnection:
             try:
                 routed = self._sibling_for(profile)
             except RuntimeStoreError as exc:
+                _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
                 return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                    'code': 4001, 'message': exc.reason, 'data': {'reason': exc.reason}}}
+                    'code': 4001, 'message': exc.reason, 'data': _refusal_data(exc)}}
             if routed is not None:
                 return await routed.dispatch(request)
             # Our own home: the scope is implicit for the strict session verbs, which refuse
@@ -199,8 +246,9 @@ class AuthorityConnection:
             check_result(contract, result)
             return {'jsonrpc': '2.0', 'id': rid, 'result': result}
         except RuntimeStoreError as exc:
+            _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
-                'code': 4001, 'message': exc.reason, 'data': {'reason': exc.reason}}}
+                'code': 4001, 'message': exc.reason, 'data': _refusal_data(exc)}}
         except sqlite3.Error:
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 5001, 'message': 'storage_unavailable', 'data': {'reason': 'storage_unavailable'}}}
@@ -304,7 +352,7 @@ class AuthorityConnection:
         # the frozen request: the policy re-reads the profile's current route every turn.
         hidden = params.pop('hidden', False)
         if type(hidden) is not bool:
-            raise RuntimeStoreError('invalid_params')
+            raise RuntimeStoreError('invalid_params', field='hidden', detail='must be a boolean')
         ref = title and resolve_titled_session(self.authority, self.actor, title, missing_ok=True)
         if not ref:
             skills_prompt = None
@@ -325,6 +373,7 @@ class AuthorityConnection:
                 await tracked_write(self.authority, partial(
                     commit_local_session, self.authority.db, epoch=self.authority.epoch, receipt=receipt))
                 ref = restore_local_session(self.authority, receipt['session_id'])
+            # `--accept-hooks`: record this launch's consent; ``resume`` below registers the hooks.
             if params.get('accept_hooks') is True:
                 from gateway.session_policy import accept_launch_hooks, restore_policy
                 from hermes_state_local import local_receipt
@@ -457,6 +506,8 @@ class AuthorityConnection:
         info = {'desktop_protocol': CANONICAL_GATEWAY_PROTOCOL}
         source = self.authority.sessions[snapshot.handle.ref.session_id].source
         if source is not None and source.platform == Platform.LOCAL:
+            from gateway.session_policy import policy_for_source, refresh_profile_hooks
+            await asyncio.to_thread(refresh_profile_hooks, policy_for_source(self.authority.runner, source))
             info = await snapshot_info(self.authority, snapshot.handle.ref)
         display = {}
         if params.get('display_projection'):

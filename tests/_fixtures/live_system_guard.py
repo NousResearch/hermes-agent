@@ -124,6 +124,17 @@ def _live_system_guard(request, monkeypatch):
             return False
         return False
 
+    def _is_zombie(pid: int) -> bool:
+        # A zombie cannot be harmed by any signal. A killed descendant whose parent exited is
+        # reparented to init (or a CI subreaper) and stays a zombie with a foreign parent chain
+        # until that reaper collects it, so a test's cleanup kill of it must pass.
+        if _psutil is None or pid <= 0:
+            return False
+        try:
+            return _psutil.Process(pid).status() == _psutil.STATUS_ZOMBIE
+        except Exception:
+            return False
+
     real_kill = _os.kill
 
     def _guarded_kill(pid, sig, *args, **kwargs):
@@ -134,7 +145,7 @@ def _live_system_guard(request, monkeypatch):
         # test_entire_tree_is_sigkilled_not_just_parent.
         if int(sig) == 0:
             return real_kill(pid, sig, *args, **kwargs)
-        if _is_own_subtree(int(pid)):
+        if _is_own_subtree(int(pid)) or _is_zombie(int(pid)):
             return real_kill(pid, sig, *args, **kwargs)
         raise RuntimeError(
             f"tests/conftest.py live-system guard: blocked os.kill("

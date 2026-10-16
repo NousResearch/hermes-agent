@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
 from agent.i18n import t
+from agent.retry_utils import jittered_backoff
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
@@ -63,6 +64,9 @@ _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 # Storage causes that clear on their own (one session's lease/compression, not the store): the
 # home-channel notice appends the operator restart tail for every OTHER cause.
 _SELF_CLEARING_STORAGE_CAUSES = frozenset({"compression", "compression_closed", "turn_lease"})
+# Process-watcher retries of a refused completion: ~5 min at the default 5 s check interval.
+_MAX_COMPLETION_INJECTION_ATTEMPTS = 8
+_COMPLETION_INJECTION_RETRY_MAX_DELAY = 60
 
 # Durable async-delegation claim transitions: kind -> (tools.async_delegation function, failure log).
 _DURABLE_CLAIM_OPS = {
@@ -891,7 +895,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             else:
                 await admit_internal_event(adapter, synth_event)
             return True
-        except WakeNotAccepted:
+        except WakeNotAccepted as exc:
+            logger.warning("Watch notification not admitted for %s chat=%s: %s",
+                           platform_name, source.chat_id, exc)
             # Durable callers refund the claim; ordinary watch callers just requeue.
             if raise_not_accepted:
                 raise
@@ -1688,8 +1694,10 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                       session_id, interval, notify_mode, agent_notify)
         silent = notify_mode == "off" and not agent_notify
         last_output_len = 0
+        completion_attempts = 0
+        retry_interval = interval
         while True:
-            await asyncio.sleep(interval)
+            await asyncio.sleep(retry_interval)
             session = process_registry.get(session_id)
             if session is None:
                 break
@@ -1723,20 +1731,43 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     # turn itself installs the guard).
                     turn_busy = await self._launching_turn_active(platform_name, watcher)
                     delivered = await self._enqueue_process_completion_notification(synth_text, completion_evt)
-                    if delivered is False:
-                        # The process remains terminal; retry after failed adapter injection instead
-                        # of suppressing the result.
+                    if delivered is not False:
+                        # The agent normally reports the result itself, so the chat gets no separate
+                        # receipt. While the launching turn is still running the injection only queues a
+                        # follow-up, and the chat would stay mute for as long as that turn lasts
+                        # (#112033): send the concise receipt now.
+                        if turn_busy and (notify_mode in {"concise", "all", "result"} or (
+                            notify_mode == "error" and session.exit_code not in {0, None}
+                        )):
+                            message_text = self._format_process_final_message(session_id, session, "concise")
+                            await self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher)
+                        break
+                    # A refusal may clear (adapter reconnecting, store draining), so retry with backoff
+                    # for a few minutes, then fall through to the plain notice instead of dropping it.
+                    completion_attempts += 1
+                    if completion_attempts < _MAX_COMPLETION_INJECTION_ATTEMPTS:
+                        retry_interval = jittered_backoff(
+                            completion_attempts, base_delay=max(interval, 1) * 2,
+                            max_delay=_COMPLETION_INJECTION_RETRY_MAX_DELAY, jitter_ratio=0.0)
                         continue
-                    # The agent normally reports the result itself, so the chat gets no separate receipt.
-                    # While the launching turn is still running the injection only queues a follow-up, and
-                    # the chat would stay mute for as long as that turn lasts (#112033): send the concise
-                    # receipt now.
-                    if turn_busy and (notify_mode in {"concise", "all", "result"} or (
-                        notify_mode == "error" and session.exit_code not in {0, None}
-                    )):
-                        message_text = self._format_process_final_message(session_id, session, "concise")
-                        await self._send_watcher_message(platform_name, chat_id, thread_id, message_text, watcher)
-                    break
+                    if (getattr(self, 'session_authority', None) is not None
+                            and self._completion_delivery_identity(completion_evt) is not None):
+                        from gateway.session_automation import completion_admission
+                        try:
+                            # The owning profile's authority, as on the delivery path.
+                            async with self._completion_event_scope(completion_evt):
+                                committed = completion_admission(self, completion_evt) is not None
+                        except Exception:
+                            # Failing open sends the notice; a dead watcher would send nothing.
+                            logger.debug("Process watcher: admission recheck failed for %s", session_id,
+                                         exc_info=True)
+                            committed = False
+                        if committed:
+                            break  # The last refusal was a lost ACK: the turn is committed.
+                    logger.warning(
+                        "Process watcher: completion for %s was refused %d times; falling back to the "
+                        "notify_mode=%s notice", session_id, completion_attempts, notify_mode,
+                    )
                 # Text-only notification; skip when already consumed via wait/log (the agent_notify branch
                 # FALLS THROUGH here, hence the re-check).
                 if process_registry.is_completion_consumed(session_id):

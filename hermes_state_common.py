@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
+from hermes_state_keys import CRON_PRINCIPAL_ID
 from hermes_state_pidns import persistent_record_pidns_checkable, pid_namespace_id
 from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
 from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
@@ -353,6 +354,26 @@ def _placeholders(items) -> str:
     return ",".join("?" for _ in range(items if isinstance(items, int) else len(items)))
 
 
+def _source_match_clause(sources, local_created_sources=None) -> tuple[str, list]:
+    """``sessions s`` source predicate. With ``local_created_sources``, a ``source='local'`` row
+    matches only when ``created_source`` is one of those surfaces; the placeholder ``'unknown'``
+    is not a surface and stays unmatched until an upsert stamps the real creator."""
+    labels = list(sources or [])
+    if not labels:
+        return "", []
+    surfaces = list(local_created_sources or ())
+    if not surfaces:
+        return f"s.source IN ({_placeholders(labels)})", labels
+    non_local = [item for item in labels if item != "local"]
+    local_sql = f"(s.source = 'local' AND s.created_source IN ({_placeholders(surfaces)}))"
+    if not non_local:
+        return local_sql, list(surfaces)
+    return (
+        f"(s.source IN ({_placeholders(non_local)}) OR {local_sql})",
+        [*non_local, *surfaces],
+    )
+
+
 # Ids per ``IN (?,...)`` list: SQLite caps bound parameters at SQLITE_MAX_VARIABLE_NUMBER (999 on builds
 # < 3.32, 32766 after); a bulk prune of a cron-heavy store bound tens of thousands of ids into one list and
 # died with "too many SQL variables". Every IN-list over session ids goes through ``_id_chunks``.
@@ -527,6 +548,14 @@ CREATE TABLE IF NOT EXISTS session_admissions (
 );
 CREATE INDEX IF NOT EXISTS session_admissions_pending
     ON session_admissions(target_session_id, status, seq);
+-- Cron run history finds a job's unified-runtime runs by the scheduler principal's request ids
+-- (``cron:<job>:<execution>``); without this a lookup walked
+-- every cron admission of every job. Partial: interactive turns, the bulk of admissions, pay
+-- nothing for it. The constant leading column gives the planner equality + range over a covering
+-- index, so it beats the UNIQUE autoindex's bare principal_id prefix even without ANALYZE stats.
+-- The WHERE is built from CRON_PRINCIPAL_ID, the literal the run queries inline, so they cannot drift.
+CREATE INDEX IF NOT EXISTS idx_session_admissions_cron_request
+    ON session_admissions(principal_id, request_id, target_session_id) WHERE principal_id = '""" + CRON_PRINCIPAL_ID + """';
 CREATE TABLE IF NOT EXISTS worker_executions (
     execution_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,
@@ -802,6 +831,13 @@ CREATE INDEX IF NOT EXISTS idx_sessions_tool_names
 -- a small candidate set before compression-chain and preview hydration.
 CREATE INDEX IF NOT EXISTS idx_sessions_effective_activity
     ON sessions(COALESCE(last_activity_at, started_at) DESC, started_at DESC);
+-- CLI/TUI listings match gateway rows stored as source='local' by created_source,
+-- before LIMIT. created_source is reconciled onto legacy DBs, so this index lives
+-- here rather than in SCHEMA_SQL. A source-only index would walk every local row
+-- (Desktop and TUI included) to find one surface.
+CREATE INDEX IF NOT EXISTS idx_sessions_local_created_started
+    ON sessions(created_source, started_at DESC)
+    WHERE source = 'local';
 """
 
 

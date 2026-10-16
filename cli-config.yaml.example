@@ -23,6 +23,12 @@ database:
   # wal_autocheckpoint: 1000     # pages between automatic checkpoints
   # journal_size_limit: 67108864 # cap the WAL/journal file size in bytes
   #
+  # Byte cap on the main-image copy inside a retired-WAL capture artifact. Above
+  # it the artifact keeps the 100-byte SQLite header only, and the log and
+  # manifest.json (main.mode: header_only) both say so. Unset = 512 MiB, which a
+  # long-lived state.db passes; raise it to keep the capture self-contained.
+  # retired_generation_max_bytes: 2147483648
+  #
   # Durability level for every state.db connection: OFF, NORMAL, FULL, EXTRA
   # (or 0-3). Unset leaves SQLite's default, which is baked in at compile time
   # (SQLITE_DEFAULT_WAL_SYNCHRONOUS) and therefore differs between the bundled

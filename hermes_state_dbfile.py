@@ -410,9 +410,47 @@ RETIRED_GENERATION_MANIFEST_VERSION = 1
 # pair that `hermes sessions recover --source <dir>/state.db` can open. Above it only the 100-byte
 # header is kept (the manifest says so): unlike the WAL inode, the main file survives process exit at
 # its path, and a multi-GB copy inside a shutdown path is a worse failure than a header-only artifact.
+# Overridable per install with ``database.retired_generation_max_bytes`` (see
+# :func:`retired_generation_main_image_max_bytes`): a long-lived store passes this default as a matter
+# of course, and a header-only capture is the artifact a forensic reader needs least (#139724).
 RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES = 512 * 1024 * 1024
+_RETIRED_GENERATION_MAIN_IMAGE_CONFIG_KEY = "retired_generation_max_bytes"
 _CAPTURE_CHUNK_BYTES = 8 * 1024 * 1024
 _SQLITE_HEADER_BYTES = 100
+
+
+def retired_generation_main_image_max_bytes() -> int:
+    """Byte cap for the main-image copy of a retired-WAL capture.
+
+    ``database.retired_generation_max_bytes`` overrides the shipped
+    :data:`RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES`; above the cap only the SQLite header is kept, so
+    the cap decides whether the artifact is a self-contained image or a header-only downgrade of it.
+    Unset, unusable (non-integer, zero, negative) or unreadable config keeps the shipped default and
+    says so: this runs on a halt/close path, where failing the capture over a config typo would be
+    worse than capturing less.
+    """
+    shipped = RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES
+    try:
+        # Local, like apply_database_pragmas: keeps this module's import surface dependency-light.
+        from hermes_cli.config import cfg_get, load_config_readonly
+        raw = cfg_get(load_config_readonly(), "database", _RETIRED_GENERATION_MAIN_IMAGE_CONFIG_KEY, default=None)
+    except Exception as exc:
+        logger.debug("retired-WAL capture: database.%s unavailable (%s); using %d bytes",
+                     _RETIRED_GENERATION_MAIN_IMAGE_CONFIG_KEY, exc, shipped)
+        return shipped
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return shipped
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        logger.warning("Ignoring non-integer database.%s=%r; capturing up to %d bytes of the main image",
+                       _RETIRED_GENERATION_MAIN_IMAGE_CONFIG_KEY, raw, shipped)
+        return shipped
+    if value <= 0:
+        logger.warning("Ignoring database.%s=%d (a positive byte count is required); capturing up to "
+                       "%d bytes of the main image", _RETIRED_GENERATION_MAIN_IMAGE_CONFIG_KEY, value, shipped)
+        return shipped
+    return value
 
 
 class RetiredGenerationCaptureError(RuntimeError):
@@ -574,15 +612,25 @@ def capture_retired_wal_generation(
         if header is None:
             raise RetiredGenerationCaptureError(f"cannot read the main image header of {db_path}")
         main_size = os.stat(db_path).st_size
+        max_main_bytes = retired_generation_main_image_max_bytes()
         main: dict[str, Any] = {"identity": list(_stat_db_file_identity(db_path) or ()) or None,
-                                "size": main_size, "header": _parse_sqlite_header(header)}
-        if main_size <= RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES:
+                                "size": main_size, "header": _parse_sqlite_header(header),
+                                # The cap that produced the mode below: a header-only artifact next
+                                # to a full one looks like a variant, not a downgrade.
+                                "max_bytes": max_main_bytes}
+        if main_size <= max_main_bytes:
             main.update(mode="copied", **_copy_main_image(db_path, staging / db_path.name, size=main_size))
         else:
             header_file = staging / (db_path.name + ".header")
             header_file.write_bytes(header)
             _fsync_path(header_file)
             main.update(mode="header_only", file=header_file.name, bytes=len(header))
+            logger.warning(
+                "%s (%d bytes) is above the %d-byte cap for the retired-WAL main-image copy, so the "
+                "capture keeps the %d-byte SQLite header only (manifest main.mode=header_only): the "
+                "retired WAL is captured exactly, but recovering from this artifact alone needs the "
+                "main image still at %s. Raise database.retired_generation_max_bytes to copy it.",
+                db_path, main_size, max_main_bytes, len(header), db_path)
         manifest["main"] = main
         # Late import: utils pulls agent-side deps; the capture must stay dependency-light.
         from utils import atomic_json_write

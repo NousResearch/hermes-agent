@@ -10,6 +10,7 @@ the writer process has exited.
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -19,9 +20,11 @@ from pathlib import Path
 import pytest
 
 import hermes_state
+import hermes_state_dbfile
 from hermes_state import DeletedWalGenerationError, SessionDB
 from hermes_state_dbfile import (
-    RETIRED_GENERATION_MANIFEST, RetiredGenerationCaptureError, capture_retired_wal_generation,
+    RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES, RETIRED_GENERATION_MANIFEST,
+    RetiredGenerationCaptureError, capture_retired_wal_generation,
 )
 from tests.hermes_state._wal_generation_harness import (
     gateway_writer, integrity_ok_conn, lose_sidecars, make_db, pin_wal, require_wal, write_second_generation,
@@ -103,6 +106,7 @@ def test_halt_captures_the_exact_retired_generation(tmp_path, force_wal, rename)
     assert captured == original and captured
     assert manifest["wal"]["sha256"] == hashlib.sha256(captured).hexdigest()
     assert manifest["main"]["mode"] == "copied" and manifest["main"]["header"]["valid"]
+    assert manifest["main"]["max_bytes"] == RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES
     assert (artifact / "state.db").stat().st_size == manifest["main"]["bytes"]
 
     recovered = _recover(artifact, "state.db", tmp_path / "recovered")
@@ -307,3 +311,64 @@ def test_retired_rows_recoverable_after_process_exit(tmp_path):
 @pytest.mark.platforms("macos")
 def test_retired_rows_recoverable_after_process_exit_with_renamed_sidecars(tmp_path):
     _assert_retired_rows_recoverable_after_exit(tmp_path, rename=True)
+
+
+# ── The main-image cap: configurable, and it never degrades silently (#139724) ──────────────────────
+#
+# A long-lived install's state.db passes the shipped 512 MiB cap as a matter of course, so the capture
+# silently stops being a self-contained image exactly when a forensic reader needs it. Two things must
+# hold: the cap is overridable from config (default unchanged), and taking the header-only path says so
+# out loud and records the cap that produced it.
+
+
+def _config_cap(monkeypatch, value) -> None:
+    """Point the cap lookup at an in-memory config; the import happens inside the function body."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"database": {"retired_generation_max_bytes": value}},
+    )
+
+
+def test_main_image_cap_defaults_and_follows_config(monkeypatch):
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: {"database": {}})
+    assert hermes_state_dbfile.retired_generation_main_image_max_bytes() == RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES
+
+    _config_cap(monkeypatch, 64 * 1024 * 1024)
+    assert hermes_state_dbfile.retired_generation_main_image_max_bytes() == 64 * 1024 * 1024
+
+
+@pytest.mark.parametrize("unusable", ["lots", 0, -1], ids=["text", "zero", "negative"])
+def test_main_image_cap_ignores_an_unusable_value_out_loud(monkeypatch, caplog, unusable):
+    _config_cap(monkeypatch, unusable)
+    with caplog.at_level(logging.WARNING):
+        assert hermes_state_dbfile.retired_generation_main_image_max_bytes() == RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES
+    assert "database.retired_generation_max_bytes" in caplog.text
+
+
+@not_windows
+def test_oversized_main_image_degrades_loudly_to_a_header_only_artifact(tmp_path, force_wal, monkeypatch, caplog):
+    path = tmp_path / "state.db"
+    db = make_db(path, "gw-0", "seed")
+    require_wal(db)
+    _wal_only_sentinel(db, "gw-0")
+    _config_cap(monkeypatch, 1)  # every real state.db is above one byte
+    lose_sidecars(path, rename=False)
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(DeletedWalGenerationError):
+            db.append_message("gw-0", role="user", content="after the loss")
+
+    artifact = db._retired_generation_capture
+    assert artifact is not None and artifact.is_dir()
+    manifest = _manifest(artifact)
+    # The WAL itself is still captured exactly; only the main image is reduced.
+    assert manifest["wal"]["bytes"] > 0
+    assert manifest["main"]["mode"] == "header_only"
+    assert manifest["main"]["max_bytes"] == 1 and manifest["main"]["size"] > 1
+    assert (artifact / manifest["main"]["file"]).stat().st_size == manifest["main"]["bytes"]
+    # An operator reading the log (or the manifest) must be able to tell that this capture is not a
+    # self-contained image, and what to raise to get one.
+    assert "header_only" in caplog.text and "database.retired_generation_max_bytes" in caplog.text
+
+    db.close()
+    assert db._retired_generation_capture == artifact

@@ -38,7 +38,7 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
-from gateway.platforms._shared import extra_or_secret as _extra_or_env, get_scoped_secret as _wx_secret
+from gateway.platforms._shared import env_is_connected, extra_or_secret as _extra_or_env, get_scoped_secret as _wx_secret
 
 
 def _extra_or_secret(extra: dict[str, Any], key: str, default: str = "") -> str:
@@ -1241,3 +1241,156 @@ async def send_weixin_direct(
         adapter._send_session = adapter._session = session
         adapter._token_store = token_store
         return await _deliver_direct(adapter, chat_id, message, media_files, context_token)
+
+
+# ---------------------------------------------------------------------------
+# Plugin wiring (formerly core: gateway/run.py _BUILTIN_ADAPTERS row, tools/send_message_senders.py
+# ``_send_weixin``, hermes_cli/gateway_setup_wizard.py ``_setup_weixin``).
+# ---------------------------------------------------------------------------
+
+_INSTALL_HINT = "Weixin: aiohttp/cryptography not installed"
+
+
+_env_configured = env_is_connected("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN")
+
+
+def _is_connected(config: Any) -> bool:
+    """Account ID AND token, from ``config`` or the scoped ``WEIXIN_*`` env (``gateway/config.py``'s
+    Weixin connected check reads the same pair), else ``.env``, which a plain CLI process never loads
+    into the environment (the old static setup row read it)."""
+    extra = getattr(config, "extra", None) or {}
+    account = _extra_or_secret(extra, "account_id")
+    token = str(getattr(config, "token", None) or extra.get("token") or _wx_secret("WEIXIN_TOKEN", "")).strip()
+    return bool(account and token) or _env_configured(config)
+
+
+async def _standalone_send(pconfig: Any, chat_id: str, message: str, *, thread_id: Optional[str] = None,
+                           media_files: Optional[list] = None, force_document: bool = False) -> dict[str, Any]:
+    """Out-of-process ``send_message``/cron sender: native text + media via :func:`send_weixin_direct`.
+    ``thread_id``/``force_document`` are signature parity only (iLink has neither). Imports nothing from
+    other plugins, so an unrelated optional SDK (e.g. lark-oapi) can never block Weixin delivery."""
+    from gateway.platforms._shared import send_error
+    if not check_weixin_requirements():
+        return send_error("Weixin requirements not met. Need aiohttp + cryptography.")
+    try:
+        return await send_weixin_direct(extra=getattr(pconfig, "extra", None) or {}, token=getattr(pconfig, "token", None),
+                                        chat_id=chat_id, message=message, media_files=media_files)
+    except Exception as e:
+        logger.debug("Weixin standalone send failed", exc_info=True)
+        return send_error(f"Weixin send failed: {e}")
+
+
+# Weixin DM policy by menu index (index 2 = allowlist is prompted separately).
+_WEIXIN_DM_POLICIES = {0: ("pairing", "false", "success", "  DM pairing enabled."),
+                       1: ("open", "true", "warning", "  Open DM access enabled for Weixin."),
+                       3: ("disabled", "false", "warning", "  Direct messages disabled.")}
+
+_WEIXIN_GROUP_NOTE = (
+    "  Note: QR login connects an iLink bot identity (e.g. ...@im.bot), not a",
+    "  scriptable personal WeChat account. Ordinary WeChat groups typically cannot",
+    "  invite an @im.bot identity, and iLink does not deliver ordinary-group events",
+    "  to most bot accounts. The settings below only apply when iLink actually",
+    "  delivers group events for your account type — otherwise DM remains the only",
+    "  working channel regardless of this choice.",
+)
+
+
+def interactive_setup() -> None:
+    """``hermes gateway setup`` flow for Weixin / WeChat personal accounts (QR login via :func:`qr_login`).
+    Helpers resolve through the ``hermes_cli.gateway`` facade so the prompts/output match every other
+    wizard and the facade seams tests patch keep intercepting."""
+    from hermes_cli import gateway as gw
+    from hermes_cli.gateway_setup_wizard import (
+        _confirm_reconfigure, _offer_home_channel, _print_setup_header, _prompt_csv, _save_env_values)
+
+    _print_setup_header("💬 Weixin / WeChat")
+    print()
+    gw._print_info_lines(
+        "  1. Hermes will open Tencent iLink QR login in this terminal.",
+        "  2. Use WeChat to scan and confirm the QR code.",
+        "  3. Hermes will store the returned account_id/token in ~/.hermes/.env.",
+        "  4. This adapter supports native text, image, video, and document delivery.",
+    )
+    if not _confirm_reconfigure("Weixin", "WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"):
+        return
+    if not check_weixin_requirements():
+        gw.print_error("  Missing dependencies: Weixin needs aiohttp and cryptography.")
+        gw.print_info("  Install them, then rerun `hermes gateway setup`.")
+        return
+    print()
+    if not gw.prompt_yes_no("  Start QR login now?", True):
+        gw.print_info("  Cancelled.")
+        return
+    try:
+        credentials = gw.asyncio.run(qr_login(str(gw.get_hermes_home())))
+    except KeyboardInterrupt:
+        print()
+        gw.print_warning("  Weixin setup cancelled.")
+        return
+    except Exception as exc:  # health: allow BLE001 -- interactive wizard: any QR-login failure is shown and setup stops
+        gw.print_error(f"  QR login failed: {exc}")
+        return
+    if not credentials:
+        gw.print_warning("  QR login did not complete.")
+        return
+
+    account_id = credentials.get("account_id", "")
+    user_id = credentials.get("user_id", "")
+    gw.save_env_value("WEIXIN_ACCOUNT_ID", account_id)
+    gw.save_env_value("WEIXIN_TOKEN", credentials.get("token", ""))
+    if credentials.get("base_url", ""):
+        gw.save_env_value("WEIXIN_BASE_URL", credentials.get("base_url", ""))
+    gw.save_env_value("WEIXIN_CDN_BASE_URL", gw.get_env_value("WEIXIN_CDN_BASE_URL") or WEIXIN_CDN_BASE_URL)
+
+    print()
+    access_choices = [
+        "Use DM pairing approval (recommended)", "Allow all direct messages", "Only allow listed user IDs",
+        "Disable direct messages",
+    ]
+    access_idx = gw.prompt_choice("  How should direct messages be authorized?", access_choices, 0)
+    if access_idx == 2:
+        allowlist = _prompt_csv("  Allowed Weixin user IDs (comma-separated)", user_id or "")
+        _save_env_values(WEIXIN_DM_POLICY="allowlist", WEIXIN_ALLOW_ALL_USERS="false", WEIXIN_ALLOWED_USERS=allowlist)
+        gw.print_success("  Weixin allowlist saved.")
+    else:
+        policy, allow_all, level, message = _WEIXIN_DM_POLICIES.get(access_idx, _WEIXIN_DM_POLICIES[3])
+        _save_env_values(WEIXIN_DM_POLICY=policy, WEIXIN_ALLOW_ALL_USERS=allow_all, WEIXIN_ALLOWED_USERS="")
+        (gw.print_success if level == "success" else gw.print_warning)(message)
+        if access_idx == 0:
+            gw.print_info("  Unknown DM users can request access and you approve them with `hermes pairing approve`.")
+
+    print()
+    gw._print_info_lines(*_WEIXIN_GROUP_NOTE)
+    group_choices = ["Disable group chats (recommended)", "Allow all group chats", "Only allow listed group chat IDs"]
+    group_idx = gw.prompt_choice("  How should group chats be handled?", group_choices, 0)
+    if group_idx == 0:
+        _save_env_values(WEIXIN_GROUP_POLICY="disabled", WEIXIN_GROUP_ALLOWED_USERS="")
+        gw.print_info("  Group chats disabled.")
+    elif group_idx == 1:
+        _save_env_values(WEIXIN_GROUP_POLICY="open", WEIXIN_GROUP_ALLOWED_USERS="")
+        gw.print_warning("  All group chats enabled (only takes effect if iLink delivers group events).")
+    else:
+        allow_groups = _prompt_csv("  Allowed group chat IDs (comma-separated, not member user IDs)", "")
+        _save_env_values(WEIXIN_GROUP_POLICY="allowlist", WEIXIN_GROUP_ALLOWED_USERS=allow_groups)
+        gw.print_success("  Group allowlist saved (only takes effect if iLink delivers group events).")
+
+    if user_id:
+        print()
+        _offer_home_channel("WEIXIN_HOME_CHANNEL", user_id, "your Weixin user ID")
+    print()
+    gw.print_success("Weixin configured!")
+    gw.print_info(f"  Account ID: {account_id}")
+    if user_id:
+        gw.print_info(f"  User ID: {user_id}")
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="weixin", label="Weixin / WeChat", adapter_factory=WeixinAdapter, check_fn=check_weixin_requirements,
+        is_connected=_is_connected, required_env=["WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"], install_hint=_INSTALL_HINT,
+        setup_fn=interactive_setup, allowed_users_env="WEIXIN_ALLOWED_USERS", allow_all_env="WEIXIN_ALLOW_ALL_USERS",
+        cron_deliver_env_var="WEIXIN_HOME_CHANNEL",
+        # Out-of-process send_message/cron; the adapter's own send() chunks (MAX_MESSAGE_LENGTH), so
+        # max_message_length stays 0: send_message hands the full text + all media to one native send.
+        standalone_sender_fn=_standalone_send, max_message_length=0, emoji="💬", allow_update_command=True)

@@ -142,8 +142,46 @@ def _is_unattended_platform_approval_context() -> bool:
     do, but there is no human who can resolve a pending approval. Treating them as gateway approval contexts
     blocks the session for the full approval timeout (60-300s) and then fails closed anyway — the deadlock
     in #37284/#87509.
+
+    Exception: webhook routes listed in ``approvals.attended_webhook_routes`` have a human
+    reachable another way (e.g. a plugin's ``pre_approval_request`` hook relays the card to a
+    chat platform), so they keep the normal gateway approval flow.
     """
-    return _get_session_platform() in _UNATTENDED_APPROVAL_PLATFORMS
+    platform = _get_session_platform()
+    if platform not in _UNATTENDED_APPROVAL_PLATFORMS:
+        return False
+    return not (platform == "webhook" and _is_attended_webhook_route())
+
+
+def _attended_webhook_routes() -> tuple[str, ...]:
+    """``approvals.attended_webhook_routes`` as a tuple of route names (default empty)."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        routes = cfg_get(load_config_readonly(), "approvals", "attended_webhook_routes", default=None) or ()
+    except Exception:  # unreadable config: no exemptions, every webhook stays unattended
+        logger.debug("could not read approvals.attended_webhook_routes", exc_info=True)
+        return ()
+    if isinstance(routes, str):
+        routes = [routes]
+    if not isinstance(routes, (list, tuple)):
+        return ()
+    return tuple(str(r).strip() for r in routes if str(r).strip())
+
+
+def _is_attended_webhook_route() -> bool:
+    """True when the current webhook session key belongs to an attended route.
+
+    Webhook session keys embed ``webhook:<route>:<delivery-id>`` and end in
+    ``:webhook:<route>``, so a route matches as a whole ``:``-delimited segment.
+    """
+    routes = _attended_webhook_routes()
+    if not routes:
+        return False
+    key = get_current_session_key("")
+    if not key:
+        return False
+    segments = key.split(":")
+    return any(r in segments for r in routes)
 
 
 # Platforms where a *registered* gateway notify callback still does not mean a human can answer:

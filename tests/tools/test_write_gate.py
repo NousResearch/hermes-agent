@@ -32,6 +32,7 @@ from tools.write_gate import (
 )
 from tools.memory_tool_store import MemoryStore
 from tools.memory_tool import memory_tool
+from datetime import UTC
 
 
 # --- Test helpers ------------------------------------------------------------
@@ -115,6 +116,30 @@ class TestCharCapSoftThreshold85pct:
         refusal = _run(store, content="x" * 800)
         assert refusal is not None
         assert refusal.failure_class == "over_budget"
+
+    def test_soft_refusal_marks_hard_cap_false(self):
+        """A write refused by the 85% soft arm carries detail['hard_cap'] is False
+        and rationale names the soft threshold (write_gate.py:247-258)."""
+        store = _make_store(limit=4000, entries=["x" * 3000])  # 75%, +800 → 3800 > 3400 (85%)
+        refusal = _run(store, content="x" * 800)
+        assert refusal is not None
+        assert refusal.failure_class == "over_budget"
+        assert refusal.detail["hard_cap"] is False
+        assert "(soft 85%" in refusal.rationale
+
+    def test_hard_cap_refusal_marks_hard_cap_true(self):
+        """A growing replace past the hard limit is refused by _stage1_projected_hard_cap
+        with rationale naming the hard limit (write_gate.py:267-296).
+
+        Note: the projected hard-cap arm emits "(hard limit)" in the rationale
+        but does NOT set detail['hard_cap'] (only the soft arm does) — the
+        rationale is the discriminator, asserted here.
+        """
+        store = _make_store(limit=500, entries=["short"])
+        refusal = _run(store, action="replace", content="x" * 600, old_text="short")
+        assert refusal is not None
+        assert refusal.failure_class == "over_budget"
+        assert "(hard limit)" in refusal.rationale
 
 
 # =========================================================================
@@ -278,7 +303,7 @@ class TestJsonlAuditLogFields:
         from datetime import datetime, timezone
         _make_audit_path(tmp_path, monkeypatch)
         store = _make_store()
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         _run(store, content=f"Note from {today}: review this.")
         lines = _read_log(tmp_path)
         admits = [l for l in lines if l.get("action") == "ADMIT"]
@@ -394,7 +419,7 @@ class TestStoreSizeNeverExceedsCapAfterAnyWriteSequence:
             if refusal is not None:
                 assert store._char_count("memory") <= cap
                 continue
-            result = store.add("memory", item)
+            store.add("memory", item)
             assert store._char_count("memory") <= cap, (
                 f"after adding {item!r}: {store._char_count('memory')} > {cap}"
             )
@@ -476,7 +501,7 @@ class TestDateCurrencyFacets:
     def test_recent_date_is_fresh(self):
         """A date within the 48h window fires the advisory annotation."""
         from datetime import datetime, timezone
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         flag = _stage2_date_currency(f"Deployed {today}")
         assert flag is not None
         assert flag["advisory"] == "date_currency"
@@ -491,7 +516,7 @@ class TestDateCurrencyFacets:
         from datetime import datetime, timezone
         _make_audit_path(tmp_path, monkeypatch)
         store = _make_doc_store(doc_entries=[])
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         _run(store, target="doc:001-conventions", content=f"Dated note {today}")
         lines = _read_log(tmp_path)
         admits = [l for l in lines if l.get("action") == "ADMIT"]
@@ -522,6 +547,24 @@ class TestBatchStaleEntryBoundary:
         # Full tool path: the store refuses the drifted op end-to-end.
         result = json.loads(memory_tool(store=store, target="memory", operations=ops))
         assert result["success"] is False
+
+    def test_batch_skips_stage6_explicitly(self, monkeypatch):
+        """Stage 6 (stale-entry) is NOT called for batch inputs — the store's
+        _pin_matched_entries handles per-op matching (write_gate.py:499-500).
+        This locks the skip as a contract, not an accident."""
+        store = _make_store(limit=5000, entries=["live entry one"])
+        ops = [{"action": "patch", "old_text": "drifted span", "content": "new"}]
+
+        calls = []
+        real_stage6 = _stage6_stale_entry
+        def spy(entries, old_text):
+            calls.append((entries, old_text))
+            return real_stage6(entries, old_text)
+        monkeypatch.setattr("tools.write_gate._stage6_stale_entry", spy)
+
+        refusal = _run(store, operations=ops, target="memory")
+        assert refusal is None, "gate delegates batch stale-matching to the store"
+        assert calls == [], f"Stage 6 must be skipped on batch paths, got {len(calls)} call(s)"
 
     def test_batch_doc_target_variant(self, tmp_path, monkeypatch):
         """Doc-flavour batch: a drifted old_text against a chain doc is refused
@@ -601,7 +644,7 @@ class TestEveryWriteAppendsExactlyOneChangeLogLine:
         from datetime import datetime, timezone
         _make_audit_path(tmp_path, monkeypatch)
         store = _make_store()
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         _run(store, content=f"Dated note {today}")
         lines = _read_log(tmp_path)
         assert len(lines) == 1
@@ -700,7 +743,7 @@ class TestGateWiringProof:
         store.load_from_disk()
         store.add("memory", "x" * 90)
 
-        result = json.loads(memory_tool(store=store, action="add", target="memory", content="y" * 50))
+        json.loads(memory_tool(store=store, action="add", target="memory", content="y" * 50))
         # With the gate neutered, the write is NOT refused by the acceptance gate
         # (it proceeds to the store's own cap, which refuses with its own message).
         # Either way the over-cap content does not silently land.

@@ -3243,3 +3243,134 @@ class TestCryptoPickleKeyMigration:
         # start still sees a legacy-key account and retries the migration.
         store.put_account.assert_not_awaited()
         assert "retried on the next start" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# m.location (geo_uri / MSC3488)
+# ---------------------------------------------------------------------------
+
+def _location_event(content, room_id="!room:ex.org", sender="@alice:ex.org",
+                    event_id="$loc1"):
+    """A minimal room event that reaches the msgtype dispatch."""
+    event = MagicMock()
+    event.room_id = room_id
+    event.sender = sender
+    event.event_id = event_id
+    event.content = content
+    event.timestamp = int(time.time() * 1000)
+    event.server_timestamp = int(time.time() * 1000)
+    return event
+
+
+class TestMatrixLocationHandler:
+    """`m.location` is turned into text the agent can act on.
+
+    FluffyChat and Element share position as `m.location` with a `geo_uri`
+    (RFC 5870) and, on newer clients, an MSC3488 block. Without this the
+    event was dropped and the agent never saw the coordinates.
+    """
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter.handle_message = AsyncMock()
+        # Echo the body back so assertions can read the composed text.
+        self.adapter._resolve_message_context = AsyncMock(
+            side_effect=lambda room_id, sender, event_id, body, content, relates:
+                (body, True, "dm", None, "Alice", MagicMock())
+        )
+
+    async def _run(self, content):
+        await self.adapter._handle_location_message(
+            "!room:ex.org", "@alice:ex.org", "$loc1", time.time(), content, {})
+
+    def _emitted(self):
+        assert self.adapter.handle_message.await_count == 1
+        return self.adapter.handle_message.await_args.args[0].text
+
+    @pytest.mark.asyncio
+    async def test_geo_uri_yields_coordinates(self):
+        await self._run({"msgtype": "m.location", "geo_uri": "geo:59.9127,10.7461"})
+        assert "59.9127, 10.7461" in self._emitted()
+
+    @pytest.mark.asyncio
+    async def test_geo_uri_parameters_are_stripped(self):
+        """`;crs=` and `;u=` are RFC 5870 parameters, not part of the coordinates."""
+        await self._run({"msgtype": "m.location",
+                         "geo_uri": "geo:59.9127,10.7461;crs=wgs84;u=35"})
+        text = self._emitted()
+        assert "59.9127, 10.7461" in text
+        assert "wgs84" not in text
+
+    @pytest.mark.asyncio
+    async def test_default_label_is_english(self):
+        """No body and no description must not emit a localised label."""
+        await self._run({"msgtype": "m.location", "geo_uri": "geo:1.5,2.5"})
+        assert "Shared location" in self._emitted()
+
+    @pytest.mark.asyncio
+    async def test_body_is_used_as_label(self):
+        await self._run({"msgtype": "m.location", "body": "Office",
+                         "geo_uri": "geo:1.5,2.5"})
+        text = self._emitted()
+        assert text.startswith("Office")
+        assert "Shared location" not in text
+
+    @pytest.mark.asyncio
+    async def test_msc3488_uri_used_when_geo_uri_absent(self):
+        await self._run({
+            "msgtype": "m.location",
+            "org.matrix.msc3488.location": {"uri": "geo:10.0,20.0"},
+        })
+        assert "10.0, 20.0" in self._emitted()
+
+    @pytest.mark.asyncio
+    async def test_msc3488_description_becomes_label(self):
+        await self._run({
+            "msgtype": "m.location",
+            "geo_uri": "geo:1.0,2.0",
+            "org.matrix.msc3488.location": {"description": "Trailhead"},
+        })
+        assert self._emitted().startswith("Trailhead")
+
+    @pytest.mark.asyncio
+    async def test_body_passes_through_without_coordinates(self):
+        """An unparseable uri is not a reason to drop a described location."""
+        await self._run({"msgtype": "m.location", "body": "Somewhere",
+                         "geo_uri": "not-a-geo-uri"})
+        assert self._emitted() == "Somewhere"
+
+    @pytest.mark.asyncio
+    async def test_nothing_useful_emits_nothing(self):
+        """The positive counterpart to the tests above: silence is possible."""
+        await self._run({"msgtype": "m.location"})
+        self.adapter.handle_message.assert_not_awaited()
+
+
+class TestMatrixLocationDispatch:
+    """`m.location` has its own dispatch branch, not a media special case.
+
+    Routing it through `media_msgtypes` and then branching out again left that
+    tuple no longer meaning "media"; the second test is what keeps the split
+    honest.
+    """
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+        self.adapter._handle_location_message = AsyncMock()
+        self.adapter._handle_media_message = AsyncMock()
+        self.adapter._handle_text_message = AsyncMock()
+
+    @pytest.mark.asyncio
+    async def test_location_reaches_the_location_handler(self):
+        await self.adapter._on_room_message(_location_event(
+            {"msgtype": "m.location", "geo_uri": "geo:1.0,2.0"}))
+        self.adapter._handle_location_message.assert_awaited_once()
+        self.adapter._handle_media_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_media_still_reaches_the_media_handler(self):
+        await self.adapter._on_room_message(_location_event(
+            {"msgtype": "m.image", "body": "pic.png"}, event_id="$img1"))
+        self.adapter._handle_media_message.assert_awaited_once()
+        self.adapter._handle_location_message.assert_not_awaited()

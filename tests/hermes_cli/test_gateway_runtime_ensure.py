@@ -437,28 +437,61 @@ def test_reserved_root_never_suppresses_a_standalone_profile_start(tmp_path, mon
     assert spawned == [home.resolve()]
 
 
-def test_ensure_reports_a_standalone_host_reason_for_an_unserved_named_profile(tmp_path, monkeypatch):
-    """A live standalone host cannot later add this profile, so do not wait on its root lock."""
-    from gateway import status
+def _standalone_host(tmp_path, monkeypatch, record):
+    """A named profile whose root holds its gateway lock and has written *record* (or nothing)
+    to the root's real gateway_state.json; returns (home, spawned targets)."""
     from hermes_cli import gateway_runtime as runtime, gateway_runtime_discovery as discovery
+    from hermes_cli import gateway_runtime_service as service, gateway_runtime_start as start
 
     root = tmp_path / ".hermes"
     home = root / "profiles" / "alpha"
     home.mkdir(parents=True, mode=0o700)
+    if record is not None:
+        (root / "gateway_state.json").write_text(json.dumps(record), encoding="utf-8")
+    spawned = []
     monkeypatch.setattr(runtime, "_update_fenced", lambda homes: False)
     monkeypatch.setattr(runtime, "discover_gateway_endpoint", lambda *a, **k: runtime.GatewayDiscovery("absent"))
-    monkeypatch.setattr(discovery, "missing_owner_state", lambda path: "starting")
-    monkeypatch.setattr(status, "read_runtime_status", lambda path: {
-        "gateway_state": "running",
-        "served_profiles": [],
-        "multiplex_standalone_reason": "duplicate Telegram token; run hermes gateway migrate --multiplex",
-    })
-    monkeypatch.setattr(status, "runtime_status_pid_is_live", lambda record: True)
+    monkeypatch.setattr(discovery, "missing_owner_state", lambda path: "starting" if Path(path).resolve() == root.resolve() else "absent")
+    monkeypatch.setattr(service, "discover_existing_gateway_service", lambda *a, **k: None)
+    monkeypatch.setattr(start, "spawn_unmanaged_gateway", lambda target, **k: spawned.append(Path(target)))
+    return home, spawned
+
+
+_REASON = "duplicate Telegram token; run hermes gateway migrate --multiplex"
+
+
+def test_ensure_reports_a_standalone_host_reason_for_an_unserved_named_profile(tmp_path, monkeypatch):
+    """A live standalone host cannot later add this profile, so do not wait on its root lock: its
+    reason is read from the root's real gateway_state.json (path and key included)."""
+    from hermes_cli import gateway_runtime as runtime
+
+    home, spawned = _standalone_host(tmp_path, monkeypatch, {
+        "gateway_state": "running", "pid": os.getpid(), "served_profiles": [],
+        "multiplex_standalone_reason": _REASON})
 
     result = runtime.ensure_gateway_runtime(home, timeout=1)
 
-    assert (result.state, result.reason_code) == ("inaccessible", "profile_parked")
-    assert result.detail == "duplicate Telegram token; run hermes gateway migrate --multiplex"
+    assert (result.state, result.reason_code, result.detail) == ("inaccessible", "profile_parked", _REASON)
+    assert spawned == []
+
+
+@pytest.mark.parametrize("record", [
+    None,  # the host has not written its state yet
+    {"gateway_state": "running", "pid": os.getpid()},  # a multiplexer: no refusal
+    {"gateway_state": "stopped", "pid": os.getpid(), "multiplex_standalone_reason": _REASON},
+    {"gateway_state": "running", "pid": 999_999_999, "multiplex_standalone_reason": _REASON},
+], ids=["no-state", "no-reason", "stopped", "dead-pid"])
+def test_a_reserved_root_without_a_live_refusal_is_still_awaited(tmp_path, monkeypatch, record):
+    """A held root lock with no LIVE standalone refusal is a multiplexer still starting: the named
+    profile waits for it (never parked on a stale reason, never a competing per-profile spawn)."""
+    from hermes_cli import gateway_runtime as runtime
+
+    home, spawned = _standalone_host(tmp_path, monkeypatch, record)
+
+    result = runtime.ensure_gateway_runtime(home, timeout=0.5)
+
+    assert (result.state, result.reason_code) == ("starting", "deadline")
+    assert spawned == []
 
 
 @pytest.mark.platforms("linux", "macos")

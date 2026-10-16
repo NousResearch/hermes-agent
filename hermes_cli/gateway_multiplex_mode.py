@@ -358,21 +358,30 @@ def standalone_warning_lines(decision: MultiplexDecision, unserved: Optional[lis
     return _box(body)
 
 
-def recorded_standalone_warning_lines() -> list[str]:
-    """Same box, rebuilt from the live gateway's ``gateway_state.json`` for processes that did not
-    make the decision (``hermes update``'s summary, ``hermes gateway status``)."""
+def recorded_standalone_reason(state_path: Path | None = None) -> str | None:
+    """The guard refusal a LIVE standalone gateway published in its ``gateway_state.json`` (this
+    home's, or *state_path*), else ``None``. A stopped, failed or dead record's reason is history."""
     try:
         from gateway.status import read_runtime_status, runtime_status_pid_is_live
-        record = read_runtime_status() or {}
+        record = read_runtime_status(state_path) or {}
         if record.get("gateway_state") in (None, "stopped", "startup_failed"):
-            return []
+            return None
         # Liveness is the state + a live PID, never the heartbeat: a paused or wedged gateway is
         # still the standalone process the box warns about (#120991).
         if not runtime_status_pid_is_live(record):
-            return []
+            return None
         reason = record.get("multiplex_standalone_reason")
-    except Exception:
-        return []
+    # The readers already absorb a missing/garbled file; what is left is a hostile record shape
+    # (a non-object, a PID too large for the OS) or a liveness probe's OS error.
+    except (OSError, ValueError, TypeError, AttributeError, OverflowError):
+        return None
+    return str(reason) if isinstance(reason, str) and reason else None
+
+
+def recorded_standalone_warning_lines() -> list[str]:
+    """Same box, rebuilt from the live gateway's ``gateway_state.json`` for processes that did not
+    make the decision (``hermes update``'s summary, ``hermes gateway status``)."""
+    reason = recorded_standalone_reason()
     if not reason:
         return []
-    return standalone_warning_lines(MultiplexDecision(False, "guard", str(reason)))
+    return standalone_warning_lines(MultiplexDecision(False, "guard", reason))

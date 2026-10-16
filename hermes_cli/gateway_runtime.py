@@ -129,35 +129,28 @@ def control_home_for(home: Path, endpoint: GatewayEndpoint | None) -> Path:
     return home
 
 
-def _multiplexer_starting(home: Path) -> bool:
-    """The root's reservation is pending AND that root's boot policy would serve *home*. A
-    ``gateway.standalone: true`` secondary is never served by it, so a reserved (or ready) root
-    must not make its client wait out the deadline instead of starting the profile's own owner."""
+def _starting_multiplexer_root(home: Path) -> Path | None:
+    """The root whose reservation is pending AND whose boot policy would serve *home*, else None.
+    A ``gateway.standalone: true`` secondary is never served by it, so a reserved (or ready) root
+    must not make its client wait out the deadline instead of starting the profile's own owner.
+    One uncached config parse plus a lock probe: call it once per ensure iteration."""
     from hermes_cli.gateway_runtime_discovery import missing_owner_state
     from hermes_cli.gateway_runtime_multiplex import implied_host_root
     root = implied_host_root(home)
-    return root is not None and missing_owner_state(root) == "starting"
+    return root if root is not None and missing_owner_state(root) == "starting" else None
 
 
-def _standalone_multiplexer_reason(home: Path) -> str | None:
-    """Return a live host's reason for not serving *home*, if it has one.
+def _standalone_multiplexer_reason(root: Path) -> str | None:
+    """A live host's reason for not serving its named profiles, if it published one.
 
     A held root lock ordinarily means that a named profile should wait for its
     multiplexer.  A host which published a guard refusal is different: it is a
-    standalone gateway and can never add the named profile during that boot.
+    standalone gateway and can never add the named profile during that boot. Read
+    with the same liveness rules as ``hermes gateway status``'s standalone box.
     """
-    from hermes_cli.gateway_runtime_discovery import missing_owner_state
-    from hermes_cli.gateway_runtime_multiplex import implied_host_root
-
-    root = implied_host_root(home)
-    if root is None or missing_owner_state(root) != "starting":
-        return None
-    from gateway.status import read_runtime_status, runtime_status_pid_is_live
-    record = read_runtime_status(root / "gateway_state.json")
-    if not runtime_status_pid_is_live(record):
-        return None
-    reason = record.get("multiplex_standalone_reason") if isinstance(record, dict) else None
-    return str(reason)[:500] if isinstance(reason, str) and reason else None
+    from hermes_cli.gateway_multiplex_mode import recorded_standalone_reason
+    reason = recorded_standalone_reason(root / "gateway_state.json")
+    return reason[:500] if reason else None
 
 
 def _parked_by_multiplexer(payload: dict, home: Path) -> GatewayDiscovery | None:
@@ -347,11 +340,12 @@ def ensure_gateway_runtime(profile_home: str | Path, *, timeout: float = DEFAULT
                 requested = True
             if observed.state == "absent":
                 retiring = False
-            if observed.state == "absent" and not requested and (reason := _standalone_multiplexer_reason(home)):
+            reserved = _starting_multiplexer_root(home) if observed.state == "absent" and not requested else None
+            if reserved is not None and (reason := _standalone_multiplexer_reason(reserved)):
                 return GatewayDiscovery("inaccessible", reason_code="profile_parked", detail=reason)
             # A default multiplexer that is still starting will serve this named profile; never
             # spawn a competing per-profile daemon while its reservation is pending.
-            if observed.state == "absent" and not requested and _multiplexer_starting(home):
+            if reserved is not None:
                 requested = True
             if observed.state == "absent" and not requested:
                 # A named profile the default multiplexer serves has no daemon of its own: start

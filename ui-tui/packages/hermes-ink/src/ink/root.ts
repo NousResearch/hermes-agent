@@ -192,7 +192,10 @@ const getOptions = (stdout: NodeJS.WriteStream | RenderOptions | undefined = {})
   return stdout
 }
 
-const getInstance = (stdout: NodeJS.WriteStream, createInstance: () => Ink): Ink => {
+/** Test seam: read the Ink instance registered for *stdout* without creating one. */
+export const peekInkInstance = (stdout: NodeJS.WriteStream): Ink | undefined => instances.get(stdout)
+
+export const getInstance = (stdout: NodeJS.WriteStream, createInstance: () => Ink): Ink => {
   let instance = instances.get(stdout)
 
   if (!instance) {

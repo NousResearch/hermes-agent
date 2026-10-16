@@ -7,6 +7,76 @@ from tools import drive_preview_tool as ap
 
 
 
+def test_targeted_inspection_preserves_targets_limit_and_renderer_result():
+    """The existing bridge forwards targeted reads without interpreting page data."""
+    result = {"success": True, "inspection": {"candidateCount": 0, "candidates": [], "truncated": False}}
+    for target in ({"selector": "svg circle"}, {"ref": "btn-resize"}):
+        calls = []
+
+        def callback(payload):
+            calls.append(payload)
+            return json.dumps(result)
+
+        answer = ap.registry.dispatch("drive_preview", {"action": "elements", **target, "max": 2}, callback=callback)
+        assert calls == [{"action": "elements", **target, "max": 2}]
+        assert json.loads(answer) == result
+
+
+def test_inspection_cap_survives_final_tool_json_serialization():
+    """JSON separator expansion and non-BMP characters count at the tool boundary."""
+    for hint in ("\\" * 21 + "x" * 59, "😀" * 40, "\u0000" * 80):
+        node = {"tag": "button", "nthOfType": 1, "id": hint, "class": hint, "testId": hint}
+        candidate = {
+            "node": node, "ancestors": [node] * 4,
+            "rect": {"left": 0, "top": 0, "right": 20, "bottom": 20, "width": 20, "height": 20},
+            "point": {"x": 10, "y": 10}, "centerInViewport": True,
+            "style": {"pointerEvents": "auto", "visibility": "visible", "display": "block"},
+            "hit": {"node": node, "ancestors": [node] * 4, "relationship": "self"},
+        }
+        inspection = {
+            "coordinateSpace": "guest-viewport-css-pixels", "candidateCount": 5,
+            "truncated": False, "viewport": {"width": 900, "height": 700, "scrollX": 0, "scrollY": 0, "devicePixelRatio": 1},
+            "candidates": [candidate] * 5,
+        }
+        payload = {"success": True, "inspection": inspection}
+        # Match the guest's compact JSON cap, including escaped control characters.
+        while len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-16-le")) // 2 > 12000:
+            inspection["candidates"].pop()
+            inspection["truncated"] = True
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        answer = ap.registry.dispatch("drive_preview", {"action": "elements", "selector": "button"}, callback=lambda _: raw)
+        assert len(answer.encode("utf-16-le")) // 2 <= 12000
+        result = json.loads(answer)
+        assert result["success"] is True
+        assert result["inspection"]["candidateCount"] == 5
+        assert len(result["inspection"]["candidates"]) <= len(inspection["candidates"])
+        assert all(entry == candidate for entry in result["inspection"]["candidates"])
+        assert result["inspection"]["truncated"] == (len(result["inspection"]["candidates"]) < 5)
+
+
+def test_inspection_cap_drops_whole_entries_and_fails_closed_without_affecting_inventory():
+    hint = "\\" * 80
+    node = {"tag": "button", "nthOfType": 1, "id": hint, "class": hint, "testId": hint}
+    candidate = {"node": node, "ancestors": [node] * 4, "hit": {"node": node, "ancestors": [node] * 4}}
+    payload = {"success": True, "inspection": {"candidateCount": 9, "truncated": True, "candidates": [candidate] * 5}}
+    raw = json.dumps(payload)
+    for target in ({"ref": "btn-resize"}, {"selector": "button"}):
+        answer = ap.registry.dispatch("drive_preview", {"action": "elements", **target}, callback=lambda _: raw)
+        assert len(answer.encode("utf-16-le")) // 2 <= 12000
+        inspection = json.loads(answer)["inspection"]
+        assert 0 < len(inspection["candidates"]) < 5
+        assert all(entry == candidate for entry in inspection["candidates"])
+        assert inspection["candidateCount"] == 9
+        assert inspection["truncated"] is True
+        bad = json.dumps({"inspection": {"candidates": [], "unexpected": "private" * 12000}})
+        failure = ap.registry.dispatch("drive_preview", {"action": "elements", **target}, callback=lambda _: bad)
+        assert "response limit" in json.loads(failure)["error"]
+        assert "private" not in failure
+    ordinary = ap.registry.dispatch("drive_preview", {"action": "elements"}, callback=lambda _: raw)
+    assert json.loads(ordinary) == payload
+    assert len(ordinary.encode("utf-16-le")) // 2 > 12000
+
+
 def test_requires_callback():
     """Outside the desktop GUI there is no bridge — a clear error, no crash."""
     result = json.loads(ap.drive_preview_tool(action="elements", callback=None))

@@ -1,0 +1,6 @@
+{
+  "name": "preview-inspection-native-fixture",
+  "private": true,
+  "type": "module",
+  "main": "../preview-inspection-native.test.mjs"
+}

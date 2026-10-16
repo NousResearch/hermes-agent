@@ -62,7 +62,7 @@ def show_reasoning(turn) -> bool:
     return getattr(live, "show_reasoning", None) is True
 
 
-def _is_active_session_subagent(turn, payload: dict) -> bool:
+def _is_active_session_subagent(turn, payload: dict, event_type: str = "") -> bool:
     subagent_id = payload.get("subagent_id")
     if not isinstance(subagent_id, str) or not subagent_id:
         return False
@@ -72,8 +72,12 @@ def _is_active_session_subagent(turn, payload: dict) -> bool:
     turn_agent = holder[0] if isinstance(holder, list) and holder else None
     if registry is None or turn_agent is None:
         return False
+    parent_id = payload.get("parent_id")
     with registry._active_subagents_lock:
         record = registry._active_subagents.get(subagent_id)
+        if record is None and event_type == "subagent.spawn_requested" and isinstance(parent_id, str):
+            # A queued grandchild is announced before it registers; its spawning parent must be a registered descendant.
+            record = registry._active_subagents.get(parent_id)
         return record is not None and registry._is_descendant_of(record.get("agent"), turn_agent)
 
 
@@ -92,7 +96,7 @@ def _publish_subagent(turn, event_type, payload) -> None:
         if executing.get(session_id) == generation:
             turn._publish_execution(event_type, payload)
             return
-        if stream is None or not _is_active_session_subagent(turn, payload):
+        if stream is None or not _is_active_session_subagent(turn, payload, event_type):
             return
         # A background delegate_task outlives the spawning turn's running claim; publish without borrowing a later turn's execution identity.
         saved = getattr(stream, "execution", None)

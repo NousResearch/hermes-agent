@@ -467,6 +467,26 @@ def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
         _unregister_subagent('sa-0-abc12345')
     assert publish_calls == ['subagent.start'] and stream_frames == []
 
+    # Out of turn, a queued grandchild's spawn_requested is admitted only through a registered descendant parent.
+    authority.executing = {'s': 2}
+    grandchild_relay = _build_child_progress_callback(
+        0, 'grandchild goal', parent, subagent_id='sa-1-grand', parent_id='sa-0-abc12345', depth=2)
+    orphan_relay = _build_child_progress_callback(
+        0, 'orphan goal', parent, subagent_id='sa-1-orphan', parent_id='sa-foreign-same-sid', depth=2)
+    _register_subagent({'subagent_id': 'sa-0-abc12345', 'agent': owned_child, 'owner_agent_session_id': 's'})
+    _register_subagent({'subagent_id': 'sa-foreign-same-sid', 'agent': foreign_child, 'owner_agent_session_id': 's'})
+    try:
+        stream_frames.clear()
+        orphan_relay('subagent.spawn_requested', preview='orphan goal')
+        grandchild_relay('subagent.start')
+        assert stream_frames == []
+        grandchild_relay('subagent.spawn_requested', preview='grandchild goal')
+    finally:
+        _unregister_subagent('sa-0-abc12345')
+        _unregister_subagent('sa-foreign-same-sid')
+    assert [f['params']['type'] for f in stream_frames] == ['subagent.spawn_requested']
+    assert stream_frames[0]['params']['payload']['subagent_id'] == 'sa-1-grand'
+
     # Messaging routes never publish subagent.* viewer frames.
     msg_published = []
     msg_turn = _turn(Platform.TELEGRAM, msg_published)

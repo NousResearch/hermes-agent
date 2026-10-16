@@ -35,5 +35,5 @@ async def test_registered_command_this_surface_does_not_carry_is_still_refused_l
     agent._gateway = AsyncMock()
     agent._snapshots["s"] = {}
     with pytest.raises(GatewayClientError, match="unsupported_command"):
-        await agent.prompt([acp.text_block("/reset")], "s")
+        await agent.prompt([acp.text_block("/rollback")], "s")
     agent._gateway.rpc.assert_not_awaited()

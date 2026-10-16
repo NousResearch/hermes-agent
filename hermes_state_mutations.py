@@ -22,6 +22,10 @@ def validate_action(operation, payload):
             return
     if operation == 'workspace' and set(payload) == {'cwd'} and isinstance(payload['cwd'], str) and payload['cwd'].strip():
         return
+    # The editor's MCP servers (gateway/session_local_mcp.py): the owner keeps the list in memory and
+    # hands the store only its fingerprint, so no transport credential reaches a receipt.
+    if operation == 'editor_mcp' and set(payload) == {'mcp_servers'} and _valid_editor_fingerprint(payload):
+        return
     if operation == 'compress' and _valid_compress_payload(payload):
         return
     if operation in {'delete', 'reset'} and not payload:
@@ -45,12 +49,19 @@ def validate_action(operation, payload):
 def _valid_branch_payload(payload):
     # ``through_message_id``: the physical row id of the last message the branch keeps (a stable
     # boundary, never a visible-message count); absent means the whole active transcript.
-    if set(payload) - {'title', 'through_message_id'}:
+    if set(payload) - {'title', 'through_message_id', 'mcp_servers'}:
+        return False
+    if 'mcp_servers' in payload and not _valid_editor_fingerprint(payload):
         return False
     if 'title' in payload and not isinstance(payload['title'], str):
         return False
     return 'through_message_id' not in payload or (
         type(payload['through_message_id']) is int and payload['through_message_id'] > 0)
+
+
+def _valid_editor_fingerprint(payload):
+    servers = payload['mcp_servers']
+    return isinstance(servers, dict) and set(servers) == {'fingerprint'} and isinstance(servers['fingerprint'], str)
 
 
 _COMPRESS_FIELDS = {'focus': str, 'preview': bool, 'partial': bool, 'keep_last': int}
@@ -70,13 +81,14 @@ def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
     if operation == 'compress':
         from hermes_state_mutation_compress import compress_in_transaction
         return compress_in_transaction(db, conn, session_id, payload, prepared)
-    if operation in {'model', 'reasoning', 'workspace'}:
+    if operation in {'model', 'reasoning', 'workspace', 'editor_mcp'}:
         from hermes_state_mutation_prepared import POLICY_HANDLERS
         return POLICY_HANDLERS[operation](db, conn, session_id, payload, prepared)
+    if operation == 'branch':
+        from hermes_state_mutation_branch import branch_in_transaction
+        return branch_in_transaction(db, conn, session_id, payload, prepared)
     from hermes_state_mutation_reset import reset_in_transaction
-    from hermes_state_mutation_branch import branch_in_transaction
-    handlers = {'delete': _delete, 'import': _import, 'rewind': _rewind, 'reset': reset_in_transaction,
-                'branch': branch_in_transaction}
+    handlers = {'delete': _delete, 'import': _import, 'rewind': _rewind, 'reset': reset_in_transaction}
     if operation in handlers:
         return handlers[operation](db, conn, session_id, payload)
     affected = set()

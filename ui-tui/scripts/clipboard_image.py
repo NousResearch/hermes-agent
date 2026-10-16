@@ -12,12 +12,23 @@ def python_root() -> Path:
 
 sys.path.insert(0, str(python_root()))
 
-from hermes_cli.clipboard import save_clipboard_image
-from pm.environments import activate_dependencies
-
-if __name__ == "__main__":
+def main(destination: Path) -> bool:
     # Ink runs this on HERMES_PYTHON with PYTHONPATH=<root> only, which on a source install is PM's
     # store Python: without the committed generation, Pillow is missing and non-PNG clipboard
-    # images silently depend on ImageMagick being installed.
-    activate_dependencies(python_root())
-    print(json.dumps(bool(save_clipboard_image(Path(sys.argv[1])))))
+    # images silently depend on ImageMagick being installed. Activate before any Hermes import, so
+    # a module that grows a third-party import still loads from the generation.
+    from pm.environments import activate_dependencies
+
+    try:
+        activate_dependencies(python_root())
+    except (RuntimeError, OSError) as exc:
+        # No generation / unreadable install state: no image, not a traceback (Ink reads stdout).
+        print(f"clipboard helper: dependency environment unavailable: {exc}", file=sys.stderr)
+        return False
+    from hermes_cli.clipboard import save_clipboard_image
+
+    return bool(save_clipboard_image(destination))
+
+
+if __name__ == "__main__":
+    print(json.dumps(main(Path(sys.argv[1]))))

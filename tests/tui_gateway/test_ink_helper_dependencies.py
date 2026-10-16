@@ -102,6 +102,15 @@ def test_store_python_without_a_generation_names_the_remedy():
     assert lines[-1] == "gateway unavailable: run `hermes pm repair`, then restart the TUI", bootstrap.stderr
 
 
+def test_clipboard_helper_without_a_generation_answers_false(tmp_path):
+    """The clipboard helper activates before importing Hermes, and a missing generation is `false`
+    on stdout (no image), not a traceback before Ink can parse anything."""
+    clipboard = _store_python_child("clipboard_image.py", str(tmp_path / "paste.png"))
+    assert clipboard.returncode == 0, clipboard.stderr
+    assert json.loads(clipboard.stdout) is False
+    assert "Traceback" not in clipboard.stderr
+
+
 def test_unreadable_install_state_is_retried_not_terminal():
     """An I/O error on the install state can be one-off: it takes the ordinary failure path the
     client retries, never the terminal verdict that ends the TUI's gateway for its lifetime."""

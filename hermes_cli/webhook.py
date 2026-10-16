@@ -196,10 +196,10 @@ def _cmd_subscribe(args):
             validate_profile_name(profile)
         except ValueError as exc:
             print(f"Error: {exc}")
-            return
+            return 1
         if not profile_exists(profile):
             print(f"Error: Profile '{profile}' does not exist.")
-            return
+            return 1
     existing_profile = existing.get("profile", "default")
     profile_changed = is_update and profile != existing_profile
     if profile_changed and args.secret and args.secret == existing.get("secret"):
@@ -207,7 +207,7 @@ def _cmd_subscribe(args):
             "Error: Rebinding a webhook route requires a new HMAC secret. "
             "Omit --secret to generate one automatically, or provide a different secret."
         )
-        return
+        return 1
     secret = args.secret or (None if profile_changed else existing.get("secret")) or secrets.token_urlsafe(32)
     events = [e.strip() for e in args.events.split(",")] if args.events else []
     route = {
@@ -228,7 +228,7 @@ def _cmd_subscribe(args):
                 "--cron-job fires an existing cron job (which handles its own "
                 "delivery)."
             )
-            return
+            return 1
         if route["deliver"] == "log":
             print(
                 "Error: --deliver-only requires --deliver to be a real target "
@@ -245,10 +245,10 @@ def _cmd_subscribe(args):
             job = _resolve_route_cron_job(profile, cron_job)
         except AmbiguousJobReference as e:
             print(f"Error: {e}")
-            return
+            return 1
         if job is None:
             print(f"Error: no cron job matches '{cron_job}'. List jobs with: hermes cron list")
-            return
+            return 1
         route["cron_job"] = job["id"]
     script = (getattr(args, "script", "") or "").strip()
     if script:
@@ -259,7 +259,7 @@ def _cmd_subscribe(args):
         route = _replace_subscription(name, route, expected)
     except SubscriptionMutationConflict as exc:
         print(f"Error: {exc}")
-        return
+        return 1
 
     print(f"\n  {'Updated' if is_update else 'Created'} webhook subscription: {name}")
     print(f"  URL:    {_route_url(name, route)}")
@@ -365,8 +365,6 @@ def _cmd_test(args):
         with urllib.request.urlopen(req, timeout=10) as resp:
             body = resp.read().decode()
             print(f"  Response ({resp.status}): {body}")
-            if resp.status >= 400:
-                return 1
             return 0
     except Exception as e:
         print(f"  Error: {e}")

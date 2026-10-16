@@ -59,11 +59,18 @@ _get_command_stt_output_format = partial(_command_output_format, formats=COMMAND
 
 
 def _read_command_stt_output(output_path: Path, stdout: str, fmt: str) -> str:
-    """Transcript: non-empty output file > non-empty stdout (curl one-liners) > RuntimeError. JSON is returned raw."""
+    """Transcript: non-empty output file > non-empty stdout (curl one-liners) > "" for an
+    exit-0 provider whose transcript came back empty (no speech — re-listen quietly, not
+    "Transcription failed", matching the built-in providers, #132951). A provider that wrote
+    neither the output file nor stdout broke its contract and still fails. JSON is returned raw."""
     content = (output_path.read_text(encoding="utf-8-sig", errors="replace").strip()
                if output_path.exists() else "")
-    if content or (stdout or "").strip():
-        return content or stdout.strip()
+    if content:
+        return content
+    if (stdout or "").strip():
+        return stdout.strip()
+    if output_path.exists():
+        return ""  # exit-0 + empty transcript = silence, not a failure
     raise RuntimeError(f"Command STT provider wrote no output file at {output_path} and produced no stdout")
 
 

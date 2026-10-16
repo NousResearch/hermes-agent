@@ -56,6 +56,28 @@ def test_fallback_pointer_uses_owner_location_and_keeps_identity_checks(tmp_path
 
 
 @pytest.mark.platforms("linux", "macos")
+def test_private_node_reports_path_kind_and_owner_recovery_hint(tmp_path, monkeypatch):
+    from hermes_cli.gateway_runtime_discovery import _private_node
+
+    control = tmp_path / "control"
+    control.write_text("not a socket", encoding="utf-8")
+    with pytest.raises(DiscoveryError, match="unsafe_control_path") as kind_error:
+        _private_node(control, kind="socket")
+    assert str(control) in str(kind_error.value)
+    assert "expected socket" in str(kind_error.value)
+    assert "-rw" in str(kind_error.value)
+
+    node_uid = control.lstat().st_uid
+    monkeypatch.setattr("hermes_cli.gateway_runtime_discovery.os.getuid", lambda: node_uid + 1)
+    with pytest.raises(DiscoveryError, match="unsafe_control_path") as owner_error:
+        _private_node(control, kind="file")
+    assert f"owned by uid {node_uid}" in str(owner_error.value)
+    assert f"expected uid {node_uid + 1}" in str(owner_error.value)
+    assert "chown it to the gateway user" in str(owner_error.value)
+    assert owner_error.value.reason == "unsafe_control_path"
+
+
+@pytest.mark.platforms("linux", "macos")
 def test_home_mode_refuses_only_writes_another_user_can_make(tmp_path, monkeypatch):
     import grp
     import os

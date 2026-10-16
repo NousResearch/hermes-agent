@@ -13,6 +13,12 @@ The fix keys on the provider contract violation itself
 bounded to 3 consecutive stalls, with the budget resetting after any
 successful tool round so it guards each stall rather than the whole run. A
 genuine ``finish_reason="stop"`` text turn is unaffected.
+
+The same path also covers a ``finish_reason="stop"`` turn whose visible content
+carries raw tool-call markup naming an available tool — the server's tool parser
+missed a Qwen ``<function=NAME>`` call (observed: qwen3-coder on Ollama). The
+markup is only detected, never executed, so quoted tool syntax can't become a
+phantom call (#47967).
 """
 
 from __future__ import annotations
@@ -64,6 +70,43 @@ def _dropped_tool_call_response(content: str):
         )],
         usage=None,
     )
+
+
+# What qwen3-coder on Ollama returned as plain content (finish_reason="stop") when Ollama's tool
+# parser missed the call — delivered verbatim to Telegram before the fix.
+_QWEN_MARKUP = (
+    "I'll run the nightly ingest. Let me execute this task.\n\n"
+    "<function=terminal>\n<parameter=command>\nmkdir -p ~/Downloads/pdf_receipts\n"
+    "</parameter>\n</function>\n</tool_call>"
+)
+
+
+class TestStrandedToolCallName:
+    """The detector only names AVAILABLE tools and ignores fenced (quoted) markup."""
+
+    @pytest.mark.parametrize("text,expected", [
+        (_QWEN_MARKUP, "terminal"),
+        ("<tool_call>\n<function=terminal>\n<parameter=command>ls</parameter>\n</function>\n"
+         "</tool_call>", "terminal"),
+        ('<tool_call>\n{"name": "terminal", "arguments": {"command": "ls"}}\n</tool_call>',
+         "terminal"),
+        ("<function=read_file>\n</function>", None),  # not an available tool
+        ("```\n<function=terminal>\n<parameter=command>ls</parameter>\n</function>\n```", None),
+        ("Use the <function=terminal> tag syntax in prose.", None),  # no parameter/closer
+        ('<tool_call>{"name": not json}</tool_call>', None),
+        ("Plain answer with no markup.", None),
+        ("", None),
+        (None, None),
+    ])
+    def test_detection(self, text, expected):
+        from agent.turn_dropped_tool_call import stranded_tool_call_name
+
+        assert stranded_tool_call_name(text, {"terminal"}) == expected
+
+    def test_no_tools_means_no_detection(self):
+        from agent.turn_dropped_tool_call import stranded_tool_call_name
+
+        assert stranded_tool_call_name(_QWEN_MARKUP, set()) is None
 
 
 class TestDroppedToolCallRecovery:
@@ -150,6 +193,72 @@ class TestDroppedToolCallRecovery:
             "Consecutive dropped tool calls must be bounded (no infinite loop)."
         )
         assert result is not None
+
+    def test_qwen_markup_in_stop_text_reprompts(self, loop_agent):
+        """A finish_reason=stop turn whose content is a Qwen ``<function=NAME>`` call the
+        server's parser missed (observed with qwen3-coder on Ollama in a cron job) must
+        re-prompt instead of delivering the raw markup as the final answer."""
+        from tests.agent.test_run_agent import _mock_response
+
+        loop_agent.valid_tool_names = {"terminal"}
+        loop_agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=_QWEN_MARKUP, finish_reason="stop"),
+            _mock_response(content="Ingest finished: 3 new receipts.", finish_reason="stop"),
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("run the nightly ingest")
+
+        assert loop_agent.client.chat.completions.create.call_count == 2
+        assert result["final_response"] == "Ingest finished: 3 new receipts."
+        assert "<function=" not in result["final_response"]
+
+    def test_persistent_qwen_markup_is_bounded(self, loop_agent):
+        """Markup on every turn shares the dropped-tool-call budget: at most 3 re-prompts."""
+        from tests.agent.test_run_agent import _mock_response
+
+        loop_agent.valid_tool_names = {"terminal"}
+        loop_agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=_QWEN_MARKUP, finish_reason="stop") for _ in range(9)
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("run the nightly ingest")
+
+        assert loop_agent.client.chat.completions.create.call_count <= 4
+        assert result is not None
+
+    @pytest.mark.parametrize("content", [
+        # Quoted tool syntax (e.g. echoing a file, #47967) is an answer, not a call.
+        "The file contains:\n```xml\n<function=terminal>\n<parameter=command>ls</parameter>\n"
+        "</function>\n```",
+        # Unknown tool name: prose about markup, not a dropped call.
+        "<function=not_a_tool>\n<parameter=x>1</parameter>\n</function>",
+    ])
+    def test_markup_that_is_not_a_dropped_call_is_delivered(self, loop_agent, content):
+        from tests.agent.test_run_agent import _mock_response
+
+        loop_agent.valid_tool_names = {"terminal"}
+        loop_agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=content, finish_reason="stop"),
+        ]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            loop_agent.run_conversation("show me the file")
+
+        assert loop_agent.client.chat.completions.create.call_count == 1
 
     def test_nudge_pair_is_ephemeral_scaffolding(self, loop_agent):
         """The re-prompt pair (interim assistant turn + synthetic user nudge)

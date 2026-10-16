@@ -634,6 +634,71 @@ def test_fs_reads_accept_profile_current_for_host_files(client, tmp_path):
         assert listing.status_code == 200, (selector, listing.text)
 
 
+def _two_profile_homes(monkeypatch, tmp_path, *, active_backend, work_backend):
+    """Default + ``work`` homes with their own ``terminal.backend``; returns (default, work)."""
+    from hermes_cli import profiles
+
+    default_home = tmp_path / "default-home"
+    work_home = default_home / "profiles" / "work"
+    for home, backend in ((default_home, active_backend), (work_home, work_backend)):
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text(
+            f"terminal:\n  backend: {backend}\n  container_persistent: false\n", encoding="utf-8")
+    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    monkeypatch.setenv("TERMINAL_ENV", active_backend)
+    monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+    return default_home, work_home
+
+
+@pytest.mark.parametrize(("active", "work", "expected"), [
+    ("local", "docker", True),   # requested docker profile: a miss is a sandbox path
+    ("docker", "local", False),  # requested local profile: never the sandbox 404
+])
+def test_unmapped_classification_uses_requested_profiles_backend(
+    monkeypatch, tmp_path, active, work, expected,
+):
+    """The Windows 404-or-drive decision and the sandbox hint read the same profile
+    translation used, in both mixed-backend directions."""
+    from hermes_cli import web_server_files
+
+    _default, work_home = _two_profile_homes(
+        monkeypatch, tmp_path, active_backend=active, work_backend=work)
+
+    assert web_server_files._is_unmapped_container_path(
+        "/workspace/x.txt", profile_home=work_home) is expected
+    assert web_server_files._is_unmapped_container_path("/workspace/x.txt") is (active == "docker")
+
+
+def test_native_home_override_translates_with_that_profiles_volumes(monkeypatch, tmp_path):
+    """A native ticket binds the profile's home before the route runs; translation must
+    install that profile's terminal policy, not read the launch env's volumes."""
+    from hermes_cli import web_server_files
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    _default, work_home = _two_profile_homes(
+        monkeypatch, tmp_path, active_backend="docker", work_backend="docker")
+    launch_mount = tmp_path / "launch-mount"
+    work_mount = tmp_path / "work-mount"
+    for mount, label in ((launch_mount, "LAUNCH"), (work_mount, "WORK")):
+        mount.mkdir()
+        (mount / "native.txt").write_text(label, encoding="utf-8")
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", json.dumps([f"{launch_mount}:/workspace"]))
+    (work_home / "config.yaml").write_text(
+        "terminal:\n  backend: docker\n  container_persistent: false\n"
+        f"  docker_volumes:\n    - {work_mount}:/workspace\n", encoding="utf-8")
+
+    token = set_hermes_home_override(str(work_home))
+    try:
+        translated = web_server_files._agent_container_path("/workspace/native.txt")
+    finally:
+        reset_hermes_home_override(token)
+
+    assert translated == (work_mount / "native.txt").resolve()
+    assert web_server_files._agent_container_path("/workspace/native.txt") == (
+        launch_mount / "native.txt").resolve()
+
+
 def test_fs_read_plain_host_path_logs_no_docker_media_warning(client, docker_volumes, tmp_path, caplog):
     """fs routes see ordinary host paths constantly; misses are not MEDIA warnings."""
     plain = tmp_path / "plain.txt"

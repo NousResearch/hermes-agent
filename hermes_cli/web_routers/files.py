@@ -160,17 +160,18 @@ def _io_errors(denied: str, failed: str):
         raise HTTPException(status_code=500, detail=f"{failed}: {exc}")
 
 
-def _fs_sandbox_not_found_detail(path: Path) -> str:
+def _fs_sandbox_not_found_detail(path: Path, profile_home: Optional[Path] = None) -> str:
     """Distinguish an untranslated agent-sandbox path from a plain missing file."""
-    return SANDBOX_NOT_FOUND if _is_unmapped_container_path(path.as_posix()) else "File not found"
+    unmapped = _is_unmapped_container_path(path.as_posix(), profile_home=profile_home)
+    return SANDBOX_NOT_FOUND if unmapped else "File not found"
 
 
-def _fs_regular_file(path: Path) -> tuple[Path, os.stat_result]:
+def _fs_regular_file(path: Path, profile_home: Optional[Path] = None) -> tuple[Path, os.stat_result]:
     target = _fs_path(str(path))
     try:
         st = target.stat()
     except (FileNotFoundError, NotADirectoryError):
-        raise HTTPException(status_code=404, detail=_fs_sandbox_not_found_detail(target))
+        raise HTTPException(status_code=404, detail=_fs_sandbox_not_found_detail(target, profile_home))
     except PermissionError:
         raise HTTPException(status_code=403, detail="File is not readable")
     except OSError as exc:
@@ -819,9 +820,10 @@ async def fs_read_text(path: str, request: Request = None, profile: Optional[str
             "text": data.decode("utf-8", errors="replace"),
             "truncated": size > _FS_TEXT_PREVIEW_MAX_BYTES,
         }
-    target = _agent_fs_path(path, profile_home=_fs_profile_home(profile))
+    profile_home = _fs_profile_home(profile)
+    target = _agent_fs_path(path, profile_home=profile_home)
     _hosted_fs_read_guard(target, request)
-    target, st = _fs_regular_file(target)
+    target, st = _fs_regular_file(target, profile_home)
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     data = await asyncio.to_thread(
@@ -938,7 +940,7 @@ async def fs_read_data_url(
         return {"dataUrl": f"data:{_fs_mime_type(Path(target))};base64,{encoded}"}
     target = await _fs_download_path(path, profile, session_id)
     _hosted_fs_read_guard(target, request)
-    target, st = _fs_regular_file(target)
+    target, st = _fs_regular_file(target, _fs_profile_home(profile))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     encoded = await asyncio.to_thread(
@@ -968,7 +970,7 @@ async def fs_download(
         )
     target = await _fs_download_path(path, profile, session_id)
     _hosted_fs_read_guard(target, request)
-    target, _st = _fs_regular_file(target)
+    target, _st = _fs_regular_file(target, _fs_profile_home(profile))
     await asyncio.to_thread(_refuse_live_database, target)
     return FileResponse(
         path=str(target),

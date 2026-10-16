@@ -6,10 +6,11 @@ import mimetypes
 import os
 import stat
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from fastapi import HTTPException, Request
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -84,19 +85,51 @@ def _translate_agent_path(candidate: Path) -> Path | None:
     return _translate_docker_container_media_path(candidate, quiet=True)
 
 
+@contextmanager
+def _agent_path_scope(profile_home: Path | None = None) -> Iterator[None]:
+    """Bind the profile whose sandbox a container path names: its home and its terminal policy.
+
+    A requested ``profile_home`` other than the current home binds that home and its complete
+    terminal policy, as MEDIA delivery does (#109024). A home already bound by the caller (a
+    native profile ticket's override) gets its own terminal policy when no scope is bound, so
+    translation never reads the launch profile's ambient ``TERMINAL_DOCKER_VOLUMES``. An
+    override naming the launch home keeps the ambient env, which may carry env-only policy.
+    Translation and the unmapped-path classification both run inside this scope, so they
+    agree about the backend.
+    """
+    from hermes_cli.config import get_hermes_home
+    from hermes_constants import (
+        get_hermes_home_override, get_process_hermes_home, reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from tools.terminal_scope import get_terminal_scope, install_profile_terminal_scope, reset_terminal_scope
+
+    home_token = scope_token = None
+    if profile_home is not None and Path(profile_home).resolve() != get_hermes_home().resolve():
+        home_token = set_hermes_home_override(str(profile_home))
+    try:
+        foreign_override = (get_hermes_home_override() is not None
+                            and get_hermes_home().resolve() != get_process_hermes_home().resolve())
+        if home_token is not None or (foreign_override and get_terminal_scope() is None):
+            scope_token = install_profile_terminal_scope(get_hermes_home())
+        yield
+    finally:
+        if scope_token is not None:
+            reset_terminal_scope(scope_token)
+        if home_token is not None:
+            reset_hermes_home_override(home_token)
+
+
 def _agent_container_path(raw: str, *, profile_home: Path | None = None) -> Path | None:
     """Map an agent-visible container path to its host bind mount, or None.
 
     Docker agents emit container paths (``/workspace/...``, ``/root/...``) in
     transcripts and MEDIA tags, while the dashboard fs routes stat the gateway
-    HOST filesystem (#85238). Reuse the gateway's MEDIA volume translator.
-
-    ``profile_home`` (a request's ``profile``) binds that profile's home and
-    terminal policy, as MEDIA delivery does (#109024), so its sandbox and mounts
-    are used rather than the active profile's. Without one, when no terminal
-    scope is bound (``serve --isolated`` after a failed early bridge), retry once
-    under the active profile's complete terminal policy, never replacing an
-    already-bound scope or refusal (retry from #104992).
+    HOST filesystem (#85238). Reuse the gateway's MEDIA volume translator inside
+    ``_agent_path_scope(profile_home)``. When no terminal scope is bound even
+    then (``serve --isolated`` after a failed early bridge), retry once under the
+    current profile's complete terminal policy, never replacing an already-bound
+    scope or refusal (retry from #104992).
 
     Runs on the raw string, before host normalization: on a Windows gateway
     ``Path("/workspace/x").resolve()`` anchors to the current drive and the
@@ -107,29 +140,20 @@ def _agent_container_path(raw: str, *, profile_home: Path | None = None) -> Path
         return None
     try:
         from hermes_cli.config import get_hermes_home
-        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         from tools.terminal_scope import (
-            build_profile_terminal_scope, get_terminal_scope, install_and_reset_profile_terminal_scope,
-            reset_terminal_scope, set_terminal_scope,
+            build_profile_terminal_scope, get_terminal_scope, reset_terminal_scope, set_terminal_scope,
         )
 
         candidate = Path(raw)
-        if profile_home is not None and Path(profile_home).resolve() != get_hermes_home().resolve():
-            home_token = set_hermes_home_override(str(profile_home))
+        with _agent_path_scope(profile_home):
+            translated = _translate_agent_path(candidate)
+            if translated is not None or get_terminal_scope() is not None:
+                return translated
+            token = set_terminal_scope(build_profile_terminal_scope(get_hermes_home()))
             try:
-                with install_and_reset_profile_terminal_scope(profile_home):
-                    return _translate_agent_path(candidate)
+                return _translate_agent_path(candidate)
             finally:
-                reset_hermes_home_override(home_token)
-
-        translated = _translate_agent_path(candidate)
-        if translated is not None or get_terminal_scope() is not None:
-            return translated
-        token = set_terminal_scope(build_profile_terminal_scope(get_hermes_home()))
-        try:
-            return _translate_agent_path(candidate)
-        finally:
-            reset_terminal_scope(token)
+                reset_terminal_scope(token)
     except Exception:  # fail open: translation is additive, the host path still serves
         logger.debug("agent container path translation failed for %s", raw, exc_info=True)
         return None
@@ -159,23 +183,25 @@ def _agent_fs_path(
     translated = _agent_container_path(raw, profile_home=profile_home)
     if translated is not None:
         return translated
-    if _is_unmapped_container_path(raw):
+    if _is_unmapped_container_path(raw, profile_home=profile_home):
         raise HTTPException(status_code=404, detail=SANDBOX_NOT_FOUND)
     return _fs_path(raw_path, cwd=cwd)
 
 
-def _is_unmapped_container_path(raw: str) -> bool:
+def _is_unmapped_container_path(raw: str, *, profile_home: Path | None = None) -> bool:
     """A docker-backend container path (``/workspace``, ``/root`` or a configured
-    volume target) rather than a host path or a typo elsewhere on the host."""
+    volume target) rather than a host path or a typo elsewhere on the host. Reads
+    the backend and volumes in the same profile scope translation used."""
     if not raw.startswith("/") or raw.startswith("//"):
         return False
     try:
         from gateway.platforms.base import _docker_env_active, _parse_docker_volume_mounts
         from tools.environments.local import _msys_to_windows_path
 
-        if not _docker_env_active() or _msys_to_windows_path(raw) != raw:
-            return False
-        roots = {"/workspace", "/root", *(c.as_posix() for _, c in _parse_docker_volume_mounts())}
+        with _agent_path_scope(profile_home):
+            if not _docker_env_active() or _msys_to_windows_path(raw) != raw:
+                return False
+            roots = {"/workspace", "/root", *(c.as_posix() for _, c in _parse_docker_volume_mounts())}
     except Exception:  # a refusal scope or import failure: just skip the hint
         logger.debug("container path classification failed for %s", raw, exc_info=True)
         return False

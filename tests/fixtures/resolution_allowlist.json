@@ -85,16 +85,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "gateway/platforms/signal.py",
-    "symbol": "_remux_aac_to_m4a",
-    "kind": "bare_which"
-  },
-  {
-    "path": "gateway/platforms/whatsapp_cloud.py",
-    "symbol": "<module>",
-    "kind": "bare_which"
-  },
-  {
     "path": "gateway/run.py",
     "symbol": "_resolve_hermes_bin",
     "kind": "bare_which"
@@ -210,11 +200,6 @@
   {
     "path": "hermes_cli/gateway.py",
     "symbol": "supports_systemd_services",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/gateway_setup_wizard.py",
-    "symbol": "_setup_signal",
     "kind": "bare_which"
   },
   {

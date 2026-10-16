@@ -3,6 +3,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import { modelPickerCommand } from '../components/modelPicker.js'
 
 const flush = () => new Promise(resolve => setImmediate(resolve))
 const info = { model: 'old', skills: {}, tools: {}, execution_epoch: '1', execution_generation: 4 }
@@ -107,6 +108,69 @@ it('ambiguous mutations retry the frozen identity while unsupported model scopes
   expect(request.mock.calls.filter(([method]) => method === 'session.mutate')).toHaveLength(2)
 })
 
+it.each(['high', 'none'])(
+  'applies picker reasoning %s after the model switch through existing controls',
+  async effort => {
+    const { request, slash } = harness()
+    let generation = 4
+    request.mockImplementation(async (method: string, params: any) => {
+      if (method === 'session.resume') {
+        return { revision: generation + 4, execution_generation: generation } as any
+      }
+
+      if (method === 'session.mutate') {
+        generation += 1
+
+        return { model: 'picked', effort: params.payload.effort, execution_generation: generation }
+      }
+
+      return {}
+    })
+
+    slash(`/model ${modelPickerCommand('picked', 'custom', false, effort)}`)
+    await flush()
+
+    expect(request).toHaveBeenCalledWith('session.mutate', {
+      session_id: 'owner',
+      request_id: expect.any(String),
+      expected_revision: 8,
+      expected_generation: 4,
+      operation: 'model',
+      payload: { model: 'picked', provider: 'custom' }
+    })
+    expect(request).toHaveBeenCalledWith('session.mutate', {
+      session_id: 'owner',
+      request_id: expect.any(String),
+      expected_revision: 9,
+      expected_generation: 5,
+      operation: 'reasoning',
+      payload: { effort }
+    })
+    expect(getUiState().info?.model).toBe('picked')
+  }
+)
+
+it('does not apply picker reasoning after the model generation has been superseded', async () => {
+  const { request, slash } = harness()
+  let reads = 0
+  request.mockImplementation(async (method: string) => {
+    if (method === 'session.resume') {
+      reads += 1
+
+      return { revision: 8 + reads, execution_generation: reads === 1 ? 4 : 6 } as any
+    }
+
+    return { model: 'picked', execution_generation: 5 }
+  })
+
+  slash(`/model ${modelPickerCommand('picked', 'custom', false, 'high')}`)
+  await flush()
+
+  const sends = request.mock.calls.filter(([method]) => method === 'session.mutate')
+  expect(sends).toHaveLength(1)
+  expect(sends[0]![1].operation).toBe('model')
+})
+
 it('late model or compression replies cannot replace a newer execution snapshot', async () => {
   for (const command of ['/model picked', '/compress']) {
     resetUiState()
@@ -157,16 +221,34 @@ it('a guarded canonical model switch asks; yes re-sends once with the owner toke
     resetOverlayState()
     patchUiState({ sid: 'owner', info })
     const { request, slash } = harness()
+    let generation = 4
     request.mockImplementation(async (method: string, params: any) => {
       if (method === 'session.resume') {
-        return { revision: 8, execution_generation: 4, info } as any
+        return { revision: generation + 4, execution_generation: generation, info } as any
       }
 
-      return params.payload.confirm === 'tok-1'
-        ? { model: 'pricey', execution_generation: 5 }
-        : { status: 'confirmation_required', confirm: 'tok-1', confirm_message: 'pricey IS EXPENSIVE', target_model: 'pricey' }
+      if (method !== 'session.mutate') {
+        return {}
+      }
+
+      if (params.operation === 'reasoning') {
+        return { effort: params.payload.effort, execution_generation: 6 }
+      }
+
+      if (params.payload.confirm === 'tok-1') {
+        generation = 5
+
+        return { model: 'pricey', execution_generation: generation }
+      }
+
+      return {
+        status: 'confirmation_required',
+        confirm: 'tok-1',
+        confirm_message: 'pricey IS EXPENSIVE',
+        target_model: 'pricey'
+      }
     })
-    slash('/model pricey')
+    slash(`/model ${modelPickerCommand('pricey', 'custom', false, 'high')}`)
     await flush()
     const ask = getOverlayState().confirm
     expect(ask?.detail).toBe('pricey IS EXPENSIVE')
@@ -178,8 +260,12 @@ it('a guarded canonical model switch asks; yes re-sends once with the owner toke
       await flush()
     }
 
-    const sends = request.mock.calls.filter(([method]) => method === 'session.mutate').map(([, params]) => params.payload)
-    expect(sends).toEqual(accept ? [{ model: 'pricey' }, { model: 'pricey', confirm: 'tok-1' }] : [{ model: 'pricey' }])
+    const sends = request.mock.calls
+      .filter(([method]) => method === 'session.mutate')
+      .map(([, params]) => params.payload)
+
+    const selection = { model: 'pricey', provider: 'custom' }
+    expect(sends).toEqual(accept ? [selection, { ...selection, confirm: 'tok-1' }, { effort: 'high' }] : [selection])
     expect(getUiState().info?.model).toBe(accept ? 'pricey' : 'old')
   }
 })
@@ -218,9 +304,14 @@ it('a /compress that removes nothing prints main\'s "No changes" report without 
     }
 
     return {
-      session_id: 'owner', operation: 'compress', status: 'noop',
-      summary: { headline: 'No changes from compression: 2 messages', noop: true,
-                 token_line: 'Approx request size: ~6,547 tokens (unchanged)' }
+      session_id: 'owner',
+      operation: 'compress',
+      status: 'noop',
+      summary: {
+        headline: 'No changes from compression: 2 messages',
+        noop: true,
+        token_line: 'Approx request size: ~6,547 tokens (unchanged)'
+      }
     } as any
   })
 

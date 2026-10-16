@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
+import { REASONING_EFFORT_VALUES } from '@hermes/shared/reasoning-effort'
+
 import { introMsg, toTranscriptMessages } from '../../domain/messages.js'
 import { TUI_SESSION_MODEL_FLAG } from '../../domain/slash.js'
 import { t } from '../../i18n/runtime.js'
@@ -16,11 +18,13 @@ interface MutationGateway {
 // Keep the original CAS tuple after a lost reply. Reissuing the same command
 // must query that receipt, not silently authorize another write at a new revision.
 const pending = new WeakMap<MutationGateway, Map<string, Record<string, unknown>>>()
+const reasoningEfforts = new Set<string>([...REASONING_EFFORT_VALUES, 'false', 'disabled'])
 
 function modelPayload(arg: string) {
   const parts = arg.trim().split(/\s+/)
   const model = parts.shift()!
   const payload: Record<string, string> = { model }
+  let reasoning: string | undefined
 
   if (model.startsWith('--')) {
     throw new Error(t('canonical.controls.modelUsage'))
@@ -39,10 +43,16 @@ function modelPayload(arg: string) {
       continue
     }
 
+    if (flag === '--reasoning' && parts[0] && reasoningEfforts.has(parts[0].toLowerCase())) {
+      reasoning = parts.shift()!.toLowerCase()
+
+      continue
+    }
+
     throw new Error(t('canonical.controls.unsupportedModelOption', flag))
   }
 
-  return payload
+  return { payload, reasoning }
 }
 
 export type CanonicalOperation = 'model' | 'branch' | 'compress' | 'delete' | 'rename' | 'rewind' | 'reasoning'
@@ -151,14 +161,18 @@ export async function mutateCanonicalSession(
 ) {
   // `confirm`: the owner's one-time token for a guarded model target the user accepted. It keys a
   // separate retained request, so an ambiguous reply to the confirmed send retries that exact one.
+  const selection = operation === 'model' ? modelPayload(arg) : undefined
+
   const payload = {
-    ...(operation === 'model' ? modelPayload(arg) : arg ? { [operation === 'branch' ? 'title' : 'focus']: arg } : {}),
+    ...(selection ? selection.payload : arg ? { [operation === 'branch' ? 'title' : 'focus']: arg } : {}),
     ...(confirm ? { confirm } : {})
   }
 
   const mutation = await mutateCanonical(gw, sid, operation, payload, stale)
 
-  return mutation?.result ? { result: mutation.result, expectedGeneration: mutation.expectedGeneration } : undefined
+  return mutation?.result
+    ? { result: mutation.result, expectedGeneration: mutation.expectedGeneration, reasoning: selection?.reasoning }
+    : undefined
 }
 
 type CanonicalControlResult = NonNullable<Awaited<ReturnType<typeof mutateCanonicalSession>>>['result']
@@ -250,11 +264,40 @@ function applyModelResult(result: CanonicalControlResult, ctx: SlashRunCtx) {
   ctx.transcript.sys(t('session.main.modelSwitched', result.model))
 }
 
+/** The owner exposes model and reasoning as separate controls, as on Desktop. Apply the effort
+ * only after an accepted model switch, and only while that exact generation is still current. */
+async function applyModelReasoning(
+  mutation: NonNullable<Awaited<ReturnType<typeof mutateCanonicalSession>>>,
+  ctx: SlashRunCtx
+) {
+  const effort = mutation.reasoning
+
+  if (!effort) {
+    return
+  }
+
+  const generation = mutation.result.execution_generation ?? mutation.expectedGeneration
+
+  const reasoning = await mutateCanonical(
+    ctx.gateway.gw,
+    ctx.sid!,
+    'reasoning',
+    snapshot => (snapshot.execution_generation === generation ? { effort } : null),
+    ctx.stale
+  )
+
+  if (reasoning?.result && !ctx.stale()) {
+    ctx.transcript.sys(t('slashCmd.session.reasoning.current', effort))
+  }
+}
+
 type CompressSummary = { headline?: string; noop?: boolean; note?: string; token_line?: string } | null
 
 /** The authority's report (headline, token line, note), as the native /compress prints it. */
 function printCompressSummary(summary: CompressSummary, ctx: SlashRunCtx) {
-  ctx.transcript.sys(summary?.headline ? `${summary.noop ? '' : '✓ '}${summary.headline}` : t('canonical.controls.compressed'))
+  ctx.transcript.sys(
+    summary?.headline ? `${summary.noop ? '' : '✓ '}${summary.headline}` : t('canonical.controls.compressed')
+  )
 
   for (const line of [summary?.token_line, summary?.note]) {
     if (line) {
@@ -324,6 +367,7 @@ export async function runCanonicalSessionControl(
       await applyBranchResult(result, arg, ctx)
     } else if (operation === 'model') {
       applyModelResult(result, ctx)
+      await applyModelReasoning(mutation, ctx)
     } else if (result.status === 'preview') {
       // `--preview` is a read-only report; nothing to re-hydrate.
       ctx.transcript.sys((result.lines as string[]).join('\n'))

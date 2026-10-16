@@ -1582,6 +1582,11 @@ def _apply_monitor_gate(
         ), extra_prompt, None
     if not _mon.changed:
         # Unchanged: silent no_change tick (ledger doc kept; SILENT_MARKER blocks delivery).
+        # (#140178) This tick runs no agent: it must not later count as a recovery. Mark it so
+        # mark_job_run keeps failure_streak/last_status and _compose_run_delivery skips the
+        # incident resolve — otherwise an open incident is resolved between every failing run
+        # and the alert-once gates (failure_repeat_alert_hours / streak nudge) never apply.
+        job["_suppressed_tick"] = True
         logger.info("Job '%s': monitor output unchanged — suppressing agent run", job_id)
         return (
             True, f"{header}**Status:** no_change (agent run suppressed)\n", SILENT_MARKER, None,
@@ -2281,6 +2286,7 @@ def _prepare_job_prompt(
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info("Job '%s' (ID: %s): wakeAgent=false, skipping agent run", job_name, job_id)
             note_cron_skipped(job)
+            job["_suppressed_tick"] = True
             silent_doc = (
                 f"# Cron Job: {job_name}\n\n"
                 f"**Job ID:** {job_id}\n"
@@ -2316,6 +2322,7 @@ def _prepare_job_prompt(
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         note_cron_skipped(job)
+        job["_suppressed_tick"] = True
         return (True, "", SILENT_MARKER, None), None
     return None, prompt
 
@@ -2925,12 +2932,14 @@ def _record_fire_ownership_lost(
 
 def _compose_run_delivery(
     job: dict, *, success: bool, error, final_response: str, output_file,
-    agent_declared: bool = False,
+    agent_declared: bool = False, suppressed: bool = False,
 ) -> tuple[str, bool, bool, bool, Optional[str]]:
     """Text to deliver for a finished run. Returns ``(deliver_content, blocked_config,
     silent_alert, incident_acked, failure_incident_id)``; ``silent_alert``: an alert-once marker
     says the operator was already told, deliver nothing. ``agent_declared``: *error* is the
-    agent's own ``[CRON_FAILURE]`` evidence, delivered verbatim."""
+    agent's own ``[CRON_FAILURE]`` evidence, delivered verbatim. ``suppressed``: an agent-less
+    tick (monitor no_change / wake-gate skip) — it is not recovery evidence, so open incidents
+    stay open (#140178)."""
     err = str(error) if error else ""
     # Failed jobs always deliver, except blocked-config runs, which alert exactly ONCE.
     blocked_config_silent = BLOCKED_CONFIG_SILENT_MARKER in err
@@ -2944,7 +2953,8 @@ def _compose_run_delivery(
         deliver_content = blocked_config_notice(job.get("name") or job["id"], _pf_text)
     elif success:
         deliver_content = final_response
-        _resolve_incidents_for_recovered_job(job)
+        if not suppressed:
+            _resolve_incidents_for_recovered_job(job)
     else:
         # Record the job+error signature once; withhold the per-run ping while the operator
         # already acked it (closed) or was already told (alerted, inside the reminder cooldown).
@@ -3055,6 +3065,8 @@ class _RunDelivery:
     incident_acked: bool = False
     failure_incident_id: Optional[str] = None
     side_effect_ownership_lost: bool = False
+    # (#140178) An agent-less tick (monitor no_change / wake-gate skip): not recovery evidence.
+    suppressed: bool = False
 
 
 def _save_compose_deliver(
@@ -3087,7 +3099,7 @@ def _save_compose_deliver(
         deliver_content, d.blocked_config, _silent_alert, d.incident_acked, d.failure_incident_id,
     ) = _compose_run_delivery(
         job, success=d.success, error=d.error, final_response=final_response,
-        output_file=output_file, agent_declared=d.agent_declared)
+        output_file=output_file, agent_declared=d.agent_declared, suppressed=d.suppressed)
     # Whitespace-only == empty: skip delivery; the guard below marks it a soft failure.
     d.should_deliver = bool(deliver_content.strip()) and not _silent_alert
     if d.should_deliver and not d.success and job.get("_model_unreachable"):
@@ -3365,7 +3377,8 @@ def _run_one_job_body(
 
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
         # raise anywhere still tears the deferred agent down.
-        d = _RunDelivery(job=job, success=success, error=error, agent_declared=agent_declared)
+        d = _RunDelivery(job=job, success=success, error=error, agent_declared=agent_declared,
+                         suppressed=job.pop("_suppressed_tick", False))
         try:
             _save_compose_deliver(
                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,

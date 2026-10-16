@@ -75,6 +75,8 @@ class FakeChannel:
 @pytest.fixture
 def adapter(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("DISCORD_FORCE_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_AUTO_THREAD", raising=False)
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
     bot_user = SimpleNamespace(id=999, bot=True, display_name="Hermes", name="hermes")

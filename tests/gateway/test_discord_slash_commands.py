@@ -97,7 +97,12 @@ class FakeTree:
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
+    # Bridge tests in this file write real process env (YAML→env is
+    # first-writer-wins by design); clear thread-gate vars per test so
+    # file-internal ordering can't pollute thread-behavior tests.
+    monkeypatch.delenv("DISCORD_FORCE_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_AUTO_THREAD", raising=False)
     config = PlatformConfig(enabled=True, token="***")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(

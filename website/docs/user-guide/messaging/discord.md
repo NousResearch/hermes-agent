@@ -537,7 +537,7 @@ Behavior:
 - If a message arrives inside a thread or forum post and that thread has no explicit entry, Hermes falls back to the parent channel/forum ID.
 - Prompts are applied ephemerally at runtime, so changing them affects future turns immediately without rewriting past session history.
 
-#### `discord.channel_overrides[].reasoning_effort`
+#### `platforms.discord.channel_overrides.<channel_id>.reasoning_effort`
 
 **Type:** string or boolean — **Default:** unset (inherit)
 
@@ -546,12 +546,13 @@ Set the reasoning effort for a Discord channel or thread. Accepted values are
 `none` to disable reasoning explicitly.
 
 ```yaml
-discord:
-  channel_overrides:
-    "100000000000000001":
-      reasoning_effort: high
-    "100000000000000002":
-      reasoning_effort: false
+platforms:
+  discord:
+    channel_overrides:
+      "100000000000000001":
+        reasoning_effort: high
+      "100000000000000002":
+        reasoning_effort: false
 ```
 
 Resolution order:

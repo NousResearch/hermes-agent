@@ -928,12 +928,16 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if self._poll_session and self._token and not self._typing_cache.get(sender_id):
             asyncio.create_task(self._fetch_typing_ticket(self._poll_session, sender_id, context_token or None, "getConfig failed"))
         media_paths, media_types = [], []  # type: List[str], List[str]
+        failed_downloads: list[str] = []
         for item in item_list:
             ref_item = (item.get("ref_msg") or {}).get("message_item")
             for candidate in (item, ref_item) if isinstance(ref_item, dict) else (item,):
-                await self._collect_media(candidate, media_paths, media_types)
-        if not text and not media_paths:
+                failed_downloads.extend(await self._collect_media(candidate, media_paths, media_types))
+        if not text and not media_paths and not failed_downloads:
             return
+        if failed_downloads:
+            failed_note = "\n".join(f"[Attachment download failed: {label}]" for label in failed_downloads)
+            text = f"{text}\n\n{failed_note}" if text else failed_note
         source = self.build_source(chat_id=effective_chat_id, chat_type=chat_type, user_id=sender_id, user_name=sender_id)
         event = MessageEvent(
             text=text, message_type=_message_type_from_media(media_types, text), source=source, raw_message=message,
@@ -944,12 +948,22 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         else:
             await self.handle_message(event)
 
-    async def _collect_media(self, item: dict[str, Any], media_paths: list[str], media_types: list[str]) -> None:
+    async def _collect_media(self, item: dict[str, Any], media_paths: list[str], media_types: list[str]) -> list[str]:
+        """Download one media item and return labels for failed downloads."""
         spec = _INBOUND_MEDIA.get(item.get("type"))
-        path, mime = await self._download_media(item, spec) if spec else (None, "")
+        if not spec:
+            return []
+        if item.get("type") == ITEM_VOICE:
+            voice_item = item.get("voice_item") or {}
+            if not voice_item.get("media") and voice_item.get("text"):
+                # iLink supplied only a transcript; there is no attachment to fetch.
+                return []
+        path, mime = await self._download_media(item, spec)
         if path:
             media_paths.append(path)
             media_types.append(mime)
+            return []
+        return [spec[4]]
 
     async def _download_media(self, item: dict[str, Any], spec: tuple[Any, ...]) -> tuple[Optional[str], str]:
         """Download + decrypt one inbound media item -> (cached path or None, mime). Voice is always downloaded

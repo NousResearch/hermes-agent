@@ -327,8 +327,13 @@ class GatewayTurnPersistenceMixin:
             try:
                 await move_route_wakes(self, session_key, session_entry.session_id)
                 self._evict_cached_agent(session_key)
+                # The /queue overflow behind the deferred head slot is queued user input, like the
+                # re-homed native rows: it survives the boundary the funnel below otherwise clears.
+                queued = list(self._overflow_queue(session_key) or ())
                 # Conversation boundary: the funnel clears every conversation-scoped per-session dict.
                 self._clear_conversation_scope(session_key, reason="compression_exhausted_reset")
+                if queued:
+                    self._session_state(session_key).conversation.queued_events.extend(queued)
                 if new_entry is not None:
                     # Re-point the Telegram topic binding at the fresh session, or the binding-heal walk
                     # switches the next message back onto the bloated child and re-triggers exhaustion

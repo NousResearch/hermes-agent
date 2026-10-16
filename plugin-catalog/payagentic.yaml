@@ -1,0 +1,17 @@
+name: payagentic
+repo: https://github.com/payagentic/agent-plugins
+sha: 8413574abfebd58be72f8fc7beabcb00071d285d
+subdir: hermes
+description: Read-only PayAgentic account workflow skills for the separately authorized MCP connector.
+maintainer: loupsatoshi
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://payagentic.ai/platform/developers
+version: "0.2.0"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

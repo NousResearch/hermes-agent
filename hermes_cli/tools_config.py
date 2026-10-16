@@ -221,8 +221,6 @@ _NOUS = {"requires_nous_auth": True}
 _OPENAI_VOICE_KEY = _key("VOICE_TOOLS_OPENAI_KEY", "OpenAI API key", "https://platform.openai.com/api-keys")
 _ELEVENLABS_KEY = _key("ELEVENLABS_API_KEY", "ElevenLabs API key", "https://elevenlabs.io/app/settings/api-keys")
 _DEEPINFRA_KEY = _key("DEEPINFRA_API_KEY", "DeepInfra API key", "https://deepinfra.com/dash/api_keys")
-_LANGFUSE_PUBLIC = ("HERMES_LANGFUSE_PUBLIC_KEY", "Langfuse public key (pk-lf-...)")
-_LANGFUSE_SECRET = ("HERMES_LANGFUSE_SECRET_KEY", "Langfuse secret key (sk-lf-...)")
 
 TOOL_CATEGORIES = {
     "tts": {
@@ -355,16 +353,6 @@ TOOL_CATEGORIES = {
             _row("cua-driver (background)", "★ recommended · free · local",
                  "Background computer-use via cua-driver — does NOT steal your cursor or focus. Works with any model.",
                  computer_use_backend="cua", post_setup="cua_driver"),
-        ],
-    },
-    "langfuse": {
-        "name": "Langfuse Observability", "icon": "📊",
-        "providers": [
-            _row("Langfuse Cloud", tag="Hosted Langfuse (cloud.langfuse.com)", post_setup="langfuse",
-                 env_vars=[_key(*_LANGFUSE_PUBLIC, "https://cloud.langfuse.com"), _key(*_LANGFUSE_SECRET, "https://cloud.langfuse.com")]),
-            _row("Langfuse Self-Hosted", tag="Self-hosted Langfuse instance", post_setup="langfuse",
-                 env_vars=[_key(*_LANGFUSE_PUBLIC), _key(*_LANGFUSE_SECRET),
-                           _key("HERMES_LANGFUSE_BASE_URL", "Langfuse server URL (e.g. http://localhost:3000)", default="http://localhost:3000")]),
         ],
     },
 }
@@ -697,11 +685,19 @@ def _merge_mcp_servers(
     """Explicit passthrough entries plus this platform's MCP servers: listed names form an allowlist, else every
     globally enabled server (when ``include_default_mcp_servers``); the ``no_mcp`` sentinel disables all."""
     enabled_mcp_servers = enabled_mcp_server_names(config)
-    result = explicit_passthrough - enabled_mcp_servers
+    configured = config.get("mcp_servers") if isinstance(config.get("mcp_servers"), dict) else {}
+    known = enabled_mcp_servers | {str(name) for name in configured}
+    # ``mcp-<server>`` names the same server as its bare alias: either spelling selects only that server
+    # (unless a server is literally named ``mcp-<server>``).
+    explicit_passthrough = {ts[4:] if ts.startswith("mcp-") and ts not in known
+                            and ts[4:] in known else ts for ts in explicit_passthrough}
+    result = explicit_passthrough - known
     if "no_mcp" in toolset_names:
         return result - {"no_mcp"}
     explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
-    if include_default_mcp_servers and not explicit_mcp_servers:
+    # A listed server that is configured but disabled is still the user's server selection: it stays
+    # off, and it must not fall through to every enabled server.
+    if include_default_mcp_servers and not explicit_passthrough & known:
         return result | enabled_mcp_servers
     return result | explicit_mcp_servers
 

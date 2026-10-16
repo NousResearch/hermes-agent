@@ -623,3 +623,12 @@ class TestManifestMatchesInRepoLists:
                 for entry in json.load(fh)["providers"]["openrouter"]["models"]
             ]
         assert "inclusionai/ling-3.0-flash:free" in manifest_ids
+
+    def test_nous_lists_portal_served_muse_spark_but_not_contributor_twins(self):
+        """The Portal serves plain muse-spark 1.2/1.3; only the -contributor twins are OpenRouter-only."""
+        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+
+        nous = _PROVIDER_MODELS["nous"]
+        for version in ("1.2", "1.3"):
+            assert f"meta/muse-spark-{version}" in nous
+            assert f"meta/muse-spark-{version}-contributor" not in nous

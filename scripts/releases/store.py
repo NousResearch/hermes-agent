@@ -110,9 +110,16 @@ def _has_in_flight(submission_output: str) -> bool:
         submission = json.loads(submission_output)
     except json.JSONDecodeError:
         raise StoreError(f"unreadable submission: {submission_output[:200]!r}")
-    if not isinstance(submission, dict) or "status" not in submission:
+    key = _key(submission, "status") if isinstance(submission, dict) else None
+    if key is None:
         raise StoreError(f"unreadable submission: {submission_output[:200]!r}")
-    return submission["status"] not in _NOT_IN_FLIGHT
+    return submission[key] not in _NOT_IN_FLIGHT
+
+
+def _key(submission: dict, name: str) -> str | None:
+    """The submission's own spelling of ``name``. The CLI serializes .NET property names
+    (``Status``, ``TargetPublishMode``); the REST API documents camelCase."""
+    return next((k for k in submission if k.lower() == name.lower()), None)
 
 
 def submit(package: str, *, product_id: str, run=_cli_run) -> dict:
@@ -121,7 +128,7 @@ def submit(package: str, *, product_id: str, run=_cli_run) -> dict:
         run(["msstore", "submission", "delete", product_id, "--no-confirm"])
     run(["msstore", "publish", package, "--appId", product_id, "--noCommit"])
     submission = json.loads(run(["msstore", "submission", "get", product_id]))
-    submission["targetPublishMode"] = "Manual"
+    submission[_key(submission, "targetPublishMode") or "TargetPublishMode"] = "Manual"
     run(["msstore", "submission", "update", product_id,
          json.dumps(submission, separators=(",", ":"))])
     run(["msstore", "submission", "publish", product_id])

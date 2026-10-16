@@ -276,7 +276,12 @@ class GatewayAuthorizationMixin:
         platform = getattr(source, "platform", None)
         from gateway.session_identity import identity_of
         identity = identity_of(source)
-        if identity is not None and identity.multiplexed:
+        # A LOCAL session has no receiving bot.  Its default transport is inferred as the
+        # primary profile, but the policy and delivery adapter belong to the session authority.
+        # Let the delivery fallback resolve that profile instead of treating a lazily-created
+        # primary LocalSessionAdapter as the receiver (#139060).
+        if (identity is not None and identity.multiplexed
+                and not (platform == Platform.LOCAL and identity.transport_inferred)):
             return self._adapters_for_profile(identity.transport_profile).get(platform) if platform else None
         if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
             return self._primary_adapters().get(platform) if platform else None
@@ -637,6 +642,11 @@ class GatewayAuthorizationMixin:
 
     def _principal_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool) -> bool:
         """The allowlist verdict alone, before the bot loop guard."""
+        from gateway.session_local import authorize_local_source
+        local_verdict = authorize_local_source(self, source)
+        if local_verdict is not None:
+            return local_verdict
+
         # Webhook events are HMAC-verified; a ``trusted_inbound`` platform's events come from the
         # service its adapter authenticated to (no human sender to allowlist).
         if source.platform == Platform.WEBHOOK or getattr(_registry_entry(source.platform), "trusted_inbound", False) is True:

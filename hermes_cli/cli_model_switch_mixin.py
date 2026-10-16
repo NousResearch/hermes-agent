@@ -58,11 +58,18 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     from hermes_state import SessionDB as _SessionDB
     runtime = _SessionDB.session_gateway_runtime(session_meta)
     base_url = runtime.get("base_url") or None
-    provider = _heal_bare_custom_provider(runtime.get("provider") or None, base_url=base_url, model=stored_model)
+    api_mode = runtime.get("api_mode") or None
+    stored_provider = runtime.get("provider") or None
+    provider = _heal_bare_custom_provider(stored_provider, base_url=base_url, model=stored_model)
+    if provider != stored_provider:
+        # A healed entry resolves its own current endpoint. A route that didn't heal is gone with its
+        # endpoint and wire, which must not ride on the ambient provider.
+        base_url = None
+        if provider is None:
+            api_mode = None
     provider_changed = bool(provider) and provider != current_provider
     if stored_model == current_model and not provider_changed:
         return None
-    api_mode = runtime.get("api_mode") or None
     from hermes_cli.runtime_provider import is_foreign_provider_endpoint
     if is_foreign_provider_endpoint(provider, base_url):
         # The endpoint and its wire belong to the provider this chat left; resolve the stored one's own.

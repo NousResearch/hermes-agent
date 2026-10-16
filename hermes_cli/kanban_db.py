@@ -3317,7 +3317,8 @@ def request_review(
                 return _ret(False, "parent dependencies are not satisfied")
             trow = conn.execute(
                 "SELECT assignee, status, claim_lock, current_run_id, worker_pid, "
-                "worker_started_at FROM tasks WHERE id = ?", (task_id,),
+                "worker_started_at, model_override, provider_override "
+                "FROM tasks WHERE id = ?", (task_id,),
             ).fetchone()
             if trow is None:
                 return _ret(False, "task not found")
@@ -3356,9 +3357,15 @@ def request_review(
                 implementer = arow["profile"] if arow else None
             if implementer is None and trow["assignee"] != reviewer:
                 implementer = trow["assignee"]
+            # A task-level model pin belongs to the implementation phase.
+            # Atomically unpin before dispatching a named independent reviewer.
+            # Store the original pin in the review event so request_changes can
+            # restore the exact implementation route on the same card.
+            clear_model_pin = reviewer is not None and reviewer != implementer
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
             params: tuple[Any, ...] = (
+                int(clear_model_pin), int(clear_model_pin),
                 *(() if reviewer is None else (reviewer,)), task_id,
                 *(() if expected_run_id is None else (int(expected_run_id),)),
             )
@@ -3368,7 +3375,9 @@ def request_review(
                    SET status        = 'review',
                        claim_lock    = NULL,
                        claim_expires = NULL,
-                       worker_pid    = NULL
+                       worker_pid    = NULL,
+                       model_override = CASE WHEN ? THEN NULL ELSE model_override END,
+                       provider_override = CASE WHEN ? THEN NULL ELSE provider_override END
                 """ + assignee_sql + """
                  WHERE id = ?
                    AND status IN ('running', 'ready')
@@ -3393,6 +3402,9 @@ def request_review(
                 "implementer": implementer,
                 "reviewer": reviewer,
             }
+            if clear_model_pin:
+                payload["implementation_model_override"] = trow["model_override"]
+                payload["implementation_provider_override"] = trow["provider_override"]
             staged = _cleaned_artifact_paths(metadata)
             if staged:
                 payload["artifacts"] = staged
@@ -3454,7 +3466,8 @@ def request_changes(
         requested_event = _latest_event(conn, task_id, "review_requested")
         if requested_event is None:
             return False, "no prior review_requested event"
-        implementer = _nonblank_str(_json_dict(requested_event["payload"]).get("implementer"))
+        request_payload = _json_dict(requested_event["payload"])
+        implementer = _nonblank_str(request_payload.get("implementer"))
         if implementer is None:
             return False, "review handoff has no valid implementer provenance"
         reviewer = _canonical_assignee(_nonblank_str(task_row["assignee"]))
@@ -3469,10 +3482,19 @@ def request_changes(
                    assignee = COALESCE(?, assignee),
                    claim_lock = NULL,
                    claim_expires = NULL,
-                   worker_pid = NULL, worker_started_at = NULL
+                   worker_pid = NULL, worker_started_at = NULL,
+                   model_override = CASE WHEN ? THEN ? ELSE model_override END,
+                   provider_override = CASE WHEN ? THEN ? ELSE provider_override END
              WHERE id = ? AND status = 'running' AND current_run_id = ?
             """,
-            (new_status, implementer, task_id, int(current_run_id)),
+            (
+                new_status, implementer,
+                int("implementation_model_override" in request_payload),
+                request_payload.get("implementation_model_override"),
+                int("implementation_provider_override" in request_payload),
+                request_payload.get("implementation_provider_override"),
+                task_id, int(current_run_id),
+            ),
         )
         if cur.rowcount != 1:
             return False, "task changed during review handoff"

@@ -36,6 +36,59 @@ if TYPE_CHECKING:
 # dispatcher parks the task in ``blocked`` with a reason — prevents retry storms.
 DEFAULT_FAILURE_LIMIT = 2
 
+# A quota wall is not a code failure, but it must not spin forever.
+# After this many consecutive rate-limited worker exits, park the same card
+# until the owner changes the provider/profile or explicitly unblocks it.
+DEFAULT_RATE_LIMIT_MAX_ATTEMPTS = 3
+
+
+def _rate_limit_attempt_budget() -> int:
+    """Bound quota retries even if the environment contains a bad value."""
+    try:
+        return max(1, int(os.environ.get(
+            "HERMES_KANBAN_RATE_LIMIT_MAX_ATTEMPTS",
+            str(DEFAULT_RATE_LIMIT_MAX_ATTEMPTS),
+        )))
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_RATE_LIMIT_MAX_ATTEMPTS
+
+
+def _quota_budget_exhausted(conn: sqlite3.Connection, task_id: str, profile: str,
+                            phase: str) -> bool:
+    """Consecutive same-profile/same-phase quota exits since last operator reset.
+
+    A real success, a different profile, or a manually changed model/assignment
+    breaks the run. We intentionally do not charge task failure accounting.
+    """
+    from hermes_cli import kanban_db as kb
+    cap = _rate_limit_attempt_budget()
+    recent = conn.execute(
+        "SELECT outcome, profile, ended_at, metadata FROM task_runs "
+        "WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT ?",
+        (task_id, cap),
+    ).fetchall()
+    if len(recent) < cap:
+        return False
+    if any(
+        run["outcome"] != "rate_limited"
+        or run["profile"] != profile
+        or kb._json_dict(run["metadata"]).get("retry_status") != phase
+        for run in recent
+    ):
+        return False
+
+    first_end = kb._to_epoch(recent[-1]["ended_at"])
+    reset = conn.execute(
+        "SELECT created_at FROM task_events WHERE task_id = ? AND kind IN "
+        "('unblocked', 'assigned', 'model_override_set') "
+        "ORDER BY id DESC LIMIT 1", (task_id,),
+    ).fetchone()
+    reset_at = kb._to_epoch(reset["created_at"]) if reset else None
+    return not (
+        reset_at is not None and first_end is not None and reset_at > first_end
+    )
+
 # Worker log files larger than this at spawn time are rotated.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
 DEFAULT_LOG_BACKUP_COUNT = 1
@@ -1206,6 +1259,29 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 error=dead.error_text,
                 metadata=dict(dead.event_payload),
             )
+            if dead.rate_limited and _quota_budget_exhausted(
+                conn, row["id"], row["assignee"], retry_status,
+            ):
+                reason = (
+                    f"Rate-limit retry budget exhausted after "
+                    f"{_rate_limit_attempt_budget()} consecutive quota exits "
+                    f"for {row['assignee']}. Change provider/profile or manually "
+                    "unblock after the quota reset."
+                )
+                updated = conn.execute(
+                    "UPDATE tasks SET status = 'blocked', last_failure_error = ? "
+                    "WHERE id = ? AND status = ?",
+                    (reason[:500], row["id"], retry_status),
+                )
+                if updated.rowcount == 1:
+                    retry_status = "blocked"
+                    dead.event_payload["retry_status"] = "blocked"
+                    _kb._append_event(
+                        conn, row["id"], "quota_retry_budget_exhausted",
+                        {"attempts": _rate_limit_attempt_budget(),
+                         "profile": row["assignee"], "run_id": run_id},
+                        run_id=run_id,
+                    )
             _kb._append_event(conn, row["id"], dead.event_kind, dead.event_payload, run_id=run_id)
             sweep.exited_hook_payloads.append({
                 "task_id": row["id"],
@@ -1217,7 +1293,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 "outcome": dead.run_outcome,
                 "retry_status": retry_status,
             })
-            if dead.rate_limited or dead.protocol_violation:
+            if dead.protocol_violation or (dead.rate_limited and retry_status != "blocked"):
                 # Stamp last_failure_error WITHOUT touching ``consecutive_failures``:
                 # a rate-limited requeue must show ``check_respawn_guard`` a quota
                 # blocker; a below-budget protocol violation never reaches
@@ -1605,7 +1681,7 @@ def check_respawn_guard(
         if ended_at is not None and (now - ended_at) < rl_cooldown:
             return "rate_limit_cooldown"
         # Cooldown elapsed — return early so blocker_auth doesn't catch the
-        # stamped rate-limit text; this path intentionally retries forever
+        # stamped rate-limit text; this path can retry only until the separate quota attempt budget blocks the card
         # (spaced by the cooldown) until quota returns or a real run supersedes it.
         return None
 

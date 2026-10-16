@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from pathlib import Path
+import threading
 import time
 
 from gateway.config import Platform
@@ -26,16 +27,23 @@ from gateway.config import Platform
 logger = logging.getLogger("gateway.run")
 
 # One refusal warning per (plugin, kind) per window: a plugin retrying on a timer must not flood the log.
+# (plugin, kind) -> when it last warned; a mark past the window is dropped at the next refusal.
 _WARN_WINDOW_S = 300.0
 _warned: dict[tuple[str, str], float] = {}
+_warned_lock = threading.Lock()  # refusals run on plugin threads
 
 
 def _refuse(plugin_id: str, kind: str, detail: str) -> None:
     now = time.monotonic()
-    if now - _warned.get((plugin_id, kind), -_WARN_WINDOW_S) < _WARN_WINDOW_S:
+    with _warned_lock:
+        for key in [key for key, at in _warned.items() if now - at >= _WARN_WINDOW_S]:
+            del _warned[key]
+        repeated = (plugin_id, kind) in _warned
+        if not repeated:
+            _warned[(plugin_id, kind)] = now
+    if repeated:
         logger.debug("inject_message from plugin %s refused again: %s", plugin_id, detail)
         return
-    _warned[(plugin_id, kind)] = now
     logger.warning("inject_message from plugin %s has no session key and %s; nothing was injected. Pass "
                    "session_key= (or origin=) to choose the chat.", plugin_id, detail)
 

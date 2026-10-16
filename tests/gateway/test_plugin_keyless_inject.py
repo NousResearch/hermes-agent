@@ -206,3 +206,21 @@ def test_with_no_calling_session_only_the_one_attached_classic_cli_session_is_pi
                 if 'WARNING' in line and 'plugin probe-inj has no session key' in line and 'Pass session_key=' in line]
     assert len(refusals) == 2, refusals
     assert 'no classic CLI session' in refusals[0] and '2 classic CLI sessions' in refusals[1], refusals
+
+
+def test_a_refusal_warns_once_per_window_and_expired_marks_are_dropped(monkeypatch, caplog):
+    """One warning per (plugin, kind) per window; a mark older than the window is dropped on the next
+    refusal, so the map holds only the plugins refused within the last window."""
+    from types import SimpleNamespace
+    from gateway import plugin_keyless_inject as keyless
+    clock = [1000.0]
+    monkeypatch.setattr(keyless, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(keyless, '_warned', {})
+    with caplog.at_level('WARNING', logger='gateway.run'):
+        keyless._refuse('old', 'none', 'no classic CLI session is attached in its profile')
+        keyless._refuse('old', 'none', 'no classic CLI session is attached in its profile')
+        clock[0] += keyless._WARN_WINDOW_S
+        keyless._refuse('new', 'several', '2 classic CLI sessions are attached in its profile')
+    assert [r.getMessage().split(' has ')[0] for r in caplog.records if r.levelname == 'WARNING'] == [
+        'inject_message from plugin old', 'inject_message from plugin new']
+    assert keyless._warned == {('new', 'several'): clock[0]}

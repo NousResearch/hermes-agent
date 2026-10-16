@@ -395,7 +395,8 @@ export async function reconcileTileTranscripts({
                 graftRefreshedTailOntoBackfill(messages, state.messages),
                 state.messages
               ),
-              state.messages
+              state.messages,
+              messagesAtRequest ?? []
             ),
             state.messages
           )
@@ -485,7 +486,8 @@ export async function hydrateStoredSessionTranscript({
                 graftRefreshedTailOntoBackfill(messages, state.messages),
                 state.messages
               ),
-              state.messages
+              state.messages,
+              messagesAtRequest ?? []
             ),
             state.messages
           )
@@ -656,7 +658,8 @@ export async function reconcileActiveTranscript({
         messages: preserveLocalSystemNotices(
           preserveLocalAssistantErrors(
             preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
-            state.messages
+            state.messages,
+            messagesAtRequest ?? []
           ),
           state.messages
         )

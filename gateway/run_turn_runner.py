@@ -313,7 +313,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         owner = self._approval_owner
         local_viewer = owner is not None and getattr(ctx.source, "platform", None) == Platform.LOCAL
 
-        def deliver(message: str) -> None:
+        def deliver(message: str | dict) -> None:
             if local_viewer and owner is not None:
                 # LocalSessionAdapter.send publishes nothing, so a local viewer only sees the
                 # summary as the in-process TUI's review.summary frame. Not generation-fenced:
@@ -321,7 +321,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 authority, session_id, _generation = owner
                 live = authority.sessions.get(session_id)
                 if live is not None:
-                    live.event_stream.publish(session_id, {"text": str(message)}, event_type="review.summary")
+                    live.event_stream.publish(
+                        session_id, message if isinstance(message, dict) else {"text": str(message)},
+                        event_type="review.summary")
                 return
             if self._status_live():
                 self._send_status_text(
@@ -338,7 +340,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             for message in queued:
                 deliver(message)
 
-        def send(message: str) -> None:
+        def send(message: str | dict) -> None:
             if local_viewer and owner is not None:
                 # The review fork reports from its own thread while the drain may still be
                 # settling this turn. Hold the row until the authority published the turn's
@@ -419,6 +421,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # this turn's must-deliver notes; a managed worker arms its agent through the same helper.
         arm_surface_turn(agent, runner._consume_pending_turn_sidecar_notes(ctx.session_key), voice_turn=ctx.voice_turn)
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()
+        agent.background_review_event_callback = (
+            agent.background_review_callback if local_viewer_turn(self) else None)
         # Register the release hook on the adapter so base.py's finally block fires it after the
         # main response is delivered.
         if ctx._status_adapter and ctx.session_key:

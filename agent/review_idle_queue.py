@@ -18,7 +18,7 @@ import logging
 import threading
 import time
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -65,7 +65,14 @@ class _PendingReview:
     session_key: str
     kwargs: dict[str, Any]
     enqueued_at: float
-    context: contextvars.Context
+    context: contextvars.Context = field(default_factory=contextvars.copy_context)
+
+    def __post_init__(self) -> None:
+        from agent.review_summary import REVIEW_SOURCE_SESSION_ID, REVIEW_SUMMARY_DELIVERY, capture_review_summary_delivery
+        if not self.context.get(REVIEW_SOURCE_SESSION_ID):
+            self.context.run(REVIEW_SOURCE_SESSION_ID.set, getattr(self.agent, "session_id", None))
+        if self.context.get(REVIEW_SUMMARY_DELIVERY) is None:
+            self.context.run(REVIEW_SUMMARY_DELIVERY.set, capture_review_summary_delivery(self.agent))
 
 
 class ReviewIdleQueue:

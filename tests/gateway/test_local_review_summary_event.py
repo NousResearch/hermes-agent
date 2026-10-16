@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from gateway.config import Platform
 from gateway.run_turn_runner import TurnRunner
 
@@ -36,7 +38,12 @@ def _runner(platform, published):
     return turn, adapter_sends
 
 
-def test_local_review_summary_follows_the_turn_settlement_and_is_never_fenced():
+@pytest.mark.parametrize("message", [
+    "💾 Self-improvement review: memory updated",
+    {"text": "💾 Self-improvement review: memory updated", "review_id": "receipt-1", "timestamp": 103.0,
+     "row_id": 7, "stored_session_id": "s", "persisted": True},
+])
+def test_local_review_summary_follows_the_turn_settlement_and_is_never_fenced(message):
     import threading
     published = []
     turn, adapter_sends = _runner(Platform.LOCAL, published)
@@ -44,14 +51,14 @@ def test_local_review_summary_follows_the_turn_settlement_and_is_never_fenced():
     stream.execution = {'execution_generation': 3}  # the drain is still settling turn 3
     turn._ctx._run_still_current = lambda: False  # and the review fork outlives the turn
     send, _release = turn._make_bg_review_callbacks()
-    worker = threading.Thread(target=send, args=('💾 Self-improvement review: memory updated',))
+    worker = threading.Thread(target=send, args=(message,))
     worker.start()
     worker.join(0.3)
     # Not before the turn's message.complete: the drain clears the stamp only after it.
     assert worker.is_alive() and published == []
     stream.execution = {}
     worker.join(5)
-    assert published == [('s', 'review.summary', {'text': '💾 Self-improvement review: memory updated'})]
+    assert published == [('s', 'review.summary', message if isinstance(message, dict) else {'text': message})]
     assert adapter_sends == []
 
 

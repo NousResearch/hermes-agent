@@ -71,13 +71,55 @@ export function canShowInteractiveOauthLogin(): boolean {
   return interactiveLoginAllowed.getStore() !== false
 }
 
+const cookieReloginFlights = new Map<string, Promise<void>>()
+
+async function shareCookieRelogin(
+  key: string,
+  actions: { clearCookies: () => void; login: () => Promise<unknown> }
+): Promise<void> {
+  const running = cookieReloginFlights.get(key)
+
+  if (running) {
+    await running
+
+    return
+  }
+
+  // One burst shares one cookie clear. A joiner that clears mid-flight wipes
+  // the mirror the in-flight window is about to fill.
+  actions.clearCookies()
+
+  const flight = actions.login().then(() => undefined)
+
+  const tracked = flight.finally(() => {
+    if (cookieReloginFlights.get(key) === tracked) {
+      cookieReloginFlights.delete(key)
+    }
+  })
+
+  cookieReloginFlights.set(key, tracked)
+  await tracked
+}
+
 export async function retryCookie401WithLogin<T>(
   error: unknown,
-  options: { method?: unknown; replayOn401?: unknown },
+  options: { method?: unknown; replayOn401?: unknown; loginKey?: unknown },
   actions: { clearCookies: () => void; login: () => Promise<unknown>; retry: () => Promise<T> }
 ): Promise<T> {
   if (!canShowInteractiveOauthLogin() || !shouldReplayAfterCookie401(error, options)) {
     throw error
+  }
+
+  const loginKey = typeof options.loginKey === 'string' ? options.loginKey : ''
+
+  if (loginKey) {
+    try {
+      await shareCookieRelogin(loginKey, actions)
+    } catch {
+      throw error
+    }
+
+    return actions.retry()
   }
 
   actions.clearCookies()

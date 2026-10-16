@@ -12,7 +12,7 @@ import logging
 import os
 import threading
 from contextlib import contextmanager, suppress
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
@@ -109,7 +109,7 @@ def _read_lines(path: Path, fail_log: str) -> list[str]:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _parse_iso_timestamp(value: Any) -> Optional[datetime]:
@@ -117,7 +117,7 @@ def _parse_iso_timestamp(value: Any) -> Optional[datetime]:
         parsed = datetime.fromisoformat(str(value)) if value else None
     except (TypeError, ValueError):
         return None
-    return parsed.replace(tzinfo=timezone.utc) if parsed and parsed.tzinfo is None else parsed
+    return parsed.replace(tzinfo=UTC) if parsed and parsed.tzinfo is None else parsed
 
 
 def latest_activity_at(record: dict[str, Any]) -> Optional[str]:
@@ -638,7 +638,7 @@ def archive_skill(skill_name: str) -> tuple[bool, str]:
     except OSError as e:
         return False, f"failed to create archive dir: {e}"
     if dest.exists():
-        dest = dest.with_name(f"{skill_dir.name}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}")
+        dest = dest.with_name(f"{skill_dir.name}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}")
     # complete_package: consolidation may have re-homed support files first, so a disk-only capture can come
     # back hollow; the fill from the newest curator backup keeps rollback restorable.
     return _relocate(skill_dir, dest, skill_name, "archive", complete_package=True, skill=skill_name)

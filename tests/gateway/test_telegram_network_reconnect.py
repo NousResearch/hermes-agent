@@ -629,7 +629,7 @@ async def test_heartbeat_loop_skips_reconnect_if_already_in_progress():
     async def timeout_wait_for(coro, timeout):
         if asyncio.iscoroutine(coro):
             coro.close()
-        raise asyncio.TimeoutError()
+        raise TimeoutError()
 
     with patch("asyncio.sleep", side_effect=fast_sleep):
         with patch("plugins.platforms.telegram.adapter.asyncio.wait_for", side_effect=timeout_wait_for):

@@ -215,7 +215,7 @@ def _normalize_path(path_value: str) -> Path:
     return Path(path_value).expanduser().resolve()
 
 
-def _normalize_excludes(paths: object) -> Tuple[str, ...]:
+def _normalize_excludes(paths: object) -> tuple[str, ...]:
     """Normalize ``checkpoints.exclude_paths`` into absolute directory prefixes.
 
     Accepts a list/tuple of paths or one comma/newline-separated string (so
@@ -228,13 +228,13 @@ def _normalize_excludes(paths: object) -> Tuple[str, ...]:
         raw_items = list(paths)
     else:
         return ()
-    out: List[str] = []
+    out: list[str] = []
     for raw in raw_items:
         if not isinstance(raw, str) or not raw.strip():
             continue
         try:
             norm = str(_normalize_path(raw.strip()))
-        except Exception:  # noqa: BLE001 — an unresolvable entry is skipped, not fatal
+        except Exception:  # an unresolvable entry is skipped, not fatal
             continue
         if norm and norm not in out:
             out.append(norm)
@@ -430,6 +430,7 @@ def _run_git(
             # console-less desktop/gateway backend; suppress the per-call
             # conhost flash on Windows (no-op on POSIX).
             creationflags=windows_hide_flags(),
+            check=False,
         )
         ok = result.returncode == 0
         stdout = os.fsdecode(result.stdout) if "-z" in args else result.stdout.strip()
@@ -579,6 +580,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
             env=init_env, timeout=_GIT_TIMEOUT,
             stdin=subprocess.DEVNULL,
             creationflags=windows_hide_flags(),
+            check=False,
         )
         if result.returncode != 0:
             return f"Shadow store init failed: {result.stderr.strip()}"
@@ -845,7 +847,7 @@ class CheckpointManager:
         """
         try:
             abs_dir = str(_normalize_path(working_dir))
-        except Exception:  # noqa: BLE001 — an unresolvable path is not ours to skip
+        except Exception:  # an unresolvable path is not ours to skip
             return False
         for prefix in self.exclude_paths:
             if abs_dir == prefix or abs_dir.startswith(prefix + os.sep):

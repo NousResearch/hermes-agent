@@ -61,7 +61,7 @@ class Finding:
     detail: str
     action: Optional[str] = None      # what --apply does; None = report only
     reason: Optional[str] = None      # why it is report only
-    _fix: Optional[Callable[["_Session"], dict[str, int]]] = field(default=None, repr=False, compare=False)
+    _fix: Optional[Callable[[_Session], dict[str, int]]] = field(default=None, repr=False, compare=False)
 
     @property
     def repairable(self) -> bool:
@@ -167,7 +167,7 @@ class RepairPlan:
         self.legacy_main = legacy_main
         self.multiplexes = _gateway_multiplexes(self.routing_store.home) if self.routing_store else False
         self.findings: list[Finding] = []
-        self._moves: dict[tuple[Path, Path], "_MoveBatch"] = {}
+        self._moves: dict[tuple[Path, Path], _MoveBatch] = {}
 
     # -- helpers --
     def _add(self, finding: Finding) -> None:
@@ -178,7 +178,7 @@ class RepairPlan:
         return [f for f in self.findings if f.repairable]
 
     # -- scan --
-    def scan(self, session: _Session) -> "RepairPlan":
+    def scan(self, session: _Session) -> RepairPlan:
         for store in self.stores:
             self._scan_sessions(session, store)
             self._scan_topics(session, store)
@@ -193,7 +193,15 @@ class RepairPlan:
         db = session.db(store)
         crossed = db.find_crossed_profile_sessions(store.profile)
         moving: set[str] = set()
+        held = _ledgered_lineages([r for r in crossed["foreign"] if self._would_move(store, r)])
         for row in crossed["foreign"]:
+            if row["id"] in held:
+                moving.add(row["id"])  # neither relabelled nor severed in place: it is a stray
+                self._add(Finding(
+                    "wrong_store", store.profile, row["id"],
+                    f"key {row['session_key']!r} ({row['message_count']} messages) sits in the "
+                    f"{store.profile} store", reason=held[row["id"]]))
+                continue
             self._plan_foreign_row(store, row, moving)
         for row in crossed["mislabelled"]:
             if row["id"] in moving:
@@ -212,6 +220,12 @@ class RepairPlan:
                 f"{row['key_profile']!r} row inherits from parent {row['parent_session_id']} keyed under "
                 f"{row['parent_profile']!r}", action="sever parent_session_id",
                 _fix=lambda s, st=store, sid=row["id"]: {"severed": s.db(st).sever_crossed_parents([sid])}))
+
+    def _would_move(self, store: Store, row: dict[str, Any]) -> bool:
+        """Mirror of :meth:`_plan_foreign_row`: does the plan copy this row to another store?"""
+        if row["key_profile"] == "default" and store.profile != "default":
+            return self.legacy_main == "move" and self.routing_store is not None
+        return row["key_profile"] in self.claimed
 
     def _plan_foreign_row(self, store: Store, row: dict[str, Any], moving: set[str]) -> None:
         key_profile, sid = row["key_profile"], row["id"]
@@ -249,7 +263,7 @@ class RepairPlan:
                 reason="either a standalone gateway's own history (--legacy-main rekey) or a default "
                        "chat that leaked in (--legacy-main move); the row cannot say which"))
 
-    def _move_batch(self, src: Store, dst: Store) -> "_MoveBatch":
+    def _move_batch(self, src: Store, dst: Store) -> _MoveBatch:
         return self._moves.setdefault((src.db_path, dst.db_path), _MoveBatch(src, dst))
 
     def _scan_topics(self, session: _Session, store: Store) -> None:
@@ -392,9 +406,16 @@ class _MoveBatch:
         if self._result is not None:
             return self._result
         src_db, dst_db = session.db(self.src), session.db(self.dst)
-        payloads = {sid: src_db.export_session_for_move(sid) for sid in self.ids}
+        from hermes_state_profile_repair import SessionLedgeredError
+        payloads: dict[str, Optional[dict[str, Any]]] = {}
+        for sid in self.ids:
+            try:
+                payloads[sid] = src_db.export_session_for_move(sid)
+            except SessionLedgeredError as exc:  # gained ledger rows since the scan: never copied
+                self._errors[sid] = exc
         ordered = _parents_first([p for p in payloads.values() if p is not None])
-        result: dict[str, dict[str, int]] = {sid: {"missing": 1} for sid, p in payloads.items() if p is None}
+        result: dict[str, dict[str, int]] = {sid: {"missing": 1} for sid, p in payloads.items()
+                                             if p is None and sid not in self._errors}
         for payload in ordered:
             sid, parent = payload["session"]["id"], payload["session"].get("parent_session_id")
             if parent in self._errors:
@@ -427,6 +448,30 @@ class _MoveBatch:
                 self._errors[sid] = exc
         self._result = result
         return result
+
+
+def _ledgered_lineages(foreign: list[dict[str, Any]]) -> dict[str, str]:
+    """Stray rows that must stay put, each with the reason. A row the gateway ledger references
+    (admissions/workers, ``ON DELETE RESTRICT``) cannot be deleted from its store, so copying it
+    would leave the session in both; the stray rows linked to it by ``parent_session_id`` stay
+    with it, since moving a parent detaches the child left behind and a moved child loses its
+    parent. Whether a move should carry the ledger is a separate policy decision."""
+    by_id = {row["id"]: row for row in foreign}
+    groups: dict[str, set[str]] = {sid: {sid} for sid in by_id}
+    for row in foreign:
+        parent = row.get("parent_session_id")
+        if parent in by_id and groups[parent] is not groups[row["id"]]:
+            merged = groups[parent] | groups[row["id"]]
+            for sid in merged:
+                groups[sid] = merged
+    held: dict[str, str] = {}
+    for sid, row in by_id.items():
+        anchors = sorted(m for m in groups[sid] if by_id[m].get("ledgered"))
+        if row.get("ledgered"):
+            held[sid] = "has gateway admission/worker history, which a move cannot carry"
+        elif anchors:
+            held[sid] = f"its lineage holds {anchors[0]}, which has gateway admission/worker history"
+    return held
 
 
 def _parents_first(payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:

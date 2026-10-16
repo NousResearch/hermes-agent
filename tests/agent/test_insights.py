@@ -222,7 +222,6 @@ class TestInsightsPopulated:
         """A session that switches models mid-flight is split across both
         models in the breakdown, not dumped on the initial model (#51607).
         """
-        now = time.time()
         db.create_session(session_id="sw", source="cli",
                           model="deepseek/deepseek-v4-pro")
         # 40k tokens on deepseek, then switch and 50k on opus.
@@ -329,9 +328,9 @@ class TestInsightsPopulated:
     _INDEX = "idx_messages_assistant_calls_by_session"
     _PINNED_QUERIES = (
         ("_GET_TOOL_CALLS_ALL", (0.0,)),
-        ("_GET_TOOL_CALLS_WITH_SOURCE", (0.0, "cli")),
+        ("_GET_TOOL_CALLS_WITH_SOURCE", (0.0, "cli", "cli")),  # label, then created_source of a local row
         ("_GET_SKILL_CALLS_ALL", (0.0,)),
-        ("_GET_SKILL_CALLS_WITH_SOURCE", (0.0, "cli")),
+        ("_GET_SKILL_CALLS_WITH_SOURCE", (0.0, "cli", "cli")),
     )
 
     def test_assistant_call_queries_use_partial_index_without_analyze(
@@ -534,7 +533,7 @@ class TestEdgeCases:
         assert report["platforms"][0]["platform"] == "cli"
 
         # Terminal format should NOT show platform section for single platform
-        text = engine.format_terminal(report)
+        engine.format_terminal(report)
         # (it still shows platforms section if there's only cli and nothing else)
         # Actually the condition is > 1 platforms OR non-cli, so single cli won't show
 
@@ -590,3 +589,31 @@ class TestEdgeCases:
         assert "~$0.0046" in terminal_text
         assert "~$0.00 estimated" not in gateway_text
         assert "~$0.0046 estimated" in gateway_text
+
+
+def _label(db, session_id, source, created_source):
+    db.create_session(session_id=session_id, source=source, model="model-a")
+    db.append_message(session_id, role="user", content="hi")
+    db._conn.execute("UPDATE sessions SET created_source = ? WHERE id = ?", (created_source, session_id))
+    db._conn.commit()
+
+
+def test_source_filter_includes_gateway_local_rows_that_surface_created(db):
+    """The gateway stores interactive CLI/TUI rows as ``local`` (``created_source`` keeps the
+    surface), so ``/insights --source cli`` reads both labels (tracker #134889 CLI-23)."""
+    _label(db, "legacy-cli", "cli", "cli")
+    _label(db, "local-cli", "local", "cli")
+    _label(db, "local-tui", "local", "tui")
+    _label(db, "tg", "telegram", "telegram")
+    engine = InsightsEngine(db)
+    assert engine.generate(days=30, source="cli")["overview"]["total_sessions"] == 2
+    assert engine.generate(days=30, source="tui")["overview"]["total_sessions"] == 1
+    assert engine.generate(days=30, source="telegram")["overview"]["total_sessions"] == 1
+
+
+def test_source_filter_on_a_db_without_created_source(db):
+    """A DB an older writer left behind (read-only opens skip migrations) still filters by label."""
+    _label(db, "legacy-cli", "cli", "cli")
+    db._conn.execute("ALTER TABLE sessions DROP COLUMN created_source")
+    db._conn.commit()
+    assert InsightsEngine(db).generate(days=30, source="cli")["overview"]["total_sessions"] == 1

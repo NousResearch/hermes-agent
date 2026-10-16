@@ -54,7 +54,7 @@ def _verbatim(path: Path | str) -> Path:
 
 def _plain(path: Path | str) -> str:
     text = os.fspath(path)
-    return text[len(VERBATIM):] if text.startswith(VERBATIM) else text
+    return text.removeprefix(VERBATIM)
 
 
 def _strings(value):

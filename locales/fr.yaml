@@ -210,8 +210,8 @@ gateway:
     choice_normal: "normal — traitement standard"
     choice_auto: "auto — rapide pendant les premières secondes de chaque tour"
     choice_cold: "cold — rapide uniquement au premier tour d'une session"
-    choice_ultrafast: "ultrafast — OpenAI Ultrafast (GPT-6 Astra, prix x6)"
-    ultrafast_not_supported: "⚡ Ultrafast n'est disponible que pour GPT-6 Astra (modèle actuel : `{model}`)."
+    choice_ultrafast: "ultrafast — OpenAI Ultrafast, prix x6"
+    ultrafast_not_supported: "⚡ Ultrafast n'est pas disponible pour `{model}` sur ce compte ou cette route."
   footer:
     status: "📎 Pied de page d'exécution : **{state}**\nChamps : `{fields}`\nPlateforme : `{platform}`"
     usage: "Usage : `/footer [on|off|status]`"
@@ -475,7 +475,6 @@ gateway:
     last_activity: "**Dernière activité :** {timestamp}"
     model: "**Modèle :** `{model}`"
     model_provider: "**Modèle :** `{model}` ({provider})"
-    free_tier: "Nous · offre gratuite · nous/welcome · /login pour se connecter"
     context: "**Contexte :** {used} / {total} ({pct}%)"
     context_used: "**Contexte :** ~{used} jetons"
     tokens: "**Jetons facturés au total :** {tokens} _(pas la taille actuelle de votre contexte ; utilisez `/context`)_"
@@ -921,8 +920,6 @@ gateway:
   plan:
     ack_task: "Planification : {task}"
     ack_conversation: "Planification à partir du contexte de cette conversation…"
-  initiate_setup:
-    ack: "Lancement de la configuration…"
   init:
     start_failed: "Impossible de démarrer /init — veuillez réessayer."
     ack_update: "Mise à jour d'AGENTS.md à partir d'une analyse du projet…"
@@ -999,7 +996,6 @@ gateway:
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ Gateway redémarré avec succès. Votre session continue."
-    free_tier_line: "Inférence : offre gratuite Nous (nous/welcome). Connectez-vous pour en obtenir plus : /login"
     online: "♻️ Gateway en ligne — Hermes est de retour et prêt."
     db_corrupt: |-
       ⚠️ Corruption détectée dans la base de données des sessions. Les messages risquent de ne pas être persistés. Options de récupération :
@@ -1810,8 +1806,6 @@ slash:
     description: "Relancer un prompt à intervalle régulier dans cette session"
   plan:
     description: "Rédiger un plan d'implémentation markdown dans .hermes/plans/ sans rien exécuter"
-  initiate-setup:
-    description: "Lancer la configuration initiale : apprendre à vous connaître et adapter Hermes à vous"
   moa:
     description: "Exécuter un prompt via le preset Mixture of Agents par défaut, puis restaurer votre modèle"
   subgoal:
@@ -2224,6 +2218,7 @@ cli:
     desc_switch_anyway: "Utiliser ce modèle pour la session Hermes en cours."
     choice_cancel: "Annuler"
     desc_keep_current_model: "Conserver le modèle actuel."
+    confirm_choice_prompt: "Choix [1/2] : "
     switch_cancelled: "Changement de modèle annulé."
     selection_failed: "✗ Échec de la sélection du modèle : {error}"
     switch_failed: "⚠ Échec du passage au modèle {model} ({error}) ; {old_model} est conservé."
@@ -2552,6 +2547,7 @@ cli:
     failed: "Échec de la connexion"
     authorized_no_tools: "Autorisé. Outils indisponibles."
     connected: "Connecté"
+    named_account: "Hermes a nommé ce compte {name} {alias}. Vous pouvez le renommer à tout moment."
     waiting: "En attente…"
   editor:
     only_interactive: "L'éditeur externe n'est disponible que dans la CLI interactive."
@@ -2938,7 +2934,7 @@ cli:
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
       feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) Ultrafast n'est disponible que pour GPT-6 Astra (modèle actuel : {model})."
+      ultrafast_not_supported: "(._.) Ultrafast n'est pas disponible pour {model} sur ce compte ou cette route."
       usage: "Usage : /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
       status: "{feature} : {status}"
       set_to: "✓ {feature} défini sur {value} {scope}"
@@ -3215,8 +3211,6 @@ cli:
     plan:
       planning: "📋 Planification : {task}"
       from_conversation: "📋 Planification à partir du contexte de cette conversation..."
-    initiate_setup:
-      starting: "🧭 Lancement de la configuration..."
     init:
       updating: "⚡ Mise à jour d'AGENTS.md à partir d'une analyse du projet..."
       generating: "⚡ Génération d'AGENTS.md à partir d'une analyse du projet..."

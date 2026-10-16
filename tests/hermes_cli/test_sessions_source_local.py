@@ -55,6 +55,39 @@ def test_stats_counts_cli_segments_while_list_shows_one_conversation(tmp_path, c
     assert "cli: 2 sessions" in capsys.readouterr().out
 
 
+def test_list_includes_a_compression_tip_whose_root_has_no_created_source(tmp_path):
+    """Search and stats see a tip healed to cli. List must show that conversation too.
+
+    The page hides compression children and paints the root as the tip, so a root
+    whose created_source is still NULL used to drop the tip from the page.
+    """
+    from hermes_cli.gateway_session_store import SurfaceLabelReader
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("chain-root", source="local")
+    with db._lock:
+        db._conn.execute("UPDATE sessions SET created_source=NULL WHERE id=?", ("chain-root",))
+        db._conn.commit()
+    db.append_message("chain-root", role="user", content="hi")
+    db.publish_compression_child(
+        parent_session_id="chain-root", child_session_id="chain-mid", source="local",
+        messages=[{"role": "user", "content": "hi"}], require_compression_lease=False)
+    db.publish_compression_child(
+        parent_session_id="chain-mid", child_session_id="chain-tip", source="local",
+        messages=[{"role": "user", "content": "hi"}], require_compression_lease=False)
+    db.update_token_counts(
+        "chain-tip", input_tokens=2, output_tokens=1, model="m", api_call_count=1, source="cli")
+    assert db.get_session("chain-root")["created_source"] is None
+    assert db.get_session("chain-mid")["created_source"] is None
+    assert db.get_session("chain-tip")["created_source"] == "cli"
+    reader = SurfaceLabelReader(db)
+    listed = [row["id"] for row in reader.list_sessions_rich(source="cli", limit=10)]
+    assert listed == ["chain-tip"]
+    assert "chain-tip" in [row["id"] for row in reader.search_sessions(source="cli", limit=10)]
+    assert reader.session_count(source="cli") == 1
+    db.close()
+
+
 def test_reader_session_count_includes_gateway_rows_and_a_pre_column_store(tmp_path):
     """session_count through the reader matches a local/cli row, and a read-only
     store from before the column still counts its source=cli rows without migrating."""

@@ -16,7 +16,12 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
-from hermes_cli.plugins_state import _plugin_relative_segments, _plugin_settings_entry, save_plugin_setting
+from hermes_cli.plugins_state import (
+    _nested_plugin_value,
+    _plugin_relative_segments,
+    _plugin_settings_entry,
+    save_plugin_setting,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +113,7 @@ def plugin_settings_fields(plugin_id: str, plugin_dir: Optional[Path]) -> list[d
                 field["choices"] = [str(c) for c in choices]
             if "default" in spec:
                 field["default"] = spec["default"]
-            field["value"] = current.get(key, spec.get("default"))
+            field["value"] = _nested_plugin_value(current, _plugin_relative_segments(key), spec.get("default"))
         fields.append(field)
     return fields
 

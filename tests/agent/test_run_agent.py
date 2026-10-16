@@ -1592,6 +1592,41 @@ class TestExecuteToolCalls:
         assert metadata["tool_call_id"] == "mem-1"
         assert messages[-1]["tool_call_id"] == "mem-1"
 
+    def test_memory_provider_tool_receives_gateway_session_key(self, agent):
+        """Regression for #140058: multiplexed provider calls retain their caller identity."""
+        provider_call = MagicMock(return_value="{}")
+        agent._gateway_session_key = "agent:profile-a:telegram:dm:42"
+        agent._memory_manager = SimpleNamespace(
+            has_tool=lambda name: name == "external_memory_tool",
+            handle_tool_call=provider_call,
+        )
+        tc = _mock_tool_call(name="external_memory_tool", arguments="{}", call_id="memory-1")
+
+        agent._execute_tool_calls_sequential(_mock_assistant_msg(content="", tool_calls=[tc]), [], "task-1")
+
+        provider_call.assert_called_once_with(
+            "external_memory_tool", {}, caller_gsk="agent:profile-a:telegram:dm:42",
+        )
+
+    def test_concurrent_memory_provider_tool_receives_gateway_session_key(self, agent):
+        """The concurrent dispatch helper preserves the same provider identity contract."""
+        from agent.inline_tool_executors import resolve_invoke_tool_executor
+
+        provider_call = MagicMock(return_value="{}")
+        agent._gateway_session_key = "agent:profile-b:discord:dm:7"
+        agent._memory_manager = SimpleNamespace(
+            has_tool=lambda name: name == "external_memory_tool",
+            handle_tool_call=provider_call,
+        )
+
+        executor = resolve_invoke_tool_executor(agent, "external_memory_tool")
+
+        assert executor is not None
+        executor(agent, {}, SimpleNamespace())
+        provider_call.assert_called_once_with(
+            "external_memory_tool", {}, caller_gsk="agent:profile-b:discord:dm:7",
+        )
+
     def test_interrupt_skips_remaining(self, agent, monkeypatch):
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments="{}", call_id="c2")

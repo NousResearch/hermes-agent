@@ -71,6 +71,20 @@ def _spillover_retention_hours() -> int:
 _SPILLOVER_NAME_RE = re.compile(r"spillover/([A-Za-z0-9_.-]+)")
 
 
+_ARCHIVE_PATH_RE = re.compile(r"(?:^|[/\\])(?:spillover|hermes-results)[/\\][^/\\]+$")
+
+
+def expired_archive_hint(path: str) -> str | None:
+    """Hint for a read_file miss on a persisted-tool-result path: the archive was pruned, so the
+    model gets "expired" instead of a generic not-found it might mistake for a typo (#126351)."""
+    if not isinstance(path, str) or not _ARCHIVE_PATH_RE.search(path):
+        return None
+    return ("This was a persisted tool result archive and it has expired (pruned with its "
+            "session or by the cache sweep); the full output is no longer recoverable. Inspect "
+            "the current state before re-running the original tool — the call that produced it "
+            "may already have taken effect.")
+
+
 def spillover_names_in_text(*texts) -> set:
     """Spillover archive basenames referenced by transcript message text (empty set on none)."""
     names: set = set()

@@ -23,6 +23,7 @@ from tools.tool_result_storage import (
     _write_to_sandbox,
     cleanup_spillover_cache,
     enforce_turn_budget,
+    extract_persisted_path,
     generate_preview,
     get_spillover_dir,
     maybe_persist_tool_result,
@@ -605,6 +606,25 @@ class TestSpillover:
 
         assert not old.exists()
         assert (spill_dir / "tc_prune_1.txt").exists()
+
+    def test_read_file_on_pruned_archive_says_expired(self, tmp_path, monkeypatch):
+        """A pruned archive's pointer read via read_file says "expired", not a generic miss;
+        an ordinary missing file keeps the plain not-found result."""
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+        from tools.file_tools import read_file_tool
+        out = maybe_persist_tool_result(content="z" * 50_000, tool_name="terminal",
+                                        tool_use_id="tc_expired_1", env=None, threshold=30_000)
+        path = extract_persisted_path(out)
+        assert path
+        os.remove(path)
+
+        expired = json.loads(read_file_tool(path, task_id="t_expired_archive"))
+        plain = json.loads(read_file_tool(str(tmp_path / "nope.txt"), task_id="t_expired_archive"))
+
+        assert expired["error"].startswith("File not found:")
+        assert expired.get("expired") is True and "expired" in expired["hint"]
+        assert "expired" not in plain and "expired" not in (plain.get("hint") or "")
 
 # ── recovery hint in the persisted preview ────────────────────────────
 

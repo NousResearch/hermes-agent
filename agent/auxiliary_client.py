@@ -7227,7 +7227,7 @@ def _resolve_call_client(
         client, final_model = _get_cached_client(
             resolved_provider, resolved_model, async_mode=async_mode, base_url=resolved_base_url,
             api_key=resolved_api_key, api_mode=resolved_api_mode, main_runtime=main_runtime,
-            task=task)
+            task=task, is_vision=(task == "ocr"))
         effective_provider = _effective_provider_for_client(client, resolved_provider)
         if client is None:
             # Explicit provider with no credentials: honor the task fallback_chain before

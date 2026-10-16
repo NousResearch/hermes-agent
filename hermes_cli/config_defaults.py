@@ -744,6 +744,8 @@ DEFAULT_CONFIG = {
         # none|minimal|low|medium|high|xhigh|max|ultra ("" = provider default); extra_body =
         # OpenAI-compatible request fields. Vision: download_timeout = image HTTP download (s).
         "vision": _aux(120, download_timeout=30),
+        # vision_ocr: OCR model for text extraction; empty model = tool not advertised (fail closed).
+        "ocr": _aux(120, download_timeout=30),
         # web_extract, session_search, skills_hub: no aux LLM any more, leftover blocks are ignored.
         # Compression: raise timeout for local models. no_progress_timeout: seconds a streamed call
         # goes without a substantive chunk before it fails fast into retry/fallback; None = built-in

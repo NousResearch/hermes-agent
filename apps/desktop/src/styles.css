@@ -66,7 +66,12 @@
 
 /* Pause continuous animations only when the window is hidden/minimized, not
    merely unfocused. main.tsx owns this attribute for the primary window;
-   wake/pet overlays retain their purpose-built visibility behavior. */
+   wake/pet overlays retain their purpose-built visibility behavior.
+   Every infinite animation the renderer loads (src/ CSS, the package CSS it
+   @imports, Tailwind animate-* utilities, @utility classes) must be covered
+   here or by a sibling rule under the same attribute;
+   scripts/check-idle-animations.mjs fails the lint lane otherwise. See
+   apps/desktop/AGENTS.md, "Idle costs nothing". */
 :root[data-renderer-animations-paused]
   :is(
     .shimmer,
@@ -78,9 +83,23 @@
     .progress-slide,
     .kanban-arc,
     .glyph-spinner__strip,
-    .decode-cursor-blink
+    .decode-cursor-blink,
+    .hover-marquee-inner,
+    .particle__sway,
+    .starmap-twinkle,
+    .wake-indicator-light,
+    [data-tip-target],
+    [data-slot='timeline-bar'],
+    .animate-spin,
+    .animate-pulse,
+    .animate-ping,
+    .animate-bounce,
+    .codicon-modifier-spin,
+    /* `[&_svg]:animate-spin` spins the child svg, which has no animate-spin class. */
+    [class*='animate-spin'] svg
   ),
 :root[data-renderer-animations-paused] .arc-border::before,
+:root[data-renderer-animations-paused] .tour-pop-accent::before,
 :root[data-renderer-animations-paused]
   [data-slot='aui_assistant-message-content']
   .aui-md
@@ -1375,6 +1394,12 @@
     opacity: 1;
   }
 }
+/* Duration/delay are per-star inline custom properties; the animation itself
+   lives on a class so the hidden-window pause rule above can reach it. */
+.starmap-twinkle {
+  animation: starmap-twinkle var(--twinkle-duration, 3s) ease-in-out var(--twinkle-delay, 0s) infinite;
+}
+
 @keyframes starmap-twinkle {
   0%,
   100% {

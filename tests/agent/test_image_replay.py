@@ -1,0 +1,96 @@
+"""Turns rebuilt from the session DB re-attach the newest retained user images (agent/image_replay.py)."""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from agent.image_routing import build_native_content_parts
+from agent.session_persistence import _durable_content
+from agent.turn_context import build_api_messages
+from gateway.session_ingress_media import capture_native_media
+from hermes_state import SessionDB
+
+_PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d49484452000000010000000108020000009077"
+    "53de0000000c4944415408d763f8cfc0f00f00050201ff2ecf3ca10000000049454e44ae426082")
+
+
+class _Agent:
+    api_mode = "chat_completions"
+    provider, model = "custom", "fake-vision"
+    ephemeral_system_prompt = None
+    _compression_warning = None
+    _current_turn_timestamp = 10_000.0
+
+    @staticmethod
+    def _copy_reasoning_content_for_api(_source, _target):
+        return None
+
+    @staticmethod
+    def _should_sanitize_tool_calls():
+        return False
+
+
+def _config(**vision):
+    from hermes_constants import get_hermes_home  # sandboxed per test by conftest
+    cfg = {"agent": {"image_input_mode": vision.pop("mode", "native")}, "vision": vision}
+    (get_hermes_home() / "config.yaml").write_text(json.dumps(cfg), encoding="utf-8")  # JSON is valid YAML
+
+
+def _live_turn(tmp_path, name, text, data=_PNG):
+    """A native user turn exactly as the CLI/gateway/API server build it: bytes retained under
+    native-inputs, then ``build_native_content_parts`` on the retained path."""
+    staged = tmp_path / name
+    staged.write_bytes(data)
+    path = capture_native_media([staged])[0]["path"]
+    parts, skipped = build_native_content_parts(text, [path])
+    assert not skipped
+    return {"role": "user", "content": parts}, Path(path)
+
+
+def _rebuilt_request(tmp_path, live_turns):
+    """Persist ``live_turns`` through the DB projection, reload as the API server does, send a follow-up."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="s", source="api_server")
+    for i, turn in enumerate(live_turns):
+        db.append_message("s", role="user", content=_durable_content(turn["content"]), timestamp=1000.0 + 2 * i)
+        db.append_message("s", role="assistant", content=f"reply {i}", timestamp=1001.0 + 2 * i)
+    history = db.get_messages_as_conversation("s") + [{"role": "user", "content": "and the expiry date?"}]
+    request, _ = build_api_messages(
+        _Agent(), history, current_turn_user_idx=len(history) - 1,
+        ext_prefetch_cache="", plugin_user_context="", moa_config=None, active_system_prompt="")
+    return [m for m in request if m["role"] == "user"]
+
+
+@pytest.mark.parametrize("mode,replayed", [("native", True), ("text", False)])
+def test_rebuilt_turn_resends_the_image_byte_identical_only_for_native_input(tmp_path, mode, replayed):
+    _config(mode=mode)
+    live, _ = _live_turn(tmp_path, "label.png", "What is on this label?")
+
+    users = _rebuilt_request(tmp_path, [live])
+
+    assert users[-1]["content"] == "and the expiry date?"
+    if replayed:
+        # Same bytes as the request that first sent it: the prompt-cache prefix holds.
+        assert users[0]["content"] == live["content"]
+    else:
+        assert isinstance(users[0]["content"], str) and users[0]["content"].endswith("\n[screenshot]")
+
+
+def test_replay_window_skips_untrusted_bytes_and_typed_markers(tmp_path):
+    _config(replay_recent_images=2)
+    oldest, _ = _live_turn(tmp_path, "oldest.png", "first photo")
+    older, _ = _live_turn(tmp_path, "older.png", "second photo")
+    typed = {"role": "user", "content": "I literally typed\n[screenshot]"}  # no attachment hint: never paired
+    changed, changed_path = _live_turn(tmp_path, "changed.png", "third photo", data=_PNG + b"\x00")
+    newest, _ = _live_turn(tmp_path, "new.png", "fourth photo")
+    changed_path.write_bytes(b"tampered")  # retained bytes no longer match their digest
+
+    users = _rebuilt_request(tmp_path, [oldest, older, typed, changed, newest])
+
+    assert users[4]["content"] == newest["content"]
+    assert users[3]["content"].endswith("\n[screenshot]")  # tampered bytes are never replayed
+    assert users[2]["content"] == "I literally typed\n[screenshot]"
+    assert users[1]["content"] == older["content"]
+    assert users[0]["content"].endswith("\n[screenshot]")  # outside the 2-image window

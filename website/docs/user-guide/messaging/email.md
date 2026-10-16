@@ -151,6 +151,27 @@ Replies are sent via SMTP with proper email threading:
 - **Message-ID** generated with the agent's domain
 - Responses are sent as plain text (UTF-8)
 
+### Quoting the Original Email
+
+By default a reply contains only the agent's answer. To append the incoming email below the answer in the classic `>` quote style, add to your `config.yaml`:
+
+```yaml
+platforms:
+  email:
+    quote_original: true
+    quote_max_chars: 10000                               # optional, length limit of the quoted block
+    quote_header: "On {date}, {name} <{address}> wrote:" # optional, placeholders: {date} {name} {address}
+```
+
+or set `EMAIL_QUOTE_ORIGINAL=true` (and optionally `EMAIL_QUOTE_MAX_CHARS`) in `~/.hermes/.env`. The environment variables take precedence over `config.yaml`.
+
+- The quote is added to the turn's final reply to the received email (the reply the gateway marks as the final response for that turn). It is never added to cron jobs or other proactive messages.
+- Progress, status, approval and busy-acknowledgement messages are never quoted, only the final reply is.
+- Senders who are not authorized are never quoted, including the pairing code or decline reply sent with `unauthorized_dm_behavior: pair` / `decline`.
+- Each received email is quoted once. A failed send releases the quote, so the retry quotes again. A final reply that consists only of attachments quotes on the first attachment mail.
+- The quote is shortened (or left out) so the email stays within the 50,000-character limit; the agent's answer is never shortened.
+- Replies stay plain text; attachments and HTML formatting of the original are not quoted.
+
 ### File Attachments
 
 The agent can send file attachments in replies. Include `MEDIA:/path/to/file` in the response and the file is attached to the outgoing email.
@@ -234,3 +255,5 @@ Hermes acts on a message only when the `Authentication-Results` header stamped b
 | `EMAIL_AUTHSERV_ID` | Yes, unless sender authentication is off | — | Exact authserv-id on your receiving server's topmost `Authentication-Results` header; without it every message needing an authenticated `From:` is dropped |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |
+| `EMAIL_QUOTE_ORIGINAL` | No | `false` | Quote the received email below the reply |
+| `EMAIL_QUOTE_MAX_CHARS` | No | `10000` | Maximum length of the quoted block |

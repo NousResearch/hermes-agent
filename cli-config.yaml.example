@@ -435,10 +435,11 @@ terminal:
   # start with the launching shell's toolchain: PATH, VIRTUAL_ENV and CONDA_* / NODE_* / NVM_* /
   # PYENV_* (plus GOPATH, GOROOT, CARGO_HOME, RUSTUP_HOME, JAVA_HOME), for that session only, when
   # the client runs on the gateway's host (a remote client's session keeps the gateway's toolchain).
-  # List more non-secret names here; names execute_code treats as credentials (…TOKEN, …KEY,
-  # …SECRET, …PASSWORD, …AUTH, …DSN, …WEBHOOK, …CREDS, …BEARER, …COOKIE) and HERMES_* names are
-  # never sent: pass secrets with `env_passthrough` instead.
-  # client_env_passthrough: ["GEM_HOME", "POETRY_HOME"]
+  # A toolchain name the client did not export is unset for its session's tools (PATH excepted).
+  # List more non-secret names here (default: none); names execute_code treats as credentials (…TOKEN,
+  # …KEY, …SECRET, …PASSWORD, …AUTH, …DSN, …WEBHOOK, …CREDS, …BEARER, …COOKIE) and HERMES_* names
+  # are never sent: pass secrets with `env_passthrough` instead.
+  client_env_passthrough: []  # e.g. ["GEM_HOME", "POETRY_HOME"]
   # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
   # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
 

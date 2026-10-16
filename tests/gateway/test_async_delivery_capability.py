@@ -172,6 +172,24 @@ class TestAdapterCapabilityFlag:
         finally:
             clear_session_vars(tokens)
 
+    @pytest.mark.parametrize(("launch", "expected"), [("acp", False), ("cli", True)])
+    def test_local_route_withholds_delivery_from_acp_launches_only(self, tmp_path, launch, expected):
+        """An ACP launch joins detached work in its prompt (editors drop post-prompt updates);
+        a CLI/TUI/desktop launch on the same LOCAL adapter keeps the wake."""
+        from types import SimpleNamespace
+
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+        from gateway.session_local import LocalSessionAdapter, async_delivery_for
+        from gateway.session_policy import build_policy
+
+        adapter = LocalSessionAdapter(SimpleNamespace())
+        adapter.policies["local-1"] = build_policy({"source": launch, "cwd": str(tmp_path), "model": "fixture"}, {})
+        runner = SimpleNamespace(adapters={Platform.LOCAL: adapter},
+                                 _adapters_for_profile=lambda profile: {Platform.LOCAL: adapter})
+        source = SessionSource(platform=Platform.LOCAL, chat_id="local-1")
+        assert async_delivery_for(runner, source) is expected
+
 
 # ---------------------------------------------------------------------------
 # terminal_tool: refuses to register a watcher on unsupported sessions

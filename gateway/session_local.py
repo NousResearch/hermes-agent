@@ -129,6 +129,22 @@ def authorize_local_source(runner, source):
     return adapter.authorize_source(source)
 
 
+def async_delivery_for(runner, source):
+    """Whether a turn on *source* may leave work for a later wake (``set_session_vars(async_delivery=...)``).
+
+    An ACP launch may not. ACP has no assistant update outside a prompt turn, and editors drop
+    the ones a wake publishes after ``session/prompt`` returns (T3 Code does), so a background
+    ``delegate_task`` result would reach the transcript but never the editor. ``False`` joins
+    delegated children before ``end_turn``; CLI, TUI and desktop viewers keep the wake."""
+    if source.platform == Platform.LOCAL:
+        adapter = runner._adapters_for_profile(source.profile).get(Platform.LOCAL)
+        policy = adapter.policies.get(source.chat_id) if isinstance(adapter, LocalSessionAdapter) else None
+        if policy is not None and policy.source == 'acp':
+            return False
+    adapter = (getattr(runner, "adapters", None) or {}).get(source.platform)
+    return getattr(adapter, "supports_async_delivery", True)
+
+
 def _bypass_policy(params, *, private_secrets):
     """Frozen snapshot for --safe-mode / --ignore-user-config: code defaults plus the explicit
     launch options. The profile's config.yaml/.env are never read, so a malformed profile cannot

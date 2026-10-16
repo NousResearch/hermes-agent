@@ -5,6 +5,7 @@ import os
 import pytest
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -680,6 +681,44 @@ class TestAtomicWriteNewFilePermissions:
         assert result.error is None, f"write failed: {result.error}"
         assert dest.read_text() == "#!/bin/sh\necho updated\n"
         assert dest.stat().st_mode & 0o777 == 0o755
+
+    @pytest.mark.skipif(not hasattr(os, "setxattr"), reason="extended attributes unavailable")
+    def test_overwrite_preserves_existing_extended_attributes(self, tmp_path):
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        dest = tmp_path / "existing.txt"
+        dest.write_text("original\n", encoding="utf-8")
+        attribute = "user.hermes-test" if sys.platform != "darwin" else "hermes-test"
+        try:
+            getattr(os, "setxattr")(dest, attribute, b"keep-me")
+        except OSError as exc:
+            pytest.skip(f"filesystem does not support extended attributes: {exc}")
+
+        result = ops.write_file(str(dest), "updated\n")
+
+        assert result.error is None, f"write failed: {result.error}"
+        assert getattr(os, "getxattr")(dest, attribute) == b"keep-me"
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs unavailable")
+    def test_overwrite_of_fifo_does_not_block_on_metadata_clone(self, tmp_path):
+        """``cp`` reads its source, so cloning metadata from a FIFO would block until a writer
+        appears. Only regular targets are cloned; anything else keeps the stat+chmod path."""
+        import threading
+
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        dest = tmp_path / "pipe"
+        os.mkfifo(dest)
+        outcome = {}
+        worker = threading.Thread(
+            target=lambda: outcome.setdefault("result", ops.write_file(str(dest), "data\n")),
+            daemon=True)
+        worker.start()
+        worker.join(15)
+        if worker.is_alive():  # unblock the stuck reader so the test process can exit
+            os.close(os.open(dest, os.O_WRONLY | os.O_NONBLOCK))
+            worker.join(5)
+            pytest.fail("write_file blocked reading the FIFO it was replacing")
+        assert outcome["result"].error is None, outcome["result"].error
+        assert dest.read_text(encoding="utf-8") == "data\n"
 
 
 class TestAtomicWriteThroughSymlink:

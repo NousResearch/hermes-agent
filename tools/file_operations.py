@@ -571,11 +571,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
         Symlink targets are resolved first (replacing the link would orphan the
         target) and the temp dir recomputed from the RESOLVED target. Existing
-        target: mode copied via ``stat`` (GNU ``-c%a`` / BSD ``-f%Lp``) + ``chmod``
-        (``chmod --reference`` is GNU-only). New target: ``chmod "=rw"`` AFTER cat
-        gives umask-default perms instead of mktemp's 0600 — not ``$(umask)``
-        arithmetic (zsh parses leading-zero constants as decimal), quoted so zsh
-        doesn't =word-expand. ``trap ... EXIT`` removes the temp on every failure.
+        regular target: metadata cloned with native ``cp`` (GNU ``--attributes-only
+        --preserve=all`` / portable ``-p``); otherwise, or when ``cp`` fails, the mode is
+        copied via ``stat`` (GNU ``-c%a`` / BSD ``-f%Lp``) + ``chmod``. New target:
+        ``chmod "=rw"`` AFTER cat gives umask-default perms instead of mktemp's 0600 —
+        not ``$(umask)`` arithmetic (zsh parses leading-zero constants as decimal),
+        quoted so zsh doesn't =word-expand. ``trap ... EXIT`` removes the temp on every failure.
         """
         q_path = self._escape_shell_arg(path)
         q_parent = self._escape_shell_arg(os.path.dirname(path) or ".")
@@ -608,7 +609,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             '|| { tmp="$d/.hermes-tmp.$$"; : > "$tmp" && echo "$tmp"; })"; '
             '[ -n "$tmp" ] || { echo "atomic write: could not create temp file" >&2; exit 1; }; '
             "trap 'rm -f \\\"$tmp\\\"' EXIT; "
-            'if [ -e "$t" ]; then '
+            # Metadata clone, regular files only: ``cp`` READS its source, so a FIFO would block
+            # and a device would stream forever. GNU ``--attributes-only`` copies no data; BSD/
+            # busybox ``cp -p`` copies the bytes once (``cat >`` truncates them right after).
+            'if [ -f "$t" ] && { cp --attributes-only --preserve=all "$t" "$tmp" 2>/dev/null || '
+            'cp -p "$t" "$tmp" 2>/dev/null; }; then :; '
+            'elif [ -e "$t" ]; then '
             'm="$(stat -c%a "$t" 2>/dev/null || stat -f%Lp "$t" 2>/dev/null || true)"; '
             '[ -n "$m" ] && chmod "$m" "$tmp" 2>/dev/null || true; '
             "fi; "

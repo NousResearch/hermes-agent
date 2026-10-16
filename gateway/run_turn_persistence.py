@@ -368,8 +368,11 @@ class GatewayTurnPersistenceMixin:
                             **display_metadata_for_event(event)}
         if display_metadata:
             _user_entry["display_metadata"] = display_metadata
-        if getattr(event, "message_id", None):
-            _user_entry["message_id"] = str(event.message_id)
+        if getattr(event, "source_message_id", None) or getattr(event, "message_id", None):
+            # The stable source identity first (#63298): the canonical wire's ``message_id`` is a
+            # synthetic admission id, and the row's ``platform_message_id`` must carry the client
+            # identity so ``has_platform_message_id`` retry dedup matches it.
+            _user_entry["message_id"] = str(event.source_message_id or event.message_id)
         return _user_entry
 
     async def _hmwa_persist_turn_transcript(
@@ -415,10 +418,11 @@ class GatewayTurnPersistenceMixin:
                 # Transient failure / hidden-reasoning incomplete: persist only the user message (the
                 # assistant error text is a gateway hint, not model output). Dedupe on platform
                 # message_id (Telegram retries after transient failures).
-                if event.message_id and await store.has_platform_message_id(sid, str(event.message_id)):
+                if (event.source_message_id or event.message_id) and await store.has_platform_message_id(
+                        sid, str(event.source_message_id or event.message_id)):
                     logger.info(
                         "Skipping duplicate user turn (message_id=%s) in session %s",
-                        event.message_id, sid,
+                        event.source_message_id or event.message_id, sid,
                     )
                 else:
                     await store.append_to_transcript(sid, _user_row, skip_db=agent_persisted)

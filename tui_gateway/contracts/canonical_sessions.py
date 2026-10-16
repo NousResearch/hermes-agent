@@ -182,6 +182,15 @@ class CanonicalSubmitParams(CanonicalSessionParams):
     text: str
     submission_id: str | None = None
     input_id: str | None = None
+    # Client-assigned id for this user turn, the legacy ``PromptSubmitParams.message_id``
+    # registration carried onto this wire (#63298). The queue drain dedupes retries on it (a
+    # reconnect resend of the same turn answers the dedup receipt instead of starting a second
+    # turn) and the drained turn's persist stamps its user row with it for retry dedup.
+    message_id: str | None = None
+    # Client clock at submit time (unix seconds, float ok), the legacy ``submitted_at``
+    # registration (#63298): stored with the accepted input so a reconnect resend is recognised as
+    # the same turn, and stamped on the persisted user row.
+    submitted_at: float | None = None
     queued: bool = False
     attachments: list[CanonicalAttachment] | None = None
     finite: bool = False

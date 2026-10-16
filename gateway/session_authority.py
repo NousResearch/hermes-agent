@@ -433,6 +433,40 @@ class SessionAuthority:
             with capture_lease():  # captured bytes are held from capture until commit or refusal
                 return await self._submit(actor, request, _authorize_write=_authorize_write)
 
+    def _owned_source_admission(self, actor, request):
+        """The admission already owning this submit's client source identity (legacy
+        ``_has_prompt_message_id`` for the canonical wire, #63298): an admission payload that carried
+        the identity (any status), or this exact request identity already admitted — "the client
+        retries the SAME submission id after a timeout/resume: acknowledge the already-owned id".
+        The request identity is looked up on this target and across a re-minted one (compression tip
+        rotation / resume recovery re-keys the live target for the same conversation), the
+        webhook-ingress identity shape (gateway/platforms/webhook_ingress.py). A row stamped before
+        this identity existed (payload has no ``message_id``) owns the request identity all the same.
+
+        Returns the owning row, or None. An identity only a persisted user row owns (no admission
+        names it) falls through to admission: the drained turn's persist skip-guard still keeps its
+        ONE user row, and no receipt may name an admission that does not exist."""
+        message_id = request.message_id
+        from hermes_state_runtime import find_session_admission, list_session_admissions
+        for row in reversed(list_session_admissions(self.db, session_id=request.ref.session_id, pending_only=False)):
+            if (row.get('payload') or {}).get('message_id') == message_id:
+                return row
+        for row in [find_session_admission(self.db, principal_id=actor.subject,
+                                           session_id=request.ref.session_id, request_id=request.request_id),
+                    *(dict(raw) for raw in self.db._read_all(
+                        'SELECT * FROM session_admissions WHERE principal_id=? AND request_id=? '
+                        'ORDER BY seq', (actor.subject, request.request_id)))]:
+            if row is None:
+                continue
+            payload = row.get('payload')
+            if payload is None:
+                import json
+                raw = row['payload_json']
+                payload = raw if isinstance(raw, dict) else json.loads(raw)
+            if payload.get('message_id') in (None, message_id):
+                return row
+        return None
+
     async def _submit(self, actor, request, *, _authorize_write=None):
         self._require_admission_open()
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
@@ -440,6 +474,18 @@ class SessionAuthority:
                 'voice_turn', 'display_kind', 'title_preview', 'turn_author', 'api_text', 'model_override', 'clarify_batch'}
                 or not isinstance(request.payload['text'], str)):
             raise RuntimeStoreError('invalid_params')
+        owner = self._owned_source_admission(actor, request) if request.message_id is not None else None
+        if owner is not None:
+            # The legacy ``prompt.submit`` handler's ``_has_prompt_message_id`` verdict, its bare
+            # ``{"status": "duplicate"}`` answer as the canonical receipt (#63298): the already-owned
+            # source identity is acknowledged and no second turn or durable row is ever minted for
+            # one client identity. The receipt keeps the admission vocabulary upstream pins
+            # (``terminal`` + ``outcome: 'duplicate'`` over an ``admission_id`` echo) and adds the
+            # source identity echo — never a reshape of the trio.
+            return AdmissionReceipt(
+                owner['admission_id'], request.ref, owner['seq'], 'terminal', 'duplicate',
+                owner['owner_epoch'] or self.epoch, owner['generation'],
+                message_id=request.message_id, submitted_at=request.submitted_at)
         from gateway.session_ingress_media import admit_attachments
         from gateway.session_finite import admit_finite
         from gateway.session_surface import admit_surface
@@ -454,7 +500,13 @@ class SessionAuthority:
                                           session_id=request.ref.session_id, request_id=request.request_id)
         payload = {'text': request.payload['text'], **finite, **admit_surface(request.payload),
                    **admit_display(request.payload), **admit_cli_turn(request.payload),
-                   **admit_attachments(request.payload.get('attachments'), admitted=admitted)}
+                   **admit_attachments(request.payload.get('attachments'), admitted=admitted),
+                   # The accepted source identity (#63298), durable with the admission row: the
+                   # drained turn's persist stamps its ONE user row from it (attribution and
+                   # ``has_platform_message_id`` retry dedup ride that row), never synthesized from
+                   # the request id. Absent keys keep identityless submits byte-identical.
+                   **({'message_id': request.message_id} if request.message_id is not None else {}),
+                   **({'submitted_at': request.submitted_at} if request.submitted_at is not None else {})}
         source = self.sessions[request.ref.session_id].source
         if source is not None and source.user_id != actor.subject:
             # Durable server authorization, not a client payload field. The original

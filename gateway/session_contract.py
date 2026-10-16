@@ -1,6 +1,6 @@
 """Public session authority contract; live execution state never crosses this boundary."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Mapping, Protocol
 
 JsonObject = Mapping[str, object]
@@ -47,6 +47,11 @@ class Submission:
     ref: SessionRef
     payload: JsonObject
     intent: Literal["queue", "steer", "redirect"]
+    # Stable client source identity of THIS submission event (#63298), the same registration the
+    # legacy Desktop API carries on ``PromptSubmitParams``: ``message_id`` is the client-assigned id
+    # for this user turn (retries dedupe on it), ``submitted_at`` the client clock at submit time.
+    message_id: str | None = None
+    submitted_at: float | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,12 @@ class AdmissionReceipt:
     outcome: str | None
     authority_epoch: int
     execution_generation: int | None
+    # The source identity echo of a dedup receipt (#63298): present only when the acknowledged
+    # submit carried one and the receipt answers an already-owned turn, never on a fresh admission.
+    # Keyword-only so ``PendingAdmission`` keeps its required fields constructible (dataclass
+    # ordering) and the positional ``AdmissionReceipt`` construction is unchanged.
+    message_id: str | None = field(default=None, kw_only=True)
+    submitted_at: float | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)

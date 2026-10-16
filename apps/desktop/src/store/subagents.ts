@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
 import { capitalize } from '@/lib/text'
+import { $showReasoning } from '@/store/reasoning-disclosure'
 
 export type SubagentStatus = 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
 export type SubagentStreamKind = 'progress' | 'summary' | 'thinking' | 'tool'
@@ -195,7 +196,9 @@ function streamFromPayload(
     out.push({ at, isError: !!payload.error, kind: 'progress', text })
   }
 
-  if (eventType === 'subagent.thinking' && text) {
+  // The child's chain of thought: hidden with Reasoning Blocks off, matching
+  // the gateway, whose own flag can be stale for a live session.
+  if (eventType === 'subagent.thinking' && text && $showReasoning.get()) {
     out.push({ at, kind: 'thinking', text })
   }
 

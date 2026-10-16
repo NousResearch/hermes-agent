@@ -87,8 +87,11 @@ def _masked_secret_prompt_windows(prompt: str, *, mask: str) -> str:
 
 
 def _masked_secret_prompt_posix(prompt: str, *, mask: str) -> str:
-    import termios
-    import tty
+    try:
+        import termios
+        import tty
+    except ImportError:  # no raw terminal control on this interpreter (e.g. mobile CPython builds)
+        return getpass.getpass(prompt)
     fd = sys.stdin.fileno()
     old_attrs = termios.tcgetattr(fd)
     try:

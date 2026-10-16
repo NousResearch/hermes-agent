@@ -961,6 +961,43 @@ class CuaDriver(BinaryPackage):
         except Exception:
             return dict(os.environ, CUA_DRIVER_RS_TELEMETRY_ENABLED="0")
 
+    def repair_staged_verification(self, entry: Path, target: str, reason: str) -> tuple[str, str]:
+        """Install the host X11 client libraries cua-driver links against, then
+        re-probe.
+
+        cua-driver-rs is a native binary that links the X11 client stack
+        directly: on headless Linux hosts (containers, minimal servers) the
+        staged probe dies on the FIRST missing library — libX11, then libXi,
+        then libXtst… — one package-manager round per message. On Linux
+        targets with a shared-library failure, ``ldd`` enumerates the full
+        set and the distro packages providing them are installed
+        non-interactively (``sudo -n`` under PM's install lock), mirroring
+        Nodejs's libatomic repair.
+
+        Keep this out of verify(): doctor/status checks call verify and must
+        never gain permission to install host packages.
+        """
+        if target != current_target() or not target.startswith("linux") \
+                or "loading shared libraries" not in reason:
+            return reason, ""
+        binary = self.binary(entry, target)
+        if binary is None:
+            return reason, ""
+        from pm.x11libs import missing_shared_libraries, try_install_x11_client_libs
+
+        sonames = missing_shared_libraries(binary)
+        if not sonames:
+            return reason, ""
+        installed, remedy = try_install_x11_client_libs(sonames)
+        retried = self.verify(entry, target)
+        if "loading shared libraries" in retried:
+            still = missing_shared_libraries(binary)
+            detail = ", ".join(still) if still else "an unknown remaining set"
+            # name the remaining set in BOTH arms: a failed attempt may only
+            # have covered part of it, and the probe surfaces one lib at a time.
+            return retried, f"{remedy}; still missing: {detail}"
+        return retried, ""
+
 
 @register
 class AgentBrowser(BinaryPackage):

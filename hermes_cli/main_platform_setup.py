@@ -114,7 +114,7 @@ def _whatsapp_install_bridge(bridge_dir) -> bool:
         result = subprocess.run(
             [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
             cwd=str(bridge_dir), stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
-            encoding="utf-8", errors="replace", env=env)
+            encoding="utf-8", errors="replace", env=env, check=False)
     except (pm.InstallError, OSError) as exc:
         print(f"  ✗ Bridge dependency preparation failed: {exc}")
         return False
@@ -200,7 +200,7 @@ def cmd_whatsapp(args):
     with contextlib.suppress(KeyboardInterrupt):
         subprocess.run(
             [node, str(bridge_script), "--pair-only", "--session", str(session_dir)],
-            cwd=str(bridge_dir), env=with_hermes_node_path())
+            cwd=str(bridge_dir), env=with_hermes_node_path(), check=False)
 
     print()
     if not (session_dir / "creds.json").exists():

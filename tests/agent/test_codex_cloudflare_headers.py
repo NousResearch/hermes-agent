@@ -222,7 +222,7 @@ class TestAuxiliaryClientWiring:
         )
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            client, model = auxiliary_client._build_codex_client("gpt-5.4")
+            client, _model = auxiliary_client._build_codex_client("gpt-5.4")
             assert client is not None
             headers = mock_openai.call_args.kwargs.get("default_headers") or {}
             assert headers.get("originator") == "hermes-agent"
@@ -244,7 +244,7 @@ class TestAuxiliaryClientWiring:
         )
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            client, model = auxiliary_client.resolve_provider_client(
+            client, _model = auxiliary_client.resolve_provider_client(
                 "openai-codex", model="gpt-5.4", raw_codex=True,
             )
             assert client is not None

@@ -251,6 +251,10 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
                       "compression_count": getattr(compressor, "compression_count", 0) if compressor is not None else 0,
                       "runtime": "codex_app_server", "thread_id": thread_id, "turn_id": turn_id,
                   }))
+    if not force:
+        # Hermes-forced compactions are recorded by their compress_context attempt; this one Codex ran alone.
+        from agent.compaction_events import publish_provider_native
+        publish_provider_native(agent)
     return True
 
 
@@ -592,7 +596,7 @@ def _codex_turn_service_tier(agent) -> str | None:
     return CODEX_TIER_WORDS.get(effective_request_overrides(agent).get("service_tier"))
 
 
-def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -> None:
+def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -> None:
     """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook).
     A live session whose thread was started with a different prompt composition (TUI/Desktop ``/personality``
     or a prompt mirror mutate the agent in place) is retired first so the new thread carries the current one.
@@ -615,11 +619,14 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     from agent.transports.codex_app_server_session import CodexAppServerSession, _ServerRequestRouting
     from hermes_cli.codex_runtime_switch import get_configured_codex_binary
     from hermes_cli.config import load_config
-    # Approval callback: Hermes' standard prompt flow when a CLI thread installed one.
+    # Approval callback: Hermes' standard prompt flow when a CLI thread installed one. `hermes chat -q`, cron and
+    # unattended platforms can have one registered with nobody to answer it, so they get none and fail closed at once.
     approval_callback = None
     with suppress(Exception):
+        from tools.approval_context import _no_user_can_answer
         from tools.terminal_tool import _get_approval_callback
-        approval_callback = _get_approval_callback()
+        if not _no_user_can_answer():
+            approval_callback = _get_approval_callback()
     # Gateway/cron have no UI for codex approval requests, so exec/apply_patch fail closed by default. Only an
     # explicit approval bypass (approvals.mode: off, /yolo, --yolo, HERMES_YOLO_MODE) hands policy to codex's sandbox.
     auto_approve_requests = False
@@ -656,7 +663,7 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     )
 
 
-def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> bool:
+def _persist_projected_messages(agent, turn, messages: list[dict[str, Any]]) -> bool:
     """Splice the projected messages into ``messages`` and flush them to the session DB; True when the
     rows are durable in the session DB (the codex thread binding may then be published).
 
@@ -690,7 +697,7 @@ def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> 
     return flush_ok is True
 
 
-def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_user_message: Any,
+def _finish_codex_turn(agent, turn, messages: list[dict[str, Any]], *, original_user_message: Any,
                        should_review_memory: bool) -> dict[str, Any]:
     """Post-turn bookkeeping mirroring the chat_completions loop; returns usage fields."""
     # run_conversation() already bumped _turns_since_memory / _user_turn_count; only _iters_since_skill is ours.
@@ -715,8 +722,8 @@ def _finish_codex_turn(agent, turn, messages: List[Dict[str, Any]], *, original_
     return usage_result
 
 
-def run_codex_app_server_turn(agent, *, user_message: str, original_user_message: Any, messages: List[Dict[str, Any]],
-                              effective_task_id: str, should_review_memory: bool = False) -> Dict[str, Any]:
+def run_codex_app_server_turn(agent, *, user_message: str, original_user_message: Any, messages: list[dict[str, Any]],
+                              effective_task_id: str, should_review_memory: bool = False) -> dict[str, Any]:
     """Hand the turn to a ``codex app-server`` subprocess and project its events into ``messages``.
     Returns the chat_completions result shape. The user message is ALREADY in ``messages`` — never append it again."""
     # Defense in depth for compression.checkpoint_required: agent init refuses the combination, but
@@ -761,8 +768,8 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     )
 
 
-def _turn_result(interrupt: tuple[bool, Any], messages: List[Dict[str, Any]], *, api_calls: int, completed: bool,
-                 error: Any, final_response: Any, **extra: Any) -> Dict[str, Any]:
+def _turn_result(interrupt: tuple[bool, Any], messages: list[dict[str, Any]], *, api_calls: int, completed: bool,
+                 error: Any, final_response: Any, **extra: Any) -> dict[str, Any]:
     """Result shape shared with the chat_completions path (``partial`` == ``not completed``)."""
     user_interrupted, interrupt_message = interrupt
     return {
@@ -859,15 +866,15 @@ class _CodexResponseAssembler:
     def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta):
         self.model, self.on_text_delta, self.on_reasoning_delta = model, on_text_delta, on_reasoning_delta
         self.on_commentary_message, self.on_first_delta = on_commentary_message, on_first_delta
-        self.output_items: List[Any] = []
+        self.output_items: list[Any] = []
         # output_index / first-observed sequence per output item, in lockstep, so settled pending calls merge
         # back in stream order.
         self.output_indexes, self.output_sequences = [], []
         self.text_deltas, self.commentary_text_deltas = [], []
         # pending_function_calls: announced-but-unconfirmed function calls keyed by item id. announced_output_order:
         # first-observed (sequence, output_index) per announced item id so a later .done keeps its announced position.
-        self.pending_function_calls: Dict[str, Dict[str, Any]] = {}
-        self.announced_output_order: Dict[str, tuple] = {}
+        self.pending_function_calls: dict[str, dict[str, Any]] = {}
+        self.announced_output_order: dict[str, tuple] = {}
 
     def _safe(self, cb: Callable | None, label: str, *args: Any) -> None:
         _call_guarded(cb, f"Codex stream {label} raised", args=args)
@@ -924,9 +931,21 @@ class _CodexResponseAssembler:
         if isinstance(refusal_text, str) and refusal_text:
             self.text_deltas.append(refusal_text)
 
+    def _pending_function_key(self, item_id: str, output_index: Any) -> str | None:
+        if item_id in self.pending_function_calls:
+            return item_id
+        # Copilot rotates opaque item IDs between SSE events. The response-local
+        # output_index still identifies the call, including index zero.
+        if output_index is not None:
+            return next((key for key, pending in self.pending_function_calls.items()
+                         if pending["output_index"] == output_index), None)
+        return None
+
     def _on_function_call(self, event: Any, event_type: str) -> None:
         self.has_tool_calls = True
-        pending = self.pending_function_calls.get(str(_event_field(event, "item_id", "")))
+        key = self._pending_function_key(str(_event_field(event, "item_id", "")),
+                                         _event_field(event, "output_index"))
+        pending = self.pending_function_calls.get(key)
         if pending is None:
             return  # the item itself lands on output_item.done
         if "delta" in event_type:
@@ -957,12 +976,39 @@ class _CodexResponseAssembler:
         # event's own output_index wins over the announced one.
         done_id = str(_event_field(done_item, "id", ""))
         announced_sequence, announced_index = self.announced_output_order.get(done_id, (None, None))
+        pending_keys = []
+        if "function_call" in str(_event_field(done_item, "type", "")):
+            done_call_id = _event_field(done_item, "call_id", "")
+            if isinstance(done_call_id, str) and done_call_id.strip():
+                # A stable call_id is exclusive: conflicting item/index identities
+                # must not evict unrelated calls, even when no alias matches.
+                pending_keys = [key for key, pending in self.pending_function_calls.items()
+                                if _event_field(pending["item"], "call_id") == done_call_id]
+                # An announcement that carried no call_id cannot contradict this one, so the
+                # positional match argument events use is the only evidence left for it.
+                if not pending_keys:
+                    pending_key = self._pending_function_key(done_id, _event_field(event, "output_index"))
+                    if pending_key is not None and not _event_field(
+                            self.pending_function_calls[pending_key]["item"], "call_id"):
+                        pending_keys = [pending_key]
+                announced_sequence, announced_index = None, None
+            else:
+                # Without a stable call_id, retain item-id then index association,
+                # as used by argument events (which never carry a call_id).
+                pending_key = self._pending_function_key(done_id, _event_field(event, "output_index"))
+                if pending_key is not None:
+                    pending_keys = [pending_key]
+            if pending_keys:
+                announced_alias = min((self.pending_function_calls[key] for key in pending_keys),
+                                      key=lambda pending: pending["sequence"])
+                announced_sequence, announced_index = announced_alias["sequence"], announced_alias["output_index"]
         if announced_sequence is None:
             announced_sequence, self.next_output_sequence = self.next_output_sequence, self.next_output_sequence + 1
         self.output_indexes.append(_event_field(event, "output_index", announced_index))
         self.output_sequences.append(announced_sequence)
-        # Confirmed by the authoritative done event; never settle it twice.
-        self.pending_function_calls.pop(done_id, None)
+        # The done payload is authoritative for every pending alias of this call.
+        for pending_key in pending_keys:
+            self.pending_function_calls.pop(pending_key, None)
         if _message_phase(done_item) == "commentary" and self.on_commentary_message is not None:
             commentary_text = "".join(self.commentary_text_deltas).strip() or _output_text_of(done_item)
             if commentary_text:
@@ -1006,7 +1052,7 @@ class _CodexResponseAssembler:
         handler = self._EXACT_HANDLERS.get(event_type) or next((h for m, h in self._FUZZY_HANDLERS if m(event_type)), None)
         return bool(handler(self, event, event_type)) if handler is not None else False
 
-    def _settled_output(self) -> List[Any]:
+    def _settled_output(self) -> list[Any]:
         """Merge .done items with settled pending calls, keeping stream order."""
         indexed = list(zip(self.output_indexes, self.output_sequences, self.output_items))
         for pending in self.pending_function_calls.values():
@@ -1027,15 +1073,13 @@ class _CodexResponseAssembler:
         return [entry[2] for entry in indexed]
 
     def result(self) -> SimpleNamespace:
+        # Successful completion orders all output, even when no calls remain pending.
+        # Done items stay authoritative; only successful streams settle missing done events.
+        output: list[Any] = self._settled_output() if self.saw_response_completed else list(self.output_items)
         # With only plain text deltas (no tool calls), synthesize one message item.
-        output: List[Any] = list(self.output_items)
         if not output and self.text_deltas and not self.has_tool_calls:
             content = [SimpleNamespace(type="output_text", text="".join(self.text_deltas))]
             output = [SimpleNamespace(type="message", role="assistant", status="completed", content=content)]
-        # Done items stay authoritative; settlement only fills the gap left by backends that omit
-        # per-item done events on a successful completion.
-        if self.pending_function_calls and self.saw_response_completed:
-            output = self._settled_output()
         # No terminal frame AND no usable content = truncated / rejected stream.
         if not self.saw_terminal and not output:
             raise RuntimeError("Codex Responses stream did not emit a terminal response")
@@ -1383,6 +1427,8 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
 
 
 __all__ = [
-    "run_codex_app_server_turn", "run_codex_stream",
-    "_consume_codex_event_stream", "make_codex_app_server_event_bridge",
+    "_consume_codex_event_stream",
+    "make_codex_app_server_event_bridge",
+    "run_codex_app_server_turn",
+    "run_codex_stream",
 ]

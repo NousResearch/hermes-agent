@@ -63,12 +63,12 @@ class KeyboardButton(_Serializable):
 
 @dataclass
 class KeyboardRow(_Serializable):
-    buttons: List[KeyboardButton] = field(default_factory=list)
+    buttons: list[KeyboardButton] = field(default_factory=list)
 
 
 @dataclass
 class KeyboardContent(_Serializable):
-    rows: List[KeyboardRow] = field(default_factory=list)
+    rows: list[KeyboardRow] = field(default_factory=list)
 
 
 @dataclass
@@ -178,7 +178,7 @@ class InteractionEvent:
 _SCENE_NAMES = {0: "guild", 1: "group", 2: "c2c"}
 
 
-def parse_interaction_event(raw: Dict[str, Any]) -> InteractionEvent:
+def parse_interaction_event(raw: dict[str, Any]) -> InteractionEvent:
     """Parse a raw ``INTERACTION_CREATE`` dispatch payload (``d``)."""
     data_raw = raw.get("data") or {}
     resolved, scene_code = data_raw.get("resolved") or {}, int(raw.get("chat_type", 0) or 0)

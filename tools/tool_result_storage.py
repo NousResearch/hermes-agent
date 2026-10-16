@@ -292,7 +292,7 @@ def extract_persisted_path(content: str) -> str | None:
 
 def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, env=None,
                               config: BudgetConfig = DEFAULT_BUDGET,
-                              threshold: int | float | None = None) -> str:
+                              threshold: float | None = None) -> str:
     """Layer 2: persist an oversized result, return preview + path. ``threshold`` overrides
     ``config.resolve_threshold(tool_name)``; falls back to inline truncation when no write
     location succeeds."""
@@ -334,14 +334,38 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
             "Full output could not be saved to sandbox.]")
 
 
+def _content_text_size(content) -> int:
+    """Characters of TEXT a tool message carries: a string's length, or the summed text parts of a multimodal
+    part list (image parts are governed by the vision embed budget, and a list's ``len`` counts parts)."""
+    if isinstance(content, list):
+        return sum(len(p.get("text") or "") for p in content if isinstance(p, dict) and p.get("type") == "text")
+    return len(content or "")
+
+
+def _spill_largest_text_part(parts: list, tool_use_id: str, env, config: BudgetConfig) -> tuple[list, int]:
+    """Persist the largest non-persisted text part of a multimodal list; ``(new parts, chars saved)``."""
+    texts = [(i, p["text"]) for i, p in enumerate(parts) if isinstance(p, dict) and p.get("type") == "text"
+             and isinstance(p.get("text"), str) and PERSISTED_OUTPUT_TAG not in p["text"]]
+    if not texts:
+        return parts, 0
+    idx, text = max(texts, key=lambda t: len(t[1]))
+    replacement = maybe_persist_tool_result(content=text, tool_name=_BUDGET_TOOL_NAME,
+                                            tool_use_id=f"{tool_use_id}_part{idx}", env=env, config=config, threshold=0)
+    if replacement == text:
+        return parts, 0
+    return [*parts[:idx], {**parts[idx], "text": replacement}, *parts[idx + 1:]], len(text) - len(replacement)
+
+
 def enforce_turn_budget(tool_messages: list[dict], env=None,
                         config: BudgetConfig = DEFAULT_BUDGET) -> list[dict]:
     """Layer 3: persist the largest non-persisted results first until the turn's aggregate is
-    under budget. Mutates the list in-place and returns it."""
-    sizes = [len(msg.get("content", "")) for msg in tool_messages]
+    under budget. Mutates the list in-place and returns it. A multimodal result (part list) counts its
+    text characters and spills its largest text part; its images stay inline."""
+    sizes = [_content_text_size(msg.get("content", "")) for msg in tool_messages]
     total_size = sum(sizes)
     candidates = [(i, size) for i, size in enumerate(sizes)
-                  if PERSISTED_OUTPUT_TAG not in tool_messages[i].get("content", "")]
+                  if isinstance(tool_messages[i].get("content"), list)
+                  or PERSISTED_OUTPUT_TAG not in tool_messages[i].get("content", "")]
     if total_size <= config.turn_budget:
         return tool_messages
     for idx, size in sorted(candidates, key=lambda x: x[1], reverse=True):
@@ -349,6 +373,13 @@ def enforce_turn_budget(tool_messages: list[dict], env=None,
             break
         content = tool_messages[idx]["content"]
         tool_use_id = tool_messages[idx].get("tool_call_id", f"budget_{idx}")
+        if isinstance(content, list):
+            parts, saved = _spill_largest_text_part(content, tool_use_id, env, config)
+            if saved:
+                total_size -= saved
+                tool_messages[idx]["content"] = parts
+                logger.info("Budget enforcement: persisted a text part of tool result %s (%d chars)", tool_use_id, saved)
+            continue
         replacement = maybe_persist_tool_result(
             content=content, tool_name=_BUDGET_TOOL_NAME, tool_use_id=tool_use_id,
             env=env, config=config, threshold=0)

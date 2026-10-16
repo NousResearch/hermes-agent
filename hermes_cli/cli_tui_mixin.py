@@ -189,7 +189,7 @@ class CLITuiMixin:
         """Render the dangerous-command approval panel.
 
         Layout priority: title + command + choices must always render, even in a short terminal
-        or with a long (tirith multi-paragraph) description. The description sits at the bottom
+        or with a long multi-paragraph description. The description sits at the bottom
         and is truncated to the remaining row budget, so HSplit never clips approve/deny off-screen.
         """
         from cli import _panel_box_width, _wrap_panel_text_keep_ws
@@ -796,10 +796,10 @@ class CLITuiMixin:
         return []
 
     def _tui_placeholder_text(self):
-        if self._voice_recording:
-            return t("cli.tui.placeholder_recording", shortcut=self._voice_record_key_label())
+        if self._voice_recording:  # live STT partial text (stt.streaming) replaces the hint
+            return self._voice_live_text or t("cli.tui.placeholder_recording", shortcut=self._voice_record_key_label())
         if self._voice_processing:
-            return t("cli.tui.placeholder_transcribing")
+            return self._voice_live_text or t("cli.tui.placeholder_transcribing")
         if self._sudo_state:
             if (self._sudo_state.get("vault_save") or {}).get("step") == "identifier":
                 return t("cli.tui.placeholder_vault_username")
@@ -941,7 +941,7 @@ class CLITuiMixin:
         return True
 
     def _tui_clear_or_exit(self, event) -> None:
-        """Idle press: clear text/images like bash; exit when everything is already empty."""
+        """Clear text/images like bash; exit when everything is already empty."""
         if event.app.current_buffer.text or self._attached_images:
             event.app.current_buffer.reset()
             self._attached_images.clear()
@@ -952,8 +952,8 @@ class CLITuiMixin:
 
     def _tui_handle_ctrl_c(self, event):
         """Ctrl+C priority: cancel voice recording → cancel foreground UI/overlay prompt →
-        interrupt the running agent (first press) → force exit (second press within 2s) → when
-        idle clear the draft or exit."""
+        clear a typed draft, even mid-run (a correction must never kill the turn) → interrupt
+        the running agent → force exit (second press within 2s) → when idle and empty, exit."""
         now = time.time()
         if self._tui_cancel_voice_recording(event):
             return
@@ -965,7 +965,7 @@ class CLITuiMixin:
         overlay_cleared = self._tui_clear_blocking_overlays(event)
         if overlay_cleared and not (self._agent_running and self.agent):
             return
-        if self._agent_running and self.agent:
+        if self._agent_running and self.agent and not (event.app.current_buffer.text or self._attached_images):
             if now - self._last_ctrl_c_time < 2.0:
                 print("\n" + t("cli.tui.force_exiting"))
                 self._should_exit = True
@@ -988,7 +988,7 @@ class CLITuiMixin:
         overlay_cleared = self._tui_clear_blocking_overlays(event)
         if overlay_cleared and not (self._agent_running and self.agent):
             return
-        if self._agent_running and self.agent:
+        if self._agent_running and self.agent and not (event.app.current_buffer.text or self._attached_images):
             print("\n" + t("cli.tui.interrupting"))
             request_hard_interrupt(self.agent)
         else:
@@ -1101,7 +1101,6 @@ class CLITuiMixin:
                     break
         except Exception:
             pass
-        return None
 
     def _tui_handle_escape_modal(self, event):
         """ESC cancels active secret/sudo/connection/slash-confirm prompts."""
@@ -1492,9 +1491,9 @@ class CLITuiMixin:
                 self._should_exit = True
                 if event.app.is_running:
                     event.app.exit()
-        elif (
-            self._should_handle_steer_command_inline(text, has_images=has_images)
-            or self._should_handle_background_command_inline(text, has_images=has_images)):
+        elif (self._should_handle_steer_command_inline(text, has_images=has_images)
+              or self._should_handle_background_command_inline(text, has_images=has_images)
+              or self._should_handle_stop_command_inline(text, has_images=has_images)):
             self.process_command(text)
         else:
             return False
@@ -1898,7 +1897,7 @@ class CLITuiMixin:
         self._voice_tts = False
         self._voice_recorder = None     # AudioRecorder (lazy init)
         self._voice_recording = False
-        self._voice_processing = False  # STT in progress
+        self._voice_processing, self._voice_live_text = False, ""  # STT in progress; live partial text
         self._voice_continuous = False  # auto-restart after the agent responds
         self._voice_tts_done = threading.Event()  # TTS playback finished
         self._voice_tts_done.set()  # initially "done" (no TTS pending)
@@ -1909,7 +1908,6 @@ class CLITuiMixin:
 
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             self._install_tool_callbacks()
-            self._ensure_tirith_security()
 
     def _tui_build_key_bindings(self):
         """Build the prompt_toolkit KeyBindings for the REPL input area.

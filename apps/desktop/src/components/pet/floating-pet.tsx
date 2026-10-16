@@ -206,6 +206,10 @@ export function FloatingPet() {
             next.spritesheetBase64 = current.spritesheetBase64
           }
 
+          if (!next.enabled && !current.enabled) {
+            return
+          }
+
           if (
             next.enabled &&
             current.enabled &&

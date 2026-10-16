@@ -167,6 +167,29 @@ async def test_delegation_started_after_the_close_is_refused_until_a_viewer_retu
     assert _dispatch(route, 'chat')['status'] == 'dispatched', 'a viewer that came back keeps its work'
 
 
+@pytest.mark.asyncio
+async def test_a_closed_sessions_refusal_goes_with_its_live_state(tmp_path, monkeypatch):
+    """A session closed and never resumed keeps refusing its still-running turn's dispatches until
+    the owner retires its live state (delete, prune); then the refusal goes too, so closed sessions
+    don't accumulate refusals. Another closed session keeps its own."""
+    from gateway.session_mutations import retire_live_sessions
+    db, authority = await _owner(tmp_path, monkeypatch)
+    viewer, subscription = await _open(db, authority, tmp_path, 'chat')
+    other, other_subscription = await _open(db, authority, tmp_path, 'other')
+    route, other_route = authority.sessions['chat'].route, authority.sessions['other'].route
+    await _call(viewer, 'session.detach', session_id='chat', subscription_id=subscription, end_reason='cli_close')
+    await _call(other, 'session.detach', session_id='other', subscription_id=other_subscription,
+                end_reason='new_session')
+    assert _dispatch(route, 'chat')['status'] == 'rejected', 'its turn may still be running'
+
+    retire_live_sessions(authority, ['chat'])
+
+    assert (authority.profile_id, 'chat') not in delegation._refused, 'retired with its live state'
+    assert _dispatch(route, 'chat')['status'] == 'dispatched'
+    assert _dispatch(other_route, 'other')['status'] == 'rejected', 'other closed sessions keep theirs'
+    assert list(delegation._refused) == [(authority.profile_id, 'other')]
+
+
 # --- completions for a local session with no viewer --------------------------------------------
 
 async def _local(tmp_path, monkeypatch):

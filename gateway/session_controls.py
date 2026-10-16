@@ -61,6 +61,12 @@ def _log_refusal(profile, method, exc: RuntimeStoreError) -> None:
         logger.debug(line, *args)
 
 
+def _log_storage_failure(profile, method, session_id, exc: sqlite3.Error) -> None:
+    """Keep SQLite's diagnostic at the gateway while its wire error stays retryable."""
+    logger.warning('%s storage failure for profile=%s session_id=%r: %s',
+                   method, _profile_label(profile), session_id, exc, exc_info=True)
+
+
 # ``session.detach end_reason``: a short snake_case label, stored verbatim as ``sessions.end_reason``.
 _END_REASON = re.compile(r'[a-z][a-z_]{0,31}')
 # Verbs whose param sets are closed and never carried a ``profile`` key.
@@ -261,7 +267,9 @@ class AuthorityConnection:
             _log_refusal(getattr(self.actor, 'profile_id', None), method, exc)
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 4001, 'message': exc.reason, 'data': _refusal_data(exc)}}
-        except sqlite3.Error:
+        except sqlite3.Error as exc:
+            _log_storage_failure(getattr(self.actor, 'profile_id', None), method,
+                                 params.get('session_id'), exc)
             return {'jsonrpc': '2.0', 'id': rid, 'error': {
                 'code': 5001, 'message': 'storage_unavailable', 'data': {'reason': 'storage_unavailable'}}}
 

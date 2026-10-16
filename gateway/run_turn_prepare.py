@@ -620,6 +620,12 @@ class GatewayTurnPrepareMixin:
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
         restore_gateway_yolo(session_key, session_entry.yolo)  # None: TurnRunner seeds the launch policy
         context = build_session_context(source, self.config, session_entry)
+        from gateway.project_session import ProjectWorkspaceError, project_cwd_for_turn
+        try:
+            context.cwd = await project_cwd_for_turn(self, session_entry, source)
+        except ProjectWorkspaceError as exc:  # fail closed: never run a project session elsewhere
+            from gateway.session_results import record_unexecuted_failure
+            return record_unexecuted_failure(str(exc)), []
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
         # Self-injected turns (internal=True) persist with a DB-only display_kind: timeline notices, not user bubbles.

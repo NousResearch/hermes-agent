@@ -140,6 +140,9 @@ def set_session_vars(
     tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
     tokens.append(_SESSION_HISTORY_DELIVERY.set(_UNSET if session_history_delivery is None else session_history_delivery))
+    if platform == "telegram" and session_key:
+        from gateway.project_session import bind_workspace
+        cwd = bind_workspace(session_key, session_id, cwd)
     _runtime_cwd("set_session_cwd", cwd)
     return tokens
 

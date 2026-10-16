@@ -174,6 +174,7 @@ class SessionContext:
     session_id: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    cwd: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {

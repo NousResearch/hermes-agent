@@ -155,6 +155,7 @@ class GatewaySessionAgentMixin:
         runner = self._runner
         src = ctx.source
         from gateway.session_policy import policy_for_source
+        from agent.runtime_cwd import scoped_session_cwd
         policy = policy_for_source(runner, src)
         return ctx.AIAgent(
             model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),
@@ -183,6 +184,7 @@ class GatewaySessionAgentMixin:
             # A local session's frozen budget (`--run-budget` / its profile's agent.run_budget_seconds);
             # None leaves the agent reading the owner's config, as before.
             run_budget_seconds=policy.run_budget_seconds if policy else None,
+            cwd=scoped_session_cwd() or None,
         )
 
     def _resolve_turn_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr):
@@ -198,6 +200,8 @@ class GatewaySessionAgentMixin:
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
             skip_context_files=skip_context_files,
         )
+        from agent.runtime_cwd import scoped_session_cwd
+        sig = (sig, scoped_session_cwd())
         cache_lock = getattr(runner, "_agent_cache_lock", None)
         cache = getattr(runner, "_agent_cache", None)
         peek_sid, dead = self._cached_sid_is_dead(cache_lock, cache)

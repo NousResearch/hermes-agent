@@ -83,7 +83,7 @@ _CHAIN_CAP = 1000
 
 # model_config keys that belong to the whole conversation, not one compression segment: a rotation
 # carries them onto the child (per-segment keys such as usage anchors stay behind).
-_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run",)
+_CONVERSATION_MODEL_CONFIG_KEYS = ("onboarding_run", "project_session")
 
 
 def _walk_compression_chain(session_id: str, step) -> list[str]:

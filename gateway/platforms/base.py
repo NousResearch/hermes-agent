@@ -4074,15 +4074,14 @@ class BasePlatformAdapter(ABC):
         # calling the message handler directly and sending the response.  Do NOT use
         # _process_message_background — it manages session lifecycle and its cleanup
         # races with the running task (split-brain, see PR #4926).
-        # Certain commands must bypass the active-session guard and be dispatched directly to the gateway
-        # runner. Without this, they are queued as pending messages and either: See #4926.
         self._canonicalize(event.source)  # identity FIRST (direct callers may skip handle_message)
         cmd = event.get_command()
         from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)
+        from gateway.project_picker import is_nondestructive_new
         if should_bypass_active_session(cmd):
             try:
                 # /stop, /new, /reset: cancel + response + drain; other bypasses don't cancel.
-                if cmd and is_interrupt_then_dispatch(cmd):
+                if cmd and is_interrupt_then_dispatch(cmd) and not is_nondestructive_new(event):
                     self._discard_text_debounce(session_key)
                     await self._dispatch_active_session_command(event, session_key, cmd)
                 else:

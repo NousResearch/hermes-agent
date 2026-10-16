@@ -628,12 +628,6 @@ export const fr: Translations = {
       "Les tableaux vous permettent de séparer des flux de travail indépendants — un par projet, dépôt ou domaine. Les workers d'un tableau ne voient jamais les tâches d'un autre.",
     slug: "Slug",
     slugHint: "— minuscules, tirets, par ex. atm10-server",
-    confirmDoneMany:
-      "Mark {n} tasks as done? The workers' claims are released and dependent children become ready.",
-    confirmArchiveMany:
-      "Archive {n} tasks? They disappear from the default board view.",
-    confirmBlockedMany:
-      "Mark {n} tasks as blocked? The workers' claims are released.",
     displayName: "Nom affiché",
     displayNameHint: "(facultatif)",
     description: "Description",
@@ -662,6 +656,9 @@ export const fr: Translations = {
     createTask: "Créer une tâche dans cette colonne",
     noTasks: "— aucune tâche —",
     unassigned: "non assigné",
+    needsAssignee: "Assigné requis",
+    needsAssigneeHint:
+      "Les dépendances sont satisfaites, mais le dispatcher ignore cette tâche tant qu'aucun profil ne lui est assigné.",
     untitled: "(sans titre)",
     loadingDetail: "Chargement…",
     addComment: "Ajouter un commentaire… (Enter pour envoyer)",
@@ -670,7 +667,7 @@ export const fr: Translations = {
     workspace: "Workspace",
     skills: "Compétences",
     createdBy: "Créé par",
-    result: "Result",
+    result: "Résultat",
     comments: "Commentaires",
     events: "Événements",
     runHistory: "Historique d'exécution",
@@ -766,6 +763,25 @@ export const fr: Translations = {
       "Archiver cette tâche ? Elle disparaîtra de la vue par défaut du tableau.",
     confirmBlocked:
       "Marquer cette tâche comme bloquée ? La revendication du worker est libérée.",
+    confirmScheduled:
+      "Déplacer cette tâche vers Planifié ? À utiliser pour un délai connu plutôt que pour une attente humaine.",
+    confirmDoneMany:
+      "Marquer {n} tâches comme terminées ? Les revendications des workers sont libérées et les enfants dépendants deviennent prêts.",
+    confirmArchiveMany:
+      "Archiver {n} tâches ? Elles disparaîtront de la vue par défaut du tableau.",
+    confirmBlockedMany:
+      "Marquer {n} tâches comme bloquées ? Les revendications des workers sont libérées.",
+    confirmTitle: "Confirmer le changement",
+    confirmStatusTitle: {
+      done: "Confirmer le changement de statut",
+      archived: "Confirmer le changement de statut",
+      blocked: "Confirmer le changement de statut",
+    },
+    confirmStatusLabel: {
+      done: "Confirmer",
+      archived: "Confirmer",
+      blocked: "Confirmer",
+    },
     completionSummary:
       "Résumé d'achèvement pour {label}. Stocké comme result de la tâche.",
     completionSummaryRequired:
@@ -783,5 +799,39 @@ export const fr: Translations = {
       "chemin du workspace (facultatif, dérivé de l'assigné si vide)",
     logTruncated: "(affichage des derniers 100 KB — log complet à ",
     logAt: ")",
+    newTaskTitle: "Nouvelle tâche — {column}",
+    taskTitleLabel: "Titre",
+    assigneeLabel: "Assigné à",
+    assigneeLabelHint: "(vide = le dispatcher choisit)",
+    skillsLabel: "Compétences",
+    skillsLabelHint: "(facultatif, séparées par virgules)",
+    parentLabel: "Tâche parente",
+    parentLabelHint: "(l'enfant reste bloqué jusqu'à la fin du parent)",
+    create: "Créer",
+    boardSettings: "Paramètres",
+    boardSettingsTitle:
+      "Paramètres du tableau — nom, description et répertoire de projet par défaut hérité par les nouvelles tâches",
+    boardSettingsTitleFor: "Paramètres du tableau — {name}",
+    projectDirectoryOverrideHint:
+      "Les nouvelles tâches l'héritent comme workspace par défaut ; chaque tâche peut encore le remplacer dans la boîte de création.",
+    saving: "Enregistrement…",
+    commentHint:
+      "Les commentaires parviennent au worker à sa prochaine exécution ou via kanban_show() — inutile de bloquer la tâche d'abord.",
+    commentHintTitle:
+      "Les commentaires sont le canal pour parler au worker d'une tâche. Ils arrivent immédiatement sur le fil — inutile de bloquer la tâche d'abord. Un worker en cours reprend le fil à son prochain kanban_show() ou redémarrage ; bloquer ne sert que si vous voulez que le worker S'ARRÊTE et attende votre réponse.",
+    common: {
+      confirm: "Confirmer",
+      delete: "Supprimer",
+    },
+    trash: {
+      label: "Corbeille",
+      title: "Glissez une carte ici pour la supprimer définitivement",
+      confirm: "Supprimer définitivement cette tâche ? Cette action est irréversible.",
+      confirmMany:
+        "Supprimer définitivement {n} tâches sélectionnées ? Cette action est irréversible.",
+      dropHint: "Déposer pour supprimer",
+      confirmTitle: "Supprimer la tâche ?",
+      confirmManyTitle: "Supprimer {n} tâches ?",
+    },
   },
 };

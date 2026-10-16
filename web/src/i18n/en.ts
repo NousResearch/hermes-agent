@@ -889,6 +889,17 @@ export const en: Translations = {
       "Archive {n} tasks? They disappear from the default board view.",
     confirmBlockedMany:
       "Mark {n} tasks as blocked? The workers' claims are released.",
+    confirmTitle: "Confirm change",
+    confirmStatusTitle: {
+      done: "Confirm status change",
+      archived: "Confirm status change",
+      blocked: "Confirm status change",
+    },
+    confirmStatusLabel: {
+      done: "Confirm",
+      archived: "Confirm",
+      blocked: "Confirm",
+    },
     completionSummary:
       "Completion summary for {label}. This is stored as the task result.",
     completionSummaryRequired:
@@ -926,7 +937,17 @@ export const en: Translations = {
       "Comments reach the worker on its next run or kanban_show() — no need to block the task first.",
     commentHintTitle:
       "Comments are the channel for talking to a task's worker. They land on the thread immediately — no need to block the task first. A running worker picks the thread up on its next kanban_show() or respawn; blocking is only for when you want the worker to STOP and wait for your input.",
+    common: {
+      confirm: "Confirm",
+      delete: "Delete",
+    },
     trash: {
+      label: "Trash",
+      title: "Drag a card here to permanently delete it",
+      confirm: "Permanently delete this task? This cannot be undone.",
+      confirmMany:
+        "Permanently delete {n} selected tasks? This cannot be undone.",
+      dropHint: "Drop to delete",
       confirmTitle: "Delete task?",
       confirmManyTitle: "Delete {n} tasks?",
     },

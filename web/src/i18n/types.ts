@@ -880,6 +880,19 @@ export interface Translations {
     confirmDoneMany: string;
     confirmArchiveMany: string;
     confirmBlockedMany: string;
+    // Extracted from the English literals the dashboard plugin bundle used to
+    // hardcode as fallbacks; optional so locales can adopt them one at a time.
+    confirmTitle?: string;
+    confirmStatusTitle?: {
+      done?: string;
+      archived?: string;
+      blocked?: string;
+    };
+    confirmStatusLabel?: {
+      done?: string;
+      archived?: string;
+      blocked?: string;
+    };
     completionSummary: string;
     completionSummaryRequired: string;
     triagePlaceholder: string;
@@ -915,7 +928,16 @@ export interface Translations {
     commentHintTitle?: string;
     // Optional in-app confirm-dialog strings for the trash/delete flow;
     // non-English locales fall back to the English literals in the bundle.
+    common?: {
+      confirm?: string;
+      delete?: string;
+    };
     trash?: {
+      label?: string;
+      title?: string;
+      confirm?: string;
+      confirmMany?: string;
+      dropHint?: string;
       confirmTitle?: string;
       confirmManyTitle?: string;
     };

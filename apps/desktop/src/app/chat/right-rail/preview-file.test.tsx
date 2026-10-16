@@ -16,15 +16,18 @@ describe('MarkdownPreview', () => {
     cleanup()
   })
 
-  it('renders block and inline math through KaTeX', () => {
-    // KaTeX marks its output; raw "$" delimiters must be gone.
+  it('renders block and inline math through KaTeX', async () => {
+    // KaTeX marks its output; raw "$" delimiters must be gone. The math
+    // plugin loads async (katex stays off the entry graph), so wait for it.
     const { container } = render(
       <MarkdownPreview
         text={'Formula:\n\n$$\nx = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}\n$$\n\nInline $a^2 + b^2 = c^2$ too.'}
       />
     )
 
-    expect(container.querySelector('.katex')).not.toBeNull()
+    await waitFor(() => {
+      expect(container.querySelector('.katex')).not.toBeNull()
+    })
     expect(screen.queryByText(/\$\$/)).toBeNull()
   })
 

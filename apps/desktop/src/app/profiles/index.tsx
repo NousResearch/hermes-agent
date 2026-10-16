@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { CodeEditor } from '@/components/chat/code-editor'
+import { LazyCodeEditor as CodeEditor } from '@/components/chat/code-editor-lazy'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { ProfileGlyph } from '@/components/ui/profile-glyph'

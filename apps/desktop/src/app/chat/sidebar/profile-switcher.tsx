@@ -24,7 +24,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { useNavigate } from 'react-router'
 
 import type { ProfileScope } from '@/api/client'
-import { CodeEditor } from '@/components/chat/code-editor'
+import { LazyCodeEditor as CodeEditor } from '@/components/chat/code-editor-lazy'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ColorSwatches } from '@/components/ui/color-swatches'

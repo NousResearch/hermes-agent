@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
-import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { type CSSProperties, lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { isElementInHiddenPane, PANE_HIDDEN_ATTR } from '@/components/pane-shell/pane-visibility'
 import { $layoutTree } from '@/components/pane-shell/tree/store'
@@ -11,7 +11,13 @@ import { $paneStates } from '@/store/panes'
 import { $terminalTakeover } from '../store'
 
 import { ensureTerminal } from './terminals'
-import { TerminalWorkspace } from './workspace'
+
+// `@xterm/*` (~0.5–1MB with the WebGL addon) must never sit on the entry
+// graph: it only mounts when the terminal pane opens. `terminals.ts` above
+// stays static on purpose — it is type-only xterm usage plus the PTY-side
+// registry — while everything that constructs a Terminal goes through this
+// boundary into the lazy chunk.
+const TerminalWorkspace = lazy(() => import('./workspace').then(module => ({ default: module.TerminalWorkspace })))
 
 /**
  * One xterm Terminal mounted at the layout root and CSS-overlayed onto
@@ -286,9 +292,15 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
   // Defer the FIRST mount until the pane is open and the slot has real dims —
   // booting xterm/node-pty at 0×0 starts the shell at 80×24 and spawns a visible
   // conhost on Windows. After that `mounted` latches: shells persist while hidden.
+  // The workspace itself is a lazy boundary (see above): the xterm chunk only
+  // loads the first time the pane opens, and the empty slot paints meanwhile.
   return (
     <div aria-hidden={!visible} data-persistent-terminal="" style={style}>
-      {mounted && <TerminalWorkspace onAddSelectionToChat={onAddSelectionToChat} />}
+      {mounted && (
+        <Suspense fallback={null}>
+          <TerminalWorkspace onAddSelectionToChat={onAddSelectionToChat} />
+        </Suspense>
+      )}
     </div>
   )
 }

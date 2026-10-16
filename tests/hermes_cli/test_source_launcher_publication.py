@@ -752,3 +752,102 @@ def test_publication_uses_the_runtime_store_when_the_tree_records_none(tmp_path,
     assert len(written) == len(_launchers.WINDOWS_BIN_LAUNCHERS)
     for path in written:
         assert shlex.quote(str(python)) in Path(path).read_text(encoding="utf-8-sig")
+
+
+PYCACHE_PROBE = (
+    "import json, sys\n"
+    "print(json.dumps({'prefix': sys.pycache_prefix, 'dont': sys.dont_write_bytecode}))\n"
+    "raise SystemExit(9)\n"
+)
+
+
+def _pyc_clean_env() -> dict:
+    env = dict(os.environ)
+    for name in ("PYTHONDONTWRITEBYTECODE", "PYTHONPYCACHEPREFIX", "XDG_CACHE_HOME",
+                 "HERMES_RUNTIME_DIR"):
+        env.pop(name, None)
+    return env
+
+
+def _mint_pycache_probe_launcher(repo: Path, out: Path, interpreter: Path) -> Path:
+    (repo / "pycache_probe.py").write_text(PYCACHE_PROBE, encoding="utf-8")
+    return _launchers._mint_shell_launcher(
+        "hermes", out, interpreter, _launchers._launcher_script("hermes", repo, None))
+
+
+def _run_pycache_probe(launcher: Path, env: dict, cwd: Path) -> dict:
+    result = subprocess.run([str(launcher), "--run-module", "pycache_probe"], env=env, cwd=cwd,
+                            capture_output=True, text=True, encoding="utf-8", timeout=30, check=False)
+    assert result.returncode == 9, result.stdout + result.stderr
+    return json.loads(result.stdout)
+
+
+@pytest.mark.platforms("posix")
+def test_launcher_honors_pythondontwritebytecode(tmp_path, monkeypatch, real_bash):
+    """The launcher runs under ``-I`` (implied ``-E``), which makes the interpreter ignore
+    PYTHONDONTWRITEBYTECODE; the bootstrap must re-apply it (#139500) or every import
+    writes __pycache__ into the checkout."""
+    repo, _home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    select_generation(repo, 1, 1)
+    out = tmp_path / "commands"
+    out.mkdir()
+    launcher = _mint_pycache_probe_launcher(repo, out, interpreter)
+
+    env = _pyc_clean_env()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    receipt = _run_pycache_probe(launcher, env, tmp_path)
+
+    assert receipt == {"prefix": None, "dont": True}
+    assert not list(repo.rglob("__pycache__"))
+
+
+@pytest.mark.platforms("posix")
+def test_launcher_honors_pythonpycacheprefix(tmp_path, monkeypatch, real_bash):
+    repo, _home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    select_generation(repo, 1, 1)
+    out = tmp_path / "commands"
+    out.mkdir()
+    launcher = _mint_pycache_probe_launcher(repo, out, interpreter)
+    custom = tmp_path / "user-pyc"
+
+    env = _pyc_clean_env()
+    env["PYTHONPYCACHEPREFIX"] = str(custom)
+    receipt = _run_pycache_probe(launcher, env, tmp_path)
+
+    assert receipt == {"prefix": str(custom), "dont": False}
+    assert list(custom.rglob("*.pyc"))
+    assert not list(repo.rglob("__pycache__"))
+
+
+@pytest.mark.platforms("posix")
+def test_launcher_redirects_default_pycache_out_of_checkout(tmp_path, monkeypatch, real_bash):
+    """With neither variable set, bytecode goes to a user cache dir — like the bundled
+    installers — instead of bloating the install tree (#139500)."""
+    repo, _home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    select_generation(repo, 1, 1)
+    out = tmp_path / "commands"
+    out.mkdir()
+    launcher = _mint_pycache_probe_launcher(repo, out, interpreter)
+
+    receipt = _run_pycache_probe(launcher, _pyc_clean_env(), tmp_path)
+
+    redirected = tmp_path / ".cache" / "hermes-pycache"
+    assert receipt == {"prefix": str(redirected), "dont": False}
+    assert list(redirected.rglob("*.pyc"))
+    assert not list(repo.rglob("__pycache__"))
+
+
+@pytest.mark.platforms("windows", "posix")
+def test_runtime_command_reapplies_pyc_controls(tmp_path, monkeypatch):
+    probe = ("import json, sys; print(json.dumps({'prefix': sys.pycache_prefix, "
+             "'dont': sys.dont_write_bytecode})); raise SystemExit(8)")
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+    command = _launchers.runtime_command(ROOT, code=probe)
+
+    env = _pyc_clean_env()
+    env["PYTHONPYCACHEPREFIX"] = str(tmp_path / "user-pyc")
+    result = subprocess.run(command, env=env, cwd=tmp_path, capture_output=True, text=True,
+                            encoding="utf-8", timeout=60, check=False)
+
+    assert result.returncode == 8, result.stdout + result.stderr
+    assert json.loads(result.stdout) == {"prefix": str(tmp_path / "user-pyc"), "dont": False}

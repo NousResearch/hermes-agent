@@ -26,6 +26,35 @@ from pm.environments import owning_home_root, store_root
 # install's default root once the launch-time repair ran (``hermes_bootstrap._pin_launcher_home``).
 PIN_DEFAULT_HOME_FLAG = "_hermes_pin_default_home"
 
+# ``-I`` implies ``-E``: the interpreter silently ignored PYTHONDONTWRITEBYTECODE and
+# PYTHONPYCACHEPREFIX at startup, so every import below wrote ``__pycache__`` into the install
+# tree — thousands of root-owned-after-a-sudo-run files that `hermes update` then wades through
+# (#139500). The env vars cannot retro-activate at runtime, but sys.dont_write_bytecode and
+# sys.pycache_prefix are the live switches importlib reads per write (the bundled launcher's
+# wrapper already relies on this). Honor the user's variables; with neither set, redirect new
+# bytecode to a user cache dir like the bundled installers do instead of the checkout. Any
+# PYTHONDONTWRITEBYTECODE value other than '0' enables it, matching the interpreter's own
+# env parsing. Runs before the first import so it covers the stdlib imports that follow too.
+_PYC_CONTROL_SOURCE = """\
+_pyc_flag = os.environ.get('PYTHONDONTWRITEBYTECODE', '0')
+if _pyc_flag != '0':
+    sys.dont_write_bytecode = True
+elif not sys.pycache_prefix and not os.environ.get('PYTHONPYCACHEPREFIX'):
+    if os.name == 'nt':
+        _pyc_base = os.environ.get('LOCALAPPDATA')
+        _pyc_tail = ('hermes', 'pycache')
+    else:
+        _pyc_base = os.environ.get('XDG_CACHE_HOME')
+        if not _pyc_base and os.environ.get('HOME'):
+            _pyc_base = os.path.join(os.environ['HOME'], '.cache')
+        _pyc_tail = ('hermes-pycache',)
+    if _pyc_base:
+        os.environ['PYTHONPYCACHEPREFIX'] = os.path.join(_pyc_base, *_pyc_tail)
+_pyc_prefix = os.environ.get('PYTHONPYCACHEPREFIX')
+if _pyc_prefix and not sys.pycache_prefix:
+    sys.pycache_prefix = _pyc_prefix
+"""
+
 
 def _inline_string_literal(value: str) -> str:
     """Keep inline Python source intact through Windows PowerShell's native argv quoting."""
@@ -62,6 +91,7 @@ def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main"
         "import os, sys, runpy; "
         "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
         "os.environ.pop('VIRTUAL_ENV', None); "
+        + _PYC_CONTROL_SOURCE +
         f"sys.path.insert(0, {_inline_string_literal(str(root))}); "
         + pin
         + "import hermes_bootstrap; "
@@ -439,6 +469,7 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
         # file in the tree must not run in its place ahead of the closure's verification. The first
         # line stays the shape gateway.status._BOOTSTRAPS recognises as this launcher (#124318).
         "import os, re, sys\n"
+        + _PYC_CONTROL_SOURCE +
         "import contextlib, hashlib, io, pathlib, shutil, subprocess\n"
         "os.environ.pop('PYTHONHOME', None)\n"
         "os.environ.pop('PYTHONPATH', None)\n"

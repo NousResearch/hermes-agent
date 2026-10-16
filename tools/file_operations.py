@@ -1508,7 +1508,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         preservation → atomic write (content rides stdin: no ARG_MAX limit) →
         sha256 verification → lint delta → LSP check when syntax is clean
         (non-blocking; the pre-edit content is its baseline, see ``_maybe_lsp_diagnostics``). ``pre_content``: pre-edit content the
-        caller already has (skips the read); BOM detection always probes disk.
+        caller already has (skips the read; also the line-ending reference, so only
+        lines that differ from it take a new ending); BOM detection always probes disk.
         """
         started = time.monotonic()
         path = self._expand_path(path)

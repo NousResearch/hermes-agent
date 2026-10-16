@@ -385,12 +385,14 @@ def test_a_plugin_whose_register_fails_leaves_its_name_to_a_same_named_skill(tmp
     from cli import HermesCLI
     _no_local_plugins(monkeypatch)
     ran_skill = []
-    monkeypatch.setattr(cli_mod, '_ensure_skill_commands', lambda: {'/pptwin': {'name': 'pptwin'}})
+    monkeypatch.setattr(cli_mod, '_ensure_skill_commands', dict)  # the skill is the gateway's, below
     monkeypatch.setattr(cli_mod, 'get_skill_bundles', dict)
     monkeypatch.setattr(HermesCLI, '_run_skill_slash_command', lambda self, *a: ran_skill.append(a[0]))
     work = tmp_path / 'work'
     work.mkdir()
     with _plugin_home(tmp_path, _BROKEN) as (root, home, env):
+        (home / 'skills' / 'pptwin').mkdir(parents=True)
+        (home / 'skills' / 'pptwin' / 'SKILL.md').write_text('---\nname: pptwin\ndescription: Twin skill\n---\nSay SKILL_TWIN.\n')
         with daemon(root, home, env, barrier=True, fixture='plugin_mcp_daemon.py') as (proc, desc):
             wire = _Wire(home, desc)
             try:

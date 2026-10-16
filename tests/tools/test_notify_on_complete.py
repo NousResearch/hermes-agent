@@ -346,6 +346,8 @@ def test_background_without_notify_emits_silent_process_hint(monkeypatch, tmp_pa
 
     assert result["session_id"] == "proc_silent_test"
     hint = result.get("hint", "")
+    from tools.process_registry import PROCESS_SCHEMA
+    assert f"{PROCESS_SCHEMA['name']}(action=" in hint
     assert hint, "Silent background process must include a hint field"
     assert "notify_on_complete" in hint, (
         "Hint must name the corrective flag so the agent can self-correct"

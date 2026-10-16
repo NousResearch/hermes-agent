@@ -80,10 +80,10 @@ async def write_receipt(home, record, *, expect=_UNCHECKED):
     return await _mailbox_io(_write_receipt, home, record, expect)
 
 
-def _scan_receipts(home):
+def _scan_receipts(home, pins=None):
     from gateway.session_bot import _scan_records
     with _locked(home) as root:
-        return root, list(_scan_records(root))
+        return root, list(_scan_records(root, pins))
 
 
 def _withdraw_pin(home, key):
@@ -92,12 +92,38 @@ def _withdraw_pin(home, key):
         current = _read(path)
         if current is not None and current.get('status') == 'ambiguous' and not current.get('admission_id'):
             path.unlink()
+            return True
+        return False
 
 
 async def withdraw_pin(home, key):
     """Drop a pre-admission pin the FIFO definitely refused (nothing committed), only while it is
     still that pin, so the same-id retry admits instead of answering ``unknown_execution``."""
     return await _mailbox_io(_withdraw_pin, home, key)
+
+
+# What ``_admit`` lays over a legacy ticket when it pins it (``legacy=``); the ticket never had them.
+_PIN_FIELDS = ('profile_home', 'session_id', 'principal_id', 'operator')
+
+
+def _requeue_pin(home, key):
+    with _locked(home) as root:
+        path = root / f'{key}.json'
+        current = _read(path)
+        if (current is None or current.get('status') != 'ambiguous' or current.get('admission_id')
+                or 'owner' not in current):
+            return None
+        ticket = {k: v for k, v in current.items() if k not in _PIN_FIELDS}
+        ticket['status'] = 'queued'
+        _write(path, ticket)
+        return ticket
+
+
+async def requeue_pin(home, key):
+    """Restore the queued legacy ticket a pre-admission pin was laid over (nothing committed), only
+    while it is still that pin: its id, message, sequence and created_at are kept, so ``_migrate``
+    admits it once in its FIFO place. Returns the ticket, or None when the pin is gone or changed."""
+    return await _mailbox_io(_requeue_pin, home, key)
 
 
 def _refuse_pin(home, key):
@@ -117,8 +143,9 @@ async def refuse_pin(home, key):
     return await _mailbox_io(_refuse_pin, home, key)
 
 
-async def scan_receipts(home):
-    return await _mailbox_io(_scan_receipts, home)
+async def scan_receipts(home, pins=None):
+    """Bulk scan; an owner scan passes ``pins`` to collect pre-admission pins instead of warning."""
+    return await _mailbox_io(_scan_receipts, home, pins)
 
 
 def remember_receipt(authority, home, record):

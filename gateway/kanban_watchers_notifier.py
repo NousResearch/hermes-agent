@@ -52,6 +52,10 @@ _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "revie
 
 def diagnostic_event(ev) -> bool:
     """Infrastructure attention is distinct from an explicit owner decision."""
+    # Reviewer-to-implementer rework is internal coordination. Preserve its
+    # wake/board receipt, but let the subscriber's diagnostic policy mute it.
+    if ev.kind == "changes_requested":
+        return True
     if ev.kind in {"crashed", "timed_out", "gave_up"}:
         return True
     if ev.kind in {"blocked", "block_loop_detected"}:
@@ -537,11 +541,17 @@ def _fmt_gave_up(ev, n) -> tuple:
     return t("gateway.kanban.ping.gave_up", head=n.head, count=count, last=last, task_id=n.task_id), None, None
 
 
-def _fmt_timed_out(ev, n) -> tuple:
-    limit = int(_payload(ev, "limit_seconds") or 0)
-    minutes = max(1, round(limit / 60)) if limit else 0
-    span = t("gateway.kanban.ping.limit_minutes", minutes=minutes) if minutes else t("gateway.kanban.ping.limit_generic")
-    return t("gateway.kanban.ping.timed_out", head=n.head, span=span), None, None
+def _fmt_timeout(ev, n) -> tuple:
+    used, maximum = _payload(ev, "budget_used"), _payload(ev, "budget_max")
+    payload = ev.payload or {}
+    if maximum:
+        detail = f"iteration budget {used}/{maximum}"
+    elif payload.get("limit_seconds") is not None:
+        detail = f"max_runtime={int(payload['limit_seconds'])}s"
+    else:
+        detail = "timeout limit unavailable"
+    retry = "retry queued" if n.task and n.task.status in {"ready", "review"} else "no automatic retry queued"
+    return f"⏱ {n.head} timed out ({detail}); {retry}", None, None
 
 
 # archived / unblocked are claimed (so the cursor advances past them) but
@@ -554,8 +564,8 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, _KanbanNotification], tuple]] = {
         None, None,
     ),
     "gave_up": _fmt_gave_up,
-    "crashed": lambda ev, n: (t("gateway.kanban.ping.crashed", head=n.head), None, None),
-    "timed_out": _fmt_timed_out,
+    "crashed": lambda ev, n: (f"✖ {n.head} worker crashed (pid gone); retry queued", None, None),
+    "timed_out": _fmt_timeout,
     "status": lambda ev, n: (t("gateway.kanban.ping.status", head=n.head, status=_payload(ev, "status") or ""), None, None),
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
@@ -885,7 +895,6 @@ class _KanbanNotification:
                                self.task_id, self.board_slug, exc)
                 await self.rewind()
                 return
-
             # All text pings delivered (or skipped for non-push / wake-only).
             original_events = self.d["events"]
             from gateway.warning_notifications import warning_notifications_enabled

@@ -1865,7 +1865,10 @@ def _end_run(
     ``worker_pid`` / ``worker_started_at`` / ``claim_lock`` stay on the closed
     row: they are the only evidence left of the OS process once the task row
     is wiped, and :func:`kanban_db_dispatch.reap_terminal_workers` needs them
-    to end a worker that survived its own terminal transition."""
+    to end a worker that survived its own terminal transition.
+
+    When ``expected_run_id`` is set, refuse to close any other run so a stale
+    finalizer cannot end a successor attempt."""
     now = int(time.time())
     run_id = _current_run_id(conn, task_id)
     if run_id is None or (expected_run_id is not None and run_id != expected_run_id):
@@ -1887,7 +1890,10 @@ def _end_run(
     )
     if cur.rowcount != 1:
         return None
-    conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ? AND current_run_id = ?", (task_id, run_id))
+    conn.execute(
+        "UPDATE tasks SET current_run_id = NULL WHERE id = ? AND current_run_id = ?",
+        (task_id, run_id),
+    )
     return run_id
 
 

@@ -1430,11 +1430,9 @@ def _record_task_failure(
         else:
             effective_limit, limit_source = int(failure_limit), "dispatcher"
 
-        tripped = (not infrastructure) and (force_trip or failures >= effective_limit)
+        tripped = force_trip or failures >= effective_limit
         disposition = "blocked" if tripped else retry_status
         payload = {"error": error, "failures": failures, "retry_status": disposition}
-        if infrastructure:
-            payload["infrastructure"] = True
         if event_payload_extra:
             payload.update(event_payload_extra)
         payload["retry_status"] = disposition
@@ -1444,13 +1442,18 @@ def _record_task_failure(
         if tripped:
             payload.update(effective_limit=effective_limit, limit_source=limit_source,
                            trigger_outcome=outcome)
+        if infrastructure:
+            # The early close below writes this payload as run metadata, so the
+            # flag must be present before ``_end_run`` rather than merged into
+            # the event afterwards.
+            payload["infrastructure"] = True
         run_id = None
         if end_run:
             # Close before accounting/event append, in the same transaction.
             # A lost CAS must not spend a retry or announce a stale timeout.
             run_id = _kb._end_run(
                 conn, task_id, outcome="gave_up" if tripped else outcome,
-                status="gave_up" if tripped else outcome,
+
                 error=error, metadata=payload, expected_run_id=expected_run_id,
             )
             if run_id is None:
@@ -1474,10 +1477,11 @@ def _record_task_failure(
                 )
             # Timeout/crash path's caller already emitted its own event.
             if end_run:
-                _kb._append_event(
-                    conn, task_id, outcome, payload,
-                    run_id=run_id,
-                )
+                detail = {"failures": failures, "retry_status": retry_status}
+                if infrastructure:
+                    detail["infrastructure"] = True
+                payload.update(detail)
+                _kb._append_event(conn, task_id, outcome, payload, run_id=run_id)
             return False
 
         # Spawn path (release_claim) is still running and also clears claim

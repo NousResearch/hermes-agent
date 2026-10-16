@@ -31,6 +31,8 @@ from agent.error_classifier import (
     _extract_status_code)
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
+from agent.chat_completion_stale_breaker import (
+    _bump_stale_streak, _check_stale_giveup, _reset_stale_streak, _resolve_stale_on_responsive_error, _stale_streak)
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
@@ -543,29 +545,8 @@ def _estimate_chunk_bytes(chunk: Any) -> int:
 
 
 # ── Cross-turn stale-call circuit breaker (#58962) ─────────────────────
-# A session wedged against an unresponsive provider would otherwise hit the
-# stale detector on every call forever. ``agent._consecutive_stale_streams``
-# is bumped on every stale kill and reset only when a call completes or the
-# provider is swapped (switch_model / try_activate_fallback /
-# restore_primary_runtime — the streak measured the OLD provider). Past the
-# give-up threshold, calls abort immediately with an actionable error.
-
-def _stale_streak(agent) -> int:
-    try:
-        return int(getattr(agent, "_consecutive_stale_streams", 0) or 0)
-    except Exception:
-        return 0
-
-
-def _bump_stale_streak(agent) -> None:
-    with contextlib.suppress(Exception):
-        agent._consecutive_stale_streams = _stale_streak(agent) + 1
-
-
-def _reset_stale_streak(agent) -> None:
-    with contextlib.suppress(Exception):
-        agent._consecutive_stale_streams = 0
-
+# Streak, give-up gate and half-open probe: agent/chat_completion_stale_breaker.py.
+# The stale-kill and interrupted-wait paths below feed it.
 
 _INTERRUPTED_WAIT_STALE_SECONDS = 30.0
 
@@ -603,19 +584,6 @@ def _touch_stale_kill_activity(agent, elapsed: float) -> None:
         agent._touch_activity(f"stale non-streaming call killed after {int(elapsed)}s")
     except Exception:
         logger.debug("stale activity touch failed", exc_info=True)
-
-
-def _check_stale_giveup(agent) -> None:
-    """Raise immediately when the consecutive-stale streak is past the
-    give-up threshold — no network attempt, no stale-timeout wait."""
-    _giveup = env_int("HERMES_STREAM_STALE_GIVEUP", 5)
-    _streak = _stale_streak(agent)
-    if _giveup > 0 and _streak >= _giveup:
-        raise RuntimeError(
-            "Provider has been unresponsive (no response received) for "
-            f"{_streak} consecutive stale attempts — aborting this call to "
-            "avoid an indefinite stall. Switch models or start a new session, then retry."
-        )
 
 
 def _stream_env_stale_base() -> tuple[float, bool]:
@@ -1038,7 +1006,7 @@ def direct_api_call(agent, api_kwargs: dict):
     succeeded = False
     try:
         response = _dispatch_nonstreaming_api_request(agent, api_kwargs, make_client=request.make_client)
-    except Exception:
+    except Exception as _api_exc:
         if getattr(agent, "_interrupt_requested", False):
             raise InterruptedError("Agent interrupted during API call") from None
         with request.lock:
@@ -1049,6 +1017,9 @@ def direct_api_call(agent, api_kwargs: dict):
             raise TimeoutError(
                 f"Non-streaming API call timed out after {int(time.time() - call_start)}s with no response "
                 f"(threshold: {int(stale_timeout)}s)") from None
+        # A real HTTP response (429/5xx/4xx) proves the provider reachable —
+        # resolve the stale condition (see _resolve_stale_on_responsive_error).
+        _resolve_stale_on_responsive_error(agent, _api_exc)
         raise
     else:
         if getattr(agent, "_interrupt_requested", False):
@@ -2699,7 +2670,11 @@ class _BedrockStream:
         self.last_event = time.time()
         # Raises RuntimeError past HERMES_STREAM_STALE_GIVEUP; otherwise end
         # THIS call with a TimeoutError and let the streak carry forward.
-        _check_stale_giveup(agent)
+        # Mid-call: never probe — this path is already ending the call as
+        # stale (TimeoutError below), so an admitted probe could never
+        # dispatch; it would only consume the window's single claim and
+        # delay real recovery by a full cooldown.
+        _check_stale_giveup(agent, allow_probe=False)
         self.result["error"] = TimeoutError(
             f"Bedrock stream produced no events for {int(stale_elapsed)}s (threshold {int(self.stale_timeout)}s) "
             f"— aborting stalled stream so the retry/fallback path can recover.")
@@ -2718,6 +2693,10 @@ class _BedrockStream:
         # (on_interrupt_check), so the in-loop raise may never fire. Re-check (#59999 area).
         self._raise_if_interrupted("Agent interrupted during Bedrock API call (post-worker)")
         if self.result["error"] is not None:
+            # Mirrors the non-streaming path: an authoritative Bedrock HTTP
+            # response resolves the stale condition (see
+            # _resolve_stale_on_responsive_error).
+            _resolve_stale_on_responsive_error(self.agent, self.result["error"])
             raise self.result["error"]
         # Success clears the cross-turn breaker (#58962).
         if self.result["response"] is not None:
@@ -3981,6 +3960,10 @@ class _StreamingCall(StreamingWaitMonitor):
         if self.result["error"] is not None:
             if self.deltas_were_sent["yes"]:
                 return self._partial_stream_stub()
+            # Mirrors the non-streaming path: an authoritative provider HTTP
+            # response resolves the stale condition (see
+            # _resolve_stale_on_responsive_error).
+            _resolve_stale_on_responsive_error(self.agent, self.result["error"])
             raise self.result["error"]
         if self.result["response"] is not None:
             _reset_stale_streak(self.agent)  # provider proved responsive: clear the breaker

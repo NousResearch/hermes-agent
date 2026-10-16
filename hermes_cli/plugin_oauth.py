@@ -160,10 +160,13 @@ def oauth_notice(manifest: Mapping[str, Any]) -> str:
 
 
 def oauth_surface(manifest: Mapping[str, Any]) -> set[str]:
-    """One line per client for the re-pin consent delta: a new entry, or a changed token host, hosts or scopes,
-    shows up as added. Any other change only alters the fingerprint, so the user signs in again."""
-    return {f"{c.id} ({urlparse(c.token_url).hostname} -> {', '.join(c.hosts)}; {' '.join(c.scopes)})"
-            for c in parse_oauth_clients(manifest)[0]}
+    """One line per client for the re-pin consent delta: a new entry, or a changed authorize host, token host,
+    hosts or scopes, shows up as added. Any other change only alters the fingerprint, so the user signs in again."""
+    lines: set[str] = set()
+    for c in parse_oauth_clients(manifest)[0]:
+        idp_hosts = ", ".join(dict.fromkeys(urlparse(url).hostname for url in (c.authorize_url, c.token_url)))
+        lines.add(f"{c.id} ({idp_hosts} -> {', '.join(c.hosts)}; {' '.join(c.scopes)})")
+    return lines
 
 
 def _declared_env_names(manifest: Mapping[str, Any]) -> set[str]:

@@ -26,6 +26,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_graph import decompose_triage_task
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import profiles as profiles_mod
+from hermes_cli.kanban_assignee_gate import reserved_and_unspawnable
 from hermes_cli.kanban_specify import (
     _call_aux, _extract_json_blob, _load_triage_task, _task_prompt_fields, _title_body,
 )
@@ -155,7 +156,13 @@ def _resolve_profile_from_cfg(cfg: dict, key: str, *, fallback: Optional[str] = 
 
 def _build_roster() -> tuple[list[dict], set[str]]:
     """``(roster_for_prompt, valid_assignee_names)``; entries are
-    ``{name, description, has_description}``."""
+    ``{name, description, has_description}``.
+
+    ``valid_assignee_names`` stays "every profile that exists" — both callers
+    (``_normalize_assignee_choice``, and the "picked unknown assignee" info log)
+    mean exactly that by it. Only the OFFERED roster drops reserved,
+    unspawnable names; the two lists are different questions.
+    """
     try:
         all_profiles = profiles_mod.list_profiles()
     except Exception as exc:
@@ -163,6 +170,13 @@ def _build_roster() -> tuple[list[dict], set[str]]:
         return [], set()
     roster = []
     for p in all_profiles:
+        # Never offer a reserved, unspawnable name to the decomposer: offering
+        # `hermes` is how a child gets filed into a lane that dies
+        # spawn_failed. `default` is reserved-but-spawnable and is kept.
+        # The refusal itself is the write path's job (kanban_assignee_gate);
+        # this is only about not tempting the LLM with a dead lane.
+        if reserved_and_unspawnable(p.name):
+            continue
         desc = (p.description or "").strip()
         roster.append({
             "name": p.name,

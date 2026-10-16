@@ -79,6 +79,14 @@ def read_active_work(home: Optional[Path] = None) -> Optional[list]:
         return None
 
 
+def _tui_command(home: Optional[Path]) -> str:
+    """The TUI command that opens *home*'s profile: a bare ``hermes`` opens the default one."""
+    from hermes_constants import profile_name_for_home
+
+    name = profile_name_for_home(home)
+    return f"hermes -p {name} --tui" if name and name != "default" else "hermes --tui"
+
+
 def format_drain_report(work: Optional[list], *, remaining_s: float, home: Optional[Path] = None) -> str:
     """Multi-line progress block: what the gateway is waiting on plus how to stop waiting."""
     lines = [f"  ⏳ still draining — {max(remaining_s, 0):.0f}s left before the forced restart"]
@@ -93,7 +101,7 @@ def format_drain_report(work: Optional[list], *, remaining_s: float, home: Optio
             # The draining gateway stays reachable for this (#139041): a chat turn parked on an
             # approval/clarify is answered from a client, not waited out.
             lines.append("     a chat turn waiting on an approval or clarify question can be answered now: "
-                         "open it with `hermes --tui` (resume the session)")
+                         f"open it with `{_tui_command(home)}` (resume the session)")
         lines.append("     finish or kill the work above to release the drain now; "
                      "agent.restart_after_turn_timeout in config.yaml caps this wait")
     return "\n".join(lines)

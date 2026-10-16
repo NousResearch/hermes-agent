@@ -220,3 +220,17 @@ async def test_restart_wait_queues_only_interactive_input(tmp_path, monkeypatch)
         assert list_session_admissions(db, session_id="s") == []
     finally:
         db.close()
+
+
+def test_update_drain_hint_names_the_draining_profile(tmp_path, monkeypatch):
+    """The updater's hint opens the profile whose gateway holds the parked turn: a bare
+    ``hermes --tui`` opens the default profile, where that session isn't listed (#139041)."""
+    from hermes_cli.update_cmd_drain_report import format_drain_report
+
+    root = tmp_path / ".hermes"
+    (root / "profiles" / "work").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    work = [{"kind": "chat", "session": "s1"}]
+    assert "`hermes -p work --tui`" in format_drain_report(work, remaining_s=60, home=root / "profiles" / "work")
+    assert "`hermes --tui`" in format_drain_report(work, remaining_s=60, home=root)

@@ -846,7 +846,7 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
 
 
 def _apply_transform_tool_result_hook(function_name: str, function_args: dict[str, Any], result: Any, duration_ms: int,
-                                      ids: _CallIds) -> Any:
+                                      ids: _CallIds, available_tools: Optional[list[str]] = None) -> Any:
     """transform_tool_result: plugins may replace the final result string.
 
     Runs after post_tool_call and before the result enters context. Fail-open;
@@ -858,7 +858,8 @@ def _apply_transform_tool_result_hook(function_name: str, function_args: dict[st
             status, error_type, error_message = _tool_result_observer_fields(function_name, result)
             hook_results = invoke_hook("transform_tool_result", tool_name=function_name, args=function_args,
                                        result=result, **ids.hook_kwargs(), duration_ms=duration_ms,
-                                       status=status, error_type=error_type, error_message=error_message)
+                                       available_tools=available_tools, status=status,
+                                       error_type=error_type, error_message=error_message)
             return next((r for r in hook_results if isinstance(r, str)), result)
     except Exception as _hook_err:
         logger.debug("transform_tool_result hook error: %s", _hook_err)
@@ -956,7 +957,8 @@ def handle_function_call(
                                enabled_tools=enabled_tools, skip_tool_execution_middleware=skip_tool_execution_middleware)
         duration_ms = _elapsed_ms(start)
         _emit(result, duration_ms=duration_ms)
-        return _apply_transform_tool_result_hook(function_name, function_args, result, duration_ms, ids)
+        return _apply_transform_tool_result_hook(
+            function_name, function_args, result, duration_ms, ids, available_tools=enabled_tools)
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {e!s}"

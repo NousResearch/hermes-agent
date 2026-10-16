@@ -1608,6 +1608,12 @@ Not every backend accepts a prompt. `local` maps it to faster-whisper's `initial
 
 ### `transform_tool_result`
 
+The optional `available_tools: list[str] | None` keyword describes the calling
+session's model-visible tools. `None` means unknown; an empty list means none.
+A plugin that replaces output with a retrieval handle must leave the original
+output intact unless its retrieval tool is present. This field does not grant
+additional tools or override disabled toolsets.
+
 Fires **after** a tool returns and **before** the result is appended to the conversation. Lets a plugin rewrite ANY tool's result string — not just terminal output — before the model sees it.
 
 **Callback signature:**

@@ -123,8 +123,10 @@ import { desktopSettings } from './settings'
 
 /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
 export { PANES_AREA, STATUSBAR_AREAS, TITLEBAR_AREAS } from './areas'
-/** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
-export type * from './plugin-contract'
+// Every contribution surface, plugin-reachable: register keybinds, palette
+// commands, routes, themes, panes, composer extensions, and bar items with
+// the same area ids + payload types core uses.
+export * from './composer-contrib'
 
 // -- state: readonly views over the app's live atoms -------------------------
 
@@ -1572,10 +1574,12 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
-export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
+/** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
+export type * from './plugin-contract'
 
 // -- ui: the design language --------------------------------------------------
 
+export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
 export type { DesktopSettingKey, DesktopSettingValues } from './settings'
 /** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
  *  lists, full-skill detail pane, embedded hub picker with one-click
@@ -1593,18 +1597,7 @@ export { CapabilitiesView } from '@/app/capabilities'
  *  dialog); pass a live `gateway` (see `host.getGateway()`) and the `profile`
  *  to scope it to one bot. */
 export { ConnectorsTab } from '@/app/capabilities/connectors/connectors-tab'
-// Every contribution surface, plugin-reachable: register keybinds, palette
-// commands, routes, themes, panes, composer extensions, and bar items with
-// the same area ids + payload types core uses.
-export {
-  COMPOSER_AREAS,
-  type ComposerAtCompletionItem,
-  type ComposerAtCompletionSource,
-  type ComposerAttachmentProvider,
-  type ComposerMiddleware,
-  type ComposerModelPillContext,
-  type ComposerModelPillProvider
-} from '@/app/chat/composer/contrib'
+
 /** THE session status dot — the one primitive the sidebar row, the pane tabs
  *  and the session switcher render, so a session's status can never disagree
  *  between surfaces. Pass the STORED session id and it resolves the rest

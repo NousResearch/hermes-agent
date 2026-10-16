@@ -8,6 +8,9 @@ const mocks = vi.hoisted(() => ({
   clearDraft: vi.fn(),
   conversationSubmits: [] as Array<(text: string) => Promise<void>>,
   onSubmit: vi.fn(async () => true),
+  onInterrupt: vi.fn(async () => undefined),
+  endConversation: vi.fn(async () => undefined),
+  notifyError: vi.fn(),
   resetBrowseState: vi.fn(),
   triggerHaptic: vi.fn()
 }))
@@ -25,6 +28,7 @@ vi.mock('nanostores', async () => {
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
+      common: { error: 'Error', retry: 'Retry' },
       assistant: { thread: { readAloudFailed: '' } },
       notifications: { voice: { sayStopToEnd: () => '' } },
       settings: { config: { autosaveFailed: '' } }
@@ -68,7 +72,7 @@ vi.mock('@/store/gateway', () => ({
 
 vi.mock('@/store/notifications', () => ({
   notify: vi.fn(),
-  notifyError: vi.fn()
+  notifyError: mocks.notifyError
 }))
 
 vi.mock('@/store/voice-prefs', () => ({
@@ -100,7 +104,7 @@ vi.mock('./use-voice-conversation', () => ({
     mocks.conversationSubmits.push(onSubmit)
 
     return {
-      end: vi.fn(async () => undefined),
+      end: mocks.endConversation,
       level: 0,
       muted: false,
       start: vi.fn(async () => undefined),
@@ -118,6 +122,26 @@ vi.mock('./use-voice-recorder', () => ({
     voiceStatus: 'idle'
   })
 }))
+
+function renderVoice() {
+  return renderHook(
+    ({ sessionId, disabled }) =>
+      useComposerVoice({
+        busy: false,
+        clearDraft: mocks.clearDraft,
+        disabled,
+        focusInput: vi.fn(),
+        insertText: vi.fn(),
+        maxRecordingSeconds: 60,
+        onInterrupt: mocks.onInterrupt,
+        onSubmit: mocks.onSubmit,
+        onTranscribeAudio: vi.fn(async () => ''),
+        sessionId,
+        target: 'tile:test'
+      }),
+    { initialProps: { sessionId: 'session-1', disabled: false } }
+  )
+}
 
 describe('useComposerVoice voice submission', () => {
   afterEach(() => {
@@ -159,5 +183,95 @@ describe('useComposerVoice voice submission', () => {
 
     expect(mocks.onSubmit).toHaveBeenCalledTimes(1)
     expect(mocks.clearDraft).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['submit', 'interrupt'] as const)(
+    'reports rejected plugin %s callbacks without an unhandled rejection',
+    async action => {
+      const failure = new Error('callback failed')
+
+      if (action === 'submit') {
+        mocks.onSubmit.mockRejectedValueOnce(failure)
+      } else {
+        mocks.onInterrupt.mockRejectedValueOnce(failure)
+      }
+
+      const hook = renderVoice()
+      await act(async () => {
+        const accepted =
+          action === 'submit'
+            ? hook.result.current.voiceController.submitText('hello')
+            : hook.result.current.voiceController.interrupt()
+
+        expect(accepted).toBe(true)
+      })
+      expect(mocks.notifyError).toHaveBeenCalledWith(failure, 'Error')
+    }
+  )
+
+  it('rejects retained plugin controllers after navigation, disable and unmount', () => {
+    const hook = renderVoice()
+    const first = hook.result.current.voiceController
+    hook.rerender({ sessionId: 'session-2', disabled: false })
+    expect(first.submitText('stale')).toBe(false)
+    expect(first.interrupt()).toBe(false)
+    const second = hook.result.current.voiceController
+    hook.rerender({ sessionId: 'session-2', disabled: true })
+    expect(second.submitText('disabled')).toBe(false)
+    hook.rerender({ sessionId: 'session-2', disabled: false })
+    const third = hook.result.current.voiceController
+    hook.unmount()
+    expect(third.submitText('unmounted')).toBe(false)
+    expect(mocks.onSubmit).not.toHaveBeenCalled()
+    expect(mocks.onInterrupt).not.toHaveBeenCalled()
+  })
+
+  it('keeps retained plugin controllers from acquiring the mic during native voice', async () => {
+    const hook = renderVoice()
+    const controller = hook.result.current.voiceController
+    act(() => hook.result.current.startConversation())
+    await expect(controller.acquire()).resolves.toBeNull()
+  })
+
+  it('reserves native capture across composers until the native engine has stopped', async () => {
+    let stopped!: () => void
+
+    const stopping = new Promise<void>(resolve => {
+      stopped = resolve
+    })
+
+    mocks.endConversation.mockImplementation(() => stopping)
+    const native = renderVoice()
+    const plugin = renderVoice()
+    act(() => native.result.current.startConversation())
+    await expect(plugin.result.current.voiceController.acquire()).resolves.toBeNull()
+    act(() => native.result.current.endConversation())
+    await act(async () => {
+      await Promise.resolve()
+    })
+    await expect(plugin.result.current.voiceController.acquire()).resolves.toBeNull()
+    await act(async () => {
+      stopped()
+    })
+    const lease = await plugin.result.current.voiceController.acquire()
+    expect(lease).not.toBeNull()
+    lease?.release()
+    mocks.endConversation.mockResolvedValue(undefined)
+  })
+
+  it('offers retry when native teardown fails without releasing a potentially live mic', async () => {
+    const failure = new Error('teardown failed')
+    mocks.endConversation.mockRejectedValueOnce(failure)
+    const native = renderVoice()
+    const plugin = renderVoice()
+    act(() => native.result.current.startConversation())
+    await act(async () => native.unmount())
+    await expect(plugin.result.current.voiceController.acquire()).resolves.toBeNull()
+    const retry = mocks.notifyError.mock.calls.find(call => call[0] === failure)?.[2]?.action
+    expect(retry?.label).toBe('Retry')
+    await act(async () => retry.onClick())
+    const lease = await plugin.result.current.voiceController.acquire()
+    expect(lease).not.toBeNull()
+    lease?.release()
   })
 })

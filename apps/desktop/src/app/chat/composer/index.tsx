@@ -118,6 +118,7 @@ import {
   resolveExactLinkPaste,
   selectionLinkLabel
 } from './url-refs'
+import { ComposerVoiceActions } from './voice-actions'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
 export function ChatBar({
@@ -1085,6 +1086,7 @@ export function ChatBar({
     endConversation,
     handleToggleAutoSpeak,
     startConversation,
+    voiceController,
     voiceActivityState,
     voiceConversationActive,
     voiceStatus
@@ -1509,15 +1511,7 @@ export function ChatBar({
                       <ContribSlot area={COMPOSER_AREAS.leading} />
                     </div>
                     <div className="min-w-0 [grid-area:input]">{input}</div>
-                    {/* `justify-end` packs contributed actions and the send cluster
-                      together on the right. The cluster must not carry its own
-                      `ml-auto`: in the stacked layout the auto margin absorbs the
-                      row's free space and pins a contributed action to the row
-                      start, detached from the cluster (#116332). */}
-                    <div className="flex min-w-0 items-center justify-end gap-(--composer-control-gap) [grid-area:controls]">
-                      <ContribSlot area={COMPOSER_AREAS.actions} />
-                      {controls}
-                    </div>
+                    <ComposerVoiceActions controller={voiceController}>{controls}</ComposerVoiceActions>
                   </div>
                   <ContribSlot area={COMPOSER_AREAS.bottom} />
                 </div>

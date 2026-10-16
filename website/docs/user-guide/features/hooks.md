@@ -475,7 +475,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
 | `subagent_stop` | Observer | Child exit; return ignored. | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary and redacted tool-history metadata may reveal project structure. |
-| `pre_gateway_dispatch` | Directive/control | Incoming non-internal message before auth/pairing/dispatch; first valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
+| `pre_gateway_dispatch` | Directive/control | Once per incoming non-internal message, at ingress: platform-adapter messages before auth/pairing/dispatch; webhook and relay deliveries after their authorization, before the admission commits; never for local CLI/TUI/Desktop or API turns, a retry of a committed delivery, or a queued admission when it executes. First valid `skip`, `rewrite`, or `allow` controls flow. | `event`, `gateway`, `session_store` | Extremely privileged in-process objects expose inbound user/routing data and host handles. |
 | `post_gateway_admission` | Directive/control (fail-open) | Admitted non-internal message after auth, pause/drain, pending-reply, running-session and slash-command lanes, inside the claimed session slot and the routed profile's scope; first `handled` result skips the agent turn, anything else (including a raise or timeout) runs it. | `session_key`, `platform`, `source` (dict snapshot), `message_id`, `text` | Inbound text is untrusted user data; no runner or session-store handles are passed. |
 | `gateway_platform_event` | Observer | After the gateway's profile-scoped authorization succeeds, when a supported platform-native event is normalized at the gateway boundary (Telegram: reactions, message edits; Discord: message edits/deletes, thread created/renamed); return ignored. | `platform`, `event_type`, `payload` (event-type-specific dict — see the per-event contracts below) | Normalized plain-dict envelope only; raw SDK objects, adapter handles, and bot clients are never exposed. |
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
@@ -1234,7 +1234,7 @@ With heavy delegation (e.g. orchestrator roles × 5 leaves × nested depth), `su
 
 ### `pre_gateway_dispatch`
 
-Fires **once per incoming `MessageEvent`** in the gateway, after the internal-event guard but **before** auth/pairing and agent dispatch. This is the interception point for gateway-level message-flow policies (listen-only windows, human handover, per-chat routing, etc.) that don't fit cleanly into any single platform adapter.
+Fires **once per incoming `MessageEvent`** in the gateway, at ingress, after the internal-event guard and before the message is admitted or dispatched. Where it runs relative to authorization depends on how the message arrived (see **Fires** below). This is the interception point for gateway-level message-flow policies (listen-only windows, human handover, per-chat routing, etc.) that don't fit cleanly into any single platform adapter.
 
 **Callback signature:**
 
@@ -1248,7 +1248,14 @@ def my_callback(event, gateway, session_store, **kwargs):
 | `gateway` | `GatewayRunner` | The active gateway runner, so plugins can call `gateway.adapters[platform].send(...)` for side-channel replies (owner notifications, etc.). |
 | `session_store` | `SessionStore` | For silent transcript ingestion via `session_store.append_to_transcript(...)`. |
 
-**Fires:** In `gateway/run.py`, inside `GatewayRunner._handle_message()`, immediately after `is_internal` is computed. **Internal events skip the hook entirely** (they are system-generated — background-process completions, etc. — and must not be gate-kept by user-facing policy).
+**Fires:** **Internal events skip the hook entirely** (they are system-generated — background-process completions, etc. — and must not be gate-kept by user-facing policy). Otherwise:
+
+| Path | When the hook runs |
+|------|--------------------|
+| Platform adapters (Telegram, Discord, Slack, …) and relay slash commands | In `GatewayRunner._handle_message()` (`_hm_admit_event` in `gateway/run_inbound.py`), **before** auth/pairing, so a plugin can handle unauthorized senders. |
+| Webhook deliveries and relay messages | In `admit_producer` (`gateway/platforms/webhook_ingress.py`), **after** the delivery's authorization and **before** its admission commits: a refused sender never reaches the hook, a skipped delivery is never admitted, and a rewrite is what gets admitted. A provider retry or relay re-send of a delivery that was already admitted resolves to that admission without calling the hook again. On the relay, admission with a registered hook runs off the relay socket reader, so a callback may await `gateway.adapters[...].send(...)`; one chat's messages still wait for each other, in arrival order. |
+| Local CLI, TUI, Desktop and API-server turns | Never. |
+| A queued admission when it executes (first run or restart replay) | Never: the message already passed the hook at ingress, so a `skip` can't drop admitted input. |
 
 **Return value:** `None` or a dict. The first recognized action dict wins; remaining plugin results are ignored. Exceptions in plugin callbacks are caught and logged; the gateway always falls through to normal dispatch on error.
 
@@ -1256,13 +1263,13 @@ Callbacks may be `async def`: they are awaited on the gateway's own event loop, 
 
 | Return | Effect |
 |--------|--------|
-| `{"action": "skip", "reason": "..."}` | Drop the message — no agent reply, no pairing flow, no auth. Plugin is assumed to have handled it (e.g. silent-ingested into the transcript). |
+| `{"action": "skip", "reason": "..."}` | Drop the message — no agent reply, no pairing flow, no auth (a webhook or relay delivery is acknowledged and never admitted). Plugin is assumed to have handled it (e.g. silent-ingested into the transcript). |
 | `{"action": "rewrite", "text": "new text"}` | Replace `event.text`, then continue normal dispatch with the modified event. Useful for collapsing buffered ambient messages into a single prompt. |
-| `{"action": "allow"}` / `None` | Normal dispatch — runs the full auth / pairing / agent-loop chain. |
+| `{"action": "allow"}` / `None` | Normal dispatch — runs the rest of the auth / pairing / agent-loop chain. |
 
 **Use cases:** Listen-only group chats (only respond when tagged; buffer ambient messages into context); human handover (silent-ingest customer messages while owner handles the chat manually); per-profile rate limiting; policy-driven routing.
 
-**Example — drop unauthorized DMs silently without triggering the pairing code:**
+**Example — drop unauthorized DMs silently without triggering the pairing code** (platform-adapter messages; a refused webhook or relay sender never reaches the hook):
 
 ```python
 def deny_unauthorized_dms(event, **kwargs):
@@ -1385,7 +1392,7 @@ def my_callback(
 | `pattern_key` | `str` | Primary pattern key that triggered the approval (e.g. `"rm_rf"`, `"sudo"`) |
 | `pattern_keys` | `list[str]` | All pattern keys that matched |
 | `session_key` | `str` | Session identifier, useful for scoping notifications per-chat |
-| `surface` | `str` | `"cli"` for classic interactive-CLI prompts (dangerous commands, protected agent-instruction writes, consent prompts), `"gateway"` for async platform approvals (the Ink TUI and Desktop app also report `"gateway"` today), `"smart"` for auxiliary-LLM auto approve/deny decisions, or the caller's consent surface for MCP/vault prompts (`"mcp-elicitation/<server>"`, `"mcp-trust/<server>"`, `"vault-payment"`) |
+| `surface` | `str` | `"cli"` for classic CLI sessions (dangerous commands, protected agent-instruction writes, consent prompts; also when the gateway renders the prompt for that session), `"gateway"` for async platform approvals (the Ink TUI and Desktop app also report `"gateway"` today), `"smart"` for auxiliary-LLM auto approve/deny decisions, or the caller's consent surface for MCP/vault prompts (`"mcp-elicitation/<server>"`, `"mcp-trust/<server>"`, `"vault-payment"`) |
 
 **Return value:** ignored. Hooks here are observer-only; they cannot veto or pre-answer the approval. Use [`pre_tool_call`](#pre_tool_call) to block a tool before it reaches the approval system.
 

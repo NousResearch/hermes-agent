@@ -200,8 +200,8 @@ def _clean(value: Any) -> str:
 DIRECT_ALIASES: dict[str, DirectAlias] = {}
 
 
-def _load_direct_aliases() -> dict[str, DirectAlias]:
-    """Load direct aliases from config.yaml.
+def _load_direct_aliases(cfg: Optional[dict] = None) -> dict[str, DirectAlias]:
+    """Load direct aliases from config.yaml (or from the caller's *cfg* snapshot).
 
     ``model_aliases:`` entries are dicts (``model``, ``provider``, ``base_url``, optional
     ``api_key`` — literal or ``"${VAR}"`` — / ``key_env``); with neither credential field the key
@@ -213,8 +213,9 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
     """
     merged = dict(_BUILTIN_DIRECT_ALIASES)
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
+        if cfg is None:
+            from hermes_cli.config import load_config
+            cfg = load_config()
 
         user_aliases = cfg.get("model_aliases")
         if isinstance(user_aliases, dict):
@@ -357,7 +358,7 @@ class StartupModelRoute(NamedTuple):
 def resolve_startup_model_route(
     raw_model: str, *, explicit_provider: str = "", current_provider: str = "",
     user_providers: Optional[dict] = None,
-    custom_providers: Optional[list] = None) -> Optional[StartupModelRoute]:
+    custom_providers: Optional[list] = None, alias_config: Optional[dict] = None) -> Optional[StartupModelRoute]:
     """Resolve aliases, ``provider:model`` and configured ``provider/model`` input at startup.
 
     ``HermesCLI`` is constructed before the interactive ``/model`` pipeline runs; resolving here
@@ -365,13 +366,16 @@ def resolve_startup_model_route(
     model. ``provider/model`` strings are consumed only for providers present in user config. When
     ``current_provider`` is a routing aggregator and the raw string is an aggregator-native slug
     (``anthropic/claude-opus-4.6`` on OpenRouter) the input stays on the aggregator — a
-    ``providers:`` block for the same vendor must not steal the route."""
+    ``providers:`` block for the same vendor must not steal the route. ``alias_config`` is a
+    caller's config snapshot to read aliases from instead of the process-global cache."""
     raw = _clean(raw_model)
     if not raw:
         return None
 
-    _ensure_direct_aliases()
-    direct = DIRECT_ALIASES.get(raw.lower())
+    if alias_config is None:
+        _ensure_direct_aliases()
+    aliases = DIRECT_ALIASES if alias_config is None else _load_direct_aliases(alias_config)
+    direct = aliases.get(raw.lower())
     if direct is not None:
         if explicit_provider:
             # An explicit --provider wins over the alias's own label; the alias contributes

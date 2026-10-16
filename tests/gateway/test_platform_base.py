@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,6 +13,8 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
     cache_image_from_bytes,
+    cache_media_bytes,
+    media_path_for_log,
     safe_url_for_log,
     utf16_len,
     _prefix_within_utf16_limit,
@@ -49,6 +52,96 @@ class TestInboundMediaSizeCap:
             cache_image_from_bytes(self._PNG, ext=".png")
 
 
+class TestImageCacheFilename:
+    _PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 64
+
+    def test_preserves_a_sanitized_inbound_filename_stem(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "IMAGE_CACHE_DIR", tmp_path)
+        path = cache_image_from_bytes(
+            self._PNG, ext=".png", filename="Screenshot 2026-09-15 at 11.12.26.png"
+        )
+
+        # Spaces collapse to "-" instead of vanishing: deleting them would glue the
+        # words into "Screenshot2026-09-15at11.12.26" and cost the readable,
+        # sortable capture timestamp the stem is preserved for.
+        assert re.fullmatch(
+            r"img_[0-9a-f]{12}_Screenshot-2026-09-15-at-11\.12\.26\.png",
+            os.path.basename(path),
+        )
+
+    def test_collapses_separator_runs_and_trims_the_edges(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "IMAGE_CACHE_DIR", tmp_path)
+        path = cache_image_from_bytes(
+            self._PNG, ext=".png", filename="  photo   from (phone) !!.png"
+        )
+
+        assert re.fullmatch(
+            r"img_[0-9a-f]{12}_photo-from-phone\.png", os.path.basename(path)
+        )
+
+    def test_drops_a_stem_that_sanitizes_to_nothing(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "IMAGE_CACHE_DIR", tmp_path)
+        emoji_only = cache_image_from_bytes(self._PNG, ext=".png", filename="\u4e2d\u6587\u56fe.png")
+        dots_only = cache_image_from_bytes(self._PNG, ext=".png", filename="...png")
+
+        assert re.fullmatch(r"img_[0-9a-f]{12}\.png", os.path.basename(emoji_only))
+        assert re.fullmatch(r"img_[0-9a-f]{12}\.png", os.path.basename(dots_only))
+
+    def test_strips_path_components_and_falls_back_without_a_filename(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "IMAGE_CACHE_DIR", tmp_path)
+        named_path = cache_image_from_bytes(self._PNG, ext=".png", filename="../../outside.png")
+        unnamed_path = cache_image_from_bytes(self._PNG, ext=".png")
+
+        assert re.fullmatch(r"img_[0-9a-f]{12}_outside\.png", os.path.basename(named_path))
+        assert re.fullmatch(r"img_[0-9a-f]{12}\.png", os.path.basename(unnamed_path))
+
+    def test_limits_the_sanitized_stem_to_64_characters(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "IMAGE_CACHE_DIR", tmp_path)
+        path = cache_image_from_bytes(self._PNG, ext=".png", filename=f"{'a' * 80}.png")
+
+        assert re.fullmatch(r"img_[0-9a-f]{12}_a{64}\.png", os.path.basename(path))
+
+
+class TestMediaCacheFilenameReachesCaches:
+    _PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 64
+
+    def test_cache_media_bytes_keeps_the_stem_for_images(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "IMAGE_CACHE_DIR", tmp_path)
+        cached = cache_media_bytes(self._PNG, filename="Screenshot 2026-09-15 at 11.12.26.png")
+
+        assert cached.kind == "image"
+        assert re.fullmatch(
+            r"img_[0-9a-f]{12}_Screenshot-2026-09-15-at-11\.12\.26\.png",
+            os.path.basename(cached.path),
+        )
+
+    def test_log_form_drops_the_sender_chosen_stem(self, tmp_path, monkeypatch):
+        import gateway.platforms.base as base
+
+        monkeypatch.setattr(base, "IMAGE_CACHE_DIR", tmp_path)
+        path = cache_image_from_bytes(self._PNG, ext=".png", filename="Q4 Roadmap - John Smith FINAL v7.png")
+
+        assert "John" in path
+        logged = media_path_for_log(path)
+        assert "John" not in logged and "Roadmap" not in logged
+        assert re.fullmatch(r"img_[0-9a-f]{12}\.png", os.path.basename(logged))
+        assert os.path.dirname(logged) == os.path.dirname(path)
+
+    def test_log_form_leaves_unnamed_paths_alone(self):
+        assert media_path_for_log("/c/img_0123456789ab.png") == "/c/img_0123456789ab.png"
+        assert media_path_for_log("/c/doc_0123456789ab_report.pdf") == "/c/doc_0123456789ab.pdf"
 
 
 class TestSafeUrlForLog:

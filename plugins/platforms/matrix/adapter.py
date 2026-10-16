@@ -75,7 +75,7 @@ from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
-from gateway.platforms.base import transcode_to_ogg_opus
+from gateway.platforms.base import media_path_for_log, transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
@@ -2300,8 +2300,10 @@ class MatrixAdapter(BasePlatformAdapter):
         )
         if msg_type == MessageType.PHOTO:
             ext_map = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp"}
-            cached_path = await cache_image_from_bytes_async(file_bytes, ext=ext_map.get(media_type, ".jpg"))
-            logger.info("[Matrix] Cached user image at %s", cached_path)
+            cached_path = await cache_image_from_bytes_async(
+                file_bytes, ext=ext_map.get(media_type, ".jpg"), filename=body
+            )
+            logger.info("[Matrix] Cached user image at %s", media_path_for_log(cached_path))
             return cached_path
         if msg_type in {MessageType.AUDIO, MessageType.VOICE}:
             ext = Path(body or ("voice.ogg" if is_voice_message else "audio.ogg")).suffix or ".ogg"

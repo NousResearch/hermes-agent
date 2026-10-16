@@ -142,7 +142,7 @@ from agent.i18n import get_language, t
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult, classify_send_error, unauthorized_action_notice,
-    cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
+    cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_video_from_bytes_async, media_path_for_log, resolve_proxy_url, SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
 
@@ -6691,7 +6691,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         event.media_urls = [path]
         event.media_types = [mime]
         event.message_type = mtype
-        logger.info(log_fmt, path)
+        logger.info(log_fmt, media_path_for_log(path))
 
     async def _cache_inbound_document(self, msg, event: MessageEvent) -> bool:
         """Cache a document attachment (image → photo path, video, else generic media + text injection).
@@ -6717,7 +6717,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                 image_bytes = await file_obj.download_as_bytearray()
                 image_ext = ext if ext in _TELEGRAM_IMAGE_EXTENSIONS else _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, ".jpg")
                 try:
-                    cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=image_ext)
+                    cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=image_ext, filename=display)
                 except ValueError as e:
                     logger.warning("[Telegram] Failed to cache image document: %s", _redact_telegram_error_text(e), exc_info=True)
                     return await self._dispatch_with_text(event, f"Image document '{display}' could not be read as an image.")

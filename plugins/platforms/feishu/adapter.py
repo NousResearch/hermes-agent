@@ -88,7 +88,7 @@ from agent.i18n import t
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     SUPPORTED_DOCUMENT_TYPES, cache_document_from_bytes_async, cache_image_from_url,
-    cache_audio_from_bytes_async, cache_image_from_bytes_async,
+    cache_audio_from_bytes_async, cache_image_from_bytes_async, media_path_for_log,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.status import acquire_scoped_lock, release_scoped_lock
@@ -3116,7 +3116,7 @@ class FeishuAdapter(BasePlatformAdapter):
             content_type = self._get_response_header(response, "Content-Type")
             filename = getattr(response, "file_name", None) or f"{image_key}.jpg"
             ext = self._guess_extension(filename, content_type, ".jpg", allowed=_IMAGE_EXTENSIONS)
-            cached_path = await cache_image_from_bytes_async(raw_bytes, ext=ext)
+            cached_path = await cache_image_from_bytes_async(raw_bytes, ext=ext, filename=filename)
             return cached_path, self._normalize_media_type(content_type, default=self._default_image_media_type(ext))
         except Exception:
             logger.warning("[Feishu] Failed to cache image resource %s", image_key, exc_info=True)
@@ -3152,7 +3152,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
                 if media_type.startswith("image/"):
                     ext = self._guess_extension(filename, content_type, ".jpg", allowed=_IMAGE_EXTENSIONS)
-                    kind, cached_path = "image", await cache_image_from_bytes_async(raw_bytes, ext=ext)
+                    kind, cached_path = "image", await cache_image_from_bytes_async(raw_bytes, ext=ext, filename=filename)
                     media_type = media_type or self._default_image_media_type(ext)
                 elif request_type == "audio" or media_type.startswith("audio/"):
                     ext = self._guess_extension(filename, content_type, ".ogg", allowed=_AUDIO_EXTENSIONS)
@@ -3167,7 +3167,7 @@ class FeishuAdapter(BasePlatformAdapter):
                         filename = f"{filename}{_DOCUMENT_MIME_TO_EXT[media_type]}"
                     kind, cached_path = "document", await cache_document_from_bytes_async(raw_bytes, filename)
                     media_type = media_type or self._guess_document_media_type(filename)
-                logger.info("[Feishu] Cached message %s resource at %s", kind, cached_path)
+                logger.info("[Feishu] Cached message %s resource at %s", kind, media_path_for_log(cached_path))
                 return cached_path, media_type
             except Exception:
                 logger.warning("[Feishu] Failed to cache message resource %s/%s", message_id, file_key, exc_info=True)

@@ -617,8 +617,11 @@ def _secure_media_cache_dir(cache_dir: Path) -> None:
         cache_dir.mkdir(parents=True, exist_ok=True)
 
 
-def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> str:
-    """Write ``data`` to ``<cache_dir>/<prefix>_<uuid12><ext>``; return the path string.
+def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes,
+                      filename: str | None = None) -> str:
+    """Write ``data`` to ``<cache_dir>/<prefix>_<uuid12>[_<stem>]<ext>``; return the path string.
+
+    A safe stem of the sender-supplied ``filename`` is kept when given.
 
     The file is written owner-only (0600) — inbound media is private user
     content and the cache dir is hardened to 0700 by ``_secure_media_cache_dir``;
@@ -626,7 +629,18 @@ def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> st
     platforms where POSIX mode bits are advisory (Windows): falls back to a
     plain write rather than failing the media write.
     """
-    filepath = cache_dir / f"{prefix}_{uuid.uuid4().hex[:12]}{ext}"
+    # Disallowed runs collapse to a single "-" rather than being deleted. Deleting
+    # them glues words together ("Screenshot 2026-09-15 at 11.12.26" would become
+    # "Screenshot2026-09-15at11.12.26"), which costs the very thing the stem is
+    # kept for: a batch of screenshots that still reads, and still sorts, by its
+    # capture timestamp. Leading/trailing separators are trimmed, and a stem that
+    # sanitizes down to nothing (or to "." / "..") is dropped entirely.
+    stem = Path(filename if isinstance(filename, str) else "").stem
+    stem = stem.replace("\x00", "").strip()
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("-._")
+    stem = re.sub(r"-{2,}", "-", stem)[:64]
+    suffix = f"_{stem}" if stem and stem not in {".", ".."} else ""
+    filepath = cache_dir / f"{prefix}_{uuid.uuid4().hex[:12]}{suffix}{ext}"
     try:
         fd = os.open(str(filepath), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     except OSError:
@@ -637,19 +651,32 @@ def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> st
     return str(filepath)
 
 
-def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
+_CACHED_NAME_STEM_RE = re.compile(r"^([A-Za-z]+_[0-9a-f]{12})_.+$")
+
+
+def media_path_for_log(path: str) -> str:
+    """Return ``path`` with the sender-chosen filename stem removed (``img_<uuid>.<ext>``).
+
+    The stem kept on disk can carry a person's name or a project codename, so it stays out of logs.
+    """
+    p = Path(path)
+    m = _CACHED_NAME_STEM_RE.match(p.stem)
+    return str(p.with_name(f"{m.group(1)}{p.suffix}")) if m else str(path)
+
+
+def cache_image_from_bytes(data: bytes, ext: str = ".jpg", filename: str | None = None) -> str:
     """Save raw image bytes to the cache and return the absolute path; raises
     ValueError when *data* isn't an image (e.g. an upstream HTML error page)."""
     validate_inbound_media_size(len(data), media_type="image")
     if not _looks_like_image(data):
         snippet = data[:80].decode("utf-8", errors="replace")
         raise ValueError(f"Refusing to cache non-image data as {ext} (starts with: {snippet!r})")
-    return _write_cache_file(get_image_cache_dir(), "img", ext, data)
+    return _write_cache_file(get_image_cache_dir(), "img", ext, data, filename)
 
 
-async def cache_image_from_bytes_async(data: bytes, ext: str = ".jpg") -> str:
+async def cache_image_from_bytes_async(data: bytes, ext: str = ".jpg", filename: str | None = None) -> str:
     """Cache image bytes without blocking the caller's event loop."""
-    return await asyncio.to_thread(cache_image_from_bytes, data, ext)
+    return await asyncio.to_thread(cache_image_from_bytes, data, ext, filename)
 
 
 async def _cache_media_from_url(url: str, ext: str, retries: int, *, media_type: str, accept: str,
@@ -1554,7 +1581,7 @@ def cache_media_bytes(data: bytes, *, filename: str = "", mime_type: str = "",
             continue
         kind_ext = ext if ext in table else default_ext
         try:
-            path = cache_fn(data, ext=kind_ext)
+            path = cache_fn(data, ext=kind_ext, filename=filename) if kind == "image" else cache_fn(data, ext=kind_ext)
         except ValueError:
             if kind != "image":
                 raise

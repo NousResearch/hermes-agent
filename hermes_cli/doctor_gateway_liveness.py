@@ -9,7 +9,6 @@ count — and a TCP connect to 127.0.0.1 succeeds on every configured listener.
 
 from __future__ import annotations
 
-import os
 import socket
 from pathlib import Path
 
@@ -124,14 +123,16 @@ def _load_cfg(home: Path) -> dict:
     return cfg if isinstance(cfg, dict) else {}
 
 
-def _env_port(home: Path, *, active: bool) -> object:
-    """That home's ``A2A_PORT``. Process env only for the active home — under
-    multiplex ``os.environ`` is the launch profile and must not enable a secondary."""
+def _env_port(home: Path) -> object:
+    """``A2A_PORT`` from this home's ``.env`` only.
+
+    Process env is the launch profile under multiplex, so a secondary must not
+    inherit it. ``load_env_file`` is the shared tokenizer and does not touch
+    the environment.
+    """
     from agent.secret_scope import load_env_file
 
     raw = (load_env_file(home / ".env").get("A2A_PORT") or "").strip()
-    if not raw and active:
-        raw = (os.environ.get("A2A_PORT") or "").strip()
     if not raw:
         return None
     port = _coerce_port(raw)
@@ -171,12 +172,12 @@ def _scope() -> tuple[Path, list[Path]]:
     return default, homes
 
 
-def _port_for_home(home: Path, *, active: bool) -> object:
+def _port_for_home(home: Path) -> object:
     """Listener port, None when this home did not configure A2A, or ``_BAD``."""
     disabled, enabled, raw_port = _yaml_state(_load_cfg(home))
     if disabled:
         return None
-    env_port = _env_port(home, active=active)
+    env_port = _env_port(home)
     if env_port is not None:
         return env_port
     if not enabled:
@@ -186,12 +187,12 @@ def _port_for_home(home: Path, *, active: bool) -> object:
     return raw_port
 
 
-def _configured_listeners(homes: list[Path], active: Path) -> tuple[list[int], list[str]] | None:
+def _configured_listeners(homes: list[Path]) -> tuple[list[int], list[str]] | None:
     ports: list[int] = []
     errors: list[str] = []
     configured = False
     for home in homes:
-        choice = _port_for_home(home, active=_same_path(home, active))
+        choice = _port_for_home(home)
         if choice is None:
             continue
         configured = True
@@ -253,10 +254,8 @@ def _tcp_local_open(port: int) -> bool:
 
 def _liveness_problems() -> list[str] | None:
     """None when A2A is not configured. Empty when the gateway is actually up."""
-    from hermes_constants import get_hermes_home
-
     pid_home, homes = _scope()
-    found = _configured_listeners(homes, get_hermes_home())
+    found = _configured_listeners(homes)
     if found is None:
         return None
     ports, problems = found

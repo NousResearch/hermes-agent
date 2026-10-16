@@ -82,6 +82,17 @@ def test_unconfigured_gateway_stays_quiet(capsys):
     assert "Gateway Liveness" not in capsys.readouterr().out
 
 
+def test_process_env_alone_does_not_configure_a2a(monkeypatch, capsys):
+    # Under multiplex os.environ is the launch profile. A shell A2A_PORT must
+    # not make every home look configured.
+    monkeypatch.setenv("A2A_PORT", "9902")
+
+    finding = _run()
+
+    assert finding.issues == []
+    assert "Gateway Liveness" not in capsys.readouterr().out
+
+
 def test_explicit_disable_ignores_a2a_port(capsys):
     home = _root()
     (home / "config.yaml").write_text(

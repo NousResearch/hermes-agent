@@ -21,7 +21,7 @@ import threading
 import time
 import uuid
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple, TYPE_CHECKING, Union
+from typing import Any, Callable, Dict, Iterable, List, NamedTuple, Optional, Tuple, TYPE_CHECKING, Union, cast
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.error_classifier import (
@@ -8069,8 +8069,9 @@ def call_llm(
                 stream=stream, stream_options=stream_options, route_info=route_info,
             )
         if stream and semaphore is not None:
-            from agent.async_stream import _release_sync_semaphore_after_stream
+            from agent.async_stream import _release_sync_semaphore_after_stream, coerce_sync_stream
 
+            response = cast(Iterable[object], coerce_sync_stream(response))
             stream_semaphore = semaphore
             semaphore = None
             return _release_sync_semaphore_after_stream(response, stream_semaphore)

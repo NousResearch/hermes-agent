@@ -16,16 +16,21 @@ from run_agent import AIAgent
 
 
 class _AsyncStream:
-    def __init__(self) -> None:
+    def __init__(self, *, block_read_ahead: bool = False) -> None:
         self.owner = asyncio.get_running_loop()
         self.reads = 0
         self.closed = False
+        self.block_read_ahead = block_read_ahead
+        self.read_ahead = threading.Event()
 
     def __aiter__(self) -> "_AsyncStream":
         return self
 
     async def __anext__(self) -> ChatCompletionChunk:
         assert asyncio.get_running_loop() is self.owner
+        if self.block_read_ahead and self.reads == 1:
+            self.read_ahead.set()
+            await asyncio.Event().wait()
         if self.reads == 3:
             raise StopAsyncIteration
         self.reads += 1
@@ -52,17 +57,20 @@ def test_streaming_call_closes_abandoned_aggregator(
         for _ in range(chunks_to_consume):
             delivered.append(next(stream))
             yield delivered[-1]
+        if chunks_to_consume and managed and not codex_bypass:
+            assert opened[0].read_ahead.wait(5)
         raise KeyboardInterrupt("abandoned aggregator")
 
     monkeypatch.setattr(helpers, "_iter_provider_stream_chunks", abandon)
     # Codex bypasses the inner Relay seam; the outer facade must adapt that result.
-    for managed, codex_bypass in ((True, False), (False, False), (True, True)):
+    for managed, codex_bypass, limit in (
+        (True, False, 1), (True, False, 0), (False, False, 1), (True, True, 1),
+    ):
         delivered: list[object] = []
         opened: list[_AsyncStream] = []
-        home = tmp_path / f"{managed}-{codex_bypass}"
+        home = tmp_path / f"{managed}-{codex_bypass}-{limit}"
         home.mkdir()
         # Exercise the raw Relay failure too, without a semaphore wrapper hiding it.
-        limit = 0 if codex_bypass or (managed and chunks_to_consume) else 1
         (home / "config.yaml").write_text(
             "providers:\n  native-test:\n    base_url: http://127.0.0.1:1/v1\n"
             "    api_key: test-key\n"
@@ -74,7 +82,7 @@ def test_streaming_call_closes_abandoned_aggregator(
         monkeypatch.setenv("HERMES_HOME", str(home))
 
         async def create(**_kwargs: object) -> _AsyncStream:
-            source = _AsyncStream()
+            source = _AsyncStream(block_read_ahead=managed and not codex_bypass and bool(chunks_to_consume))
             opened.append(source)
             return source
 

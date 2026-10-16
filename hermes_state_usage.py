@@ -396,9 +396,11 @@ class SessionUsageMixin:
         if not session_id or not task:
             return
         usage["api_call_count"] = 1 if api_call_count is None else int(api_call_count)
-        # FK to sessions.id: same guard as update_token_counts; the aux path carries no surface, so
-        # the placeholder stays repairable by the creator's upsert (_insert_session_row).
-        self._insert_session_row(session_id, "unknown")
+        # FK to sessions.id. A missing row is inserted as ``unknown``, and that created_source
+        # never moves. An existing row keeps its column, including NULL: a compression child
+        # is not create_session'd again, and update_token_counts(source=...) fills that NULL.
+        if self._read_one("SELECT 1 FROM sessions WHERE id=?", (session_id,)) is None:
+            self._insert_session_row(session_id, "unknown")
         self._execute_write(lambda conn: self._record_model_usage(conn, session_id, task=task, **usage))
 
     def auxiliary_usage_by_task(self, session_id: str) -> dict[str, dict[str, float]]:

@@ -99,6 +99,108 @@ async def test_auxiliary_usage_cannot_replace_the_insert_stamp(tmp_path, monkeyp
         store.close_all_db_handles()
 
 
+def _set_created(db, sid, value):
+    with db._lock:
+        db._conn.execute("UPDATE sessions SET created_source=? WHERE id=?", (value, sid))
+        db._conn.commit()
+
+
+def _reset(authority, store, sid, child):
+    from gateway.session import SessionEntry
+    from hermes_state_local import local_receipt
+    from hermes_state_local_lineage import reset_local_target
+
+    live = authority.sessions[sid]
+    store._record_gateway_session_peer(sid, live.route, live.source)
+    old = SessionEntry.from_dict(local_receipt(authority.db, sid)['entry'])
+    entry = SessionEntry(old.session_key, child, old.created_at, old.updated_at, origin=old.origin,
+                         platform=old.platform, chat_type=old.chat_type, is_fresh_reset=True)
+    reset_local_target(authority.db, epoch=authority.epoch, parent_session_id=sid, entry=entry.to_dict())
+    return child
+
+
+@pytest.mark.asyncio
+async def test_reset_copies_the_parent_surface_and_falls_back_to_policy(tmp_path, monkeypatch):
+    """A real parent created_source is copied. NULL, local and unknown are not.
+
+    /new publishes with the policy label (cli), not the live local source. Copying
+    tui is not the policy fallback; a parent with no surface becomes cli.
+    """
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        copied = await _call(owner, 'session.create', request_id='copy', source='cli',
+                             cwd=str(tmp_path), toolsets=[], model='m')
+        sid = copied['session_id']
+        _set_created(authority.db, sid, 'tui')
+        child = _reset(authority, store, sid, 'reset-copied')
+        assert authority.db.get_session(child)['created_source'] == 'tui'
+
+        for parent_created, name in ((None, 'reset-null'), ('unknown', 'reset-unknown'), ('local', 'reset-local')):
+            created = await _call(owner, 'session.create', request_id=name, source='cli',
+                                  cwd=str(tmp_path), toolsets=[], model='m')
+            sid = created['session_id']
+            _set_created(authority.db, sid, parent_created)
+            child = _reset(authority, store, sid, name + '-child')
+            row = authority.db.get_session(child)
+            assert row['created_source'] == 'cli', (parent_created, row['source'], row['created_source'])
+            assert row['source'] == 'cli'
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_branch_child_copies_the_parent_surface(tmp_path, monkeypatch):
+    from hermes_state_mutation_branch import branch_in_transaction
+
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        created = await _call(owner, 'session.create', request_id='branch', source='cli',
+                              cwd=str(tmp_path), toolsets=[], model='m')
+        sid = created['session_id']
+        _set_created(authority.db, sid, 'desktop')
+        branched = authority.db._execute_write(
+            lambda conn: branch_in_transaction(authority.db, conn, sid, {}))
+        child = branched[1]['branched_session_id']
+        assert authority.db.get_session(child)['created_source'] == 'desktop'
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_compress_mutation_copies_parent_or_uses_the_policy_surface(tmp_path, monkeypatch):
+    from hermes_state_mutation_compress import compress_in_transaction
+    from hermes_state_mutation_prepared import local_snapshot
+
+    store, authority, owner = _owner(tmp_path / 'home', monkeypatch)
+    try:
+        def compress(sid):
+            def write(conn):
+                snapshot = local_snapshot(authority.db, conn, sid)
+                prepared = {'snapshot': snapshot, 'in_place': False,
+                            'messages': [{'role': 'user', 'content': 'hi'}]}
+                return compress_in_transaction(authority.db, conn, sid, {}, prepared)
+            return authority.db._execute_write(write)[1]['target_session_id']
+
+        copied = await _call(owner, 'session.create', request_id='compress-copy', source='cli',
+                             cwd=str(tmp_path), toolsets=[], model='m')
+        sid = copied['session_id']
+        _set_created(authority.db, sid, 'desktop')
+        assert authority.db.get_session(compress(sid))['created_source'] == 'desktop'
+
+        for parent_created, name in ((None, 'compress-null'), ('local', 'compress-local')):
+            created = await _call(owner, 'session.create', request_id=name, source='cli',
+                                  cwd=str(tmp_path), toolsets=[], model='m')
+            sid = created['session_id']
+            _set_created(authority.db, sid, parent_created)
+            row = authority.db.get_session(compress(sid))
+            assert row['created_source'] == 'cli', (parent_created, row['created_source'])
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
 @pytest.mark.asyncio
 async def test_worker_create_after_peer_refresh_still_resumes(tmp_path, monkeypatch):
     """The peer refresh rewrites source to local and worker_create is refused.

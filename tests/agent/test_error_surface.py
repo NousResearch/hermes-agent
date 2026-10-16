@@ -301,3 +301,14 @@ def test_rate_limit_reset_rides_the_surface():
 
     bare = _rate_limit({}, {"error": {"message": "Rate limit exceeded"}})
     assert "resets_at" not in build_error_surface_from_exception(bare, provider="openai", model="gpt-5")
+
+
+def test_local_backend_poisoned_result_is_not_retryable():
+    """The stream layer's terminal verdict for a recycled-and-still-dead managed worker (#132778):
+    a bare Retry would hit the same backend state, so the card must not offer one."""
+    surface = build_error_surface_from_result({
+        "failed": True, "failure_reason": "local_backend_poisoned",
+        "error": "Local model 'qwen3-coder-30b': the llama-server worker's GPU backend is in an error state",
+    })
+    assert surface["code"] == "local_backend_poisoned"
+    assert surface["retryable"] is False

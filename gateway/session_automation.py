@@ -241,10 +241,11 @@ async def admit_automation(authority, adapter, event, identity):
     authority.sessions.setdefault(ref.session_id, LiveSession(event.source, entry.session_key))
     from functools import partial
     from gateway.session_runtime_workers import tracked_write
+    from gateway.session_native_context_reset import automation_write_guard
     return await tracked_write(authority, partial(
         admit_session_input, authority.db, epoch=authority.epoch, principal_id='automation:' + entry.session_key,
         session_id=ref.session_id, request_id=identity, payload=deepcopy(payload),
-        _authorize_write=authority._admission_gate()), then=partial(authority._admitted, ref, event), ordered=True,
+        _authorize_write=automation_write_guard(authority, event, identity)), then=partial(authority._admitted, ref, event), ordered=True,
         after=partial(authority._schedule_admitted, ref))
 
 

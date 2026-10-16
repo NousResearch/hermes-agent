@@ -382,6 +382,10 @@ class SessionPersistenceMixin:
                 "gateway.session: repointing stale sessions.json entry %r from ended %s "
                 "(end_reason=%r) to recovered %s", key, entry.session_id, row["end_reason"],
                 recovered_entry.session_id)
+            from gateway.session_native_context_reset import recovery_entry
+            fresh = recovery_entry(self, entry.session_id, recovered_entry.session_id, key)
+            if fresh is not None:
+                return fresh
             if entry.prompt_pin and (
                 self._compression_tip_for_session_id(entry.session_id) == recovered_entry.session_id
             ):

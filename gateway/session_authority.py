@@ -807,6 +807,9 @@ class SessionAuthority:
                 from gateway.session_runtime_workers import tracked_write
                 await tracked_write(self, partial(reopen_local_session, self, ref))
             if first is not None and 'native_text_v1' in first['payload']:
+                from gateway.session_native_context_reset import cancel_old_completion
+                if await cancel_old_completion(self, ref, first):
+                    return False, first
                 from gateway.session_envelope import check_native_route
                 await check_native_route(self.runner, first['payload'], self.physical_target(ref), live.source,
                                    self.runner._adapter_for_source(live.source))

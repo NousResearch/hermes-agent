@@ -741,6 +741,7 @@ class _RouteChecks:
     canonical_id: Optional[str]  # compression tip (may equal session_id)
     is_stale: bool  # row already ended in state.db
     reset_reason: Optional[str]
+    context_reset_entry: Optional[SessionEntry] = None
 
 
 @dataclass
@@ -949,9 +950,11 @@ class SessionStore(
         checks = None
         if not force_new and observed is not None:
             sid = observed.session_id
+            canonical = self._compression_tip_for_session_id(sid)
+            from gateway.session_native_context_reset import recovery_entry
             checks = _RouteChecks(
-                sid, self._compression_tip_for_session_id(sid), self._is_session_ended_in_db(sid),
-                self._route_reset_reason(observed),
+                sid, canonical, self._is_session_ended_in_db(sid), self._route_reset_reason(observed),
+                recovery_entry(self, sid, canonical, session_key),
             )
         # Phase 2 (lock): apply the decisions to _entries.
         decision = self._apply_route_checks(session_key, checks, force_new, touch_activity, now)
@@ -994,9 +997,14 @@ class SessionStore(
                 return decision
             snapshot_sid = checks.session_id if checks else None
             # A heal rewrites entry.session_id, so it must reach the sessions.json mirror too.
-            healed = self._heal_compression_tip_locked(
-                entry, snapshot_sid, checks.canonical_id if checks else None
-            )
+            if checks and checks.context_reset_entry and entry.session_id == snapshot_sid:
+                entry = checks.context_reset_entry
+                self._entries[session_key] = entry
+                healed = True
+            else:
+                healed = self._heal_compression_tip_locked(
+                    entry, snapshot_sid, checks.canonical_id if checks else None
+                )
             checked = entry.session_id == snapshot_sid
             stale_hit = checked and checks.is_stale
             reset_reason = checks.reset_reason if checked else None

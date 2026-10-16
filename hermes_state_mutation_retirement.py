@@ -192,12 +192,14 @@ def entry_session_id(raw):
 
 
 def retire_routes(conn, session_ids):
+    from hermes_state_native_context_reset import PREFIX as CONTEXT_RESET_PREFIX
     # OR REPLACE: the marker is a fact, not a receipt; re-retiring an id that was recreated
     # beside its tombstone must not abort the delete that removes it again (and restarts its horizon).
     for sid in session_ids:
         conn.execute('INSERT OR REPLACE INTO state_meta(key,value) VALUES(?,?)',
                      (RETIRED_PREFIX + sid, json.dumps({'retired_at': time.time()})))
-        conn.execute('DELETE FROM state_meta WHERE key=?', ('gateway.api.settings.v1.' + sid,))
+        conn.execute('DELETE FROM state_meta WHERE key IN (?,?)',
+                     ('gateway.api.settings.v1.' + sid, CONTEXT_RESET_PREFIX + sid))
     targets = set(session_ids)
     for row in conn.execute('SELECT scope,session_key,entry_json FROM gateway_routing').fetchall():
         if entry_session_id(row['entry_json']) in targets:

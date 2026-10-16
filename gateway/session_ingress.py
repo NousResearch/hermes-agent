@@ -4,6 +4,11 @@ import logging
 from contextvars import ContextVar
 from contextlib import nullcontext
 from dataclasses import replace
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gateway.session_authority import SessionAuthority
+    from gateway.session_contract import SessionRef
 
 from gateway.platforms.event import MessageEvent
 from gateway.session_envelope import restore_native
@@ -13,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 admission_author = ContextVar('admission_author', default=None)
 executing_admission = ContextVar('executing_admission', default=False)
+# The admitted handler may publish a continuation only for this exact claimed execution.
+executing_claim: ContextVar[tuple['SessionAuthority', 'SessionRef', dict] | None] = ContextVar('executing_claim', default=None)
 # Set by a busy-path caller that must be released once its input is durably queued.
 busy_acceptance = ContextVar('busy_acceptance', default=None)
 # ``_validate_native`` clauses about the message's own content, safe to name to the sender's chat.
@@ -241,6 +248,7 @@ async def execute_admission(authority, ref, row):
     captured = {}
     result_token = execution_result.set(captured)
     token = executing_admission.set(True)
+    claim_token = executing_claim.set((authority, ref, row))
     # This drain, not the handler's unwind, releases the turn's crash marker (see below).
     event._turn_marker_handoff = True
     handed = False
@@ -291,6 +299,7 @@ async def execute_admission(authority, ref, row):
     finally:
         if not handed:
             await _release_turn_marker(authority, event)
+        executing_claim.reset(claim_token)
         executing_admission.reset(token)
         execution_result.reset(result_token)
         api_execution.reset(api_token)

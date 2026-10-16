@@ -205,7 +205,7 @@ def main(argv: list[str] | None = None) -> None:
         # MCP and execution belong to the daemon. Close only this viewer, while
         # its event loop is still alive, including on protocol/transport errors.
         try:
-            await acp.run_agent(agent, use_unstable_protocol=True)
+            await acp.run_agent(agent, use_unstable_protocol=True, **agent.subagent_events.connection_options())
         finally:
             await agent.aclose()
 

@@ -124,6 +124,8 @@ def _tools_changed_notice(payload):
 
 class GatewayACPAgent(acp.Agent):
     def __init__(self):
+        from acp_adapter.subagents import SubagentEvents
+        self.subagent_events = SubagentEvents()
         self._conn = None
         self._gateway = None
         self._connection = None
@@ -167,6 +169,10 @@ class GatewayACPAgent(acp.Agent):
         # Session -> the owner's latest usage dict (``session.usage`` / ``session.stats``).
         self._usage = {}
         self._background = set()
+
+    def _require_parent_session(self, session_id):
+        if self.subagent_events.owns_child(session_id):
+            raise acp.RequestError(-32602, "Subagent sessions are managed by their parent; client mutations are unsupported")
 
     def on_connect(self, conn):
         self._conn = conn
@@ -408,9 +414,11 @@ class GatewayACPAgent(acp.Agent):
         self._mutations.acknowledge(session_id, 'editor_mcp', editor)
 
     async def load_session(self, cwd, session_id, mcp_servers=None, **kwargs):
+        self._require_parent_session(session_id)
         return LoadSessionResponse(**await self._resume(cwd, session_id, mcp_servers))
 
     async def resume_session(self, cwd, session_id, mcp_servers=None, **kwargs):
+        self._require_parent_session(session_id)
         return ResumeSessionResponse(**await self._resume(cwd, session_id, mcp_servers))
 
     async def _cancel_admission(self, session_id, admission_id):
@@ -440,6 +448,7 @@ class GatewayACPAgent(acp.Agent):
                     raise
 
     async def cancel(self, session_id, **kwargs):
+        self._require_parent_session(session_id)
         session_id = self._aliases.get(session_id, session_id)
         if session_id not in self._snapshots:
             raise GatewayClientError("not_found")
@@ -451,6 +460,7 @@ class GatewayACPAgent(acp.Agent):
         await self._cancel_admission(session_id, admission_id)
 
     async def fork_session(self, cwd, session_id, mcp_servers=None, **kwargs):
+        self._require_parent_session(session_id)
         from acp.schema import ForkSessionResponse
         session_id = self._aliases.get(session_id, session_id)
         client = await self._client()
@@ -471,6 +481,7 @@ class GatewayACPAgent(acp.Agent):
         return ForkSessionResponse(session_id=child, **await self._session_fields(child, info, child))
 
     async def set_session_model(self, model_id, session_id, **kwargs):
+        self._require_parent_session(session_id)
         from acp.schema import SetSessionModelResponse
         session_id = self._aliases.get(session_id, session_id)
         client = await self._client()
@@ -520,6 +531,7 @@ class GatewayACPAgent(acp.Agent):
     async def set_session_mode(self, mode_id, session_id, **kwargs):
         """The advertised mode is the owner's own policy, so selecting it changes nothing; main's
         Accept Edits / Don't Ask need an editor-policy change the gateway has no verb for."""
+        self._require_parent_session(session_id)
         from acp.schema import SetSessionModeResponse
         from acp_adapter.gateway_session_meta import DEFAULT_MODE
         self._held_session(session_id)
@@ -530,6 +542,7 @@ class GatewayACPAgent(acp.Agent):
     async def set_config_option(self, config_id, session_id, value=None, **kwargs):
         """Accepted so editors do not fail on their own config writes, as main did; only the edit
         approval policy has a meaning here, and only the owner's ``ask`` can be selected."""
+        self._require_parent_session(session_id)
         from acp.schema import SetSessionConfigOptionResponse
         from acp_adapter.gateway_session_meta import DEFAULT_EDIT_APPROVAL_POLICY, EDIT_APPROVAL_POLICY_CONFIG_ID
         self._held_session(session_id)
@@ -549,6 +562,7 @@ class GatewayACPAgent(acp.Agent):
         return ListSessionsResponse(sessions=page, next_cursor=page[-1].session_id if len(rows) > 50 else None)
 
     async def prompt(self, prompt, session_id, **kwargs):
+        self._require_parent_session(session_id)
         held_id, session_id = session_id, self._aliases.get(session_id, session_id)
         if session_id not in self._snapshots:
             raise GatewayClientError("not_found")
@@ -715,6 +729,9 @@ class GatewayACPAgent(acp.Agent):
         kind, payload = event.get("type"), event.get("payload", {})
         sid, editor_id = event["session_id"], self._editor_id(event["session_id"])
         aid = event.get("admission_id")
+        if kind in {"subagent.start", "subagent.tool", "subagent.progress", "subagent.complete"}:
+            await self.subagent_events.project(editor_id, kind, payload)
+            return
         if kind in {"session.info", "session.updated", "session.usage", "session.tools_changed"}:
             await self._project_session_state(kind, sid, editor_id, payload)
             return

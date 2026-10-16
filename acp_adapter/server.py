@@ -34,6 +34,7 @@ from acp_adapter.events import (
 from acp_adapter.model_catalog import build_model_state, encode_model_choice
 from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
+from acp_adapter.subagents import SubagentEvents
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from acp_adapter.tools import build_tool_complete, build_tool_start, coerce_tool_args
 from agent.context_compressor import (COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor)
@@ -261,6 +262,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         super().__init__()
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
+        self.subagent_events = SubagentEvents()
+
+    def _require_parent_session(self, session_id: str) -> None:
+        if self.subagent_events.owns_child(session_id):
+            raise acp.RequestError(-32602, "Subagent sessions are managed by their parent; client mutations are unsupported")
 
     # ---- Connection lifecycle -----------------------------------------------
 
@@ -629,6 +635,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     async def load_session(
         self, cwd: str, session_id: str, mcp_servers: list | None = None, **kwargs: Any
     ) -> LoadSessionResponse | None:
+        self._require_parent_session(session_id)
         state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
         if state is None:
             logger.warning("load_session: session %s not found", session_id)
@@ -639,6 +646,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     async def resume_session(
         self, cwd: str, session_id: str, mcp_servers: list | None = None, **kwargs: Any
     ) -> ResumeSessionResponse:
+        self._require_parent_session(session_id)
         state = await asyncio.to_thread(self.session_manager.update_cwd, session_id, cwd)
         if state is None:
             logger.warning("resume_session: session %s not found, creating new", session_id)
@@ -647,6 +655,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         return ResumeSessionResponse(**await self._session_response_fields(state, "resume"))
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
+        self._require_parent_session(session_id)
         # get_session restores a not-in-memory id from the DB (full AIAgent build) and waits
         # on the restore lock — off the loop, like new/load/resume/fork (#58083).
         state = await asyncio.to_thread(self.session_manager.get_session, session_id)
@@ -672,6 +681,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     async def fork_session(
         self, cwd: str, session_id: str, mcp_servers: list | None = None, **kwargs: Any
     ) -> ForkSessionResponse:
+        self._require_parent_session(session_id)
         state = await asyncio.to_thread(self.session_manager.fork_session, session_id, cwd=cwd)
         if state is None:
             logger.info("Forked session %s -> %s", session_id, "")
@@ -823,6 +833,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
     async def prompt(self, prompt: list[PromptBlock], session_id: str, **kwargs: Any) -> PromptResponse:
         """Run Hermes on the user's prompt and stream events back to the editor."""
+        self._require_parent_session(session_id)
         state = await asyncio.to_thread(self.session_manager.get_session, session_id)
         if state is None:
             logger.error("prompt: session %s not found", session_id)
@@ -916,6 +927,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 conn, session_id, loop, tool_call_ids, tool_call_meta, edit_approval_policy_getter=policy_getter,
                 turn_state=turn_state,
             )
+            cbs.tool_progress_cb = self.subagent_events.wrap_progress(session_id, loop, cbs.tool_progress_cb)
             # Per-session allocator: a new turn must never reuse a previous turn's
             # assistant messageId (ACP clients replace the bubble with that id).
             if state.message_ids is None:
@@ -1027,6 +1039,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
     async def set_session_model(self, model_id: str, session_id: str, **kwargs: Any) -> SetSessionModelResponse | None:
         """Switch the model for a session (called by ACP protocol)."""
+        self._require_parent_session(session_id)
         state = await asyncio.to_thread(self.session_manager.get_session, session_id)
         if state is None:
             logger.warning("Session %s: model switch requested for missing session", session_id)
@@ -1065,6 +1078,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
     async def set_session_mode(self, mode_id: str, session_id: str, **kwargs: Any) -> SetSessionModeResponse | None:
         """Persist the editor-requested mode so ACP clients do not fail on mode switches."""
+        self._require_parent_session(session_id)
         state = await asyncio.to_thread(self.session_manager.get_session, session_id)
         if state is None:
             logger.warning("Session %s: mode switch requested for missing session", session_id)
@@ -1081,6 +1095,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         self, config_id: str, session_id: str, value: str, **kwargs: Any
     ) -> SetSessionConfigOptionResponse | None:
         """Accept ACP config option updates even when Hermes has no typed ACP config surface yet."""
+        self._require_parent_session(session_id)
         state = await asyncio.to_thread(self.session_manager.get_session, session_id)
         if state is None:
             logger.warning("Session %s: config update requested for missing session", session_id)

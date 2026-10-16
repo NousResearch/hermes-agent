@@ -206,3 +206,18 @@ ACP temporarily installs an approval callback on the terminal tool during prompt
 - `toolsets.py` — `hermes-acp` toolset definition
 - `hermes_cli/main.py` — `hermes acp` CLI subcommand
 - `pyproject.toml` — `[acp]` optional dependency + `hermes-acp` script
+
+### Opt-in subagent lifecycle
+
+Normal `HermesACPAgent()` construction selects `GatewayACPAgent`; an explicitly
+injected SessionManager retains the in-process adapter. Both use
+`acp_adapter/subagents.py` and the pinned SDK's public observer/sender hooks.
+Only an object-valued `clientCapabilities.subagents` (including `{}`) opts in.
+
+`gateway/session_subagent_events.py` publishes bounded lifecycle fields from
+TurnRunner's actual progress callback through the generation-fenced canonical
+stream. The ACP event pump projects stable child IDs and immediate-parent
+associations. Nested relays preserve their runtime identity. Child capabilities
+are empty; child-directed mutations are rejected before gateway lookup. No
+child transcript or reasoning is projected. Managed workers currently disable
+delegation upstream; this change does not enable an unsupported execution path.

@@ -411,6 +411,11 @@ class _ChildProgressRelay:
                 self._flush()
 
     def __call__(self, event_type, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs):
+        # Already normalized progress from a nested child retains its identity;
+        # counting/re-batching it here would attribute it to this orchestrator.
+        if event_type in ("subagent.tool", "subagent.progress"):
+            self._relay(event_type, tool_name, preview, args, **kwargs)
+            return
         key = _normalize_event(event_type)
         method = None if key is None else _EVENT_HANDLERS.get(key, "_on_tool_started")
         if method is not None:

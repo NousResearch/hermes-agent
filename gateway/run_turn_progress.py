@@ -138,6 +138,9 @@ class GatewayTurnProgressMixin:
     def progress_callback(self, event_type: str, tool_name: str | None = None, preview: str | None = None, args: dict | None = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        if local_viewer_turn(self):
+            from gateway.session_subagent_events import publish_subagent_progress
+            publish_subagent_progress(self, event_type, tool_name, kwargs)
         # Failed subagent → one clean user-facing notice, handled FIRST, before every progress-queue
         # gate: platforms with tool_progress off must still hear about a dead delegation.
         if event_type == "subagent.complete":

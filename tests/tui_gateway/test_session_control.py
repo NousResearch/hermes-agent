@@ -390,6 +390,37 @@ class TestUpdatePublication:
         updates = [e for e in emitted if e[0] == "session.control.update"]
         assert updates == [("session.control.update", sid, {"control": response["result"]["control"]})]
 
+    def test_a_tool_completion_racing_a_user_change_never_publishes_the_older_snapshot(self, server, session, monkeypatch):
+        """The tool-completion republish runs on the agent thread: if it read the goal just before the user
+        added a criterion, that older snapshot must not be emitted after the user's (Ink/Desktop keep the last)."""
+        sid, key, entry = session
+        _save_goal(key)
+        server._publish_session_control_snapshot(sid, entry)
+        emitted = self._capture(server, monkeypatch)
+        read, release, real_snapshot = threading.Event(), threading.Event(), server._snapshot_control
+
+        def snapshot_then_stall(session_key):  # scheduling only: the tool thread stalls after its read
+            control = real_snapshot(session_key)
+            if threading.current_thread().name == "tool":
+                read.set()
+                release.wait(5)
+            return control
+        monkeypatch.setattr(server, "_snapshot_control", snapshot_then_stall)
+        tool = threading.Thread(name="tool", target=server._on_tool_complete,
+                                args=(sid, "call", "terminal", {"command": "true"}, '{"exit_code": 0}'))
+        tool.start()
+        assert read.wait(5)
+        user = threading.Thread(target=_call, args=(server, "session.control"),
+                                kwargs={"session_id": sid, "action": "subgoal.add", "args": {"text": "newer criterion"}})
+        user.start()
+        user.join(0.5)
+        release.set()
+        tool.join(5)
+        user.join(5)
+        updates = [payload["control"]["goal"]["subgoals"] for event, _sid, payload in emitted
+                   if event == "session.control.update"]
+        assert updates[-1] == ["newer criterion"]
+
     @pytest.mark.parametrize("name,arg", [("goal", "pause"), ("loop", "pause")])
     def test_typed_slash_via_command_dispatch_publishes_the_new_state(self, server, session, monkeypatch, name, arg):
         """/goal and /loop never reach the slash worker (``_PENDING_INPUT_COMMANDS``) — the built-in path must

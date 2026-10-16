@@ -33,6 +33,7 @@ def _turn(platform, published, *, live=None):
     turn._approval_owner = (authority, 's', 1)
     turn._publish_execution = lambda kind, payload: published.append((kind, payload)) or True
     turn._publish_api_tool = lambda *a, **k: None
+    turn._schedule = lambda coro, _message: coro.close()  # the session.control.update hop to the gateway loop
     return turn
 
 

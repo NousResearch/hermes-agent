@@ -80,6 +80,7 @@ class SubagentMonitor:
             row['key'] = row['subagent_id']
             row.pop('running_seconds', None)
         processes = procs.process_rows(now)
+        session_rows.sync_automation(self.cli)
         goal = session_rows.goal_line(self.cli)
         loop_badge, loop, loop_prompt = session_rows.loop_row(self.cli, now)
         queued = session_rows.queued_prompts(self.cli)

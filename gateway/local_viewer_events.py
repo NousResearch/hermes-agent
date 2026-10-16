@@ -98,6 +98,19 @@ def restore(agent, previous: dict | None) -> None:
         setattr(agent, name, value)
 
 
+def publish_control_if_changed(turn) -> None:
+    """Agent thread, after each tool: a tool (a plugin adding goal criteria, parking the goal) can move
+    automation state mid-turn, so viewers' cards repaint now instead of at turn end. The snapshot is read,
+    compared and published on the gateway loop, in order with the slash commands' publishes (a snapshot
+    read here could land after a newer one); revision-gated, so other tools publish nothing."""
+    from gateway.session_control_actions import publish
+    authority, canonical_id, _generation = turn._approval_owner
+
+    async def republish():
+        publish(authority, canonical_id, only_if_changed=True)
+    turn._schedule(republish(), "session.control.update after a tool")
+
+
 def note_tool_start(turn, call_id, tool_name=None, args=None) -> None:
     """Monotonic start time of one call (``tool.complete.duration_s``) and, for a write-capable
     tool, the before-state of its local files: the agent fires the start callback BEFORE the tool

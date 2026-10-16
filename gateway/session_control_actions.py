@@ -67,13 +67,14 @@ async def _add_subgoal(connection, ref, params, text):
     return {'type': 'exec', 'output': err or t('gateway.subgoal.added', index=index, text=added)}
 
 
-def publish(authority, session_id, *, only_if_present=False):
+def publish(authority, session_id, *, only_if_present=False, only_if_changed=False):
     """Push one live session's control snapshot to every viewer as ``session.control.update``.
 
-    Desktop and Ink paint the goal/loop/heartbeat cards from this event and run the loop countdown off
-    its ``next_due_at``, so every place that moves that state on the owner publishes: the slash
-    commands, a fired or settled loop wakeup, a judged turn. ``only_if_present`` skips a session with
-    no automation state (a plain turn's event stream stays unchanged).
+    Desktop, Ink and the classic CLI paint the goal/loop/heartbeat cards from this event and run the loop
+    countdown off its ``next_due_at``, so every place that moves that state on the owner publishes: the
+    slash commands, a fired or settled loop wakeup, a judged turn, a tool that changed it mid-turn.
+    ``only_if_present`` skips a session with no automation state (a plain turn's event stream stays
+    unchanged); ``only_if_changed`` also skips one whose snapshot matches the last one published.
     """
     live = authority.sessions.get(session_id) if authority is not None else None
     if live is None:
@@ -85,8 +86,10 @@ def publish(authority, session_id, *, only_if_present=False):
     except RuntimeStoreError:  # unreadable row: the change itself already landed; the next publish repaints
         logger.debug('session.control.update skipped for %s', session_id, exc_info=True)
         return
-    if not only_if_present or snapshot['revision']:
-        live.event_stream.publish(session_id, {'control': snapshot}, event_type='session.control.update')
+    if (only_if_present and not snapshot['revision']) or (only_if_changed and snapshot['revision'] == live.control_revision):
+        return
+    live.control_revision = snapshot['revision']
+    live.event_stream.publish(session_id, {'control': snapshot}, event_type='session.control.update')
 
 
 async def control(connection, ref, params):

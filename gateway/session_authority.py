@@ -54,6 +54,9 @@ class LiveSession:
     # (a contended SQLite writer must not stall loop-side lock takers); readers holding that lock
     # still see the claim as started, so no snapshot shows a terminal row without its completion.
     settling: dict = field(default_factory=dict)
+    # Revision of the last ``session.control.update`` (gateway/session_control_actions.publish): a tool
+    # completion republishes only when a tool actually moved the goal/loop/heartbeat state.
+    control_revision: str = ""
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)

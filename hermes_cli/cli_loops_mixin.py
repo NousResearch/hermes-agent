@@ -525,6 +525,11 @@ class CLILoopsMixin:
         return self._session_bound_manager(
             attr, label, (lambda: lambda sid: remote(sid, connection)) if gateway else local)
 
+    def _mark_automation_stale(self) -> None:
+        """Agent thread: the gateway published this session's goal/loop state mid-turn (a tool moved it).
+        The dock re-reads the mirrored managers on its next spinner-thread poll (``cli_session_dock``)."""
+        self._automation_stale = True
+
     def _get_goal_manager(self):
         """GoalManager bound to the current session_id (see ``_session_bound_manager``)."""
         def max_turns():

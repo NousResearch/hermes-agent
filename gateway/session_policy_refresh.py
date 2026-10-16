@@ -98,13 +98,16 @@ def _mcp_servers(policy, config, live, toolsets, secrets, replaced):
         return toolsets
     request = json.loads(policy.request_json)
     sections = [section if isinstance(section, dict) else {} for section in (config.get('mcp_servers'), live.get('mcp_servers'))]
-    pick = request.get('toolsets')
+    pick, picked, enabled = request.get('toolsets'), set(), enabled_mcp_server_names(live)
     if pick is not None:
-        # A server the launch pick names that config has since disabled or removed leaves the pick: it no
-        # longer validates, and keeping the frozen definitions would start the server the user turned off.
-        gone = (set(sections[0]) | set(sections[1])) - enabled_mcp_server_names(live)
-        pick = [name for name in pick if not isinstance(name, str)
-                or (name[4:] if name.startswith('mcp-') and name not in sections[1] else name) not in gone]
+        # The launch pick's servers are an allowlist: each stays only while config enables it, and once all
+        # are gone the chat has none, never every enabled server. A server that is now disabled or removed
+        # leaves the pick before it is re-validated (it no longer validates, and keeping the frozen
+        # definitions would start the server the user turned off).
+        known = set(sections[0]) | set(sections[1])
+        server = partial(_server_name, known)
+        picked = {server(name) for name in pick if isinstance(name, str) and server(name) in known}
+        pick = [name for name in pick if not isinstance(name, str) or server(name) not in picked - enabled]
     try:
         selected = _resolve_toolsets({} if pick is None else {'toolsets': pick},
                                      json.loads(json.dumps(live)), policy.source, policy.safe_mode, policy.coding_posture)
@@ -116,7 +119,13 @@ def _mcp_servers(policy, config, live, toolsets, secrets, replaced):
     else:
         config.pop('mcp_servers', None)
     replaced.add('mcp_servers')
-    return tuple(sorted((set(toolsets) - set(sections[0]) - set(sections[1])) | (selected & enabled_mcp_server_names(live))))
+    servers = selected & enabled & picked if picked else selected & enabled
+    return tuple(sorted((set(toolsets) - set(sections[0]) - set(sections[1])) | servers))
+
+
+def _server_name(servers, name):
+    """The server a pick name selects: ``mcp-<server>`` is its bare alias unless a server has that name."""
+    return name[4:] if name.startswith('mcp-') and name not in servers else name
 
 
 def _prepare(authority, session_id, mcp_only=False):

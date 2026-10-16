@@ -143,6 +143,32 @@ def test_launch_options_are_frozen_and_validated(tmp_path):
             build_policy(dict(cwd=str(tmp_path), **bad), cfg)
 
 
+def test_provider_override_drops_the_previous_providers_route(tmp_path):
+    """A provider pick is a whole-route change: folding it must not keep the profile's
+    endpoint/wire-protocol/credential pointers, else the new provider's key is sent to the old
+    host (#138843). An explicit base_url is applied after the drop, and a same-provider
+    re-pick keeps what it carried."""
+    from gateway.session_policy import build_policy
+    cfg = {'model': {'default': 'deepseek-chat', 'provider': 'deepseek',
+                     'base_url': 'https://api.deepseek.com/v1', 'api_mode': 'chat_completions',
+                     'key_env': 'HERMES_CUSTOM_QWENAI_API_KEY'}}
+    policy = build_policy(dict(cwd=str(tmp_path), model='mimo-v2.6-flash', provider='xiaomi'), cfg)
+    assert policy.config()['model'] == {'default': 'deepseek-chat', 'provider': 'xiaomi'}
+    # A provider change plus an explicit URL still drops the replaced provider's wire protocol
+    # and credential pointer — only the pinned endpoint comes back.
+    explicit = build_policy(dict(cwd=str(tmp_path), model='m', provider='xiaomi',
+                                 base_url='https://proxy.example/v1'), cfg)
+    assert explicit.config()['model'] == {'default': 'deepseek-chat', 'provider': 'xiaomi',
+                                          'base_url': 'https://proxy.example/v1'}
+    same = build_policy(dict(cwd=str(tmp_path), model='deepseek-r2', provider='deepseek'), cfg)
+    assert same.config()['model']['base_url'] == 'https://api.deepseek.com/v1'
+    # A profile without a recorded provider still leaves its endpoint behind for the pick to replace.
+    unrecorded = build_policy(dict(cwd=str(tmp_path), provider='xiaomi'),
+                              {'model': {'default': 'm', 'base_url': 'https://api.deepseek.com/v1',
+                                         'api_key': 'sk-inline'}})
+    assert unrecorded.config()['model'] == {'default': 'm', 'provider': 'xiaomi'}
+
+
 def test_unlimited_max_turns_spellings_create_an_uncapped_session(tmp_path):
     """`--max-turns 0` / -1 / none / unlimited meant "no cap" before the gateway cutover: session.create
     freezes them as the unlimited budget, and `hermes chat` sends 0 instead of dropping it as falsy."""

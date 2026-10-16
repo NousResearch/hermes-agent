@@ -2145,6 +2145,31 @@ class MatrixAdapter(BasePlatformAdapter):
                 reply_to_author_name = await self._get_display_name(room_id, reply_to_author_id)
         return body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name
 
+    def toolsets_for_source(self, source) -> list[str] | None:
+        """Per-room toolset override from
+        ``config.extra['room_toolsets']`` — REPLACES ``platform_toolsets.<platform>`` for the
+        matching room only (e.g. a dedicated room runs a slim native-toolset set while every
+        other room keeps the full platform set; default-enabled MCP servers remain unioned by
+        ``_get_platform_tools``, same as for platform config). Resolution mirrors
+        ``channel_prompts``: exact room id first, then the thread parent — on Matrix both keys
+        are the same room id today (``build_source`` sets ``parent_chat_id=room_id`` for
+        threads), so the parent step is pattern symmetry that activates if the thread model
+        ever keys them apart. ``None`` => platform default. The gateway validates a returned
+        list through the same ``_get_platform_tools`` path as platform config
+        (gateway/run_turn.py::_resolve_enabled_toolsets_for_source)."""
+        try:
+            overrides = (self.config.extra or {}).get("room_toolsets") or {}
+            if not isinstance(overrides, dict):
+                return None
+            for key in (getattr(source, "chat_id", None), getattr(source, "parent_chat_id", None)):
+                value = overrides.get(key) if key else None
+                if isinstance(value, list) and value:
+                    toolsets = [str(t).strip() for t in value if str(t).strip()]
+                    return toolsets or None
+            return None
+        except Exception:
+            return None
+
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
         ctx: Optional[tuple] = None, **extra) -> Optional[MessageEvent]:

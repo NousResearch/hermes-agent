@@ -1066,6 +1066,52 @@ class TestSetupTopologyAdvisory:
         assert "Deployment note" not in capsys.readouterr().out
 
 
+class TestProxyDetection:
+    """Detection suggests only genuine remote peers: hairpin self-connections
+    (a local client reaching the dashboard via the proxy's public name) show
+    up with the machine's own LAN address as the peer and must be excluded."""
+
+    def test_own_lan_address_is_excluded(self, monkeypatch):
+        import subprocess
+
+        from hermes_cli import dashboard_webauthn
+
+        class FakeProc:
+            # `ss -tnH state established` layout (no State column):
+            stdout = ("0 0 192.168.1.11:9119 192.168.1.11:52100\n"
+                      "0 0 192.168.1.11:9119 192.168.1.3:44321\n")
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: FakeProc())
+        monkeypatch.setattr(dashboard_webauthn, "_local_addrs",
+                            lambda: {"192.168.1.11", "2a01:6247:ba36::11"})
+        assert dashboard_webauthn._proxy_candidates() == ["192.168.1.3"]
+
+    def test_plain_listing_layout_also_parses(self, monkeypatch):
+        import subprocess
+
+        from hermes_cli import dashboard_webauthn
+
+        class FakeProc:
+            # defensive: a State column present layout
+            stdout = "ESTAB 0 0 192.168.1.11:9119 192.168.1.3:44321\n"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: FakeProc())
+        monkeypatch.setattr(dashboard_webauthn, "_local_addrs",
+                            lambda: {"192.168.1.11"})
+        assert dashboard_webauthn._proxy_candidates() == ["192.168.1.3"]
+
+    def test_ss_missing_yields_no_candidates(self, monkeypatch):
+        import subprocess
+
+        from hermes_cli import dashboard_webauthn
+
+        def boom(*a, **k):
+            raise FileNotFoundError("ss")
+
+        monkeypatch.setattr(subprocess, "run", boom)
+        assert dashboard_webauthn._proxy_candidates() == []
+
+
 class TestSetupPasswordOffer:
     """The passkey is a second factor: when no password login exists (and the
     first-boot prompt can't fire because a provider is registered), the wizard

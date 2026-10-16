@@ -527,32 +527,54 @@ def _proxy_candidates(port: int = 9119) -> list[str]:
                               capture_output=True, text=True, timeout=10, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return []
-    me = {str(ip) for iface in _local_addrs() for ip in (iface,)} | {"127.0.0.1", "::1"}
+    me = _local_addrs()
     out: list[str] = []
+    port_suffix = f":{port}"
     for line in (proc.stdout or "").splitlines():
         fields = line.split()
         if len(fields) < 4:
             continue
-        peer = fields[2].rsplit(":", 1)[0].strip("[]")
+        # Column layout differs: `ss -tnH state established` OMITS the State
+        # column ([Recv-Q, Send-Q, Local, Peer]) while a plain listing keeps it
+        # ([State, Recv-Q, Send-Q, Local, Peer]). Find the LOCAL endpoint by its
+        # dashboard port and take the next field as the peer — layout-agnostic.
+        peer = None
+        for i, field in enumerate(fields):
+            if field.endswith(port_suffix) and i + 1 < len(fields):
+                peer = fields[i + 1].rsplit(":", 1)[0].strip("[]")
+                break
+        if not peer:
+            continue
         try:
             ip = ipaddress.ip_address(peer)
         except ValueError:
             continue
-        if ip.is_loopback or str(ip) in me or peer in out:
+        if ip.is_loopback or peer in me or str(ip) in me or peer in out:
             continue
         out.append(peer)
     return out
 
 
-def _local_addrs() -> list[str]:
-    """This host's own addresses, so the machine's own IP never masquerades
-    as the proxy."""
+def _local_addrs() -> set:
+    """Every address assigned to THIS host, so the machine's own addresses —
+    including hairpin connections where a local client reaches the dashboard
+    through the proxy's public name and shows up as a non-loopback peer —
+    never masquerade as the proxy. ``hostname -I`` enumerates all of them on
+    Linux; getaddrinfo(hostname) is the fallback (it can return only
+    loopback, which is exactly how a self-connection slips through)."""
     import socket
+    import subprocess
 
-    out = []
+    out: set = set()
+    try:
+        proc = subprocess.run(["hostname", "-I"], capture_output=True, text=True,
+                              timeout=5, check=False)
+        out.update(proc.stdout.split())
+    except (OSError, subprocess.TimeoutExpired):
+        pass
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None):
-            out.append(info[4][0])
+            out.add(info[4][0])
     except OSError:
         pass
     return out

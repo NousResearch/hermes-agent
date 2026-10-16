@@ -6821,6 +6821,7 @@ def _validate_llm_response(
         if not choices or not hasattr(choices[0], "message"):
             raise AttributeError("missing choices[0].message")
     except (AttributeError, TypeError, IndexError) as exc:
+        from agent.auxiliary_codex_response import _recover_aux_response_message
         recovered = _recover_aux_response_message(response)
         if recovered is None:
             invalid = RuntimeError(
@@ -6939,45 +6940,6 @@ def _unwrap_data_envelope(response: Any, task: str | None = None) -> Any:
         choices=choices,
         usage=data.get("usage"),
     )
-
-
-def _recover_aux_response_message(response: Any) -> Optional[Any]:
-    """Synthesize chat-completions shape from Responses-style text (``output_text``,
-    ``output`` items) that some compatible endpoints return outside ``choices``."""
-    text = _extract_aux_response_text(response)
-    if not text:
-        return None
-    choice = SimpleNamespace(message=SimpleNamespace(content=text), finish_reason=getattr(response, "finish_reason", None) or "stop")
-    try:
-        response.choices = [choice]
-        return response
-    except Exception:
-        return SimpleNamespace(
-            id=getattr(response, "id", ""), model=getattr(response, "model", ""),
-            object=getattr(response, "object", "chat.completion"), choices=[choice],
-            usage=getattr(response, "usage", None),
-        )
-
-
-def _extract_aux_response_text(response: Any) -> str:
-    """Text from Responses-style ``output_text`` or ``output[].content[].text``."""
-    output_text = _field(response, "output_text")
-    if isinstance(output_text, str) and output_text.strip():
-        return output_text.strip()
-    output = _field(response, "output")
-    if not isinstance(output, list):
-        return ""
-    parts: list[str] = []
-    for item in output:
-        item_type = _field(item, "type")
-        if item_type and item_type != "message":
-            continue
-        for part in (_field(item, "content") or []):
-            if _field(part, "type") in {"output_text", "text", None}:
-                text = _field(part, "text")
-                if isinstance(text, str) and text.strip():
-                    parts.append(text.strip())
-    return "\n".join(parts).strip()
 
 
 # Streamed aggregation for progress-hooked aux calls: ``timeout`` becomes an inter-chunk idle
@@ -8124,6 +8086,21 @@ def _plan_aux_call(
     return req, retry_kwargs, candidate_kwargs
 
 
+def _cached_route_client(
+    req: _PreparedAuxRequest, *, task: Optional[str], main_runtime: dict[str, Any], async_mode: bool,
+) -> Any:
+    """``req``'s client as the cache holds it now: the same one while cached, a new one once a timeout
+    closed and evicted it (Codex aux stream guard, #23432). A vision client is cached under another key
+    and a fallback-rescued one under none; both stay ``req.client``."""
+    if task == "vision":
+        return req.client
+    client, _ = _get_cached_client(
+        req.resolved_provider, req.resolved_model, async_mode=async_mode, base_url=req.resolved_base_url,
+        api_key=req.resolved_api_key, api_mode=req.resolved_api_mode, main_runtime=main_runtime, task=task,
+    )
+    return client or req.client
+
+
 def _should_retry_same_provider(task: Optional[str], exc: Exception, tag: str) -> bool:
     """True when ``exc`` is a transient transport blip worth a same-provider retry; critical-path
     tasks skip it on a full-budget timeout (``_should_skip_same_provider_retry``) and go straight
@@ -8236,6 +8213,7 @@ def _call_llm_impl(
                             "retrying same provider after %.1fs before fallback: %s",
                             task or "call", _attempt, _max_transient_retries, _backoff, _last_transient)
                 time.sleep(_backoff)
+                client = _cached_route_client(req, task=task, main_runtime=retry_kwargs["main_runtime"], async_mode=False)
                 try:
                     return _primary()
                 except Exception as retry_transient:
@@ -8390,6 +8368,7 @@ async def _async_call_llm_impl(
                 raise
             logger.info("Auxiliary %s (async): transient transport error; retrying "
                         "once on the same provider before fallback: %s", task or "call", transient_err)
+            client = _cached_route_client(req, task=task, main_runtime=retry_kwargs["main_runtime"], async_mode=True)
             return await _primary()
     except Exception as first_err:
         async def _perform(step: _LadderStep) -> Any:

@@ -17,7 +17,7 @@ from agent.context_engine import automatic_compaction_status_message
 from agent.conversation_compression import (
     PRE_API_COMPRESSION_STATUS_TEMPLATE, _reset_read_dedup_caches, compression_blocked_transiently,
     compression_skipped_due_to_lock, context_compression_timed_out,
-    conversation_history_after_compression, ensure_compression_feasibility_checked,
+    conversation_history_after_compression, ensure_compression_feasibility_checked, request_exceeds_model_window,
 )
 from agent.turn_context import _review_fork_first_request_pending
 from agent.turn_context_compaction import (
@@ -148,9 +148,13 @@ def run_preflight_compression(
             v.messages, system_message, approx_tokens=request_pressure_tokens,
             task_id=effective_task_id, trigger="pre_api",
         )
-        if context_compression_timed_out(agent):
-            # Progress-aware timeout: never reached the provider — refund the
-            # call/budget and stop; an overflow retry would only re-compress.
+        _timed_out = context_compression_timed_out(agent)
+        if _timed_out and (
+            provider_overflow_preflight or request_exceeds_model_window(agent, request_pressure_tokens) is not False
+        ):
+            # Progress-aware timeout on a request the model cannot take (provider-proven overflow, over the
+            # window, or of unknown fit): never reached the provider — refund the call/budget and stop; an
+            # overflow retry would only re-compress.
             v.api_call_count = _refund_api_call(agent, v.api_call_count)
             v.final_response = _COMPRESSION_TIMEOUT_FINAL_RESPONSE
             v.failed = True
@@ -158,10 +162,17 @@ def run_preflight_compression(
             v._turn_exit_reason = "context_compression_timeout"
             return _done("break")
         if v.messages is _pre_api_input and (
-            compression_skipped_due_to_lock(agent) or compression_blocked_transiently(agent)
+            _timed_out or compression_skipped_due_to_lock(agent) or compression_blocked_transiently(agent)
         ):
-            # Temporary DEFER (lock held / cooldown), not evidence about compressibility:
+            # Temporary DEFER (lock held / cooldown / timeout on a request that fits its window, sent
+            # unchanged as at turn start: #113646, #114594), not evidence about compressibility:
             # refund the attempt, leave the progress blocker unarmed and proceed.
+            if _timed_out:
+                logger.warning(
+                    "Pre-API compression timed out but the request (~%s tokens) fits the model window (%s); "
+                    "sending it uncompressed this turn",
+                    f"{request_pressure_tokens:,}", f"{compressor.context_length:,}",
+                )
             v.compression_attempts -= 1
             v._last_preflight_pressure = None
             if v.pending_moa_prepared_request is moa_prepared_request:

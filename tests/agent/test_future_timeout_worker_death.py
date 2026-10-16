@@ -21,10 +21,10 @@ import pytest
 
 from agent.conversation_compression import (
     CompressionCommitFence,
-    _await_in_flight_commit,
     _await_worker_within_budget,
     _join_cancelled_worker,
 )
+from agent.conversation_compression_commit_wait import _await_in_flight_commit
 from agent.tool_executor import _poll_sequential_future
 
 

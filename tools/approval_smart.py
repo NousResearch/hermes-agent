@@ -78,7 +78,13 @@ def _smart_approve(command: str, description: str) -> str:
     """
     _smart_t0 = time.monotonic()
     try:
-        from agent.auxiliary_client import _get_task_timeout, call_llm
+        from agent.auxiliary_client import (
+            _get_task_timeout,
+            call_llm,
+            call_openrouter_decisions,
+            decisions_chat_fallback,
+            is_openrouter_decisions_task,
+        )
 
         # Pass the timeout explicitly AND log call + duration: this synchronous call gates EVERY flagged command, and
         # a stalled provider once froze turns for tens of minutes with zero log output.
@@ -106,9 +112,34 @@ def _smart_approve(command: str, description: str) -> str:
             'via -c flag" but is completely harmless.\n\n'
             "Respond with exactly one word: APPROVE, DENY, or ESCALATE"
         )
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+        chat_fallback = {}
+        if is_openrouter_decisions_task("approval"):
+            try:
+                answers = call_openrouter_decisions(
+                    "approval", state={"messages": messages}, timeout=smart_timeout,
+                    questions={
+                        "approve": {
+                            "type": "noul",
+                            "instructions": "Should the command in state.messages be approved?",
+                        },
+                    },
+                )
+                probability = answers["approve"]
+                if probability >= 0.9:
+                    return "approve"
+                if probability <= 0.1:
+                    return "deny"
+                return "escalate"
+            except Exception:
+                chat_fallback = decisions_chat_fallback("approval")
+                if not chat_fallback:
+                    raise
+                logger.warning("Smart approvals: Decisions request failed; using configured chat fallback")
         response = call_llm(
-            task="approval", temperature=0, max_tokens=16, timeout=smart_timeout,
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            task="approval", temperature=0, max_tokens=16, timeout=smart_timeout, messages=messages,
+            provider=chat_fallback.get("provider") or None, model=chat_fallback.get("model") or None,
+            base_url=chat_fallback.get("base_url") or None, api_key=chat_fallback.get("api_key") or None,
         )
         logger.debug("Smart approvals: LLM call completed in %.1fs", time.monotonic() - _smart_t0)
         answer = (response.choices[0].message.content or "").strip().upper()

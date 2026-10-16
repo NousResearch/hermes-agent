@@ -409,6 +409,8 @@ _TOPIC_CHANNEL_TYPES = frozenset(
 # to their bitfield integer values. Used by _parse_permission_flags to convert
 # comma-separated permission strings into the integer the API expects, reporting
 # every name that is not in this table instead of dropping it.
+# Bit positions follow the Discord permissions topic (same values as discord.py's
+# Permissions flags); tests/tools/test_discord_tool.py freezes every entry.
 _PERMISSION_FLAGS = {
     "CREATE_INSTANT_INVITE": 0x1, "KICK_MEMBERS": 0x2, "BAN_MEMBERS": 0x4,
     "ADMINISTRATOR": 0x8, "MANAGE_CHANNELS": 0x10, "MANAGE_GUILD": 0x20,
@@ -425,8 +427,9 @@ _PERMISSION_FLAGS = {
     "MANAGE_EMOJIS_AND_STICKERS": 0x40000000, "USE_APPLICATION_COMMANDS": 0x80000000,
     "REQUEST_TO_SPEAK": 0x100000000, "MANAGE_EVENTS": 0x200000000,
     "MANAGE_THREADS": 0x400000000, "CREATE_PUBLIC_THREADS": 0x800000000,
-    "CREATE_PRIVATE_THREADS": 0x1000000000, "SEND_MESSAGES_IN_THREADS": 0x2000000000,
-    "USE_EMBEDDED_ACTIVITIES": 0x4000000000, "MODERATE_MEMBERS": 0x100000000000,
+    "CREATE_PRIVATE_THREADS": 0x1000000000, "USE_EXTERNAL_STICKERS": 0x2000000000,
+    "SEND_MESSAGES_IN_THREADS": 0x4000000000, "USE_EMBEDDED_ACTIVITIES": 0x8000000000,
+    "MODERATE_MEMBERS": 0x10000000000,
 }
 
 

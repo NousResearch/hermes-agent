@@ -140,6 +140,10 @@ class GatewayConnection:
                         raise self._error
                     return
                 thread = self._thread
+                if thread is not None and self.closed and thread.is_alive() and thread is not threading.current_thread():
+                    # ``_run`` reports ready before its thread returns: that life is over, so let it
+                    # end instead of reading it as a dial in progress (and re-raising its stale error).
+                    thread.join(max(deadline - time.monotonic(), 0))
                 if thread is None or not thread.is_alive():
                     from agent.memory_provider import spawn_context_thread
 

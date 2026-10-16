@@ -566,7 +566,8 @@ class CLIInfoMixin:
         ``self.verbose`` or the agent's ``verbose_logging`` / ``quiet_mode`` (those belong to
         ``-v`` and ``/verbose-logging``).
         """
-        from cli import _cprint, save_config_value
+        from cli import _cprint
+        from hermes_cli.config_values import save_config_value
         try:
             idx = _TOOL_PROGRESS_CYCLE.index(self.tool_progress_mode)
         except ValueError:

@@ -81,7 +81,7 @@ class TestCliSkinPromptIntegration:
     def test_handle_skin_command_refreshes_live_tui(self, capsys):
         cli = _make_cli_stub()
 
-        with patch("cli.save_config_value", return_value=True):
+        with patch("hermes_cli.config_values.save_config_value", return_value=True):
             cli._handle_skin_command("/skin ares")
 
         assert get_active_skin().name == "ares"

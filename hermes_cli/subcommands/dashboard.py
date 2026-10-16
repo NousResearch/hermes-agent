@@ -194,4 +194,9 @@ def build_dashboard_parser(
             "--skip-preflight", action="store_true",
             help="Stage the dashboard.webauthn block without the fido2/config "
                 "preflight (for writing a config for a different box)")
+        webauthn_setup_parser.add_argument(
+            "--trusted-proxy", default="", metavar="IP",
+            help="Write this reverse-proxy address into dashboard.trusted_proxies "
+                "(skips the interactive ask; the dashboard launch still needs "
+                "--host 0.0.0.0)")
         webauthn_setup_parser.set_defaults(func=cmd_webauthn_setup)

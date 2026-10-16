@@ -391,24 +391,32 @@ def _store_has_credentials(section: dict) -> bool:
     return bool((doc.get("credentials") or []) or (doc.get("pending_enrolments") or {}))
 
 
-def _write_webauthn_block(rp_id: str, rp_name: str, origins: list) -> tuple:
-    """Timestamped-backup + partial save of the three decided keys; returns
-    ``(config_path, backup_path_or_None)``."""
+def _write_webauthn_block(rp_id: str, rp_name: str, origins: list, args) -> tuple:
+    """Timestamped-backup + partial save of the decided keys (webauthn trio,
+    plus dashboard.trusted_proxies when the operator confirmed a proxy);
+    returns ``(config_path, backup_path_or_None)``."""
     from hermes_cli import config as config_mod
 
+    trusted = _acquire_trusted_proxy(origins, args)
     config_path = config_mod.get_config_path()
     backup = None
     if config_path.exists():
         backup = config_path.with_name(f"config.yaml.bak-{strftime('%Y%m%d-%H%M%S')}")
         shutil.copy2(config_path, backup)
-    partial = {"dashboard": {"webauthn": {
+    partial: dict = {"dashboard": {"webauthn": {
         "rp_id": rp_id, "rp_name": rp_name, "origins": origins}}}
+    if trusted:
+        partial["dashboard"]["trusted_proxies"] = trusted
     preserve = {("dashboard", "webauthn", key) for key in ("rp_id", "rp_name", "origins")}
+    if trusted:
+        preserve.add(("dashboard", "trusted_proxies"))
     try:
         config_mod.save_config(partial, preserve_keys=preserve, merge_existing=True)
     except Exception as exc:  # noqa: BLE001 — the fail-closed reader refuses damaged files
         print(f"✗ config.yaml was not written (nothing changed): {exc}")
         sys.exit(1)
+    if trusted:
+        print(f"✓ dashboard.trusted_proxies: {', '.join(trusted)} written")
     return str(config_path), str(backup) if backup else None
 
 
@@ -435,6 +443,106 @@ def _topology_advisory(origins: list[str]) -> None:
     print("    trusted_proxies: [<proxy IP>]   # without it X-Forwarded-Proto is ignored (fail-closed);")
     print("                                    # the provider then sees http and the passkey form never shows")
     print("  LAN plain-http access stays password-only by design.")
+
+
+def _proxy_candidates(port: int = 9119) -> list[str]:
+    """Best-effort reverse-proxy IP candidates, from the established-connection
+    table: if the dashboard is running and someone has opened it through the
+    proxy, the proxy's IP is the non-loopback peer on the dashboard port.
+    Detection is a SUGGESTION only — trusted_proxies is fail-closed security
+    config, so the operator always confirms before anything is written."""
+    import ipaddress
+    import subprocess
+
+    try:
+        proc = subprocess.run(["ss", "-tnH", "state", "established",
+                               f"( sport = :{port} )"],
+                              capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    me = {str(ip) for iface in _local_addrs() for ip in (iface,)} | {"127.0.0.1", "::1"}
+    out: list[str] = []
+    for line in (proc.stdout or "").splitlines():
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        peer = fields[2].rsplit(":", 1)[0].strip("[]")
+        try:
+            ip = ipaddress.ip_address(peer)
+        except ValueError:
+            continue
+        if ip.is_loopback or str(ip) in me or peer in out:
+            continue
+        out.append(peer)
+    return out
+
+
+def _local_addrs() -> list[str]:
+    """This host's own addresses, so the machine's own IP never masquerades
+    as the proxy."""
+    import socket
+
+    out = []
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            out.append(info[4][0])
+    except OSError:
+        pass
+    return out
+
+
+def _acquire_trusted_proxy(origins: list[str], args) -> list[str]:
+    """Decide dashboard.trusted_proxies: an explicit --trusted-proxy flag, a
+    confirmed detection, or (silent in non-interactive runs) an advisory.
+
+    Single value only, and the wildcard default routes are REJECTED even when
+    typed — trusting 0.0.0.0/0 would let any LAN peer forge X-Forwarded-Proto
+    and impersonate the https gate. Empty = leave unset (advisory only).
+    """
+    import ipaddress
+
+    def _validate(raw: str) -> str:
+        net = ipaddress.ip_network(raw if "/" in raw else f"{raw}/128"
+                                   if ":" in raw else f"{raw}/32", strict=False)
+        if net.prefixlen == 0 or net.version == 4 and net.prefixlen < 8:
+            raise ValueError(f"{raw} is too broad to trust — a trusted proxy must be "
+                             "a specific address, not a wildcard route")
+        return str(net)
+
+    flag = str(getattr(args, "trusted_proxy", "") or "").strip()
+    if flag:
+        try:
+            return [_validate(flag)]
+        except ValueError as exc:
+            print(f"✗ {exc}")
+            sys.exit(1)
+
+    public_https = [o for o in origins
+                    if o.startswith("https://") and "localhost" not in o]
+    if not public_https:
+        return []
+    if not sys.stdin.isatty():
+        return []
+    candidates = _proxy_candidates()
+    if len(candidates) == 1:
+        raw = input(f"  Trust the detected reverse proxy {candidates[0]} for "
+                    "X-Forwarded-Proto? [Y/n]: ").strip().lower()
+        if raw in ("", "y", "yes"):
+            return [_validate(candidates[0])]
+        return []  # declined — the deployment note below shows the manual step
+    hint = f" (detected: {', '.join(candidates)})" if candidates else ""
+    print()
+    answer = input(
+        f"  Reverse-proxy IP to trust for X-Forwarded-Proto{hint}\n"
+        "  (the proxy's address as seen by THIS machine; blank to skip): "
+    ).strip()
+    if not answer:
+        return []
+    try:
+        return [_validate(answer)]
+    except ValueError as exc:
+        print(f"  ✗ {exc} — leaving trusted_proxies unset; see the deployment note below.")
+        return []
 
 
 def cmd_webauthn_setup(args) -> None:
@@ -485,7 +593,7 @@ def cmd_webauthn_setup(args) -> None:
             print("Cancelled — nothing written.")
             return
 
-    config_path, backup = _write_webauthn_block(rp_id, rp_name, origins)
+    config_path, backup = _write_webauthn_block(rp_id, rp_name, origins, args)
 
     resolution = "the server re-validates it at boot"
     try:

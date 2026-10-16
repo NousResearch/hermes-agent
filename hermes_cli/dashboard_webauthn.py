@@ -178,7 +178,7 @@ def _preflight(args) -> None:
     print("✗ fido2 (the 'webauthn' extra) is not installed — passkeys cannot be "
           "provisioned or served on this box without it.")
     remedy = "pip install 'hermes-agent[webauthn]' (or: hermes pm install --extra webauthn)"
-    installed = False
+    usable = False
     if sys.stdin.isatty():
         try:
             import pm
@@ -187,11 +187,19 @@ def _preflight(args) -> None:
         if pm is not None and _confirm("Install the 'webauthn' extra now?", True):
             try:
                 pm.sync_venv(["webauthn"], explicit=True)
-                print("  ✓ webauthn extra installed")
-                installed = True
+                importlib.invalidate_caches()  # the running process must re-scan site-packages
+                if importlib.util.find_spec("fido2") is not None:
+                    print("  ✓ webauthn extra installed")
+                    usable = True
+                else:
+                    print("  ✓ webauthn extra installed, but this running process "
+                          "still can't see it")
+                    print("→ Run `hermes dashboard webauthn setup` again — a fresh "
+                          "process picks the extra up; nothing else is needed.")
+                    sys.exit(1)
             except Exception as exc:  # noqa: BLE001 — fall through to the manual remedy
                 print(f"  ✗ {exc}")
-    if not installed:
+    if not usable:
         print(f"→ {remedy}")
         print("  Run setup again after installing; --skip-preflight stages the "
               "config on THIS box without the check (use only when the "
@@ -236,7 +244,17 @@ def _validated_origin(raw: str, rp_id: str) -> str:
     (https-only off localhost; fido2's ``verify_rp_id`` when the extra is
     installed here, a structural proxy of the W3C rule when not — the server
     re-validates with the real library at boot either way)."""
-    from plugins.dashboard_auth.webauthn import _normalize_origin
+    try:
+        from plugins.dashboard_auth.webauthn import _normalize_origin
+    except ModuleNotFoundError as exc:
+        if getattr(exc, "name", "") == "fido2":
+            # e.g. --skip-preflight on a box without the extra: a clean exit,
+            # not the package __init__'s import traceback.
+            print("✗ fido2 (the 'webauthn' extra) is not importable — install it "
+                  "(pip install 'hermes-agent[webauthn]' or: hermes pm install "
+                  "--extra webauthn) and run setup again.")
+            sys.exit(1)
+        raise
 
     canonical = _normalize_origin(raw)
     if canonical is None:

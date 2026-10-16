@@ -364,6 +364,31 @@ def _init_session(
     _schedule_mcp_late_refresh(sid, agent)
 
 
+_AUTO_PRUNE_NOTIFIED: set[str] = set()
+
+
+def _maybe_notify_auto_prune(sid: str, profile_home: str | None) -> None:
+    """Low disk + auto-prune never decided: one sticky notice (TUI status line / Desktop toast)
+    per profile per process, on session create and cold resume. The cheap gate runs inline;
+    the DB estimate runs off-thread."""
+    from hermes_cli import prune_advisor
+    from hermes_constants import get_hermes_home
+    home = Path(profile_home) if profile_home else get_hermes_home()
+    if str(home) in _AUTO_PRUNE_NOTIFIED or prune_advisor.should_ask(home) is None:
+        return
+    _AUTO_PRUNE_NOTIFIED.add(str(home))
+
+    def _work() -> None:
+        advice = prune_advisor.advise(home)
+        if advice is not None:
+            _emit("notification.show", sid, {
+                "text": "⚠ " + " ".join(prune_advisor.advice_lines(advice)), "level": "warn",
+                "kind": "sticky", "ttl_ms": None, "key": "sessions.auto_prune", "id": "sessions.auto_prune"})
+
+    from agent.memory_provider import spawn_context_thread
+    spawn_context_thread(_work, name="auto-prune-advice").start()
+
+
 def _new_session_key() -> str:
     return new_session_id()
 
@@ -522,6 +547,7 @@ def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
     def _run():
         if (session := _sessions.get(sid)) is not None:
             _start_agent_build(sid, session)
+            _maybe_notify_auto_prune(sid, session.get("profile_home"))
     timer = threading.Timer(delay, _run)
     timer.daemon = True
     timer.start()

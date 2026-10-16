@@ -56,16 +56,13 @@ logger = logging.getLogger(__name__)
 
 
 def _load_config_safe() -> Optional[dict]:
-    """Load config.yaml read-only, returning None on any error.
-
-    ``load_config_readonly()`` skips the deepcopy ``load_config()`` pays per
-    call; the picker calls ``load_pool()`` once per provider row, which made
-    that copy the dominant cost of ``model.options``.
-    """
+    """Read-only config (``load_config_readonly`` skips the per-row deepcopy), None on any error.
+    Inside ``frozen_runtime_config`` it is the session's frozen config: a key rotated in config.yaml
+    must never seed a frozen session's pool."""
     try:
         from hermes_cli.config import load_config_readonly
-
-        return load_config_readonly()
+        from hermes_cli.runtime_provider import _FROZEN_RUNTIME_CONFIG
+        return _FROZEN_RUNTIME_CONFIG.get() or load_config_readonly()
     except Exception:
         return None
 

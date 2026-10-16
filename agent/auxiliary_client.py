@@ -2624,7 +2624,7 @@ def _relay_sync_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
-    from agent.auxiliary_wire import prepare_chat_messages
+    from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
 
     kwargs = prepare_chat_messages(client, kwargs)
     # The progress hook is installed per TASK, so every attempt (retries, recovery rungs, fallbacks)
@@ -2648,7 +2648,7 @@ def _relay_sync_completion(
         return run_with_aux_hooks(
             lambda: relay_llm.execute_current(
                 kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
-                name=provider_name, model_name=model_name, metadata=metadata,
+                name=provider_name, model_name=model_name, metadata=relay_chat_metadata(metadata),
                 defer_logical_completion=True,
             ),
             aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
@@ -2663,7 +2663,7 @@ async def _relay_async_completion(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None,
     api_mode: str | None = None, create: Callable[[dict[str, Any]], Any] | None = None,
 ) -> Any:
-    from agent.auxiliary_wire import prepare_chat_messages
+    from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
 
     kwargs = prepare_chat_messages(client, kwargs)
     # Async twin of the seam default above (#98466).
@@ -2679,7 +2679,7 @@ async def _relay_async_completion(
         return await arun_with_aux_hooks(
             lambda: relay_llm.execute_current_async(
                 kwargs, callback, name=provider_name, model_name=model_name,
-                metadata=metadata, defer_logical_completion=True,
+                metadata=relay_chat_metadata(metadata), defer_logical_completion=True,
             ),
             aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
             provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
@@ -2692,7 +2692,7 @@ async def _relay_async_completion(
 def _relay_sync_stream(
     client: Any, kwargs: dict[str, Any], *, provider: str | None = None, api_mode: str | None = None
 ) -> Any:
-    from agent.auxiliary_wire import prepare_chat_messages
+    from agent.auxiliary_wire import prepare_chat_messages, relay_chat_metadata
 
     kwargs = prepare_chat_messages(client, kwargs)
     # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
@@ -2708,7 +2708,7 @@ def _relay_sync_stream(
     return run_with_aux_hooks(
         lambda: relay_llm.stream_current(
             kwargs, create, name=provider_name, model_name=model_name, finalizer=dict,
-            metadata=metadata, completed_response_predicate=lambda value: hasattr(value, "choices"),
+            metadata=relay_chat_metadata(metadata), completed_response_predicate=lambda value: hasattr(value, "choices"),
         ),
         aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
         provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""), streaming=True,

@@ -186,6 +186,22 @@ def test_relative_path_metadata_exemption_tracks_working_directory(protected_hom
         guard.check(target, metadata=True)
 
 
+def test_resolving_a_path_entry_under_the_home_is_command_lookup(protected_home, monkeypatch):
+    """Command resolution realpath()s a PATH entry under the home (``~/.hermes/tools/<tool>``)
+    to tell Hermes-managed bin dirs apart; that lstats the entry and each of its ancestors."""
+    from tests.home_io_guard import HomeIOGuard
+
+    entry = protected_home / "tools" / "npm" / "bin"
+    guard = HomeIOGuard(lambda: [protected_home])
+    monkeypatch.setenv("PATH", str(entry))
+    guard.check(entry, metadata=True)
+    guard.check(entry.parent, metadata=True)
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(protected_home / "tools" / "other", metadata=True)
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(entry.parent, metadata=False)
+
+
 def test_checkout_inside_a_guarded_root_is_not_hermes_state():
     """The default install checks the repo out INSIDE the home (install.sh:
     INSTALL_DIR=$HERMES_HOME/hermes-agent): the checkout, its .venv and test

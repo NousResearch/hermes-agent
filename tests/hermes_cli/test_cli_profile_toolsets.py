@@ -81,7 +81,8 @@ def test_explicit_unknown_toolset_is_still_refused(store, monkeypatch):
         build_policy(params, CONFIG)
 
 
-def test_coding_posture_selection_still_rides_session_create(store, monkeypatch):
+def test_coding_posture_is_left_to_the_gateway(store, monkeypatch):
     db, client = store
-    _launch(monkeypatch, db, coding=["terminal"])
-    assert _created(client)["toolsets"] == ["terminal"]
+    host, _printed = _launch(monkeypatch, db, coding=["terminal"])
+    assert host.enabled_toolsets == ["terminal"]  # the local display still shows the posture
+    assert "toolsets" not in _created(client)

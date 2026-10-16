@@ -20,7 +20,7 @@ def probe(tmp_path, mode):
     result = subprocess.run([sys.executable, str(root / 'tests/gateway/fixtures/tui_desktop_routes_peer.py'), mode],
                             cwd=root, env=env, capture_output=True, text=True, timeout=120, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
-    receipt = json.loads((home / 'receipt.json').read_text())
+    receipt = json.loads((home / 'receipt.json').read_text(encoding='utf-8'))
     assert receipt['mode'] == mode and receipt['authenticated_ws']
     return receipt
 

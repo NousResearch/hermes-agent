@@ -800,18 +800,13 @@ def _live_session_payload(
 
 
 def _main_runtime_from_agent(agent) -> dict | None:
-    """Aux-client main_runtime override from a live agent, so a one-shot inherits the session's runtime."""
+    """Aux-client main_runtime override from a live agent, so a one-shot inherits the session's runtime:
+    its owner, full endpoint (tenant query) and capabilities, plus ``session_id`` for the conversation's
+    affinity headers (``x-opencode-session``, #112717)."""
     if agent is None:
         return None
-    runtime: dict = {}
-    # ``session_id`` rides along so a session-bound ``llm.oneshot`` (title, approval) on an OpenCode
-    # route sends the conversation's ``x-opencode-session`` like the main turn does (#112717).
-    for field in ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode", "session_id"):
-        value = getattr(agent, field, None)
-        if isinstance(value, str) and value.strip():
-            runtime[field] = value.strip()
-        elif field == "api_key" and callable(value):
-            runtime[field] = value
+    from agent.runtime_projection import live_main_runtime
+    runtime = {key: value for key, value in live_main_runtime(agent).items() if value}
     return runtime or None
 
 

@@ -395,10 +395,10 @@ def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
 
 
 def _usage_windows(
-    source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False,
+    source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *,
     model_scoped: frozenset[str] | set[str] = frozenset(),
 ) -> list[AccountUsageWindow]:
-    """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent.
+    """Build windows from ``source[key][used_key]``, read as a 0-100 percentage.
     ``model_scoped`` keys build windows that cap only a model family, never the account."""
     windows: list[AccountUsageWindow] = []
     for key, label in mapping:
@@ -407,8 +407,6 @@ def _usage_windows(
         if used is None:
             continue
         used = float(used)
-        if fraction and used <= 1:
-            used *= 100
         windows.append(AccountUsageWindow(
             label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key)),
             scope="model" if key in model_scoped else "account",

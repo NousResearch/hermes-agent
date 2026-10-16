@@ -136,6 +136,26 @@ def test_shared_pointer_survives_until_the_last_session_dies(_home):
         db.close()
 
 
+def test_canonical_delete_retires_the_spill_for_collection(_home):
+    """The web/gateway DELETE goes through ``mutate_runtime_session(operation='delete')``, not
+    ``delete_session``: the deletion fence records the pointer, the owner's post-delete
+    collection unlinks it."""
+    import hermes_state_runtime as rt
+    from hermes_state_media import collect_retired_media
+    db = SessionDB(db_path=_home / "state.db")
+    try:
+        _aged_session(db, "s_web", "web.txt")
+        spill = _spill(_home, "web.txt")
+        epoch = rt.begin_runtime_epoch(db, instance_id="owner")
+        rt.mutate_runtime_session(db, epoch=epoch, principal_id="human", session_id="s_web", request_id="del",
+                                  expected_revision=0, expected_generation=0, operation="delete", payload={})
+        assert spill.exists()  # the transaction only records the candidate
+        collect_retired_media(db)  # gateway/session_mutations.py runs this after every delete
+        assert not spill.exists()
+    finally:
+        db.close()
+
+
 def test_unreferenced_spill_still_sweeps_by_age(_home):
     db = SessionDB(db_path=_home / "state.db")
     try:

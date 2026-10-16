@@ -1718,7 +1718,6 @@ class SessionSessionsMixin:
                 include_compression_chain=True,
             ) > 0
         removed_ids: list[str] = []
-        spillover_names: set = set()
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
         def _do(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
@@ -1743,8 +1742,6 @@ class SessionSessionsMixin:
                 for covered_id, expected in expected_display_messages.items()
             ):
                 return False
-            # Capture the doomed messages' spillover pointers before the DELETEs (#126351).
-            spillover_names.update(self._spillover_refs(conn, target_ids or [*scope, *_collect_delegate_child_ids(conn, scope)]))
             from hermes_state_mutation_retirement import retire_sessions
             retire_sessions(conn, scope)
             removed_ids.extend(_delete_delegate_children(conn, scope))
@@ -1760,7 +1757,6 @@ class SessionSessionsMixin:
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
-        self._unlink_dead_spillover(spillover_names)
         return bool(deleted)
 
     def discard_unadmitted_session(self, session_id: str) -> bool:
@@ -1842,7 +1838,6 @@ class SessionSessionsMixin:
         if not unique_ids:
             return 0
         removed_ids: list[str] = []
-        spillover_names: set = set()
         def _do(conn):
             existing = [row["id"] for chunk in _id_chunks(unique_ids) for row in conn.execute(
                 f"SELECT id FROM sessions WHERE id IN ({_session_ids_placeholders(chunk)})", chunk,
@@ -1889,9 +1884,6 @@ class SessionSessionsMixin:
                 expanded = expand(existing)
             from hermes_state_mutation_retirement import retire_sessions
             retire_sessions(conn, expanded)
-            # Capture the doomed messages' spillover pointers before the DELETEs (#126351).
-            spillover_names.update(self._spillover_refs(
-                conn, [*expanded, *_collect_delegate_child_ids(conn, expanded)]))
             removed_ids.extend(_delete_delegate_children(conn, expanded))
             for chunk in _id_chunks(expanded):
                 ph = _session_ids_placeholders(chunk)
@@ -1911,7 +1903,6 @@ class SessionSessionsMixin:
         collect_retired_media(self)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
-        self._unlink_dead_spillover(spillover_names)
         return count
 
     # Shared by count_empty_sessions / delete_empty_sessions so badge and sweep agree. message_count

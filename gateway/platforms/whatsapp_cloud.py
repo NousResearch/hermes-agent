@@ -43,7 +43,7 @@ from gateway.config import Platform, PlatformConfig
 from agent.i18n import t
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
 from gateway.platforms.base_exec_approval import ea_header_text
-from gateway.platforms.helpers import bounded_put
+from gateway.platforms.helpers import bounded_put, redact_phone
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
 from gateway.platforms.access_policy_mixin import OPTIN_TRUTHY as _OPTIN_TRUTHY
@@ -52,6 +52,16 @@ from gateway import rich_sent_store
 from hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
+
+_LOG_VALUE_LIMIT = 300
+_MAX_ERRORS_SHOWN = 5
+_CAUSE_LIMIT = 1000
+
+
+def _one_line(value: Any, limit: int = _LOG_VALUE_LIMIT) -> str:
+    """Flatten a Meta-provided string to one bounded log line."""
+    text = str(value).replace("\r", " ").replace("\n", " ")
+    return text if len(text) <= limit else text[:limit] + "..."
 
 
 DEFAULT_API_VERSION = "v20.0"
@@ -768,7 +778,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _dispatch_payload(self, payload: dict[str, Any]) -> None:
         """Walk ``entry[].changes[].value.{messages, contacts, statuses}`` and dispatch each message.
-        ``statuses`` (sent/delivered/read/failed) are only logged — the agent doesn't consume receipts."""
+        Delivery receipts are not dispatched to the agent; failed receipts are surfaced to
+        operators at WARNING, while sent/delivered/read stay at debug."""
         if payload.get("object") != "whatsapp_business_account":
             logger.debug("[whatsapp_cloud] ignoring non-WABA payload (object=%r)", payload.get("object"))
             return
@@ -801,9 +812,63 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 for raw_message in value.get("messages") or []:
                     if isinstance(raw_message, dict):
                         await self._ingest_message(raw_message, contacts_by_waid, metadata)
-                for status in value.get("statuses") or []:
+                statuses = value.get("statuses") or []
+                if not isinstance(statuses, list):
+                    logger.debug("[whatsapp_cloud] ignoring non-list statuses container: %r", _one_line(statuses))
+                    continue
+                for status in statuses:
                     if isinstance(status, dict):
-                        logger.debug("[whatsapp_cloud] status %s for %s", status.get("status"), status.get("id"))
+                        self._log_delivery_status(status)
+
+    @staticmethod
+    def _log_delivery_status(status: dict[str, Any]) -> None:
+        """Log one delivery receipt; failed ones warn with the payload's own cause. Never raises."""
+        try:
+            state = str(status.get("status") or "").strip().lower()
+            if state != "failed":
+                logger.debug(
+                    "[whatsapp_cloud] status %s for %s",
+                    _one_line(status.get("status")), _one_line(status.get("id")))
+                return
+            wamid = _one_line(status.get("id") or "<unknown>")
+            recipient = _one_line(redact_phone(str(status.get("recipient_id") or "")))
+            errors = status.get("errors")
+            if not isinstance(errors, list) or not errors:
+                logger.warning(
+                    "[whatsapp_cloud] delivery failed for wamid %s to %s: no error details in status payload",
+                    wamid, recipient)
+                return
+            parts = []
+            for error in errors:
+                if not isinstance(error, dict):
+                    continue
+                data = error.get("error_data")
+                details = (data.get("details") if isinstance(data, dict) else None) or error.get("message")
+                parts.append(
+                    f"code={_one_line(error.get('code'))} title={_one_line(error.get('title'))!r}"
+                    f" details={_one_line(details)!r}")
+            if not parts:
+                logger.warning(
+                    "[whatsapp_cloud] delivery failed for wamid %s to %s: no error details in status payload",
+                    wamid, recipient)
+                return
+            # Summary of the first few errors, bounded by _CAUSE_LIMIT;
+            # the overflow marker is always preserved.
+            marker = (
+                f" (+{len(parts) - _MAX_ERRORS_SHOWN} more)"
+                if len(parts) > _MAX_ERRORS_SHOWN else ""
+            )
+            budget = _CAUSE_LIMIT - len(marker)
+            cause = "; ".join(parts[:_MAX_ERRORS_SHOWN])
+            if len(cause) > budget:
+                cause = cause[:max(0, budget - 3)] + "..."
+            cause += marker
+            logger.warning(
+                "[whatsapp_cloud] delivery failed for wamid %s to %s: %s",
+                wamid, recipient, cause)
+        except Exception:
+            logger.warning("[whatsapp_cloud] delivery failed for an unparseable status payload")
+            logger.debug("[whatsapp_cloud] unparseable status payload", exc_info=True)
 
     async def _ingest_message(self, raw_message: dict[str, Any], contacts_by_waid: dict[str, str], metadata: dict[str, Any]) -> None:
         """Dedup → build event → handle_message. Neither build nor dispatch errors may

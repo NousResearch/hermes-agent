@@ -42,6 +42,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     _ssrf_redirect_guard, cache_document_from_bytes_async, cache_image_from_bytes_async,
+    classify_media,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import strip_markdown
@@ -946,7 +947,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     voice_transcripts.append("[Voice] [语音识别失败]")
                 continue
 
-            is_image = ct.startswith("image/")
+            is_image = classify_media(ct, filename) == "image"
             try:
                 cached_path = await self._download_and_cache(url, ct, filename)
             except Exception as exc:
@@ -989,7 +990,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             logger.debug("[%s] Download failed for %s: %s", self._log_tag, url[:80], exc)
             return None
 
-        if content_type.startswith("image/"):
+        if classify_media(content_type, original_name, data) == "image":
             # Historical qqbot mapping: trust mimetypes' guess (never the shared table), fall back to .jpg.
             ext = ext_for_mime(content_type, use_defaults=False, use_mimetypes=True, fallback=".jpg") or ".jpg"
             return await cache_image_from_bytes_async(data, ext)

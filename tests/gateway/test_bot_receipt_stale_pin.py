@@ -89,36 +89,50 @@ async def test_an_old_pin_whose_admission_committed_stays_and_still_warns(bot, m
     assert _rows(bot) == ['bot:' + KEY]
 
 
-@pytest.mark.asyncio
-async def test_a_legacy_migration_pin_left_by_a_transient_refusal_is_cleaned_once_past_grace(
-        bot, monkeypatch, caplog):
-    """``_migrate`` keeps the pin on an owner-state refusal (``legacy=``): a later owner scan past
-    the grace window withdraws it instead of warning about it forever."""
-    from gateway.session_bot import recover_bot_deliveries
-    from tools.bot_live_delivery import _locked, _read, _write
-    home = str(bot.home.resolve())
+OTHER = 'e' * 32
+
+
+def _legacy(bot, key, sequence, message):
+    from tools.bot_live_delivery import _locked, _write
+    ticket = dict(id=key, delivery_id=key, status='queued', created_at=sequence, sequence=sequence, message=message,
+                  owner=dict(profile_home=str(bot.home.resolve()), session_id=bot.chat, lease_id='departed',
+                             live_session_id='old-native'))
     with _locked(bot.home) as root:
-        path = root / f'{KEY}.json'
-        _write(path, dict(id=KEY, delivery_id=KEY, status='queued', created_at=1, sequence=1, message='legacy',
-                          owner=dict(profile_home=home, session_id=bot.chat, lease_id='departed',
-                                     live_session_id='old-native')))
+        _write(root / f'{key}.json', ticket)
+        return root / f'{key}.json'
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_migration_pin_left_by_a_transient_refusal_is_requeued_and_admitted_once(
+        bot, monkeypatch, caplog):
+    """``_migrate`` keeps the pin on an owner-state refusal (``legacy=``), and that pin is the only
+    copy of a never-run message: a later owner scan past the grace window restores the queued
+    ticket (never deletes it), and ``_migrate`` admits it once, ahead of the ticket queued after it."""
+    from gateway.session_bot import recover_bot_deliveries
+    from tools.bot_live_delivery import _locked, _read
+    path = _legacy(bot, KEY, 1, 'never-run text')
+    _legacy(bot, OTHER, 2, 'later')
     refusing = _refuse(monkeypatch, 'runtime_draining')
     with pytest.raises(RuntimeStoreError, match='runtime_draining'):
         await recover_bot_deliveries(bot.authority)
-    with _locked(bot.home) as root:
-        pin = _read(path)
+    with _locked(bot.home):
+        pin = _read(path) or {}
     assert pin['status'] == 'ambiguous' and 'admission_id' not in pin and 'owner' in pin, pin
     refusing.clear()
-    with caplog.at_level(logging.DEBUG, logger='gateway.session_bot'):
-        await recover_bot_deliveries(bot.authority)
-    assert path.exists()  # still inside the grace window
     _age(path, HOUR)
     caplog.clear()
     with caplog.at_level(logging.DEBUG, logger='gateway.session_bot'):
         await recover_bot_deliveries(bot.authority)
-    assert not path.exists()
+    assert path.exists()
     assert not _scan_warnings(caplog, KEY)
-    assert _rows(bot) == []
+    assert not [r for r in caplog.records if 'never-run text' in r.getMessage()]
+    assert _rows(bot) == ['bot:' + KEY, 'bot:' + OTHER]
+    with _locked(bot.home):
+        receipt = _read(path) or {}
+    assert receipt['message'] == 'never-run text' and receipt['admission_id'], receipt
+    assert receipt['sequence'] == 1 and receipt['owner']['lease_id'] == 'departed', receipt
+    await recover_bot_deliveries(bot.authority)
+    assert _rows(bot) == ['bot:' + KEY, 'bot:' + OTHER]
 
 
 @pytest.mark.asyncio

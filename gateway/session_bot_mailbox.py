@@ -102,6 +102,30 @@ async def withdraw_pin(home, key):
     return await _mailbox_io(_withdraw_pin, home, key)
 
 
+# What ``_admit`` lays over a legacy ticket when it pins it (``legacy=``); the ticket never had them.
+_PIN_FIELDS = ('profile_home', 'session_id', 'principal_id', 'operator')
+
+
+def _requeue_pin(home, key):
+    with _locked(home) as root:
+        path = root / f'{key}.json'
+        current = _read(path)
+        if (current is None or current.get('status') != 'ambiguous' or current.get('admission_id')
+                or 'owner' not in current):
+            return None
+        ticket = {k: v for k, v in current.items() if k not in _PIN_FIELDS}
+        ticket['status'] = 'queued'
+        _write(path, ticket)
+        return ticket
+
+
+async def requeue_pin(home, key):
+    """Restore the queued legacy ticket a pre-admission pin was laid over (nothing committed), only
+    while it is still that pin: its id, message, sequence and created_at are kept, so ``_migrate``
+    admits it once in its FIFO place. Returns the ticket, or None when the pin is gone or changed."""
+    return await _mailbox_io(_requeue_pin, home, key)
+
+
 def _refuse_pin(home, key):
     from tools.bot_failure_reasons import AGENT_BLOCKED
     with _locked(home) as root:

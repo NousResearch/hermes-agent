@@ -17,7 +17,7 @@ from gateway.platforms.event import MessageEvent
 from hermes_state_runtime import RuntimeStoreError, get_session_admission
 from tools.bot_live_delivery import _delivery_id, _read
 from gateway.session_bot_mailbox import (mailbox_lock, read_receipt, write_receipt,
-    scan_receipts, remember_receipt, track_receipt_task, withdraw_pin, refuse_pin)
+    scan_receipts, remember_receipt, track_receipt_task, withdraw_pin, refuse_pin, requeue_pin)
 
 
 _CANONICAL_RECEIPT_STATUSES = frozenset({
@@ -111,20 +111,31 @@ async def _scan_owner_receipts(authority, home):
     """The owner's bulk scan, under the mailbox lock ``_admit`` holds. A pre-admission pin past the
     grace window whose ``bot:<key>`` never committed (refused by an older build, a death before the
     commit, a transient refusal on the legacy migration path) is withdrawn as ``_admit`` withdraws
-    one: the scan stops warning and a same-id resend admits once. A pin whose admission committed
-    stays the explicit unknown record and keeps its warning."""
+    one: the scan stops warning and a same-id resend admits once. A pin laid over a legacy ticket
+    (``owner``) is that never-run message's only copy: it is requeued instead, for ``_migrate`` to
+    admit once under the same id. A pin whose admission committed stays the explicit unknown record
+    and keeps its warning."""
     pins = []
     root, records = await scan_receipts(home, pins)
     for path, record, mtime in pins:
         key, age = record['delivery_id'], time.time() - mtime
         if (age < _PIN_GRACE_SECONDS or record['profile_home'] != str(home)
                 or _admission_at(authority, record['session_id'], 'bot:' + key) is not None
-                or not await withdraw_pin(home, key)):
+                or not await (_requeue(home, key, path, records) if 'owner' in record else withdraw_pin(home, key))):
             _warn_malformed(path, _record_shape_error(path, record))
             continue
-        logging.getLogger(__name__).info(
-            'Withdrew Bot delivery %s pre-admission pin (age %ds): nothing was admitted', key, age)
+        logging.getLogger(__name__).info('%s Bot delivery %s pre-admission pin (age %ds): nothing was admitted',
+                                         'Requeued' if 'owner' in record else 'Withdrew', key, age)
     return root, records
+
+
+async def _requeue(home, key, path, records):
+    """Requeue a legacy pin and hand the ticket to this scan's records, as if it had been read so."""
+    ticket = await requeue_pin(home, key)
+    if ticket is None or _record_shape_error(path, ticket) is not None:
+        return False
+    records.append((path, ticket))
+    return True
 
 
 def _home(authority, actor, profile):

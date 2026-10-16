@@ -1062,3 +1062,41 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             reply_to_text=reply_to_text, reply_to_is_own_message=reply_to_is_own,
             media_urls=media_urls, media_types=media_types, media_text_inlined=media_text_inlined,
         )
+
+
+# ---------------------------------------------------------------------------
+# Plugin registration
+# ---------------------------------------------------------------------------
+
+def _is_connected(config) -> bool:
+    """Phone-number id + access token, from ``PlatformConfig.extra`` (YAML / env seeding) or the
+    scope-aware env reader (``hermes_cli.gateway.get_env_value`` so setup-status patches see it)."""
+    extra = (getattr(config, "extra", None) or {}) if config is not None else {}
+    if extra.get("phone_number_id") and extra.get("access_token"):
+        return True
+    import hermes_cli.gateway as gateway_mod
+    return all((gateway_mod.get_env_value(name) or "").strip()
+               for name in ("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "WHATSAPP_CLOUD_ACCESS_TOKEN"))
+
+
+def _interactive_setup() -> None:
+    """``hermes gateway setup`` entry: the same wizard ``hermes whatsapp-cloud`` runs."""
+    from .setup_wizard import run_whatsapp_cloud_setup
+    run_whatsapp_cloud_setup()
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system.
+
+    No ``validate_config``: an unconfigured adapter still reaches ``connect()``, which records the
+    ``whatsapp_cloud_unconfigured`` fatal error (same outcome as the former core wiring). No
+    ``standalone_sender_fn`` / ``max_message_length``: out-of-process ``send_message`` had no
+    WhatsApp Cloud sender in core either, and ``send()`` chunks itself."""
+    ctx.register_platform(
+        name="whatsapp_cloud", label="WhatsApp Business (Cloud)", adapter_factory=WhatsAppCloudAdapter,
+        check_fn=check_whatsapp_cloud_requirements, is_connected=_is_connected,
+        required_env=["WHATSAPP_CLOUD_PHONE_NUMBER_ID", "WHATSAPP_CLOUD_ACCESS_TOKEN"],
+        install_hint="aiohttp/httpx missing — reinstall hermes-agent", setup_fn=_interactive_setup,
+        allowed_users_env="WHATSAPP_CLOUD_ALLOWED_USERS", allow_all_env="WHATSAPP_CLOUD_ALLOW_ALL_USERS",
+        cron_deliver_env_var="WHATSAPP_CLOUD_HOME_CHANNEL", emoji="📱", allow_update_command=False,
+    )

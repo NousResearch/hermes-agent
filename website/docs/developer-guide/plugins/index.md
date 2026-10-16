@@ -530,8 +530,8 @@ The Codex rules above apply, plus:
 - **The grant follows the declaration.** It remembers the entry it was made
   for: a plugin version that changes the token URL, hosts, scopes or client
   variables gets `ProviderNotSignedIn` until the user signs in again, and a
-  catalog re-pin that adds an `oauth` entry or changes its token host, hosts or
-  scopes asks before updating.
+  catalog re-pin that adds an `oauth` entry or changes its authorize host, token
+  host, hosts or scopes asks before updating.
 - **Errors.** `ProviderNotSignedIn`: not signed in, revoked, or the entry
   changed since sign-in. `AuthError` codes: `oauth_client_id_missing` and
   `oauth_client_secret_missing` (the variable is not set), `invalid_client`,

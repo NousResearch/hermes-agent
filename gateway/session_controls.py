@@ -748,7 +748,8 @@ class AuthorityConnection:
         """The admission a ``prompt.submit``-shaped request asks for (``prompt.replace_queued`` too)."""
         if ref.session_id not in self.subscriptions:
             raise RuntimeStoreError('permission_denied')
-        forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite', 'unattended',
+        forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'message_id', 'submitted_at',
+                                   'queued', 'attachments', 'finite', 'unattended',
                                    'surface', 'voice_context', 'interrupted', 'voice_turn', 'display_kind', 'title_preview',
                                    'turn_author', 'api_text', 'model_override', 'clarify_batch'}
         if forbidden:
@@ -756,6 +757,17 @@ class AuthorityConnection:
         request_id = params.get('submission_id') or params.get('input_id')
         if not isinstance(request_id, str) or not request_id:
             raise RuntimeStoreError('invalid_params')
+        # Stable client-supplied source identity of THIS submission event (#63298), coerced exactly
+        # as the legacy Desktop API handler does (tui_gateway/methods_prompt.py): JSON-RPC request
+        # ids are transport-local sequence numbers that may repeat after reconnect; only an
+        # explicit id belongs in canonical history / SessionDB.
+        raw_submitted_at = params.get('submitted_at')
+        try:
+            submitted_at = float(raw_submitted_at) if raw_submitted_at is not None else None
+        except (TypeError, ValueError):
+            submitted_at = None
+        raw_message_id = params.get('message_id')
+        message_id = (str(raw_message_id).strip() if raw_message_id is not None else None) or None
         from gateway.session_finite import admit_finite
         from gateway.session_display import submit_display_fields
         from gateway.session_surface import submit_surface_fields
@@ -764,7 +776,8 @@ class AuthorityConnection:
                    **submit_display_fields(params), **submit_cli_turn_fields(params)}
         if 'attachments' in params:
             payload['attachments'] = params['attachments']
-        return Submission(request_id, ref, payload, 'queue')
+        return Submission(request_id, ref, payload, 'queue',
+                          message_id=message_id, submitted_at=submitted_at)
 
     async def mutate(self, ref, params):
         from gateway.session_mutations import mutate_session

@@ -109,12 +109,13 @@ class TestSendTelegramStandaloneProxy:
         # And the bot was actually used to send.
         bot.send_message.assert_awaited_once()
 
-    def test_no_proxy_env_uses_plain_bot(
+    def test_no_proxy_env_request_carries_no_proxy(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Without TELEGRAM_PROXY (and no inherited HTTPS_PROXY/etc), Bot()
-        is constructed plainly — no ``request``/``get_updates_request``
-        kwargs, and HTTPXRequest is not invoked at all.
+        """Without TELEGRAM_PROXY (and no inherited HTTPS_PROXY/etc), the
+        Bot's request carries NO proxy. (It does carry the standalone read
+        timeout, so HTTPXRequest is invoked — without ``proxy=``;
+        ``get_updates_request`` stays unwired.)
         """
         from tools.send_message_tool import _send_telegram
 
@@ -156,7 +157,10 @@ class TestSendTelegramStandaloneProxy:
         call_args = bot_factory.call_args.args
         # token may be passed positionally or as a kwarg; either is fine.
         assert call_kwargs.get("token", call_args[0] if call_args else None) == "tok"
-        assert "request" not in call_kwargs
+        assert "request" in call_kwargs
         assert "get_updates_request" not in call_kwargs
-        httpx_request_factory.assert_not_called()
+        httpx_request_factory.assert_called_once()
+        assert httpx_request_factory.call_args.kwargs.get("proxy") is None, (
+            "no proxy is configured; the request must not carry one"
+        )
         bot.send_message.assert_awaited_once()

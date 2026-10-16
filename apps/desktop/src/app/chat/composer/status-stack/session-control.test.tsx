@@ -155,7 +155,21 @@ describe('ComposerStatusStack session-control UI', () => {
     clearQueuedPrompts('stored-1')
   })
 
-  // 1. initial structured hydration on mount; old-gateway/legacy goal remains until supported
+  it('paints resumed state instead of the historical blocked verdict', () => {
+    const blocked = sampleGoal({ status: 'paused', last_verdict: 'blocked', turns_used: 1 })
+    $sessionControlBySession.set({ [SID]: mockEntry({ snapshot: sampleSnapshot({ goal: blocked }) }) })
+    renderStack()
+    expect(screen.getByText(/Goal blocked/)).toBeTruthy()
+
+    act(() => {
+      $sessionControlBySession.set({
+        [SID]: mockEntry({ snapshot: sampleSnapshot({ goal: { ...blocked, status: 'active' } }) })
+      })
+    })
+    expect(screen.getByText(/Goal active.*1\/20/)).toBeTruthy()
+    expect(screen.queryByText(/Goal blocked/)).toBeNull()
+  })
+
   // 1. initial structured hydration on mount; old-gateway/legacy goal remains until supported
   it('calls refreshSessionControl on mount and keeps legacy goal while capability is unknown/unsupported', () => {
     $goalsBySession.set({

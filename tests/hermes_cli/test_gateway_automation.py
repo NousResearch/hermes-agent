@@ -93,3 +93,34 @@ def test_goal_draft_drafts_on_the_gateway(cli, monkeypatch):
     assert lines == ['Drafting completion contract…']
     assert result.output.startswith('⊙ Goal set (20-turn budget): ship the API') and result.kickoff
     assert mgr.state.goal == 'ship the API'
+
+
+def test_user_turn_revives_a_blocked_goal_on_the_gateway(cli, monkeypatch):
+    from hermes_cli import goals
+    monkeypatch.setattr(goals, 'judge_goal', lambda *a, **k: ('blocked', 'needs user input', False, None, False))
+    mgr = cli.cli._get_goal_manager()
+    mgr.set('finish the repair')
+    mgr.evaluate_after_turn('Please supply the missing input.')
+    assert mgr.state.status == 'paused'
+    assert mgr.resume_for_user_input() is True
+    assert ('goal', 'resume_for_user_input') in cli.conn.calls
+    assert mgr.is_active()
+    assert json.loads(cli.db.get_meta('goal:sid-1'))['status'] == 'active'
+    mgr.pause()
+    assert mgr.resume_for_user_input() is False and mgr.state.status == 'paused'  # an explicit pause stays
+
+
+@pytest.mark.asyncio
+async def test_gateway_revive_defers_to_the_cli_viewer(monkeypatch):
+    """A CLI-driven session's prompts include the CLI's own wakeups: only the CLI can classify them."""
+    from unittest.mock import AsyncMock
+    from gateway import session_authorities, session_viewer_automation
+    from gateway.run import GatewayRunner
+    monkeypatch.setattr(session_authorities, 'active_authority', lambda runner: object())
+    monkeypatch.setattr(session_viewer_automation, 'viewer_driven', lambda authority, sid: True)
+    runner = object.__new__(GatewayRunner)
+    runner._warm_goals_session_db = AsyncMock()
+    event = SimpleNamespace(internal=False, allow_gateway_control=True, text='[Heartbeat — periodic check]')
+    await runner._revive_blocked_goal_for_user_turn(SimpleNamespace(session_id='sid-1'),
+                                                    SimpleNamespace(chat_id='sid-1'), event)
+    runner._warm_goals_session_db.assert_not_called()

@@ -227,7 +227,8 @@ def test_regular_user_message_still_replays_with_timestamp():
 
 
 def test_compactor_restatement_replays_unstamped_through_session_db(tmp_path):
-    """Compaction sends its restated in-flight task unstamped; a reload must replay those exact bytes."""
+    """Compaction sends its restated in-flight task unstamped; every reload (also after a re-persist of the
+    replayed view) must replay those exact bytes."""
     from types import SimpleNamespace
     from unittest.mock import patch
 
@@ -265,6 +266,9 @@ def test_compactor_restatement_replays_unstamped_through_session_db(tmp_path):
     try:
         db.create_session("room", source="matrix")
         db.archive_and_compact("room", sent)
+        first, _ = _build_gateway_agent_history(store.load_transcript("room"), inject_timestamps=True)
+        # A later in-session prune re-persists the replayed view; the next reload must still know the row.
+        db.archive_and_compact("room", first)
         replay, _ = _build_gateway_agent_history(store.load_transcript("room"), inject_timestamps=True)
     finally:
         db.close()
@@ -275,6 +279,7 @@ def test_compactor_restatement_replays_unstamped_through_session_db(tmp_path):
                      and str(m["content"]).startswith(_INFLIGHT_TASK_REPLAY_HEADER)), None)
 
     assert restatement(sent) is not None
+    assert restatement(first) == restatement(sent)
     assert restatement(replay) == restatement(sent)
     assert next(m for m in replay if m["role"] == "user" and str(m["content"]).endswith("this is a pasted log"))[
         "content"] == render_user_content_with_timestamp(pasted, sent_at, tz=get_timezone())

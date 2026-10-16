@@ -527,13 +527,32 @@ def render_launch_skills(params, session_id):
 
 def accept_launch_hooks(policy):
     """`--accept-hooks` / `HERMES_ACCEPT_HOOKS=1` on a launch: consent to the profile's configured
-    shell hooks (recorded in the per-user allowlist, as the in-process CLI/TUI did) and register
-    them on this owner. A bypass launch has no profile hooks to consent to (main's safe mode
-    registered none either), so the flag is a no-op there rather than a refusal. Allowlist file
-    lock + write: callers run it off the owner loop."""
+    shell hooks in the per-user allowlist (no prompt; kept in memory if that write fails), which
+    the open's ``refresh_profile_hooks`` then registers. A bypass launch has no profile hooks to
+    consent to, so the flag is a no-op there rather than a refusal. Allowlist I/O: off the loop."""
     if json.loads(policy.request_json).get('accept_hooks') and not policy.ignore_user_config:
-        from agent.shell_hooks import register_from_config
-        register_from_config(policy.config(), accept_hooks=True)
+        from agent.shell_hooks import accept_for_launch
+        from gateway.run import _load_gateway_config
+        accept_for_launch(_load_gateway_config())
+
+
+def refresh_profile_hooks(policy):
+    """Bring this owner's shell hooks in step with the profile on every local session open
+    (create and resume): hooks added to ``config.yaml`` or approved since the gateway started
+    register, removed or revoked ones stop firing, as each new CLI process did on main. Reads the
+    owner home's LIVE config (as session creation does), never the session's frozen copy: the
+    registry is shared by every session and surface of this profile. Consent comes from the
+    allowlist (the launching client's TTY prompt, or ``accept_launch_hooks``) or an opt-in in force
+    on the gateway itself; this never prompts. A bypass launch registers nothing (main's safe mode
+    registered none). Config read + allowlist I/O: run off the loop."""
+    if policy is None or policy.ignore_user_config:
+        return
+    from agent.shell_hooks import sync_from_config
+    from gateway.run import _load_gateway_config
+    try:
+        sync_from_config(_load_gateway_config)  # it never removes on an empty (failed-open) config
+    except Exception:  # health: allow BLE001 -- best effort; a hook re-sync never blocks opening a session
+        logger.warning("shell-hook re-sync failed; keeping the registered hooks", exc_info=True)
 
 
 def register_worker_hooks(policy):

@@ -1,0 +1,54 @@
+name: offpeak-bekci
+repo: https://github.com/onkanat/hermes-offpeak-bekci
+sha: 15dcd63e45326d98b7a3a99caaa87c4be3269023
+title: Off-Peak Bekçi
+description: >-
+  Ollama Cloud off-peak penceresini görünür kılar: masaüstü durum çubuğu rozeti pencerenin
+  geri sayımını ve kuyrukta onay bekleyen/onaylı iş kalemlerini gösterir (pencere tanımı
+  Ollama'nın off-peak saatleri: hafta içi 18:00-12:00 UTC penceresi, hafta sonu tek blok),
+  pencere başlamadan 30 dakika önce bir kez toast uyarır ve onayı `/offpeak-onayla <id,id>`
+  ile kullanıcıdan alır — onaysız iş koşmaz. Gövde tarafında `llm_execution` middleware'i
+  yalnız Ollama Cloud çağrılarında, yalnız peak penceresinde, son 60 sn'deki çağrı sayısı
+  hedef hızı (varsayılan 6/dk) aştıysa tavanlı kısa bir bekleme uygular; saatlik kota tavanı
+  aşıldığında (varsayılan 120/saat) uyarı kaydı yazar, isteği iptal etmez. Varsayılan
+  `kuru_kosu: true` — eklenti ölçer, geciktirmez; canlıya almak için config.yaml'da
+  `offpeak-bekci.kuru_kosu: false`. `on_session_end` kancası oturum sonunda pencere/kota/
+  kuyruk özetini yerel günlüğe yazar.
+  Kurulum opt-in'dir: `/offpeak-kur` kurulacak cron işini TAM gösterir (iş adı, zamanlama,
+  promptun tamamı, monitör, workdir, araç kümeleri, teslim) ve `plan_hash` ister; onay
+  hash'e bağlıdır ve yalnız kurulum İSTEĞİ oturuma bırakılır — işi ajanın kendi cron aracıyla
+  kurar. Otomatik bırakma host'a bağlıdır (ölçüm: `hermes_cli/plugins_injection.py:18-32`):
+  klasik CLI oturumunda istek ajanın kuyruğuna girer; Ink TUI / masaüstü-panel host'unda
+  çekirdek kalıcı `session_key` ister ve o anahtar komut handler'ına verilmediği için komut
+  kurulacak parametreleri tek satır JSON olarak basar (işi yine ajanın cron aracıyla kurar,
+  isteği kullanıcı ajana verir). Anahtarı okumanın tek yolu özel çekirdek modülü
+  `gateway.session_context`ten geçer (kural 9 → kullanılmaz); gateway'e enjeksiyon ayrıca
+  `plugins.entries.offpeak-bekci.allow_gateway_injection: true` ister (varsayılan kapalı).
+  `/offpeak-kaldir` kurulu işleri listeler, `onayla <job_id>`
+  ile kaldırma isteğini bırakır (id · zamanlama · durum · sonraki koşu); host sınırı aynıdır.
+  Prova `duraklat` ile yapılır (`paused:true`).
+  Disclosure — ağ çağrısı yok, telemetri yok, sır okumaz/yazmaz, kabuk/süreç çalıştırmaz,
+  uzaktan kod indirmez, kendi kendini güncellemez. Eklenti cron deposuna (`jobs.json`)
+  HİÇBİR koşulda yazmaz, yalnız salt-okur (yol genel yüzeyden türetilir; dizin açan `load_jobs()`
+  kullanılmaz). Okuduğu yerel dosyalar: `kuyruk_dosyasi` ayarının gösterdiği defter
+  (varsayılan `~/.hermes/offpeak-bekci/kuyruk.md`) ve cron deposu. Yazdığı yerler:
+  `olcum_dosyasi` (JSONL ölçüm/uyarı, varsayılan `~/.hermes/offpeak-bekci/olcum.jsonl`) ve
+  kullanıcı `/offpeak-onayla` verdiğinde yalnız o kuyruk dosyası atomik olarak (dosyanın
+  içeriğini eklenti üretmez, kullanıcının dosyasıdır). Masaüstü tarafı `desktop/plugin.js`
+  yalnız eklenti SDK yüzeyini kullanır (prototip yamalama, eval, DOM sorgulama yok).
+maintainer: onkanat
+tier: community
+category: desktop
+version: "0.1.0"
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/onkanat/hermes-offpeak-bekci#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_session_end
+  provides_middleware:
+    - llm_execution
+  # Kayıtlı komutlar manifestte beyan edilmez (şemada alan yok); bilgi amaçlı:
+  # /offpeak-durum · /offpeak-onayla · /offpeak-kur · /offpeak-kaldir
+  requires_env: []

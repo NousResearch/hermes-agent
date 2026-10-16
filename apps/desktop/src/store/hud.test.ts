@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $activeGatewayProfile } from '@/store/profile'
-import { $sessions } from '@/store/session'
+import { $connection, $sessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { $hudActive, $hudSession, openHud } from './hud'
@@ -28,6 +28,7 @@ beforeEach(() => {
   $hudSession.set(null)
   $sessions.set([])
   $activeGatewayProfile.set('default')
+  $connection.set(null)
 })
 
 afterEach(() => {
@@ -45,7 +46,7 @@ describe('openHud profile targeting (#82285)', () => {
 
     openHud('abc')
 
-    expect(open).toHaveBeenCalledWith({ sessionId: 'abc', profile: 'work' })
+    expect(open).toHaveBeenCalledWith({ sessionId: 'abc', profile: 'work', connectionId: null })
   })
 
   it('falls back to the active gateway profile for an unstamped session', () => {
@@ -54,7 +55,7 @@ describe('openHud profile targeting (#82285)', () => {
 
     openHud('abc')
 
-    expect(open).toHaveBeenCalledWith({ sessionId: 'abc', profile: 'work' })
+    expect(open).toHaveBeenCalledWith({ sessionId: 'abc', profile: 'work', connectionId: null })
   })
 
   it('uses the active gateway profile when opening without a session', () => {
@@ -62,7 +63,7 @@ describe('openHud profile targeting (#82285)', () => {
 
     openHud()
 
-    expect(open).toHaveBeenCalledWith({ sessionId: null, profile: 'research' })
+    expect(open).toHaveBeenCalledWith({ sessionId: null, profile: 'research', connectionId: null })
   })
 
   it('uses the active profile when the target session is not in the cache', () => {
@@ -70,6 +71,23 @@ describe('openHud profile targeting (#82285)', () => {
 
     openHud('unknown-session')
 
-    expect(open).toHaveBeenCalledWith({ sessionId: 'unknown-session', profile: 'work' })
+    expect(open).toHaveBeenCalledWith({ sessionId: 'unknown-session', profile: 'work', connectionId: null })
+  })
+
+  it('carries the connection this window is on, so a HUD from This device stays local', () => {
+    $connection.set({ connectionId: 'local', profile: 'default' } as never)
+
+    openHud()
+
+    expect(open).toHaveBeenCalledWith({ sessionId: null, profile: 'default', connectionId: 'local' })
+  })
+
+  it("prefers the session's stamped owner connection over the window's", () => {
+    $connection.set({ connectionId: 'local', profile: 'default' } as never)
+    $sessions.set([session({ id: 'abc', profile: 'default', connection_id: 'studio' } as Partial<SessionInfo>)])
+
+    openHud('abc')
+
+    expect(open).toHaveBeenCalledWith({ sessionId: 'abc', profile: 'default', connectionId: 'studio' })
   })
 })

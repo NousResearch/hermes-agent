@@ -43,3 +43,15 @@ test('buildHudWindowUrl builds a packaged file URL with the flags before the has
 
   assert.match(url, /^file:\/\/.*index\.html\?win=hud&profile=coder#\/abc$/)
 })
+
+test('buildHudWindowUrl carries the owning connection alongside the profile', () => {
+  assert.equal(
+    buildHudWindowUrl('s1', { devServer: 'http://localhost:5173', profile: 'default', connectionId: 'local' }),
+    'http://localhost:5173/?win=hud&profile=default&connectionId=local#/s1'
+  )
+  // A connection without a profile is meaningless to the boot path — dropped.
+  assert.equal(
+    buildHudWindowUrl('s1', { devServer: 'http://localhost:5173', connectionId: 'local' }),
+    'http://localhost:5173/?win=hud#/s1'
+  )
+})

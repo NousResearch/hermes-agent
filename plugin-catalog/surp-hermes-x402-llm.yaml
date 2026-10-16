@@ -1,0 +1,27 @@
+name: surp-hermes-x402-llm
+repo: https://github.com/ivcained/surp-hermes-x402-llm
+sha: 771d38fa1c87f8284aeed6d66fa151abee9fd400
+description: "Talk to the Surp x402 LLM gateway from Hermes: live model listings, per-request quotes, cache status, combo creation, usage, Jev routing stats, and guarded paid chat. Paid tools are hard-capped by max_spend_usd (default $0.05 per call) and refuse to run without an explicit spend authorization; discovery, quotes, and cache tools are free and need no key. Disclosure — sends prompts and routing metadata to https://surp.ivc.lol (the operator's own gateway; paid chat spends USDC through the gateway's prepaid/x402 lanes, always under the configured per-call cap); secrets resolved only through Hermes' secret scope; no telemetry beyond the gateway's own billing."
+maintainer: ivcained
+tier: community
+category: models
+requires_hermes: ">=0.21.7"
+docs_url: https://github.com/ivcained/surp-hermes-x402-llm#readme
+version: "0.3.2"
+platforms: []
+title: "surp-hermes-x402-llm"
+capabilities:
+  provides_tools:
+    - surp_models
+    - surp_quote
+    - surp_cache_status
+    - surp_chat
+    - surp_usage
+    - surp_jev_stats
+    - surp_combo_create
+    - surp_combo_list
+    - surp_combo_get
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - SURP_API_KEY

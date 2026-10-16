@@ -603,7 +603,10 @@ async def _send_bluebubbles(extra, chat_id, message):
         return err
     try:
         from gateway.config import PlatformConfig
-        adapter = bb.BlueBubblesAdapter(PlatformConfig(extra=extra))
+        # Send-only: the live gateway already owns the BlueBubbles webhook port and registration,
+        # so a throwaway adapter that bound 8645 died with EADDRINUSE (and, on the success path,
+        # would have deleted the live webhook on disconnect).
+        adapter = bb.BlueBubblesAdapter(PlatformConfig(extra={**extra, "send_only": True}))
         if not await adapter.connect():
             return _error("BlueBubbles: failed to connect to server")
         try:

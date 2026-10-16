@@ -318,15 +318,33 @@ class TestBlueBubblesAttachmentSend:
 
 
 class TestBlueBubblesWebhookUrl:
-    """_webhook_url property normalises local hosts to 'localhost'."""
+    """Local binds are advertised as a literal loopback address, not the name 'localhost'.
 
-    def test_default_host(self, monkeypatch):
+    BlueBubbles is a Node server and Node resolves 'localhost' to ::1 first, so a registration
+    built on the name is delivered to the IPv6 loopback and refused whenever the listener bound
+    IPv4 — the registration the live gateway depends on must therefore use a literal address.
+    """
+
+    def test_ipv4_bind_advertises_literal_ipv4_loopback(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        # Default webhook_host is 0.0.0.0 → normalized to localhost
-        assert "localhost" in adapter._webhook_url
+        # Default webhook_host is 127.0.0.1.
+        assert adapter._webhook_url.startswith("http://127.0.0.1:")
         assert str(adapter.webhook_port) in adapter._webhook_url
         assert adapter.webhook_path in adapter._webhook_url
 
+    @pytest.mark.parametrize("bind_host", ["0.0.0.0", "127.0.0.1", "localhost"])
+    def test_any_local_ipv4_bind_advertises_ipv4_loopback(self, monkeypatch, bind_host):
+        adapter = _make_adapter(monkeypatch, webhook_host=bind_host)
+        assert adapter._webhook_url.startswith("http://127.0.0.1:")
+
+    @pytest.mark.parametrize("bind_host", ["::", "::1"])
+    def test_ipv6_bind_advertises_bracketed_ipv6_loopback(self, monkeypatch, bind_host):
+        adapter = _make_adapter(monkeypatch, webhook_host=bind_host)
+        assert adapter._webhook_url.startswith("http://[::1]:")
+
+    def test_non_local_host_is_passed_through_verbatim(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, webhook_host="10.0.0.5")
+        assert adapter._webhook_url.startswith("http://10.0.0.5:")
 
     def test_register_url_omits_query_when_no_password(self, monkeypatch):
         """If no password is configured, the register URL should be the bare URL."""
@@ -583,3 +601,78 @@ class TestBlueBubblesGateBeforeDownload:
         assert response.status == 200
         assert download.await_count == downloads
         assert len(handled) == handled_count
+
+
+class TestBlueBubblesSendOnly:
+    """The standalone sender builds a throwaway adapter; it must not touch the live listener's port
+    or webhook registration (EADDRINUSE killed the cron fallback lane; disconnect would have
+    unregistered the live webhook and silently stopped inbound iMessage)."""
+
+    @pytest.mark.asyncio
+    async def test_send_only_connect_skips_listener_and_registration(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_only=True)
+        monkeypatch.setattr(adapter, "_api_get", AsyncMock(return_value={"data": {}}))
+        registered = AsyncMock(return_value=True)
+        monkeypatch.setattr(adapter, "_register_webhook", registered)
+        bind = AsyncMock()
+        monkeypatch.setattr("gateway.platforms.shared_ingress.bind_listener", bind)
+
+        assert await adapter.connect() is True
+        assert adapter._runner is None
+        assert bind.await_count == 0
+        assert registered.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_send_only_disconnect_leaves_registration_alone(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_only=True)
+        unregister = AsyncMock(return_value=True)
+        monkeypatch.setattr(adapter, "_unregister_webhook", unregister)
+
+        await adapter.disconnect()
+        assert unregister.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_listener_still_registers_when_not_send_only(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setattr(adapter, "_api_get", AsyncMock(return_value={"data": {}}))
+        registered = AsyncMock(return_value=True)
+        monkeypatch.setattr(adapter, "_register_webhook", registered)
+        monkeypatch.setattr("gateway.platforms.shared_ingress.bind_listener",
+                            AsyncMock(return_value=None))
+
+        assert await adapter.connect() is True
+        assert registered.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_standalone_sender_marks_its_adapter_send_only(self, monkeypatch):
+        """Contract: `_send_bluebubbles` must request a send-only adapter."""
+        import gateway.platforms.bluebubbles as bb
+        import tools.send_message_senders as senders
+
+        seen = {}
+
+        class _Recorder(bb.BlueBubblesAdapter):
+            def __init__(self, config):
+                seen["extra"] = dict(config.extra)
+                super().__init__(config)
+
+        async def fake_send(self, chat_id, message):
+            class _R:
+                success = True
+                error = None
+                message_id = "1"
+            return _R()
+
+        monkeypatch.setattr(bb, "BlueBubblesAdapter", _Recorder)
+        monkeypatch.setattr(_Recorder, "connect", AsyncMock(return_value=True))
+        monkeypatch.setattr(_Recorder, "send", fake_send)
+        monkeypatch.setattr(_Recorder, "disconnect", AsyncMock())
+        monkeypatch.setattr(senders, "_gateway_platform_module",
+                            lambda *a, **kw: (bb, None))
+
+        out = await senders._send_bluebubbles(
+            {"server_url": "http://localhost:1234", "password": "secret"}, "chat-1", "hi")
+
+        payload = json.loads(out) if isinstance(out, str) else out
+        assert payload["success"] is True, payload
+        assert seen["extra"]["send_only"] is True

@@ -60,19 +60,46 @@ describe('isRemoteConfig', () => {
 })
 
 describe('isRemoteReauthFailure', () => {
-  it('true for a remote, gated, disconnected gateway with a URL', () => {
-    expect(isRemoteReauthFailure(config())).toBe(true)
+  it.each(['remote', 'cloud'] as const)('offers first sign-in for disconnected %s OAuth without a boot error', mode => {
+    for (const error of [undefined, null, '']) {
+      expect(isRemoteReauthFailure(config({ mode }), error)).toBe(true)
+      expect(isRemoteReauthFailure(config({ mode, remoteOauthConnected: true }), error)).toBe(false)
+    }
   })
+
+  it.each(['remote', 'cloud'] as const)(
+    'does not turn %s timeout, transport, or IPC failures into expired-session recovery',
+    mode => {
+      for (const remoteOauthConnected of [false, true]) {
+        for (const error of [
+          'Timed out minting the gateway WebSocket URL',
+          'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.',
+          'Error invoking remote method \'hermes:remoteGatewayWsUrl\': Error: IPC channel closed'
+        ]) {
+          expect.soft(isRemoteReauthFailure(config({ mode, remoteOauthConnected }), error), error).toBe(false)
+        }
+      }
+    }
+  )
 
   it('false when connected and the boot error is not auth-shaped', () => {
     expect(isRemoteReauthFailure(config({ remoteOauthConnected: true }), 'Python exploded')).toBe(false)
   })
 
-  it('true when the indicator reads connected but the boot error is auth-shaped (expired session)', () => {
-    expect(
-      isRemoteReauthFailure(config({ remoteOauthConnected: true }), 'Your remote gateway session has expired.')
-    ).toBe(true)
-  })
+  it.each(['remote', 'cloud'] as const)(
+    'requires %s reauthentication for explicit credential rejection regardless of connection metadata',
+    mode => {
+      for (const remoteOauthConnected of [false, true]) {
+        for (const error of [
+          'Your remote gateway session has expired.',
+          'Gateway sign-in required.',
+          'Reached the gateway over HTTP, but the app token is invalid.'
+        ]) {
+          expect(isRemoteReauthFailure(config({ mode, remoteOauthConnected }), error), error).toBe(true)
+        }
+      }
+    }
+  )
 
   it('false for a local gateway', () => {
     expect(isRemoteReauthFailure(config({ mode: 'local' }))).toBe(false)

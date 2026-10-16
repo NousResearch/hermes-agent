@@ -263,21 +263,37 @@ class TestControlCharSplitTokens:
         assert a not in result
         assert b not in result
 
-    def test_non_csi_esc_before_later_csi_live_text_survives(self):
-        # Review finding on #81012: at an ESC that does NOT begin a CSI
-        # sequence, the shadow builder must strip a CSI only when it starts
-        # AT that ESC. Jumping ahead to a LATER CSI marked the live text
-        # between the two regions as strippable noise, blessed it through
-        # the span validation, and the greedy join deleted it.
+    def test_non_csi_esc_before_later_csi_fails_closed_masked(self):
+        # Inverts the earlier review regression, which asserted that live
+        # text sitting between an orphan ESC and a formed CSI survives.
+        # That shape is attacker-addressable: the same layout holds either
+        # prose or a padded credential fragment, and no content rule
+        # separates them, because the attacker writes the text. Refusing the
+        # span hands the attacker a universal raw-emission token, so the join
+        # now fails closed and masks the whole span.
         text = "sk-" + "a" * 5 + "\x1bNOT_TOKEN_TEXT\x1b[31m" + "b" * 10
         result = redact_sensitive_text(text, force=True)
-        assert "NOT_TOKEN_TEXT" in result
+        assert "a" * 5 not in result
+        assert "b" * 10 not in result
 
     def test_orphan_esc_before_csi_does_not_leak_full_credential(self):
-        text = "sk-" + "a" * 5 + "\x1b" + "x" * 3 + "\x1b[31m" + "b" * 10
+        # Gap length must never decide the outcome. A previous fix refused
+        # masking when the gap held 6+ live chars, which any attacker pads
+        # into. Every gap size has to mask.
+        for gap in (0, 1, 3, 6, 20):
+            filler = "x" * gap
+            text = "sk-" + "a" * 5 + "\x1b" + filler + "\x1b[31m" + "b" * 10
+            result = redact_sensitive_text(text, force=True)
+            assert result != text, f"gap={gap} leaked verbatim"
+            assert "a" * 5 not in result, f"gap={gap} leaked head"
+            assert "b" * 10 not in result, f"gap={gap} leaked tail"
+
+    def test_orphan_esc_before_csi_masks_realistic_token_body(self):
+        # The padded case is not junk-shaped: the gap holds plausible
+        # token-body chars, so it still has to mask.
+        text = "sk-" + "a" * 25 + "\x1babc123\x1b[31m" + "b" * 10
         result = redact_sensitive_text(text, force=True)
-        assert result != text
-        assert "a" * 5 not in result
+        assert "a" * 25 not in result
         assert "b" * 10 not in result
 
     def test_mixed_csi_and_bare_control_split_masked(self):

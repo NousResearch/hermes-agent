@@ -555,52 +555,14 @@ def _mask_control_split_tokens(text: str, mask_fn) -> str:
                     body = body[:clips - body_start]
                     if not body:
                         continue
-        # Live chars must be token-body chars. One combination is refused:
-        # an ORPHAN ESC (a bare \x1b that began no CSI) appearing BEFORE any
-        # complete CSI sequence in the span. That order marks mangled or
-        # truncated terminal output — the live text between the dangling
-        # escape and the next formed sequence is continuation-of-prose, not
-        # provably token material
-        # (``sk-aaaaa\x1bNOT_TOKEN_TEXT\x1b[31mbbbbbbbbbb`` erased
-        # NOT_TOKEN_TEXT; review finding on #81012). Once a formed sequence
-        # has been seen, a later bare ESC reads as an ordinary in-token
-        # split like any other control, so the mirrored layout
-        # (``sk-aaaaa\x1b[31mbbbbb\x1bcccccccccc``) stays fully masked and no
-        # splitter combination can flip a candidate to raw emission: every
-        # non-refused candidate is replaced wholesale.
-        orphan_precedes_csi = False
-        seen_csi = False
-        first_orphan_idx = None
-        first_csi_idx = None
+        # Live chars must be token-body chars or stripped noise, so the
+        # replaced span contains no prose outside the token alphabet.
         clean_join = True
         for k, c in enumerate(span):
-            kd = keep[start_orig + k]
-            if kd == 2:
-                if first_csi_idx is None:
-                    first_csi_idx = k
-                seen_csi = True
-            elif kd:
-                if c == "\x1b" and not seen_csi:
-                    if first_orphan_idx is None:
-                        first_orphan_idx = k
-                    orphan_precedes_csi = True
-            elif c not in _TOKEN_BODY_CHARS:
+            if keep[start_orig + k] == 0 and c not in _TOKEN_BODY_CHARS:
                 clean_join = False
                 break
-        # Refusal only for substantial prose-like debris between an orphan
-        # ESC and a following CSI; short gaps (attacker-controlled junk)
-        # fail closed-masked. This closes the weaponized append bypass
-        # (orphan ESC placed to force raw emission) while keeping the
-        # NOT_TOKEN_TEXT regression intact.
-        blocked = False
-        if orphan_precedes_csi and seen_csi and first_orphan_idx is not None and first_csi_idx is not None and first_csi_idx > first_orphan_idx:
-            live_gap = sum(1 for idx in range(start_orig + first_orphan_idx,
-                                              start_orig + first_csi_idx)
-                          if keep[idx] == 0)
-            if live_gap >= 6:
-                blocked = True
         if (clean_join
-                and not blocked
                 and (end_orig >= n or text[end_orig] != "=")):
             matches.append((start_orig, end_orig, mask_fn(body)))
     for start_orig, end_orig, replacement in reversed(matches):
@@ -618,10 +580,7 @@ def _strip_shadow(text: str):
     - ``keep[i]`` classifies ``text[i]``: 0 = live char kept in the shadow,
       1 = bare control char (stripped individually), 2 = byte belonging to a
       complete ANSI CSI sequence (stripped as a unit). Any truthy value means
-      strippable noise, preserving the historical contract; the KIND
-      distinction lets the join pass refuse candidates whose ORPHAN ESC
-      precedes a formed CSI sequence (see the gate in
-      _mask_control_split_tokens).
+      strippable noise, preserving the historical contract.
     - ``orig_idx`` maps each shadow index back to its index in ``text``.
 
     Stripping complete CSI sequences — not just the bare ``\\x1b`` byte — is

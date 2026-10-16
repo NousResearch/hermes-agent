@@ -255,7 +255,7 @@ async def execute_command(connection, ref, params, *, dispatch=False):
         return {'type': 'exec', 'output': _text(output)}
     if definition is None:
         def build():
-            with _profile_runtime_scope(home):
+            with _profile_runtime_scope(home), _session_workspace(authority.runner, live.source):
                 return _skill_directive(name, arg, live.route)
         return await asyncio.to_thread(build)
 

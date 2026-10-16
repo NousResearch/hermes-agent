@@ -55,7 +55,7 @@ class CorrectionModel(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def owner(tmp_path):
+def owner(tmp_path, config=None):
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
     home.mkdir(mode=0o700)
@@ -69,7 +69,7 @@ def owner(tmp_path):
     (home / 'config.yaml').write_text(json.dumps({
         'gateway': {'multiplex_profiles': False}, 'display': {'busy_input_mode': 'steer'},
         'model': {'provider': 'custom', 'default': 'controls-fixture', 'base_url': url},
-        'auxiliary': {'title_generation': {'enabled': False}},
+        'auxiliary': {'title_generation': {'enabled': False}}, **(config or {}),
     }))
     env = child_env()
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),

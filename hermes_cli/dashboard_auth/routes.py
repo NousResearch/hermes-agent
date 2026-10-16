@@ -44,7 +44,7 @@ from hermes_cli.dashboard_auth.login_page import (
     render_login_html, render_native_provider_choice_html)
 from hermes_cli.dashboard_auth.refresh_singleflight import refresh_session_coalesced
 from hermes_cli.dashboard_auth.request_utils import (
-    access_token_max_age, client_ip as _client_ip, is_safe_next_path)
+    access_token_max_age, audit_refresh_failure, client_ip as _client_ip, is_safe_next_path)
 
 _log = logging.getLogger(__name__)
 
@@ -611,7 +611,7 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
         _audit(request, AuditEvent.REFRESH_SUCCESS, provider=session.provider,
                user_id=session.user_id)
         return _bearer_payload(session)
-    _audit(request, AuditEvent.REFRESH_FAILURE, reason="all_providers_rejected_rt")
+    audit_refresh_failure(request, reason="all_providers_rejected_rt")
     return JSONResponse(
         {"error": "session_expired",
          "detail": "Refresh token expired or invalid; start a new sign-in."}, status_code=401)

@@ -1,6 +1,7 @@
 """Request-level helpers shared by the auth routes and both middlewares."""
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 from typing import Callable, Optional
@@ -9,6 +10,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from hermes_cli.dashboard_auth import list_session_providers
+from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import DashboardAuthProvider, ProviderError
 
 # Paths a post-login redirect must never land on: the auth flow itself (would loop) and any
@@ -24,6 +26,48 @@ def client_ip(request: Request) -> str:
     may rewrite ``request.client`` only for operator-configured trusted peers.
     """
     return request.client.host if request.client else ""
+
+
+# Bound the synthetic client identifier we persist in audit records so an
+# attacker-controlled User-Agent header cannot bloat the audit log.
+_MAX_USER_AGENT_LEN = 256
+
+# Attribution only, never a credential: the same User-Agent must map to the same
+# id across records so a storm can be grouped by device, while the log keeps no
+# raw header (User-Agents embed OS versions and build numbers, and this field is
+# attacker-controlled).
+_CLIENT_DEVICE_HASH_LEN = 16
+
+
+def client_device(request) -> str:
+    """Stable, non-reversible client id for audit records, derived from the ``User-Agent``.
+
+    Both REFRESH_FAILURE sites audit *before* any token-derived identity resolves, so no
+    ``user_id`` exists; the User-Agent is the only per-device signal available on either
+    path (the native route and the cookie gate). Hashing keeps attribution ("same device
+    vs different device") without persisting a raw, spoofable header.
+
+    Returns ``""`` when the header is absent or empty.
+    """
+    ua = request.headers.get("user-agent", "")
+    if not ua:
+        return ""
+    digest = hashlib.sha256(ua[:_MAX_USER_AGENT_LEN].encode("utf-8", "replace")).hexdigest()
+    return digest[:_CLIENT_DEVICE_HASH_LEN]
+
+
+def audit_refresh_failure(
+    request: Request, *, provider: Optional[str] = None, reason: str,
+) -> None:
+    """Record one refresh rejection with the client attribution every REFRESH_FAILURE needs.
+
+    Shared by the native refresh route and the cookie-gate middleware: both audit the same
+    event before identity resolves, and a client id on only one of them would leave the other
+    path unattributable behind a NAT (#98338).
+    """
+    audit_log(
+        AuditEvent.REFRESH_FAILURE, provider=provider, reason=reason,
+        device=client_device(request), ip=client_ip(request))
 
 
 def extract_bearer(request: Request) -> str:

@@ -17,8 +17,11 @@ the reverse-proxy deployment that is the usual gotcha.
   dashboard (any of Traefik / nginx / Caddy). It must pass `X-Forwarded-Proto`
   (they all do by default) and WebSockets (nginx: the `Upgrade`/`Connection`
   headers).
-- A browser with a platform authenticator (Touch ID / Windows Hello) or a
-  hardware key, on a device you trust.
+- A browser with a passkey-capable authenticator: platform biometrics
+  (Touch ID / Windows Hello), a hardware security key (YubiKey and the like),
+  or a password manager with passkey support (1Password, Bitwarden, Proton
+  Pass, iCloud Keychain, Google Password Manager — cross-device enrolment
+  shows a QR code).
 
 ## 1. Install
 

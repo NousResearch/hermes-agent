@@ -41,6 +41,13 @@ class TestSelection:
         (home / ".env").write_text(f"{cb.BACKEND_ENV}=file\n", encoding="utf-8")
         assert cb.get_config_backend().name == "file"
 
+    def test_empty_launch_env_value_resets_a_stale_shell_value_to_file(self, home, monkeypatch):
+        # ``HERMES_CONFIG_BACKEND=`` in the launch .env loads over the shell value as "", i.e. the default.
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv(cb.BACKEND_ENV, "remote")
+        (home / ".env").write_text(f"{cb.BACKEND_ENV}=\n", encoding="utf-8")
+        assert cb.get_config_backend().name == "file"
+
     def test_explicit_non_config_file_ignores_backend(self, home, monkeypatch):
         other = home / "import-source.yaml"
         other.write_text("a: 1\n", encoding="utf-8")

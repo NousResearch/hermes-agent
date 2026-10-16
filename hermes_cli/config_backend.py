@@ -175,7 +175,8 @@ def get_config_backend() -> ConfigBackend:
     if kind != "file":
         # A config read can run before load_hermes_dotenv() (hermes_cli.config reads at import time):
         # refuse only a value the launch home's .env / managed .env do not override, as that load will.
-        kind = (_dotenv_backend_override() or kind).strip().lower() or "file"
+        override = _dotenv_backend_override()  # None = no .env sets it; "" = an explicit reset to file
+        kind = (kind if override is None else override).strip().lower() or "file"
     if kind == "file":
         return _FILE_BACKEND
     if kind == "remote":

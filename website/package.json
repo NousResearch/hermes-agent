@@ -48,7 +48,10 @@
     "tar": "7.5.22",
     "browserslist": "4.28.8",
     "fast-uri": "3.1.8",
-    "qs": "6.16.0"
+    "qs": "6.16.0",
+    "katex": "0.18.2",
+    "postcss-selector-parser": "7.1.6",
+    "tinypool": "2.1.2"
   },
   "browserslist": {
     "production": [

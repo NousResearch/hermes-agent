@@ -66,7 +66,9 @@
     "postcss": "8.5.23",
     "tar": "7.5.22",
     "browserslist": "4.28.8",
-    "electron": "41.10.6"
+    "electron": "41.10.6",
+    "katex": "0.18.2",
+    "postcss-selector-parser": "7.1.6"
   },
   "engines": {
     "node": "^22.22.0 || ^24.11.0 || >=26.0.0",

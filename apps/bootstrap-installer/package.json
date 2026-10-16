@@ -30,7 +30,7 @@
     "@vscode/codicons": "0.0.45",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
-    "katex": "0.16.47",
+    "katex": "0.18.2",
     "lucide-react": "0.577.0",
     "nanostores": "1.4.2",
     "radix-ui": "1.6.7",

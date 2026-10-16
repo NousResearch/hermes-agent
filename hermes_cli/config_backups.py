@@ -60,7 +60,7 @@ def backup_config(config_path: Path, reason: str, *, keep: int = DEFAULT_KEEP) -
         existing = list_config_backups(config_path, reason)
         # Not filecmp.cmp: its process-wide cache keys on (size, mtime), so an equal-size edit
         # within one mtime tick of an earlier comparison is reported identical and never backed up.
-        if existing and config_path.read_bytes() == existing[0].read_bytes():
+        if existing and config_path.read_bytes() == existing[0].read_bytes():  # config-reader: ok — file tooling, gated above
             return None
         dest = root / f"{config_path.name}.{reason}.{time.strftime('%Y%m%d-%H%M%S')}"
         if dest.is_symlink() or dest.exists():  # never write through a planted link

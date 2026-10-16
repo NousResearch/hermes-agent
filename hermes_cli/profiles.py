@@ -25,7 +25,7 @@ from hermes_constants import (
     named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
 )
 from hermes_cli.config_backend import config_exists, config_version, require_file_tooling
-from hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read, _config_version_or_none  # noqa: F401  _PROFILE_FILE_CACHE: tests clear it here
+from hermes_cli.profiles_cache import _PROFILE_FILE_CACHE, _cached_profile_read, _config_version_or_none
 
 logger = logging.getLogger(__name__)
 
@@ -1262,7 +1262,7 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> Optional
 def _strip_multiplex_flag(config_path: Path) -> None:
     """Multiplexing belongs to the default profile; a clone that keeps the flag would start its
     own multiplexer (or be refused at boot) the first time it runs a gateway."""
-    if not config_path.is_file():
+    if not config_exists(config_path):
         return
     with contextlib.suppress(Exception):  # creation must not fail over an unreadable copy
         from hermes_cli.config import atomic_config_replace, read_user_config_raw

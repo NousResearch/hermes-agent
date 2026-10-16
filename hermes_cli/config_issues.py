@@ -4,7 +4,6 @@ Its own module so the facade (``hermes_cli.config``) and its check siblings shar
 a facade import from the siblings."""
 
 from dataclasses import dataclass
-from typing import List
 
 
 @dataclass
@@ -15,5 +14,5 @@ class ConfigIssue:
     hint: str
 
 
-def _issue(issues: List[ConfigIssue], severity: str, message: str, hint: str) -> None:
+def _issue(issues: list[ConfigIssue], severity: str, message: str, hint: str) -> None:
     issues.append(ConfigIssue(severity, message, hint))

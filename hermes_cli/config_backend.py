@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Optional, Protocol, Tuple, Union, runtime_checkable
+from typing import Any, Mapping, Optional, Protocol, Union, runtime_checkable
 
 CONFIG_FILENAME = "config.yaml"
 BACKEND_ENV = "HERMES_CONFIG_BACKEND"
@@ -32,7 +32,7 @@ PathLike = Union[str, "os.PathLike[str]"]
 class UserLayer:
     """One read of a profile's user layer."""
     doc: Any                    # the parsed root as written (None for an empty document)
-    version: Tuple[Any, ...]    # the cache signature this doc was read at (etag for a remote backend)
+    version: tuple[Any, ...]    # the cache signature this doc was read at (etag for a remote backend)
     locks: Mapping[str, str] = field(default_factory=dict)   # dotted prefix -> level that locks it
     provenance: str = ""        # where the doc came from, for diagnostics
 
@@ -47,7 +47,7 @@ class Changes:
     """
     document: Optional[dict] = None
     set: Mapping[str, Any] = field(default_factory=dict)
-    unset: Tuple[str, ...] = ()
+    unset: tuple[str, ...] = ()
     extra_content_on_create: Optional[str] = None
 
 
@@ -61,7 +61,7 @@ class ConfigBackend(Protocol):
         """``read_user_layer(home).doc`` re-read only when ``version`` changes; never mutate it."""
         ...
 
-    def version(self, home: Path) -> Tuple[Any, ...]:
+    def version(self, home: Path) -> tuple[Any, ...]:
         """Cheap cache signature; changes whenever the user layer does."""
         ...
 
@@ -93,7 +93,7 @@ class FileBackend:
     # Path-level primitives: the file backend's whole behaviour, also used for explicit files
     # that are not a home's config.yaml (see ``_route``).
     @staticmethod
-    def version_path(path: Path) -> Tuple[int, int, int, int]:
+    def version_path(path: Path) -> tuple[int, int, int, int]:
         st = path.stat()  # before the import: a missing file must not need the utils stack (PM runtime)
         from utils import file_signature
         return file_signature(st)
@@ -130,7 +130,7 @@ class FileBackend:
     def read_user_doc_readonly(self, home: Path) -> Any:
         return self.read_path_readonly(self.config_path(home))
 
-    def version(self, home: Path) -> Tuple[int, int, int, int]:
+    def version(self, home: Path) -> tuple[int, int, int, int]:
         return self.version_path(self.config_path(home))
 
     def exists(self, home: Path) -> bool:
@@ -196,7 +196,7 @@ class _ExplicitFile(FileBackend):
         return self._path
 
 
-def _route(config_path: PathLike) -> Tuple[ConfigBackend, Path]:
+def _route(config_path: PathLike) -> tuple[ConfigBackend, Path]:
     """``(backend, home)`` serving a config path through the one ``ConfigBackend`` surface.
 
     ``<home>/config.yaml`` is that home's user layer and goes to the selected backend. Any other
@@ -220,7 +220,7 @@ def read_config_doc_readonly(config_path: PathLike) -> Any:
     return backend.read_user_doc_readonly(home)
 
 
-def config_version(config_path: PathLike) -> Tuple[Any, ...]:
+def config_version(config_path: PathLike) -> tuple[Any, ...]:
     """Cache signature of a config file; raises ``FileNotFoundError`` / ``OSError`` like ``stat``."""
     backend, home = _route(config_path)
     return backend.version(home)

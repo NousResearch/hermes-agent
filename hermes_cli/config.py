@@ -44,9 +44,9 @@ from hermes_constants import (
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_replace, fast_safe_load, file_signature, mkstemp_beside
-from hermes_cli.config_issues import ConfigIssue, _issue  # noqa: F401  ConfigIssue re-exported
+from hermes_cli.config_issues import ConfigIssue, _issue
 from hermes_cli.config_backend import (
-    config_exists, config_version, probe_config_readable, read_config_doc, supports_file_tooling,  # noqa: F401  config_exists re-exported for facades
+    config_exists, config_version, probe_config_readable, read_config_doc, supports_file_tooling,
     write_config_document)
 from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,

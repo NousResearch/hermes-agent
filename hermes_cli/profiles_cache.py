@@ -1,7 +1,7 @@
 """The per-profile derived-value cache behind ``list_profiles`` (``hermes_cli.profiles``)."""
 
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 from hermes_cli.config_backend import config_version
 
@@ -12,7 +12,7 @@ from hermes_cli.config_backend import config_version
 # template, ~119KB) was re-parsed for every bot every five seconds to yield the same two strings.
 # Only DERIVED values are cached, never a document a caller could write back: the raw readers
 # (`read_user_config_raw`, `_load_yaml_dict`) keep their uncached contract. See #117378.
-_PROFILE_FILE_CACHE: Dict[tuple, tuple] = {}
+_PROFILE_FILE_CACHE: dict[tuple, tuple] = {}
 _PROFILE_FILE_CACHE_MAX = 512
 
 

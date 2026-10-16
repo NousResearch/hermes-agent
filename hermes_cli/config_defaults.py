@@ -1072,6 +1072,27 @@ DEFAULT_CONFIG = {
         # HERMES_DASHBOARD_DRAIN_SECRET; no-op unless >=256-bit, weak secrets rejected
         # (fail-closed). scope = capability label; min_secret_chars in url-safe-b64 chars.
         "drain_auth": {"scope": "drain", "min_secret_chars": 43},
+        # Passkey (WebAuthn) login for externally shared / TLS-origined dashboards
+        # (dashboard_auth/webauthn plugin, optional `webauthn` extra). Active only when rp_id,
+        # rp_name AND origins are all set; every origin must pair with rp_id (W3C rule) or the
+        # provider fails to register — never half-enabled. Passkeys don't run on plain
+        # http://<LAN-IP>: binds (not a secure context); the SSH-tunnel path is
+        # "http://localhost:<port>" (localhost IS a secure context over plain http). Secret:
+        # reuses dashboard.basic_auth.secret / HERMES_DASHBOARD_BASIC_AUTH_SECRET first, else
+        # HERMES_DASHBOARD_WEBAUTHN_SECRET / "secret" below, else random per-process. Enrol:
+        # `hermes dashboard webauthn enrol` (one-shot URL) or from a signed-in session.
+        "webauthn": {
+            "rp_id": "",  # registrable domain of every origin; frozen per credential
+            "rp_name": "",  # label shown in the browser's passkey UI
+            "origins": [],  # exact scheme+host[:port] the browser presents
+            # optional allowlist of base64url rawIds; empty = every enrolled credential works
+            "allowed_credential_ids": [],
+            "user_verification": "preferred",  # preferred | required
+            "session_ttl_seconds": 0,  # 0 → plugin default (12h, mirror of basic_auth)
+            "credential_store": "",  # 0 → default ~/.hermes/dashboard_webauthn.json (0600)
+            "challenge_ttl_seconds": 0,  # 0 → default 120; clamped 30..300
+            "secret": "",  # credential — prefer .env (HERMES_DASHBOARD_WEBAUTHN_SECRET)
+        },
         # Public URL (env HERMES_DASHBOARD_PUBLIC_URL): full authority (scheme + host + optional
         # prefix, e.g. https://example.com/hermes) for the OAuth redirect_uri; its hostname is
         # trusted by Host/Origin guards and engages the auth gate when non-loopback. For proxies

@@ -6,7 +6,10 @@ when the provider returned one, always cleared on logout/expiry), ``hermes_sessi
 (non-secret routing hint so an RT is not handed to the wrong provider), ``hermes_session_pkce``
 (PKCE state + CSRF nonce + provider hint, 10 min; ``SameSite=None; Secure`` over HTTPS because it
 is set on the /auth/login 302 and must survive the cross-site redirect chain — Chromium drops Lax
-cookies set on such a 302, crbug 40508226), ``hermes_sso_attempt`` (auto-SSO loop guard, 60 s).
+cookies set on such a 302, crbug 40508226), ``hermes_sso_attempt`` (auto-SSO loop guard, 60 s), ``hermes_webauthn_ch``
+(WebAuthn ceremony handle — an opaque one-shot id for the SERVER-held challenge
+state in ``dashboard_auth/webauthn_state.py``; Max-Age = the challenge TTL; the
+cookie carries only the handle, never the challenge bytes).
 ``Secure`` only when ``request.url.scheme`` is https. Cookie-prefix hardening per
 draft-west-cookie-prefixes: bare name over HTTP; ``__Host-`` on gated HTTPS with Path=/;
 ``__Secure-`` behind a proxy prefix (``__Host-`` forbids Path != /). Setters and readers BOTH
@@ -29,6 +32,7 @@ SESSION_RT_COOKIE = "hermes_session_rt"
 SESSION_PROVIDER_COOKIE = "hermes_session_provider"
 PKCE_COOKIE = "hermes_session_pkce"
 SSO_ATTEMPT_COOKIE = "hermes_sso_attempt"
+WEBAUTHN_CHALLENGE_COOKIE = "hermes_webauthn_ch"
 
 # Name variants a reader may have to try; most strict first.
 _NAME_VARIANTS = ("__Host-", "__Secure-", "")
@@ -214,6 +218,25 @@ def clear_sso_attempt_cookie(response: Response, *, prefix: str = "") -> None:
     """Delete the auto-SSO marker (every variant) so it never suppresses a later silent attempt."""
     _clear_cookie_variants(
         response, SSO_ATTEMPT_COOKIE, prefix=prefix, https_samesite="lax",
+        bare_attrs=_common_attrs(use_https=False, prefix=prefix))
+
+
+def set_webauthn_challenge_cookie(
+    response: Response, *, handle: str, max_age: int, use_https: bool, prefix: str = "") -> None:
+    """Carry the WebAuthn ceremony handle (opaque 256-bit one-shot id) to the
+    verify POST; Max-Age is the challenge TTL both sides already honour."""
+    _set(response, WEBAUTHN_CHALLENGE_COOKIE, handle, max_age=max_age,
+         use_https=use_https, prefix=prefix)
+
+
+def read_webauthn_challenge_cookie(request: Request) -> Optional[str]:
+    return _read_with_fallback(request, WEBAUTHN_CHALLENGE_COOKIE)
+
+
+def clear_webauthn_challenge_cookie(response: Response, *, prefix: str = "") -> None:
+    """Delete the ceremony handle on every completion path (success or failure)."""
+    _clear_cookie_variants(
+        response, WEBAUTHN_CHALLENGE_COOKIE, prefix=prefix, https_samesite="lax",
         bare_attrs=_common_attrs(use_https=False, prefix=prefix))
 
 

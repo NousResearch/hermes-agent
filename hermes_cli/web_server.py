@@ -827,8 +827,10 @@ app.include_router(_shared_metrics_routes.router)
 # routes are always mounted — the gate middleware decides enforcement.
 _mount_plugin_api_routes()
 from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router
+from hermes_cli.dashboard_auth.webauthn_routes import router as _webauthn_ceremony_router
 
 app.include_router(_dashboard_auth_router)
+app.include_router(_webauthn_ceremony_router)
 mount_spa(app)
 
 

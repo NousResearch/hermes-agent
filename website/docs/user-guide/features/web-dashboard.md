@@ -658,11 +658,12 @@ same auth gate as the rest of `/api/`.
 
 ## Authentication (gated mode)
 
-When the dashboard is bound to a public or non-loopback address — anything other than `127.0.0.1` / `localhost` — Hermes Agent engages an auth gate. Every request must carry a verified session cookie or it's bounced to the login page. Three providers ship in the box:
+When the dashboard is bound to a public or non-loopback address — anything other than `127.0.0.1` / `localhost` — Hermes Agent engages an auth gate. Every request must carry a verified session cookie or it's bounced to the login page. Three providers ship in the box, plus a passkey provider behind an optional extra:
 
 - **[Username/password](#usernamepassword-provider-no-oauth-idp)** — the simplest way to put auth on a self-hosted / on-prem / homelab dashboard. No external identity provider. **Use it only on a trusted network or behind a VPN — not for public-internet exposure.**
 - **[OAuth (Nous Portal)](#default-provider-nous-research)** — for hosted deployments and any dashboard reachable over the public internet, and the recommended path for a [remote Hermes Desktop connection](#connecting-hermes-desktop-to-a-remote-backend). Every login is verified against your Nous account, so this is the provider suitable for internet-facing use.
 - **[Self-hosted OIDC](#self-hosted-oidc-provider)** — for bringing your own identity provider via standard OpenID Connect (Keycloak, Auth0, Okta, Google, GitHub via an OIDC bridge, etc.). No Nous Portal involved; suitable for public-internet exposure when fronted by a conformant OIDC server.
+- **[Passkeys (WebAuthn)](#passkeys-webauthn-provider)** — phishing-resistant, username-less sign-in for dashboards shared beyond localhost on a TLS origin (or via the `localhost` SSH tunnel); optional `webauthn` extra, rides the same sessions as the password provider. On plain-`http` LAN binds it stays inert — see the [applicability table](#the-one-precondition-a-webauthn-capable-origin).
 
 Operator-owned dashboards bound to loopback are unaffected — no auth, no login page.
 
@@ -986,6 +987,74 @@ engages the OAuth gate.
 > admin console (Clients → hermes-dashboard → Settings). The same pattern works
 > for Authentik, Zitadel, Authelia, and other OIDC servers — only the issuer
 > URL and client registration UI differ.
+
+### Passkeys (WebAuthn) provider
+
+Passkey sign-in for dashboards you intend to open up beyond localhost — phishing-resistant (origin-bound signatures), no shared secret at rest, username-less. It is a credential provider that rides the same stateless sessions as the [username/password provider](#usernamepassword-provider-no-oauth-idp): password login stays intact as the recovery path, and the passkey is the faster, stronger day-to-day option.
+
+#### The one precondition: a WebAuthn-capable origin
+
+Passkeys are browser ceremonies and browsers only expose them in **secure contexts**. Deciding whether this provider is for you is one table:
+
+| Deployment situation | Passkeys? | Why |
+|---|---|---|
+| `https://<domain>` in front of the dashboard (reverse proxy, `tailscale serve`, Caddy/ACME) | **YES — the target case** | HTTPS + stable origin; the operator has an externally shared surface worth hardening |
+| SSH tunnel / browser on the dashboard host (`http://localhost:9119`) | **YES** | `localhost` is a secure context even over plain http — the domainless path |
+| Plain `http://<LAN-IP>:9119`, LAN-only | **NO — by design** | Not a secure context; the password provider stays your default and nothing changes. Never half-enabled: the passkey button does not even render on that origin |
+
+Refusing the ceremony on plain http is deliberate, not a bug: a passkey ceremony over cleartext http would *feel* strong while the session rides the LAN in the open. The password provider is the honest tool for that bind; passkeys are for the TLS origin (or the localhost tunnel).
+
+:::info Requires the optional `webauthn` extra
+The provider uses Yubico's `fido2` library (pure Python; single runtime dependency). Install it once per deployment:
+
+```bash
+pip install 'hermes-agent[webauthn]'   # installs fido2>=2.2.1,<3
+```
+:::
+
+#### Configuration
+
+```yaml
+dashboard:
+  webauthn:
+    rp_id: "hermes.example.com"     # required: registrable domain of every origin
+    rp_name: "Hermes (richards-lab)" # required: label shown in the browser's passkey UI
+    origins:                         # required: exact scheme+host[:port] the browser presents
+      - "https://hermes.example.com"
+      # - "http://localhost:9119"     # the SSH-tunnel / loopback-forward path
+    allowed_credential_ids: []       # optional: base64url rawIds allowlist; empty = all
+    user_verification: "preferred"   # preferred | required (biometrics/PIN every login)
+    session_ttl_seconds: 43200       # access-token TTL (0 = 12h, mirrors basic_auth)
+    credential_store: ""             # default ~/.hermes/dashboard_webauthn.json (0600)
+    challenge_ttl_seconds: 120       # ceremony begin→complete window (30..300)
+```
+
+Behaviour worth knowing:
+
+- `rp_id` and every `origins` entry must satisfy the W3C pairing rule (the RP ID equals or is a registrable suffix of the origin's host) — the provider **fails to register loudly** on a bad pairing instead of enrolling keys into a bind that can never work. `rp_id` is frozen per credential: changing it later invalidates every enrolled passkey (the provider refuses to start against a store written for a different RP ID).
+- Sessions are minted with the same stateless HMAC seam as the password provider; the secret resolves from `HERMES_DASHBOARD_BASIC_AUTH_SECRET` / `dashboard.basic_auth.secret` first (so both providers share it), then `HERMES_DASHBOARD_WEBAUTHN_SECRET` (env, a credential — `.env`-legal) or `dashboard.webauthn.secret`, and otherwise a random per-process key logged at INFO.
+- The provider is offered **only on requests whose origin matches a configured entry** (`/api/auth/providers` and `/login` reflect this), so a LAN-password setup keeps today's page byte-for-byte.
+
+#### Enrolling a passkey
+
+Enrolment is never anonymous. Two paths:
+
+- **From a signed-in session** (after a password login): the dashboard's authenticated enrolment ceremony runs against `/auth/webauthn/register/options` + `/auth/webauthn/register/verify`.
+- **Headless / first credential, via the CLI** (on the dashboard host):
+
+  ```bash
+  hermes dashboard webauthn enrol --label "laptop touchid"
+  # Open this URL in a browser on the configured origin (secure context):
+  #   https://hermes.example.com/auth/webauthn/enrol?token=…
+  ```
+
+  The token is single-use and expires in 10 minutes (TTL 600 s). Open the URL in a browser that presents a configured origin and press the button — the create ceremony runs there and the credential lands in the store. **Enrol a second passkey immediately** (a phone's synced passkey or a hardware key such as a YubiKey): a single lost authenticator is the classic self-hosted lockout.
+
+Credentials persist in `~/.hermes/dashboard_webauthn.json` (0600, public-key material only, atomic writes). Remove lost or suspect keys with `hermes dashboard webauthn forget --label …` / `--all`; the password provider remains the recovery path throughout.
+
+#### Desktop app
+
+Passkey sign-in works in Hermes Desktop's embedded remote-gateway sign-in window exactly as in a browser, on TLS origins; LAN/`http://<LAN-IP>` remotes keep password sign-in; token-mode SSH/local backends are unaffected.
 
 ### Public URL override
 

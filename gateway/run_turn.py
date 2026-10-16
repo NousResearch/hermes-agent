@@ -2087,6 +2087,14 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         _sc, source, session_key = turn_ctx.stream_consumer_holder[0], turn_ctx.source, turn_ctx.session_key
         if not isinstance(response, dict) or response.get("failed"):
             return
+        # A finite viewer (``hermes -z``, stream-json) prints only the terminal reply: it drops the
+        # message.delta frames, so streaming delivered nothing to it however the consumer's transport
+        # finalized — the same reason the delta callback raises _NoStreamConsumer (run_turn_runner).
+        # Suppressing the final send here blanks the completion frame's text, the one delivery a
+        # finite viewer has, and the turn settles "completed" with no reply (#139666).
+        from gateway.session_finite import finite_turn_required
+        if finite_turn_required() is True:
+            return
         _final = response.get("final_response") or ""
         _is_empty_sentinel = not _final or _final == "(empty)"
         # response_previewed: only suppress if that EXACT text was delivered, not unrelated commentary.

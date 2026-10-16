@@ -1,6 +1,6 @@
 """OAuth clients a plugin declares in ``plugin.yaml``: Hermes signs in, stores and refreshes the grant.
 
-A plugin that calls a third-party API with the user's own OAuth client (Google, Microsoft, Notion ...)
+A plugin that calls a third-party API with the user's own OAuth client (a Google Cloud client, for example)
 declares it under ``oauth:``. ``hermes auth add <plugin>:<id>`` runs the PKCE login of
 :mod:`hermes_cli.auth_oauth_pkce_plugin` in a terminal, the grant lives in the active profile's
 ``auth.json`` (section ``plugin_oauth``) and Hermes refreshes it. The plugin calls

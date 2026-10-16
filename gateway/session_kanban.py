@@ -129,8 +129,17 @@ async def run_task(connection, params):
     from gateway.session_runtime_workers import tracked_write
     await tracked_write(authority, admit_claim)
     await connection.resume(ref, {})
-    receipt = await authority.submit(connection.actor, Submission(request_id, ref,
-        {'text': f'work kanban task {params["task_id"]}'}, 'queue'))
+    # Finite like the `chat -q` worker it replaced: nobody can answer an approval or clarify in a
+    # card (approvals.single_query_mode applies). Never unattended: that is `-z`'s auto-approval.
+    # A retry of an attempt admitted before cards were finite resubmits its committed payload,
+    # so the store returns the original receipt instead of admission_conflict.
+    from hermes_state_runtime import find_session_admission
+    committed = None if not saved else await asyncio.to_thread(find_session_admission, authority.db,
+        principal_id=connection.actor.subject, session_id=ref.session_id, request_id=request_id)
+    payload: dict = {'text': f'work kanban task {params["task_id"]}'}
+    if committed is None or 'finite' in committed['payload']:
+        payload['finite'] = True
+    receipt = await authority.submit(connection.actor, Submission(request_id, ref, payload, 'queue'))
     return {'session_id': ref.session_id, 'receipt': asdict(receipt)}
 
 

@@ -25,7 +25,10 @@ from tests.pm._range_server import dl_server, url as _srv_url
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     from hermes_cli import web_server
+    from hermes_cli.local_runtime import catalog
 
+    # The first catalog request after start is due a GitHub fetch; tests serve the packaged copy.
+    monkeypatch.setattr(catalog, "refresh_catalog_soon", lambda: None)
     test_client = TestClient(web_server.app)
     # Same auth pattern as the git-route tests: present the session token.
     test_client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN

@@ -7,6 +7,7 @@ hidden-console launcher instead of ``schtasks /Run`` so start/restart behavior i
 
 from __future__ import annotations
 
+import codecs
 import ctypes
 import json
 import locale
@@ -96,6 +97,11 @@ def _decode_schtasks_output(data: bytes) -> str:
     Scheduled-Task drift check could never settle (#116193). Strict UTF-8 first (ASCII and genuine
     UTF-8 output pass; legacy multi-byte text fails loudly), then the native code pages, then a lossy
     fallback so a reader thread never raises."""
+    if data[:2] in (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE):
+        try:
+            return data.decode("utf-16")  # a genuine UTF-16 write (BOM) decodes as such, never as a code page
+        except UnicodeDecodeError:
+            pass  # malformed UTF-16 falls through to the same fallbacks as any other bytes
     for encoding in ("utf-8", *_windows_console_encodings()):
         try:
             return data.decode(encoding)

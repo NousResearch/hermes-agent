@@ -723,8 +723,9 @@ class CLILoopsMixin:
             _cprint(f"  {_DIM}{t('cli.loop.paused_interrupted')}{_RST}")
             return
         decision = mgr.complete_tick(self._last_assistant_response_text())
+        # With the live-work dock up its loop row carries the countdown; the one-shot line would go stale.
         if (not _print_decision_message(decision) and decision.get("status") == "active"
-                and mgr.state is not None):
+                and mgr.state is not None and getattr(self, "_subagent_monitor", None) is None):
             _cprint(f"  {_DIM}{t('cli.loop.remaining', label=mgr.state.remaining_label())}{_RST}")
 
     def _maybe_continue_goal_after_turn(self) -> None:

@@ -103,6 +103,9 @@ class SessionAuthority:
         self.retired = False
         self._classic_evict_at = {}  # route -> last leaked/reaped-slot eviction check (monotonic)
         self.executing = {}  # session id -> generation whose execution is in progress (publish fence)
+        # session id -> end_reason of a last-viewer close still waiting for an idle FIFO
+        # (gateway/session_viewer_close); a viewer attaching again cancels it.
+        self.pending_closes = {}
 
     def authorize(self, actor, ref, capability):
         """Every handler calls this first, so a later ``self.sessions[ref.session_id]`` is
@@ -216,6 +219,7 @@ class SessionAuthority:
             subscription = next((key for key, member in live.subscribers.items()
                                  if member == actor), None) or uuid.uuid4().hex
             live.subscribers[subscription] = actor
+            self.pending_closes.pop(ref.session_id, None)
             transport = self.events.get(actor.transport_id)
             if transport is not None:
                 live.event_stream.fanout.attach(transport)
@@ -246,13 +250,17 @@ class SessionAuthority:
                 if transport is not None:
                     live.event_stream.fanout.detach(transport)
                 if not live.subscribers:
-                    from gateway.session_acp_lifecycle import (
-                        end_idle_acp_session, end_idle_viewer_session, reopen_if_reattached)
+                    from gateway.session_local_mcp import release_editor_mcp
+                    await asyncio.to_thread(release_editor_mcp, self, [session_id])
+                    if end_reason:
+                        from gateway.session_viewer_close import close_viewer_session
+                        await close_viewer_session(self, session_id, end_reason)
+                        return
+                    from gateway.session_acp_lifecycle import end_idle_acp_session, reopen_if_reattached
                     from gateway.session_runtime_workers import tracked_write
                     # A viewer that attached while the close was off the loop reopens it.
-                    close = (partial(end_idle_viewer_session, self, session_id, end_reason) if end_reason
-                             else partial(end_idle_acp_session, self, session_id))
-                    await tracked_write(self, close, then=partial(reopen_if_reattached, self, session_id))
+                    await tracked_write(self, partial(end_idle_acp_session, self, session_id),
+                                        then=partial(reopen_if_reattached, self, session_id))
                 return
         raise RuntimeStoreError('not_found')
 
@@ -441,12 +449,9 @@ class SessionAuthority:
         def admitted():
             # The exact durable identity (authenticated principal + target + request id); the
             # attachment fields it yields still pass the full payload-digest comparison below.
-            with self.db._read_ctx() as conn:
-                row = conn.execute('SELECT * FROM session_admissions WHERE principal_id=? AND '
-                                   'target_session_id=? AND request_id=?', (actor.subject,
-                                   request.ref.session_id, request.request_id)).fetchone()
-            from hermes_state_runtime import _row
-            return _row(row) if row is not None else None
+            from hermes_state_runtime import find_session_admission
+            return find_session_admission(self.db, principal_id=actor.subject,
+                                          session_id=request.ref.session_id, request_id=request.request_id)
         payload = {'text': request.payload['text'], **finite, **admit_surface(request.payload),
                    **admit_display(request.payload), **admit_cli_turn(request.payload),
                    **admit_attachments(request.payload.get('attachments'), admitted=admitted)}
@@ -791,6 +796,10 @@ class SessionAuthority:
                 else:
                     from gateway.session_operator import check_local_input
                     check_local_input(self, ref, first)
+                # Editor MCP schema drift re-freezes here, at this admission's start (a turn boundary),
+                # once the head is authorized: a refused head spawns no server and commits no change.
+                from gateway.session_local_mcp import refreeze_editor_mcp
+                await refreeze_editor_mcp(self, ref, live)
                 # The first real turn reopens a finalized row (#85303): mounts are reads, and
                 # SessionStore would route a stamped row as stale onto a FRESH session. A write: off-loop,
                 # tracked so retirement and the shutdown close gate count it.
@@ -929,6 +938,10 @@ class SessionAuthority:
                 # ``rescan`` on this still-live drain, which must claim it rather than exit.
                 from gateway.session_runtime_workers import tracked_write
                 await tracked_write(self, partial(end_idle_acp_session, self, ref.session_id))
+                if live.rescan:
+                    continue
+                from gateway.session_viewer_close import settle_viewer_close
+                await settle_viewer_close(self, ref.session_id)  # a close that arrived mid-turn
                 if live.rescan:
                     continue
                 return

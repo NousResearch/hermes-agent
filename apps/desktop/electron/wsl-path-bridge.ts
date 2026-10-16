@@ -13,6 +13,9 @@ const WIN_DRIVE_RE = /^([A-Za-z]):[\\/]/
 // `/mnt/c` and `/mnt/c/...` (drvfs default automount root).
 const WSL_MOUNT_RE = /^\/mnt\/([a-z])(?:\/(.*))?$/i
 
+// `/c/...`, `/cygdrive/c/...`, `/mnt/c/...` (Git Bash, Cygwin, drvfs).
+const SHELL_DRIVE_RE = /^\/(?:cygdrive\/|mnt\/)?([a-z])(?:\/|$)/i
+
 let cachedDistro: null | string = null
 let cachedUncBase: null | string = null
 
@@ -180,9 +183,35 @@ export function resolvePickerDefaultPath(
   return value.startsWith('/') && !WIN_DRIVE_RE.test(value) ? wslPosixToWindowsAccessible(value, distro) : defaultPath
 }
 
+/**
+ * Git Bash / Cygwin / drvfs drive spelling (`/c/...`, `/cygdrive/c/...`,
+ * `/mnt/c/...`) → the native `C:/...` path, but only when that native file
+ * exists. Native attachments use this spelling even while a local backend has
+ * WSL bridging on, and the WSL fallback would look for them under
+ * `\\wsl.localhost\<distro>\c\...`. The existence check keeps a real
+ * single-letter WSL directory (`/e/projects`) on the WSL bridge.
+ */
+export function shellDriveToNativePath(value: string, exists: (path: string) => boolean = fs.existsSync): null | string {
+  const drive = value.match(SHELL_DRIVE_RE)
+
+  if (!drive) {
+    return null
+  }
+
+  const nativePath = `${drive[1].toUpperCase()}:/${value.slice(drive[0].length)}`
+
+  return exists(nativePath) ? nativePath : null
+}
+
 /** fs read path: on Windows, make a WSL cwd readable via its UNC / drive form. */
 export function resolveLocalReadPath(dirPath: string, distro?: string, profile?: null | string): string {
   const value = String(dirPath || '').trim()
+
+  const nativeDrivePath = IS_WINDOWS ? shellDriveToNativePath(value) : null
+
+  if (nativeDrivePath) {
+    return nativeDrivePath
+  }
 
   // In remote-gateway mode the POSIX paths belong to a host the Windows
   // desktop cannot open locally — skip the WSL bridge entirely (no distro

@@ -94,6 +94,60 @@ guard, not OS isolation against arbitrary direct database writes. GitHub Enterpr
 is not covered. Related publication/lifecycle work: #91230, #84254, #52311; local
 verification and publication alone are not remote acceptance.
 
+## Proof completion contracts
+
+Most cards never land as a PR: a research report, a draft, a data pull, a
+local refactor. For those, declare the proof at creation and the card cannot
+reach `done` until that command exits 0 in the card's workspace:
+
+```bash
+hermes kanban create "Weekly SEO report" \
+    --assignee seo \
+    --workspace dir:/srv/growth-handoffs/seo \
+    --completion-contract "proof:test -s weekly-report.md"
+
+hermes kanban create "Migrate limiter to token bucket" \
+    --assignee coder --workspace worktree \
+    --completion-contract "proof:pytest -q tests/test_limiter.py"
+```
+
+The worker's summary is never the evidence; the exit status is. No model
+judges the claim, so a worker that "hallucinates completion" (writes a
+convincing summary without doing the work) is refused deterministically and
+at zero token cost.
+
+Only a human declares a proof: the CLI and the dashboard accept
+`proof:<command>`, the model-facing `kanban_create` tool rejects it. The
+command runs in the host process that completes the card (worker, gateway
+dispatcher, CLI or dashboard), not inside the worker's `terminal` backend, so
+a model-authored proof would be host code execution outside the terminal
+sandbox and the approval system.
+
+How a proof runs:
+
+- It runs through the shared `complete_task` boundary, so worker tools, the
+  CLI, review approval and the dashboard all enforce it. `--force` closes a
+  live claim; it does not skip the proof.
+- The working directory is the card's persisted workspace (`dir:`,
+  `worktree`, or a claimed scratch workspace). A card with no existing
+  absolute workspace directory is refused with classification
+  `workspace_missing` rather than running the command somewhere unrelated.
+- The environment is credential-scrubbed (no provider, bot or GitHub tokens)
+  and carries `HERMES_KANBAN_TASK` and `HERMES_KANBAN_WORKSPACE`.
+- One run is capped at 120 seconds (`HERMES_KANBAN_PROOF_TIMEOUT`); a timeout
+  kills the whole process group and refuses completion.
+- Every run lands as a durable `proof_acceptance` event with the command,
+  exit code, duration and the (redacted) last 2000 characters of stdout and
+  stderr. A refusal also sets `last_failure_error`, which `kanban_complete`
+  and `hermes kanban complete` echo so the worker can fix the work and retry
+  instead of blocking.
+
+A human-authored proof runs with the uid of the process that completes the
+card, inside that card's workspace, with no provider, bot or GitHub
+credentials in its environment: the same trust as typing the command into
+`hermes kanban` yourself. If the proof itself is wrong, re-create the card or
+`kanban_block` it for a human; completion never bypasses the contract.
+
 ## Kanban vs. `delegate_task`
 
 They look similar; they are not the same primitive.

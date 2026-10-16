@@ -2476,7 +2476,7 @@ def switch_model(
     agent.runtime_capabilities = destination_capabilities
     # Reset the cross-turn stale-call circuit breaker; otherwise the latched streak keeps
     # short-circuiting the freshly selected healthy provider.
-    from agent.chat_completion_helpers import _reset_stale_streak
+    from agent.chat_completion_stale import _reset_stale_streak
     _reset_stale_streak(agent)
     agent._primary_runtime = _build_primary_runtime_snapshot(agent, api_mode)
     _finish_switch(agent, new_provider, old_norm, new_norm)

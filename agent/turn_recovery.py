@@ -1826,6 +1826,7 @@ def route_classified_error(
     from agent.conversation_compression import conversation_history_after_compression
     from agent.conversation_loop import _arm_fallback_restart, _ra
     from agent.model_metadata import estimate_request_tokens_rough
+    from agent.turn_recovery_stale import compact_stale_context
 
     _provider_overflow_recovery_pending = False
     is_rate_limited = False
@@ -1911,6 +1912,22 @@ def route_classified_error(
                 _retry.restart_with_compressed_messages = True
                 return _verdict("break")
         # Compression exhausted or didn't help: fall through to normal error handling.
+
+    original_len = len(messages)
+    stale_compaction = compact_stale_context(
+        agent, api_error, _retry, messages=messages, api_messages=api_messages,
+        system_message=system_message, conversation_history=conversation_history,
+        compression_attempts=compression_attempts, max_compression_attempts=max_compression_attempts,
+        task_id=effective_task_id,
+    )
+    if stale_compaction is not None:
+        messages, active_system_prompt, conversation_history = stale_compaction
+        compression_attempts += 1
+        if len(messages) < original_len:
+            _retry.restart_with_compressed_messages = True
+            return _verdict("break")
+        # A no-op compaction must abort with resume instructions, not resend the same request.
+        return _verdict("fallthrough")
 
     # Eager fallback: rate-limit/billing switch immediately (primary won't recover in
     # the retry window); transport errors get 1 retry first.

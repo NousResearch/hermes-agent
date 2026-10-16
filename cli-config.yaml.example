@@ -714,6 +714,18 @@ compression:
   # cap above the window is a no-op. Survives model switches and fallback activations.
   # threshold_tokens: 200000
 
+  # Per-surface overrides: keys are platform names (local, telegram, discord, whatsapp,
+  # slack, …) and each block overrides individual compression keys for that surface only —
+  # a key you omit inherits the global value above. Useful where one profile serves both a
+  # messaging surface and the CLI: keep a long-context trigger on the CLI and compact
+  # earlier on a chat surface without duplicating the profile.
+  # platform_overrides:
+  #   telegram:
+  #     threshold: 0.60
+  #   local:
+  #     threshold: 0.35
+  #     threshold_tokens: 400000
+
   # Existing Codex gpt-5.5 behavior: raise Hermes' compaction trigger to 85%
   # for the ChatGPT Codex OAuth route. Set false to opt back down to threshold.
   codex_gpt55_autoraise: true

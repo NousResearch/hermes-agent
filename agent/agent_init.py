@@ -1520,9 +1520,53 @@ def _compression_codex_settings(cfg: dict[str, Any]) -> tuple[str, bool, Optiona
     return app_server_auto, responses_native, compact_threshold
 
 
-def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
-    """Parse the ``compression`` section. Defaults here MUST match DEFAULT_CONFIG."""
+def _platform_override_key(platform: Any) -> str:
+    """Normalise a surface name for the ``compression.platform_overrides`` lookup.
+
+    ``init_agent`` hands ``platform`` in as a plain string ("telegram", "local"), but callers
+    and tests also pass a ``Platform`` enum member, so read ``.value`` when present and fold
+    case: one spelling resolves either way.
+    """
+    if platform is None:
+        return ""
+    return str(getattr(platform, "value", platform) or "").strip().lower()
+
+
+def _merge_platform_compression_overrides(cfg: dict[str, Any], platform: Any) -> dict[str, Any]:
+    """Merge ``compression.platform_overrides.<platform>`` over the global section, per key.
+
+    Opt-in and additive: with no platform, or no block for that surface, ``cfg`` is returned
+    unchanged — so a profile that never writes the key behaves exactly as before. A block that
+    sets one key inherits the rest from the global section, and a non-mapping block is ignored
+    like any other malformed section. Returns a shallow copy; the loaded config is never mutated.
+    """
+    key = _platform_override_key(platform)
+    if not key:
+        return cfg
+    overrides = _cfg_dict(cfg, "platform_overrides")
+    block = overrides.get(key)
+    if block is None:
+        # The config file is hand-written, so match keys case-insensitively (exact hit first).
+        for name, value in overrides.items():
+            if isinstance(value, dict) and str(name).strip().lower() == key:
+                block = value
+                break
+    if not isinstance(block, dict) or not block:
+        return cfg
+    merged = dict(cfg)
+    merged.update(block)
+    return merged
+
+
+def _parse_compression_config(agent, _agent_cfg, platform: Any = None) -> CompressionSettings:
+    """Parse the ``compression`` section. Defaults here MUST match DEFAULT_CONFIG.
+
+    ``compression.platform_overrides.<platform>`` (opt-in) overrides individual keys of this
+    section for one surface, so a single profile can compact at different points on a messaging
+    surface and on the CLI.
+    """
     cfg = _cfg_dict(_agent_cfg, "compression")
+    cfg = _merge_platform_compression_overrides(cfg, platform)
     threshold, autoraise_notice_enabled = _compression_threshold(agent, cfg)
     # Plain int()/float() coercions raise on garbage; evaluated up front, in config order.
     target_ratio = float(cfg.get("target_ratio", 0.20))
@@ -2406,7 +2450,7 @@ def init_agent(
     _apply_display_config(agent, _agent_cfg, platform)
     _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=memory_manager)
     _apply_agent_section(agent, _agent_cfg)
-    cs = _parse_compression_config(agent, _agent_cfg)
+    cs = _parse_compression_config(agent, _agent_cfg, platform)
     _config_context_length, _custom_providers, _effective_context_length, _model_cfg = _resolve_context_length(
         agent, _agent_cfg, base_url
     )

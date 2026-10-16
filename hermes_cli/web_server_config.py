@@ -79,6 +79,12 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
         "description": "Context window override (0 = auto-detect from model metadata)",
         "category": "general",
     },
+    "model_lmstudio_unload_policy": {
+        "type": "select",
+        "description": "Unload the previous LM Studio instance that Hermes loaded on this endpoint. Never keeps it loaded.",
+        "options": ["always", "never"],
+        "category": "general",
+    },
     "terminal.backend": _select(
         "Terminal execution backend",
         "local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity",
@@ -267,6 +273,7 @@ def _config_schema_with_virtual_fields() -> dict[str, dict[str, Any]]:
         ordered[key] = entry
         if key == "model":
             ordered["model_context_length"] = _SCHEMA_OVERRIDES["model_context_length"]
+            ordered["model_lmstudio_unload_policy"] = _SCHEMA_OVERRIDES["model_lmstudio_unload_policy"]
     return ordered
 
 
@@ -532,6 +539,10 @@ def _normalize_config_for_web(config: dict[str, Any]) -> dict[str, Any]:
     as a top-level field (0 = auto-detect)."""
     config = dict(config)
     model_val = config.get("model")
+    from hermes_cli.models_lmstudio_instances import normalize_lmstudio_unload_policy
+    config["model_lmstudio_unload_policy"] = normalize_lmstudio_unload_policy(
+        model_val.get("lmstudio_unload_policy") if isinstance(model_val, dict) else None
+    )
     if isinstance(model_val, dict):
         ctx_len = model_val.get("context_length", 0)
         config["model"] = model_val.get("default", model_val.get("name", ""))
@@ -957,6 +968,9 @@ def _denormalize_config_from_web(config: dict[str, Any]) -> dict[str, Any]:
     from hermes_cli.config import load_config
     config = dict(config)
     config.pop("_model_meta", None)
+    from hermes_cli.models_lmstudio_instances import normalize_lmstudio_unload_policy
+    policy_sent = "model_lmstudio_unload_policy" in config
+    unload_policy = normalize_lmstudio_unload_policy(config.pop("model_lmstudio_unload_policy", None))
 
     ctx_sent = "model_context_length" in config
     ctx_override = config.pop("model_context_length", 0)
@@ -968,7 +982,7 @@ def _denormalize_config_from_web(config: dict[str, Any]) -> dict[str, Any]:
 
     model_val = config.get("model")
     has_model = isinstance(model_val, str) and bool(model_val)
-    if not (has_model or ctx_sent):
+    if not (has_model or ctx_sent or policy_sent):
         return config
     try:
         disk_cfg = load_config()
@@ -1005,4 +1019,10 @@ def _denormalize_config_from_web(config: dict[str, Any]) -> dict[str, Any]:
         else:
             default = ""
         config["model"] = {"default": default, "context_length": ctx_override}
+    if policy_sent:
+        model_block = config.get("model")
+        if not isinstance(model_block, dict):
+            model_block = {"default": model_val if has_model else disk_model if isinstance(disk_model, str) else ""}
+            config["model"] = model_block
+        model_block["lmstudio_unload_policy"] = unload_policy
     return config

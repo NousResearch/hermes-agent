@@ -31,7 +31,7 @@ def _aux(timeout, *, reasoning_effort=True, **extra):
 
 
 DEFAULT_CONFIG = {
-    "model": "",
+    "model": "",  # Dict-form model.lmstudio_unload_policy defaults to "always".
     "providers": {},
     "fallback_providers": [],
     # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset

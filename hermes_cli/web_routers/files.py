@@ -29,7 +29,8 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
-    _fs_path, _hosted_fs_read_guard, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
+    _fs_path, _hosted_fs_read_guard, _managed_default_cwd, _managed_file_entry, _managed_response_meta,
+    _resolve_managed_path,
 )
 from hermes_cli.web_models import (
     ChatImageUpload, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete, ManagedFileUpload,
@@ -239,10 +240,10 @@ def _fs_default_cwd() -> str:
         try:
             candidate = Path(raw).expanduser().resolve(strict=False)
             if candidate.is_dir():
-                return str(candidate)
+                return str(_managed_default_cwd(candidate))
         except (OSError, RuntimeError):
             pass
-    return str(Path.cwd())
+    return str(_managed_default_cwd(Path.cwd()))
 
 
 def _fs_git_branch(cwd: str) -> str:

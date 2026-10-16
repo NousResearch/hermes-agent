@@ -158,6 +158,27 @@ def _managed_files_policy(request: Optional[Request], *, create_root: bool = Tru
     return ManagedFilesPolicy(default_path=home, locked_root=None, can_change_path=True)
 
 
+def _managed_default_cwd(cwd: Path) -> Path:
+    """Keep an advertised default cwd inside the managed read boundary.
+
+    A locked deployment (``HERMES_DASHBOARD_FILES_ROOT``, or a Hermes root at
+    ``/opt/data``) refuses every ``/api/fs`` read outside its root, so a cwd
+    the server picked outside that boundary — the container's working
+    directory, ``/`` for a Docker entrypoint — would seed the Desktop's remote
+    folder picker on a path it cannot list. The root itself is the only useful
+    replacement: it is the one directory such a client can browse.
+    """
+    root = _managed_files_policy(None, create_root=False).locked_root
+    if root is None:
+        return cwd
+    try:
+        resolved = _canonical_path(cwd, require_exists=False)
+        locked = _canonical_path(root, require_exists=False)
+    except HTTPException:
+        return cwd
+    return cwd if _path_is_under(locked, resolved) else locked
+
+
 def _resolve_managed_path(
     raw_path: str | None, request: Request, *, for_write: bool = False
 ) -> tuple[ManagedFilesPolicy, Path, str]:

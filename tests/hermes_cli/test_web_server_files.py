@@ -1,6 +1,7 @@
 """Tests for the dashboard-managed file browser API."""
 
 import base64
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -610,6 +611,37 @@ def test_git_branch_decodes_utf8_under_a_gbk_default_codec(tmp_path, monkeypatch
     monkeypatch.setattr(subprocess, "_text_encoding", lambda: "gbk")
 
     assert _rt_files._fs_git_branch(str(tmp_path)) == branch
+
+
+def test_default_cwd_is_clamped_into_a_locked_managed_root(forced_files_client, tmp_path, monkeypatch):
+    """#138088: the Desktop's remote folder picker seeds itself from ``/api/fs/default-cwd``, and
+    every ``/api/fs`` read outside a locked managed root is a 403, so a cwd the server picked
+    outside that root leaves the picker with nothing to browse. A container entrypoint runs at
+    ``/`` while the managed root is ``/opt/data``; the advertised cwd must stay inside the root."""
+    client, root = forced_files_client
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.setattr(_rt_files, "load_config", lambda: {"terminal": {}})
+    monkeypatch.setenv("TERMINAL_CWD", str(elsewhere))
+
+    response = client.get("/api/fs/default-cwd")
+
+    assert response.status_code == 200
+    assert Path(response.json()["cwd"]).resolve() == root.resolve()
+
+
+def test_default_cwd_keeps_an_unlocked_workspace(local_files_client, tmp_path, monkeypatch):
+    """No locked root means no clamping: the configured workspace is served as-is."""
+    client, _home = local_files_client
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(_rt_files, "load_config", lambda: {"terminal": {}})
+    monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+
+    response = client.get("/api/fs/default-cwd")
+
+    assert response.status_code == 200
+    assert Path(response.json()["cwd"]) == workspace
 
 
 @pytest.mark.require_symlinks

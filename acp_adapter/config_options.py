@@ -1,10 +1,18 @@
 """SDK-v1 selectors projected from runtime or owner info; no independent model registry."""
 from __future__ import annotations
 
+import re
+
 from acp.schema import SessionConfigOptionSelect, SessionConfigSelectOption
 
 from agent.fast_mode import parse_exact_service_tier, service_tier_word
 from agent.reasoning_effort import effort_display_label, route_supported_efforts
+
+
+_T3_RUNTIME_SUFFIX = re.compile(
+    r"(?:^|\n)[ \t]*<runtime_info>[^<]*</runtime_info>"
+    r"(?:\s*<pull_request_linking>[^<]*</pull_request_linking>)?\s*\Z"
+)
 
 
 def runtime_info(state):
@@ -100,6 +108,9 @@ def project_options(info, models):
 
 
 def text_selection(arg):
+    # T3 appends this text block even to slash commands. Only controls consume it;
+    # prompt content (including multiline /steer and /queue) stays intact.
+    arg = _T3_RUNTIME_SUFFIX.sub("", arg)
     parts = arg.split()
     if "--global" in parts:
         raise ValueError("ACP controls are session-scoped; change global defaults through Hermes config.")

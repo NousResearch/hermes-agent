@@ -1752,7 +1752,7 @@ class SessionSessionsMixin:
             self._delete_unreferenced_system_prompts(conn)
             removed_ids.extend(scope)
             return True
-        deleted = self._execute_write(_do)
+        deleted = self._execute_write(_do, sweep_media=True)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids:
@@ -1811,7 +1811,7 @@ class SessionSessionsMixin:
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
             return True
-        deleted = self._execute_write(_do)
+        deleted = self._execute_write(_do, sweep_media=True)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         if deleted:
@@ -1898,7 +1898,7 @@ class SessionSessionsMixin:
             # the dashboard toast should say "3 deleted" when the user selected
             # 3 rows, however many physical links those rows had.
             return len(existing)
-        count = self._execute_write(_do)
+        count = self._execute_write(_do, sweep_media=True)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids:
@@ -1940,7 +1940,7 @@ class SessionSessionsMixin:
                 removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
-        count = self._execute_write(_do)
+        count = self._execute_write(_do, sweep_media=True)
         from hermes_state_media import collect_retired_media
         collect_retired_media(self)
         for sid in removed_ids:

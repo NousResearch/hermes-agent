@@ -32,3 +32,22 @@ def test_rewind_refuses_queued_work(tmp_path):
             rt.mutate_runtime_session(db, epoch=epoch, principal_id='human', session_id='s', request_id='rewind',
                 expected_revision=0, expected_generation=0, operation='rewind', payload={'target_message_id': target})
         assert db.get_messages('s')[0]['content'] == 'keep'
+
+
+@pytest.mark.parametrize('runtime', [False, True])
+def test_rewind_returns_image_and_retires_its_reference(tmp_path, runtime):
+    content = [{'type': 'text', 'text': 'inspect'},
+               {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,cGl4ZWxz'}}]
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        db.create_session('s', source='test')
+        target = db.append_message('s', role='user', content=content)
+        if runtime:
+            epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+            result = rt.mutate_runtime_session(db, epoch=epoch, principal_id='human', session_id='s',
+                request_id='rewind', expected_revision=0, expected_generation=0,
+                operation='rewind', payload={'target_message_id': target})
+        else:
+            result = db.rewind_to_message('s', target)
+        assert result['target_message']['content'] == content
+        assert db.get_messages_as_conversation('s', repair_alternation=True) == []
+        assert db._read_one('SELECT media_content FROM messages WHERE id=?', (target,))[0] is None

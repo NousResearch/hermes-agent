@@ -102,9 +102,9 @@ _EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles"})
 # ``cache/`` at those same roots mixes regenerable state (model/plugin catalogs, stamps, browser
 # profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media
 # the gateway delivered to or received from the user (``gateway.platforms.base``'s media-delivery
-# subdirs) and the grounded-citations evidence ledger. Only these subdirs are archived.
-_KEPT_CACHE_SUBDIRS = {
-    "images", "audio", "videos", "documents", "screenshots", "citations", GENERATED_SUBDIR}
+# subdirs), transcript image replay, and the grounded-citations evidence ledger. Only these are kept.
+_KEPT_CACHE_SUBDIRS = {"images", "audio", "videos", "documents", "screenshots", "citations",
+                       "transcript_media", GENERATED_SUBDIR}
 
 
 def _in_excluded_root_dir(rel_path: Path) -> bool:
@@ -713,7 +713,7 @@ def _import_skipped(rel: str) -> bool:
     except ValueError:
         return False  # A rejected traversal is still reported by the import itself.
     return (parts[-1] in _IMPORT_SKIP_NAMES or
-            profile_root_entry(parts) in PM_RUNTIME_ROOT_DIRS or
+            (profile_root_entry(parts) in PM_RUNTIME_ROOT_DIRS and _in_excluded_root_dir(Path(*parts))) or
             rel.endswith(_SQLITE_SIDECAR_SUFFIXES))
 
 
@@ -1020,7 +1020,7 @@ def _import_members_exclusive(
 
         # Older archives may contain PM selections pointing at another machine.
         # Match their home-root paths; a plugin's own facts.json is user data.
-        if profile_root_entry(parts) in PM_RUNTIME_ROOT_DIRS:
+        if profile_root_entry(parts) in PM_RUNTIME_ROOT_DIRS and _in_excluded_root_dir(Path(*parts)):
             skipped_runtime.append(rel)
             continue
 
@@ -1102,9 +1102,9 @@ def _revive_gateway_after_import(hermes_root: Path) -> None:
 # directories (recursive); missing entries are skipped. Pairing data lives in platform JSON blobs
 # outside state.db, so it is listed explicitly — ``hermes update`` snapshots this set (#15733).
 _QUICK_STATE_FILES = (
-    "state.db", "config.yaml", ".env", "auth.json", "cron/jobs.json", "cron/executions.db",
-    "gateway_state.json", "channel_directory.json", "channel_aliases.json", "processes.json",
-    "gateway/discord_message_recovery.db",  # Discord reconnect replay ledger
+    "state.db", "cache/transcript_media", "config.yaml", ".env", "auth.json", "cron/jobs.json",
+    "cron/executions.db", "gateway_state.json", "channel_directory.json", "channel_aliases.json",
+    "processes.json", "gateway/discord_message_recovery.db",  # Discord reconnect replay ledger
     # Per-profile user stores, destroyed if the update flow replaces the file and the post-update
     # schema-init re-creates an empty one (#52889). Skipped when outside HERMES_HOME.
     "projects.db",                      # per-profile project store

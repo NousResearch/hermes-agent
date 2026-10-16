@@ -206,7 +206,13 @@ class SessionPortabilityMixin:
                          (json.dumps({"imported_from": origin}), profile, session_id))
             return {"session_id": session_id, "already_imported": False}
 
-        return self._execute_write(_do)
+        from hermes_state_media import drop_prepared, prepare_rows
+        rows = normalized[0]["messages"]
+        prepare_rows(self.db_path, rows)  # image file I/O before the write lock, as import_sessions does
+        try:
+            return self._execute_write(_do)
+        finally:
+            drop_prepared(rows)
 
     @classmethod
     def _compact_session_cols(cls) -> str:
@@ -401,7 +407,7 @@ class SessionPortabilityMixin:
     def adopt_session_lineage_from(self, donor_db: Any, session_id: str, *, retire_donor: bool = True) -> dict[str, Any]:
         """Adopt *session_id*'s full compression lineage from *donor_db* (stranded-bot-session
         heal: a profile bot's rows accumulated in the DEFAULT profile's state.db before the
-        desktop routed session RPCs by target session). Pure composition
+        desktop routed session RPCs by target session). Composes
         ``donor_db.export_session_lineage()`` -> ``self.import_sessions()``: runtime
         fields reset, already-present ids skipped (idempotent). Every message row is carried
         with its archived state, so turns in-place compaction archived stay visible here and
@@ -410,6 +416,8 @@ class SessionPortabilityMixin:
         ``end_reason='adopted_by_profile'`` — deliberately NOT in the recoverable set, so
         resurrection cannot undo an adoption. Returns the ``import_sessions`` dict plus
         ``adopted`` and ``donor_retired`` (True only when EVERY segment retired).
+        Image bytes are copied before import; unavailable media aborts the adoption
+        without importing rows or retiring the donor, so a repaired store can retry.
 
         Once routing was fixed, the profile backend correctly received the RPCs but had no such session, so
         the same chat 4001'd for the opposite reason. This method moves the conversation to where routing
@@ -437,6 +445,24 @@ class SessionPortabilityMixin:
                 donor_ahead = True
                 logger.warning("adoption divergence: donor segment %s has %d messages, "
                                "local copy has %d — donor will NOT be retired", seg_id, donor_count, local_count)
+
+        # Like profile moves, rehydrate from the owning store and publish before import's
+        # SQLite write lock. Reference-only exports cannot be resolved in another profile.
+        from hermes_state_media import prepare_media_content, restore_media_content
+        try:
+            for seg in segments:
+                for message in seg.get("messages") or []:
+                    sidecar = message.get("media_content")
+                    if sidecar:
+                        content = restore_media_content(donor_db.db_path, sidecar, message.get("content"), strict=True)
+                        _, message["media_content"] = prepare_media_content(
+                            self.db_path, content, display=json.loads(sidecar).get("display", False))
+                        if message["media_content"] is None:
+                            raise OSError("Cannot copy transcript media into destination store")
+        except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
+            logger.warning("Cannot adopt transcript media for %s; leaving donor unretired", session_id, exc_info=True)
+            return {"ok": False, "adopted": False, "donor_retired": False,
+                    "error": f"Cannot adopt transcript media: {exc}"}
 
         result = self.import_sessions([dict(seg) for seg in segments])
         imported = int(result.get("imported") or 0)
@@ -829,4 +855,10 @@ class SessionPortabilityMixin:
                 "imported_ids": imported_ids, "skipped_ids": skipped_ids, "errors": [],
             }
 
-        return self._execute_write(_do)
+        from hermes_state_media import drop_prepared, prepare_rows
+        rows = [msg for item in normalized for msg in item["messages"]]
+        prepare_rows(self.db_path, rows)  # image file I/O before the write lock
+        try:
+            return self._execute_write(_do)
+        finally:
+            drop_prepared(rows)

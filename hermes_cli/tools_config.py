@@ -685,15 +685,19 @@ def _merge_mcp_servers(
     """Explicit passthrough entries plus this platform's MCP servers: listed names form an allowlist, else every
     globally enabled server (when ``include_default_mcp_servers``); the ``no_mcp`` sentinel disables all."""
     enabled_mcp_servers = enabled_mcp_server_names(config)
+    configured = config.get("mcp_servers") if isinstance(config.get("mcp_servers"), dict) else {}
+    known = enabled_mcp_servers | {str(name) for name in configured}
     # ``mcp-<server>`` names the same server as its bare alias: either spelling selects only that server
     # (unless a server is literally named ``mcp-<server>``).
-    explicit_passthrough = {ts[4:] if ts.startswith("mcp-") and ts not in enabled_mcp_servers
-                            and ts[4:] in enabled_mcp_servers else ts for ts in explicit_passthrough}
-    result = explicit_passthrough - enabled_mcp_servers
+    explicit_passthrough = {ts[4:] if ts.startswith("mcp-") and ts not in known
+                            and ts[4:] in known else ts for ts in explicit_passthrough}
+    result = explicit_passthrough - known
     if "no_mcp" in toolset_names:
         return result - {"no_mcp"}
     explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
-    if include_default_mcp_servers and not explicit_mcp_servers:
+    # A listed server that is configured but disabled is still the user's server selection: it stays
+    # off, and it must not fall through to every enabled server.
+    if include_default_mcp_servers and not explicit_passthrough & known:
         return result | enabled_mcp_servers
     return result | explicit_mcp_servers
 

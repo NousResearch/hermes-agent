@@ -351,6 +351,56 @@ def test_send_message_routes_whatsapp_group_jid_without_home_fallback() -> None:
     )
 
 
+def test_whatsapp_username_target_is_explicit() -> None:
+    # Someone who hides their number behind a WhatsApp @username: the bridge
+    # resolves the handle to their @lid, so it must reach it verbatim.
+    assert _parse_target_ref("whatsapp", "@bykahwai") == ("@bykahwai", None, True)
+    assert _parse_target_ref("whatsapp", "  @lss.me  ") == ("@lss.me", None, True)
+    assert _parse_target_ref("whatsapp", "@Some_User.9") == ("@Some_User.9", None, True)
+
+
+def test_whatsapp_malformed_username_is_not_explicit() -> None:
+    # Outside WhatsApp's 3-35 letters/digits/./_ rule: not a username, so it
+    # must not be sent anywhere verbatim.
+    for target in ("@ab", "@" + "a" * 36, "@has space", "@a@b"):
+        assert _parse_target_ref("whatsapp", target)[2] is False, target
+
+
+def test_send_message_routes_whatsapp_username_without_home_fallback() -> None:
+    whatsapp_cfg = SimpleNamespace(enabled=True, token=None, extra={"api_url": "http://bridge"})
+    config = SimpleNamespace(
+        platforms={Platform.WHATSAPP: whatsapp_cfg},
+        get_home_channel=lambda _platform: SimpleNamespace(chat_id="15551234567@s.whatsapp.net"),
+    )
+
+    with patch("gateway.config.load_gateway_config", return_value=config), \
+         patch("tools.interrupt.is_interrupted", return_value=False), \
+         patch("gateway.channel_directory.resolve_channel_name", side_effect=AssertionError("a username should not resolve via directory")), \
+         patch("model_tools._run_async", side_effect=_run_async_immediately), \
+         patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+         patch("gateway.mirror.mirror_to_session", return_value=True):
+        result = json.loads(
+            send_message_tool(
+                {
+                    "action": "send",
+                    "target": "whatsapp:@bykahwai",
+                    "message": "hello",
+                }
+            )
+        )
+
+    assert result["success"] is True
+    send_mock.assert_awaited_once_with(
+        Platform.WHATSAPP,
+        whatsapp_cfg,
+        "@bykahwai",
+        "hello",
+        thread_id=None,
+        media_files=[],
+        force_document=False,
+    )
+
+
 def test_resolved_opaque_plugin_target_uses_directory_id() -> None:
     from gateway.platform_registry import PlatformEntry, platform_registry
 

@@ -80,6 +80,26 @@ def test_retained_sessions_spill_survives_the_age_sweep(_home):
         db.close()
 
 
+def test_structured_and_backslashed_pointers_are_owned(_home):
+    """A pointer inside multimodal content (stored behind the NUL sentinel, invisible to LIKE)
+    and a backslashed Windows host path both count as references, and both leave with their
+    session."""
+    db = SessionDB(db_path=_home / "state.db")
+    try:
+        db.create_session("s", "cli")
+        db.append_message("s", "tool", [{"type": "text", "text": _pointer(_home, "parts.txt")},
+                                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}])
+        db.append_message("s", "tool", "Full output saved to: C:\\h\\cache\\spillover\\win.txt")
+        files = [_spill(_home, "parts.txt", age_hours=200 * 24), _spill(_home, "win.txt", age_hours=200 * 24)]
+
+        assert cleanup_spillover_cache(max_age_hours=24) == 0
+        assert all(f.exists() for f in files)
+        db.delete_session("s")
+        assert not any(f.exists() for f in files)
+    finally:
+        db.close()
+
+
 def test_prune_sessions_unlinks_the_spill_with_its_session(_home):
     db = SessionDB(db_path=_home / "state.db")
     try:

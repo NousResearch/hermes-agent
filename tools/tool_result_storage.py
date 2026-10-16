@@ -68,7 +68,10 @@ def _spillover_retention_hours() -> int:
 # the ``~``-relative translation, the in-container mounted path — carries the ``spillover/<name>``
 # segment. Sandbox-fallback pointers (``…/hermes-results/<name>``) do not, so their host-side
 # original stays unreferenced and is reclaimed by the orphan sweep, never by ownership.
-_SPILLOVER_NAME_RE = re.compile(r"spillover/([A-Za-z0-9_.-]+)")
+# Either separator: Windows host paths are backslashed (JSON-escaped as ``\\`` inside structured content).
+_SPILLOVER_NAME_RE = re.compile(r"spillover(?:/|\\+)([A-Za-z0-9_.-]+)")
+# instr(), not LIKE: structured content is stored behind a NUL sentinel and LIKE stops at NUL.
+SPILLOVER_SQL_FILTER = "(instr(content, 'spillover') > 0 OR instr(api_content, 'spillover') > 0)"
 
 
 _ARCHIVE_PATH_RE = re.compile(r"(?:^|[/\\])(?:spillover|hermes-results)[/\\][^/\\]+$")
@@ -90,7 +93,7 @@ def spillover_names_in_text(*texts) -> set:
     """Spillover archive basenames referenced by transcript message text (empty set on none)."""
     names: set = set()
     for text in texts:
-        if isinstance(text, str) and "spillover/" in text:
+        if isinstance(text, str) and "spillover" in text:
             names.update(_SPILLOVER_NAME_RE.findall(text))
     return names
 
@@ -109,9 +112,7 @@ def referenced_spillover_names(spill_dir) -> set | None:
         conn = sqlite3.connect(f"{db_path.as_uri()}?mode=ro", uri=True, timeout=5.0)
         try:
             rows = conn.execute(
-                "SELECT content, api_content FROM messages "
-                "WHERE content LIKE '%spillover/%' OR api_content LIKE '%spillover/%' "
-                "LIMIT 20001"
+                f"SELECT content, api_content FROM messages WHERE {SPILLOVER_SQL_FILTER} LIMIT 20001"
             ).fetchall()
         finally:
             conn.close()

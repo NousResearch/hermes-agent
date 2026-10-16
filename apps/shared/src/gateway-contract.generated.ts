@@ -4955,6 +4955,7 @@ export interface CanonicalSnapshotInfo {
   started_at?: number | null
   last_active_at?: number | null
   yolo?: boolean | null
+  base_url?: string | null
   api_mode?: string | null
   tool_count?: number | null
   credential_hint?: string | null

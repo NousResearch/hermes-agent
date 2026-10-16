@@ -58,6 +58,14 @@ def reasoning_in_transaction(db, conn, session_id, payload, prepared):
     return {session_id, snapshot['target']}, {'effort': payload['effort'], 'execution_generation': generation}
 
 
+def service_tier_in_transaction(db, conn, session_id, payload, prepared):
+    from agent.fast_mode import parse_exact_service_tier
+    snapshot, generation = _commit_policy(db, conn, session_id, prepared)
+    return {session_id, snapshot['target']}, {
+        'service_tier': parse_exact_service_tier(payload['service_tier']) or None,
+        'execution_generation': generation}
+
+
 def workspace_in_transaction(db, conn, session_id, payload, prepared):
     """The policy (execution cwd + TERMINAL_CWD) and every row of the conversation move together:
     the sidebar groups by the row's cwd/git identity, which a move REPLACES (main's update_session_cwd
@@ -80,4 +88,5 @@ def editor_mcp_in_transaction(db, conn, session_id, payload, prepared):
 
 
 POLICY_HANDLERS = {'model': model_in_transaction, 'reasoning': reasoning_in_transaction,
+                   'service_tier': service_tier_in_transaction,
                    'workspace': workspace_in_transaction, 'editor_mcp': editor_mcp_in_transaction}

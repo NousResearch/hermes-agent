@@ -67,6 +67,9 @@ class LocalSessionPolicy:
     # workspace). A following session replays this decision rather than re-probing its folder each turn: it
     # drops the posture when its profile leaves ``focus``, and one created outside it never gains it later.
     coding_posture: bool = False
+    # Post-creation picks are independent of the immutable creation request.
+    reasoning_pinned: bool = False
+    service_tier_pinned: bool = False
 
     def config(self, authority=None, *, secrets=True):
         return self.effective(authority, secrets=secrets)[0]
@@ -94,8 +97,8 @@ class LocalSessionPolicy:
             pick = frozen.get('selection_profile')
             held = pick is not None and pick == list(profile_target(live))
             pinned = {'platform_toolsets', 'disabled_toolsets'} if 'toolsets' in request else set()
-            pinned |= {'reasoning_effort', 'reasoning_overrides'} if 'reasoning' in request else set()
-            pinned |= {'service_tier'} if 'service_tier' in request else set()
+            pinned |= {'reasoning_effort', 'reasoning_overrides'} if self.reasoning_pinned or 'reasoning' in request else set()
+            pinned |= {'service_tier'} if self.service_tier_pinned or 'service_tier' in request else set()
             for key in FOLLOW_SECTIONS:
                 if key in pinned:
                     continue
@@ -707,6 +710,7 @@ def restore_policy(data):
                 or type(policy.safe_mode) is not bool or type(policy.ignore_user_config) is not bool
                 or not isinstance(policy.skills_prompt, (str, type(None)))
                 or type(policy.coding_posture) is not bool
+                or type(policy.reasoning_pinned) is not bool or type(policy.service_tier_pinned) is not bool
                 or (policy.safe_mode and not policy.ignore_user_config)):
             raise ValueError('invalid policy')
         from dataclasses import replace

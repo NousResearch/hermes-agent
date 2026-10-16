@@ -44,10 +44,10 @@ def agent(mock_manager):
 
 
 @pytest.mark.asyncio
-async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(agent):
+async def test_new_session_exposes_controls_and_edit_approval_modes(agent):
     resp = await agent.new_session(cwd="/tmp")
 
-    assert resp.config_options is None
+    assert {option.id for option in resp.config_options} == {"model", "reasoning", "fast"}
     assert isinstance(resp.modes, SessionModeState)
     assert resp.modes.current_mode_id == "default"
     assert [mode.id for mode in resp.modes.available_modes] == [
@@ -58,7 +58,7 @@ async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(ag
 
 
 @pytest.mark.asyncio
-async def test_set_config_option_persists_edit_approval_policy_without_advertising_config(agent):
+async def test_set_config_option_retains_edit_approval_compatibility(agent):
     resp = await agent.new_session(cwd="/tmp")
     update = await agent.set_config_option(
         "edit_approval_policy",
@@ -68,7 +68,7 @@ async def test_set_config_option_persists_edit_approval_policy_without_advertisi
     state = agent.session_manager.get_session(resp.session_id)
 
     assert isinstance(update, SetSessionConfigOptionResponse)
-    assert update.config_options == []
+    assert {option.id for option in update.config_options} == {"model", "reasoning", "fast"}
     assert getattr(state, "mode", None) == "accept_edits"
 
 
@@ -337,15 +337,15 @@ class TestSessionConfiguration:
         config_result = await router(
             "session/set_config_option",
             {
-                "configId": "approval_mode",
+                "configId": "edit_approval_policy",
                 "sessionId": new_resp.session_id,
-                "value": "auto",
+                "value": "workspace_session",
             },
             False,
         )
 
         assert mode_result == {}
-        assert config_result["configOptions"] == []
+        assert {option["id"] for option in config_result["configOptions"]} == {"model", "reasoning", "fast"}
 
 
 

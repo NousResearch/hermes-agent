@@ -17,6 +17,7 @@ from acp.schema import (
 from hermes_cli.gateway_client import GatewayClientError, connect_gateway
 from hermes_constants import get_hermes_home
 from acp_adapter.session import _translate_acp_cwd, _normalize_cwd_for_compare
+from acp_adapter.gateway_controls import GatewayControlsMixin
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ def _tools_changed_notice(payload):
     return f"Editor MCP tools changed (servers: {servers}); the new tool list applies from the next turn.\n"
 
 
-class GatewayACPAgent(acp.Agent):
+class GatewayACPAgent(GatewayControlsMixin, acp.Agent):
     def __init__(self):
         self._conn = None
         self._gateway = None
@@ -317,7 +318,10 @@ class GatewayACPAgent(acp.Agent):
             task = asyncio.get_running_loop().create_task(self._after_attach(session_id, editor_id))
             self._background.add(task)
             task.add_done_callback(self._background.discard)
-        return {"models": models, "modes": session_modes(), "field_meta": meta}
+        from acp_adapter.config_options import project_options
+        self._snapshots[session_id]["info"] = dict(info)
+        return {"models": models, "modes": session_modes(), "field_meta": meta,
+                "config_options": await asyncio.to_thread(project_options, info, models)}
 
     async def _after_attach(self, session_id, editor_id):
         from acp_adapter.gateway_session_meta import available_commands_update
@@ -474,6 +478,12 @@ class GatewayACPAgent(acp.Agent):
         from acp.schema import SetSessionModelResponse
         session_id = self._aliases.get(session_id, session_id)
         client = await self._client()
+        from acp_adapter.config_options import parse_selection
+        try:
+            model_id = parse_selection("model", model_id, {})
+        except ValueError as exc:
+            from acp.exceptions import RequestError
+            raise RequestError.invalid_params({"details": str(exc)}) from exc
         payload = {'model': model_id}
         self._unacked.pop(session_id, None)  # a control between a lost submit and its repeat retires it
         result = await self._mutations.apply(client, session_id, 'model', payload,
@@ -482,6 +492,7 @@ class GatewayACPAgent(acp.Agent):
             # Declined: nothing was written; the editor's picker must not show the target as active.
             raise GatewayClientError('model_switch_cancelled')
         self._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
+        await self._send_config_options(session_id)
         self._mutations.acknowledge(session_id, 'model', payload)
         return SetSessionModelResponse()
 
@@ -526,16 +537,6 @@ class GatewayACPAgent(acp.Agent):
         if mode_id != DEFAULT_MODE:
             raise GatewayClientError("acp_edit_policy_mutation_unavailable")
         return SetSessionModeResponse()
-
-    async def set_config_option(self, config_id, session_id, value=None, **kwargs):
-        """Accepted so editors do not fail on their own config writes, as main did; only the edit
-        approval policy has a meaning here, and only the owner's ``ask`` can be selected."""
-        from acp.schema import SetSessionConfigOptionResponse
-        from acp_adapter.gateway_session_meta import DEFAULT_EDIT_APPROVAL_POLICY, EDIT_APPROVAL_POLICY_CONFIG_ID
-        self._held_session(session_id)
-        if config_id == EDIT_APPROVAL_POLICY_CONFIG_ID and value != DEFAULT_EDIT_APPROVAL_POLICY:
-            raise GatewayClientError("acp_edit_policy_mutation_unavailable")
-        return SetSessionConfigOptionResponse(config_options=[])
 
     async def list_sessions(self, cursor=None, cwd=None, **kwargs):
         from acp.schema import ListSessionsResponse, SessionInfo
@@ -798,6 +799,14 @@ class GatewayACPAgent(acp.Agent):
             async with self._changed:
                 self._snapshots[sid]["pending"] = payload["pending"]
                 self._changed.notify_all()
+        if kind == "session.info" and sid in self._snapshots:
+            info = self._snapshots[sid].setdefault("info", {})
+            keys = {"model", "provider", "base_url", "api_mode", "reasoning_effort", "reasoning_effort_wire",
+                    "service_tier", "fast"}
+            changed = any(key in payload and payload[key] != info.get(key) for key in keys)
+            info.update(payload)
+            if changed:
+                await self._send_config_options(sid, info)
         await self._project_title(sid, editor_id, payload.get("title"))
 
     async def _project_usage(self, sid, editor_id, stats):

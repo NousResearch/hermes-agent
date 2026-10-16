@@ -137,6 +137,7 @@ async def test_input_queued_while_a_model_receipt_commits_still_runs(tmp_path, m
         return 'ok'
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,
                              _evict_cached_agent=lambda route: None, _handle_message=handle,
+                             _cached_agent_for=lambda route: None,
                              _resolve_session_agent_runtime=lambda **k: ('frozen', {}))
     runner._adapter_for_source = lambda source: runner.adapters.get(source.platform)
     authority = SessionAuthority(runner, profile_id='owned', instance_id='owner', db=db,

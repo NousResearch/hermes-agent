@@ -115,6 +115,8 @@ async def test_a_steer_for_a_turn_that_just_ended_becomes_the_next_prompt():
 @pytest.mark.asyncio
 async def test_only_the_owners_edit_policy_can_be_selected():
     agent = _agent(AsyncMock())
+    agent._snapshots['s']['info'] = {
+        'model': 'local-model', 'provider': 'custom', 'base_url': 'http://localhost:1234/v1'}
     await agent.set_session_mode('default', 's')
     await agent.set_config_option('edit_approval_policy', 's', 'ask')
     with pytest.raises(GatewayClientError, match='acp_edit_policy_mutation_unavailable'):

@@ -13,7 +13,7 @@ from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 _READS = frozenset({'context', 'usage', 'status', 'version'})
 _MUTATIONS = frozenset({'model', 'compress', 'new', 'branch'})
 _PROMPTS = frozenset({'steer', 'queue'})
-COMMANDS = _READS | _MUTATIONS | _PROMPTS | {'help', 'tools'}
+COMMANDS = _READS | _MUTATIONS | _PROMPTS | {'help', 'tools', 'reasoning', 'fast', 'goal'}
 
 
 async def run_command(agent, session_id, command, arg):
@@ -22,6 +22,10 @@ async def run_command(agent, session_id, command, arg):
     from acp_adapter.gateway_session_meta import help_text
     if command not in COMMANDS:
         raise GatewayClientError('unsupported_command')
+    if command == 'goal':
+        return await _goal(agent, session_id, arg)
+    if command in {'reasoning', 'fast'}:
+        return await agent._control_command(session_id, command, arg), None
     if command == 'branch':
         raise GatewayClientError('use_acp_fork_session')
     if command == 'help':
@@ -39,6 +43,19 @@ async def run_command(agent, session_id, command, arg):
         info = await client.rpc('session.info', session_id=session_id)
         return (_tools_text(info) if command == 'tools' else _model_text('Current model', info)), None
     return await _mutate(agent, client, session_id, command, arg), None
+
+
+async def _goal(agent, session_id, arg):
+    from acp_adapter.config_options import command_body
+    result = await (await agent._client()).rpc(
+        'slash.exec', session_id=session_id, command=('/goal ' + command_body(arg)).rstrip())
+    if result['type'] == 'send':
+        if result.get('notice') and agent._conn:
+            import acp
+            await agent._conn.session_update(session_id=agent._editor_id(session_id),
+                                            update=acp.update_agent_message_text(result['notice'] + '\n'))
+        return None, result['message']
+    return str(result.get('output') or ''), None
 
 
 async def _steer(agent, session_id, text):
@@ -85,6 +102,8 @@ async def _mutate(agent, client, session_id, command, arg):
         reply = _summary_text(result) or 'No changes from compression.'
     else:
         agent._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
+        if operation == 'model':
+            await agent._send_config_options(session_id)
         if operation in {'reset', 'compress'}:
             await _refresh_context(agent, client, session_id, operation)
         reply = {'model': lambda: _model_text('Model switched to', result),

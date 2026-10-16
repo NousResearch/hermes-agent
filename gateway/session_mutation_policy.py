@@ -1,6 +1,6 @@
-"""Prepare the policy-only session edits: session-scope reasoning and the workspace (Move to project).
+"""Prepare policy-only session reasoning, service tier and workspace edits.
 
-Both rewrite the frozen LocalSessionPolicy the next turn runs under, re-bound like a model switch
+These rewrite the frozen LocalSessionPolicy the next turn runs under, re-bound like a model switch
 (policy identity covers config/cwd, so its config-secret reference is re-fingerprinted).
 """
 import asyncio
@@ -27,7 +27,39 @@ async def prepare_reasoning(authority, live, payload, prepared):
     frozen.setdefault('agent', {})['reasoning_effort'] = payload['effort']
     # An explicit session level wins over a per-model default, as at creation.
     frozen['agent'].pop('reasoning_overrides', None)
-    return _rebind(authority, prepared, old, replace(old, config_json=json.dumps(frozen)))
+    return _rebind(authority, prepared, old, replace(old, config_json=json.dumps(frozen), reasoning_pinned=True))
+
+
+async def prepare_service_tier(authority, live, payload, prepared):
+    """Validate an explicit paid tier against the next turn's route before freezing it."""
+    from agent.fast_mode import CODEX_TIER_WORDS, STATIC_TIERS, parse_exact_service_tier
+    from gateway.session_policy import restore_policy
+    old = restore_policy(prepared['snapshot']['receipt']['policy'])
+    tier = parse_exact_service_tier(payload['service_tier']) or None
+    if tier is not None:
+        from gateway.session_authorities import owner_scope
+
+        def offered():
+            from agent.codex_service_tiers import ultrafast_offered
+            from hermes_cli.models import resolve_fast_mode_overrides
+            # Runtime resolution and entitlement reads belong to the owning profile, off-loop.
+            with owner_scope(authority):
+                model, runtime = authority.runner._resolve_session_agent_runtime(
+                    source=live.source, session_key=live.route)
+                if (runtime.get('api_mode') == 'codex_app_server'
+                        and tier in STATIC_TIERS and tier not in CODEX_TIER_WORDS):
+                    return False
+                route = {'provider': runtime.get('provider'), 'base_url': runtime.get('base_url')}
+                if not model or resolve_fast_mode_overrides(model, **route, tier=tier) is None:
+                    return False
+                return tier != 'ultrafast' or ultrafast_offered(
+                    model, **route, access_token=runtime.get('api_key'))
+        if not await asyncio.to_thread(offered):
+            raise RuntimeStoreError('fast_unavailable')
+    frozen = old.config()
+    frozen.setdefault('agent', {})['service_tier'] = tier or 'normal'
+    policy = replace(old, config_json=json.dumps(frozen), service_tier_pinned=True)
+    return _rebind(authority, prepared, old, policy)
 
 
 async def prepare_workspace(authority, live, payload, prepared):
@@ -51,4 +83,4 @@ async def prepare_workspace(authority, live, payload, prepared):
     return _rebind(authority, prepared, old, policy, git={'branch': branch, 'root': root})
 
 
-PREPARE = {'reasoning': prepare_reasoning, 'workspace': prepare_workspace}
+PREPARE = {'reasoning': prepare_reasoning, 'service_tier': prepare_service_tier, 'workspace': prepare_workspace}

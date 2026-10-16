@@ -10861,6 +10861,18 @@
             "default": null,
             "title": "Yolo"
           },
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Base Url"
+          },
           "api_mode": {
             "anyOf": [
               {

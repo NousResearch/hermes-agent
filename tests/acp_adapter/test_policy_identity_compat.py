@@ -13,5 +13,7 @@ def test_policy_identity_preserves_pre_editor_credential_binding(tmp_path):
     legacy.pop('config_secret_ref')
     legacy.pop('editor_mcp_json')
     legacy.pop('coding_posture')
+    legacy.pop('reasoning_pinned')
+    legacy.pop('service_tier_pinned')
     expected = hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
     assert policy_identity(policy) == expected

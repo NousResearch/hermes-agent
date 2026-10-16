@@ -90,12 +90,12 @@ async def test_explicit_create_choices_win_and_session_info_reports_the_next_tur
         assert policy.current_reasoning_config(runner)['effort'] == 'high'
         assert policy.current_service_tier(runner, None) == 'priority'
         # C17: lazy session.info reports what the next turn resolves, for both sessions.
-        for live, effort, tier in ((explicit, 'high', 'priority'), (plain, 'minimal', '')):
+        for live, effort, tier in ((explicit, 'high', 'priority'), (plain, 'minimal', None)):
             policy = policy_for_source(runner, live.source)
             info = local_session_info(authority, _ref(authority, live))
             assert (info['reasoning_effort'], info['service_tier']) == (effort, tier)
             assert policy.current_reasoning_config(runner)['effort'] == effort
-            assert (policy.current_service_tier(runner, None) or '') == tier
+            assert policy.current_service_tier(runner, None) == tier
     finally:
         await owner.close()
         store.close_all_db_handles()

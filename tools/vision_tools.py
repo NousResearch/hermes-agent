@@ -1010,14 +1010,23 @@ VISION_ANALYZE_SCHEMA = {
 
 def _configured_aux_model(sections: tuple, env_vars: tuple) -> Optional[str]:
     """First non-empty ``auxiliary.<section>.model`` from config.yaml, else the first non-empty
-    env var (legacy override), else None."""
+    env var (legacy override), else None. Env vars resolve through the active profile secret scope,
+    so a served profile without its own value never inherits the launch profile's override."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
     for section in sections:
         _vmodel = _cfg_auxiliary(section, "model")
         if _vmodel:
             if str(_vmodel).strip():
                 return str(_vmodel).strip()
             break
-    return next((v for v in (os.getenv(e, "").strip() for e in env_vars) if v), None)
+    for env_var in env_vars:
+        try:
+            _val = (get_secret(env_var, "") or "").strip()
+        except UnscopedSecretError:
+            return None
+        if _val:
+            return _val
+    return None
 
 
 async def _handle_vision_analyze(args: dict[str, Any], **kw: Any) -> str:

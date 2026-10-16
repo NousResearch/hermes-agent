@@ -1353,3 +1353,45 @@ class TestVisionOcrGating:
         ):
             assert check_vision_ocr_requirements() is True
         assert fb.call_args.args[0] == "ocr"
+
+    def test_ocr_env_override_does_not_leak_into_served_profile(self, monkeypatch):
+        """A served profile with no OCR config must not inherit the launch profile's AUXILIARY_OCR_MODEL:
+        no launch model is selected and OCR is not advertised (no route probe)."""
+        from agent import secret_scope
+        from tools.vision_tools import _configured_aux_model, check_vision_ocr_requirements
+
+        monkeypatch.setenv("AUXILIARY_OCR_MODEL", "launch-profile-ocr")
+        token_mux = secret_scope.set_multiplex_context(True)
+        token_scope = secret_scope.set_secret_scope({}, profile_home="/tmp/served-profile")
+        try:
+            with (
+                patch("hermes_cli.config.load_config", return_value={"auxiliary": {}}),
+                patch("agent.auxiliary_client.get_text_auxiliary_client", side_effect=AssertionError("probed")),
+            ):
+                assert _configured_aux_model(("ocr",), ("AUXILIARY_OCR_MODEL",)) is None
+                assert check_vision_ocr_requirements() is False
+        finally:
+            secret_scope.reset_secret_scope(token_scope)
+            secret_scope.reset_multiplex_context(token_mux)
+
+    def test_ocr_env_override_uses_served_profile_own_value(self, monkeypatch):
+        from agent import secret_scope
+        from tools.vision_tools import _configured_aux_model
+
+        monkeypatch.setenv("AUXILIARY_OCR_MODEL", "launch-profile-ocr")
+        token_mux = secret_scope.set_multiplex_context(True)
+        token_scope = secret_scope.set_secret_scope(
+            {"AUXILIARY_OCR_MODEL": "served-profile-ocr"}, profile_home="/tmp/served-profile")
+        try:
+            with patch("hermes_cli.config.load_config", return_value={"auxiliary": {}}):
+                assert _configured_aux_model(("ocr",), ("AUXILIARY_OCR_MODEL",)) == "served-profile-ocr"
+        finally:
+            secret_scope.reset_secret_scope(token_scope)
+            secret_scope.reset_multiplex_context(token_mux)
+
+    def test_ocr_env_override_still_applies_to_launch_profile(self, monkeypatch):
+        from tools.vision_tools import _configured_aux_model
+
+        monkeypatch.setenv("AUXILIARY_OCR_MODEL", "launch-ocr")
+        with patch("hermes_cli.config.load_config", return_value={"auxiliary": {}}):
+            assert _configured_aux_model(("ocr",), ("AUXILIARY_OCR_MODEL",)) == "launch-ocr"

@@ -266,8 +266,40 @@ def close_shared_transports() -> int:
     return len(transports)
 
 
-def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False, verify: Any = True) -> Optional[Any]:
+def provider_redirect_hooks(follow_redirects: bool | None, *, async_mode: bool = False) -> dict:
+    """Guard HTTPX's native redirect handling before any redirected request is sent.
+
+    HTTPX 0.28 copies request extensions to redirect requests and runs request hooks
+    before transport on every hop. Builders put this guard before bearer injection.
+    Keep the initial *actual*
+    request origin there, not in client-global state or a configured base URL.
+    HTTPX still owns method/body replay, relative URLs, response closure and limits.
+    """
+    if follow_redirects is not True:
+        return {}
+    import httpx
+
+    def guard(request: httpx.Request) -> None:
+        url = request.url
+        origin = (url.scheme, url.host, url.port if url.port is not None else {"http": 80, "https": 443}.get(url.scheme))
+        initial = request.extensions.setdefault("hermes_provider_redirect_origin", origin)
+        if origin != initial:
+            raise httpx.LocalProtocolError("Cross-origin provider redirect blocked", request=request)
+
+    if async_mode:
+        async def async_guard(request: httpx.Request) -> None:
+            guard(request)
+        return {"request": [async_guard]}
+    return {"request": [guard]}
+
+
+def build_keepalive_http_client(
+    base_url: str = "", *, async_mode: bool = False, verify: Any = True, follow_redirects: bool = False,
+) -> Optional[Any]:
     """httpx client for OpenAI SDK calls with env-only proxy policy (None on failure).
+
+    Redirects default off; explicit True follows only same-origin hops and raises
+    on construction failure rather than permitting an unguarded fallback.
 
     Explicit no-proxy mounts disable httpx's ``trust_env`` path so macOS system
     proxies (which omit the ExceptionsList) are never applied. ``keepalive_expiry``
@@ -294,9 +326,10 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
         mounts = None
         # Official Codex backend only: zstd request bodies when the stdlib codec exists (None otherwise).
         from agent.codex_headers import codex_request_compression_hooks
-        hooks = codex_request_compression_hooks(base_url, async_mode=async_mode)
-        if hooks:
-            client_cls = functools.partial(client_cls, event_hooks=hooks)
+        hooks = provider_redirect_hooks(follow_redirects, async_mode=async_mode)
+        for name, callbacks in (codex_request_compression_hooks(base_url, async_mode=async_mode) or {}).items():
+            hooks.setdefault(name, []).extend(callbacks)
+        client_cls = functools.partial(client_cls, follow_redirects=follow_redirects, event_hooks=hooks)
         if proxy is None:
             happy_eyeballs = not async_mode and _uses_codex_cloud_transport(base_url)
             # One pool serves every agent in the process, so its ceiling must cover a whole
@@ -327,6 +360,9 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
                 return client_cls(limits=limits, timeout=timeout, transport=mounts["https://"], mounts=mounts)
         return client_cls(limits=limits, timeout=timeout, proxy=proxy, mounts=mounts or None, verify=verify)
     except Exception:
+        # Explicit opt-in must not let callers fall back to an unguarded SDK client.
+        if follow_redirects is True:
+            raise
         return None
 
 
@@ -353,4 +389,5 @@ __all__ = [
     "build_keepalive_http_client",
     "close_shared_transports",
     "enable_happy_eyeballs_on_client",
+    "provider_redirect_hooks",
 ]

@@ -167,6 +167,25 @@ You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming st
 
 Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=90`s, native Anthropic 900s). The non-streaming stale detector is auto-disabled for local endpoints when left implicit and can scale upward for very large contexts. Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
+### Following Provider Redirects
+
+Hermes-created primary OpenAI-compatible, native Gemini, and native Anthropic clients support `providers.<id>.follow_redirects` in `config.yaml`. Some endpoints, such as TheGrid.ai, issue a `307/308` to a canonical path on the same origin.
+
+Set `follow_redirects: true` to follow redirects **only within the initial request's origin** (scheme, hostname, and effective port). Changes of host, port, or scheme—including HTTPS downgrades—are rejected before the redirected request is sent. `307/308` preserve the request method and body; other redirect codes retain the HTTP client's standard behavior.
+
+```yaml
+providers:
+  my-provider:
+    follow_redirects: true
+    models:
+      my-model:
+        follow_redirects: false
+```
+
+A model-specific value overrides the provider value; explicit `false` disables following. When unset, existing behavior is preserved: Hermes-created OpenAI/Gemini HTTP clients do not follow redirects, while native Anthropic retains its SDK defaults (normally enabled). Anthropic clients using a callable bearer credential retain their existing redirects-off default. The same-origin restriction applies to explicit opt-in, not to unchanged SDK defaults.
+
+The setting applies when Hermes constructs or replaces a primary client, including fallback and restoration. Caller- or provider-owned HTTP clients, AWS Bedrock, and unrelated auxiliary clients are not modified. No setup prompt or environment variable is required.
+
 ## Update Behavior
 
 ### Background checks

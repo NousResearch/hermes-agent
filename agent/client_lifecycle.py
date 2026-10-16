@@ -19,6 +19,7 @@ _QWEN_CODE_VERSION = "0.14.1"  # Qwen Portal mimics the QwenCode CLI
 _OPENAI_SLOT = "_request_client_cache"
 _ANTHROPIC_SLOT = "_request_anthropic_client_cache"
 _NO_SOCKETS_SUFFIX = " — no sockets found; in-flight request may keep running until the provider finishes"
+_UNRESOLVED_FOLLOW_REDIRECTS = object()
 
 
 def _routermint_headers() -> dict:
@@ -64,6 +65,25 @@ def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
     return bool(isinstance(api_key, str) and api_key.strip() and isinstance(base_url, str) and base_url.strip())
 
 
+def resolve_primary_follow_redirects(agent, base_url: Any) -> bool | None:
+    """Resolve policy for the client being built, not a stale agent endpoint."""
+    from hermes_cli.timeouts import get_provider_follow_redirects
+    return get_provider_follow_redirects(
+        getattr(agent, "provider", ""), getattr(agent, "model", None),
+        base_url=str(base_url or ""), requested_provider=getattr(agent, "requested_provider", "") or "",
+    )
+
+
+def build_primary_http_client(agent, base_url: str, verify: Any, policy=_UNRESOLVED_FOLLOW_REDIRECTS) -> Any:
+    """Explicit config must not fall back to an SDK's redirect defaults."""
+    if policy is _UNRESOLVED_FOLLOW_REDIRECTS:
+        policy = resolve_primary_follow_redirects(agent, base_url)
+    client = agent._build_keepalive_http_client(base_url, verify=verify, follow_redirects=bool(policy))
+    if client is None and policy is not None:
+        raise RuntimeError("Unable to enforce configured primary-client redirect policy")
+    return client
+
+
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
     timeout = get_provider_request_timeout(fb_provider, fb_model)
@@ -82,7 +102,10 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
         effective_key = credential or (resolve_anthropic_token(model=getattr(agent, "model", None)) if is_anthropic else None) or ""
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = fb_base_url
-        agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
+        agent._anthropic_client = build_anthropic_client(
+            effective_key, fb_base_url, timeout=timeout,
+            follow_redirects=resolve_primary_follow_redirects(agent, fb_base_url),
+        )
         agent._is_anthropic_oauth = anthropic_route_is_oauth(fb_base_url, effective_key, provider=fb_provider)
         agent.client, agent._client_kwargs = None, {}
         return
@@ -96,8 +119,21 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
         agent._client_kwargs["default_headers"] = dict(fb_headers)
     if timeout is not None:
         agent._client_kwargs["timeout"] = timeout
-        # Rebuild now so the timeout applies to the very next request, not only after a rotation rebuild.
-        agent._replace_primary_openai_client(reason="fallback_timeout_apply")
+    policy = resolve_primary_follow_redirects(agent, fb_base_url)
+    if policy is not None:
+        # The generic replacement helper swallows failures; never leave an unguarded fallback installed.
+        try:
+            agent.client = agent._create_openai_client(
+                agent._client_kwargs, reason="fallback_primary_apply", shared=True, _follow_redirects=policy,
+            )
+        except Exception:
+            agent.client = None
+            agent._retire_shared_openai_client(fb_client, reason="fallback_policy_failed")
+            raise
+        if agent.client is not fb_client:
+            agent._retire_shared_openai_client(fb_client, reason="fallback_primary_apply")
+    elif timeout is not None:
+        agent._replace_primary_openai_client(reason="fallback_primary_apply")
 
 
 class ClientLifecycleMixin:
@@ -184,10 +220,10 @@ class ClientLifecycleMixin:
         return False
 
     @staticmethod
-    def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True) -> Any:
+    def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True, follow_redirects: bool = False) -> Any:
         """Build the shared OpenAI httpx client used by main and aux paths."""
         from agent.process_bootstrap import build_keepalive_http_client
-        return build_keepalive_http_client(base_url, verify=verify)
+        return build_keepalive_http_client(base_url, verify=verify, follow_redirects=follow_redirects)
 
     _create_openai_client = _forward("agent.agent_runtime_helpers", "create_openai_client")
     _force_close_tcp_sockets = _forward_static("agent.agent_runtime_helpers", "force_close_tcp_sockets")
@@ -453,15 +489,17 @@ class ClientLifecycleMixin:
         if is_copilot and self._api_kwargs_have_image_parts(api_kwargs or {}):
             from hermes_cli.copilot_auth import copilot_request_headers
             request_kwargs["default_headers"] = copilot_request_headers(is_agent_turn=True, is_vision=True)
-        cached, stale = self._checkout_request_slot(_OPENAI_SLOT, request_kwargs)
+        policy = resolve_primary_follow_redirects(self, request_kwargs.get("base_url", ""))
+        cache_key = (request_kwargs, policy)
+        cached, stale = self._checkout_request_slot(_OPENAI_SLOT, cache_key)
         if cached is not None:
             return cached
         if stale is not None:
             self._close_openai_client(stale, reason=f"reuse_evict:{reason}", shared=False)
-        client = self._create_openai_client(request_kwargs, reason=reason, shared=False)
+        client = self._create_openai_client(request_kwargs, reason=reason, shared=False, _follow_redirects=policy)
         # Snapshot nested dicts (default_headers) so an aliased inner object can't mutate the cache key.
         snapshot = {k: dict(v) if isinstance(v, dict) else v for k, v in request_kwargs.items()}
-        self._store_request_slot(_OPENAI_SLOT, client, snapshot)
+        self._store_request_slot(_OPENAI_SLOT, client, (snapshot, policy))
         return client
 
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
@@ -484,18 +522,22 @@ class ClientLifecycleMixin:
         self._abort_request_slot_client(_OPENAI_SLOT, client, reason=reason)
 
     def _request_anthropic_client_key(self) -> tuple:
-        """Cache key over everything forcing a fresh client: credential, base URL/region, timeout, 1M-beta flag."""
+        """Cache key over credential, route, timeout, 1M-beta and redirect policy."""
         if getattr(self, "provider", None) == "bedrock":
             return ("bedrock", getattr(self, "_bedrock_region", "us-east-1") or "us-east-1")
         return (
             "direct", self._anthropic_api_key, getattr(self, "_anthropic_base_url", None),
             get_provider_request_timeout(self.provider, self.model), bool(getattr(self, "_oauth_1m_beta_disabled", False)),
+            resolve_primary_follow_redirects(self, getattr(self, "_anthropic_base_url", None)),
         )
 
     def _build_direct_anthropic_client(self, token: str, base_url: Any) -> Any:
         """Native Anthropic client for ``token``/``base_url`` with the provider/model request timeout."""
         from agent.anthropic_adapter import build_anthropic_client
-        return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model))
+        return build_anthropic_client(
+            token, base_url, timeout=get_provider_request_timeout(self.provider, self.model),
+            follow_redirects=resolve_primary_follow_redirects(self, base_url),
+        )
 
     def _anthropic_oauth_flag(self, token: str) -> bool:
         """OAuth flag only on native Anthropic routes; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
@@ -506,7 +548,9 @@ class ClientLifecycleMixin:
         from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client
         if key[0] == "bedrock":
             return build_anthropic_bedrock_client(key[1])
-        return build_anthropic_client(key[1], key[2], timeout=key[3], drop_context_1m_beta=key[4])
+        return build_anthropic_client(
+            key[1], key[2], timeout=key[3], drop_context_1m_beta=key[4], follow_redirects=key[5],
+        )
 
     def _create_request_anthropic_client(self, *, reason: str) -> Any:
         """Build (or reuse) a request-local Anthropic client for one in-flight call.

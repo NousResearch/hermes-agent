@@ -376,7 +376,9 @@ def test_pre_command_fires_in_the_sessions_own_profile(tmp_path):
 def test_a_command_ink_answers_itself_fires_once_in_the_gateway_when_observed(tmp_path):
     """Ink answers ``/usage`` and ``/history`` without ``slash.exec`` and reports them through
     ``command.observe``: each fires ``pre_command`` once, in the gateway, under the TUI session's
-    profile, with main's values. A name only Ink knows (``/fortune``) is refused and fires nothing."""
+    profile, with main's values. A name only Ink knows (``/fortune``) is refused and fires nothing.
+    This sends ``command.observe`` by hand (the gateway side); when Ink sends it, only once a command
+    ran, is covered by ``ui-tui/src/__tests__/canonicalCommandObserve.test.ts``."""
     from hermes_cli.gateway_client import GatewayClientError
     with _gateway(tmp_path) as (proc, desc, home, work, _env, log, _peer):
         wire = _Wire(home, desc)

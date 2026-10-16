@@ -5,8 +5,8 @@ import { createSlashHandler } from '../app/createSlashHandler.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
 
 // PLG-7: the shared gateway fires `pre_command` for the commands it runs (slash.exec,
-// command.dispatch). A registry command Ink answers itself is reported through `command.observe`,
-// as the classic CLI reports its own; one Ink forwards is never reported twice.
+// command.dispatch). A registry command Ink runs itself is reported through `command.observe` once
+// it ran, as the classic CLI reports its own; a refused one is not, and a forwarded one never twice.
 const flush = () => new Promise(resolve => setTimeout(resolve, 5))
 
 beforeEach(() => {
@@ -14,7 +14,17 @@ beforeEach(() => {
   patchUiState({ sid: 'owner', info: { model: 'm', skills: {}, tools: {} } as any })
 })
 
-function harness({ canonical = true, observe }: { canonical?: boolean; observe?: () => Promise<unknown> } = {}) {
+function harness({
+  busy = false,
+  canonical = true,
+  mutate,
+  observe
+}: {
+  busy?: boolean
+  canonical?: boolean
+  mutate?: () => Promise<unknown>
+  observe?: () => Promise<unknown>
+} = {}) {
   const request = vi.fn(async (method: string) => {
     if (method === 'command.observe') {
       return observe ? observe() : { queued: true }
@@ -22,6 +32,14 @@ function harness({ canonical = true, observe }: { canonical?: boolean; observe?:
 
     if (method === 'slash.exec') {
       return { output: 'ok', type: 'exec' }
+    }
+
+    if (method === 'session.resume') {
+      return { execution_generation: 1, revision: 1 }
+    }
+
+    if (method === 'session.mutate') {
+      return mutate ? mutate() : { effort: 'high', execution_generation: 1 }
     }
 
     return {}
@@ -34,7 +52,7 @@ function harness({ canonical = true, observe }: { canonical?: boolean; observe?:
     composer: { enqueue: vi.fn() },
     gateway: { gw, rpc: request },
     local: { getHistoryItems: () => [], getLastUserMsg: () => '', maybeWarn: vi.fn() },
-    session: { resumeById: vi.fn() },
+    session: { guardBusySessionSwitch: vi.fn(() => busy), newSession: vi.fn(), resumeById: vi.fn() },
     slashFlightRef: { current: 0 },
     transcript: { page: vi.fn(), panel: vi.fn(), send: vi.fn(), setHistoryItems: vi.fn(), sys, trimLastExchange: (x: unknown[]) => x }
   } as any)
@@ -57,6 +75,63 @@ it('reports a registry command Ink answers itself, as typed, once', async () => 
     { arg: '', name: 'history', session_id: 'owner' },
     { arg: '', name: 'usage', session_id: 'owner' }
   ])
+})
+
+it('reports /help, a bare /reasoning and /tools list, each once', async () => {
+  const { observed, slash } = harness()
+
+  slash('/help')
+  slash('/reasoning')
+  slash('/tools list')
+  await flush()
+
+  expect(observed()).toEqual([
+    { arg: '', name: 'help', session_id: 'owner' },
+    { arg: '', name: 'reasoning', session_id: 'owner' },
+    { arg: 'list', name: 'tools', session_id: 'owner' }
+  ])
+})
+
+it('reports nothing for /tools enable or disable, which the shared gateway refuses', async () => {
+  const tools = harness()
+
+  tools.slash('/tools disable web')
+  tools.slash('/tools enable web')
+  await flush()
+  expect(tools.sys).toHaveBeenCalled() // the "not available" line
+  expect(tools.observed()).toEqual([])
+})
+
+it('reports nothing for a /new the busy guard rejects', async () => {
+  const busy = harness({ busy: true })
+
+  busy.slash('/new')
+  await flush()
+  expect(busy.observed()).toEqual([])
+
+  patchUiState({ destructiveSlashConfirm: false })
+  const idle = harness()
+
+  idle.slash('/new')
+  await flush()
+  expect(idle.observed()).toEqual([{ arg: '', name: 'new', session_id: 'owner' }])
+})
+
+it('reports a gateway-backed /reasoning level only once the gateway accepts it', async () => {
+  const refused = harness({
+    mutate: () => Promise.reject(new JsonRpcGatewayError('busy', { code: 4009, data: { reason: 'busy' } }))
+  })
+
+  refused.slash('/reasoning high')
+  await flush()
+  expect(refused.request).toHaveBeenCalledWith('session.mutate', expect.objectContaining({ operation: 'reasoning' }))
+  expect(refused.observed()).toEqual([])
+
+  const accepted = harness()
+
+  accepted.slash('/reasoning high')
+  await flush()
+  expect(accepted.observed()).toEqual([{ arg: 'high', name: 'reasoning', session_id: 'owner' }])
 })
 
 it('never reports a command Ink sends to the gateway, which fires pre_command itself', async () => {

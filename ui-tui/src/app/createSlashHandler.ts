@@ -9,7 +9,7 @@ import { getWidgetApp } from '../sdk/registry.js'
 import type { SlashHandler, SlashHandlerContext, SlashSubmission } from './interfaces.js'
 import { scoreSlashMenuItem } from './slash/fuzzyScore.js'
 import { findSlashCommand } from './slash/registry.js'
-import type { SlashCommand, SlashRunCtx } from './slash/types.js'
+import type { SlashRunCtx } from './slash/types.js'
 import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { getUiState } from './uiStore.js'
 import {
@@ -33,43 +33,22 @@ export function reportSlashCommand(gw: GatewayClient, name: string, sid: null | 
 // Gateways that answered `command.observe` with unknown_method (older than this TUI): not asked again.
 const observeUnsupported = new WeakSet<object>()
 
-const FORWARDS = new Set(['command.dispatch', 'slash.exec'])
+/** `SlashRunCtx.ran`: the shared gateway fires `pre_command` for the commands it runs (`slash.exec`,
+ *  `command.dispatch`). A recognized command Ink runs itself is reported the way the classic CLI
+ *  reports its own (`command.observe`, plain data, not awaited) once the handler says it ran: a read
+ *  when it answers, a gateway mutation once accepted. A refusal never calls it, and neither does a
+ *  forward, so no command fires twice. At most once per typed command; the gateway refuses a name
+ *  it does not recognize. */
+function observer(gw: GatewayClient, name: string, arg: string, sid: null | string): () => void {
+  let sent = false
 
-/** The shared gateway fires `pre_command` for the commands it runs (`slash.exec`,
- *  `command.dispatch`). A recognized command Ink answers itself is reported the way the classic CLI
- *  reports its own (`command.observe`, plain data, not awaited); the gateway refuses a name it does
- *  not recognize. A command Ink sends to the gateway (every one sends it synchronously from `run`)
- *  is never reported twice: while `run` runs, the client's `request` notes a forward. The client
- *  itself stays the same object (session state is keyed by it), and is restored before returning. */
-function runObserved(found: SlashCommand, arg: string, runCtx: SlashRunCtx, cmd: string, name: string): void {
-  const { gw } = runCtx.gateway
-
-  if (!gw?.isCanonical || !runCtx.sid || observeUnsupported.has(gw)) {
-    return found.run(arg, runCtx, cmd)
-  }
-
-  let forwarded = false
-  const own = Object.prototype.hasOwnProperty.call(gw, 'request')
-  const original = gw.request
-
-  gw.request = ((method: string, ...rest: unknown[]) => {
-    forwarded ||= FORWARDS.has(method)
-
-    return (original as (...a: unknown[]) => unknown).call(gw, method, ...rest)
-  }) as typeof gw.request
-
-  try {
-    found.run(arg, runCtx, cmd)
-  } finally {
-    if (own) {
-      gw.request = original
-    } else {
-      delete (gw as { request?: unknown }).request
+  return () => {
+    if (sent || !gw?.isCanonical || !sid || observeUnsupported.has(gw)) {
+      return
     }
-  }
 
-  if (!forwarded) {
-    gw.request('command.observe', { arg, name, session_id: runCtx.sid }).catch((e: unknown) => {
+    sent = true
+    gw.request('command.observe', { arg, name, session_id: sid }).catch((e: unknown) => {
       if ((e as { code?: number })?.code === RPC_UNKNOWN_METHOD || /unknown_method/.test(rpcErrorMessage(e))) {
         observeUnsupported.add(gw)
       }
@@ -122,7 +101,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
     if (found) {
       countTyped()
       // A programmatic call (a picker's re-issue, an alias re-dispatch) is not the user's command.
-      typed ? runObserved(found, parsed.arg, runCtx, cmd, parsed.name) : found.run(parsed.arg, runCtx, cmd)
+      found.run(parsed.arg, typed ? { ...runCtx, ran: observer(gw, parsed.name, parsed.arg, sid) } : runCtx, cmd)
 
       return true
     }

@@ -63,6 +63,20 @@ def _newest_mtime_ns(paths) -> int | None:
     return max((m for m in map(_watcher_mtime_ns, paths) if m is not None), default=None)
 
 
+def _files_sig(paths) -> tuple:
+    """Sorted ``(path, mtime_ns, size)`` per stat-able file in ``paths``.
+
+    For multi-file signatures, unlike a newest-mtime max: a file added, removed or rewritten in
+    the same timestamp tick as the current newest one (coarse-mtime filesystems) still moves it.
+    """
+    entries = []
+    for path in paths:
+        with contextlib.suppress(OSError):
+            st = path.stat()
+            entries.append((str(path), st.st_mtime_ns, st.st_size))
+    return tuple(sorted(entries))
+
+
 def _skin_sig() -> tuple[str, float | None]:
     """(active skin name, its user-file mtime). Built-ins have no file, so only
     their name moves; a user skin's mtime lets an in-place color edit repaint too."""
@@ -184,7 +198,7 @@ _SESSION_SIGNATURE_FIELDS = (
 )
 # path -> (database/WAL mtime, session-table digest). The mtime guard keeps the
 # normal 0.5 s watch pass stat-only; SQLite is read only after another process
-# actually commits (and for ``_RACY_MTIME_WINDOW_NS`` after it, see _settled_mtime).
+# actually commits (and for ``utils.RACY_MTIME_WINDOW_NS`` after it, see _settled_mtime).
 _sessions_db_sig_cache: dict[str, tuple[object, tuple | None]] = {}
 
 
@@ -250,13 +264,13 @@ def _session_db_content_sig(db_path: Path):
 # SQLite commits in place, so a commit landing in the tick of a read leaves the DB/WAL mtime unchanged.
 # A digest read while the mtime is that fresh must not become a cache hit ("racily clean", as in git's
 # index): it is cached under a key no mtime equals, so the next tick re-reads the rows.
-_RACY_MTIME_WINDOW_NS = 2_000_000_000
 _RACY_MTIME = object()
 
 
 def _settled_mtime(mtime):
     """``mtime`` when it is old enough to trust as a cache key, else a never-matching sentinel."""
-    if mtime is None or time.time_ns() - mtime < _RACY_MTIME_WINDOW_NS:
+    from utils import mtime_is_racy  # function-local: bodies are rebound onto server.py's globals
+    if mtime is None or mtime_is_racy(mtime):
         return _RACY_MTIME
     return mtime
 
@@ -276,18 +290,18 @@ def _sessions_sig():
 
 
 def _projects_sig():
-    """Newest mtime across projects.db (+ WAL) for the watcher home and every served
+    """Per-file stat signature of projects.db (+ WAL) for the watcher home and every served
     sibling profile. The CLI and other windows write projects.db directly — nothing in
     their process touches this gateway's transports — so the file is the only shared
     signal, exactly like state.db (#53046, #56757)."""
-    return _newest_mtime_ns(
+    return _files_sig(
         root / name
         for root in (_watcher_home(), *_served_profile_homes)
         for name in ("projects.db", "projects.db-wal"))
 
 
 def _pairing_sig():
-    """Newest mtime across every profile's pairing ledgers (legacy ``pairing/`` and
+    """Per-file stat signature of every profile's pairing ledgers (legacy ``pairing/`` and
     ``platforms/pairing/``): the gateway process writes pending codes, so the files are the only
     shared signal (a pairing request moves nothing in gateway_state.json)."""
     entries = []
@@ -296,7 +310,7 @@ def _pairing_sig():
             # Only the ledgers: _rate_limits.json moves on every unauthorized DM.
             entries += [
                 e for e in root.iterdir() if e.name.endswith(("-pending.json", "-approved.json"))]
-    return _newest_mtime_ns(entries)
+    return _files_sig(entries)
 
 
 # Live-profile pairing roots, cached on (home, ``profiles/`` dir mtime) with a TTL. The liveness

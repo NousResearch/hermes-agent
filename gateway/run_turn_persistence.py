@@ -321,27 +321,33 @@ class GatewayTurnPersistenceMixin:
             )
         elif agent_result.get("compression_exhausted") and session_entry and session_key:
             logger.info("Auto-resetting session %s after compression exhaustion.", session_entry.session_id)
-            new_entry = await self.async_session_store.reset_session(session_key)
-            from gateway.session_automation import move_route_wakes
-            await move_route_wakes(self, session_key, session_entry.session_id)
-            self._evict_cached_agent(session_key)
-            # Conversation boundary: the funnel clears every conversation-scoped per-session dict.
-            self._clear_conversation_scope(session_key, reason="compression_exhausted_reset")
-            if new_entry is not None:
-                # Re-point the Telegram topic binding at the fresh session, or the binding-heal walk
-                # switches the next message back onto the bloated child and re-triggers exhaustion
-                # forever. No-op on non-topic lanes.
-                # Compression rotated session_entry.session_id to the oversized compressed child earlier
-                # this turn (the agent-result sync above), and that _sync also rewrote the (chat_id,
-                # thread_id) -> bloated-child binding. reset_session swaps in a clean, parentless session,
-                # but without re-syncing the binding the next inbound message in this topic gets
-                # switch_session'd back onto the bloated child by the binding-heal walk, reloads the
-                # oversized transcript, and re-triggers compression exhaustion forever (#35809 — regression
-                # of the #9893/#10063 auto-reset).
-                session_entry = new_entry
-                await asyncio.to_thread(
-                    self._sync_telegram_topic_binding, source, session_entry, reason="compression-exhausted-reset",
-                )
+            from gateway.session_automation import move_route_wakes, reset_and_rehome_messages
+            # Messages queued behind the exhausted turn still run, on the fresh session (unlike /new).
+            new_entry, release_fresh = await reset_and_rehome_messages(self, session_key, session_entry.session_id)
+            try:
+                await move_route_wakes(self, session_key, session_entry.session_id)
+                self._evict_cached_agent(session_key)
+                # Conversation boundary: the funnel clears every conversation-scoped per-session dict.
+                self._clear_conversation_scope(session_key, reason="compression_exhausted_reset")
+                if new_entry is not None:
+                    # Re-point the Telegram topic binding at the fresh session, or the binding-heal walk
+                    # switches the next message back onto the bloated child and re-triggers exhaustion
+                    # forever. No-op on non-topic lanes.
+                    # Compression rotated session_entry.session_id to the oversized compressed child earlier
+                    # this turn (the agent-result sync above), and that _sync also rewrote the (chat_id,
+                    # thread_id) -> bloated-child binding. reset_session swaps in a clean, parentless session,
+                    # but without re-syncing the binding the next inbound message in this topic gets
+                    # switch_session'd back onto the bloated child by the binding-heal walk, reloads the
+                    # oversized transcript, and re-triggers compression exhaustion forever (#35809 — regression
+                    # of the #9893/#10063 auto-reset).
+                    session_entry = new_entry
+                    await asyncio.to_thread(
+                        self._sync_telegram_topic_binding, source, session_entry, reason="compression-exhausted-reset",
+                    )
+            finally:
+                # Only now may the fresh session's FIFO claim (it is fenced until here, against every
+                # scheduler): after eviction, scope clear and binding sync.
+                release_fresh()
             response = (response or "") + t("gateway.session.auto_reset_context_exhausted")
         return response, session_entry
 
@@ -572,6 +578,9 @@ class GatewayTurnPersistenceMixin:
                 status_hint = t("gateway.errors.hint_usage_limit")
         elif status_code == 400:
             status_hint = t("gateway.errors.hint_rejected")
+        elif getattr(e, "reason", None) == "launch_credentials_unavailable" and getattr(e, "field", None):
+            # The session's own frozen route credential is gone or changed: name it, not the model.
+            status_hint = f" {e.reason} ({e.field}: {e.detail or 'unavailable'})."
         from gateway.session_results import record_unexecuted_failure
         return record_unexecuted_failure(self._hmwa_add_failed_turn_notice(
             t("gateway.errors.generic_failed_with_hint", hint=status_hint), PARTIAL_FAILED_TURN_NOTICE,

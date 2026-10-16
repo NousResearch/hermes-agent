@@ -8,6 +8,7 @@ import asyncio
 from functools import partial
 import sys
 
+from gateway.config import Platform
 from gateway.session_busy_controls import authorize
 from hermes_state_runtime import RuntimeStoreError
 
@@ -202,9 +203,16 @@ async def read(connection, ref, params, *, kind):
     authorize(connection, ref, params, 'session:read')
     live = authority.sessions[ref.session_id]
     with live.event_stream.lock:
-        _require_current_route(authority, ref)
         if kind == 'control':
+            # Control cards belong to local GUI/CLI conversations. A messaging
+            # route is deliberately reused after /new, but Desktop can still
+            # inspect an empty control projection without borrowing
+            # the replacement conversation's live objects.
+            if live.source.platform != Platform.LOCAL:
+                return {'control': control_snapshot(authority, ref, persisted=False)}
+            _require_current_route(authority, ref)
             return {'control': control_snapshot(authority, ref)}
+        _require_current_route(authority, ref)
         agent, records = _owner_objects(authority, ref)
         if kind == 'subagents':
             return {'subagents': [{key: record.get(key) for key in _SUBAGENT_FIELDS}
@@ -331,7 +339,7 @@ def physical_target(authority, ref):
     return ref.session_id
 
 
-def control_snapshot(authority, ref):
+def control_snapshot(authority, ref, *, persisted=True):
     from hermes_cli.goals import GoalState
     from hermes_cli.loops import LoopState
     from hermes_cli.heartbeat import HeartbeatState
@@ -341,14 +349,15 @@ def control_snapshot(authority, ref):
         _safe_goal_snapshot, _safe_loop_snapshot, _safe_heartbeat_snapshot,
         _snapshot_revision, _snapshot_updated_at,
     )
-    target = physical_target(authority, ref)
-    states = []
-    for kind, cls in [('goal', GoalState), ('loop', LoopState), ('heartbeat', HeartbeatState)]:
-        raw = authority.db.get_meta(kind + ':' + target)
-        try:
-            states.append(cls.from_json(raw) if raw else None)
-        except (ValueError, TypeError, AttributeError) as exc:
-            raise RuntimeStoreError('storage_unavailable') from exc
+    states = [None, None, None]
+    if persisted:
+        target = physical_target(authority, ref)
+        for index, (kind, cls) in enumerate([('goal', GoalState), ('loop', LoopState), ('heartbeat', HeartbeatState)]):
+            raw = authority.db.get_meta(kind + ':' + target)
+            try:
+                states[index] = cls.from_json(raw) if raw else None
+            except (ValueError, TypeError, AttributeError) as exc:
+                raise RuntimeStoreError('storage_unavailable') from exc
     goal_state, loop_state, heartbeat_state = states
     goal = _safe_goal_snapshot(goal_state)
     # Project the persisted barrier, not GoalManager.is_waiting(), which clears

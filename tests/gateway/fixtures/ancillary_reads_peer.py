@@ -78,6 +78,21 @@ async def probe(mode):
                     assert result.get('result') == expected, result
                 assert authority.agent(ref) is None
                 assert not authority.db.get_messages(sid)
+                # Messaging routes rotate when a chat starts a new conversation.
+                # Their Desktop control poll is an empty persisted projection,
+                # not an attempt to inspect the replacement route's live objects.
+                from gateway.config import Platform
+                from gateway.session import SessionSource
+                messaging = await rpc(ws, 'session.create', request_id='messaging-control', source='gui', toolsets=[])
+                messaging_sid = messaging['result']['session_id']
+                messaging_live = authority.sessions[messaging_sid]
+                messaging_live.source = SessionSource(Platform.WEIXIN, 'fixture-wechat')
+                with runner.session_store._lock:
+                    runner.session_store._entries[messaging_live.route].session_id = 'replacement-conversation'
+                messaging_read = await rpc(ws, 'session.control.read', session_id=messaging_sid)
+                assert messaging_read.get('result', {}).get('control', {}).get('goal') is None, messaging_read
+                assert messaging_read['result']['control']['loop'] is None
+                assert messaging_read['result']['control']['heartbeat'] is None
                 authority.sessions.pop(sid)
                 result = await rpc(ws, 'session.control.read', session_id=sid)
                 assert result.get('error', {}).get('message') == 'not_found', result

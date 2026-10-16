@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $activeSessionId, $selectedStoredSessionId, $sessions, $unreadFinishedSessionIds } from '@/store/session'
+import {
+  $activeSessionId,
+  $messagingSessions,
+  $selectedStoredSessionId,
+  $sessions,
+  $unreadFinishedSessionIds
+} from '@/store/session'
+import { makeSessionInfo } from '@/test/session-info'
 import { $sessionStates, $sessionTiles, closeSessionTile, publishSessionState } from '@/store/session-states'
 
 /**
@@ -22,6 +29,7 @@ beforeEach(() => {
   $sessionStates.set({})
   $sessionTiles.set([])
   $sessions.set([])
+  $messagingSessions.set([])
   $activeSessionId.set(null)
   $selectedStoredSessionId.set(null)
   $unreadFinishedSessionIds.set([])
@@ -38,6 +46,15 @@ describe('publish-time eviction', () => {
     expect($sessionStates.get()['rt-1']).toMatchObject({ storedSessionId: 'stored-1', busy: false })
     // The settle transition still fired: the sidebar's unread marker landed.
     expect($unreadFinishedSessionIds.get()).toContain('stored-1')
+  })
+
+  it('does not mark an external messaging completion unread', () => {
+    $messagingSessions.set([makeSessionInfo({ id: 'wechat-1', source: 'weixin' })])
+
+    publishSessionState('rt-wechat', state('wechat-1', { busy: true }))
+    publishSessionState('rt-wechat', state('wechat-1', { busy: false }))
+
+    expect($unreadFinishedSessionIds.get()).not.toContain('wechat-1')
   })
 
   it('keeps a busy session with no surface — its background turn feeds the sidebar dot', () => {

@@ -1,0 +1,43 @@
+name: sticky-statusbar
+repo: https://github.com/kyssta-exe/hermes-sticky-statusbar
+sha: 5e3e7705de505c031595bc4d03e96d9187417f40
+subdir: sticky-statusbar
+version: "1.0.0"
+requires_hermes: ">=0.22.0"
+description: >-
+  A self-updating status message that lives in your chat: the tool running right
+  now, the calls that just finished, turn state and elapsed time, tokens/sec,
+  cache hit rate, context occupancy and the active model, rewritten in place on
+  an interval as the conversation piles up above it. Telegram also pins it
+  silently so it stays visible above the composer; mode: bump reposts it at the
+  end of each turn so it is always the newest message. Adds /sticky, an
+  agent_status tool and a `hermes sticky-statusbar` CLI command.
+  Disclosure — posts one message per tracked chat and updates it through the
+  platform's own client (Telegram Bot API / Discord API) using the reach of the
+  gateway bot, so the board is visible to everyone who can see that chat; chats
+  are tracked when they message the agent, when listed in `chats`, or with
+  /sticky here, and tracking can be stopped with /sticky stop; stores
+  platform:chat_id -> message_id in
+  $HERMES_HOME/plugin-data/sticky-statusbar/anchors.json so a restart edits the
+  same message instead of posting a second one; makes no network calls of its
+  own, reads no credentials, runs no shell commands, and holds one asyncio task
+  per connected platform on that platform's existing event loop.
+maintainer: kyssta-exe
+tier: community
+category: platform
+docs_url: https://github.com/kyssta-exe/hermes-sticky-statusbar/blob/5e3e7705de505c031595bc4d03e96d9187417f40/README.md
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - agent_status
+  provides_hooks:
+    - pre_api_request
+    - post_api_request
+    - api_request_error
+    - pre_tool_call
+    - post_tool_call
+    - post_gateway_admission
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

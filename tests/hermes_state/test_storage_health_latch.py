@@ -85,6 +85,23 @@ class TestLatch:
             db.close()
         assert storage_state(path) == "corrupt"
 
+    def test_a_direct_read_ctx_consumer_latches_too(self, tmp_path):
+        """Reads that run raw statements through _read_ctx (timeline, portability, the web
+        fan-out's callbacks) must publish the latch the _read_* helpers publish; otherwise
+        containing a sibling-store failure to its own database (#134865) would leave this
+        path's state.db damage unreported."""
+        path = tmp_path / "state.db"
+        _seed(path)
+        _corrupt_sessions_btree(path)
+        db = SessionDB(db_path=path, read_only=True)
+        try:
+            with pytest.raises(sqlite3.DatabaseError):
+                with db._read_ctx() as conn:
+                    conn.execute("SELECT * FROM sessions LIMIT 5").fetchall()
+        finally:
+            db.close()
+        assert storage_state(path) == "corrupt"
+
 
 class TestPeerWritesAfterLatch:
     """A second handle in the same process must not keep writing to a file another handle

@@ -199,7 +199,10 @@ Cron 任务**支持**回退：`run_job()` 从 `config.yaml` 读取 `fallback_pro
 
 ### 测试覆盖
 
-参见 `tests/test_fallback_model.py`，其中包含覆盖所有支持 provider、单次触发语义及边界情况的完整测试。
+回退行为分布在多个测试套件中：
+
+- `tests/agent/test_fallback_credential_isolation.py` — 主 provider 与回退 provider 之间的凭据隔离
+- `tests/hermes_cli/test_fallback_cmd.py` — `/fallback` CLI 命令
 
 ## 相关文档
 

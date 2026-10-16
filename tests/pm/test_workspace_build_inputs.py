@@ -282,3 +282,45 @@ def test_nested_dist_travels_but_root_dist_stays_out(tmp_path):
 
     assert (destination / "plugins/kanban/dashboard/dist/index.js").read_text(encoding="utf-8") == "ENTRY\n"
     assert not (destination / "dist").exists(), "root build output never enters the snapshot"
+
+
+def test_runtime_payload_dirs_stay_out_of_the_snapshot(tmp_path):
+    """The tools package is copied. The image tool-store entries inside it are not."""
+    core = tmp_path / "core"
+    tools = core / "tools"
+    (tools / "ffmpeg-9.0.1-linux-x64" / "bin").mkdir(parents=True)
+    (tools / "chromium-1208").mkdir()
+    (tools / "computer_use").mkdir()
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["tools"]\n',
+        encoding="utf-8",
+    )
+    (tools / "ffmpeg-9.0.1-linux-x64" / "bin" / "ffmpeg").write_bytes(b"binary")
+    (tools / "chromium-1208" / "chrome").write_bytes(b"browser")
+    (tools / "approval.py").write_text("MODULE\n", encoding="utf-8")
+    (tools / "computer_use" / "__init__.py").write_text("PKG\n", encoding="utf-8")
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "tools/approval.py").read_text(encoding="utf-8") == "MODULE\n"
+    assert (destination / "tools/computer_use/__init__.py").read_text(encoding="utf-8") == "PKG\n"
+    assert not (destination / "tools/ffmpeg-9.0.1-linux-x64").exists()
+    assert not (destination / "tools/chromium-1208").exists()
+
+
+def test_repair_snapshot_drops_runtime_payloads(tmp_path):
+    """A recorded workspace that already contains payloads must not copy them forward."""
+    replay = tmp_path / "replay"
+    (replay / "tools" / "node-26.7.0-linux-x64").mkdir(parents=True)
+    (replay / "tools" / "approval.py").write_text("MODULE\n", encoding="utf-8")
+    (replay / "pyproject.toml").write_text("name\n", encoding="utf-8")
+    (replay / "uv.lock").write_text("lock\n", encoding="utf-8")
+
+    fresh = tmp_path / "fresh"
+    shutil.copytree(replay, fresh, symlinks=True, ignore=workspace._member_ignored)
+
+    assert (fresh / "tools/approval.py").read_text(encoding="utf-8") == "MODULE\n"
+    assert (fresh / "pyproject.toml").is_file()
+    assert not (fresh / "tools/node-26.7.0-linux-x64").exists()

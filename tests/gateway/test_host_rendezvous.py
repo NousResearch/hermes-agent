@@ -269,18 +269,19 @@ def test_free_host_lock_means_attach_does_not_treat_a_recycled_pid_as_owner(host
 
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
+        # The record must name OUR home: a record from another tenant root starts beside it anyway.
+        home = host_dir / "home"
+        home.mkdir()
         record = _gateway_record(
             pid=child.pid,
             create_time=hr.process_create_time(child.pid),
             start_time=get_process_start_time(child.pid),
-            home=str(host_dir),
+            home=str(home),
         )
         hr.ensure_host_state_dir()
         hr.record_path(hr.ROLE_GATEWAY).write_text(json.dumps(record.to_json()), encoding="utf-8")
         monkeypatch.setattr("gateway.host_attach._identify", lambda home: None)
         invalidate_host_gateway_cache()
-        home = host_dir / "home"
-        home.mkdir()
         decision = decide(home)
         assert decision.outcome == START
         assert decision.owner is None
@@ -296,3 +297,26 @@ def test_holding_the_host_lock_keeps_a_matching_incarnation_live(host_dir):
     assert record is not None
     assert hr.host_lock_is_held(hr.ROLE_GATEWAY) is True
     assert hr.liveness_is_proven(record) is True
+
+
+def test_null_create_time_record_on_a_recycled_pid_starts_instead_of_refusing_forever(host_dir, monkeypatch):
+    """The outage shape: a SIGKILLed owner left ``createTime: null``, its pid now an unrelated process.
+
+    ``decide()`` must START (take the host over), not the transient REFUSE a supervisor retries forever.
+    """
+    from gateway.host_attach import START, decide, invalidate_host_gateway_cache
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        home = host_dir / "home"
+        home.mkdir()
+        record = _gateway_record(pid=child.pid, create_time=None, start_time=None, home=str(home))
+        record = dataclasses.replace(record, updated_at="2020-01-01T00:00:00+00:00")
+        hr.ensure_host_state_dir()
+        hr.record_path(hr.ROLE_GATEWAY).write_text(json.dumps(record.to_json()), encoding="utf-8")
+        monkeypatch.setattr("gateway.host_attach._identify", lambda home: None)
+        invalidate_host_gateway_cache()
+        assert decide(home).outcome == START
+    finally:
+        child.kill()
+        child.wait(timeout=10)

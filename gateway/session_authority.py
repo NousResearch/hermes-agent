@@ -140,7 +140,13 @@ class SessionAuthority:
                 restore_local_session(self, ref.session_id)
             else:
                 from gateway.session_api import restore_api_session
-                restore_api_session(self, ref.session_id)
+                try:
+                    restore_api_session(self, ref.session_id)
+                except RuntimeStoreError as exc:
+                    if exc.reason != 'not_found':
+                        raise
+                    from gateway.session_messaging_recovery import restore_messaging_session
+                    restore_messaging_session(self, ref.session_id)
         from gateway.config import Platform
         source = self.sessions[ref.session_id].source
         if (source is not None and source.platform == Platform.LOCAL

@@ -88,7 +88,7 @@ profile's does not, and that `os.environ` is unchanged afterwards.
 | Tool activity | `thinking.tsx` | `tool.start` / `tool.generating` / `tool.complete` |
 | Approvals | `prompts.tsx` | server→client request `approval` → response `{choice}` |
 | Clarify / sudo / secret | `prompts.tsx`, `maskedPrompt.tsx` | server→client requests `clarify` / `sudo` / `secret` (`server_requests.py`) |
-| Session picker | `sessionPicker.tsx` | `session.list` / `session.resume` |
+| Session picker | `activeSessionSwitcher.tsx` (+ `domain/sessionGroups.ts`: project groups, search) | `session.active_list` + `session.list` + `projects.tree` / `session.resume` |
 | Slash commands | local handler + fallthrough | `slash.exec` → `_SlashWorker`; `command.dispatch` |
 | Completions | `useCompletion` hook | `complete.slash`, `complete.path` (under a non-local `terminal.backend`, `complete.path` lists the directory through the session's terminal backend — never the gateway host, whose same-named tree would look right and be wrong) |
 | Theming | `theme.ts` + `branding.tsx` | `gateway.ready` carries skin data |

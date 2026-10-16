@@ -124,6 +124,12 @@ export const pickersEn = {
         messageCount: (count: number) => `${count} msgs`
       },
       noOtherSessions: 'no other sessions — Enter on +new to start one',
+      // Header above resumable sessions that no project claimed.
+      otherProject: 'Other',
+      searchPrompt: 'search › ',
+      searchHint: '/ search sessions & projects',
+      searchClear: ' · Esc clears',
+      noMatches: 'no sessions or projects match',
       promptLabel: 'prompt › ',
       // {0} = the draft model label (short model id or `currentOrDefault`).
       draftModel: (label: string) => `model: ${label}`,
@@ -145,7 +151,11 @@ export const pickersEn = {
         close: ' close',
         move: ' move · ',
         new: ' new · ',
-        refresh: ' refresh · '
+        refresh: ' refresh · ',
+        groupRowLabel: 'Project:',
+        cycleGroup: ' expand/collapse · ',
+        ungroup: ' ungroup',
+        group: ' group'
       }
     },
     pet: {

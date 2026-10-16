@@ -611,7 +611,7 @@ def curses_checklist(
 
     return _run_curses_menu(
         initial_cursor=0, item_count=len(items),
-        draw_header=_simple_header(title, "SPACE toggle  ENTER confirm", "ESC cancel", False),
+        draw_header=_simple_header(title, "SPACE toggle  ENTER apply all selections", "ESC cancel", False),
         draw_row=_draw_row, on_action=_on_action, reserve_bottom=(2 if status_fn else 1),
         draw_footer=_draw_footer if status_fn else None, extra_color_pairs=bool(status_fn),
         fallback=lambda: _numbered_fallback(title, items, selected, cancel_returns, status_fn),
@@ -763,7 +763,7 @@ def _numbered_fallback(
     """Text-based toggle fallback for terminals without curses."""
     chosen = set(selected)
     print(color(f"\n  {title}", Colors.YELLOW))
-    print(color("  Toggle by number, Enter to confirm.\n", Colors.DIM))
+    print(color("  Toggle by number, Enter to apply all selections.\n", Colors.DIM))
     while True:
         for i, label in enumerate(items):
             marker = color("[✓]", Colors.GREEN) if i in chosen else "[ ]"
@@ -772,7 +772,7 @@ def _numbered_fallback(
         if status_text:
             print(color(f"\n  {status_text}", Colors.DIM))
         print()
-        idx = _read_numbered_choice(color("  Toggle # (or Enter to confirm): ", Colors.DIM))
+        idx = _read_numbered_choice(color("  Toggle # (or Enter to apply all selections): ", Colors.DIM))
         if idx is _NAV_ABORT:
             return cancel_returns
         if idx is None:

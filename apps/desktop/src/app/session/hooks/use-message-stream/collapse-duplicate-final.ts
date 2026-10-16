@@ -1,9 +1,22 @@
+import type { PersistedTurn } from '@hermes/shared'
+
+import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
 import { type ChatMessage, chatMessageText, withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
 
 export interface DuplicateFinalCollapse {
   /** The surviving bubble replaces the removed stream id at completion. */
   keptId: string
   messages: ChatMessage[]
+}
+
+/** The stored row the terminal frame's receipt names, or null when absent or
+ *  malformed (#123801). */
+export function finalRowIdFromReceipt(
+  persistedTurn: Pick<PersistedTurn, 'final_assistant_row_id'> | null | undefined
+): null | number {
+  const rowId = persistedTurn?.final_assistant_row_id
+
+  return typeof rowId === 'number' && Number.isSafeInteger(rowId) && rowId > 0 ? rowId : null
 }
 
 /** An identical final belongs to the adjacent interim, not a second tool bubble. */
@@ -145,4 +158,51 @@ export function collapseDuplicateFinalOntoIdenticalInterim(
   }
 
   return mergeLiveIntoKept(messages, streamIndex, interimIndex, options.completeMessage)
+}
+
+/**
+ * The receipt's final row is already on screen as a stored bubble of this
+ * occurrence, so the live stream is its twin (#123801).
+ *
+ * A history reconcile that lands after the gateway committed the reply but
+ * before the client applied the rest of the turn folds the live bubble into
+ * the stored row. The stream id survives it, so the next delta re-seeds a
+ * bubble under that id and completion settles it: one stored row, a
+ * `timestamp-index-assistant` root and an `assistant-stream-*` root. Settle
+ * onto the stored row, which the receipt names, and drop the live twin.
+ * Identity is the row id, never prose, so an identical reply of another
+ * occurrence is untouched.
+ */
+export function collapseLiveTwinOfPersistedFinal(
+  messages: ChatMessage[],
+  streamIndex: number,
+  options: {
+    completeMessage: (message: ChatMessage) => ChatMessage
+    finalRowId: null | number
+    lastUserIndex: number
+  }
+): DuplicateFinalCollapse | null {
+  const { finalRowId } = options
+
+  if (streamIndex < 0 || finalRowId === null) {
+    return null
+  }
+
+  const storedIndex = messages.findIndex(
+    (message, index) =>
+      index > options.lastUserIndex &&
+      index !== streamIndex &&
+      message.role === 'assistant' &&
+      transcriptRowIds(message).includes(finalRowId)
+  )
+
+  if (storedIndex < 0) {
+    return null
+  }
+
+  const next = messages.slice()
+  next[storedIndex] = options.completeMessage(messages[storedIndex])
+  next.splice(streamIndex, 1)
+
+  return { keptId: messages[storedIndex].id, messages: next }
 }

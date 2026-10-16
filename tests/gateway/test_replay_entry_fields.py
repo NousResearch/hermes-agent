@@ -90,7 +90,8 @@ class TestBuildReplayEntry:
 
 
     def test_unrelated_keys_are_ignored(self):
-        """Random keys on the message must not leak into the replay entry."""
+        """Random keys on the message must not leak into the replay entry. The durable timestamp does
+        carry over: it is part of the row's display identity when compaction writes the dict back."""
         msg = {
             "role": "assistant",
             "content": "answer",
@@ -99,7 +100,7 @@ class TestBuildReplayEntry:
             "tool_call_id": "should not be set on simple-text branch",
         }
         entry = _build_replay_entry("assistant", "answer", msg)
-        assert "timestamp" not in entry
+        assert entry["timestamp"] == 12345.6
         assert "internal_marker" not in entry
         assert "tool_call_id" not in entry
 

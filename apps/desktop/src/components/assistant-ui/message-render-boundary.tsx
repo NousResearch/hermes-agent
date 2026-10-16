@@ -16,7 +16,11 @@ const isTransientLookupError = (error: unknown): boolean =>
 // resetKey change (the pre-retry behavior). The race heals on the next
 // consistent store snapshot, so one retry almost always recovers; the cap
 // only bounds a pathological loop where the lookup stays out of bounds.
+// Spaced over ~700ms, not one zero-ms burst: five setTimeout(0) retries all
+// burn while the snapshot is still inconsistent, then the row stays null
+// until an unrelated structural change (#122167 symptom A).
 const MAX_TRANSIENT_RETRIES = 5
+const RETRY_DELAY_MS = [0, 16, 50, 150, 500]
 
 interface Props {
   // Changes whenever the message list mutates STRUCTURALLY (ids/roles/count);
@@ -56,10 +60,13 @@ export class MessageRenderBoundary extends Component<Props, { error: Error | nul
     }
 
     this.transientRetries += 1
-    this.retryTimer = window.setTimeout(() => {
-      this.retryTimer = null
-      this.setState({ error: null })
-    }, 0)
+    this.retryTimer = window.setTimeout(
+      () => {
+        this.retryTimer = null
+        this.setState({ error: null })
+      },
+      RETRY_DELAY_MS[this.transientRetries - 1] ?? 0
+    )
   }
 
   componentDidUpdate(prev: Props, prevState: { error: Error | null }) {

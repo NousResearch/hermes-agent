@@ -294,11 +294,40 @@ interface StoredRowSlot {
   leading: ChatMessage[]
 }
 
+/** One logical stored message across compaction generations — the same
+ *  role/timestamp/content the backend's display dedupe folds on. Only
+ *  text-only rows qualify: the backend's key also carries tool_call_id,
+ *  tool_calls and tool_name, so a tool-bearing row and a plain row with the
+ *  same visible text and timestamp are distinct durable rows, and matching
+ *  them here deletes a whole turn. */
+function logicalRowKey(message: ChatMessage): string | undefined {
+  return message.rowId === undefined ||
+    message.timestamp === undefined ||
+    message.parts.some(part => part.type !== 'text')
+    ? undefined
+    : JSON.stringify([message.role, message.timestamp, chatMessageText(message)])
+}
+
+/** The live turn this window streamed: an optimistic prompt or a stream
+ *  bubble. `preserveLocalPendingTurnMessages` reconciles these against the
+ *  committed page; the merge must not pre-empt it by carrying them verbatim. */
+function isUnstoredLiveTurnRow(message: ChatMessage): boolean {
+  return (
+    message.rowId === undefined &&
+    ((message.role === 'user' && message.id.startsWith('user-')) ||
+      (message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))))
+  )
+}
+
 /**
  * Stored-id merge for a page that overlaps the window but does not anchor in
  * front of it. A row with no stored id travels with the next stored row after
- * it, so a page-local fold stays in front of the row it preceded. Rows with no
- * stored id after the last stored row stay at the end (page first, then live).
+ * it, so a page-local fold stays in front of the row it preceded. Page rows
+ * with no stored id after the last stored row stay at the end, then the
+ * window's other trailing unstored rows. The window's live-turn rows are left
+ * to `preserveLocalPendingTurnMessages`, exactly as the anchored splice does.
+ * A window row the page re-inserted under a new stored id (in-place compaction
+ * re-sequences the carried tail) is that page row, not a second message.
  */
 function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessage[]): ChatMessage[] {
   // Compaction, rewind, or a different session arrives as new stored ids.
@@ -316,7 +345,20 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
     }
   }
 
+  const refreshedRowIds = durableRowIds(refreshedTail)
+  const refreshedLogicalRows = new Set(refreshedTail.map(logicalRowKey).filter(key => key !== undefined))
   const byRowId = new Map<number, StoredRowSlot>()
+
+  const reinsertedByPage = (message: ChatMessage, rowId: number) => {
+    const key = logicalRowKey(message)
+
+    return key !== undefined && !refreshedRowIds.has(rowId) && refreshedLogicalRows.has(key)
+  }
+
+  /** True when the page supersedes this window row: the same slot already holds
+   *  it, or the page carries the same logical row under a fresh stored id. */
+  const supersededByPage = (message: ChatMessage, rowId: number, existing: StoredRowSlot | undefined): boolean =>
+    existing !== undefined || reinsertedByPage(message, rowId)
 
   const place = (messages: ChatMessage[], fresh: boolean): ChatMessage[] => {
     let pending: ChatMessage[] = []
@@ -352,7 +394,7 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
 
       const existing = byRowId.get(rowId)
 
-      if (!fresh && existing) {
+      if (!fresh && supersededByPage(message, rowId, existing)) {
         pending = []
 
         continue
@@ -368,7 +410,7 @@ function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessag
     return pending
   }
 
-  const previousTrailing = place(previous, false)
+  const previousTrailing = place(previous, false).filter(message => !isUnstoredLiveTurnRow(message))
   const refreshedTrailing = place(refreshedTail, true)
 
   const stored = [...byRowId.entries()]

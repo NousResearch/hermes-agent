@@ -22,3 +22,12 @@ Some skills are useful but not broadly needed by every user:
 
 By keeping them optional, we keep the default skill set lean while still
 providing curated, tested, official skills for users who want them.
+
+## Featured Optional Skillsets
+
+| Skillset | Description | Category |
+|----------|-------------|----------|
+| **Orchestra** | 94+ deep research engineering primitives for RL, Post-Training, and Model Architecture. | `research/orchestra` |
+| **Canvas** | Manage courses, assignments, and files from Canvas LMS. | `education/canvas` |
+| **Docker** | Advanced Docker CLI management (containers, images, compose). | `devops/docker` |
+

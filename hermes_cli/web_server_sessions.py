@@ -179,6 +179,53 @@ def _mutate_offline_store(profile, actor, params):
     return _with_session_maintenance(profile, run)
 
 
+async def _mutate_via_gateway_owner(profile, actor, params):
+    """Forward a standalone dashboard mutation to the live gateway owner.
+
+    While a gateway serves the same home, a separately launched ``hermes
+    dashboard`` is not the store owner, so the offline path's
+    exclusive-maintenance reservation can never win and every write action
+    dies on a bare 409 (#138915). The owner exposes the same revision-fenced
+    verb over the control socket; with no discoverable owner return None so the
+    caller falls back to the offline store.
+
+    A dial or RPC that dies on an endpoint discovery just identified is not
+    owner-less (a slow first dial, not a stale endpoint): the offline
+    reservation would only lose to that same owner and answer with the bare 409
+    this forward exists to remove, so it surfaces a retryable 503 instead.
+
+    The ticket is minted for the dashboard's authenticated principal, not the
+    socket UID: ``authorize_history`` compares the actor subject against the
+    row's stored owner, so a cold row owned by a dashboard account only takes
+    the mutation when the forward acts as that account.
+    """
+    from fastapi import HTTPException
+    from hermes_cli.gateway_client import GatewayClientError, connect_gateway
+    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_cli.web_server_cron import _cron_profile_home
+    from hermes_state import _default_db_path
+
+    home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
+    # Discovery is read-only and never starts a gateway; the ticket mint in
+    # connect_gateway(endpoint=...) dials the endpoint's own control socket,
+    # so a served profile reaches its owner, not the launch home's.
+    discovery = await asyncio.to_thread(discover_gateway_endpoint, home, timeout=1.5)
+    endpoint = getattr(discovery, 'endpoint', None)
+    if endpoint is None:
+        return None
+    call = {key: params[key] for key in
+            ('session_id', 'request_id', 'expected_revision', 'operation', 'payload') if key in params}
+    if params.get('expected_generation') is not None:
+        call['expected_generation'] = params['expected_generation']
+    try:
+        async with connect_gateway(endpoint=endpoint, subject=actor.subject) as client:
+            return await client.rpc('session.mutate', **call)
+    except GatewayClientError:
+        raise
+    except (OSError, TimeoutError) as exc:
+        raise HTTPException(status_code=503, detail='owner_unreachable') from exc
+
+
 async def _mutate_session_request(request, profile, session_id, *, request_id,
                                   expected_revision, operation, payload, expected_generation=None):
     """Resolve the authenticated principal and owner; never open a second writer."""
@@ -186,6 +233,7 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
     from fastapi import HTTPException
     from gateway.session_contract import SessionRef
     from gateway.session_mutations import mutate_session
+    from hermes_cli.gateway_client import GatewayClientError
     from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
     from hermes_state_runtime import RuntimeStoreError
 
@@ -202,7 +250,11 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         params['expected_generation'] = expected_generation
     try:
         if authority is None:
-            result = await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
+            # A live gateway owner answers first; only an owner-less home takes
+            # the offline store (whose reservation loses to that same owner).
+            result = await _mutate_via_gateway_owner(profile, actor, params)
+            if result is None:
+                result = await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
         else:
             with _native_history_transport(request, authority, actor):
                 result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params)
@@ -211,6 +263,12 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         status = {'permission_denied': 403, 'profile_mismatch': 403, 'not_found': 404,
                   'invalid_params': 400, 'runtime_draining': 503}.get(exc.reason, 409)
         raise HTTPException(status_code=status, detail=exc.reason) from exc
+    except GatewayClientError as exc:
+        # The owner's own refusal verdicts, wire-shaped like RuntimeStoreError's
+        # reasons (plus dial-time failures that read as the default 409).
+        status = {'permission_denied': 403, 'profile_mismatch': 403, 'not_found': 404,
+                  'invalid_params': 400, 'runtime_draining': 503}.get(str(exc), 409)
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
     except MUTATION_GUARD_REFUSALS as exc:
         raise HTTPException(status_code=409, detail='session_busy') from exc
     except ValueError as exc:

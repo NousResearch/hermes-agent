@@ -1215,6 +1215,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             gone = self._run_plugin_slash_command(base_cmd, user_args) is gateway_plugin_commands.GONE
             if not gone:
                 return True
+            skill_commands = _session_skill_commands(self)  # the reload may have changed the skills
         if base_cmd in skill_bundles:  # also a name a gateway plugin reload just dropped (GONE)
             self._run_skill_bundle_command(base_cmd, skill_bundles[base_cmd], user_args)
         elif base_cmd in skill_commands:

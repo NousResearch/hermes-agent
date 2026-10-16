@@ -15,8 +15,11 @@ import sys
 # The Python root, not this file's location: the TUI product ships this helper in its own
 # dist/scripts/ (a separate Nix store path), so parents[2] is only right in a source tree.
 # gatewayClient.ts passes the root it put on PYTHONPATH.
-ROOT = Path(os.environ.get("HERMES_PYTHON_SRC_ROOT") or Path(__file__).resolve().parents[2])
-sys.path.insert(0, str(ROOT))
+def python_root() -> Path:
+    return Path(os.environ.get("HERMES_PYTHON_SRC_ROOT") or Path(__file__).resolve().parents[2])
+
+
+sys.path.insert(0, str(python_root()))
 
 
 
@@ -41,7 +44,7 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
     # (gateway.status -> utils -> hermes_yaml -> ruamel): boot the committed generation first, as
     # hermes_bootstrap does for every other entry point.
     try:
-        activate_dependencies(ROOT)
+        activate_dependencies(python_root())
     except (RuntimeError, OSError) as exc:  # no committed generation / unreadable install state
         raise ImportError(f"dependency environment unavailable: {exc}") from exc
     from hermes_constants import get_hermes_home

@@ -134,16 +134,23 @@ def test_redacted_schema_verdict_describes_delivered_summary_without_rerunning_c
     assert len(child.calls) == 1
 
 
-def test_structured_summary_is_redacted_per_value_and_stays_valid_json():
-    """A text pass over JSON lets ``KEY=***`` swallow the closing quote and comma."""
+@pytest.mark.parametrize(
+    "wrap",
+    [lambda s: s, lambda s: "```json\n" + s + "\n```", lambda s: "Here is the answer:\n" + s + "\nDone."],
+    ids=["bare", "fenced", "prose"],
+)
+def test_structured_summary_is_redacted_per_value_and_stays_valid_json(wrap):
+    """A text pass over JSON lets ``KEY=***`` swallow the closing quote and comma; every
+    wrapper the schema validator accepts must survive redaction the same way."""
+    from tools.delegation_output_schema import extract_json_candidate
     from tools.delegation_redaction import redact_child_result
 
     answer = {"env": "OPENAI_API_KEY=sk-proj-" + "a" * 40, "n": 2}
     entry = redact_child_result(
-        {"summary": json.dumps(answer), "schema_valid": True}, {"type": "object"}
+        {"summary": wrap(json.dumps(answer)), "schema_valid": True}, {"type": "object"}
     )
 
-    parsed = json.loads(entry["summary"])
+    parsed = json.loads(extract_json_candidate(entry["summary"]))
     assert parsed["n"] == 2 and "sk-proj-" + "a" * 40 not in parsed["env"]
     assert entry["schema_valid"] is True
 

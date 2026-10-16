@@ -104,18 +104,27 @@ def redact_child_value(value: Any, *, force: bool = True, _depth: int = 0) -> An
 
 
 def _redact_summary(summary: Any, structured: bool, force: bool) -> Any:
-    """Structured (schema) summaries that parse as JSON are redacted per value and
-    re-serialized: a text pass can eat JSON delimiters (``KEY=***`` swallowing the
-    closing quote and comma) and break an answer that was valid. Unchanged JSON keeps
-    its original formatting; anything that does not parse gets the text pass."""
+    """Structured (schema) summaries are redacted per value and re-serialized: a text
+    pass can eat JSON delimiters (``KEY=***`` swallowing the closing quote and comma)
+    and break an answer that was valid. The JSON is located with the validator's own
+    extraction grammar (code fence / surrounding prose), so every wrapper the validator
+    accepts stays accepted; the wrapper text gets the text pass. Unchanged output keeps
+    its original formatting; anything without a parseable candidate gets the text pass."""
     if structured and isinstance(summary, str):
+        from tools.delegation_output_schema import extract_json_candidate
+
+        candidate = extract_json_candidate(summary)
+        start = summary.find(candidate) if candidate else -1
+        parsed: Any = None
         try:
-            parsed = json.loads(summary)
+            parsed = json.loads(candidate) if start >= 0 else None
         except ValueError:
-            pass
-        else:
+            start = -1
+        if start >= 0:
+            prefix, suffix = summary[:start], summary[start + len(candidate):]
             cleaned = redact_child_value(parsed, force=force)
-            return summary if cleaned == parsed else json.dumps(cleaned, ensure_ascii=False)
+            body = candidate if cleaned == parsed else json.dumps(cleaned, ensure_ascii=False)
+            return redact_child_text(prefix, force=force) + body + redact_child_text(suffix, force=force)
     return redact_child_value(summary, force=force)
 
 

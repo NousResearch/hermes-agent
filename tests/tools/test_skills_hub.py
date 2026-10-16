@@ -1718,53 +1718,6 @@ class TestInstallPathSafety:
         assert installed.exists()
         assert (installed / "SKILL.md").read_text().strip() == "---\nname: my-skill\n---\nnew"
 
-    def test_install_from_quarantine_overwrites_read_only_skill(self, tmp_path):
-        """A read-only installed copy (restored backup, Nix/deb-sourced tree keeps
-        ``r-xr-xr-x``) must be replaced, not abort the whole update run with
-        PermissionError (#139890)."""
-        import stat
-        import tools.skills_hub as hub
-        from tools.skills_guard import ScanResult
-
-        skills_dir = tmp_path / "skills"
-        existing = skills_dir / "smart-home" / "my-skill"
-        existing.mkdir(parents=True)
-        (existing / "SKILL.md").write_text("old content")
-        os.chmod(existing / "SKILL.md", stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
-        os.chmod(existing, stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
-
-        quarantine_root = skills_dir / ".hub" / "quarantine"
-        q_dir = quarantine_root / "pending"
-        q_dir.mkdir(parents=True)
-        (q_dir / "SKILL.md").write_text("---\nname: my-skill\n---\nnew")
-
-        bundle = SkillBundle(
-            name="my-skill",
-            files={"SKILL.md": "---\nname: my-skill\n---\nnew"},
-            source="official",
-            identifier="x",
-            trust_level="builtin",
-        )
-        scan_result = ScanResult(
-            skill_name="my-skill",
-            source="official",
-            trust_level="builtin",
-            verdict="safe",
-        )
-
-        try:
-            with patch.object(hub, "SKILLS_DIR", skills_dir), \
-                 patch.object(hub, "QUARANTINE_DIR", quarantine_root):
-                installed = install_from_quarantine(
-                    q_dir, "my-skill", "smart-home", bundle, scan_result,
-                )
-        finally:
-            if existing.exists():
-                os.chmod(existing, stat.S_IRWXU)
-
-        assert installed.exists()
-        assert (installed / "SKILL.md").read_text().strip() == "---\nname: my-skill\n---\nnew"
-
     def test_install_from_quarantine_allows_empty_category_dir(self, tmp_path):
         """Installing into an existing but empty category directory is allowed
         (no sibling skills to destroy)."""

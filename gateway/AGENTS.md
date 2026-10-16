@@ -65,6 +65,10 @@ MagicMock adapters in older tests auto-create truthy attributes.
 without spending an attempt. Long form: `website/docs/developer-guide/gateway-internals.md`
 § Background process notifications.
 
+Canonical local CLI/TUI/Desktop sessions admit completion and watch events into the same durable
+FIFO as human input (private launch policy, `internal_notification` display kind); observers never
+own or consume those turns, and an interrupted started turn stays unknown and pauses its followers.
+
 ## `/login` (off-turn, paired DM only)
 
 `GatewayLoginCommandsMixin` refuses outside a real paired DM (ntfy, raft and a2a report `dm` for
@@ -181,7 +185,9 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
 - **Hooks and observers register per served profile.** `builtin_hooks/`, `agent/shell_hooks.py::
   register_from_config` and lifecycle observers are prepared under each profile's scope at startup
   and on profile add/remove; idempotence keys include the profile, and `hooks/` paths resolve at call
-  time (a module constant freezes to the first importer).
+  time (a module constant freezes to the first importer). Shell hooks are also re-synced (added AND
+  unregistered) on every local session create/resume via `session_policy.refresh_profile_hooks` ->
+  `shell_hooks.sync_from_config`, the only caller that removes.
 - **Adapter YAML never reaches `os.environ` under multiplex.** `platforms/_shared.py::
   apply_yaml_bridge` seeds `PlatformConfig.extra` and skips the environ write under a secondary
   profile's scope; gate/allowlist reads go through `platform_gate_env`. A `if not os.getenv(X):

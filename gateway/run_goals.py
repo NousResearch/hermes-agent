@@ -14,6 +14,7 @@ import time
 from contextlib import nullcontext, suppress
 from typing import TYPE_CHECKING, Any, Optional
 
+from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -142,6 +143,10 @@ class GatewayGoalsMixin:
         adapter = self._delivery_adapter_for(source)
         if adapter is None or not adapter._message_handler:
             return
+        if getattr(self, 'session_authority', None) is not None:
+            from gateway.run_heartbeat_acceptance import admit_heartbeat
+            await admit_heartbeat(self, adapter, source, session_id, quick_key)
+            return
         if (
             self._is_session_running(quick_key)
             or quick_key in adapter._active_sessions
@@ -216,6 +221,16 @@ class GatewayGoalsMixin:
 
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
         """Send a /goal judge status line back to the originating chat/thread."""
+        if getattr(source, "platform", None) == Platform.LOCAL:
+            # The local adapter's send is a no-op (viewers read the event stream): main's TUI
+            # painted the verdict from ``status.update {kind: goal}``.
+            from gateway.session_authorities import active_authority
+            authority = active_authority(self)
+            live = authority.sessions.get(source.chat_id) if authority is not None else None
+            if live is not None:
+                live.event_stream.publish(source.chat_id, {"kind": "goal", "text": message},
+                                          event_type="status.update")
+            return
         adapter = self._goal_notice_adapter(source)
         if not adapter:
             return
@@ -310,6 +325,15 @@ class GatewayGoalsMixin:
         prompt = decision.get("continuation_prompt") or ""
         if not decision.get("should_continue") or not prompt or source is None:
             return
+        if getattr(source, "platform", None) == Platform.LOCAL:
+            # A local session's adapter FIFO has no reader: its turns are authority admissions.
+            # Commit the continuation there, as main's TUI chained it after the turn.
+            from gateway.session_automation import admit_route_wake
+            try:
+                await admit_route_wake(self, self._delivery_adapter_for(source), source, prompt, "goal-continuation")
+            except Exception:  # health: allow BLE001 -- best-effort like the FIFO enqueue below; traceback logged
+                logger.debug("goal continuation: local admission failed", exc_info=True)
+            return
         # Enqueue via the adapter's FIFO so a user message already in flight preempts naturally.
         try:
             adapter = self._delivery_adapter_for(source)
@@ -323,6 +347,10 @@ class GatewayGoalsMixin:
         self, *, agent_result: Any, source: Any, is_internal: bool, event: Any = None,
     ) -> None:
         """Run goal and loop bookkeeping after an agent turn returns."""
+        from gateway.session_authorities import active_authority
+        from gateway.session_viewer_automation import viewer_driven
+        if viewer_driven(active_authority(self), getattr(source, "chat_id", None)):
+            return  # the classic CLI viewer judges and continues through ``session.automation``
         final_text = self._final_text_for_post_turn_hooks(agent_result, event)
         try:
             session_entry = await self.async_session_store.get_or_create_session(
@@ -341,6 +369,16 @@ class GatewayGoalsMixin:
                 await hook(session_entry=session_entry, source=source, final_response=final_text)
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
+        self._publish_local_control(source, only_if_present=True)
+
+    def _publish_local_control(self, source: Any, *, only_if_present: bool = False) -> None:
+        """A local (Desktop/Ink) session's goal or loop state just moved here: repaint its viewers' cards,
+        whose loop countdown runs off the snapshot's ``next_due_at``."""
+        if getattr(source, "platform", None) != Platform.LOCAL:
+            return
+        from gateway.session_authorities import active_authority
+        from gateway.session_control_actions import publish
+        publish(active_authority(self), source.chat_id, only_if_present=only_if_present)
 
     @staticmethod
     def _final_text_for_post_turn_hooks(agent_result, event=None) -> str:
@@ -450,7 +488,11 @@ class GatewayGoalsMixin:
                 mgr.state.ticks_fired if mgr.state else "?",
                 platform_name, source.chat_id, source.thread_id,
             )
-            await adapter.handle_message(self._synthetic_prompt_event(source, wakeup, internal=True))
+            from gateway.session_automation import admit_route_wake
+            # Under a session authority the tick commits to the FIFO (never a classic turn beside an
+            # admitted one); a slash-command loop is a command and keeps the command path.
+            if wakeup.lstrip().startswith("/") or not await admit_route_wake(self, adapter, source, wakeup, "loop-tick"):
+                await adapter.handle_message(self._synthetic_prompt_event(source, wakeup, internal=True))
             # Slash-command loops dispatch through the command path and never hit the post-turn
             # completion hook — complete the tick immediately (caps + scheduling).
             if wakeup.lstrip().startswith("/"):
@@ -459,6 +501,8 @@ class GatewayGoalsMixin:
             logger.warning("loop wakeup injection failed for %s: %s", sid, exc)
             with suppress(Exception):
                 mgr.abandon_tick()
+        # Viewers swap the countdown for "running now" (or re-anchor it after a slash tick settled).
+        self._publish_local_control(source)
 
     async def _loop_wakeup_watcher(self, interval: float = 15.0) -> None:
         """Fire due /loop wakeups for idle gateway sessions: a coarse ticker scans persisted loops

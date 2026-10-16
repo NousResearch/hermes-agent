@@ -167,6 +167,44 @@ class TestImageCorruptClassification:
         assert result.reason == FailoverReason.image_corrupt
         assert result.reason != FailoverReason.image_too_large
 
+    def test_xai_undersized_invalid_image_classifies_as_image_corrupt(self):
+        """Production wording from a Teams 20×20 party-popper sprite.
+
+        xAI 400: code=invalid_image, 400 total pixels, floor 512. Must not
+        fall through to format_error (non-retryable) or image_too_large
+        (shrink cannot grow a sprite).
+        """
+        err = _FakeApiError(
+            status_code=400,
+            message=(
+                'HTTP 400: {"code":"invalid_image", "error":"Image has 400 '
+                'total pixels (20x20), which is below the minimum of 512 pixels."}'
+            ),
+        )
+        result = classify_api_error(err, provider="xai", model="grok-4.6")
+        assert result.reason == FailoverReason.image_corrupt
+        assert result.retryable is True
+        assert result.reason != FailoverReason.image_too_large
+        assert result.reason != FailoverReason.format_error
+
+    def test_xai_undersized_invalid_image_message_only_path(self):
+        err = Exception(
+            'Image has 400 total pixels (20x20), which is below the minimum of 512 pixels.'
+        )
+        result = classify_api_error(err, provider="xai", model="grok-4.6")
+        assert result.reason == FailoverReason.image_corrupt
+        assert result.retryable is True
+
+    def test_undersized_wording_matches_pre_classification_corrupt_phrases(self):
+        from agent.message_sanitization import _looks_like_corrupt_image_rejection
+
+        body = (
+            'HTTP 400: {"code":"invalid_image", "error":"Image has 400 '
+            'total pixels (20x20), which is below the minimum of 512 pixels."}'
+        )
+        assert _looks_like_corrupt_image_rejection(body) is True
+        assert _looks_like_corrupt_image_rejection("Unknown parameter: foo") is False
+
 # ─── Strip helper (reused, not reimplemented) ────────────────────────────────
 
 class TestStripHelperBehaviorBackingTheBranch:
@@ -402,6 +440,80 @@ class TestRunConversationRecoversFromCorruptImage400:
             "reverted generic fallback appears to have been reintroduced: "
             f"{only_call_msgs!r}"
         )
+
+
+class TestRunConversationRecoversFromUndersizedInvalidImage:
+    """Same strip-and-retry as corrupt PNG, triggered by xAI invalid_image
+    on a 20×20 Teams emoticon sprite (400 px < 512 floor)."""
+
+    def test_strip_and_retry_succeeds_on_xai_invalid_image(self):
+        history = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Lets GO thanks"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": (
+                                "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEA"
+                                "AAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQA"
+                                "AAAABJRU5ErkJggg=="
+                            )
+                        },
+                    },
+                ],
+            },
+        ]
+
+        calls = []
+
+        def fake_api_call(api_kwargs):
+            calls.append(copy.deepcopy(api_kwargs.get("messages")))
+            if len(calls) == 1:
+                raise _FakeApiError(
+                    status_code=400,
+                    message=(
+                        'HTTP 400: {"code":"invalid_image", "error":"Image has '
+                        '400 total pixels (20x20), which is below the minimum '
+                        'of 512 pixels."}'
+                    ),
+                )
+            return _mock_response("Party popper noted — let's go.")
+
+        agent = _make_agent()
+        agent._api_max_retries = 3
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call),
+            patch.object(agent, "_model_supports_vision", return_value=True),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()),
+            patch("agent.agent_runtime_helpers.time.sleep"),
+            patch("agent.model_metadata.get_model_context_length", return_value=200000),
+        ):
+            result = agent.run_conversation(
+                "did that look right?", conversation_history=history
+            )
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Party popper noted — let's go."
+        assert len(calls) == 2
+        first_msgs = calls[0]
+        assert any(
+            isinstance(m.get("content"), list)
+            and any(p.get("type") == "image_url" for p in m["content"])
+            for m in first_msgs
+        )
+        second_msgs = calls[1]
+        assert not any(
+            isinstance(m.get("content"), list)
+            and any(p.get("type") == "image_url" for p in m["content"])
+            for m in second_msgs
+        )
+
 
 # ─── History isolation: strip only the per-call payload copy (#69104) ────────
 

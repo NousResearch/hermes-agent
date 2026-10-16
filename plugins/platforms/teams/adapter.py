@@ -518,6 +518,17 @@ class TeamsAdapter(BasePlatformAdapter):
                 return
         if "<at>" in text:  # strip the <at>BotName</at> tags Teams prepends for @mentions
             text = re.sub(r"<at>[^<]*</at>\s*", "", text).strip()
+        # Lazy: plugins.platforms.teams.__init__ imports adapter, so a top-level
+        # import of the sibling would cycle during plugin load.
+        from plugins.platforms.teams.emoticons import (
+            convert_inbound_emoticons,
+            is_emoticon_attachment,
+        )
+        # Emoticon sprites are 20×20 PNGs. Convert to Unicode before they become vision.
+        emoticon_text = convert_inbound_emoticons(activity)
+        for bit in emoticon_text.split():
+            if bit and bit not in text:
+                text = f"{text} {bit}".strip() if text else bit
         from_account = activity.from_
         user_id = getattr(from_account, "aad_object_id", None) or getattr(from_account, "id", "")
         source = self.build_source(
@@ -528,7 +539,15 @@ class TeamsAdapter(BasePlatformAdapter):
             user_name=getattr(from_account, "name", None) or "",
             guild_id=getattr(conv, "tenant_id", None) or self._tenant_id,
             message_id=msg_id)
-        media: list = [m for m in [await self._cache_attachment(a) for a in getattr(activity, "attachments", None) or []] if m]
+        media: list = [
+            m
+            for m in [
+                await self._cache_attachment(a)
+                for a in getattr(activity, "attachments", None) or []
+                if not is_emoticon_attachment(a)
+            ]
+            if m
+        ]
         media_kinds = [kind for _, _, kind in media]  # media items are (path, media_type, kind)
         msg_type = next((t for kind, t in _MEDIA_KIND_PRECEDENCE if kind in media_kinds), MessageType.TEXT)
         await self.handle_message(MessageEvent(
@@ -550,6 +569,9 @@ class TeamsAdapter(BasePlatformAdapter):
         content_url = getattr(att, "content_url", None)
         content_type = (getattr(att, "content_type", None) or "").lower()
         att_name = getattr(att, "name", None) or ""
+        from plugins.platforms.teams.emoticons import is_emoticon_attachment
+        if is_emoticon_attachment(att):
+            return None
         # Skip non-file payloads: Teams mirrors the message body as a text/html attachment,
         # and cards arrive as application/vnd.microsoft.card.*
         if (content_type in ("text/html", "text/plain") and not content_url) or content_type.startswith("application/vnd.microsoft.card"):

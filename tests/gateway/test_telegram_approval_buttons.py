@@ -284,7 +284,7 @@ class TestTelegramApprovalCallback:
         context = MagicMock()
 
         with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
-            with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+            with patch("hermes_constants.get_process_hermes_home", return_value=tmp_path):
                 # Allow the caller — the new fail-closed allowlist gate
                 # (#24457) rejects empty TELEGRAM_ALLOWED_USERS, but this
                 # test isn't exercising that gate; it's verifying the
@@ -295,6 +295,46 @@ class TestTelegramApprovalCallback:
         # Should NOT have triggered approval resolution
         mock_resolve.assert_not_called()
         assert (tmp_path / ".update_response").read_text() == "y"
+
+    @pytest.mark.asyncio
+    async def test_update_prompt_callback_ignores_profile_home_override(self, tmp_path):
+        """A multiplexed secondary-profile callback must still answer the LAUNCH home.
+
+        Regression: the detached ``hermes update --gateway`` polls the launch home's
+        ``.update_response``, but a secondary-profile adapter runs under a context-local
+        HERMES_HOME override. Reading the answer through ``get_hermes_home()`` wrote it to the
+        profile dir, so the update never saw it and fell through to its 300s default.
+        """
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        adapter = _make_adapter()
+        launch_home = tmp_path / "launch"
+        profile_home = tmp_path / "profiles" / "secondary"
+        launch_home.mkdir()
+        profile_home.mkdir(parents=True)
+
+        query = AsyncMock()
+        query.data = "update_prompt:y"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.from_user = MagicMock()
+        query.from_user.id = 123
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        token = set_hermes_home_override(profile_home)
+        try:
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*", "HERMES_HOME": str(launch_home)}):
+                await adapter._handle_callback_query(update, context)
+        finally:
+            reset_hermes_home_override(token)
+
+        assert (launch_home / ".update_response").read_text() == "y"
+        assert not (profile_home / ".update_response").exists()
 
     @pytest.mark.asyncio
     async def test_update_prompt_callback_rejects_unauthorized_user(self, tmp_path):
@@ -314,7 +354,7 @@ class TestTelegramApprovalCallback:
         update.callback_query = query
         context = MagicMock()
 
-        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+        with patch("hermes_constants.get_process_hermes_home", return_value=tmp_path):
             with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "111"}):
                 await adapter._handle_callback_query(update, context)
 
@@ -344,7 +384,7 @@ class TestTelegramApprovalCallback:
         update.callback_query = query
         context = MagicMock()
 
-        with patch("hermes_constants.get_hermes_home", return_value=tmp_path):
+        with patch("hermes_constants.get_process_hermes_home", return_value=tmp_path):
             with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": ""}):
                 await adapter._handle_callback_query(update, context)
 

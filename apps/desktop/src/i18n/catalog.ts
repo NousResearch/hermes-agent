@@ -2,6 +2,7 @@ import { ar } from './ar'
 import { de } from './de'
 import { en } from './en'
 import { es } from './es'
+import { fa } from './fa'
 import { fr } from './fr'
 import { ja } from './ja'
 import { ru } from './ru'
@@ -20,6 +21,7 @@ export const TRANSLATIONS: Record<BundledLocale, Translations> = {
   ar,
   ru,
   fr,
+  fa,
   de,
   es
 }

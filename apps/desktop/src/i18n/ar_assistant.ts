@@ -16,7 +16,7 @@ export const arAssistant = {
       hideNames: 'إخفاء الأسماء',
       skill: name => `المهارة ${name}`,
       kind: { plugin: 'إضافة', skill: 'مهارة' },
-      tier: { official: 'رسمي', community: 'مجتمعي' },
+      tier: { official: 'رسمي', verified: 'موثّق', community: 'مجتمعي' },
       targetProfile: profile => `يُثبَّت في ملفك الشخصي ${profile}`,
       sendFailed: 'تعذّر إرسال ردك. حاول مرة أخرى.',
       commitLabel: 'الإيداع',

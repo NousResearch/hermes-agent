@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Optional
 
 from hermes_cli.plugin_catalog import (
-    PluginCatalogEntry, RemovedEntry, cached_removed_entries, entry_capability_summary, filter_entries,
+    CATALOG_TIERS, PluginCatalogEntry, RemovedEntry, cached_removed_entries, entry_capability_summary, filter_entries,
     find_removed, get_live_catalog_entry, load_catalog_live, match_removed, resolved_removed_entries,
     _NAME_RE, _normalize_repo,
 )
@@ -721,8 +721,10 @@ def _render_entries(entries: list[PluginCatalogEntry], console) -> None:
     from hermes_cli.plugins_cmd import _table
     table = _table(((("Name", "bold")), ("Category", None), ("Tier", None), ("Description", None),
                     ("Pinned", "dim"), ("Capabilities", "dim")), title="Hermes Plugin Catalog (curated)")
-    for e in sorted(entries, key=lambda e: (e.category, e.tier != "official", e.name)):
-        tier = "[cyan]official[/cyan]" if e.tier == "official" else "[magenta]community[/magenta]"
+    rank = {name: i for i, name in enumerate(CATALOG_TIERS)}
+    style = {"official": "cyan", "verified": "green", "community": "magenta"}
+    for e in sorted(entries, key=lambda e: (e.category, rank.get(e.tier, len(rank)), e.name)):
+        tier = f"[{style.get(e.tier, 'magenta')}]{e.tier}[/{style.get(e.tier, 'magenta')}]"
         desc = e.description if len(e.description) <= 60 else e.description[:57] + "..."
         table.add_row(e.name, e.category, tier, desc, pin_label(e), _capability_counts(e))
     console.print()

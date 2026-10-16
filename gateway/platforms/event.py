@@ -138,6 +138,12 @@ class MessageEvent:
     # display data only, never a path. Appended for positional compat.
     media_filenames: list[str] = field(default_factory=list)
 
+    # The stable client source identity of the inbound turn (#63298) when the wire carries one and
+    # ``message_id`` is a synthetic admission id (the canonical wire): persisted as the user row's
+    # ``platform_message_id`` so attribution and ``has_platform_message_id`` retry dedup ride the
+    # row. None falls every consumer back to ``message_id``, byte-identical for every adapter.
+    source_message_id: Optional[str] = None
+
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Set when ``admit_internal_event`` hands its producer a receipt before any drain began. The

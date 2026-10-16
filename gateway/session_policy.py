@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+import contextlib
 import json
 import logging
 from pathlib import Path
@@ -19,6 +20,13 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
 FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
                    'platform_toolsets')
+def pin_reasoning_effort(config, effort):
+    """Write an explicit session reasoning level into *config*: it wins over a per-model default
+    (``reasoning_overrides``), at creation, on ``/reasoning`` and on a model pick that carries one."""
+    config.setdefault('agent', {})['reasoning_effort'] = effort
+    config['agent'].pop('reasoning_overrides', None)
+
+
 FOLLOW_AGENT_KEYS = ('reasoning_effort', 'reasoning_overrides', 'service_tier', 'disabled_toolsets', 'coding_context')
 # What a pick (create-time ``model`` / committed ``/model``) owns of the ``model:`` block.
 SELECTION_KEYS = ('default', 'provider', 'base_url', 'api_mode', 'selection_profile', 'api_key_from', 'key_env',
@@ -30,6 +38,16 @@ _TURN_PROFILE: ContextVar = ContextVar('follow_profile_read', default=None)  # (
 # ``oneshot`` (finite ``chat -q`` / ``-z`` runs) run as the CLI but keep their own stored label, so human
 # pickers hide them (INTERNAL_LISTING_SOURCES).
 SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp', 'tool': 'cli', 'oneshot': 'cli'}
+
+
+def _refuse(field, detail=None):
+    """One named refusal: the launch field the check read, and why it failed.
+
+    ``reason`` stays the bounded wire code every caller compares as a string; ``field`` and
+    ``detail`` are what tells ~20 different create checks apart, in the client and in the
+    gateway log, without a second run to find out which one fired (``RuntimeStoreError`` bounds
+    and flattens both)."""
+    raise RuntimeStoreError('invalid_params', field=field, detail=detail)
 
 
 @dataclass(frozen=True)
@@ -69,8 +87,9 @@ class LocalSessionPolicy:
         config = present_sections(json.loads(self.config_json))
         live = self.read_profile(authority)
         if self.config_secret_ref is not None and authority is not None and secrets:
-            from gateway.session_policy_credentials import recover_config_secrets
-            for path, value in recover_config_secrets(authority, self).items():
+            from gateway.session_policy_credentials import disable_dropped_secrets, recover_config_secrets
+            recovered = recover_config_secrets(authority, self)
+            for path, value in recovered.items():
                 if path[0] is None:  # private terminal projection, not config
                     continue
                 target = config
@@ -78,6 +97,7 @@ class LocalSessionPolicy:
                     # An alias entry added after creation is absent from the frozen tree.
                     target = target.setdefault(key, {}) if isinstance(target, dict) else target[key]
                 target[path[-1]] = value
+            disable_dropped_secrets(config, getattr(recovered, 'dropped', ()), getattr(recovered, 'session', None))
         model = self.model
         if live:
             frozen, request = config.get('model') or {}, json.loads(self.request_json)
@@ -231,14 +251,30 @@ def profile_target(config):
     return (model.strip() if isinstance(model, str) else ''), ''
 
 
+def model_route(block):
+    """``(provider, endpoint)`` identity of a ``model:`` block: what an endpoint-bound credential belongs to."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    block = block if isinstance(block, dict) else {}
+    return str(block.get('provider') or '').strip().lower(), normalize_route_base_url(block.get('base_url'))
+
+
+def bound_route_holds(bound, bound_config, block, config):
+    """True when *block* (resolved in *config*) is the route *bound* was bound to, *bound* resolved in
+    the config it was bound in: a respelled provider on one endpoint is one route, and a named entry
+    whose ``base_url`` moved is another. An ``auto``/unset side keeps the literal comparison: a
+    credential never follows a route the resolver picks later."""
+    from gateway.session_route_identity import resolved_route, same_route
+    bound = bound if isinstance(bound, dict) else {}
+    identity, url = resolved_route(bound, bound_config)
+    if 'auto' in (identity, resolved_route(block, config)[0]):
+        return model_route(bound) == model_route(block)
+    return same_route({**bound, 'base_url': url} if url else bound, block, config)
+
+
 def _held_pick(frozen, live):
     """A pick that still holds keeps its selection; on the profile's own endpoint the rest of the
     ``model:`` block (a rotated key included) is the profile's. Another endpoint never gets it."""
-    from hermes_cli.route_identity import normalize_route_base_url
-
-    def route(block):
-        return str(block.get('provider') or '').strip().lower(), normalize_route_base_url(block.get('base_url'))
-    if route(frozen) != route(live):
+    if model_route(frozen) != model_route(live):
         return frozen
     return {**{k: v for k, v in live.items() if k not in SELECTION_KEYS},
             **{k: frozen[k] for k in SELECTION_KEYS if k in frozen}}
@@ -263,23 +299,26 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     if source == 'a2a':
         from gateway.session_a2a import build_forward_policy
         return build_forward_policy(params, config, private_secrets=private_secrets)
-    if set(params) - CREATE_FIELDS or not isinstance(source, str) or source not in SURFACES:
-        raise RuntimeStoreError('invalid_params')
-    if any(name in params and type(params[name]) is not bool for name in BYPASS_FIELDS):
-        raise RuntimeStoreError('invalid_params')
+    unknown = sorted(set(params) - CREATE_FIELDS)
+    if unknown or not isinstance(source, str) or source not in SURFACES:
+        _refuse(f'params.{unknown[0]}' if unknown else 'source',
+                'unknown create field' if unknown else f'not a surface: {source!r}')
+    bad_bypass = next((name for name in BYPASS_FIELDS if name in params and type(params[name]) is not bool), None)
+    if bad_bypass:
+        _refuse(bad_bypass, 'must be a boolean')
     safe_mode = params.get('safe_mode', False)
     ignore_user_config = safe_mode or params.get('ignore_user_config', False)
     if 'api_key' in params and (not isinstance(params['api_key'], str) or not params['api_key'].strip()):
-        raise RuntimeStoreError('invalid_params')
+        _refuse('api_key', 'must be a non-empty string')
     model = params.get('model')
     if 'model' in params and (not isinstance(model, str) or not model.strip()):
-        raise RuntimeStoreError('invalid_params')
+        _refuse('model', 'must be a non-empty string')
     cwd = params.get('cwd', str(resolve_agent_cwd()))
     if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
-        raise RuntimeStoreError('invalid_params')
+        _refuse('cwd', 'must be an absolute path to an existing directory')
     row_cwd = params.get('row_cwd')
     if 'row_cwd' in params and (not isinstance(row_cwd, str) or (row_cwd and not Path(row_cwd).is_absolute())):
-        raise RuntimeStoreError('invalid_params')
+        _refuse('row_cwd', 'must be an absolute path when set')
     if params.get('cwd_explicit') is False and 'cwd' in params:
         cwd = _profile_workspace_cwd(get_hermes_home()) or cwd
     from gateway.session_local_editor import validate_editor
@@ -296,7 +335,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     # pick wins anyway; skipping it here also spares the probe.
     named = workspace_posture and source != 'tool' and 'cwd' in params and 'toolsets' not in params
     coding_posture = named and _in_coding_workspace(config, source, cwd)
-    enabled = _resolve_toolsets(params, config, source, safe_mode, coding_posture)
+    enabled = _resolve_toolsets(params, config, source, safe_mode, coding_posture, bypass=ignore_user_config)
     terminal = build_profile_terminal_scope(get_hermes_home()) if profile_terminal else default_terminal_scope()
     # The client's launch folder is a path on THIS host: a remote or container backend keeps its own
     # configured cwd unless the user picked this folder for the session.
@@ -336,26 +375,65 @@ def _profile_workspace_cwd(home):
     return configured if configured and os.path.isdir(configured) else None
 
 
+def _without_auto_pick(params):
+    """`provider: auto` is the thin client's "no pick" sentinel: the profile's route stands as configured."""
+    if isinstance(params.get('provider'), str) and params['provider'].strip().lower() == 'auto':
+        return {k: v for k, v in params.items() if k != 'provider'}
+    return params
+
+
+def _keeps_profile_route(picked, config):
+    """Whether a provider pick resolves to the profile's own route, so its endpoint and key pins stay.
+
+    The same resolved provider under another spelling (`vllm` for `custom`, `deep-infra` for
+    `deepinfra`, `custom:<name>` for a named entry) is the same route. A block with an endpoint
+    and no provider (or `auto`) already routes to `custom` there.
+    """
+    from gateway.session_route_identity import resolved_route
+    held = dict(config.get('model') or {}) if isinstance(config.get('model'), dict) else {}
+    if str(held.get('provider') or '').strip().lower() in ('', 'auto') and str(held.get('base_url') or '').strip():
+        held['provider'] = 'custom'
+    held_id = resolved_route(held, config)[0]
+    if held_id == 'auto' or not isinstance(picked, str) or not picked.strip():
+        return False
+    return resolved_route({'provider': picked}, config)[0] == held_id
+
+
 def _apply_launch_overrides(params, config):
     """Validate the explicit model/agent launch overrides and fold them into *config*."""
     from urllib.parse import urlsplit
     from hermes_cli.config import resolve_turn_limit
     from hermes_constants import parse_reasoning_effort
+    params = _without_auto_pick(params)
+    if 'provider' in params and not _keeps_profile_route(params['provider'], config):
+        model = config.setdefault('model', {})
+        # A provider pick is a route change: the profile's endpoint, wire protocol and
+        # credential pointers belong to the provider being replaced, and pairing the new one
+        # with them sends its key to the old host (401) or the old key down the new route.
+        # They are dropped before the overrides fold in, so the target provider resolves its
+        # own — the same route keys a committed /model switch rewrites (#138843). An explicit
+        # base_url is applied after the drop, so a pinned endpoint survives without carrying
+        # the replaced provider's other pins, and a same-provider re-pick keeps the profile's.
+        from gateway.session_route_identity import ROUTE_BOUND_KEYS
+        # The replaced provider's context window goes too: it was sized for the old model.
+        for stale in ROUTE_BOUND_KEYS:
+            model.pop(stale, None)
     for key in ('provider', 'base_url'):
         if key in params:
             value = params[key]
             if not isinstance(value, str) or not value.strip():
-                raise RuntimeStoreError('invalid_params')
+                _refuse(key, 'must be a non-empty string')
             if key == 'base_url':
                 url = urlsplit(value)
                 if (url.scheme not in {'http', 'https'} or not url.hostname
                         or url.username or url.password or url.query or url.fragment):
-                    raise RuntimeStoreError('invalid_params')
+                    _refuse('base_url', 'must be an http(s) URL without credentials, query or fragment')
             config.setdefault('model', {})[key] = value
-    for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
-                 'cwd_explicit', 'verbose'):
-        if flag in params and type(params[flag]) is not bool:
-            raise RuntimeStoreError('invalid_params')
+    bad_flag = next((flag for flag in ('ignore_rules', 'yolo', 'checkpoints', 'accept_hooks', 'pass_session_id',
+                                      'follow_profile_config', 'cwd_explicit', 'verbose')
+                     if flag in params and type(params[flag]) is not bool), None)
+    if bad_flag:
+        _refuse(bad_flag, 'must be a boolean')
     if 'service_tier' in params:
         # An explicit speed pick (Desktop Fast / Ultrafast / Normal): normal pins normal over a
         # profile tier; an unknown word is refused, never read as normal.
@@ -365,14 +443,14 @@ def _apply_launch_overrides(params, config):
         except ValueError:
             tier = None
         if tier is None:
-            raise RuntimeStoreError('invalid_params')
+            _refuse('service_tier', f"not a known tier: {params['service_tier']!r}")
         config.setdefault('agent', {})['service_tier'] = tier or 'normal'
     if 'run_budget' in params:
         # `--run-budget SECONDS`: the wall-clock budget per run (80% wrap-up notice, capped provider
         # timeouts), frozen as the session's `agent.run_budget_seconds` like main's CLI flag over config.
         value = params['run_budget']
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
-            raise RuntimeStoreError('invalid_params')
+            _refuse('run_budget', 'must be a positive number of seconds')
         config.setdefault('agent', {})['run_budget_seconds'] = float(value)
     if params.get('checkpoints'):
         section = config.get('checkpoints')
@@ -384,27 +462,41 @@ def _apply_launch_overrides(params, config):
         value = params['max_turns']
         limit = resolve_turn_limit(value, default=0) if isinstance(value, (int, str)) else 0
         if not limit:
-            raise RuntimeStoreError('invalid_params')
+            _refuse('max_turns', f'unreadable cap: {value!r}')
         config.setdefault('agent', {})['max_turns'] = limit
     if 'reasoning' in params:
         if not isinstance(params['reasoning'], str) or parse_reasoning_effort(params['reasoning']) is None:
-            raise RuntimeStoreError('invalid_params')
-        config.setdefault('agent', {})['reasoning_effort'] = params['reasoning']
-        # An explicit launch level wins over a per-model default, just like CLI.
-        config['agent'].pop('reasoning_overrides', None)
+            _refuse('reasoning', f"not a known effort level: {params['reasoning']!r}")
+        pin_reasoning_effort(config, params['reasoning'])
 
 
-def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False):
+def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, bypass=False):
     """Validate explicit toolsets and return the session's enabled toolset set. Without a pick, a
     *coding_posture* session runs ``focus_toolsets`` instead of the profile default while the profile
     stays on ``focus``; the gateway decides it, never the client."""
-    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names
+    from hermes_cli.toolset_validation import saved_toolset_resolver
     from toolsets import validate_toolset
     explicit = params.get('toolsets')
     if 'toolsets' in params:
-        if (not isinstance(explicit, list) or any(not isinstance(x, str) or not validate_toolset(x) for x in explicit)
-                or ('desktop_ui' in explicit and source != 'gui')):
-            raise RuntimeStoreError('invalid_params')
+        if not isinstance(explicit, list):
+            _refuse('toolsets', f'must be a list of toolset names, got {type(explicit).__name__}')
+        # The CLI validator's rule: a configured MCP server's toolset registers only after its first
+        # connect, so an offline server is inactive, not a typo (#138748, #139154). A bypass launch never
+        # reads the profile, so it takes the in-process registry alone.
+        known = validate_toolset if bypass else saved_toolset_resolver(config)
+        configured = config.get('mcp_servers') if isinstance(config.get('mcp_servers'), dict) else {}
+        enabled_servers = enabled_mcp_server_names(config) if configured else set()
+        for name in explicit:
+            if not isinstance(name, str) or not known(name):
+                _refuse('toolsets', f'unknown or invalid toolset name: {name!r}')
+            server = name[4:] if name.startswith('mcp-') and name not in configured else name
+            if server in configured and server not in enabled_servers:
+                # Picking a disabled server must not match nothing and fall through to every enabled one.
+                why = 'is disabled in config' if isinstance(configured[server], dict) else 'has no usable config entry'
+                _refuse('toolsets', f'MCP server {server!r} {why}')
+        if 'desktop_ui' in explicit and source != 'gui':
+            _refuse('toolsets', f'desktop_ui is only available on the Desktop, not on {source}')
         config.setdefault('platform_toolsets', {})['acp' if source == 'acp' else 'cli'] = explicit
     posture = None
     if explicit is None and coding_posture:
@@ -416,7 +508,7 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False):
         requested = {t for name in explicit for t in resolve_toolset(name)}
         effective = {t for name in enabled for t in resolve_toolset(name)}
         if not requested <= effective:
-            raise RuntimeStoreError('invalid_params')
+            _refuse('toolsets', f"not available on this surface: {', '.join(sorted(requested - effective))}")
     if explicit is None and source in {'tui', 'gui'}:
         # Same surface toolsets as the native TUI factory, without its env inference.
         # The fold-in lands after _get_platform_tools subtracted agent.disabled_toolsets, so
@@ -470,10 +562,11 @@ def launch_skills(params):
     """The validated `-s/--skills` identifiers of a create request (empty when absent). Skills
     live in the profile, which a bypass launch must never read: refused there, not dropped."""
     skills = params.get('skills', [])
-    if (('skills' in params and (not isinstance(skills, list) or not skills
-                                 or any(not isinstance(s, str) or not s.strip() for s in skills)))
-            or (skills and any(params.get(name) is True for name in BYPASS_FIELDS))):
-        raise RuntimeStoreError('invalid_params')
+    if 'skills' in params and (not isinstance(skills, list) or not skills
+                               or any(not isinstance(s, str) or not s.strip() for s in skills)):
+        _refuse('skills', 'must be a non-empty list of skill names')
+    if skills and any(params.get(name) is True for name in BYPASS_FIELDS):
+        _refuse('skills', 'a bypass launch never reads the profile, so skills cannot be preloaded')
     return [s.strip() for s in skills]
 
 
@@ -497,13 +590,32 @@ def render_launch_skills(params, session_id):
 
 def accept_launch_hooks(policy):
     """`--accept-hooks` / `HERMES_ACCEPT_HOOKS=1` on a launch: consent to the profile's configured
-    shell hooks (recorded in the per-user allowlist, as the in-process CLI/TUI did) and register
-    them on this owner. A bypass launch has no profile hooks to consent to (main's safe mode
-    registered none either), so the flag is a no-op there rather than a refusal. Allowlist file
-    lock + write: callers run it off the owner loop."""
+    shell hooks in the per-user allowlist (no prompt; kept in memory if that write fails), which
+    the open's ``refresh_profile_hooks`` then registers. A bypass launch has no profile hooks to
+    consent to, so the flag is a no-op there rather than a refusal. Allowlist I/O: off the loop."""
     if json.loads(policy.request_json).get('accept_hooks') and not policy.ignore_user_config:
-        from agent.shell_hooks import register_from_config
-        register_from_config(policy.config(), accept_hooks=True)
+        from agent.shell_hooks import accept_for_launch
+        from gateway.run import _load_gateway_config
+        accept_for_launch(_load_gateway_config())
+
+
+def refresh_profile_hooks(policy):
+    """Bring this owner's shell hooks in step with the profile on every local session open
+    (create and resume): hooks added to ``config.yaml`` or approved since the gateway started
+    register, removed or revoked ones stop firing, as each new CLI process did on main. Reads the
+    owner home's LIVE config (as session creation does), never the session's frozen copy: the
+    registry is shared by every session and surface of this profile. Consent comes from the
+    allowlist (the launching client's TTY prompt, or ``accept_launch_hooks``) or an opt-in in force
+    on the gateway itself; this never prompts. A bypass launch registers nothing (main's safe mode
+    registered none). Config read + allowlist I/O: run off the loop."""
+    if policy is None or policy.ignore_user_config:
+        return
+    from agent.shell_hooks import sync_from_config
+    from gateway.run import _load_gateway_config
+    try:
+        sync_from_config(_load_gateway_config)  # it never removes on an empty (failed-open) config
+    except Exception:  # health: allow BLE001 -- best effort; a hook re-sync never blocks opening a session
+        logger.warning("shell-hook re-sync failed; keeping the registered hooks", exc_info=True)
 
 
 def register_worker_hooks(policy):
@@ -584,7 +696,7 @@ def rebind_launch_key(authority, session, api_key):
     from agent.credential_persistence import fingerprint_secret_value
     from gateway.config import Platform
     if not isinstance(api_key, str) or not api_key.strip():
-        raise RuntimeStoreError('invalid_params')
+        _refuse('api_key', 'must be a non-empty string')
     source = authority.sessions[session.session_id].source
     if source is None or source.platform != Platform.LOCAL:
         raise RuntimeStoreError('admission_conflict')
@@ -641,6 +753,16 @@ def launch_key(authority, policy):
     if value is None:
         raise RuntimeStoreError('launch_credentials_unavailable')
     return value
+
+
+def route_launch_key(authority, policy, config):
+    """The launch key a turn on *config* (the route it runs, a followed profile's included) sends.
+    A launch key authenticates the frozen route it was bound with: once the followed profile
+    supersedes that pick and moves to another endpoint, the key stays behind with its route."""
+    bound = present_sections(json.loads(policy.config_json))  # the route the key was bound with
+    if not bound_route_holds(bound.get('model'), bound, config.get('model'), config):
+        return None
+    return launch_key(authority, policy)
 
 
 def restore_policy(data):
@@ -716,14 +838,30 @@ def policy_scope(policy, *, authority=None):
     policy_token = _ACTIVE_POLICY.set(active)
     from gateway.session_local_editor import editor_scope
     try:
+        from agent.auxiliary_task_config import session_auxiliary_scope
         from gateway.session_local_mcp import editor_mcp_scope
-        with editor_scope(policy), editor_mcp_scope(authority, policy):
+        # Auxiliary tasks read the session's frozen section, never live config.yaml (a rotated key there).
+        auxiliary = policy.config(authority).get('auxiliary') if authority is not None else None
+        aux_scope = session_auxiliary_scope(auxiliary) if authority is not None else contextlib.nullcontext()
+        with editor_scope(policy), editor_mcp_scope(authority, policy), aux_scope:
             yield
     finally:
         _ACTIVE_POLICY.reset(policy_token)
         reset_terminal_scope(terminal_token)
         cwd_token.var.reset(cwd_token)
         _TURN_PROFILE.reset(profile_token)
+
+
+@contextmanager
+def profile_read_scope(policy, authority):
+    """Hold ONE read of a following session's profile for every resolution inside, as a turn's
+    ``policy_scope`` does, without that scope's workspace and terminal setup (a session control
+    reads the route, it runs nothing)."""
+    token = _TURN_PROFILE.set((policy, policy.read_profile(authority)))
+    try:
+        yield
+    finally:
+        _TURN_PROFILE.reset(token)
 
 
 def active_policy():

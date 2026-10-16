@@ -1043,6 +1043,9 @@ class TestEventBridgePollE2E:
                 conn.close()
                 return [dict(r) for r in rows]
 
+        # The index comes from sessions.json: a real SessionDB open would migrate this minimal
+        # DB and move its mtime between the polls.
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: None)
         db = TestDB()
         bridge = mcp_serve.EventBridge()
 
@@ -1171,10 +1174,8 @@ class TestEventBridgePollE2E:
                 }]
 
         bridge = mcp_serve.EventBridge()
-        # Bridge has never seen this db state (mtime differs) and has an
-        # empty cached index — exactly the state after a new conversation's
-        # first write.
-        bridge._state_db_mtime = 0.0
+        # Bridge has never seen this db state and has an empty cached index —
+        # exactly the state after a new conversation's first write.
         assert bridge._cached_sessions_index == {}
 
         bridge._poll_once(DB())
@@ -1271,3 +1272,123 @@ class TestEventBridgePollE2E:
         assert len(events) == 1
         assert events[0]["session_key"] == "agent:main:telegram:dm:fresh"
         assert events[0]["content"] == "hello after baseline"
+
+    def test_wal_commit_without_checkpoint_is_delivered(self, tmp_path, monkeypatch):
+        """A WAL-mode commit lands in state.db-wal; state.db's own mtime moves only at a
+        checkpoint, so a gate keyed on the main file alone kept new messages undelivered."""
+        import mcp_serve
+        from hermes_state import SessionDB
+
+        def commit_message(role, content, ts):
+            # Another process's connection: its commit lands in the WAL like a gateway turn's.
+            conn = sqlite3.connect(str(tmp_path / "state.db"))
+            with conn:
+                conn.execute("INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                             ("s1", role, content, ts))
+            conn.close()
+
+        monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: SessionDB(tmp_path / "state.db"))
+        db = SessionDB(tmp_path / "state.db")
+        try:
+            db.create_session("s1", "telegram", session_key="agent:main:telegram:dm:wal",
+                              chat_id="wal", chat_type="dm")
+            commit_message("user", "before baseline", 100.0)
+            bridge = mcp_serve.EventBridge()
+            bridge._establish_baseline()
+            bridge._poll_once(db)
+            assert bridge.poll_events(after_cursor=0)["events"] == []
+
+            for i in range(5):
+                commit_message("assistant", f"reply {i} after baseline", 101.0 + i)
+            # No checkpoint ran: the main database file is untouched by these commits.
+            bridge._poll_once(db)
+        finally:
+            db.close()
+
+        events = bridge.poll_events(after_cursor=0)["events"]
+        assert [e["content"] for e in events] == [f"reply {i} after baseline" for i in range(5)]
+
+    def test_commit_in_the_baseline_mtime_tick_is_delivered(self, tmp_path, monkeypatch):
+        """A commit in the same coarse mtime tick as the baseline leaves every stat field the
+        same; the gate must still see it."""
+        import mcp_serve
+        from hermes_state import SessionDB
+
+        db = SessionDB(tmp_path / "state.db")
+        try:
+            db.create_session("s1", "telegram", session_key="agent:main:telegram:dm:tick",
+                              chat_id="tick", chat_type="dm")
+            db.append_message("s1", role="user", content="before baseline")
+            monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: db)
+            bridge = mcp_serve.EventBridge()
+            bridge._establish_baseline()
+            pinned = {name: (tmp_path / name).stat().st_mtime_ns for name in ("state.db", "state.db-wal")}
+
+            db.append_message("s1", role="assistant", content="same tick")
+            for name, mtime_ns in pinned.items():
+                os.utime(tmp_path / name, ns=(mtime_ns, mtime_ns))
+            bridge._poll_once(db)
+        finally:
+            db.close()
+
+        events = bridge.poll_events(after_cursor=0)["events"]
+        assert [e["content"] for e in events] == ["same tick"]
+
+    def test_one_commit_costs_one_full_poll(self, tmp_path, monkeypatch):
+        """Every full poll loads each active session's transcript. An isolated commit must open
+        the gate exactly once: a gate that distrusts recent mtimes re-polls for seconds after every
+        write, and a gateway writing that often keeps the bridge in permanent full-poll mode."""
+        import mcp_serve
+        from hermes_state import SessionDB
+
+        db = SessionDB(tmp_path / "state.db")
+        try:
+            db.create_session("s1", "telegram", session_key="agent:main:telegram:dm:cost",
+                              chat_id="cost", chat_type="dm")
+            monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: db)
+            bridge = mcp_serve.EventBridge()
+            bridge._establish_baseline()
+            full_polls = []
+            real_load = mcp_serve._load_sessions_index
+            monkeypatch.setattr(mcp_serve, "_load_sessions_index", lambda: full_polls.append(1) or real_load())
+
+            db.append_message("s1", role="user", content="one write")
+            for _ in range(10):
+                bridge._poll_once(db)
+        finally:
+            db.close()
+
+        assert len(full_polls) == 1
+        assert [e["content"] for e in bridge.poll_events(after_cursor=0)["events"]] == ["one write"]
+
+    @pytest.mark.parametrize(
+        "home_name",
+        [
+            pytest.param("home#1", marks=pytest.mark.platforms("any")),
+            pytest.param("home%23", marks=pytest.mark.platforms("any")),
+            # A literal question mark is valid on POSIX, but forbidden in Windows filenames.
+            pytest.param("home?x", marks=pytest.mark.platforms("posix")),
+        ],
+    )
+    def test_the_version_gate_watches_the_real_db_under_a_uri_special_home(self, tmp_path, monkeypatch, home_name):
+        """``#``/``?``/``%xx`` in HERMES_HOME must not truncate or re-decode the read-only URI: the
+        gate would then watch some other (empty) database whose version never follows state.db."""
+        import hermes_constants
+        import mcp_serve
+        from hermes_state import SessionDB
+
+        home = tmp_path / home_name
+        home.mkdir()
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+        db = SessionDB(home / "state.db")
+        try:
+            gate = mcp_serve._StateDbVersion()
+            before = gate.read()
+            db.create_session("s1", "telegram", session_key="agent:main:telegram:dm:uri",
+                              chat_id="uri", chat_type="dm")
+            after = gate.read()
+            gate.close()
+        finally:
+            db.close()
+
+        assert before is not None and after != before

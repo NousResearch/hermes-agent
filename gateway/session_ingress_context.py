@@ -69,8 +69,9 @@ def native_callback(runner, event, transport_home, profile=None):
 
 
 def carry_callback(event, rewritten):
-    """A gateway-side rewrite of a callback's event (``pre_gateway_dispatch``) keeps the callback's
-    provenance: it changes the text only, never the source the callback authenticated (#139045)."""
+    """Gateway code that rebuilds a callback's event (a ``pre_gateway_dispatch`` rewrite, the
+    ``/retry`` re-send) keeps the callback's provenance, but only on the source object the callback
+    authenticated: a new event with a swapped source carries nothing (#139045, #139040)."""
     for bound_var in (_callback, _relay_callback):
         bound = bound_var.get()
         if bound is not None and bound[1] is event and rewritten.source is event.source:

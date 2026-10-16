@@ -1572,6 +1572,29 @@ class TestSendViaAdapterStandaloneFallback:
         assert set(result) == {"error"}
         assert "boom!" in result["error"]
 
+    @pytest.mark.asyncio
+    async def test_fresh_process_discovers_plugins_before_the_fallback(self, monkeypatch):
+        """No gateway and nothing registered yet (cron/CLI process): the fallback runs plugin
+        discovery, so a platform without a dedicated route still reaches its standalone sender."""
+        from tools.send_message_tool import _send_via_adapter
+        from gateway.platform_registry import platform_registry
+
+        sent = []
+
+        async def send(pconfig, chat_id, message, **kwargs):
+            sent.append((chat_id, message))
+            return {"success": True, "platform": "fakeplatform", "chat_id": chat_id}
+
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins",
+                            lambda *a, **k: platform_registry.register(self._make_entry(send)))
+        try:
+            result = await _send_via_adapter(_FakePlatform("fakeplatform"), SimpleNamespace(extra={}), "chat-1", "hi")
+        finally:
+            platform_registry.unregister("fakeplatform")
+
+        assert result["success"] is True and sent == [("chat-1", "hi")]
+
 class TestSendTelegramThreadNotFoundRetry:
     """Tests for thread-not-found retry behaviour in _send_telegram (#27012)."""
 

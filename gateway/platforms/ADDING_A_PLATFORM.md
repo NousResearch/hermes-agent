@@ -137,7 +137,7 @@ If your platform supports interactive button/menu messages, implement these for 
 | `send_model_picker(...)` | Interactive `/model` picker. Used by Telegram, Discord, and Slack (Socket Mode). |
 | `send_choice_picker(...)` | Flat single-level picker for finite-choice commands (`/reasoning`, `/fast`). Implemented by Telegram (inline keyboard), Discord (select menu), and Matrix (reactions). Platforms without it fall back to the text status card automatically. |
 
-See `gateway/platforms/telegram.py`, `discord.py`, and `plugins/platforms/whatsapp_cloud/adapter.py` for reference implementations. The button-callback id convention (`cl:<id>:<idx>`, `appr:<id>:<choice>`, `sc:<choice>:<id>`) is shared across adapters — match it so the gateway-side resolvers work without modification.
+See `plugins/platforms/telegram/adapter.py`, `plugins/platforms/discord/adapter.py`, and `plugins/platforms/whatsapp_cloud/adapter.py` for reference implementations. The button-callback id convention (`cl:<id>:<idx>`, `appr:<id>:<choice>`, `sc:<choice>:<id>`) is shared across adapters — match it so the gateway-side resolvers work without modification.
 
 ### Required function
 

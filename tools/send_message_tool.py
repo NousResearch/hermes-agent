@@ -566,8 +566,8 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
             return {"success": True, "message_id": result.message_id}
         return {"error": f"Adapter send failed: {_bounded_send_error(result.error)}"}
     try:
-        from gateway.platform_registry import platform_registry
-        sender = platform_registry.get(platform_name).standalone_sender_fn
+        # Discover first: a fresh process (cron/CLI) has not registered plugin platforms yet.
+        sender, _ = _plugin_standalone_sender(platform_name)
     except Exception:
         sender = None
     if sender is None:

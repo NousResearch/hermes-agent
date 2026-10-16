@@ -579,8 +579,8 @@ function handleErrorEvent(
 /** Live usage tick while a turn runs (see tui_gateway _start_usage_ticker): keeps the status-bar
  *  context window current mid-turn instead of only at message.complete. The session filter at the
  *  top of the handler already dropped ticks for non-focused sessions. */
-function applyUsageTick(payload: unknown): void {
-  const usage = usageFromTick(payload as Parameters<typeof usageFromTick>[0]) // canonical: the owner's counters at the top level
+function applyUsageTick(payload: Extract<AnyGatewayEvent, { type: 'session.usage' }>['payload']): void {
+  const usage = usageFromTick(payload) // canonical: the owner's counters at the top level
 
   if (usage) {
     patchUiState(state => ({ ...state, usage: { ...state.usage, ...usage } }))
@@ -1041,6 +1041,29 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       })
   }
 
+  type NoticeEventPayload = Extract<AnyGatewayEvent, { type: 'notification.show' }>['payload']
+
+  const showGatewayNotice = (p: NoticeEventPayload) => {
+    if (!p?.text) {
+      return
+    }
+
+    // A notice with a full question (the low-disk auto-prune prompt) prints it into the
+    // transcript once: the status slot is one truncated line and would drop the commands.
+    if (typeof p.detail === 'string' && p.detail.trim()) {
+      sys(p.detail)
+    }
+
+    turnController.showNotice({
+      id: p.id ?? undefined,
+      key: p.key ?? undefined,
+      kind: p.kind === 'ttl' ? 'ttl' : 'sticky',
+      level: isNoticeLevel(p.level) ? p.level : 'info',
+      text: p.text,
+      ttl_ms: p.ttl_ms ?? null
+    })
+  }
+
   return (ev: AnyGatewayEvent) => {
     const sid = getUiState().sid
 
@@ -1216,20 +1239,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // wire and stays snake_case in UiState.notice (no mapping layer). The
         // text already carries its own glyph; turnController decides whether to
         // show now or hold until turn end (FaceTicker wins while busy).
-        const p = ev.payload
-
-        if (!p?.text) {
-          return
-        }
-
-        turnController.showNotice({
-          id: p.id ?? undefined,
-          key: p.key ?? undefined,
-          kind: p.kind === 'ttl' ? 'ttl' : 'sticky',
-          level: isNoticeLevel(p.level) ? p.level : 'info',
-          text: p.text,
-          ttl_ms: p.ttl_ms ?? null
-        })
+        showGatewayNotice(ev.payload)
 
         return
       }

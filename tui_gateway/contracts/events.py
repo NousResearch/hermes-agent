@@ -420,7 +420,9 @@ event("todo.updated", TodoUpdatedPayload, doc="Full todo snapshot after a todo t
 
 class NotificationShowPayload(Payload):
     """``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s
-    slow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent."""
+    slow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent.
+    ``detail``: the full text behind a short ``text`` (the low-disk auto-prune question): Desktop shows
+    it in the toast's expandable body, the Ink TUI prints it into the transcript."""
 
     text: str
     level: str
@@ -428,6 +430,7 @@ class NotificationShowPayload(Payload):
     ttl_ms: int | None = None
     key: str | None = None
     id: str | None = None
+    detail: str | None = None
 
 
 class NotificationClearPayload(Payload):

@@ -138,7 +138,7 @@ class TestReconnectFastPath:
     async def test_reconnect_reuses_healthy_webhook(self, tmp_path, monkeypatch, host, stale):
         from aiohttp import web
         from gateway.config import PlatformConfig
-        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+        from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
@@ -201,7 +201,7 @@ class TestReconnectFastPath:
         from aiohttp import web
         from gateway.config import PlatformConfig
         from gateway.platforms.shared_ingress import dispatch_profile_ingress
-        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+        from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         adapter = WhatsAppCloudAdapter(PlatformConfig(extra={

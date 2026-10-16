@@ -613,6 +613,19 @@ def test_compose_env_dependents_win_non_path_too():
     assert env["X"] == "dependent"
 
 
+def test_compose_env_strips_node_ipc_channel_vars(monkeypatch):
+    """Regression for #139556: pm2 fork mode leaks NODE_CHANNEL_FD into the
+    supervised process; a node child that adopts the (closed) fd aborts in libuv."""
+    monkeypatch.setenv("NODE_CHANNEL_FD", "13")
+    monkeypatch.setenv("NODE_CHANNEL_SERIALIZATION_MODE", "json")
+    env = compose_env([])  # base=None snapshots os.environ, the env_for("node") path
+    assert "NODE_CHANNEL_FD" not in env
+    assert "NODE_CHANNEL_SERIALIZATION_MODE" not in env
+    env = compose_env([{"X": "dep"}], base={"NODE_CHANNEL_FD": "13", "X": "old"})
+    assert "NODE_CHANNEL_FD" not in env
+    assert env["X"] == "dep"
+
+
 
 # ── bundle payload pieces ─────────────────────────────────────────────
 

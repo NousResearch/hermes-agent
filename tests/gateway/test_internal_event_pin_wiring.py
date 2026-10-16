@@ -454,9 +454,13 @@ async def test_synthetic_goal_turn_keeps_pins_and_effective_prompt(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_goal_continuation_keeps_channel_pin_through_session_authority(tmp_path, monkeypatch):
+@pytest.mark.parametrize("origin_message_id", [None, "m-origin"], ids=("no-msgid", "msgid"))
+async def test_goal_continuation_keeps_channel_pin_through_session_authority(tmp_path, monkeypatch, origin_message_id):
     """The default runtime admits adapter turns through the native session envelope; a goal
-    continuation must arrive at the handler still asking to reuse the pins (#126109)."""
+    continuation must arrive at the handler still asking to reuse the pins (#126109). The
+    continuation is enqueued mid-turn like the post-turn hook does and drains from the adapter
+    FIFO; a source carrying ``message_id`` (Discord) must keep its adapter ref through the
+    producer's copy or native admission refuses it as ``not_found``."""
     import gateway.run as gr
     from gateway.platforms.base import SendResult
     from gateway.session_authority import initialize_session_authority
@@ -475,18 +479,26 @@ async def test_goal_continuation_keeps_channel_pin_through_session_authority(tmp
     calls: list[dict] = []
     _capture(runner, calls)
     monkeypatch.setattr(adapter, "send", AsyncMock(return_value=SendResult(success=True, message_id="s")))
-    source = adapter.build_source(chat_id=chat, user_id=chat, chat_type="dm")
+    source = adapter.build_source(chat_id=chat, user_id=chat, chat_type="dm", message_id=origin_message_id)
+    run_agent = runner._run_agent
+
+    async def run_and_continue(**kw):
+        if not calls:  # the goal judge said continue: enqueue while this turn still runs
+            runner._enqueue_fifo(runner._session_key_for_source(source), runner._synthetic_prompt_event(
+                source, "[Continuing toward your standing goal]\nGoal: x"), adapter)
+        return await run_agent(**kw)
+
+    runner._run_agent = run_and_continue
     turns = (
-        MessageEvent(text="hi", source=source, message_id="h1", channel_prompt="Channel hint."),
-        runner._synthetic_prompt_event(source, "[Continuing toward your standing goal]\nGoal: x"),
-        MessageEvent(text="hi again", source=source, message_id="h2", channel_prompt="Channel hint."),
+        (2, MessageEvent(text="hi", source=source, message_id="h1", channel_prompt="Channel hint.")),
+        (3, MessageEvent(text="hi again", source=source, message_id="h2", channel_prompt="Channel hint.")),
     )
     try:
-        for index, event in enumerate(turns):
+        for want, event in turns:
             await adapter.handle_message(event)
             await async_wait_until(
-                lambda: len(calls) > index and not adapter._background_tasks and not adapter._session_tasks,
-                timeout=60, what=f"turn {index}")
+                lambda: len(calls) >= want and not adapter._background_tasks and not adapter._session_tasks,
+                timeout=60, what=f"turn {want}")
     finally:
         authority.db.close()
 

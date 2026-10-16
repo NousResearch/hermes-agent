@@ -106,8 +106,10 @@ class GatewayGoalsMixin:
         The stored source's ``message_id`` is the message that registered the watch; a synthetic
         prompt is not a reply to it, so it is dropped or every progress bubble and final reply
         would quote that stale message (Telegram DM topics route anchorless via the topic id).
+        ``replace_source`` keeps the receiving-adapter provenance native admission reads.
         """
-        source = dataclasses.replace(source, message_id=None) if getattr(source, "message_id", None) else source
+        from gateway.session_identity import replace_source
+        source = replace_source(source, message_id=None) if getattr(source, "message_id", None) else source
         return MessageEvent(
             text=text, message_type=MessageType.TEXT, source=source, internal=internal,
             inherit_channel_pin=True,

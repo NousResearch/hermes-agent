@@ -570,14 +570,24 @@ def discard_dead_record(role: str) -> bool:
     record = read_record(role, include_stale=True)
     if record is None:
         return False
+    claimed = False
     if record.pid != os.getpid() and _record_incarnation_matches(record) is not False:
         # A recycled pid can still look like the same incarnation. The publisher holds the
-        # host lock for its life, so a free flock is proof the recorded owner is gone.
-        if host_lock_is_held(role) is not False:
+        # host lock for its life, so winning it proves the recorded owner is gone. Hold it
+        # across the re-read and unlink: a free-lock probe released first let a new gateway
+        # claim and publish in the gap, and we deleted ITS record and token.
+        if owns_host_lock(role) or claim_host_lock(role)[0] is not HostLockOutcome.ACQUIRED:
             return False
-    for path in (record_path(role), token_path(role)):
-        with contextlib.suppress(OSError):
-            path.unlink(missing_ok=True)
+        claimed = True
+    try:
+        if claimed and read_record(role, include_stale=True) is None:
+            return False
+        for path in (record_path(role), token_path(role)):
+            with contextlib.suppress(OSError):
+                path.unlink(missing_ok=True)
+    finally:
+        if claimed:
+            release_host_lock(role)
     _invalidate_attach_cache()
     return True
 

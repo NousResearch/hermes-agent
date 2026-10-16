@@ -349,3 +349,75 @@ def test_discard_dead_record_retracts_a_live_looking_pid_only_once_the_host_lock
     finally:
         child.kill()
         child.wait(timeout=10)
+
+
+# Claims the host lock and publishes on demand, like a gateway starting during a restart.
+_CLAIMER_CHILD = """
+import json, sys
+sys.path.insert(0, {tree!r})
+from gateway import host_rendezvous as hr
+print("ready", flush=True)
+for line in sys.stdin:
+    won = hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
+    if won:
+        hr.publish_record(hr.ROLE_GATEWAY, profiles=("default",), token="new-owner-token")
+    print(json.dumps(won), flush=True)
+"""
+
+
+@pytest.mark.platforms("posix")
+def test_restart_cleanup_never_deletes_a_gateway_that_claimed_the_lock_mid_cleanup(host_dir, monkeypatch):
+    """A free-lock probe released before the unlink let a new gateway publish in the gap.
+
+    The restart's record cleanup then deleted the NEW owner's record and token while it held
+    the host lock. A gateway holding the lock must always have its record and token on disk.
+    """
+    from gateway.status import get_process_start_time
+    from hermes_cli.gateway_host_record import _discard_dead_host_record
+
+    tree = _tree()
+    sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    claimer = subprocess.Popen(
+        [sys.executable, "-u", "-c", _CLAIMER_CHILD.format(tree=tree)], cwd=tree,
+        env={**os.environ, "HERMES_GATEWAY_LOCK_DIR": str(host_dir / "locks")},
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert claimer.stdout.readline().strip() == "ready"
+
+        def claim() -> bool:
+            claimer.stdin.write("claim\n")
+            claimer.stdin.flush()
+            return json.loads(claimer.stdout.readline())
+
+        record = _gateway_record(
+            pid=sleeper.pid,
+            create_time=hr.process_create_time(sleeper.pid),
+            start_time=get_process_start_time(sleeper.pid),
+            home=str(host_dir),
+        )
+        hr.ensure_host_state_dir()
+        hr.record_path(hr.ROLE_GATEWAY).write_text(json.dumps(record.to_json()), encoding="utf-8")
+
+        won_in_gap = []
+        real_unlink = Path.unlink
+
+        def unlink_after_a_racing_claim(self, *args, **kwargs):
+            if not won_in_gap:
+                won_in_gap.append(claim())
+            return real_unlink(self, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "unlink", unlink_after_a_racing_claim)
+            _discard_dead_host_record()
+
+        assert won_in_gap, "cleanup never reached the unlink"
+        if not won_in_gap[0]:
+            assert claim() is True, "the cleanup must release the host lock it took"
+        current = hr.read_record(hr.ROLE_GATEWAY, include_stale=True)
+        assert current is not None and current.pid == claimer.pid
+        assert hr.token_path(hr.ROLE_GATEWAY).exists()
+    finally:
+        claimer.kill()
+        sleeper.kill()
+        claimer.wait(timeout=10)
+        sleeper.wait(timeout=10)

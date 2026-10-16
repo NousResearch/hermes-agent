@@ -1198,6 +1198,7 @@ export function useMainApp(gw: GatewayClient) {
           setCatalog: setSlashCatalog
         },
         session: {
+          closeCanonicalSession: session.closeCanonicalSession,
           closeSession: session.closeSession,
           die,
           dieWithCode,
@@ -1412,7 +1413,12 @@ export function useMainApp(gw: GatewayClient) {
       patchUiState({ status: t('session.status.closingSession') })
 
       try {
-        const result = (await session.closeSession(id)) as null | SessionCloseResponse
+        // A canonical gateway has no `session.close`: end the row through the owner's own verbs
+        // (detach when this view holds it, else the revision-fenced archive mutation).
+        const result = gw.isCanonical
+          ? await session.closeCanonicalSession(id)
+          : ((await session.closeSession(id)) as null | SessionCloseResponse)
+
         patchUiState({ status: 'ready' })
 
         return result
@@ -1424,7 +1430,7 @@ export function useMainApp(gw: GatewayClient) {
         throw e
       }
     },
-    [session, sys]
+    [gw.isCanonical, session, sys]
   )
 
   const newPromptSession = useCallback(

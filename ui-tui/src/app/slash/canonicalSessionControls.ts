@@ -53,7 +53,15 @@ function modelPayload(arg: string) {
   return payload
 }
 
-export type CanonicalOperation = 'model' | 'branch' | 'compress' | 'delete' | 'rename' | 'rewind' | 'reasoning'
+export type CanonicalOperation =
+  | 'archive'
+  | 'model'
+  | 'branch'
+  | 'compress'
+  | 'delete'
+  | 'rename'
+  | 'rewind'
+  | 'reasoning'
 
 /** The snapshot a mutation's CAS tuple was read from; `payload` may derive its target from it. */
 export interface MutationSnapshot {

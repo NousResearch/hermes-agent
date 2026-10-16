@@ -196,7 +196,9 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
     """Synchronous durable results with a private byte-bounded retry journal.
 
     A failed write remains pending, and failure is sticky until explicit retry or
-    adoption. Local queue acceptance is never returned as canonical commit.
+    adoption. A refusal before journaling (a running event loop on the caller's
+    thread) is neither pending nor sticky. Local queue acceptance is never returned
+    as canonical commit.
     Pending journals live outside age-pruned cache trees.
     """
     def __init__(self, rpc, scope, outbox_dir, adopted=None, *, max_bytes=4 * 1024 * 1024):
@@ -294,6 +296,18 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
                 raise WorkerPersistenceError(self.failure)
             if self.journal['pending']:
                 raise WorkerPersistenceError('pending_receipt')
+            # WorkerRPC refuses a call made on a running event loop before any I/O. Refuse it here,
+            # before journaling: nothing was sent, so the failure must not turn sticky. Otherwise one
+            # swallowed best-effort write (activity heartbeat, usage) on a loop thread fails every
+            # later write of the run (#139029).
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                logger.warning('synchronous_rpc_on_event_loop: %s on thread %s; caller: %s (not sent, not sticky)',
+                               operation, threading.current_thread().name, _caller_summary())
+                raise WorkerPersistenceError('synchronous_rpc_on_event_loop')
             entry = {'sequence': self.journal['next_sequence'], 'operation': operation, 'payload': payload}
             candidate = json.loads(json.dumps(self.journal))
             candidate['pending'].append(json.loads(json.dumps(entry, allow_nan=False)))

@@ -1284,8 +1284,8 @@ def _sdk_build(request_cls: Any, **fields: Any) -> Any:
 
 class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
-    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
-    serves_profile_prefix: bool = True
+    serves_profile_prefix: bool = True  # Served secondaries use /p/<profile>/... on the default listener.
+    _enforces_group_rules = True  # Exact rules gate groups in _admit; this does not delegate DM access.
 
     supports_code_blocks = True  # Feishu renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
@@ -2479,16 +2479,16 @@ class FeishuAdapter(BasePlatformAdapter):
         raw_message: Any, message_id: str,
     ) -> None:
         """Wrap a reaction/card click as a MessageEvent and run it through the guarded pipeline."""
+        if event_chat_type != "p2p" and chat_id in self._group_rules and not self._allow_group_message(sender_id, chat_id):
+            return
         sender_profile = await self._resolve_sender_profile(sender_id)
         chat_info = await self.get_chat_info(chat_id)
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
             chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=event_chat_type),
-            user_id=sender_profile["user_id"],
-            user_name=sender_profile["user_name"],
-            thread_id=None,
-            user_id_alt=sender_profile["user_id_alt"],
+            user_id=sender_profile["user_id"], user_name=sender_profile["user_name"],
+            thread_id=None, user_id_alt=sender_profile["user_id_alt"],
         )
         synthetic_event = MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=raw_message,

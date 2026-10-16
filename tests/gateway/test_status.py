@@ -1251,6 +1251,10 @@ class TestScopedLockTakeover:
             "_read_process_cmdline",
             lambda _pid: "python -m hermes_cli.main gateway run",
         )
+        # Fake PID 4242 can be a live ancestor of this worker on CI; a real
+        # psutil snapshot of its descendants would include pytest itself and
+        # reap_gateway_children would SIGTERM the test process.
+        monkeypatch.setattr(status, "_snapshot_gateway_children", lambda _pid: [])
         calls = []
 
         def terminate(pid, *, force=False):

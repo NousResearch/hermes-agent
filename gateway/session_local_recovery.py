@@ -37,6 +37,19 @@ def local_source(authority, chat_id, user_id):
     return source
 
 
+def _origin_matches(stored, live):
+    """``to_dict`` equality that also accepts the pre-profile spelling of a served profile's
+    origin (#140099): receipts written before ``local_source`` composed ``profile`` into the
+    origin carry no key while every other field matches. Only reachable after the receipt's
+    ``profile_id`` pinned this authority, so a missing key cannot borrow another profile's
+    session; an origin that names a DIFFERENT profile still fails closed."""
+    if stored.to_dict() == live.to_dict():
+        return True
+    if stored.profile is not None or live.profile is None:
+        return False
+    return {k: v for k, v in live.to_dict().items() if k != 'profile'} == stored.to_dict()
+
+
 def restore_local_session(authority, sid):
     from gateway.session_authority import LiveSession
     from gateway.session_local import LocalSessionAdapter
@@ -58,7 +71,7 @@ def restore_local_session(authority, sid):
         entry = SessionEntry.from_dict(receipt['entry'])
         target = entry.session_id
         if (entry.session_key != route
-                or entry.origin.to_dict() != source.to_dict()):
+                or not _origin_matches(entry.origin, source)):
             raise ValueError('entry mismatch')
         row = authority.db.get_session(target)
         if row is None or (row['session_key'], row['chat_id'], row['user_id']) != (route, chat_id, source.user_id):
@@ -69,6 +82,9 @@ def restore_local_session(authority, sid):
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         if isinstance(exc, RuntimeStoreError):
             raise
+        # The bare ``storage_unavailable`` reason is the only field signal; name the check that
+        # rejected the receipt so a field report pins the layer without offline replication.
+        logging.getLogger(__name__).debug('Local session %s restore rejected by %r', sid, exc)
         raise RuntimeStoreError('storage_unavailable') from exc
     adapters = local_adapter_map(authority)
     adapter = adapters.get(Platform.LOCAL)
@@ -95,7 +111,7 @@ def restore_local_session(authority, sid):
         authority.sessions[sid] = LiveSession(source, route)
         adapter.register_source(source)
     elif (not adapter.authorize_source(live.source)
-          or live.source.to_dict() != source.to_dict()
+          or not _origin_matches(live.source, source)
           or adapter.policies.get(chat_id) != policy):
         raise RuntimeStoreError('storage_unavailable')
     else:

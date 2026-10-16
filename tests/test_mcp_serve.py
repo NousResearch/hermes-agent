@@ -1361,7 +1361,15 @@ class TestEventBridgePollE2E:
         assert len(full_polls) == 1
         assert [e["content"] for e in bridge.poll_events(after_cursor=0)["events"]] == ["one write"]
 
-    @pytest.mark.parametrize("home_name", ["home#1", "home?x", "home%23"])
+    @pytest.mark.parametrize(
+        "home_name",
+        [
+            pytest.param("home#1", marks=pytest.mark.platforms("any")),
+            pytest.param("home%23", marks=pytest.mark.platforms("any")),
+            # A literal question mark is valid on POSIX, but forbidden in Windows filenames.
+            pytest.param("home?x", marks=pytest.mark.platforms("posix")),
+        ],
+    )
     def test_the_version_gate_watches_the_real_db_under_a_uri_special_home(self, tmp_path, monkeypatch, home_name):
         """``#``/``?``/``%xx`` in HERMES_HOME must not truncate or re-decode the read-only URI: the
         gate would then watch some other (empty) database whose version never follows state.db."""

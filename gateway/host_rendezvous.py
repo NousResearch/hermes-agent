@@ -272,7 +272,14 @@ def record_is_stale(record: Optional[HostRecord]) -> bool:
 
 
 def liveness_is_proven(record: HostRecord) -> bool:
-    """True only when the record's process-incarnation probe positively matched (never on ``None``)."""
+    """True only when the record's process-incarnation probe positively matched (never on ``None``).
+
+    A record with neither ``createTime`` nor ``startTime`` cannot prove incarnation:
+    ``_same_incarnation`` treats a missing create_time as a match, so a recycled pid would
+    otherwise look alive forever. Topology already refused that shape; attach did not.
+    """
+    if record.create_time is None and record.start_time is None:
+        return False
     return _record_incarnation_matches(record) is True
 
 
@@ -462,6 +469,43 @@ def owns_host_lock(role: str) -> bool:
     return _lock_handles.get(_lock_key(_validated_role(role))) is not None
 
 
+def host_lock_is_held(role: str) -> Optional[bool]:
+    """Whether any process currently holds the host lock for ``role``.
+
+    ``True`` / ``False`` when the flock can be observed; ``None`` when the lock file cannot
+    be opened. Never retains a lock. This process's handle is authoritative: re-probing our
+    own flock succeeds on POSIX, so a second open would lie.
+    """
+    role = _validated_role(role)
+    if owns_host_lock(role):
+        return True
+    path = lock_path(role)
+    if not path.exists():
+        return False
+    try:
+        handle = open(path, "a+", encoding="utf-8")
+    except OSError:
+        return None
+    from gateway.status import _probe_lock_file
+
+    return _probe_lock_file(handle)
+
+
+def record_names_live_owner(record: HostRecord) -> bool:
+    """True when ``record``'s incarnation is proven AND its host lock is not observed free.
+
+    The publisher holds the host lock for its whole life and the OS drops it on death, so a free
+    flock falsifies a record whose pid merely looks alive (recycle, start-tick collision after a
+    reboot — #138343, #133744). Every reader that trusts a record as a running owner uses this.
+    """
+    if not liveness_is_proven(record):
+        return False
+    if host_lock_is_held(record.role) is False:
+        logger.debug("host %s record names pid %s but the host lock is free", record.role, record.pid)
+        return False
+    return True
+
+
 def publish_record(
     role: str,
     *,
@@ -526,13 +570,46 @@ def discard_dead_record(role: str) -> bool:
     record = read_record(role, include_stale=True)
     if record is None:
         return False
+    guard = None
     if record.pid != os.getpid() and _record_incarnation_matches(record) is not False:
-        return False
-    for path in (record_path(role), token_path(role)):
-        with contextlib.suppress(OSError):
-            path.unlink(missing_ok=True)
+        # A recycled pid can still look like the same incarnation. The publisher holds the
+        # host lock for its life, so winning it proves the recorded owner is gone. Hold it
+        # across the re-read and unlink: a free-lock probe released first let a new gateway
+        # claim and publish in the gap, and we deleted ITS record and token. A private handle,
+        # not claim_host_lock: cleanup must not enter this process's own claim/release ledger.
+        if owns_host_lock(role) or (guard := _hold_lock_briefly(role)) is None:
+            return False
+    try:
+        if guard is not None and read_record(role, include_stale=True) is None:
+            return False
+        for path in (record_path(role), token_path(role)):
+            with contextlib.suppress(OSError):
+                path.unlink(missing_ok=True)
+    finally:
+        if guard is not None:
+            from gateway.status import _release_file_lock
+
+            _release_file_lock(guard)
+            with contextlib.suppress(OSError):
+                guard.close()
     _invalidate_attach_cache()
     return True
+
+
+def _hold_lock_briefly(role: str):
+    """Open and flock ``role``'s host lock without registering it; ``None`` when not won."""
+    from gateway.status import _try_acquire_file_lock
+
+    path = lock_path(role)
+    try:
+        handle = open(path, "a+", encoding="utf-8")
+    except OSError:
+        return None
+    if _try_acquire_file_lock(handle):
+        return handle
+    with contextlib.suppress(OSError):
+        handle.close()
+    return None
 
 
 def clear_record(role: str) -> None:

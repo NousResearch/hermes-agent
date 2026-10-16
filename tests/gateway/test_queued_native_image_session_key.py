@@ -69,6 +69,8 @@ class CaptureQueuedNativeImageAgent:
 
 
 class CompressionExhaustedAgent(CaptureQueuedNativeImageAgent):
+    pending_steer = None
+
     def run_conversation(self, message, conversation_history=None, task_id=None):
         type(self).calls.append(message)
         return {
@@ -77,6 +79,7 @@ class CompressionExhaustedAgent(CaptureQueuedNativeImageAgent):
             "api_calls": 1,
             "failed": True,
             "compression_exhausted": True,
+            "pending_steer": type(self).pending_steer,
         }
 
 
@@ -167,10 +170,12 @@ async def test_queued_followup_uses_pending_event_session_key_for_native_images(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("leftover_steer", [None, "use the short answer"])
 async def test_compression_exhaustion_defers_queued_event_for_fresh_session(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, leftover_steer
 ):
     CompressionExhaustedAgent.calls = []
+    CompressionExhaustedAgent.pending_steer = leftover_steer
 
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -232,9 +237,16 @@ async def test_compression_exhaustion_defers_queued_event_for_fresh_session(
     assert len(CompressionExhaustedAgent.calls) == 1, (
         "the queued turn must not recurse into the exhausted session"
     )
-    assert adapter._pending_messages[session_key] is pending_event, (
-        "the exact native event must survive for the post-reset adapter drain"
-    )
-    assert runner._queued_events[session_key] == [overflow_event], (
-        "deferral must not promote or reorder later FIFO events"
-    )
+    if leftover_steer is None:
+        assert adapter._pending_messages[session_key] is pending_event, (
+            "the exact native event must survive for the post-reset adapter drain"
+        )
+        assert runner._queued_events[session_key] == [overflow_event], (
+            "deferral must not promote or reorder later FIFO events"
+        )
+    else:
+        # The agent already took the accepted /steer out of its buffer: it keeps its usual place
+        # ahead of the queued event instead of vanishing with the exhausted turn.
+        head = adapter._pending_messages[session_key]
+        assert head.text == leftover_steer
+        assert runner._queued_events[session_key] == [pending_event, overflow_event]

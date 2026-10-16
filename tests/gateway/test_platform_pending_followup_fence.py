@@ -1,10 +1,11 @@
 """Platform-surface pending-slot writes publish to background-review admission.
 
 The base adapter and the gateway runner fence every accepted follow-up already
-(``test_background_review_followup_admission.py``). Four surfaces write the pending slot
+(``test_background_review_followup_admission.py``). Five surfaces write the pending slot
 directly instead: raft's busy-session wake merge, yuanbao's message-recall interrupt, the
 runner's /stop, /new, /reset tail that re-parks an internal wake (#114456), and the runner's
-post-turn drain restoring a dequeued event behind a leftover /steer (#131644). Each write IS the
+post-turn drain restoring a dequeued event behind a leftover /steer (#131644) or past a
+compression-exhausted turn's reset. Each write IS the
 next live turn, so an automatic review that sampled "no follow-up" a moment earlier must not get
 its full-transcript request onto the wire beside it. Rejected and no-op events must leave
 admission untouched, or a dropped message would suppress learning forever.
@@ -316,3 +317,46 @@ async def test_leftover_steer_restoring_a_dequeued_event_publishes_the_followup_
     assert adapter._pending_messages[key] is queued
     assert fenced_under_admission == [True]
     assert state.epoch == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "leftover_steer", [None, "accepted correction"], ids=["queued_only", "steer_ahead"]
+)
+async def test_exhaustion_deferral_restoring_the_dequeued_event_publishes_the_followup_fence(
+    leftover_steer,
+):
+    """A compression-exhausted turn leaves its post-turn drain to the fresh session: the event the
+    drain had just dequeued goes back in the head slot for the post-reset adapter drain, and an
+    accepted leftover /steer takes its usual place ahead of it. Both are accepted follow-ups — the
+    turns after the reset — so each write publishes through the fence like every other slot write:
+    a review that sampled the slot empty between the dequeue and the restore is fenced here, never
+    left to run beside them."""
+    adapter, runner, source, key = _command_gateway()
+    runner._draining = False
+    queued = _accepted(source, "queued while busy", internal=False)
+    adapter._pending_messages[key] = queued
+    state, fenced_under_admission = _watch_admission(adapter, key)
+
+    event, text = await runner._run_agent_drain_pending(
+        {
+            "final_response": "",
+            "failed": True,
+            "compression_exhausted": True,
+            "pending_steer": leftover_steer,
+        },
+        adapter,
+        source,
+        key,
+    )
+
+    assert (event, text) == (None, None)
+    if leftover_steer is None:
+        assert adapter._pending_messages[key] is queued
+        assert fenced_under_admission == [True]
+        assert state.epoch == 1
+    else:
+        assert adapter._pending_messages[key].text == leftover_steer
+        assert runner._overflow_queue(key) == [queued]
+        assert fenced_under_admission == [True, True]
+        assert state.epoch == 2

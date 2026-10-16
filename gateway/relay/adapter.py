@@ -153,6 +153,10 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         self._auto_thread_waiters: dict[str, asyncio.Event] = {}
         # Bounded FIFO seen-set for inbound replay dedupe (insertion-ordered dict).
         self._seen_inbound: dict[str, None] = {}
+        # Discord chat labels the text lane carries and a forwarded interaction does not:
+        # (scope, chat) -> (chat_name, chat_topic); the second map is what the store holds.
+        self._discord_chat_labels: dict[tuple, tuple] = {}
+        self._discord_labels_recorded: dict[tuple, tuple] = {}
         # Live cards: draft_key -> draft_id of the OPEN native stream. Armed by
         # send_draft; consumed by send() to convert the turn-final into
         # draft(final=true) instead of a duplicate post. Keyed by _draft_key (chat +
@@ -888,13 +892,21 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
                 return
             self._seen_inbound[dedupe_key] = None
             self._evict_oldest(self._seen_inbound, self._SEEN_INBOUND_MAX)
-        self._capture_scope(event)
-        self._stamp_slack_session_thread(event)
-        # A structured prompt answer resolves its waiting primitive and is CONSUMED —
-        # never also dispatched as chat.
-        if await self._consume_prompt_response(event):
-            return
-        await self._localize_inbound_media(event)
+        try:
+            self._capture_scope(event)
+            await self._remember_discord_labels(event.source)
+            self._stamp_slack_session_thread(event)
+            # A structured prompt answer resolves its waiting primitive and is CONSUMED —
+            # never also dispatched as chat.
+            if await self._consume_prompt_response(event):
+                return
+            await self._localize_inbound_media(event)
+        except asyncio.CancelledError:
+            # Teardown cancels the reader mid-frame, before admission and before the ACK, so the
+            # connector replays this frame; the replay must be admitted, not dropped as seen.
+            if dedupe_key is not None:
+                self._seen_inbound.pop(dedupe_key, None)
+            raise
         if native:
             from datetime import datetime, timezone
             from gateway.platforms.webhook_ingress import admit_producer
@@ -1146,31 +1158,6 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
     async def on_interrupt(self, session_key: str, chat_id: str) -> None:
         """Bridge a connector-delivered /stop into the per-session interrupt path."""
         await self.interrupt_session_activity(session_key, chat_id)
-
-    async def _on_passthrough(self, forward, buffer_id: Optional[str] = None) -> None:
-        """Handle a connector-forwarded passthrough request. The connector answered the
-        provider's latency-critical ACK at the edge, verified the signature and vaulted
-        any shared-identity credential; the agent later acts via the token-less
-        ``send_follow_up`` path. A Discord interaction becomes a normalized
-        ``MessageEvent`` on the SAME agent path as chat; other forwards are logged and
-        dropped. NEVER raises: a malformed forward must not kill the read loop."""
-        try:
-            platform = getattr(forward, "platform", "") or ""
-            if platform == "discord":
-                event = self._discord_interaction_to_event(forward)
-                if event is not None:
-                    self._capture_scope(event)
-                    # A prompt-token component press is consumed (same gate as _on_inbound).
-                    if await self._consume_prompt_response(event):
-                        return
-                    await self.handle_message(event)
-                    return
-            logger.info(
-                "relay passthrough_forward dropped (no handler): platform=%s method=%s path=%s",
-                platform, getattr(forward, "method", "?"), getattr(forward, "path", "?"),
-            )
-        except Exception:
-            logger.warning("relay passthrough_forward handling failed", exc_info=True)
 
     async def disconnect(self) -> None:
         # The runner wraps this call in wait_for(adapter disconnect budget). Monitor

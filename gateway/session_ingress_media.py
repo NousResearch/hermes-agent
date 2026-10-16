@@ -60,9 +60,13 @@ def drop_capture_lease(paths=None):
                 del _leases[path]
 
 
-def _media_root():
+def native_inputs_root():
+    """This profile's content-addressed store of retained native inputs (``<root>/<sha256>/<name>``)."""
     from gateway.platforms.base import get_document_cache_dir
     return get_document_cache_dir().resolve() / 'native-inputs'
+
+
+_media_root = native_inputs_root
 
 
 # Public ``prompt.submit`` attachments: a local client stages image bytes in the

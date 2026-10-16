@@ -1398,14 +1398,7 @@ def run_compress_context_with_progress_timeout(
             fence.revoke_commit_admission()
 
 
-from agent.conversation_compression_checkpoint import (
-    _CHECKPOINT_REQUIRED_REMEDIATION,
-    CompressionCheckpointUnavailable,
-    _active_memory_provider_label,
-    _checkpoint_blocked,
-    _checkpoint_incapable,
-    _warn_checkpoint_required_without_capable_provider,
-)
+from agent.conversation_compression_checkpoint import _checkpoint_blocked, _checkpoint_incapable
 
 
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:

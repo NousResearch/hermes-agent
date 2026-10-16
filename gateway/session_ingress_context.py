@@ -24,6 +24,18 @@ def relay_callback(transport, event):
         _relay_callback.reset(token)
 
 
+@contextmanager
+def relay_passthrough_event(transport, forward, event):
+    # A passthrough frame is decoded after the reader bound its proof to the raw forward; move
+    # that proof onto the decoded event. Without the reader's binding nothing is minted.
+    bound = _relay_callback.get()
+    if bound is None or bound[0] is not transport or bound[1] is not forward:
+        yield
+        return
+    with relay_callback(transport, event):
+        yield
+
+
 def _relay_connector(adapter, source):
     from gateway.relay.ws_transport import WebSocketRelayTransport
     transport = getattr(adapter, '_transport', None)

@@ -214,6 +214,10 @@ def row_turn_author(policy, row):
 
 
 async def execute_admission(authority, ref, row):
+    from gateway.session_completion_notes import note_if_unviewed
+    noted = await note_if_unviewed(authority, ref, row)  # #134889 LC-7: no viewer, no turn
+    if noted is not None:
+        return noted
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if policy is not None and policy.source == 'cron':
@@ -290,7 +294,9 @@ async def execute_admission(authority, ref, row):
                               'error': response or 'The admitted turn failed.'}
             # The drain commits this under the stream lock so no viewer reads `terminal`
             # before the completion event exists in the replay ring.
-            authority.pending_results[row['admission_id']] = {'result': result, 'usage': captured.get('usage', {})}
+            authority.pending_results[row['admission_id']] = {
+                'result': result, 'usage': captured.get('usage', {}),
+                **({'session_usage': captured['session_usage']} if 'session_usage' in captured else {})}
             if not is_api and response:
                 adapter = authority.runner._adapter_for_source(event.source)
                 if adapter is not None:

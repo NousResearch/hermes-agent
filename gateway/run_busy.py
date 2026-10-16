@@ -183,6 +183,28 @@ class GatewayBusySessionMixin:
 
         self._apply_followup_queue_mutation(adapter, session_key, _restore)
 
+    def _defer_past_exhaustion_reset(
+        self, result: Any, adapter: Any, source: SessionSource, session_key: str, pending_event: MessageEvent,
+    ) -> None:
+        """Leave the post-turn drain to the fresh session after a compression-exhausted turn.
+
+        The outer handler owns the reset: the exact queued event goes back in the head slot so the
+        adapter's post-handler drain starts it on the fresh session (never promoted or prepared on the
+        exhausted one). An accepted leftover /steer was already taken out of the agent's buffer, so it
+        keeps its usual place ahead of that event instead of vanishing. Both are accepted follow-ups —
+        the turns after the reset — so each write publishes through the review-admission fence like
+        every other slot write (``_restore_dequeued_event``): a review that sampled the slot empty
+        between the dequeue and this restore is fenced, never left to run beside them.
+        """
+        self._restore_dequeued_event(session_key, adapter, pending_event)
+        leftover_steer = (result.get("pending_steer") or "").strip()
+        if leftover_steer:
+            steer_prompt, steer_source = self._pinned_channel_inputs(session_key, None, source, internal=True)
+            steer_event = MessageEvent(text=leftover_steer, source=steer_source, channel_prompt=steer_prompt)
+            # The steer takes the slot; the just-restored event moves to the overflow head behind it.
+            self._restore_dequeued_event(session_key, adapter, steer_event)
+        logger.info("Deferring queued follow-up for session %s until after its compression-exhausted reset", session_key)
+
     def _merge_leftover_steer(
         self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str],
         pending_event: Optional[MessageEvent], pending: Optional[str],
@@ -237,14 +259,7 @@ class GatewayBusySessionMixin:
         if result and adapter and session_key:
             pending_event = _dequeue_pending_event(adapter, session_key)
             if result.get("compression_exhausted") and pending_event is not None:
-                # The outer handler owns the reset. Preserve the exact event in the head slot so the
-                # adapter's post-handler drain starts it against the fresh session; do not promote or
-                # prepare native media on the exhausted session.
-                adapter._pending_messages[session_key] = pending_event
-                logger.info(
-                    "Deferring queued follow-up for session %s until after its compression-exhausted reset",
-                    session_key,
-                )
+                self._defer_past_exhaustion_reset(result, adapter, source, session_key, pending_event)
                 return None, None
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
@@ -583,10 +598,13 @@ class GatewayBusySessionMixin:
 
         def _merge_media_head() -> bool:
             # #28503 — consecutive text events stay distinct FIFO turns; only compatible media
-            # contexts merge into the head slot.
+            # contexts merge into the head slot. A pin-inheriting synthetic event and a human
+            # event never share a slot (a merge could make a human turn inherit the pin, or a
+            # synthetic turn overwrite a human one) — see d3ed7d4798.
             existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
             same_security_context = existing is not None and (
                 getattr(existing, "internal", False) == getattr(event, "internal", False)
+                and getattr(existing, "inherit_channel_pin", False) == getattr(event, "inherit_channel_pin", False)
                 and getattr(existing, "allow_gateway_control", True)
                 == getattr(event, "allow_gateway_control", True)
                 and all(
@@ -1125,7 +1143,7 @@ class GatewayBusySessionMixin:
     _PLAIN_COMMANDS = (
         "status", "context", "restart", "approve", "deny", "pause", "agents", "bg", "btw",
         "kanban", "subgoal", "heartbeat", "busy", "yolo", "verbose", "footer", "help",
-        "commands", "profile", "login", "update", "version",
+        "commands", "profile", "login", "update", "version", "autoprune",
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).
     _IDLE_COMMANDS = (

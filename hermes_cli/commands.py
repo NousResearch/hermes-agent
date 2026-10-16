@@ -238,6 +238,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[queue|steer|interrupt|status]",
                subcommands=("queue", "steer", "interrupt", "status"),
                busy_policy="dispatch", desktop="terminal"),
+    CommandDef("autoprune", "Turn automatic pruning of old sessions on or off", "Configuration",
+               args_hint="[on|off|later|status]", subcommands=("on", "off", "later", "status"),
+               busy_policy="dispatch", execute="autoprune", argument_mode="options"),
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",

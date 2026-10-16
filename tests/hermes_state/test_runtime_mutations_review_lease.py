@@ -8,7 +8,8 @@ yield (the rewrite invalidated its replay basis); a reset or branch publishes a 
 target and leaves the review beside the closed transcript; a delete removes the fork's replay
 basis outright and asks it to yield the same way, over the canonical receipt and the facade's
 ``delete_session`` alike (only a maintenance probe spares a review-held row). A foreground holder
-still refuses every one of them.
+still refuses every one of them. A detached result (an unviewed completion's note, a delegation's
+delivery) is an APPEND after the review's snapshot: it lands beside the review and asks nothing.
 
 The lease row is keyed by the conversation's compression ROOT while the fork addresses it by its
 own session id, the live TIP; a delete that removed the chain must still let the fork read the
@@ -23,6 +24,7 @@ import pytest
 from agent import review_admission
 from hermes_state import SessionDB
 from hermes_state_compression import BACKGROUND_REVIEW_LEASE_HOLDER_MARK
+from hermes_state_errors import SessionTurnLeaseLostError
 from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
 import hermes_state_runtime as rt
 
@@ -382,3 +384,36 @@ def test_branch_prepare_returns_the_snapshot_beside_a_background_review(tmp_path
         )
         with pytest.raises(MUTATION_GUARD_REFUSALS):
             _mutate(db, epoch, logical, "branch", {}, "branch", _prepare_only=True)
+
+
+def test_completion_note_lands_beside_a_background_review_and_still_refuses_a_foreground_holder(
+    tmp_path,
+):
+    """An unviewed completion's note runs at the FIFO head with no viewer attached — a moment the
+    session may hold a live review lease. It is an append after the review's snapshot, so it lands
+    without asking the holder to yield, exactly once per admission; a foreground holder refuses it."""
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        _three_rows(db)
+        holder = _review_holder()
+        assert db.try_acquire_session_turn_lease("s", holder, ttl_seconds=60)
+        row_id = db.append_completion_note(
+            "s", "adm-1", "done", "internal_notification", {}
+        )
+        assert isinstance(row_id, int)
+        assert db.session_turn_lease_yield_requested("s", holder) is False
+        assert (
+            db.append_completion_note(
+                "s", "adm-1", "done again", "internal_notification", {}
+            )
+            == row_id
+        )
+        assert [m["content"] for m in db.get_messages("s")][-1] == "done"
+        db.release_session_turn_lease("s", holder)
+
+        assert db.try_acquire_session_turn_lease(
+            "s", _foreground_holder(), ttl_seconds=60
+        )
+        with pytest.raises(SessionTurnLeaseLostError):
+            db.append_completion_note(
+                "s", "adm-2", "later", "internal_notification", {}
+            )

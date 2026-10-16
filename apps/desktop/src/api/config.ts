@@ -158,7 +158,8 @@ export function getHermesConfigRecord(
   { includeDefaults = true }: { includeDefaults?: boolean } = {}
 ): Promise<HermesConfigRecord> {
   return fetchBoundConfigRecord(profile, {
-    path: includeDefaults ? '/api/config' : '/api/config?include_defaults=false'
+    path: includeDefaults ? '/api/config' : '/api/config?include_defaults=false',
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 

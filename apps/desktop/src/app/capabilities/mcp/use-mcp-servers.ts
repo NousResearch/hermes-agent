@@ -79,15 +79,15 @@ export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpSe
     isError: configFailed,
     error: configError,
     refetch: refetchConfigQuery,
-    dataUpdatedAt: configUpdatedAt,
-    errorUpdatedAt: configErroredAt
+    dataUpdatedAt: configUpdatedAt
   } = useHermesConfigRecord(profile)
 
   const setConfig = hermesConfigCacheWriter(profile)
 
   const { arm: armProfileLatch, pending: profilePending } = useProfileSwitchLatch({
-    dataUpdatedAt: configUpdatedAt,
-    errorUpdatedAt: configErroredAt
+    // A failed owner refetch can retain the previous profile's cached record.
+    // Only a fresh successful config read is proof that writes may unlock.
+    dataUpdatedAt: configUpdatedAt
   })
 
   const [saving, setSaving] = useState(false)
@@ -138,6 +138,12 @@ export function useMcpServers({ gateway, profile }: UseMcpServersOptions): McpSe
   const fleet = useMcpProbes({ appProfile, profile, profileEpoch, scopeProfileKey, servers })
 
   useOnProfileSwitch(() => {
+    // An explicit Capabilities scope owns this controller independently of the
+    // foreground chat profile. Its parent remounts when that actual scope changes.
+    if (profile != null) {
+      return
+    }
+
     profileEpoch.current += 1
     fleet.resetForProfileSwitch()
     setAuthing(null)

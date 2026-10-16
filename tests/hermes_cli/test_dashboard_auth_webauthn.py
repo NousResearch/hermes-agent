@@ -1032,3 +1032,35 @@ class TestSetupPreflight:
             dashboard_webauthn.cmd_webauthn_setup(args)
         out = capsys.readouterr().out
         assert "unreadable" in out and "nothing was written" in out
+
+
+class TestSetupTopologyAdvisory:
+    """A public-https origin is unservable on the default loopback bind and
+    inert without trusted_proxies; the wizard must say so at write time."""
+
+    @staticmethod
+    def _args(**overrides):
+        base = {"rp_id": "", "rp_name": "", "origin": None, "force": False,
+                "skip_preflight": False}
+        base.update(overrides)
+        return type("A", (), base)()
+
+    def test_public_https_origin_prints_the_deployment_note(self, hermes_home, capsys, monkeypatch):
+        from hermes_cli import dashboard_webauthn
+
+        _write_webauthn_config(hermes_home)
+        args = self._args(rp_id="dash.example.com", rp_name="Dash",
+                          origin=["https://dash.example.com"])
+        dashboard_webauthn.cmd_webauthn_setup(args)
+        out = capsys.readouterr().out
+        assert "Deployment note" in out
+        assert "--host 0.0.0.0" in out and "trusted_proxies" in out
+
+    def test_localhost_tunnel_origin_prints_no_note(self, hermes_home, capsys, monkeypatch):
+        from hermes_cli import dashboard_webauthn
+
+        _write_webauthn_config(hermes_home, rp_id="localhost")
+        args = self._args(rp_id="localhost", rp_name="Local",
+                          origin=["http://localhost:9119"])
+        dashboard_webauthn.cmd_webauthn_setup(args)
+        assert "Deployment note" not in capsys.readouterr().out

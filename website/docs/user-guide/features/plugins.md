@@ -827,7 +827,9 @@ the profile's own copy winning a same-name conflict, and enabled in its own conf
 host, whatever its `plugins.isolation` says: another profile's plugin code never runs inside the
 gateway. The host does not carry websockets yet, so such a plugin's websocket routes are refused
 (HTTP 501) for that profile; its HTTP routes work. A slow hosted handler holds only its own profile's
-plugin requests, and a request the host has not answered after 60 s gets HTTP 504.
+plugin requests, and a request the host has not answered after 60 s gets HTTP 504. Such a host starts
+on the profile's first dashboard plugin request and runs until the gateway exits: one extra Python
+process for each profile that has used a dashboard plugin.
 
 What changes in `host` mode:
 

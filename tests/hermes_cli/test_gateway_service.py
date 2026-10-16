@@ -1833,6 +1833,86 @@ class TestProfileArg:
             stdout_log.read_text(encoding="utf-8"),
         )
 
+    # -- bundle job-root identity (gateway.launchd_network_identity: bundle, #123118) ----------
+
+    @staticmethod
+    def _bundle_identity_env(tmp_path, monkeypatch, value="bundle"):
+        """Point HERMES_HOME + load_config at a tmp profile with the identity switch set."""
+        profile_dir = tmp_path / ".hermes"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
+        monkeypatch.setattr(gateway_cli, "_profile_suffix", lambda: "")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"gateway": {"launchd_network_identity": value}})
+        return profile_dir
+
+    @pytest.mark.platforms("macos")
+    def test_launchd_bundle_identity_roots_job_in_named_bundle(self, tmp_path, monkeypatch):
+        """`bundle` replaces the opaque osascript root with a grantable, named, stable ProgramArguments[0]."""
+        profile_dir = self._bundle_identity_env(tmp_path, monkeypatch)
+
+        plist = gateway_cli.generate_launchd_plist()
+        program_args = plistlib.loads(plist.encode("utf-8"))["ProgramArguments"]
+
+        assert program_args == [str(profile_dir / "HermesGateway.app" / "Contents" / "MacOS" / "HermesGateway")]
+        exe = Path(program_args[0])
+        assert exe.exists() and os.access(exe, os.X_OK)
+        body = exe.read_text()
+        assert body.startswith("#!/bin/sh\nexec ")
+        assert "gateway run" in body and "--external-supervisor" in body
+        assert f"2>> {profile_dir / 'logs' / 'gateway.error.log'}" in body
+        info = plistlib.loads((exe.parent.parent / "Info.plist").read_bytes())
+        assert info["CFBundleIdentifier"] == "ai.hermes.gateway.launcher"
+        assert info["LSUIElement"] is True
+        # The wrapper's own ps line must never be taken for the gateway (stop/status parity with osascript).
+        assert status.looks_like_gateway_command_line(" ".join(program_args)) is False
+
+        # Refresh parity: plist regeneration is idempotent — bundle identity never rewrites (no
+        # codesign churn that could invalidate TCC's cached attribution mid-flight).
+        mtime_ns = exe.stat().st_mtime_ns
+        assert gateway_cli.generate_launchd_plist() == plist
+        assert exe.stat().st_mtime_ns == mtime_ns
+
+    @pytest.mark.platforms("macos")
+    @pytest.mark.parametrize("value", [None, "osascript", "bundles", "BUNDLE ", "", 1])
+    def test_launchd_bundle_identity_fails_safe_to_osascript(self, tmp_path, monkeypatch, value):
+        """Anything but the exact string 'bundle' keeps the shipped osascript shape (#71206 default)."""
+        self._bundle_identity_env(tmp_path, monkeypatch, value=value)
+        # Comparison trims/casefolds, so 'BUNDLE ' counts as bundle; everything else fails safe.
+        program_args = plistlib.loads(gateway_cli.generate_launchd_plist().encode("utf-8"))["ProgramArguments"]
+        expected_bundle = isinstance(value, str) and value.strip().lower() == "bundle"
+        assert (program_args[0].endswith("HermesGateway")) is expected_bundle
+
+    @pytest.mark.platforms("macos")
+    def test_launchd_bundle_launcher_preserves_process_group_and_exit_status(self, tmp_path, monkeypatch):
+        """exec-in-launcher keeps lifecycle parity with the JXA shape: group + KeepAlive exit code."""
+        from hermes_cli.gateway_launchd import launchd_program_arguments
+        self._bundle_identity_env(tmp_path, monkeypatch)
+        stdout_log = tmp_path / "stdout.log"
+        stderr_log = tmp_path / "stderr.log"
+        command = [
+            sys.executable,
+            "-c",
+            "import os, sys; print(os.getpgrp()); sys.exit(23)",
+        ]
+
+        wrapper = subprocess.Popen(
+            launchd_program_arguments(command, stdout_log, stderr_log), start_new_session=True
+        )
+        try:
+            returncode = wrapper.wait(timeout=10)
+        finally:
+            if wrapper.poll() is None:
+                os.killpg(wrapper.pid, signal.SIGKILL)
+                wrapper.wait()
+
+        assert returncode == 23
+        # exec: the gateway IS the job pid, in the launchd-allocated group (test: its own session pid).
+        assert int(stdout_log.read_text()) == wrapper.pid
+        assert stderr_log.read_text() == ""
+
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)

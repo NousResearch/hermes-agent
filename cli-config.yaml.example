@@ -1551,6 +1551,10 @@ platform_toolsets:
 #       #       slack:
 #       #         tool_progress_native: true
 #       #         tool_progress_native_mode: plan   # plan | timeline
+#       # Route interim narration into one per-turn thinking card titled
+#       # "<bot name> is thinking", with one collapsible row per narration
+#       # burst. Opt-in beside native_task_cards; slot-keyed so both coexist.
+#       thinking_cards: false
 #       # Slack user IDs whose Web-API posts (user token, e.g. your own
 #       # dashboard/mobile front-end) count as human instead of being dropped
 #       # as app traffic. Narrower than allow_bots: all. Users only — never apps.

@@ -51,7 +51,15 @@ import { $activeConnectionId } from '@/store/connections'
 import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
 import { reconnectGateway } from '@/store/gateway-reconnect'
 import { $interfaceMode, shownInMode } from '@/store/interface-mode'
-import { $fileBrowserOpen, $panesFlipped, $pinnedSessionIds, $sidebarOpen, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
+import {
+  $fileBrowserOpen,
+  $panesFlipped,
+  $pinnedSessionIds,
+  $sidebarOpen,
+  pinSession,
+  restoreWorktree,
+  unpinSession
+} from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { markOnboardingDecided } from '@/store/onboarding-presence'
 import {
@@ -1258,9 +1266,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const leftPaneOccupiesEdge = panesFlipped ? fileBrowserOpen : sidebarOpen
 
-  const titlebarContentInset = leftPaneOccupiesEdge
-    ? '0rem'
-    : titlebarContentInsetCss(controlsPos.left, clusters.left)
+  const titlebarContentInset = leftPaneOccupiesEdge ? '0rem' : titlebarContentInsetCss(controlsPos.left, clusters.left)
 
   // Native caption reservations can translate chrome without resizing it.
   useEffect(() => {

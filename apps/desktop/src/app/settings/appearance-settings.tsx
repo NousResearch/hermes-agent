@@ -782,35 +782,35 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
           {show('window-layout') && (
             <>
               <ListRow
-              action={
-                <SegmentedControl
-                  onChange={id => {
-                    triggerHaptic('selection')
-                    setTitlebarAppActionsSide(id)
-                  }}
-                  options={appActionsOptions}
-                  value={titlebarAppActionsSide}
-                />
-              }
-              description={a.appActionsDesc}
-              id={settingElementId(ids.appActions)}
-              title={a.appActionsTitle}
-            />
+                action={
+                  <SegmentedControl
+                    onChange={id => {
+                      triggerHaptic('selection')
+                      setTitlebarAppActionsSide(id)
+                    }}
+                    options={appActionsOptions}
+                    value={titlebarAppActionsSide}
+                  />
+                }
+                description={a.appActionsDesc}
+                id={settingElementId(ids.appActions)}
+                title={a.appActionsTitle}
+              />
 
-            <ListRow
-              action={
-                <SegmentedControl
-                  onChange={id => {
-                    triggerHaptic('selection')
-                    setTitlebarExternalButtons(Number(id))
-                  }}
-                  options={externalButtonsOptions}
-                  value={String(titlebarExternalButtons) as ExternalButtonOptionId}
-                />
-              }
-              description={a.externalButtonsDesc}
-              title={a.externalButtonsTitle}
-            />
+              <ListRow
+                action={
+                  <SegmentedControl
+                    onChange={id => {
+                      triggerHaptic('selection')
+                      setTitlebarExternalButtons(Number(id))
+                    }}
+                    options={externalButtonsOptions}
+                    value={String(titlebarExternalButtons) as ExternalButtonOptionId}
+                  />
+                }
+                description={a.externalButtonsDesc}
+                title={a.externalButtonsTitle}
+              />
             </>
           )}
 

@@ -272,7 +272,9 @@ async def execute_admission(authority, ref, row):
                               'error': response or 'The admitted turn failed.'}
             # The drain commits this under the stream lock so no viewer reads `terminal`
             # before the completion event exists in the replay ring.
-            authority.pending_results[row['admission_id']] = {'result': result, 'usage': captured.get('usage', {})}
+            authority.pending_results[row['admission_id']] = {
+                'result': result, 'usage': captured.get('usage', {}),
+                **({'session_usage': captured['session_usage']} if 'session_usage' in captured else {})}
             if not is_api and response:
                 adapter = authority.runner._adapter_for_source(event.source)
                 if adapter is not None:

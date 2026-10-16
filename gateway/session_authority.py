@@ -54,6 +54,8 @@ class LiveSession:
     # (a contended SQLite writer must not stall loop-side lock takers); readers holding that lock
     # still see the claim as started, so no snapshot shows a terminal row without its completion.
     settling: dict = field(default_factory=dict)
+    # A viewer attached while a guarded deferred pick awaits consent: the next boundary asks again.
+    reask_pick: bool = False
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
@@ -235,9 +237,12 @@ class SessionAuthority:
             active_generation = handle.execution_generation if handle.execution_state == "running" else None
             prompts = live.controls.snapshot(ref.session_id, active_generation)
             epoch, sequence = live.event_stream.watermark()
-            return SubscriptionSnapshot(subscription, handle, epoch,
+            snapshot = SubscriptionSnapshot(subscription, handle, epoch,
                                         sequence, tuple(local_history(self, ref)),
                                         tuple(self._pending_receipt(r) for r in self._pending_rows(ref)), prompts)
+        from gateway.session_deferred_pick import reask_on_attach
+        await reask_on_attach(self, ref, live)
+        return snapshot
 
     def _retire_overflowed(self, session_id, transport):
         """The fanout dropped this peer's backlog: its subscription is over even though the
@@ -787,6 +792,10 @@ class SessionAuthority:
                 raise RuntimeStoreError('unknown_execution')
             first = next((row for row in pending if row['status'] == 'queued'), None)
             from gateway.config import Platform
+            if live.source.platform == Platform.LOCAL:
+                # A model pick made while the previous turn ran lands here, at the turn boundary.
+                from gateway.session_deferred_pick import apply_deferred_pick
+                await apply_deferred_pick(self, ref, live)
             if first is not None and live.source.platform == Platform.LOCAL:
                 from gateway.session_local_recovery import restore_local_session
                 restore_local_session(self, ref.session_id)

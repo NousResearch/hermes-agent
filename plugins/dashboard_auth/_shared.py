@@ -54,7 +54,7 @@ def unsign_session_token(token: str, secret: bytes, kind: str) -> Optional[dict]
         if not hmac.compare_digest(sig, expected):
             return None
         payload = json.loads(raw)
-    except Exception:
+    except Exception:  # health: allow BLE001 -- tampered/foreign blob is just "no session"
         return None
     if payload.get("kind") != kind or payload.get("exp", 0) <= int(time.time()):
         return None

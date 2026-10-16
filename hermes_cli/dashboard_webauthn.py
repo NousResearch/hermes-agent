@@ -45,7 +45,7 @@ def cmd_webauthn_enrol(args) -> None:
 
     kwargs = _resolve_provider_settings()
     provider = WebauthnDashboardAuthProvider(**kwargs)
-    origins = tuple(provider._origins)  # noqa: SLF001
+    origins = tuple(provider._origins)
     origin_arg = (getattr(args, "origin", "") or "").strip().rstrip("/")
     chosen = ""
     if origin_arg:
@@ -72,13 +72,13 @@ def cmd_webauthn_enrol(args) -> None:
 
     print("Open this URL in a browser on the configured origin (secure context):")
     print(f"  {url}")
-    print("")
+    print()
     expires_at = int(time.time()) + webauthn_store.ENROLMENT_TOKEN_TTL_SECONDS
     store_path = getattr(provider, "_store_path", "")
     print(f"Token {token[:8]}… pending in {store_path or 'the dashboard_webauthn.json store'};")
     print(f"single-use, expires {time.strftime('%H:%M:%S', time.gmtime(expires_at))}Z "
           f"({int(webauthn_store.ENROLMENT_TOKEN_TTL_SECONDS / 60)} minutes) — open it before then.")
-    print("")
+    print()
     print("After enrolling, enrol a SECOND passkey (another device or a hardware")
     print("key) so a lost authenticator cannot lock you out. Re-running enrol does")
     print("NOT invalidate earlier tokens, but a link whose token was already")
@@ -109,7 +109,7 @@ def cmd_webauthn_forget(args) -> None:
     store_path = store.resolve_store_path(str(section.get("credential_store", "")).strip())
     try:
         doc = store.load(store_path)
-    except Exception as exc:  # noqa: BLE001 - fail closed, never erase on a bad read
+    except Exception as exc:  # health: allow BLE001 -- fail closed, never erase on a bad read
         print(f"✗ Refusing to edit the credential store: {exc}")
         sys.exit(1)
     credentials = doc.get("credentials") or []
@@ -166,7 +166,7 @@ def _preflight(args) -> None:
 
     try:
         load_config_readonly()
-    except Exception as exc:  # noqa: BLE001 — same failure save_config would hit later
+    except Exception as exc:  # health: allow BLE001 -- same failure save_config would hit later
         print(f"✗ config.yaml is unreadable — fix it before setup; nothing was written: {exc}")
         sys.exit(1)
     if getattr(args, "skip_preflight", False):
@@ -182,7 +182,7 @@ def _preflight(args) -> None:
     if sys.stdin.isatty():
         try:
             import pm
-        except Exception:  # noqa: BLE001 — not a PM-managed install here
+        except Exception:  # health: allow BLE001 -- not a PM-managed install here
             pm = None
         if pm is not None and _confirm("Install the 'webauthn' extra now?", True):
             try:
@@ -197,7 +197,7 @@ def _preflight(args) -> None:
                     print("→ Run `hermes dashboard webauthn setup` again — a fresh "
                           "process picks the extra up; nothing else is needed.")
                     sys.exit(1)
-            except Exception as exc:  # noqa: BLE001 — fall through to the manual remedy
+            except Exception as exc:  # health: allow BLE001 -- fall through to the manual remedy
                 print(f"  ✗ {exc}")
     if not usable:
         print(f"→ {remedy}")
@@ -269,7 +269,7 @@ def _validated_origin(raw: str, rp_id: str) -> str:
     try:
         from plugins.dashboard_auth.webauthn import crypto as _wa_crypto
         verify = _wa_crypto.verify_rp_id
-    except Exception:  # noqa: BLE001 — any import failure here means "no fido2 on this box"
+    except Exception:  # health: allow BLE001 -- any import failure here means "no fido2 on this box"
         verify = None
     if verify is not None:
         if not verify(rp_id, canonical):
@@ -386,7 +386,7 @@ def _store_has_credentials(section: dict) -> bool:
     try:
         doc = webauthn_store.load(webauthn_store.resolve_store_path(
             str(section.get("credential_store", "")).strip()))
-    except Exception:  # noqa: BLE001 — a unreadable store is treated as populated
+    except Exception:  # health: allow BLE001 -- a unreadable store is treated as populated
         return True
     return bool((doc.get("credentials") or []) or (doc.get("pending_enrolments") or {}))
 
@@ -465,7 +465,7 @@ def _write_webauthn_block(rp_id: str, rp_name: str, origins: list, args,
         preserve.add(("dashboard", "basic_auth"))
     try:
         config_mod.save_config(partial, preserve_keys=preserve, merge_existing=True)
-    except Exception as exc:  # noqa: BLE001 — the fail-closed reader refuses damaged files
+    except Exception as exc:  # health: allow BLE001 -- the fail-closed reader refuses damaged files
         print(f"✗ config.yaml was not written (nothing changed): {exc}")
         sys.exit(1)
     if trusted:
@@ -482,7 +482,7 @@ def _write_webauthn_block(rp_id: str, rp_name: str, origins: list, args,
                                        preserve_keys={("plugins", "disabled")},
                                        merge_existing=True)
                 print("  ✓ re-enabled the bundled basic plugin (it was in plugins.disabled)")
-        except Exception as exc:  # noqa: BLE001 — informational; the boot gate re-checks
+        except Exception as exc:  # health: allow BLE001 -- informational; the boot gate re-checks
             print(f"  (plugin-enable re-check skipped: {exc})")
     return str(config_path), str(backup) if backup else None
 
@@ -524,7 +524,7 @@ def _proxy_candidates(port: int = 9119) -> list[str]:
     try:
         proc = subprocess.run(["ss", "-tnH", "state", "established",
                                f"( sport = :{port} )"],
-                              capture_output=True, text=True, timeout=10, check=False)
+                              capture_output=True, text=True, encoding="utf-8", timeout=10, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return []
     me = _local_addrs()
@@ -567,7 +567,7 @@ def _local_addrs() -> set:
 
     out: set = set()
     try:
-        proc = subprocess.run(["hostname", "-I"], capture_output=True, text=True,
+        proc = subprocess.run(["hostname", "-I"], capture_output=True, text=True, encoding="utf-8",
                               timeout=5, check=False)
         out.update(proc.stdout.split())
     except (OSError, subprocess.TimeoutExpired):
@@ -693,7 +693,7 @@ def cmd_webauthn_setup(args) -> None:
         resolution = "resolves cleanly"
     except SkipRegistration as skip:
         resolution = f"the server will refuse it at boot: {skip.reason}"
-    except Exception as exc:  # noqa: BLE001 — informational only; the server decides
+    except Exception as exc:  # health: allow BLE001 -- informational only; the server decides
         resolution = f"could not re-check on this box ({type(exc).__name__}: {exc}); the server re-validates at boot"
 
     print()

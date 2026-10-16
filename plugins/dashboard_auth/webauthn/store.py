@@ -61,7 +61,7 @@ def load(path: Path) -> dict:
         return {"version": FILE_VERSION, "rp_id": None, "credentials": [],
                 "pending_enrolments": {}}
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding="utf-8-sig") as fh:
             doc = json.load(fh)
     except (OSError, ValueError) as exc:
         raise StoreError(f"cannot read credential store {path}: {exc}") from exc
@@ -78,7 +78,7 @@ def load(path: Path) -> dict:
 
 def save(path: Path, doc: Mapping[str, Any]) -> None:
     """Atomically persist ``doc`` (temp+rename in the same directory), 0600,
-    owners-only directory creation. Explicit ``encoding="utf-8"`` everywhere
+    owners-only directory creation. BOM-tolerant ``encoding="utf-8-sig"`` reads; plain ``utf-8`` writes
     (PLW1514); ``os.replace`` is atomic on POSIX and same-volume Windows."""
     with _lock:
         path.parent.mkdir(parents=True, exist_ok=True)

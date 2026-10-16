@@ -82,7 +82,8 @@ def _require_enrol_session_or_token(request: Request, provider, token: str):
     try:
         if token and provider.peek_enrolment_token(token):
             return None  # authorised by the pending one-shot enrolment token
-    except Exception:  # noqa: BLE001 - store I/O failure means "not authorised"
+    # health: allow S110 -- deliberate fall-through: the 401 below is the answer
+    except Exception:  # health: allow BLE001 -- store I/O failure means "not authorised"
         pass
     access, _rt = read_session_cookies(request)
     if not access:
@@ -143,7 +144,7 @@ async def webauthn_verify(request: Request, body: _WebauthnVerifyBody):
     except ProviderError as e:
         _login_failure(request, PROVIDER_NAME, "provider_unreachable")
         raise _http(503, f"Provider unreachable: {e}")
-    except Exception:  # noqa: BLE001 - any credential rejection is the generic 401
+    except Exception:  # health: allow BLE001 -- any credential rejection is the generic 401
         _login_failure(request, PROVIDER_NAME, "invalid_credentials")
         raise _http(401, "Invalid or expired passkey ceremony.")
     # Broker tail parity with /auth/password-login: the desktop's native flow
@@ -211,13 +212,13 @@ async def webauthn_register_verify(request: Request, body: _WebauthnRegisterBody
         raise _http(401, "Invalid or expired passkey ceremony.")
     except ProviderError as exc:
         raise _http(503, f"Provider unreachable: {exc}")
-    except Exception:  # noqa: BLE001 - credential rejection mapping
+    except Exception:  # health: allow BLE001 -- credential rejection mapping
         _login_failure(request, PROVIDER_NAME, "registration_rejected")
         raise _http(401, "Invalid or expired passkey ceremony.")
     if token_used:
         try:
             provider.consume_enrolment_token(body.enrolment)
-        except Exception as exc:  # noqa: BLE001 - best effort; registration succeeded
+        except Exception as exc:  # health: allow BLE001 -- best effort; registration succeeded
             _log.warning("dashboard-auth: enrolment token consume failed: %s", exc)
     response = JSONResponse({"ok": True, "credential": record}, headers=_NO_STORE)
     _clear_challenge(response, request)
@@ -239,7 +240,7 @@ async def webauthn_enrol_page(request: Request, token: str = "", label: str = ""
         raise _http(404, "Not Found")
     try:
         valid = provider.peek_enrolment_token(token)
-    except Exception:  # noqa: BLE001 - unreadable store = link no longer trusted
+    except Exception:  # health: allow BLE001 -- unreadable store = link no longer trusted
         valid = False
     if not valid:
         return HTMLResponse(_ENROL_PAGE_EXPIRED, headers=_NO_STORE)

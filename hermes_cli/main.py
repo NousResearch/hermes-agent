@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3  # health: allow FILE_LINES -- additive provider wiring: three `_forward_command` registry lines plus a 5-line dashboard-start hook
 """Hermes CLI - Main entry point.
 
 Usage:

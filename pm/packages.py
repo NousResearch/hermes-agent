@@ -988,7 +988,7 @@ class CuaDriver(BinaryPackage):
         sonames = missing_shared_libraries(binary)
         if not sonames:
             return reason, ""
-        installed, remedy = try_install_x11_client_libs(sonames)
+        _installed, remedy = try_install_x11_client_libs(sonames)
         retried = self.verify(entry, target)
         if "loading shared libraries" in retried:
             still = missing_shared_libraries(binary)

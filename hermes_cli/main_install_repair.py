@@ -291,7 +291,7 @@ def _configured_features_missing_deps() -> list[tuple[str, str, str]]:
             missing.append(("Dashboard passkeys (WebAuthn)",
                             "Run `hermes pm install --extra webauthn` to install fido2.",
                             "webauthn"))
-    except Exception as exc:
+    except Exception as exc:  # health: allow BLE001 -- advisory inventory; read failures omit the row
         logger.debug("configured-dashboard-webauthn dependency check skipped: %s", exc)
     return missing
 

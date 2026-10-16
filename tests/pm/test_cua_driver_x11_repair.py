@@ -46,7 +46,7 @@ def no_host_install(monkeypatch):
 class TestCuaDriverX11Repair:
     def test_repair_enumerates_the_full_missing_set(self, tmp_path, monkeypatch, no_host_install):
         """ldd lists ALL missing libraries in one pass; the probe only shows one."""
-        binary = _fake_cua_binary(tmp_path / "tree", [
+        _fake_cua_binary(tmp_path / "tree", [
             "cua-driver: error while loading shared libraries: libX11.so.6: "
             "cannot open shared object file: No such file or directory"])
         pkg = CuaDriver()
@@ -64,7 +64,7 @@ class TestCuaDriverX11Repair:
         assert "loading shared libraries" in reason2
 
     def test_repair_reports_success_when_reprobe_passes(self, tmp_path, monkeypatch, no_host_install):
-        binary = _fake_cua_binary(tmp_path / "tree", [
+        _fake_cua_binary(tmp_path / "tree", [
             "cua-driver: error while loading shared libraries: libX11.so.6: "
             "cannot open shared object file: No such file or directory"])
         pkg = CuaDriver()
@@ -78,14 +78,14 @@ class TestCuaDriverX11Repair:
             return real_run(cmd, **kwargs)
 
         monkeypatch.setattr(subprocess, "run", fake_run)
-        reason2, remedy = pkg.repair_staged_verification(
+        reason2, _remedy = pkg.repair_staged_verification(
             tmp_path / "tree", current_target(), reason)
         assert reason2 == ""
 
     def test_unmapped_soname_still_names_the_libraries(
             self, tmp_path, monkeypatch):
         """A soname the family table does not map stays in the remedy verbatim."""
-        binary = _fake_cua_binary(tmp_path / "tree", [
+        _fake_cua_binary(tmp_path / "tree", [
             "cua-driver: error while loading shared libraries: libWeird.so.9: "
             "cannot open shared object file: No such file or directory"])
         pkg = CuaDriver()

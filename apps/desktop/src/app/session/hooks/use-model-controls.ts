@@ -13,7 +13,7 @@ import {
   modelOptionsQueryKey,
   requestModelOptions
 } from '@/lib/model-options'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
@@ -446,17 +446,6 @@ export function useModelControls({
 
         return true
       } catch (err) {
-        // An OLDER gateway refuses a mid-turn switch outright (4009) instead of
-        // deferring it. Don't punish the user for a backend they haven't
-        // updated: keep the pick painted as the composer's selection, which is
-        // what the NEXT turn runs anyway. Current gateways never take this
-        // path — they answer `deferred`.
-        if (isBusySessionModelSwitch(err)) {
-          settleModelPick(liveSessionId, pickToken, true)
-
-          return true
-        }
-
         // An abandoned pick (a newer one was made, or the user left the chat)
         // is not the user's current choice; its failure is not worth a toast.
         const abandoned =
@@ -468,6 +457,18 @@ export function useModelControls({
           restoreSnapshot(restored)
         }
 
+        // A revision-fenced mid-turn refusal (session_busy / revision_conflict): the owner wrote
+        // nothing and queues no retry (no next-turn stash on the canonical gateway, #139222), so
+        // this is NOT the abandoned-pick "nothing to report" case either — the user asked for a
+        // switch and it did not happen. Say so without a scary toast; a plain pick is routine.
+        if (isBusySessionModelSwitch(err)) {
+          if (!abandoned) {
+            notify({ kind: 'info', message: copy.modelSwitchBusyNotice })
+          }
+
+          return false
+        }
+
         if (!abandoned) {
           notifyError(err, copy.modelSwitchFailed)
         }
@@ -475,7 +476,7 @@ export function useModelControls({
         return false
       }
     },
-    [cacheOwnerConnectionId, cacheProfile, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
+    [cacheOwnerConnectionId, cacheProfile, copy.modelSwitchBusyNotice, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
   )
 
   return { applySavedMainModel, followDefaultModel, refreshCurrentModel, selectModel }

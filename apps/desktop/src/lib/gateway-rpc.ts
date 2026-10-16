@@ -75,9 +75,21 @@ export function isMissingPendingPromptRequest(error: unknown, key: string): bool
   return message.toLowerCase().includes(`no pending ${key.toLowerCase()} request`)
 }
 
-/** True when a pre-deferral backend refused a mid-turn model switch (4009).
- *  Current gateways park the pick and answer `scope: "pending"` instead. */
+/** True when the shared gateway's revision-fenced `session.mutate operation=model` refused a pick
+ *  because a turn is currently executing (`session_busy`) or the session moved under it
+ *  (`revision_conflict`, e.g. the turn's own progress bumped the revision between snapshot and
+ *  commit). Both are typed `error.data.reason` on `RuntimeStoreError`
+ *  (`hermes_state_mutation_guards.require_not_executing`, `hermes_state_runtime.py`), never prose:
+ *  a legacy `new Error('session busy — ...')` with no `data` still falls through to the message,
+ *  for the pre-deferral TUI sidecar this replaced (#139222 removed its stash-for-next-turn path on
+ *  the canonical gateway; there is no queued retry here, so callers must not paint this as applied). */
 export function isBusySessionModelSwitch(error: unknown): boolean {
+  const reason = (error as { data?: { reason?: unknown } } | null)?.data?.reason
+
+  if (typeof reason === 'string') {
+    return reason === 'session_busy' || reason === 'revision_conflict'
+  }
+
   const message = error instanceof Error ? error.message : String(error)
 
   return /session busy/i.test(message) && /switching models/i.test(message)

@@ -601,6 +601,7 @@
   "cron.title": ["ar"],
   "desktop.handoff.startMessaging": ["ar","ja","ru","zh","zh-hant"],
   "desktop.hydrationSyncing": ["ru"],
+  "desktop.modelSwitchBusyNotice": ["ar","de","es","fr","ja","ru","zh","zh-hant"],
   "desktop.pasteAttachFailed": ["ru"],
   "desktop.pastedContent": ["ru"],
   "desktop.readOnlyTranscriptBody": ["ru"],

@@ -5041,6 +5041,7 @@ export const en: Translations = {
     modelSwitchConfirmLabel: 'Switch anyway',
     modelSwitchConfirmTitle: (model: string) => `Switch to ${model}?`,
     modelSwitchConfirmTitleFallback: 'Switch models?',
+    modelSwitchBusyNotice: "Couldn't switch models mid-reply — wait for it to finish, then try again",
     modelSwitchFailed: 'Model switch failed',
     modelSwitchKeepLabel: 'Keep current model',
     modelSwitchStaleNotice: 'Selection changed — the model switch was not applied.',

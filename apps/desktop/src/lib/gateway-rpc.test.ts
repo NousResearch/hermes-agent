@@ -1,7 +1,7 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { describe, expect, it } from 'vitest'
 
-import { isMissingPendingPromptRequest, isMissingRpcMethod, isOfflineMaintenance } from './gateway-rpc'
+import { isBusySessionModelSwitch, isMissingPendingPromptRequest, isMissingRpcMethod, isOfflineMaintenance } from './gateway-rpc'
 
 describe('isMissingRpcMethod', () => {
   it('trusts the JSON-RPC code over the message when the frame survived', () => {
@@ -45,5 +45,23 @@ describe('isMissingPendingPromptRequest', () => {
   it('ignores unrelated gateway failures', () => {
     expect(isMissingPendingPromptRequest(new Error('gateway not connected'), 'password')).toBe(false)
     expect(isMissingPendingPromptRequest(new Error('no pending value request'), 'password')).toBe(false)
+  })
+})
+
+describe('isBusySessionModelSwitch', () => {
+  it("matches the shared gateway's structured reason, never message prose", () => {
+    const busy = new JsonRpcGatewayError('session_busy', { code: 4001, data: { reason: 'session_busy' } })
+    const conflict = new JsonRpcGatewayError('revision_conflict', { code: 4001, data: { reason: 'revision_conflict' } })
+
+    expect(isBusySessionModelSwitch(busy)).toBe(true)
+    expect(isBusySessionModelSwitch(conflict)).toBe(true)
+    // An unrelated reason with the same code must not match.
+    expect(isBusySessionModelSwitch(new JsonRpcGatewayError('not_found', { code: 4001, data: { reason: 'not_found' } }))).toBe(false)
+  })
+
+  it('still matches the legacy pre-deferral TUI sidecar prose (no data.reason)', () => {
+    expect(isBusySessionModelSwitch(new Error('session busy — /interrupt the current turn before switching models'))).toBe(true)
+    expect(isBusySessionModelSwitch(new Error('session busy'))).toBe(false)
+    expect(isBusySessionModelSwitch(new Error('switching models failed: no such provider'))).toBe(false)
   })
 })

@@ -51,6 +51,7 @@ vi.mock('@/i18n', async importOriginal => ({
   useI18n: () => ({
     t: {
       desktop: {
+        modelSwitchBusyNotice: "Couldn't switch models mid-reply — wait for it to finish, then try again",
         modelSwitchFailed: 'Model switch failed'
       }
     }
@@ -407,10 +408,12 @@ describe('useModelControls', () => {
     expect(notifyError).not.toHaveBeenCalled()
   })
 
-  it('keeps the pick when an OLDER gateway refuses a mid-turn switch', async () => {
-    // Pre-deferral backends answer 4009 instead of parking the pick. Rolling
-    // back would bounce the pill to the old model and toast an error at a user
-    // who did nothing wrong; the pick still applies to the next turn.
+  it('rolls back quietly (no error toast) when a mid-turn switch is refused busy', async () => {
+    // Revision-fenced `session.mutate operation=model` hard-refuses a mid-turn pick
+    // (session_busy / revision_conflict): nothing was written and there is no
+    // next-turn stash on the canonical gateway (#139222 removed the old TUI
+    // sidecar's defer path). Rolling back is correct; a scary error toast is not —
+    // the user asked for a switch, it is just not possible right now.
     $activeSessionId.set('session-1')
     setCurrentModel('fable-5')
     setCurrentProvider('nous')
@@ -423,11 +426,51 @@ describe('useModelControls', () => {
 
     render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
 
-    await expect(controls.selectModel({ model: 'grok-4.5', provider: 'xai' })).resolves.toBe(true)
+    await expect(controls.selectModel({ model: 'grok-4.5', provider: 'xai' })).resolves.toBe(false)
 
-    expect($currentModel.get()).toBe('grok-4.5')
-    expect($currentProvider.get()).toBe('xai')
+    expect($currentModel.get()).toBe('fable-5')
+    expect($currentProvider.get()).toBe('nous')
     expect(notifyError).not.toHaveBeenCalled()
+    expect(notify).toHaveBeenCalledWith({
+      kind: 'info',
+      message: "Couldn't switch models mid-reply — wait for it to finish, then try again"
+    })
+  })
+
+  it('rolls back quietly on the shared gateway\'s structured session_busy / revision_conflict reason', async () => {
+    // The current (non-legacy) shape: `error.data.reason`, bare snake_case, no
+    // human prose at all — RuntimeStoreError on hermes_state_mutation_guards.py /
+    // hermes_state_runtime.py, surfaced via gateway/session_controls.py::dispatch.
+    for (const reason of ['session_busy', 'revision_conflict']) {
+      notify.mockClear()
+      notifyError.mockClear()
+      $activeSessionId.set('session-1')
+      setCurrentModel('fable-5')
+      setCurrentProvider('nous')
+
+      const requestGateway = vi.fn(async () => {
+        const err = new Error(reason) as Error & { data?: { reason: string } }
+
+        err.data = { reason }
+        throw err
+      })
+
+      let controls!: Controls
+
+      render(<Harness onReady={value => (controls = value)} requestGateway={requestGateway} />)
+
+      await expect(controls.selectModel({ model: 'grok-4.5', provider: 'xai' })).resolves.toBe(false)
+
+      expect($currentModel.get()).toBe('fable-5')
+      expect($currentProvider.get()).toBe('nous')
+      expect(notifyError).not.toHaveBeenCalled()
+      expect(notify).toHaveBeenCalledWith({
+        kind: 'info',
+        message: "Couldn't switch models mid-reply — wait for it to finish, then try again"
+      })
+
+      cleanup()
+    }
   })
 
   it('still rolls back and reports a real switch failure', async () => {

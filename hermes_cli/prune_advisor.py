@@ -32,6 +32,13 @@ LOW_FREE_PERCENT = 10.0
 LOW_FREE_HEADROOM = 20 * GIB
 SNOOZE_SECONDS = 7 * 86400
 _SNOOZE_FILE = ".auto_prune_prompt.json"
+# The all-rows byte total is a full scan of ``messages`` (seconds, up to tens on a cold multi-GB
+# store), so one measurement is reused for a week, scaled by how much state.db has grown since.
+# The prunable share is read fresh each time through the session index.
+_ESTIMATE_FILE = ".auto_prune_estimate.json"
+TOTAL_BYTES_TTL = 7 * 86400
+# The classic CLI asks from a stored estimate only: it never reads the store at startup.
+CLI_ADVICE_TTL = 86400
 
 
 @dataclass(frozen=True)
@@ -173,16 +180,81 @@ def advise(home: Optional[Path] = None) -> Optional[Advice]:
                 prunable_bytes = (db._read_one(
                     f"SELECT COALESCE(SUM({row_bytes}), 0) FROM messages m WHERE m.session_id IN "
                     f"(SELECT s.id FROM sessions s WHERE {where})", params) or (0,))[0]
-                total_bytes = (db._read_one(
-                    f"SELECT COALESCE(SUM({row_bytes}), 0) FROM messages m", []) or (0,))[0]
+                total_bytes = _cached_total_bytes(home, snap.db_bytes)
+                if total_bytes is None:
+                    total_bytes = (db._read_one(
+                        f"SELECT COALESCE(SUM({row_bytes}), 0) FROM messages m", []) or (0,))[0]
+                    _store_estimate(home, total_bytes=total_bytes, total_at_db_bytes=snap.db_bytes)
+                total_bytes = max(total_bytes, prunable_bytes)  # a stale scaled total never under-counts
         finally:
             db.close()
     except (sqlite3.Error, OSError, RuntimeError, ValueError) as exc:  # a busy/damaged store: no estimate
         logger.debug("auto-prune advice: reclaim estimate unavailable: %s", exc)
         estimate_ok = False
     reclaim = int(snap.db_bytes * prunable_bytes / total_bytes) if total_bytes else 0
-    return Advice(snap, retention, int(prunable), int(total), reclaim, estimate_ok,
-                  bool(sessions.get("vacuum_after_prune", True)))
+    advice = Advice(snap, retention, int(prunable), int(total), reclaim, estimate_ok,
+                    bool(sessions.get("vacuum_after_prune", True)))
+    if estimate_ok:
+        _store_estimate(home, advice={"retention_days": retention, "prunable": advice.prunable_sessions,
+                                      "total": advice.total_sessions, "db_bytes": snap.db_bytes,
+                                      "reclaim_bytes": reclaim})
+    return advice
+
+
+def _read_estimate(home: Optional[Path]) -> dict:
+    try:
+        data = json.loads((_home(home) / _ESTIMATE_FILE).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _store_estimate(home: Optional[Path], **fields) -> None:
+    """Merge *fields* (each stamped with the time) into the estimate sidecar; a full disk that
+    cannot take the write just means the next estimate measures again."""
+    from utils import atomic_json_write
+    data = _read_estimate(home)
+    now = time.time()
+    for key, value in fields.items():
+        data[key] = value
+        data[f"{key}_at"] = now
+    try:
+        atomic_json_write(_home(home) / _ESTIMATE_FILE, data)
+    except OSError as exc:
+        logger.debug("auto-prune advice: estimate not cached: %s", exc)
+
+
+def _cached_total_bytes(home: Optional[Path], db_bytes: int) -> Optional[int]:
+    """The week-old all-rows byte total scaled to the current file size, or None to re-measure."""
+    data = _read_estimate(home)
+    try:
+        total, at, base = int(data["total_bytes"]), float(data["total_bytes_at"]), int(data["total_at_db_bytes"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if time.time() - at > TOTAL_BYTES_TTL or base <= 0 or total <= 0:
+        return None
+    return int(total * db_bytes / base)
+
+
+def cached_advice(home: Optional[Path] = None) -> Optional[Advice]:
+    """:func:`advise` from the last stored estimate (under :data:`CLI_ADVICE_TTL` old, same
+    retention), with the live disk snapshot; None when it must be measured first. No DB read."""
+    snap = should_ask(home)
+    if snap is None:
+        return None
+    sessions = _effective_sessions(home) or {}
+    retention = _retention_days(sessions)
+    stored = _read_estimate(home)
+    est = stored.get("advice")
+    try:
+        fresh = time.time() - float(stored["advice_at"]) <= CLI_ADVICE_TTL
+        if not (fresh and isinstance(est, dict) and int(est["retention_days"]) == retention):
+            return None
+        reclaim = int(est["reclaim_bytes"]) * snap.db_bytes // max(int(est["db_bytes"]), 1)
+        return Advice(snap, retention, int(est["prunable"]), int(est["total"]), min(reclaim, snap.db_bytes),
+                      True, bool(sessions.get("vacuum_after_prune", True)))
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _row_bytes_sql(db) -> str:
@@ -323,12 +395,14 @@ def offer_interactive(*, cprint, ask=input) -> Optional[bool]:
     or the user chose later."""
     if should_ask() is None:
         return None
-    # The byte estimate reads every message row: seconds on a cold multi-GB store. Say so.
-    cprint("\n☤ Low disk space: checking how much session history pruning could free…")
-    advice = advise()
+    advice = cached_advice()
     if advice is None:
+        # Never read the store on the startup path: measure in the background and ask next launch.
+        from agent.memory_provider import spawn_context_thread
+        spawn_context_thread(advise, name="auto-prune-estimate").start()
         return None
-    cprint("  " + advice_lines(advice)[0])
+    cprint("")
+    cprint("☤ " + advice_lines(advice)[0])
     for line in advice_lines(advice)[1:-1]:
         cprint(f"  {line}")
     try:

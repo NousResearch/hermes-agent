@@ -1,8 +1,17 @@
 """Named-profile lifecycle inside the host gateway, never a service-manager action."""
 from __future__ import annotations
 
+import time
+
 from hermes_constants import get_hermes_home, get_default_hermes_root
 from hermes_cli.profiles import parked_marker_path, profile_is_parked, profile_is_standalone, profiles_to_serve
+
+# A serve/unserve outlasts the control verb's own reply budget whenever an adapter connect or MCP
+# discovery is slow (Telegram's cold-start connect alone may spend 45s), so the host answers
+# ``{"pending": True}`` while the work keeps running on its loop. Poll the host's live served set so
+# the command reports the real outcome instead of a false "not confirmed".
+_CONFIRM_TIMEOUT_SECS = 60.0
+_CONFIRM_POLL_SECS = 0.5
 
 
 def _confirmed(answer, key, name):
@@ -13,6 +22,32 @@ def _failure(answer):
     if isinstance(answer, dict):
         return answer.get("error") or "host operation is still pending"
     return "host control socket did not answer"
+
+
+def _await_served_state(host_home, name: str, *, served: bool, timeout: float | None = None) -> bool:
+    """Poll the host's live served set until ``name`` matches ``served`` or the deadline lapses.
+
+    The control verb's ``pending`` answer means "still running", not "failed" — the outcome is read
+    from ``identify`` (the live record on the socket we just talked to), never the state file, so a
+    recycled PID can never be mistaken for the host. Never raises; a host that stops answering reads
+    as unconfirmed.
+    """
+    from gateway.control_socket import identify_gateway
+    if timeout is None:
+        timeout = _CONFIRM_TIMEOUT_SECS
+    deadline = time.monotonic() + timeout
+    while True:
+        answer = identify_gateway(host_home, timeout=2.0)
+        profiles = answer.get("served_profiles") if isinstance(answer, dict) else None
+        if isinstance(profiles, list):
+            if (name in profiles) == served:
+                return True
+            if not profiles:
+                # A multiplexer with no recorded served set cannot be confirmed this way.
+                return False
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_CONFIRM_POLL_SECS)
 
 
 def host_scope_for_all_verb(owner):
@@ -57,7 +92,7 @@ def profile_lifecycle(command: str, args) -> bool:
                 return False  # Unpark even when today's normal start path must start the host first.
         host_home = owner.home if owner is not None else get_default_hermes_root()
         answer = request_serve_profile_hot(host_home, name)
-        if _confirmed(answer, "served", name):
+        if _confirmed(answer, "served", name) or _await_served_state(host_home, name, served=True):
             print(f"Profile '{name}' served by the host gateway.")
         else:
             print(f"Profile '{name}' unparked, but serving was not confirmed: {_failure(answer)}.")
@@ -75,7 +110,7 @@ def profile_lifecycle(command: str, args) -> bool:
         # Persist intent BEFORE teardown: the periodic rescan must not re-add this profile.
         marker.touch()
         answer = request_unserve_profile(host_home, name)
-        if _confirmed(answer, "unserved", name):
+        if _confirmed(answer, "unserved", name) or _await_served_state(host_home, name, served=False):
             print(f"Profile '{name}' parked; its bots and cron are stopped. "
                   f"Start again with: hermes -p {name} gateway start")
         else:
@@ -84,11 +119,11 @@ def profile_lifecycle(command: str, args) -> bool:
         return True
 
     answer = request_unserve_profile(host_home, name)
-    if not _confirmed(answer, "unserved", name):
+    if not (_confirmed(answer, "unserved", name) or _await_served_state(host_home, name, served=False)):
         print(f"Profile '{name}' restart was not confirmed: {_failure(answer)}.")
         return True
     answer = request_serve_profile_hot(host_home, name)
-    if _confirmed(answer, "served", name):
+    if _confirmed(answer, "served", name) or _await_served_state(host_home, name, served=True):
         print(f"Profile '{name}' restarted by the host gateway.")
     else:
         print(f"Profile '{name}' stopped, but serving was not confirmed: {_failure(answer)}.")

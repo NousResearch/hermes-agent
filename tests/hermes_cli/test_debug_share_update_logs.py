@@ -67,6 +67,23 @@ class TestCaptureDefaultLogSnapshots:
         assert "Desktop GUI build failed" in snaps["update"].tail_text
         assert "ELIFECYCLE" in snaps["handoff"].tail_text
 
+    def test_snapshots_read_the_root_home_update_logs_under_a_profile(self, tmp_path, monkeypatch):
+        """``hermes update`` and the hand-off scripts write the ROOT home's logs, whatever profile."""
+        from hermes_cli.debug import _capture_default_log_snapshots
+
+        root = tmp_path / "root"
+        profile = root / "profiles" / "coder"
+        (root / "logs").mkdir(parents=True)
+        (profile / "logs").mkdir(parents=True)
+        (root / "logs" / "update.log").write_text(UPDATE_LOG_BODY)
+        (root / "logs" / "desktop-update-handoff.log").write_text(HANDOFF_LOG_BODY)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        snaps = _capture_default_log_snapshots(100)
+
+        assert "Desktop GUI build failed" in snaps["update"].tail_text
+        assert "ELIFECYCLE" in snaps["handoff"].tail_text
+
     def test_missing_files_report_absence_without_raising(
         self, home_without_update_logs
     ):

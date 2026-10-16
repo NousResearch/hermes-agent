@@ -3,8 +3,8 @@
 import json
 from types import SimpleNamespace
 
-import agent.redact as redact
-import tools.terminal_tool as terminal_tool
+from agent import redact
+from tools import terminal_tool
 
 
 SECRET = "OPENAI_API_KEY=sk-testterminalerrorredaction1234567890"

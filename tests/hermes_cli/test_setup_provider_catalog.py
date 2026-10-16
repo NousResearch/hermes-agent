@@ -35,7 +35,7 @@ def test_setup_offers_registered_provider_catalog(monkeypatch, live):
     monkeypatch.setattr(flows, "_env_base_url", lambda *_: "")
     monkeypatch.setattr(flows, "_prompt_base_url_override", lambda value, *_args, **_kwargs: value)
     monkeypatch.setattr(flows, "_models_dev_merged", lambda *_: [])
-    monkeypatch.setattr(config, "load_config", lambda: {})
+    monkeypatch.setattr(config, "load_config", dict)
     monkeypatch.setattr(models, "fetch_api_models", lambda *_args, **_kwargs: [])
     from hermes_cli import models_pricing
     monkeypatch.setattr(models_pricing, "get_pricing_for_provider", lambda *_: {})

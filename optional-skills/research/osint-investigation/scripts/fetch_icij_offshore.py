@@ -65,7 +65,7 @@ def _download(dest: Path, force: bool = False) -> Path:
         BULK_URL,
         headers={"User-Agent": "hermes-agent osint-investigation skill"},
     )
-    with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
+    with urllib.request.urlopen(req, timeout=120) as resp:
         tmp = zip_path.with_suffix(".zip.tmp")
         with open(tmp, "wb") as fh:
             while True:
@@ -128,7 +128,7 @@ def fetch(
             applicable_needles = [n for (k, n) in needles if k == node_type]
             if needles and not applicable_needles and not jur_norm:
                 continue
-            stream, fname = _open_csv(zf, csv_substring)
+            stream, _fname = _open_csv(zf, csv_substring)
             if not stream:
                 continue
             with stream:

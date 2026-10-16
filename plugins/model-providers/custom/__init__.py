@@ -76,9 +76,14 @@ class CustomProfile(ProviderProfile):
                 if _looks_like_ollama_endpoint(ctx.get("base_url")):
                     extra_body["think"] = False
             elif effort and base_url_host_matches(str(ctx.get("base_url") or ""), "api.groq.com"):
-                # Groq's OpenAI-compatible wire accepts top-level reasoning_effort only as
-                # "none" / "default"; any graded level ("medium", "high") 400s (#75089).
-                top_level["reasoning_effort"] = "default"
+                # Groq's wire vocabulary is model-dependent: the gpt-oss reasoning models accept ONLY the
+                # graded low/medium/high ladder — "default" 400s there (#131530, live-verified) — while other
+                # Groq models (qwen3.6, #75089) accept only "none"/"default" and graded levels 400. Grade the
+                # ladder for gpt-oss; keep "default" for everything else on this host.
+                if "gpt-oss" in str(ctx.get("model") or "").lower():
+                    top_level["reasoning_effort"] = clamp_effort(effort, ("low", "medium", "high"))
+                else:
+                    top_level["reasoning_effort"] = "default"
             elif effort:
                 top_level["reasoning_effort"] = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS)
         return extra_body, top_level

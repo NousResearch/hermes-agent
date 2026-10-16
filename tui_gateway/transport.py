@@ -171,6 +171,8 @@ class FanoutTransport:
                         return False
                     # Reuse the in-flight writer: reconnect cannot spawn more
                     # threads or overtake a write already inside this socket.
+                    peer.pending.clear()
+                    peer.pending_bytes = 0
                     peer.attached = True
                     peer.generation += 1
                     return True
@@ -178,9 +180,10 @@ class FanoutTransport:
             return True
 
     def _remove(self, peer: _FanoutPeer) -> None:
-        # Membership lock held; identity fences a stale writer from removing
-        # a later attachment of the same transport.
+        # Revoke captured batches as well as the queue. Failure cleanup must not
+        # remove a later attachment of this same transport.
         peer.attached = False
+        peer.generation += 1
         peer.pending.clear()
         peer.pending_bytes = 0
         if not peer.writing and peer in self._peers:
@@ -189,9 +192,10 @@ class FanoutTransport:
     def detach(self, transport: Transport) -> bool:
         with self._lock:
             for peer in self._peers:
-                if peer.attached and peer.transport is transport:
+                if peer.transport is transport:
+                    attached = peer.attached
                     self._remove(peer)
-                    return True
+                    return attached
         return False
 
     def contains(self, transport: Transport) -> bool:
@@ -204,6 +208,11 @@ class FanoutTransport:
 
     def has_transports(self, *, excluding: Transport | None = None) -> bool:
         return any(peer is not excluding for peer in self.transports())
+
+    def _is_current(self, peer: _FanoutPeer, generation: int) -> bool:
+        # Overflow notices may send while detached, but only for their own generation.
+        with self._lock:
+            return peer.generation == generation
 
     def _drain(self, peer: _FanoutPeer) -> None:
         while True:
@@ -227,17 +236,26 @@ class FanoutTransport:
                 # Duck-typed on purpose: importing ``tui_gateway.ws`` here would pull
                 # ``tui_gateway.server`` in on this drain thread, racing any concurrent
                 # importer with a partially initialized module.
-                write_many = getattr(peer.transport, "write_many_async", None)
+                write_current = getattr(peer.transport, "write_many_if_current_async", None)
+                write_many = write_current or getattr(peer.transport, "write_many_async", None)
                 loop = getattr(peer.transport, "_loop", None)
                 if write_many is not None and loop is not None:
                     # write() acknowledges buffered tokens/timeouts, not socket
                     # progress. Await the real send so WS cannot move an
                     # unbounded backlog underneath this bounded mailbox.
                     from agent.async_utils import safe_schedule_threadsafe
-                    future = safe_schedule_threadsafe(write_many([frame for frame, _size in batch]), loop)
+                    frames = [frame for frame, _size in batch]
+                    if write_current is not None:
+                        send = write_current(frames, lambda generation=generation: self._is_current(peer, generation))
+                    elif self._is_current(peer, generation):
+                        send = write_many(frames)
+                    else:
+                        continue
+                    future = safe_schedule_threadsafe(send, loop)
                     ok = future is not None and future.result()
                 else:
-                    ok = all(peer.transport.write(frame) for frame, _size in batch)
+                    ok = all(not self._is_current(peer, generation) or peer.transport.write(frame)
+                             for frame, _size in batch)
             except Exception:
                 logger.debug("fanout write failed; pruning peer", exc_info=True)
                 ok = False

@@ -8,6 +8,7 @@ import asyncio
 from contextlib import nullcontext
 from functools import partial
 
+from hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
 from hermes_state_runtime import RuntimeStoreError, mutate_runtime_session
 
 _METADATA = frozenset({'rename', 'archive', 'sidebar'})
@@ -92,7 +93,15 @@ async def _owned_mutation(authority, actor, ref, params):
             result = await _mutate_session(authority, actor, ref, params, commit_lock=live.mutation_lock)
     else:
         async with live.mutation_lock:
-            result = await _mutate_session(authority, actor, ref, params)
+            try:
+                result = await _mutate_session(authority, actor, ref, params)
+            except (RuntimeStoreError, *MUTATION_GUARD_REFUSALS) as exc:
+                # A pick on a running session is for the next turn (the running turn keeps its route).
+                if params.get('operation') != 'model' or getattr(exc, 'reason', 'session_busy') != 'session_busy':
+                    raise
+                from gateway.session_deferred_pick import defer_pick
+                # Its own BEGIN IMMEDIATE: off the loop, like the receipt commit.
+                return await asyncio.to_thread(defer_pick, authority, actor, ref, params)
     if params.get('operation') in {*_POLICY, 'compress', 'reset'}:
         authority._schedule(ref)
     return result
@@ -249,12 +258,12 @@ def _project_committed(authority, ref, operation, result):
         # the old live one and paused; with both now equal, queued input must run, not wait for
         # the next submit or restart.
         authority._schedule(ref)
-    if operation == 'reasoning':
+    if operation == 'reasoning' or (operation == 'model' and 'effort' in result):
         # The picked level is the policy's now; a typed /reasoning override must not shadow it.
         authority.runner._set_session_reasoning_override(authority.sessions[ref.session_id].route, None)
-    if operation in {'reasoning', 'workspace'}:
-        # Every viewer repaints its reasoning pill / workspace from the published policy, as main's
-        # _emit_session_info did after the live change.
+    if operation in {'model', 'reasoning', 'workspace'}:
+        # Every viewer repaints its model, reasoning pill or workspace from the published policy,
+        # as main's _emit_session_info did after the live change.
         from gateway.session_local import local_session_info
         authority.sessions[ref.session_id].event_stream.publish(
             ref.session_id, local_session_info(authority, ref), event_type='session.info')

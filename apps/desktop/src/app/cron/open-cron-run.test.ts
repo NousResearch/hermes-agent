@@ -1,8 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $cronRunReadOnlyVerdicts, isStoredTranscriptReadOnly } from '@/store/read-only-transcript'
+import { $cronSessions, $sessions } from '@/store/session'
+import type { SessionInfo } from '@/types/hermes'
 
-import { isResumableCronRun, openCronRun, reconcileCronRunVerdicts, refreshCronRunWriteGate } from './open-cron-run'
+import {
+  cronRunWriteGateApplies,
+  isResumableCronRun,
+  openCronRun,
+  reconcileCronRunVerdicts,
+  refreshCronRunWriteGate
+} from './open-cron-run'
 
 const NOW_MS = 1_800_000_000_000
 const NOW_S = NOW_MS / 1000
@@ -152,6 +160,49 @@ describe('refreshCronRunWriteGate — restored tab after a restart (no verdict y
 
     expect(await refreshCronRunWriteGate('20260929_120000_abc123', fetchRow)).toBe(false)
     expect(await refreshCronRunWriteGate(null, fetchRow)).toBe(false)
+    expect(fetchRow).not.toHaveBeenCalled()
+  })
+})
+
+describe('refreshCronRunWriteGate — a unified-runtime run is known by its row, not its id (#138812)', () => {
+  // The unified gateway runtime keeps the run's runtime-minted `local-*` id;
+  // only the row the backend served (`source: 'cron'`) says it is a cron run.
+  const id = 'local-7e105fd6cca5c3d1'
+
+  const cachedRow = (source: string) =>
+    ({ ended_at: null, id, is_active: false, last_active: NOW_S, source }) as SessionInfo
+
+  afterEach(() => {
+    $cronSessions.set([])
+    $sessions.set([])
+  })
+
+  it('gates a restored zombie run whose cached row is a cron run', async () => {
+    $cronSessions.set([cachedRow('cron')])
+    const fetchRow = vi.fn(async () => ({ ended_at: null, last_active: 0, scheduler_owned: false, source: 'cron' }))
+
+    expect(await refreshCronRunWriteGate(id, fetchRow)).toBe(true)
+    expect(fetchRow).toHaveBeenCalledWith(id)
+    expect(isStoredTranscriptReadOnly(id)).toBe(true)
+  })
+
+  it('keeps gating an opened run after a sidebar refresh drops its row from the cache', async () => {
+    $cronSessions.set([cachedRow('cron')])
+    openCronRun({ ...cachedRow('cron'), scheduler_owned: true }, vi.fn()) // opened live: writable
+    $cronSessions.set([]) // the latest page no longer lists it
+    const fetchRow = vi.fn(async () => ({ ended_at: null, last_active: 0, scheduler_owned: false, source: 'cron' }))
+
+    expect(cronRunWriteGateApplies(id)).toBe(true)
+    expect(await refreshCronRunWriteGate(id, fetchRow)).toBe(true) // its scheduler died since
+    expect(fetchRow).toHaveBeenCalledWith(id)
+  })
+
+  it('never fetches for an ordinary session that also has a local id', async () => {
+    $sessions.set([cachedRow('desktop')])
+    expect(cronRunWriteGateApplies(id)).toBe(false)
+    const fetchRow = vi.fn()
+
+    expect(await refreshCronRunWriteGate(id, fetchRow)).toBe(false)
     expect(fetchRow).not.toHaveBeenCalled()
   })
 })

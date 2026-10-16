@@ -129,11 +129,29 @@ class GatewayProcessView:
         return value if isinstance(value, int) else 0
 
 
+class _OpenedSession:
+    """The CLI's open gateway session before any chat agent exists (``_init_agent`` builds that on the
+    first turn): the view's ``connection`` and ``session_id``, following the CLI's id."""
+
+    def __init__(self, cli, connection):
+        self.cli, self.connection = cli, connection
+
+    @property
+    def session_id(self):
+        return self.cli.session_id
+
+
 def bind(agent):
     """Called when the CLI's gateway-backed agent is built."""
     global _view
     _view = GatewayProcessView(agent) if getattr(agent, "connection", None) is not None else None
     return _view
+
+
+def bind_session(cli, connection):
+    """Called when the CLI opens its gateway session, so ``/agents``, ``/stop``, the dock and the status
+    bar read the session's processes before the first turn (a resumed session's work keeps running)."""
+    return bind(_OpenedSession(cli, connection))
 
 
 def mark_dirty():
@@ -143,9 +161,9 @@ def mark_dirty():
 
 def process_view():
     """The gateway-backed registry, or None when this process runs its own tools (not rewired) or
-    its gateway connection is gone."""
+    its gateway connection is final (a hang-up keeps the view; its next call redials)."""
     view = _view
-    return view if view is not None and not view.connection.closed else None
+    return view if view is not None and not view.connection.final else None
 
 
 def process_registry():

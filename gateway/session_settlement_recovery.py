@@ -49,6 +49,16 @@ def completion_payload(row, settled, response, captured):
     captured_result = (captured or {}).get('result') or {}
     if response and captured_result.get('response_reused'):
         complete['response_reused'] = True
+    if captured_result.get('response_previewed'):
+        complete['response_previewed'] = True
+    if captured_result.get('response_transformed'):
+        complete['response_transformed'] = True
+    if isinstance(captured_result.get('warning'), str) and captured_result['warning']:
+        complete['warning'] = captured_result['warning']
+    if isinstance(captured_result.get('billing_block'), dict):
+        complete['billing'] = captured_result['billing_block']
+    if isinstance(captured_result.get('failure_reason'), str) and captured_result['failure_reason']:
+        complete['failure_reason'] = captured_result['failure_reason']
     # The committed row addresses of the turn: a viewer binds the streamed reply to
     # its stored row, so a transcript read racing this frame never paints it twice.
     # ``submission_id`` names whose turn it is: the sending viewer binds its optimistic

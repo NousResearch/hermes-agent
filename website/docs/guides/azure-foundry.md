@@ -153,7 +153,7 @@ The ambient credential-chain refusal remains in place.
    Project URLs use the project deployment API. Resource URLs use the same selected Entra
    identity for Azure resource reads, which may need additional read permissions. API keys
    cannot authorize those resource reads. If listing is unavailable, manual entry and testing still work.
-6. Click **Test**, then **Save and use**. This sets Foundry as the provider for new
+6. Click **Test**, then **Save**. This sets Foundry as the provider for new
    chats in that profile. Existing chats with a saved model selection may need their
    model selector updated.
 

@@ -264,3 +264,28 @@ def test_unavailable_model_listing_keeps_manual_setup_possible(client, monkeypat
     saved = client.put("/api/providers/azure-foundry?profile=default", json={**payload, "model": "manual-deployment"})
     assert saved.status_code == 200
     assert saved.json()["model"] == "manual-deployment"
+
+
+@pytest.mark.parametrize("key", [None, "", "  "])
+def test_blank_api_key_reuses_saved_key_for_test_and_save(client, monkeypatch, key):
+    from hermes_cli.web_routers import azure_foundry
+
+    requests = []
+
+    def endpoint(request):
+        requests.append(request)
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr(azure_foundry, "_endpoint_probe_client", lambda *_: httpx.AsyncClient(transport=httpx.MockTransport(endpoint)))
+    route = "/api/providers/azure-foundry?profile=default"
+    payload = {"base_url": "https://resource.services.ai.azure.com/openai/v1", "model": "deployment",
+               "api_mode": "codex_responses", "auth": {"kind": "api_key", "api_key": "saved-key"}}
+    assert client.put(route, json=payload).status_code == 200
+    payload["auth"] = {"kind": "api_key", "api_key": key}
+    tested = client.post("/api/providers/azure-foundry/validate?profile=default", json=payload)
+    assert tested.json()["ok"], tested.text
+    assert requests[0].headers["Authorization"] == "Bearer saved-key"
+    saved = client.put(route, json=payload)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["api_key_set"] is True
+    assert "saved-key" not in client.get(route).text

@@ -1,0 +1,38 @@
+# EvoLink vendor-hosted remote MCP; catalog inclusion requires Nous review.
+manifest_version: 1
+
+name: evolink
+description: Generate images, video, music, and speech with model discovery and cost estimates.
+source: https://evolink.ai/docs/en/mcp/hermes-agent
+
+transport:
+  type: http
+  url: https://mcp.evolink.ai/mcp
+
+auth:
+  type: oauth
+  oauth:
+    scope: mcp offline_access
+
+suggest:
+  keywords:
+    - evolink
+  hosts:
+    - evolink.ai
+
+post_install: |
+  Run `hermes mcp login evolink` from a fresh terminal, sign in to your
+  EvoLink account in the browser, and approve access. Keep the command
+  running until authorization completes. No EvoLink CLI or API key is
+  required for this remote connection.
+
+  Start a new Hermes session or run `/reload-mcp` after authorization.
+  Verify the connection for free with `check_balance` and `search_models`;
+  listing tools alone does not verify authorized tool calls.
+
+  Connecting is free. Image, video, music, and speech generation uses your
+  EvoLink balance at published API prices. Review the cost estimate and
+  approve the request before paid generation.
+
+  Setup and SSH callback guidance: https://evolink.ai/docs/en/mcp/hermes-agent
+  Support: support@evolink.ai

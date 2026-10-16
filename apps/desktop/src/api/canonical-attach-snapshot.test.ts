@@ -17,17 +17,29 @@ test('a cold attach delivers the snapshot prompt and marks the session attached'
       const frame = JSON.parse(bytes.toString())
       sent.push(frame)
 
-      const result = frame.method === 'session.resume'
-        ? { session_id: 's', stored_session_id: 's', revision: 2, execution_generation: 5, running: true, messages: [],
-            prompts: [{ kind: 'clarify', prompt_id: 'c1', execution_generation: 5, question: 'Which target?', choices: [] }] }
-        : { status: 'resolved' }
+      const result =
+        frame.method === 'session.resume'
+          ? {
+              session_id: 's',
+              stored_session_id: 's',
+              revision: 2,
+              execution_generation: 5,
+              running: true,
+              messages: [],
+              prompts: [
+                { kind: 'clarify', prompt_id: 'c1', execution_generation: 5, question: 'Which target?', choices: [] }
+              ]
+            }
+          : { status: 'resolved' }
 
       socket.send(JSON.stringify({ jsonrpc: '2.0', id: frame.id, result }))
     })
   })
   const client = new HermesGateway()
   const delivered: any[] = []
-  client.onRequest(request => { delivered.push(request) })
+  client.onRequest(request => {
+    delivered.push(request)
+  })
 
   try {
     const address = server.address() as { port: number }
@@ -41,7 +53,9 @@ test('a cold attach delivers the snapshot prompt and marks the session attached'
   } finally {
     client.close()
 
-    for (const socket of server.clients) { socket.terminate() }
+    for (const socket of server.clients) {
+      socket.terminate()
+    }
     await new Promise<void>(resolve => server.close(() => resolve()))
   }
 })

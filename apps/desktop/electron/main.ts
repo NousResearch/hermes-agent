@@ -14810,11 +14810,11 @@ function closeHudWindow() {
 // swallowed: a chord another app already owns comes back as `error: 'taken'`.
 const QUICK_ENTRY_CONFIG_PATH = path.join(app.getPath('userData'), 'quick-entry.json')
 
-let quickEntryWindow = null
+let quickEntryWindow: BrowserWindow | null = null
 
 // Latest state push from the primary renderer (connection + recent sessions),
 // replayed to a quick window that spawns after the push happened.
-let quickEntryLastState = null
+let quickEntryLastState: unknown = null
 
 function readQuickEntrySettings() {
   try {
@@ -14953,6 +14953,10 @@ function showQuickEntryWindow() {
       show: () => {
         win.show()
         win.focus()
+
+        if (quickEntryLastState && !win.isDestroyed()) {
+          win.webContents.send('hermes:quick-entry:state', quickEntryLastState)
+        }
       }
     })
 
@@ -14962,6 +14966,11 @@ function showQuickEntryWindow() {
   repositionQuickEntryWindow(quickEntryWindow)
   quickEntryWindow.show()
   quickEntryWindow.focus()
+
+  if (quickEntryLastState && !quickEntryWindow.isDestroyed()) {
+    quickEntryWindow.webContents.send('hermes:quick-entry:state', quickEntryLastState)
+  }
+
   // Re-summoned: tell the renderer to clear any stale draft and refocus.
   quickEntryWindow.webContents.send('hermes:quick-entry:shown')
 }
@@ -18401,6 +18410,8 @@ ipcMain.on('hermes:quick-entry:state', (_event, payload) => {
     quickEntryWindow.webContents.send('hermes:quick-entry:state', payload)
   }
 })
+
+ipcMain.handle('hermes:quick-entry:state:get', () => quickEntryLastState)
 
 ipcMain.on('hermes:quick-entry:dismiss', () => hideQuickEntryWindow())
 

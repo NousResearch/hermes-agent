@@ -463,14 +463,14 @@ describe('quickComposerReducer', () => {
       window.localStorage?.removeItem(QUICK_ENTRY_TARGET_STORAGE_KEY)
     })
 
-    it('a fresh composer stays on the current chat when nothing was persisted', () => {
-      expect(createInitialQuickComposerState().target).toBe(QUICK_TARGET_CURRENT)
+    it('a fresh composer defaults to new session when nothing was persisted', () => {
+      expect(createInitialQuickComposerState().target).toBe(QUICK_TARGET_NEW)
     })
 
-    it('a fresh composer honors a persisted "new session" choice', () => {
-      window.localStorage?.setItem(QUICK_ENTRY_TARGET_STORAGE_KEY, QUICK_TARGET_NEW)
+    it('a fresh composer honors a persisted choice', () => {
+      window.localStorage?.setItem(QUICK_ENTRY_TARGET_STORAGE_KEY, QUICK_TARGET_CURRENT)
 
-      expect(createInitialQuickComposerState().target).toBe(QUICK_TARGET_NEW)
+      expect(createInitialQuickComposerState().target).toBe(QUICK_TARGET_CURRENT)
     })
 
     it('persistQuickEntryTarget roundtrips to loadPersistedQuickEntryTarget', () => {

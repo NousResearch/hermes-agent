@@ -231,6 +231,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   quickEntry: {
     getSettings: () => ipcRenderer.invoke('hermes:quick-entry:settings:get'),
     setSettings: patch => ipcRenderer.invoke('hermes:quick-entry:settings:set', patch),
+    getState: () => ipcRenderer.invoke('hermes:quick-entry:state:get'),
     // Invoke returns the delivery result so the draft is not lost (#85590).
     submit: payload => ipcRenderer.invoke('hermes:quick-entry:submit', payload),
     // Main cannot invoke the primary renderer, so it receives this ack (#85590).

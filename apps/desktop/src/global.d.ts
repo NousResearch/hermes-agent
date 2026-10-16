@@ -186,6 +186,7 @@ declare global {
       // the renderer reads/writes it here and adopts the authoritative reply.
       quickEntry: {
         getSettings: () => Promise<QuickEntryStatus>
+        getState?: () => Promise<null | QuickEntryStatePush>
         // Returns the resulting state — including `registered: false` +
         // `error: 'taken'` when another app already owns the chord, so a failed
         // registration surfaces in Settings instead of failing silently.

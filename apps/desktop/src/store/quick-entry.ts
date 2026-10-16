@@ -125,9 +125,9 @@ export function loadPersistedQuickEntryTarget(): string {
   try {
     const raw = typeof window !== 'undefined' ? window.localStorage?.getItem(QUICK_ENTRY_TARGET_STORAGE_KEY) : null
 
-    return raw && raw.trim() ? raw : QUICK_TARGET_CURRENT
+    return raw && raw.trim() ? raw : QUICK_TARGET_NEW
   } catch {
-    return QUICK_TARGET_CURRENT
+    return QUICK_TARGET_NEW
   }
 }
 
@@ -280,6 +280,7 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
       // already handed to main keeps its correlation and draft: the promise
       // still resolves, and a late failure must be able to restore the text.
       const unresolved = state.submitting || state.unknownSubmitId !== null
+      const resetTarget = 'resetTarget' in event && event.resetTarget ? event.resetTarget : QUICK_TARGET_CURRENT
 
       return {
         send: null,
@@ -293,7 +294,7 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
               orphanedFailure: null,
               pendingSubmitId: null,
               submitting: false,
-              target: 'resetTarget' in event ? (event.resetTarget ?? QUICK_TARGET_CURRENT) : QUICK_TARGET_CURRENT,
+              target: resetTarget,
               unknownSubmitId: null,
               visible: false
             }
@@ -313,6 +314,8 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
         return { send: null, state: { ...state, error: null, visible: true } }
       }
 
+      const resetTarget = 'resetTarget' in event && event.resetTarget ? event.resetTarget : QUICK_TARGET_CURRENT
+
       return {
         send: null,
         state: {
@@ -323,7 +326,7 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
           orphanedFailure: null,
           pendingSubmitId: null,
           submitting: false,
-          target: 'resetTarget' in event ? (event.resetTarget ?? QUICK_TARGET_CURRENT) : QUICK_TARGET_CURRENT,
+          target: resetTarget,
           unknownSubmitId: null,
           visible: true
         }
@@ -332,7 +335,7 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
 
     case 'state': {
       // Adopt the pushed truth. A selected session that no longer exists in the
-      // pushed list must not silently swallow the prompt — fall back to current.
+      // pushed list must not silently swallow the prompt — fall back to default.
       const targetStillValid =
         event.connected &&
         (state.target === QUICK_TARGET_CURRENT ||

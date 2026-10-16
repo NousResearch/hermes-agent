@@ -10,7 +10,8 @@ import {
   type QuickComposerEvent,
   quickComposerReducer,
   type QuickComposerState,
-  quickEntryResultEvent
+  quickEntryResultEvent,
+  type QuickEntryStatePush
 } from '@/store/quick-entry'
 
 // Native select popups do not reliably inherit the closed control's colors.
@@ -70,17 +71,26 @@ export function QuickEntryApp() {
   useEffect(() => {
     const api = window.hermesDesktop?.quickEntry
 
+    const applyState = (payload?: null | QuickEntryStatePush) => {
+      if (payload) {
+        dispatch({
+          connected: payload.connected === true,
+          sessions: Array.isArray(payload.sessions) ? payload.sessions : [],
+          type: 'state'
+        })
+      }
+    }
+
+    void api?.getState?.().then(applyState)
+
     const offShown = api?.onShown(() => {
       dispatch({ resetTarget: loadPersistedQuickEntryTarget(), type: 'shown' })
+      void api?.getState?.().then(applyState)
       requestAnimationFrame(() => inputRef.current?.focus())
     })
 
     const offState = api?.onState(payload => {
-      dispatch({
-        connected: payload?.connected === true,
-        sessions: Array.isArray(payload?.sessions) ? payload.sessions : [],
-        type: 'state'
-      })
+      applyState(payload)
     })
 
     const offLateResult = api?.onLateResult(payload => {
@@ -195,7 +205,6 @@ export function QuickEntryApp() {
           </label>
           <select
             aria-label="Target session"
-            disabled={!state.connected}
             id="quick-entry-target"
             onChange={event => {
               const target = event.target.value

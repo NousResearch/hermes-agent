@@ -1194,7 +1194,7 @@ class TestVisionOcrContext:
         fake_cfg = {
             "auxiliary": {
                 "ocr": {"model": "unlimited-test"},
-                "vision": {"model": "scene-test"},
+                "vision": {"model": "scene-test", "ocr_context": True},
             }
         }
         calls = []
@@ -1235,7 +1235,7 @@ class TestVisionOcrContext:
         fake_cfg = {
             "auxiliary": {
                 "ocr": {"model": "unlimited-test"},
-                "vision": {"model": "scene-test"},
+                "vision": {"model": "scene-test", "ocr_context": True},
             }
         }
         calls = []
@@ -1277,3 +1277,67 @@ class TestVisionOcrContext:
         }
         with patch("hermes_cli.config.load_config", return_value=fake_cfg):
             assert await _maybe_ocr_context("data:image/png;base64,aaaa") == ""
+
+    @pytest.mark.asyncio
+    async def test_ocr_context_is_off_by_default(self):
+        from tools.vision_tools import _maybe_ocr_context
+
+        fake_cfg = {"auxiliary": {"ocr": {"model": "unlimited-test"}, "vision": {"model": "scene-test"}}}
+        with (
+            patch("hermes_cli.config.load_config", return_value=fake_cfg),
+            patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock) as mock_vision,
+        ):
+            assert await _maybe_ocr_context("data:image/png;base64,aaaa") == ""
+        mock_vision.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ocr_transcript_is_truncated_to_bound(self):
+        import json
+
+        from tools.vision_tools import _OCR_CONTEXT_MAX_CHARS, _maybe_ocr_context
+
+        fake_cfg = {
+            "auxiliary": {
+                "ocr": {"model": "unlimited-test"},
+                "vision": {"ocr_context": True},
+            }
+        }
+        huge = "word " * 10000
+        raw = json.dumps({"success": True, "analysis": huge})
+        with (
+            patch("hermes_cli.config.load_config", return_value=fake_cfg),
+            patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock, return_value=raw),
+        ):
+            result = await _maybe_ocr_context("data:image/png;base64,aaaa")
+        assert result.endswith("[OCR transcript truncated]")
+        assert len(result) <= _OCR_CONTEXT_MAX_CHARS + 300
+
+
+class TestVisionOcrGating:
+    def test_vision_ocr_gate_requires_configured_ocr_model(self, monkeypatch):
+        from tools.vision_tools import check_vision_ocr_requirements
+
+        monkeypatch.delenv("AUXILIARY_OCR_MODEL", raising=False)
+        with patch("hermes_cli.config.load_config", return_value={"auxiliary": {"vision": {"model": "x"}}}):
+            assert check_vision_ocr_requirements() is False
+
+    def test_vision_ocr_gate_passes_on_ocr_route_without_vision(self, monkeypatch):
+        from tools.vision_tools import check_vision_ocr_requirements
+
+        monkeypatch.delenv("AUXILIARY_OCR_MODEL", raising=False)
+        with (
+            patch("hermes_cli.config.load_config", return_value={"auxiliary": {"ocr": {"model": "unlimited-test"}}}),
+            patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(object(), "unlimited-test")) as probe,
+        ):
+            assert check_vision_ocr_requirements() is True
+        assert probe.call_args.args == ("ocr",)
+
+    def test_vision_ocr_gate_fails_when_ocr_route_unreachable(self, monkeypatch):
+        from tools.vision_tools import check_vision_ocr_requirements
+
+        monkeypatch.delenv("AUXILIARY_OCR_MODEL", raising=False)
+        with (
+            patch("hermes_cli.config.load_config", return_value={"auxiliary": {"ocr": {"model": "unlimited-test"}}}),
+            patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(None, None)),
+        ):
+            assert check_vision_ocr_requirements() is False

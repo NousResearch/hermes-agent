@@ -1052,10 +1052,15 @@ registry.register(
 
 
 def check_vision_ocr_requirements() -> bool:
-    """``vision_ocr`` gate: the vision gate AND a configured OCR model (``auxiliary.ocr.model`` or
-    ``AUXILIARY_OCR_MODEL``). Without the OCR model the handler fails closed, so the tool must not
-    be advertised."""
-    return _configured_aux_model(("ocr",), ("AUXILIARY_OCR_MODEL",)) is not None and check_vision_requirements()
+    """``vision_ocr`` gate: an OCR model is configured AND the OCR task's own route resolves to a
+    client (probed under ``aux_probe_mode``). Independent of the vision route, so an OCR-only setup
+    advertises the tool; the handler fails closed with guidance otherwise."""
+    from agent.auxiliary_client import aux_probe_mode, get_text_auxiliary_client
+    if _configured_aux_model(("ocr",), ("AUXILIARY_OCR_MODEL",)) is None:
+        return False
+    with aux_probe_mode():
+        client, _ = get_text_auxiliary_client("ocr")
+    return client is not None
 
 
 VISION_OCR_SCHEMA = {

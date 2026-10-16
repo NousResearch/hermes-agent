@@ -67,6 +67,11 @@ def _cmd_add(args) -> None:
             identifier = ""
             while not identifier:
                 identifier = input(f"{id_type.capitalize()}: ").strip()
+                from agent.vault_store import identifier_warning
+                if identifier and identifier_warning(identifier):
+                    c.print(f"[yellow]{identifier_warning(identifier)}[/]")
+                    if input("Keep it anyway? [y/N]: ").strip().lower() != "y":
+                        identifier = ""
             password = ""
             while not password:
                 password = getpass.getpass("Password (hidden): ")

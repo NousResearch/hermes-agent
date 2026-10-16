@@ -29,3 +29,4 @@ capabilities:
     - VORNIK_URL
     - VORNIK_BROKER_TOKEN
     - VORNIK_MEMORY_TOKEN
+requires_env: []

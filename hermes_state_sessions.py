@@ -1573,12 +1573,14 @@ class SessionSessionsMixin:
         self, source: str | None = None, sources: list[str] | None = None, cwd_prefix: str | None = None,
         min_message_count: int = 0, include_archived: bool = False, archived_only: bool = False,
         exclude_children: bool = False, exclude_sources: list[str] | None = None, include_subagents: bool = False,
+        local_created_sources: Sequence[str] | None = None,
     ) -> int:
         """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, source=source, sources=sources,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
+            local_created_sources=local_created_sources,
         )
         if exclude_children:
             from hermes_state_local import exclude_superseded_segments

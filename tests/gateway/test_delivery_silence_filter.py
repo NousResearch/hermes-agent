@@ -212,5 +212,113 @@ async def test_non_cron_metadata_still_filters(tmp_path, monkeypatch):
 
 
 # --- Config round-trip ------------------------------------------------------
+# The vocabulary and the length guard are declared data (#135444): an instance that narrates
+# silence in its own language declares its narrations under ``gateway.silence_narration_tokens``
+# and the longest line the filter may drop under ``gateway.silence_narration_max_chars``. The
+# built-in English vocabulary stays the default, so an install that declares nothing is unchanged.
+
+# The narrations recorded in that report, verbatim.
+DECLARED_TOKENS = [
+    "tăcere",
+    "fără răspuns",
+    "fără livrare: no_answer_owed",
+    "tăcere — clasa nu poartă răspuns",
+    "tăcere — no_answer_owed: clasa nu poartă text și nu se livrează niciun răspuns",
+    ("fără răspuns: verdictul no_answer_owed nu poartă text — clasa nu compune niciun răspuns, "
+     "iar pe linia asta nu se livrează nimic"),
+]
+DECLARED_NARRATIONS = [f"_({token})_" for token in DECLARED_TOKENS]
+DECLARED_MAX_CHARS = max(len(narration) for narration in DECLARED_NARRATIONS)
+
+
+@pytest.mark.parametrize("content", DECLARED_NARRATIONS)
+def test_declared_vocabulary_drops_the_instances_own_narrations(content):
+    assert _is_silence_narration(content, tokens=DECLARED_TOKENS, max_chars=DECLARED_MAX_CHARS) is True
+
+
+@pytest.mark.parametrize("content", DECLARED_NARRATIONS)
+def test_narrations_without_a_declaration_are_delivered(content):
+    """The built-in vocabulary is English: an undeclared line was delivered before and still is."""
+    assert _is_silence_narration(content) is False
+
+
+def test_undeclared_vocabulary_falls_back_to_the_built_ins():
+    assert _is_silence_narration("*(silent)*", tokens=[], max_chars=None) is True
+
+
+def test_declared_vocabulary_keeps_the_anchoring():
+    assert _is_silence_narration("_(tăcere)_ restul răspunsului", tokens=DECLARED_TOKENS,
+                                 max_chars=DECLARED_MAX_CHARS) is False
+    assert _is_silence_narration("salut, tăcere nu e ce am spus", tokens=["tăcere"], max_chars=200) is False
+
+
+def test_declared_max_chars_bounds_the_line():
+    long_token = "x" * 100
+    assert _is_silence_narration(f"_({long_token})_", tokens=[long_token], max_chars=64) is False
+    assert _is_silence_narration(f"_({long_token})_", tokens=[long_token], max_chars=200) is True
+
+
+def test_declared_multi_word_token_tolerates_whitespace_runs():
+    assert _is_silence_narration("_(no   response)_", tokens=["no response"]) is True
+
+
+def test_gateway_config_reads_the_declaration_from_yaml():
+    config = GatewayConfig.from_dict(
+        {"gateway": {"silence_narration_tokens": DECLARED_TOKENS, "silence_narration_max_chars": 200}})
+
+    assert config.silence_narration_tokens == DECLARED_TOKENS
+    assert config.silence_narration_max_chars == 200
+
+
+def test_gateway_config_defaults_leave_the_vocabulary_undeclared():
+    config = GatewayConfig()
+
+    assert config.silence_narration_tokens is None
+    assert config.silence_narration_max_chars is None
+
+
+def test_gateway_config_ignores_malformed_declarations():
+    config = GatewayConfig.from_dict(
+        {"gateway": {"silence_narration_tokens": "tăcere", "silence_narration_max_chars": "many"}})
+
+    assert config.silence_narration_tokens is None
+    assert config.silence_narration_max_chars is None
+
+
+def test_declared_vocabulary_survives_the_config_round_trip():
+    config = GatewayConfig(silence_narration_tokens=["tăcere"], silence_narration_max_chars=200)
+
+    restored = GatewayConfig.from_dict(config.to_dict())
+
+    assert restored.silence_narration_tokens == ["tăcere"]
+    assert restored.silence_narration_max_chars == 200
+
+
+def test_config_loader_bridges_the_nested_gateway_declaration():
+    """The ``gateway:`` YAML form reaches the gateway's own config dict."""
+    from gateway.config_loader import bridge_toplevel_keys
+
+    gw_data: dict = {}
+    bridge_toplevel_keys({}, {"silence_narration_tokens": DECLARED_TOKENS,
+                              "silence_narration_max_chars": 200}, gw_data)
+
+    assert gw_data["silence_narration_tokens"] == DECLARED_TOKENS
+    assert gw_data["silence_narration_max_chars"] == 200
+
+
+@pytest.mark.asyncio
+async def test_router_drops_a_declared_narration_pre_send(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    config = GatewayConfig(silence_narration_tokens=DECLARED_TOKENS,
+                           silence_narration_max_chars=DECLARED_MAX_CHARS)
+    router = DeliveryRouter(config, adapters={Platform.DISCORD: adapter})
+    target = DeliveryTarget.parse("discord:99887766")
+
+    for narration in DECLARED_NARRATIONS:
+        result = await router._deliver_to_platform(target, narration, metadata=None)
+        assert result == {"success": True, "filtered": "silence_narration", "delivered": False}
+
+    assert adapter.calls == []
 
 

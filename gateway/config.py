@@ -160,6 +160,22 @@ def _coerce_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _coerce_narration_tokens(value: Any) -> Optional[list[str]]:
+    """Declared silence-narration vocabulary: a list of non-empty strings, else ``None`` (the built-ins
+    in gateway/delivery.py). A malformed declaration is ignored with a warning, like every other
+    gateway setting — a typo must never block startup."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        logger.warning("Ignoring invalid silence_narration_tokens=%r (expected a list of narrations)", value)
+        return None
+    tokens = [str(token).strip() for token in value if str(token).strip()]
+    if not tokens:
+        logger.warning("Ignoring empty silence_narration_tokens (expected at least one narration)")
+        return None
+    return tokens
+
+
 # "pair" DMs a pairing code, "ignore" drops silently, "decline" sends one polite refusal then goes
 # silent toward that sender for gateway.pairing.DECLINE_DEDUPE_SECONDS (#88028).
 UNAUTHORIZED_DM_BEHAVIORS = {"pair", "ignore", "decline"}
@@ -597,6 +613,12 @@ class GatewayConfig:
     # Drop outbound "silence narration" (*(silent)*, 🔇, a bare ".") that ping-pongs in bot-to-bot
     # channels; a substrate guard that survives prompt drift.
     filter_silence_narration: bool = True
+    # Declared vocabulary + length guard for that filter (#135444): the narrations this instance
+    # actually emits (its language, not necessarily English) and how long such a line may be. ``None``
+    # = the shipped defaults in gateway/delivery.py, so an install that declares nothing keeps the
+    # historical behaviour verbatim.
+    silence_narration_tokens: Optional[list[str]] = None
+    silence_narration_max_chars: Optional[int] = None
     stt_enabled: bool = True  # Auto-transcribe inbound voice messages
     stt_echo_transcripts: bool = True  # Echo raw STT transcripts back to the user
     group_sessions_per_user: bool = True  # Isolate group sessions per participant when user IDs exist
@@ -713,6 +735,8 @@ class GatewayConfig:
             **{name: getattr(self, name) for name in self._SCALAR_DICT_FIELDS},
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
+            "silence_narration_tokens": self.silence_narration_tokens,
+            "silence_narration_max_chars": self.silence_narration_max_chars,
             "profile_routes": [
                 {k: v for k, v in asdict(r).items() if k != "user_id" or v is not None}
                 if is_dataclass(r) and not isinstance(r, type) else r
@@ -797,6 +821,9 @@ class GatewayConfig:
             quick_commands=_coerce_dict(data.get("quick_commands", {})),
             sessions_dir=Path(data["sessions_dir"]) if "sessions_dir" in data else get_hermes_home() / "sessions",
             **{name: _coerce_bool(data.get(name), default) for name, default in _TOPLEVEL_BOOL_DEFAULTS.items()},
+            silence_narration_tokens=_coerce_narration_tokens(pick("silence_narration_tokens")),
+            silence_narration_max_chars=_coerce_optional_positive_int(
+                pick("silence_narration_max_chars"), key_label("silence_narration_max_chars")),
             stt_enabled=_coerce_bool(stt_setting("stt_enabled", "enabled"), True),
             stt_echo_transcripts=_coerce_bool(stt_setting("stt_echo_transcripts", "echo_transcripts"), True),
             multiplex_profiles=None if multiplex_profiles is None else _coerce_bool(multiplex_profiles, True),

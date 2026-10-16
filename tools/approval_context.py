@@ -80,6 +80,22 @@ def gateway_approval_surface() -> str:
     return "cli" if session_surface() == "cli" else "gateway"
 
 
+# Launch sources of a local session whose viewer answers per-command prompts (classic CLI, TUI, Desktop, ACP editor).
+_LOCAL_INTERACTIVE_SOURCES = frozenset({"cli", "tui", "gui", "acp"})
+
+
+def _is_local_interactive_session() -> bool:
+    """True for a classic CLI, TUI, Desktop or ACP session's turn, read from the launch policy the gateway
+    froze at ``session.create`` (never a per-turn client flag). Kanban, cron and forwarded routes keep
+    their own sources and stay out."""
+    try:
+        from gateway.session_policy import active_policy
+    except ImportError:  # install without the gateway package: no local session can be running
+        return False
+    policy = active_policy()
+    return policy is not None and policy.source in _LOCAL_INTERACTIVE_SOURCES
+
+
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
     """Bind the active approval session key to the current context."""
     return _approval_session_key.set(session_key or "")

@@ -166,3 +166,47 @@ def test_accepts_atomic_desktop_gateway():
     assert matches_runtime(ATOMIC_DESKTOP) is True
 
 
+def test_spawn_intent_does_not_rescan_gateway_free_suffixes(monkeypatch):
+    """A large inline source with no ``gateway`` token calls the matcher once, for the direct
+    probe. Previously it called once per suffix."""
+    from gateway import status as status_mod
+
+    calls = 0
+    real = status_mod._gateway_command_subcommand
+
+    def counting(command):
+        nonlocal calls
+        calls += 1
+        return real(command)
+
+    monkeypatch.setattr(status_mod, "_gateway_command_subcommand", counting)
+
+    body = "\n".join(f'x_{i}="${{{i}}}"' for i in range(400))
+    assert spawn_intent(" ".join(["bash", "-c", body])) is None
+    assert calls == 1, f"matcher called {calls} times for a gateway-free inline source"
+
+
+ADVERSARIAL_SPAWN_INTENT = [
+    # ``gateway`` only as a SUBSTRING of a junk token — the necessary-condition filter must keep
+    # looking, and the canonical matcher must still reject (no entrypoint).
+    "python -m mygateway thing",
+    "bash -c 'echo x' 1234 python -m mygateway run",
+    "some/path/mygateway.exe --help",
+    # a bare ``gateway`` word with no Hermes entrypoint
+    "python -c 'x' 1 echo gateway",
+    # Hermes entrypoint but NOT a lifecycle verb (read-only subcommands stay launchable)
+    "python -c 'x' 1 hermes dashboard",
+]
+
+
+@pytest.mark.parametrize("cmd", ADVERSARIAL_SPAWN_INTENT)
+def test_spawn_intent_rejects_substring_only_gateway(cmd):
+    assert spawn_intent(cmd) is None
+
+
+def test_spawn_intent_keeps_a_real_gateway_behind_a_substring_lookalike():
+    """The filter is a NECESSARY condition only: a genuine gateway that also happens to carry a
+    ``mygateway`` token must still be recognised. The ``-c`` wrapper puts this through the suffix
+    PRUNE (a bare command is answered by the direct matcher, never reaching it)."""
+    cmd = "python -c 'x' 1 python -m mygateway thing 1 python -m hermes_cli.main gateway run"
+    assert spawn_intent(cmd) == "run"

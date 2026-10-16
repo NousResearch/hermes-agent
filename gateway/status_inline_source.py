@@ -160,3 +160,22 @@ def inline_bootstrap_argv(tokens: list[str]) -> list[str] | None:
             if entry is not None:
                 return [tokens[0], *entry]
     return None
+
+
+def spawn_intent_suffix_positions(tokens: list[str], flag_index: int) -> range:
+    """Suffix starts worth handing the canonical matcher.
+
+    Every suffix the matcher accepts names ``gateway``, so the range ends just past the last such
+    token instead of covering every tail after ``-c`` (#137023). With none, the range is empty
+    and the caller does not walk.
+
+    The base64 ``_BOOTSTRAPS`` kind encodes its gateway argv and has no literal token. Safe today
+    only because its producer, the Windows ``.cmd`` launcher, appends ``gateway run`` via ``%*``.
+    A base64-only launcher form has to revisit this.
+    """
+    start = flag_index + 2
+    last = start - 1
+    for i in range(start, len(tokens)):
+        if "gateway" in tokens[i].lower():
+            last = i
+    return range(start, last + 1)

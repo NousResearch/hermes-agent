@@ -564,19 +564,28 @@ export function ChatBar({
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
     const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
 
-    if (imageBlobs.length > 0 && onAttachImageBlob) {
+    // Trim surrounding whitespace so a copy that dragged along leading/trailing
+    // blank lines (common when selecting from terminals, code blocks, web pages)
+    // doesn't dump multiline padding into the composer. Internal newlines are
+    // preserved — only the edges are cleaned up.
+    const pastedText = sanitizeComposerInput(event.clipboardData.getData('text').trim())
+
+    // Rich-text sources put both a text and an image flavor on the clipboard —
+    // Word attaches a rendered copy of the prose, and macOS adds a PDF ghost
+    // flavor beside every plain-text copy. The image is a rendering artifact,
+    // not an intentional attachment, so when meaningful text exists it wins and
+    // nothing is attached (#42280, #42827). A bare `data:image` URL is an image
+    // in text form: it must not count as text here, or the attachment path
+    // would starve and the URI would land in the editor as literal text.
+    const textOutweighsImage = pastedText !== '' && !DATA_IMAGE_URL_RE.test(pastedText)
+
+    if (imageBlobs.length > 0 && !textOutweighsImage && onAttachImageBlob) {
       triggerHaptic('selection')
 
       for (const blob of imageBlobs) {
         void onAttachImageBlob(blob)
       }
     }
-
-    // Trim surrounding whitespace so a copy that dragged along leading/trailing
-    // blank lines (common when selecting from terminals, code blocks, web pages)
-    // doesn't dump multiline padding into the composer. Internal newlines are
-    // preserved — only the edges are cleaned up.
-    const pastedText = sanitizeComposerInput(event.clipboardData.getData('text').trim())
 
     if (!pastedText) {
       event.preventDefault()

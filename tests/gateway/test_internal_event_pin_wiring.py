@@ -391,6 +391,67 @@ async def test_first_internal_event_after_agent_eviction_keeps_effective_prompt(
     assert eph[0] == eph[1] == eph[2], "wake after eviction re-rendered the session context (A->B->A)"
 
 
+def _synthetic_turn(runner, source, kind: str) -> MessageEvent:
+    """The event each real producer builds: goal continuation / heartbeat via
+    ``_synthetic_prompt_event``, ``/goal resume`` via ``_enqueue_goal_turn``."""
+    if kind == "goal-resume":
+        enqueued: list[MessageEvent] = []
+        runner._adapter_and_key_for = lambda _event: (object(), KEY)
+        runner._enqueue_fifo = lambda _key, turn, _adapter: enqueued.append(turn)
+        command = MessageEvent(text="/goal resume", source=source, channel_prompt="Channel hint.")
+        runner._enqueue_goal_turn(command, "[goal] resume", label="resume", kickoff=False)
+        return enqueued[0]
+    if kind == "heartbeat-rebuilt-route":
+        # A watch route rebuilt from a stored origin can lack the chat/user names the human turn
+        # rendered; the context pin must still be reused, not re-rendered from it.
+        source = _wake_thread_source()
+    return runner._synthetic_prompt_event(source, "[goal] continue")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["goal-continuation", "goal-resume", "heartbeat-rebuilt-route"])
+async def test_synthetic_goal_turn_keeps_pins_and_effective_prompt(monkeypatch, kind):
+    """Goal continuation, heartbeat due-prompts and ``/goal resume`` are non-internal (they keep
+    authorization and the emergency stop) but carry no channel prompt of their own; they must
+    reuse the human turn's pins instead of overwriting the channel pin with None (A->B->A)."""
+    config = GatewayConfig()
+    config.platforms[Platform.DISCORD] = PlatformConfig(
+        enabled=True,
+        channel_overrides={PARENT_ID: ChannelOverride(system_prompt="Parent persona.")},
+    )
+    runner = _make_runner(monkeypatch, config)
+    calls: list[dict] = []
+    _capture(runner, calls)
+    human = _human_thread_source()
+
+    await _drive(runner, ((False, human),), channel_prompt="Channel hint.")
+    synthetic = _synthetic_turn(runner, human, kind)
+    assert not synthetic.internal and synthetic.channel_prompt is None
+    await runner._handle_message_with_agent(synthetic, synthetic.source, KEY, 1)
+    assert runner._peek_session_state(KEY).conversation.channel_pin[0] == "Channel hint."
+    await _drive(runner, ((False, human),), channel_prompt="Channel hint.")
+
+    assert [kw["channel_prompt"] for kw in calls] == ["Channel hint."] * 3
+    eph = [_effective_ephemeral(runner, kw) for kw in calls]
+    assert "Channel hint." in eph[0] and "Parent persona." in eph[0]
+    assert eph[0] == eph[1] == eph[2], "synthetic turn toggled the effective ephemeral prompt"
+
+
+@pytest.mark.asyncio
+async def test_human_turn_without_channel_prompt_still_replaces_the_pin(monkeypatch):
+    """Negative control: only synthetic turns inherit. A human turn whose channel prompt was
+    removed must still clear it, or a deleted channel prompt would stick forever."""
+    runner = _make_runner(monkeypatch)
+    calls: list[dict] = []
+    _capture(runner, calls)
+
+    await _drive(runner, ((False, _human_thread_source()),), channel_prompt="Channel hint.")
+    await _drive(runner, ((False, _human_thread_source()),), channel_prompt=None)
+
+    assert [kw["channel_prompt"] for kw in calls] == ["Channel hint.", None]
+    assert runner._peek_session_state(KEY).conversation.channel_pin[0] is None
+
+
 @pytest.mark.asyncio
 async def test_human_first_after_restart_ignores_stale_durable_prompt_pin(monkeypatch):
     durable = {

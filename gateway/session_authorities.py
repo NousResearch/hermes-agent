@@ -98,7 +98,16 @@ class SessionAuthorities:
     def serving(self) -> list:
         """Authorities that accept work: not a reserved-but-unbuilt slot, not one retiring (a
         failed serve or an unserve whose turn outlived Stop keeps its slot but refuses admissions)."""
-        return [a for a in self._by_key.values() if a is not None and not getattr(a, 'retiring', False)]
+        # A snapshot: hosted-room coordinator threads read the served set while the loop hot-serves.
+        return [a for a in list(self._by_key.values()) if a is not None and not getattr(a, 'retiring', False)]
+
+    def named_serving(self) -> list[tuple[str, object]]:
+        """``(name, authority)`` for each of ``serving()``. A secondary goes by the name it was
+        reserved under: re-deriving it from the resolved home misnames a ``profiles/<name>`` entry
+        that is a link (it resolves outside ``profiles/`` and reads as ``default``), and a group
+        must refuse such a profile by its own name rather than bind ``default`` to its home. The
+        launch profile keeps ``served_profile_name``, the label its sessions and clients use."""
+        return [(self.profile_name(a) or served_profile_name(a.profile_id), a) for a in self.serving()]
 
     def served_profiles(self) -> list[dict]:
         return [{'profile_id': a.profile_id, 'home': a.profile_id} for a in self.serving()]

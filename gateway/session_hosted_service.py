@@ -24,27 +24,8 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         return self
 
     def profile_homes(self):
-        from gateway.run import _load_gateway_config
-        from gateway.hosted_rooms_common import IDENTIFIER_RE
-        from gateway.session_authorities import served_profile_name
-        home = Path(self.authority.profile_id)
-        own = served_profile_name(home)
-        # The coordinator's own threads do not inherit the caller's ContextVars.
-        with owner_scope(self.authority):
-            configured = _load_gateway_config().get('hosted_rooms', {}).get('profiles', {})
-        result = {own: home}
-        if not isinstance(configured, dict):
-            raise RuntimeStoreError('invalid_params')
-        for name, value in configured.items():
-            if not isinstance(name, str) or not isinstance(value, str):
-                raise RuntimeStoreError('invalid_params')
-            target = Path(value)
-            if not IDENTIFIER_RE.fullmatch(name) or not target.is_absolute() or target != target.resolve():
-                raise RuntimeStoreError('invalid_params')
-            if name == own and target != home:
-                raise RuntimeStoreError('permission_denied')
-            result[name] = target
-        return result
+        from gateway.session_hosted_members import member_roster
+        return member_roster(self.authority)[0]
 
     def local_profiles(self):
         return tuple(self.profile_homes())

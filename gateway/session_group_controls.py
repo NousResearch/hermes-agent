@@ -69,7 +69,7 @@ async def dispatch_group_control(connection, method, params):
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied)
             try:
-                return _group(authority, actor, home, method, supplied)
+                return _group(authority, actor, method, supplied, host_scope=connection.host_scoped)
             except RuntimeStoreError:
                 raise
             except HostedRoomError as exc:
@@ -79,7 +79,7 @@ async def dispatch_group_control(connection, method, params):
     return await asyncio.to_thread(invoke)
 
 
-def _group(authority, actor, home, method, params):
+def _group(authority, actor, method, params, *, host_scope=False):
     from gateway import hosted_rooms as rooms
     db_path = authority.db.db_path
     gateway_id = rooms.local_authority_gateway_id()
@@ -160,15 +160,21 @@ def _group(authority, actor, home, method, params):
         return {'rooms': found, 'next_offset': next_offset}
 
     def create():
-        if service is not None:
-            return {'room': service.create_room(**params, admit=admit)}
-        from gateway.hosted_room_discussion import validate_roster
-        from gateway.session_authorities import served_profile_name
-        name = served_profile_name(home)
-        profiles = {name}
-        if name == 'default' and (home / 'profiles').is_dir():
-            profiles.update(path.name for path in (home / 'profiles').iterdir() if path.is_dir())
-        members = validate_roster(params.get('members'), local_profiles=profiles)
+        from gateway.hosted_room_discussion import DiscussionValidationError, validate_roster
+        from gateway.session_hosted_members import member_roster, refuse_unseatable
+        # Only a host-scoped grant, the one that may address siblings directly
+        # (``AuthorityConnection._sibling_for``), seats served siblings with no entry; a
+        # profile-bound one seats its own profile plus its hosted_rooms.profiles entries, as
+        # before. Both create paths validate here, by the driver's rule.
+        homes, refused = member_roster(authority, siblings=host_scope)
+        refuse_unseatable(params.get('members'), refused)
+        try:
+            members = validate_roster(params.get('members'), local_profiles=homes)
+            if service is not None:
+                return {'room': service.create_room(**params, admit=admit)}
+        except DiscussionValidationError as exc:
+            # Name the refused member; the bare code left Desktop and gateway.log silent (#139002).
+            raise RuntimeStoreError('invalid_params', field='members', detail=str(exc)) from exc
         normalized = [{'member_id': m.member_id, 'profile': m.profile, 'handle': m.handle,
                        'target': dict(m.target or {}),
                        **({'display_name': m.display_name} if m.display_name else {})} for m in members]

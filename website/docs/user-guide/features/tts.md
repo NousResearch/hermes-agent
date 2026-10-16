@@ -43,6 +43,15 @@ Convert text to speech with eleven providers:
 | WhatsApp | Audio file attachment | MP3 |
 | CLI | Saved to `~/.hermes/audio_cache/` | MP3 |
 
+### Desktop playback speed
+
+On the Desktop app, the speaker (read-aloud) control in an assistant message's action bar
+has a speed control beside it (0.75x-2x presets). The rate is a device-level preference: it
+persists across replies and windows, applies to read-aloud and voice-conversation playback
+alike, and takes effect immediately - including on a reply that is already speaking. It is
+applied client-side at playback, so it works with every TTS provider and never conflicts
+with the synthesis-side `speed` parameter of the `text_to_speech` tool.
+
 ### Configuration
 
 ```yaml

@@ -249,6 +249,10 @@ class TestRerouteTargetField:
         assert refusal is not None
         assert refusal.reroute_target == "skills/"
 
+    @pytest.mark.skipif(
+        getattr(memory_tool, "DOC_TARGET_PREFIX", None) is None,
+        reason="doc-chain primitives absent (the #116673 store is not in this push)",
+    )
     def test_over_budget_refusal_names_chain_doc_destination(self):
         """T1-3: the over_budget soft refusal names a concrete chain-doc destination
         (not None), so the model knows where the content should live instead."""
@@ -481,6 +485,10 @@ class TestGrowingReplaceCapBypass:
         # A shrinking edit returns None.
         assert _stage1_projected_hard_cap(store, "memory", "replace", "y", "abcdefgh") is None
 
+    @pytest.mark.skipif(
+        getattr(memory_tool, "DOC_TARGET_PREFIX", None) is None,
+        reason="doc-chain primitives absent (the #116673 store is not in this push)",
+    )
     def test_growing_replace_on_doc_target_admitted(self):
         """A growing replace on an uncapped doc target is admitted (no cap)."""
         store = _make_doc_store(limit=100, doc_entries=["short"])
@@ -510,6 +518,10 @@ class TestDateCurrencyFacets:
         """A date far outside the window does not fire."""
         assert _stage2_date_currency("Deployed 1999-01-15") is None
 
+    @pytest.mark.skipif(
+        getattr(memory_tool, "DOC_TARGET_PREFIX", None) is None,
+        reason="doc-chain primitives absent (the #116673 store is not in this push)",
+    )
     def test_doc_target_skips_date_advisory(self, tmp_path, monkeypatch):
         """T2-2c: the date advisory does not fire for a doc: target (a new dated
         note belongs in the chain, not the session-log)."""
@@ -566,6 +578,10 @@ class TestBatchStaleEntryBoundary:
         assert refusal is None, "gate delegates batch stale-matching to the store"
         assert calls == [], f"Stage 6 must be skipped on batch paths, got {len(calls)} call(s)"
 
+    @pytest.mark.skipif(
+        getattr(memory_tool, "DOC_TARGET_PREFIX", None) is None,
+        reason="doc-chain primitives absent (the #116673 store is not in this push)",
+    )
     def test_batch_doc_target_variant(self, tmp_path, monkeypatch):
         """Doc-flavour batch: a drifted old_text against a chain doc is refused
         by the store through the full tool path (INTEG-4 doc batch variant)."""
@@ -758,6 +774,11 @@ class TestGateWiringProof:
 #    It proves the gate scopes size/limit/stale-entry PER TARGET.
 # =========================================================================
 
+@pytest.mark.skipif(
+    getattr(memory_tool, "DOC_TARGET_PREFIX", None) is None,
+    reason="doc-chain primitives absent (the #116673 store is not in this push) — "
+    "the doc-chain arms degrade to the plain-memory path",
+)
 class TestDocTargetPathUnderGate:
     """Chain-doc writes through the full memory_tool path, against a store in the
     doc-chain world.  Cites INTEG-1..3 and the sandbox-head store primitives

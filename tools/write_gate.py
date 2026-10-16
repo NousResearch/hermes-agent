@@ -14,7 +14,10 @@ prior fail-open precedent for lazy gate imports.
 
 Size, limit and stale-entry resolution are SCOPED PER TARGET through the
 store's own doc-aware primitives (``_char_limit`` / ``_char_count`` /
-``_entries_for`` / ``_doc``).  Chain docs (``doc:<name>`` targets) are uncapped
+``_entries_for`` / ``_doc``).  When the store lacks the doc-chain primitives
+(the #116673 work not present), the doc-chain arms degrade to the plain-memory
+path (fail-closed) — the gate still refuses over-budget writes, without the
+per-target scoping.  Chain docs (``doc:<name>`` targets) are uncapped
 by store design (``_char_limit`` returns ``None``); the gate inherits that and
 never charges a chain-doc write against the anchor's budget (INTEG-1), and it
 searches the target's OWN entries for a stale-entry anchor (INTEG-2).  The

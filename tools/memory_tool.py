@@ -41,8 +41,16 @@ def get_memory_dir() -> Path:
 
 
 from tools.memory_tool_store import (
-    DOC_TARGET_PREFIX, ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, PATCH_DROP_HINT, MemoryStore,
-    _scan_memory_content, doc_name, doc_target)
+    ENTRY_DELIMITER, FAILURE_CLASS, MEMORY_BLOCK_HEADERS, PATCH_DROP_HINT, MemoryStore,
+    _scan_memory_content)
+try:
+    from tools.memory_tool_store import DOC_TARGET_PREFIX, doc_name, doc_target
+except ImportError:
+    # The doc-chain primitives (the #116673 work) are absent from the store —
+    # the doc-chain arms degrade to the plain-memory path (fail-closed, the E1 pattern).
+    DOC_TARGET_PREFIX = None
+    doc_name = None
+    doc_target = None
 
 
 def load_on_disk_store() -> MemoryStore:
@@ -401,7 +409,7 @@ def _memory_target_error(
             "Missing required target. Retry with target='memory' or target='user' at the top level. "
             "For a batch, remove target from every operation; use separate calls for different stores. "
             "Nothing was written or staged.")}
-    if isinstance(target, str) and target.startswith(DOC_TARGET_PREFIX):  # chain doc: gated with the anchor it hangs off
+    if DOC_TARGET_PREFIX and isinstance(target, str) and target.startswith(DOC_TARGET_PREFIX):  # chain doc: gated with the anchor it hangs off
         if store.target_enabled("memory"):
             return None
         FAILURE_CLASS.set("disabled")

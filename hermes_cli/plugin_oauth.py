@@ -57,10 +57,23 @@ class OAuthClient:
 
 # ── Manifest ───────────────────────────────────────────────────────────────────────────────────────
 
+def _parse_url(url: Any):
+    """``urlparse`` of *url*; None for a non-string or a URL it cannot read (bad IPv6 literal or port)."""
+    if not isinstance(url, str):
+        return None
+    try:
+        parsed = urlparse(url)
+        _ = parsed.port  # urlparse checks the port only when it is read
+    except ValueError:
+        return None
+    return parsed
+
+
 def _url_problems(where: str, url: Any) -> list[str]:
-    parsed = urlparse(url) if isinstance(url, str) else None
-    if parsed is None or not parsed.hostname or parsed.username is not None or parsed.password is not None:
-        return [f"{where}: must be an absolute URL without user info"]
+    parsed = _parse_url(url)
+    if (parsed is None or not parsed.hostname or parsed.username is not None or parsed.password is not None
+            or parsed.fragment):
+        return [f"{where}: must be an absolute URL without user info or fragment"]
     if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in _LOOPBACK_LITERALS):
         return [f"{where}: must use https (plain http only for a loopback address)"]
     return []
@@ -98,7 +111,7 @@ def _client(entry: dict) -> OAuthClient:
 def parse_oauth_clients(manifest: Mapping[str, Any]) -> tuple[list[OAuthClient], list[str]]:
     """``oauth:`` from a manifest dict: the well-formed clients, and one problem string per defect."""
     raw = (manifest or {}).get("oauth")
-    if raw in (None, [], {}):
+    if raw is None or raw == []:
         return [], []
     if not isinstance(raw, list):
         return [], ["oauth: must be a list of client entries"]
@@ -184,7 +197,7 @@ def token_url_mentions(manifest: Mapping[str, Any], plugin_dir: Path) -> list[st
     warnings: list[str] = []
     for path in sorted(plugin_dir.rglob("*.py")):
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = path.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             continue
         warnings += [f"oauth: {path.relative_to(plugin_dir).as_posix()} names the token URL {url}; Hermes "
@@ -278,7 +291,7 @@ def _token_request(client: OAuthClient, key: str) -> Callable[[dict[str, str]], 
         except httpx.HTTPError as exc:
             raise _auth_error(key, f"the token request failed ({type(exc).__name__}).", "oauth_refresh_failed") from None
         payload = _json_object(response)
-        if response.status_code >= 400:
+        if not 200 <= response.status_code < 300:  # a redirect is a failure too: it is never followed
             raise _token_error(key, response.status_code, payload)
         if fields.get("grant_type") == "authorization_code":
             _require_granted_scopes(client, payload, key)
@@ -365,8 +378,11 @@ def _bearer(plugin_dir: Path, client: OAuthClient) -> str:
         return _live_token(row) or _refresh(client, key, row)
 
 
-def plugin_oauth_spec(plugin_dir: Path, provider: str):
-    """``(origins, resolver)`` for *provider* when the calling plugin declares it under ``oauth:``, else None."""
+def _plugin_oauth_spec(plugin_dir: Path, provider: str):
+    """``(origins, resolver)`` for *provider* when the calling plugin declares it under ``oauth:``, else None.
+
+    Core-only, like the ``_PROVIDERS`` resolvers: the resolver returns the bearer, so plugins go through
+    ``credentialed_provider_request``, which attributes the caller and checks the origin first."""
     client = next((c for c in _declared_clients(plugin_dir) if c.id == provider), None)
     if client is None:
         return None
@@ -473,5 +489,5 @@ def handle_auth_action(action: str, args: Any, provider: str) -> Optional[bool]:
 
 __all__ = [
     "OAuthClient", "handle_auth_action", "oauth_admission_problems", "oauth_notice", "oauth_surface",
-    "parse_oauth_clients", "plugin_key", "plugin_oauth_spec", "token_url_mentions",
+    "parse_oauth_clients", "plugin_key", "token_url_mentions",
 ]

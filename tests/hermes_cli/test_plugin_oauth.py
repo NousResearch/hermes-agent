@@ -75,11 +75,12 @@ def _entry(idp: FakeIdP, **overrides) -> dict:
     return {**entry, **overrides}
 
 
-def _plugin(name: str = "voice", oauth: list | None = None):
-    """Write ``plugins/<name>`` (manifest plus a module that calls the helper) and import it like a plugin."""
+def _plugin(name: str = "voice", oauth: list | None = None, display: str | None = None):
+    """Write ``plugins/<name>`` (manifest plus a module that calls the helper) and import it like a plugin.
+    *display* is a manifest ``name`` other than the directory."""
     root = _home() / "plugins" / name
     root.mkdir(parents=True, exist_ok=True)
-    manifest = {"name": name, "version": "1.0.0", "description": "test plugin",
+    manifest = {"name": display or name, "version": "1.0.0", "description": "test plugin",
                 "requires_env": [{"name": "VOICE_CLIENT_ID"}, {"name": "VOICE_CLIENT_SECRET"}]}
     if oauth is not None:
         manifest["oauth"] = oauth
@@ -254,6 +255,40 @@ def test_expiring_token_is_refreshed_once_and_the_rotation_kept(idp, api):
     assert [s["headers"]["Authorization"] for s in allowed.seen] == [f"Bearer {grant['access_token']}"] * 2
 
 
+def test_refresh_without_a_new_refresh_token_keeps_the_old_one(idp, api):
+    """Google answers a refresh with an access token only; the stored refresh token must survive it."""
+    allowed, _ = api
+    plugin = _signed_in(idp)
+    old_refresh = _grant()["refresh_token"]
+    _set_grant(expires_at_ms=0)
+    idp.token_answer = (200, {"access_token": "at-google-style", "expires_in": 3599, "token_type": "Bearer"})
+
+    assert plugin.call("google", allowed.url).status == 200
+
+    grant = _grant()
+    assert (grant["access_token"], grant["refresh_token"]) == ("at-google-style", old_refresh)
+    assert allowed.seen[-1]["headers"]["Authorization"] == "Bearer at-google-style"
+
+
+def test_a_redirect_from_the_token_endpoint_is_a_failure_not_a_token(idp, api):
+    allowed, _ = api
+    redirect = (302, {"access_token": "at-from-a-redirect", "refresh_token": "rt-x", "expires_in": 3600})
+    _plugin(oauth=[_entry(idp)])
+    idp.token_answer = redirect
+    with pytest.raises(SystemExit, match="HTTP 302"):
+        _auth("add")
+    assert not (_home() / "auth.json").exists() or _grant() is None
+
+    idp.token_answer = None
+    plugin = _signed_in(idp)
+    _set_grant(expires_at_ms=0)
+    before = _grant()
+    idp.token_answer = redirect
+    with pytest.raises(AuthError) as excinfo:
+        plugin.call("google", allowed.url)
+    assert excinfo.value.code == "oauth_refresh_failed" and _grant() == before and allowed.seen == []
+
+
 def test_two_threads_with_an_expiring_token_refresh_once(idp, api):
     allowed, _ = api
     plugin = _signed_in(idp)
@@ -309,7 +344,7 @@ def test_rejected_client_is_an_auth_error_that_leaves_the_grant(idp, api):
     allowed, _ = api
     plugin = _signed_in(idp)
     _set_grant(expires_at_ms=0)
-    idp.token_error = (401, {"error": "invalid_client", "error_description": "The OAuth client was not found."})
+    idp.token_answer = (401, {"error": "invalid_client", "error_description": "The OAuth client was not found."})
     for _ in range(2):
         with pytest.raises(AuthError) as excinfo:
             plugin.call("google", allowed.url)
@@ -334,6 +369,9 @@ def test_missing_client_env_fails_before_any_request(idp, api, monkeypatch):
     {"hosts": ["api.example.com", "collect.example.net"]},
     {"scopes": SCOPES[:1]},
     {"client_id_env": "OTHER_CLIENT_ID"},
+    {"client_secret_env": "OTHER_CLIENT_SECRET"},
+    {"authorize_url": "https://login.example.net/authorize"},
+    {"authorize_params": {"access_type": "online"}},
 ])
 def test_entry_changed_since_sign_in_is_not_used(idp, api, change):
     allowed, _ = api
@@ -373,7 +411,7 @@ def test_client_secret_stays_out_of_config_repr_logs_and_errors(idp, api, caplog
     assert SECRET not in repr(plugin_oauth._pkce_config(client, KEY))
 
     _set_grant(expires_at_ms=0)
-    idp.token_error = (500, {"error": "server_error", "error_description": SECRET})
+    idp.token_answer = (500, {"error": "server_error", "error_description": SECRET})
     with pytest.raises(AuthError) as excinfo:
         plugin.call("google", allowed.url)
     out = capsys.readouterr()
@@ -405,6 +443,17 @@ def test_install_notice_and_repin_delta_name_the_oauth_entry(idp, tmp_path):
     widened = {"name": "voice", "oauth": [_entry(idp, hosts=["api.example.com", "collect.example.net"])]}
     lines = surface_delta_lines(surface_delta(plugin_surface(manifest, tmp_path), plugin_surface(widened, tmp_path)))
     assert len(lines) == 1 and lines[0].startswith("your OAuth sign-in for") and "collect.example.net" in lines[0]
+
+
+def test_the_notice_command_finds_a_plugin_whose_name_differs_from_its_directory(idp, api):
+    allowed, _ = api
+    plugin = _plugin("voice-dir", oauth=[_entry(idp)], display="gemini-voice")
+    manifest = json.loads((_home() / "plugins" / "voice-dir" / "plugin.yaml").read_text(encoding="utf-8"))
+    assert "hermes auth add gemini-voice:google" in ppr.requires_auth_notice(manifest)
+
+    assert _auth("add", "gemini-voice:google") is True
+    assert _grant("voice-dir:google")["refresh_token"] in idp.refresh_tokens
+    assert plugin.call("google", allowed.url).status == 200
 
 
 def test_hermes_auth_commands_route_a_plugin_grant(idp, capsys):

@@ -24,7 +24,7 @@ from hermes_cli.tools_config_post_setup import (
     _post_setup_already_installed, _module_installed, _POST_SETUP_READY)
 from hermes_cli.tools_config_providers import (
     _plugin_image_gen_providers, _plugin_video_gen_providers, _plugin_web_search_providers, _plugin_browser_providers,
-    _plugin_tts_providers, web_provider_capabilities, _visible_providers, provider_readiness_status,
+    _plugin_tts_providers, _plugin_stt_providers, web_provider_capabilities, _visible_providers, provider_readiness_status,
     _toolset_needs_configuration_prompt, _configure_tool_category, _web_tier_matches, _is_provider_active,
     _detect_active_provider_index, IMAGEGEN_BACKENDS, _plugin_image_gen_catalog, _plugin_video_gen_catalog,
     _configure_imagegen_model, _configure_imagegen_model_for_plugin, _configure_videogen_model_for_plugin,

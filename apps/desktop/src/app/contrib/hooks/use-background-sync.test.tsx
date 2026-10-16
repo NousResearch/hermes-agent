@@ -63,11 +63,16 @@ describe('useBackgroundSync profile-scoped session refresh', () => {
     $sessionsChangeTick.set(0)
     $sidebarShowArchived.set(false)
     vi.mocked(loadArchivedSessions).mockReset()
+    // The safety-net interval polls require focus, and jsdom's
+    // document.hasFocus() is not reliably true, so pin it (visibility stays
+    // at jsdom's "visible" default for the heavy pass).
+    vi.spyOn(globalThis.document, 'hasFocus').mockReturnValue(true)
   })
 
   afterEach(() => {
     cleanup()
     vi.useRealTimers()
+    vi.restoreAllMocks()
   })
 
   it('coalesces change ticks while the live status request is pending', async () => {
@@ -236,5 +241,123 @@ describe('useBackgroundSync keeps a quiet working turn live', () => {
 
     expect($workingSessionIds.get()).not.toContain('s-quiet')
     expect($sessionStates.get()['rt-quiet']?.interrupted).toBeFalsy()
+  })
+})
+
+describe('useBackgroundSync active-view gating', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    $changeEventsAvailable.set(true)
+    $cronChangeTick.set(0)
+    $sessionsChangeTick.set(0)
+    $sidebarShowArchived.set(false)
+    vi.spyOn(globalThis.document, 'hasFocus').mockReturnValue(true)
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  const hideWindow = () => {
+    const visibility = vi.spyOn(globalThis.document, 'visibilityState', 'get').mockReturnValue('hidden')
+
+    return () => visibility.mockReturnValue('visible')
+  }
+
+  const changeVisibility = async () => {
+    await act(async () => {
+      globalThis.document.dispatchEvent(new Event('visibilitychange'))
+    })
+  }
+
+  it('holds the coalesced pass while the window is hidden and catches up when shown', async () => {
+    const refreshSessions = vi.fn(async () => undefined)
+    render('default', 'local', refreshSessions)
+    await act(async () => undefined)
+    refreshSessions.mockClear()
+
+    const show = hideWindow()
+
+    await act(async () => {
+      $sessionsChangeTick.set(1)
+    })
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000)
+      await Promise.resolve()
+    })
+
+    expect(refreshSessions).not.toHaveBeenCalled()
+
+    show()
+    await changeVisibility()
+
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not stack passes when visibility flips repeatedly', async () => {
+    const refreshSessions = vi.fn(async () => undefined)
+    render('default', 'local', refreshSessions)
+    await act(async () => undefined)
+    refreshSessions.mockClear()
+
+    const show = hideWindow()
+
+    await act(async () => {
+      $sessionsChangeTick.set(1)
+    })
+
+    show()
+    await changeVisibility()
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      globalThis.document.dispatchEvent(new Event('visibilitychange'))
+      window.dispatchEvent(new Event('focus'))
+      globalThis.document.dispatchEvent(new Event('visibilitychange'))
+    })
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps an owed pass across an effect re-creation while hidden and defers it to the gap floor', async () => {
+    const refreshSessions = vi.fn(async () => undefined)
+    render('default', 'local', refreshSessions)
+    await act(async () => undefined)
+    refreshSessions.mockClear()
+
+    // First tick while visible: the pass runs and sets the gap floor.
+    await act(async () => {
+      $sessionsChangeTick.set(1)
+    })
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+
+    const show = hideWindow()
+
+    // In-gap tick while hidden: flagged as owed (no timer is armed while hidden).
+    await act(async () => {
+      $sessionsChangeTick.set(2)
+    })
+
+    // Re-create the heavy effect (the shape of an active-session switch)
+    // while still hidden: the owed flag must survive - a closure timer would
+    // be cancelled - and the gap floor must not reset.
+    await act(async () => {
+      $changeEventsAvailable.set(false)
+    })
+    await act(async () => {
+      $changeEventsAvailable.set(true)
+    })
+
+    show()
+    await changeVisibility()
+    expect(refreshSessions).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      vi.advanceTimersByTime(30_000)
+      await Promise.resolve()
+    })
+    expect(refreshSessions).toHaveBeenCalledTimes(2)
   })
 })

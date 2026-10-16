@@ -15,8 +15,11 @@ def policy_identity(policy):
     data = asdict(policy)
     data.pop('credential_ref')
     data.pop('config_secret_ref')
+    # Fields added after release are hashed only when set, so an older session's reference still matches.
     if data.get('editor_mcp_json') is None:
         data.pop('editor_mcp_json', None)
+    if not data.get('coding_posture'):
+        data.pop('coding_posture', None)
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 

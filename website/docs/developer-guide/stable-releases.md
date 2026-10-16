@@ -306,6 +306,10 @@ cannot delay a bundle; the price is that a broken `main` still pays for signed
 candidates that `acceptance` then refuses.
 The `smoke-win32-universal` job is gone; the per-arch MSIX smokes cover each
 arch, and the Windows install arms install the `.msixbundle` on both arches.
+Stable runs those two MSIX smokes in its `win32-bundle` call, beside assembly,
+not in the per-arch calls: assembly starts as soon as both arches are built
+instead of waiting for the slower arch's smoke, and the bundle call (so
+`candidate-manifest`) still fails when either smoke fails.
 
 ## Tag namespaces and receipts
 

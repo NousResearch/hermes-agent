@@ -13,7 +13,7 @@ import logging
 import socket
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from tui_gateway import server
 from agent.message_sanitization import _sanitize_surrogates
@@ -219,21 +219,29 @@ class WSTransport:
 
     async def write_many_async(self, frames: list[dict]) -> bool:
         """``write_async`` for an ordered batch: buffered tokens, then *frames*, in one send batch."""
+        return await self.write_many_if_current_async(frames, None)
+
+    async def write_many_if_current_async(self, frames: list[dict], is_current: Callable[[], bool] | None) -> bool:
+        """Recheck the batch's owner at each send without gating other producers' buffered tokens."""
         if self._closed:
             return False
         with self._token_lock:
             batch, self._pending_tokens = self._pending_tokens, []
+            unguarded_prefix = len(batch)
             batch.extend(serialize_frame(frame, self._peer, _log) for frame in frames)
-        await self._safe_send_many(batch)
+        await self._safe_send_many(batch, is_current=is_current, unguarded_prefix=unguarded_prefix)
         return not self._closed
 
-    async def _safe_send_many(self, lines: list[str]) -> None:
+    async def _safe_send_many(self, lines: list[str], *, is_current: Callable[[], bool] | None = None,
+                              unguarded_prefix: int = 0) -> None:
         """Send one indivisible batch of pre-serialized frames in wire order."""
         async with self._send_lock:
             if self._closed:
                 return
-            for line in lines:
+            for index, line in enumerate(lines):
                 if self._closed:
+                    return
+                if is_current is not None and index >= unguarded_prefix and not is_current():
                     return
                 payload = _sanitize_ws_text(line)
                 try:

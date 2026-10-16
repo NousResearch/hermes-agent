@@ -200,6 +200,47 @@ def _clean(value: Any) -> str:
 DIRECT_ALIASES: dict[str, DirectAlias] = {}
 
 
+def _load_user_direct_aliases(cfg: Any) -> dict[str, DirectAlias]:
+    """Aliases the user explicitly configured in ``cfg``, without the built-ins.
+
+    Same precedence as :func:`_load_direct_aliases` (``model_aliases:`` first, ``model.aliases:``
+    never overriding it); split out so routing decisions can tell "explicit user config" apart
+    from the built-in namespace (e.g. a user alias named like a MoA preset, #134162).
+    """
+    merged: dict[str, DirectAlias] = {}
+    user_aliases = cfg.get("model_aliases")
+    if isinstance(user_aliases, dict):
+        for name, entry in user_aliases.items():
+            if isinstance(entry, dict) and entry.get("model", ""):
+                merged[name.strip().lower()] = DirectAlias(
+                    model=entry.get("model", ""), provider=entry.get("provider", "custom"),
+                    base_url=entry.get("base_url", ""), api_key=_clean(entry.get("api_key", "")),
+                    key_env=_clean(entry.get("key_env", "")))
+
+    model_section = cfg.get("model", {})
+    simple_aliases = model_section.get("aliases") if isinstance(model_section, dict) else None
+    if isinstance(simple_aliases, dict):
+        current_provider = model_section.get("provider", "")
+        for name, value in simple_aliases.items():
+            key = name.strip().lower()
+            if not key or key in merged:
+                continue
+            if isinstance(value, dict):
+                model = _clean(value.get("model"))
+                if model:
+                    merged[key] = DirectAlias(
+                        model=model, provider=_clean(value.get("provider")) or current_provider or "custom",
+                        base_url=_clean(value.get("base_url", "")),
+                        api_key=_clean(value.get("api_key", "")),
+                        key_env=_clean(value.get("key_env", "")))
+            elif isinstance(value, str) and value.strip():
+                val = value.strip()
+                provider, model = val.split("/", 1) if "/" in val else (current_provider, val)
+                merged[key] = DirectAlias(
+                    model=model.strip(), provider=provider.strip() or current_provider, base_url="")
+    return merged
+
+
 def _load_direct_aliases() -> dict[str, DirectAlias]:
     """Load direct aliases from config.yaml.
 
@@ -214,38 +255,7 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
     merged = dict(_BUILTIN_DIRECT_ALIASES)
     try:
         from hermes_cli.config import load_config
-        cfg = load_config()
-
-        user_aliases = cfg.get("model_aliases")
-        if isinstance(user_aliases, dict):
-            for name, entry in user_aliases.items():
-                if isinstance(entry, dict) and entry.get("model", ""):
-                    merged[name.strip().lower()] = DirectAlias(
-                        model=entry.get("model", ""), provider=entry.get("provider", "custom"),
-                        base_url=entry.get("base_url", ""), api_key=_clean(entry.get("api_key", "")),
-                        key_env=_clean(entry.get("key_env", "")))
-
-        model_section = cfg.get("model", {})
-        simple_aliases = model_section.get("aliases") if isinstance(model_section, dict) else None
-        if isinstance(simple_aliases, dict):
-            current_provider = model_section.get("provider", "")
-            for name, value in simple_aliases.items():
-                key = name.strip().lower()
-                if not key or key in merged:
-                    continue
-                if isinstance(value, dict):
-                    model = _clean(value.get("model"))
-                    if model:
-                        merged[key] = DirectAlias(
-                            model=model, provider=_clean(value.get("provider")) or current_provider or "custom",
-                            base_url=_clean(value.get("base_url", "")),
-                            api_key=_clean(value.get("api_key", "")),
-                            key_env=_clean(value.get("key_env", "")))
-                elif isinstance(value, str) and value.strip():
-                    val = value.strip()
-                    provider, model = val.split("/", 1) if "/" in val else (current_provider, val)
-                    merged[key] = DirectAlias(
-                        model=model.strip(), provider=provider.strip() or current_provider, base_url="")
+        merged.update(_load_user_direct_aliases(load_config()))
     except Exception:
         pass
     return merged
@@ -1347,7 +1357,15 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
     try:
         from hermes_cli.config import load_config
         from hermes_cli.moa_config import exact_moa_preset_name, normalize_moa_config
-        moa_match = exact_moa_preset_name(normalize_moa_config(load_config().get("moa") or {}), raw_input)
+        cfg = load_config()
+        moa_match = exact_moa_preset_name(
+            normalize_moa_config(cfg.get("moa") or {}), raw_input)
+        if moa_match and raw_input.strip().lower() in _load_user_direct_aliases(cfg):
+            # An alias the user explicitly configured wins over a same-named MoA preset (#134162):
+            # the stock preset "default" is also the most natural everyday alias name, and the
+            # silent pivot bills every turn through the aggregator. ``--provider moa`` and the
+            # /moa picker still reach the preset.
+            moa_match = None
     except Exception:
         moa_match = None  # MoA config unreadable: fall through to plain alias resolution
     if moa_match:

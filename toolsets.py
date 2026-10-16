@@ -24,7 +24,7 @@ _HERMES_CORE_TOOLS = [
     "todo_list", "memory",
     "session_search",
     "clarify",
-    "execute_code", "delegate_task",
+    "execute_code", "delegate_task", "review",
     "cronjob_manage",
     "kanban_show", "kanban_list",
     "kanban_complete", "kanban_block", "kanban_request_review",
@@ -154,6 +154,7 @@ TOOLSETS = {
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
     "delegation": _ts("Spawn subagents with isolated context for complex subtasks", ["delegate_task"]),
+    "review": _ts("Independent review of the conversation's work by the configured reviewer model", ["review"]),
     "kanban": _ts(
         "Kanban multi-agent coordination — only active when the agent is spawned by "
         "the kanban dispatcher (HERMES_KANBAN_TASK env set). The dispatcher runs "

@@ -328,12 +328,17 @@ Credentials resolve exactly like a `delegation.provider` pin (full runtime-provi
 
 `/review` is deliberately separate from `/refine`: `/refine` reviews the conversation to update memory and skills, `/review` reviews the *work product* the conversation created.
 
+### The agent can start a review itself
+
+The `review` tool gives the agent the same reviewer: the same briefing (recent conversation plus loaded skills), the same `auxiliary.review` model and the same background completion. The agent passes an optional `focus`, and the reviewer is told the request came from the primary agent, not from you. Use it to let the agent get its own PR reviewed by a different model without waiting for you to type `/review`. Subagents never get the tool, at any depth: a review completes into the requesting conversation, and a subagent has none to receive it. Turn it off like any toolset (`hermes tools`, toolset `review`).
+
 ## Inherited Tool Access
 
 `delegate_task` does not accept a model-facing `toolsets` parameter. Each subagent inherits the parent's enabled toolsets so the model cannot grant a child capabilities that the parent does not have. Configure the parent's tools before starting the conversation if delegated work needs additional capabilities.
 
 Certain tools are blocked for subagents even when the parent has them:
 - `delegate_task` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
+- `review` — blocked at every depth, orchestrators included.
 - `clarify` — subagents cannot interact with the user
 - `memory` — no writes to shared persistent memory
 - `send_message` — no cross-platform side effects

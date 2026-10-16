@@ -1318,6 +1318,8 @@ export function useSessionActions({
       resumeRequestRef.current = requestId
       const resumedSameSelectedSession = selectedStoredSessionIdRef.current === storedSessionId
 
+      // Navigation may commit after this resume captures its token; landing on
+      // this session is still current, while a different route remains an abort.
       const isCurrentResume = () => {
         const currentRouteToken = getRouteToken()
 

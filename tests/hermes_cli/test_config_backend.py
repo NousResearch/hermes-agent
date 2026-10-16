@@ -75,6 +75,7 @@ class TestFileBackend:
         assert cb.version_token(version) == version[0] / 1_000_000_000 > 0
         # An opaque non-file version still yields a stable non-zero number.
         assert cb.version_token(("etag-1",)) == cb.version_token(("etag-1",)) != 0
+        assert cb.version_token(("etag-1",)) != cb.version_token(("etag-2",))
 
     def test_read_version_and_bom(self, home):
         path = home / "config.yaml"

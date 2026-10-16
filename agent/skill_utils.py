@@ -210,11 +210,9 @@ def _raw_config_cache_clear() -> None:
 
 def _config_cache_key(config_path: Path) -> Optional[tuple[str, int, int, int, int]]:
     """``(path, *backend version)`` identity of config.yaml, or None when unreadable/absent."""
-    try:
-        from hermes_cli.config_backend import config_version
-        return (str(config_path), *config_version(config_path))
-    except OSError:
-        return None
+    from hermes_cli.config_backend import config_version_or_none
+    version = config_version_or_none(config_path)
+    return None if version is None else (str(config_path), *version)
 
 
 def _load_raw_config() -> dict[str, Any]:

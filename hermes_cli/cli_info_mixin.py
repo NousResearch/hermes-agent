@@ -864,7 +864,7 @@ class CLIInfoMixin:
         cache** (the next message re-sends the full input prefix, expensive on long-context / high-reasoning
         models). See #1474.
         """
-        from hermes_cli.config_backend import config_exists, config_version, read_config_doc
+        from hermes_cli.config_backend import config_version_or_none, read_config_doc
 
         now = time.monotonic()
         if now - self._last_config_check < CONFIG_WATCH_INTERVAL:
@@ -873,11 +873,8 @@ class CLIInfoMixin:
 
         from hermes_cli.config import get_config_path as _get_config_path
         cfg_path = _get_config_path()
-        if not config_exists(cfg_path):
-            return
-        try:
-            sig = config_version(cfg_path)
-        except OSError:
+        sig = config_version_or_none(cfg_path)
+        if sig is None:
             return
         if sig == self._config_sig:
             return  # unchanged — fast path

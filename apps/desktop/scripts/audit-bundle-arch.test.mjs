@@ -103,6 +103,8 @@ test('findUnpackedDirs matches electron-builder output shapes only', () => {
 test.each([
   ['resources/agent-payload/tools/git-2.53.0-win32-x64/mingw64/bin/Avalonia.dll', true],
   ['resources\\agent-payload\\tools\\git-2.53.0-win32-x64\\mingw64\\libexec\\git-core\\GitHub.dll', true],
+  ['resources/agent-payload/tools/git-2.56.0-win32-x64/ucrt64/bin/Avalonia.dll', true],
+  ['resources\\agent-payload\\tools\\git-2.56.0-win32-x64\\ucrt64\\libexec\\git-core\\GitHub.dll', true],
   ['resources\\agent-payload\\tools\\git-2.53.0-win32-x64\\usr\\libexec\\getprocaddr32.exe', true],
   ['resources/agent-payload/tools/git-2.54.0-win32-arm64/clangarm64/libexec/git-core/msalruntime.dll', true],
   ['resources/agent-payload/tools/git-2.53.0-linux-x64/bin/git', false],

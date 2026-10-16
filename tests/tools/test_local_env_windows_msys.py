@@ -277,6 +277,30 @@ class TestGitBashCoreutilsOnPath:
         # Non-existent dirs (mingw32, usr/local/bin) are excluded.
         assert "/pg/mingw32/bin" not in norm
 
+    @pytest.mark.platforms("windows")
+    def test_derives_dirs_from_ucrt64_portablegit_layout(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)
+        monkeypatch.setattr(local_mod, "_find_bash", lambda: "/pg/bin/bash.exe")
+        existing = {"/pg/ucrt64/bin", "/pg/usr/bin", "/pg/bin"}
+        monkeypatch.setattr(local_mod.os.path, "isdir", self._fake_isdir(existing))
+
+        dirs = _git_bash_bin_dirs()
+        norm = [d.replace("\\", "/") for d in dirs]
+        assert "/pg/usr/bin" in norm
+        assert norm.index("/pg/ucrt64/bin") < norm.index("/pg/usr/bin")
+
+    @pytest.mark.platforms("windows")
+    def test_derives_dirs_from_clangarm64_portablegit_layout(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)
+        monkeypatch.setattr(local_mod, "_find_bash", lambda: "/pg/bin/bash.exe")
+        existing = {"/pg/clangarm64/bin", "/pg/usr/bin", "/pg/bin"}
+        monkeypatch.setattr(local_mod.os.path, "isdir", self._fake_isdir(existing))
+
+        dirs = _git_bash_bin_dirs()
+        norm = [d.replace("\\", "/") for d in dirs]
+        assert "/pg/usr/bin" in norm
+        assert norm.index("/pg/clangarm64/bin") < norm.index("/pg/usr/bin")
+
     @pytest.mark.platforms("linux")
     def test_empty_off_windows(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)

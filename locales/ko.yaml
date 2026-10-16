@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    (다음 턴에만 적용 — 응답 한 번 후 복원돼요)"
     switch_cancelled: "🟡 모델 전환이 취소됐어요. 현재 모델은 그대로예요({model})."
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_텍스트로 답하려면: 전환은 `{prefix}approve`, 현재 모델 유지는 `{prefix}cancel`이라고 답해 주세요._"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **활성 에이전트 및 작업**"
     active_agents: "**활성 에이전트:** {count}"

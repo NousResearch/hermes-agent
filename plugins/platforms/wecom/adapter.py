@@ -34,7 +34,9 @@ from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendR
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_float
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
+from gateway.platforms._shared import (
+    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret, send_error,
+)
 from plugins.platforms.wecom.send_queue import ChatSendQueueMixin
 from plugins.platforms.wecom.media import WeComMediaMixin, APP_CMD_SEND
 from plugins.platforms.wecom.streaming import (
@@ -819,13 +821,20 @@ def interactive_setup() -> None:
 
 
 def _is_connected(config) -> bool:
-    return bool((getattr(config, "extra", {}) or {}).get("bot_id"))
+    extra = getattr(config, "extra", {}) or {}
+    return bool(
+        _extra_or_secret(extra, "bot_id", "WECOM_BOT_ID")
+        and _extra_or_secret(extra, "secret", "WECOM_SECRET")
+    )
 
 
 def _callback_is_connected(config) -> bool:
     """Callback mode: corp_id or a multi-app `apps` block."""
     extra = getattr(config, "extra", {}) or {}
-    return bool(extra.get("corp_id") or extra.get("apps"))
+    return bool(extra.get("apps") or (
+        _extra_or_secret(extra, "corp_id", "WECOM_CALLBACK_CORP_ID")
+        and _extra_or_secret(extra, "corp_secret", "WECOM_CALLBACK_CORP_SECRET")
+    ))
 
 
 

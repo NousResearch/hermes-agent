@@ -177,6 +177,8 @@ class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
     api_mode: str | None = None
     tool_count: int | None = None
     credential_hint: str | None = None
+    # A session-start notice (the project plugins this gateway does not load).
+    config_warning: str | None = None
 
 
 canonical_method("session.info", params=CanonicalSessionInfoParams, result=CanonicalSessionInfo,

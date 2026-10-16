@@ -257,10 +257,9 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             # Admission/typing is not execution. All routing, authorization and
             # turn preparation gates have passed when the agent runner is entered.
             event._heartbeat_execution_started = True
-            # Internal events reuse the last human turn's channel inputs (see _pinned_channel_inputs).
-            _turn_channel_prompt, _turn_source = self._pinned_channel_inputs(
-                session_key, event.channel_prompt, source, internal=event.internal,
-            )
+            _turn_channel_prompt, _turn_source = self._pinned_channel_inputs(  # internal/synthetic reuse pins
+                session_key, event.channel_prompt, source,
+                internal=event.internal or getattr(event, "inherit_channel_pin", False))
             if not event.internal:
                 # Persist the coherent context+channel pair before execution: a crash during the
                 # human turn may be followed by an internal startup-resume on the next process.
@@ -1922,7 +1921,8 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
             next_channel_prompt, next_source = self._pinned_channel_inputs(
-                next_session_key, pending_event.channel_prompt, next_source, internal=pending_event.internal,
+                next_session_key, pending_event.channel_prompt, next_source,
+                internal=pending_event.internal or getattr(pending_event, "inherit_channel_pin", False),
             )
             if not pending_event.internal:
                 # A drained human turn re-pins its channel inputs; make them durable like a first turn.

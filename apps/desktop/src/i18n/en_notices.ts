@@ -1,7 +1,7 @@
 import { enSessionCommands } from './en_session_commands'
 import type { Translations } from './types'
 
-// Shell notices (remote-display toast, butterbar), spread into en.ts.
+// Shell notices (remote-display toast, butterbar, keep-awake offer), spread into en.ts.
 export const enNotices = {
   remoteDisplayBanner: {
     message: reason =>
@@ -21,5 +21,11 @@ export const enNotices = {
     legacySendUnconfirmed:
       'This server could not confirm the earlier send of this message, so it may already have run. Check the conversation before sending it again.',
     sessionCommands: enSessionCommands
+  },
+  keepAwakeOffer: {
+    title: 'Your computer slept while Hermes was working',
+    message:
+      'Hermes can keep your computer awake while a task runs. The screen still turns off, and on battery your computer may still sleep.',
+    action: 'Keep awake while working'
   }
-} satisfies Pick<Translations, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices'>
+} satisfies Pick<Translations, 'remoteDisplayBanner' | 'butterbar' | 'promptNotices' | 'keepAwakeOffer'>

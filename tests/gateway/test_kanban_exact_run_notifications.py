@@ -175,3 +175,42 @@ def test_obsolete_events_are_silent_but_new_approval_survives(board, monkeypatch
             assert "Approval B" in adapter.sent[0] and "Approval A" not in adapter.sent[0]
     else:
         assert adapter.sent == adapter.wakes == []
+
+
+def test_refresh_delivery_failure_rewinds_claimed_cursor(board, monkeypatch):
+    """A transient freshness re-read error must not permanently lose the claim."""
+    import sqlite3
+
+    import gateway.kanban_watchers_notifier as notifier
+
+    tid, rid = claim(board)
+    subscribe(board, tid)
+    assert kb.block_task(board, tid, reason="Needs decision", kind="needs_input", expected_run_id=rid)
+    adapter = Transport()
+    r = runner(adapter)
+    ds = collect(r)
+    assert ds
+    claimed_cursor = ds[0]["cursor"]
+    old_cursor = ds[0]["old_cursor"]
+    assert claimed_cursor > old_cursor
+    real_refresh = notifier._refresh_delivery
+
+    def boom(_d):
+        raise sqlite3.OperationalError("injected refresh failure")
+
+    monkeypatch.setattr(notifier, "_refresh_delivery", boom)
+    asyncio.run(deliver(r, ds))
+    assert adapter.sent == adapter.wakes == []
+
+    sub = board.execute(
+        "SELECT last_event_id FROM kanban_notify_subs WHERE task_id=?", (tid,),
+    ).fetchone()
+    assert sub is not None
+    assert int(sub["last_event_id"]) == old_cursor
+
+    monkeypatch.setattr(notifier, "_refresh_delivery", real_refresh)
+    asyncio.run(deliver(r, collect(r)))
+    assert len(adapter.sent) == len(adapter.wakes) == 1
+    assert "Needs decision" in adapter.sent[0]
+
+

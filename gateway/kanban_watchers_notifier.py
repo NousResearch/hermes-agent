@@ -825,7 +825,15 @@ class _KanbanNotification:
         return True
 
     async def deliver(self) -> None:
-        self.task, self.d["events"] = await _to_thread_process_service(_refresh_delivery, self.d)
+        try:
+            self.task, self.d["events"] = await _to_thread_process_service(_refresh_delivery, self.d)
+        except Exception as exc:
+            # Claim already advanced the cursor; a failed freshness re-read must
+            # rewind so the envelope can retry instead of vanishing forever.
+            logger.warning("kanban notifier: freshness re-read failed for %s on board %s: %s; rewinding claim",
+                           self.task_id, self.board_slug, exc)
+            await self.rewind()
+            return
         if not self.d["events"]:
             await self.advance()
             return
@@ -870,7 +878,14 @@ class _KanbanNotification:
                 return
             # Transport awaits can overlap a human resolving an approval or a
             # dispatcher claiming the retry. Never wake from the older snapshot.
-            self.task, self.d["events"] = await _to_thread_process_service(_refresh_delivery, self.d)
+            try:
+                self.task, self.d["events"] = await _to_thread_process_service(_refresh_delivery, self.d)
+            except Exception as exc:
+                logger.warning("kanban notifier: post-send freshness re-read failed for %s on board %s: %s; rewinding claim",
+                               self.task_id, self.board_slug, exc)
+                await self.rewind()
+                return
+
             # All text pings delivered (or skipped for non-push / wake-only).
             original_events = self.d["events"]
             from gateway.warning_notifications import warning_notifications_enabled

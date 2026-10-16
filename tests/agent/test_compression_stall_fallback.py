@@ -254,6 +254,38 @@ def test_total_ceiling_exhaustion_does_not_start_fallback():
     assert len(timeouts) == 1
 
 
+class _ReadThenStallWorker(_StalledSummaryWorker):
+    """The primary attempt's server reads the prompt (pushing the fence deadline back), then stalls."""
+
+    def __call__(self, fence: CompressionCommitFence):
+        if not self.routes:
+            assert fence.extend_deadline(10.0)
+        return super().__call__(fence)
+
+
+def test_stall_after_prompt_reading_still_funds_the_fallback():
+    """Prompt reading moves the fence deadline; the fallback must be budgeted from the moved deadline,
+    not the primary attempt's original one, or a long read followed by a stall skips the fallback."""
+    original = [{"role": "user", "content": "keep-me"}]
+    compressed = [{"role": "user", "content": "summary"}]
+    worker = _ReadThenStallWorker(compressed)
+    timeouts = []
+
+    try:
+        msgs, prompt = _run(
+            # Same budget as the exhaustion test above: without the extension the idle expiry spends it.
+            worker, chain=[dict(CHAIN_ENTRY, timeout=2.0)], timeouts=timeouts, messages=original,
+            idle=2.0, ceiling=2.0,
+        )
+    finally:
+        worker.release.set()
+
+    assert worker.attempts == 2, "the extended budget must fund the fallback attempt"
+    assert msgs == compressed
+    assert prompt == "summarized-prompt"
+    assert not timeouts
+
+
 def test_same_turn_fallback_retry_is_not_gated_by_the_primary_stall_backoff(tmp_path, monkeypatch):
     """The cancelled primary worker persists ``stall_interrupted`` while the fallback retry is already
     running; that cooldown must not no-op the retry (#112387). Real AIAgent, real ``compress_context``

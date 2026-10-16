@@ -21,7 +21,8 @@ from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
-from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement, image_dimensions_from_bytes
+from agent.image_eviction_policy import image_dimensions_from_bytes
+from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseBackend, UIElement
 
 logger = logging.getLogger(__name__)
 

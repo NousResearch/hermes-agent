@@ -73,6 +73,13 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
         logger.debug("Approval hook %s dispatch failed: %s", hook_name, exc)
 
 
+def gateway_approval_surface() -> str:
+    """Surface a gateway-rendered approval reports: ``cli`` for a classic CLI session's turn (main
+    prompted those in the CLI process), else ``gateway``."""
+    from hermes_cli.plugin_session import session_surface
+    return "cli" if session_surface() == "cli" else "gateway"
+
+
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
     """Bind the active approval session key to the current context."""
     return _approval_session_key.set(session_key or "")

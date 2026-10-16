@@ -1201,12 +1201,14 @@ _EXECUTE_CODE_DESCRIPTION = (
 
 
 def _is_local_viewer_turn() -> bool:
-    """A local session's turn its viewer submitted: its frozen launch policy is local-interactive, the admission
-    is the viewer's own prompt (not a plugin injection or another producer admission), it is not a delegate_task
-    child (sync or async; they inherit the parent's policy), and the turn's approval notifier is registered
-    under the bound session key (side tasks bind their own task key with none)."""
+    """A local session's turn its viewer submitted, with that viewer there to answer: its frozen launch policy is
+    local-interactive, the admission is the viewer's own prompt (not a plugin injection or another producer
+    admission) and a viewer holding ``session:approve`` is attached now, it is not a delegate_task child (sync or
+    async; they inherit the parent's policy), and the turn's approval notifier is registered under the bound
+    session key. The notifier is registered for every session turn, so it only tells side tasks (their own task
+    key, none registered) apart; it does not show anyone is attached."""
     from agent.delegation_context import is_delegated_child_process_context
-    return (approval_context._is_local_interactive_session() and approval_context.is_viewer_submitted_turn()
+    return (approval_context._is_local_interactive_session() and approval_context.is_viewer_turn_with_approver()
             and not is_delegated_child_process_context()
             and _gateway_notify_cb(get_current_session_key()) is not None)
 

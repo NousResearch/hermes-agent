@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 admission_author = ContextVar('admission_author', default=None)
 executing_admission = ContextVar('executing_admission', default=False)
 # The live session while the executing turn is one its viewer submitted (``is_viewer_input``), else None.
-viewer_turn = ContextVar('viewer_turn', default=None)
+viewer_turn: ContextVar = ContextVar('viewer_turn', default=None)
 # Set by a busy-path caller that must be released once its input is durably queued.
 busy_acceptance = ContextVar('busy_acceptance', default=None)
 # ``_validate_native`` clauses about the message's own content, safe to name to the sender's chat.

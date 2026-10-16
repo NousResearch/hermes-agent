@@ -33,12 +33,15 @@ def _policy(source: str, cwd: str) -> LocalSessionPolicy:
                               toolsets=(), config_json="{}", request_json="{}", terminal_json="{}")
 
 
-def _viewer_session():
-    """The live session with its viewer attached, holding ``session:approve`` (what ``session.resume`` records)."""
+def _viewer_session(attached: str = "approver"):
+    """The live session; ``attached`` is who ``session.resume`` recorded as subscribed: a viewer holding
+    ``session:approve``, a read-only one, or nobody."""
     from types import SimpleNamespace
     from gateway.session_authority import LiveSession
     live = LiveSession(None, SESSION_KEY)
-    live.subscribers["viewer"] = SimpleNamespace(capabilities=frozenset({"session:read", "session:approve"}))
+    capabilities = {"approver": {"session:read", "session:approve"}, "read-only": {"session:read"}}.get(attached)
+    if capabilities is not None:
+        live.subscribers["viewer"] = SimpleNamespace(capabilities=frozenset(capabilities))
     return live
 
 
@@ -60,9 +63,11 @@ def turn(monkeypatch, tmp_path):
 
     cleanups = []
 
-    def start(*, platform: str = "local", source: str | None = None, viewer: bool = True, **set_answers):
+    def start(*, platform: str = "local", source: str | None = None, viewer: bool = True,
+              attached: str = "approver", **set_answers):
         """``viewer``: the turn is one the session's viewer submitted (``execute_admission`` binds it);
-        ``False`` is a plugin injection or another producer admission into the session."""
+        ``False`` is a plugin injection or another producer admission into the session. ``attached``: see
+        ``_viewer_session``."""
         monkeypatch.setenv("HERMES_EXEC_ASK", "1")  # start_gateway() sets it process-wide
         for name in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_CRON_SESSION"):
             monkeypatch.delenv(name, raising=False)
@@ -72,7 +77,7 @@ def turn(monkeypatch, tmp_path):
         policy_token = _ACTIVE_POLICY.set(_policy(source, str(tmp_path)) if source else None)
         if viewer:
             from gateway.session_ingress import viewer_turn
-            viewer_token = viewer_turn.set(_viewer_session())
+            viewer_token = viewer_turn.set(_viewer_session(attached))
             cleanups.append(lambda: viewer_turn.reset(viewer_token))
         A.register_gateway_notify(SESSION_KEY, notify)
         cleanups.append(lambda: (A.unregister_gateway_notify(SESSION_KEY), _ACTIVE_POLICY.reset(policy_token),
@@ -178,6 +183,22 @@ def test_injected_turn_keeps_whole_script_gate(child_env, turn, source):
     victim = child_env / "victim"
     victim.mkdir()
     prompts = turn(source=source, viewer=False)  # every prompt is denied
+    _code, result = _run_unguarded_rm(victim)
+    assert result.get("error") == _DENIED_SCRIPT, result
+    assert "ran" not in result.get("output", "") and victim.is_dir()
+    assert [p["pattern_key"] for p in prompts] == ["execute_code"]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("source", ["cli", "gui"])
+@pytest.mark.parametrize("attached", ["nobody", "read-only"])
+def test_viewer_turn_with_no_approver_attached_keeps_whole_script_gate(child_env, turn, source, attached):
+    """The turn's notifier is registered for every session turn, viewer attached or not; the exemption also
+    needs an attached viewer that can answer approvals. Otherwise the script is approved as a whole and,
+    with nobody approving, never runs."""
+    victim = child_env / "victim"
+    victim.mkdir()
+    prompts = turn(source=source, attached=attached)  # every prompt is denied
     _code, result = _run_unguarded_rm(victim)
     assert result.get("error") == _DENIED_SCRIPT, result
     assert "ran" not in result.get("output", "") and victim.is_dir()

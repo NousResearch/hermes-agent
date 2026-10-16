@@ -96,16 +96,21 @@ def _is_local_interactive_session() -> bool:
     return policy is not None and policy.source in _LOCAL_INTERACTIVE_SOURCES
 
 
-def is_viewer_submitted_turn() -> bool:
-    """True while the executing turn is one its session's viewer submitted through ``session.submit``, as
-    the gateway's FIFO drain recorded for this admission. A plugin ``inject_message`` turn, a delegation
-    completion, a background-process or watch notice, a /loop tick, a heartbeat or a hosted-room task is
-    not."""
+def is_viewer_turn_with_approver() -> bool:
+    """True while the executing turn is one its session's viewer submitted through ``session.submit`` (as the
+    gateway's FIFO drain recorded for this admission) and a viewer that can answer approvals is attached now:
+    a subscriber holding ``session:approve``, the only answer the gateway's approval resolver accepts. A plugin
+    ``inject_message`` turn, a delegation completion, a background-process or watch notice, a /loop tick, a
+    heartbeat or a hosted-room task is never a viewer turn."""
     try:
         from gateway.session_ingress import viewer_turn
     except ImportError:  # install without the gateway package: no admission is executing
         return False
-    return viewer_turn.get() is not None
+    live = viewer_turn.get()
+    if live is None:
+        return False
+    with live.event_stream.lock:
+        return any("session:approve" in member.capabilities for member in live.subscribers.values())
 
 
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:

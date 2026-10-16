@@ -76,7 +76,7 @@ async def test_only_the_viewers_own_turn_skips_the_whole_script_gate(tmp_path, m
         ref = create_local_session(authority, viewer, dict(request_id="cli", source="cli", model="fixture",
                                                           toolsets=[]))
         live = authority.sessions[ref.session_id]
-        await authority.attach(viewer, ref)
+        subscription = (await authority.attach(viewer, ref)).subscription_id
         entry = runner.session_store.lookup_by_session_key(live.route)
         adapter = runner._adapter_for_source(live.source)
 
@@ -88,12 +88,17 @@ async def test_only_the_viewers_own_turn_skips_the_whole_script_gate(tmp_path, m
         await async_wait_until(lambda: "plugin injection" in gates, timeout=10, what="the injected turn")
         assert await admit_route_wake(runner, adapter, live.source, "loop tick", "loop-tick") is True
         await async_wait_until(lambda: "loop tick" in gates, timeout=10, what="the /loop tick")
+        # The viewer detaches: its queued turn still runs, with nobody attached who can answer.
+        await authority.detach(viewer, subscription)
+        await authority.submit(viewer, Submission("queued", ref, {"text": "typed, then detached"}, "queue"))
+        await async_wait_until(lambda: "typed, then detached" in gates, timeout=10, what="the detached turn")
     finally:
         db.close()
 
     assert gates == {"typed by the viewer": (True, []),
                      "plugin injection": (False, ["execute_code"]),
-                     "loop tick": (False, ["execute_code"])}
+                     "loop tick": (False, ["execute_code"]),
+                     "typed, then detached": (False, ["execute_code"])}
 
 
 @pytest.mark.parametrize("request_id,payload,viewer", [

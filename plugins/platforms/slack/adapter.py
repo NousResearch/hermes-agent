@@ -5680,8 +5680,7 @@ class SlackAdapter(BasePlatformAdapter):
             return
         clarify_id, token = value.split("|", 1)
         target = self._clarify_messages.get(clarify_id)
-        if target is None or target[:2] != (channel_id, msg_ts):
-            # A forged value must not claim another prompt or consume this card's guard.
+        if target is None or target[:2] != (channel_id, msg_ts):  # Reject forged values before consuming the guard.
             return
         session_key = target[3]
         # Double-click guard — atomic pop (mirrors approval).
@@ -5689,8 +5688,7 @@ class SlackAdapter(BasePlatformAdapter):
             return
         original_text = self._section_text(message, limit=None)
         from tools import clarify_gateway as _clarify_mod
-        # "Other" → text-capture mode: mark_awaiting_text flips the entry and the
-        # gateway's text-intercept resolves it from the user's next message.
+        # "Other" flips the entry to text capture; the gateway intercepts the user's next message.
         expired_text = t("platform.slack.clarify.expired", user=user_name)
         if action_id == "hermes_clarify_other" or token == "other":
             if not _clarify_mod.mark_awaiting_text(clarify_id):
@@ -5698,8 +5696,7 @@ class SlackAdapter(BasePlatformAdapter):
                 self._clarify_messages.pop(clarify_id, None)
                 await self._update_clarify_message(channel_id, msg_ts, original_text, expired_text)
                 return
-            # Not terminal: the clarify stays pending for typed text, so keep the card entry —
-            # the gateway still has to retire it on timeout / reset / typed answer.
+            # Keep the pending card for retirement on timeout / reset / typed answer.
             await self._update_clarify_message(
                 channel_id, msg_ts, original_text, t("platform.slack.clarify.awaiting", user=user_name))
             return
@@ -5727,9 +5724,7 @@ class SlackAdapter(BasePlatformAdapter):
                 channel_id, msg_ts, original_text,
                 t("platform.slack.clarify.resolved", user=user_name, choice=display_text))
             # Privacy: choice text may carry user context — INFO gets metadata only.
-            logger.info(
-                "Slack button resolved clarify (id=%s, choice_index=%d, user=%s)", clarify_id, idx,
-                user_name)
+            logger.info("Slack button resolved clarify (id=%s, choice_index=%d, user=%s)", clarify_id, idx, user_name)
             logger.debug("Slack clarify choice text (id=%s): %.100r", clarify_id, resolved_text)
         else:
             # Entry evicted/gateway restarted — show expiry, not a misleading ✓.

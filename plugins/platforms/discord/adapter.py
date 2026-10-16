@@ -6745,8 +6745,7 @@ def _define_discord_view_classes() -> None:
         gateway clarify entry immediately; ``Other`` flips to text-capture (next message answers).
         Single-use: after the first valid click all buttons disable."""
 
-        def __init__(self, choices: list[str], clarify_id: str, allowed_user_ids: set,
-                     allowed_role_ids: Optional[set] = None, *, session_key: str = ""):
+        def __init__(self, choices: list[str], clarify_id: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None, *, session_key: str = ""):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
             self.choices = list(choices)[:24]
             self.clarify_id = clarify_id
@@ -6820,8 +6819,7 @@ def _define_discord_view_classes() -> None:
             ):
                 return
             display_name = getattr(getattr(interaction, "user", None), "display_name", "user")
-            # Round-trip the canonical choice text from the entry, not the button label.
-            resolved_text: Optional[str] = None
+            resolved_text: Optional[str] = None  # Canonical choice text, not the button label.
             try:
                 from tools.clarify_gateway import get_pending
                 entry = get_pending(self.clarify_id)
@@ -6834,17 +6832,14 @@ def _define_discord_view_classes() -> None:
             try:
                 from tools.clarify_gateway import resolve_gateway_clarify
                 resolved = resolve_gateway_clarify(self.clarify_id, resolved_text, session_key=self.session_key)
-                logger.info(
-                    "Discord clarify button resolved (id=%s, choice=%r, user=%s, ok=%s)",
-                    self.clarify_id, resolved_text,
-                    getattr(getattr(interaction, "user", None), "display_name", "?"), resolved,
-                )
+                logger.info("Discord clarify button resolved (id=%s, choice=%r, user=%s, ok=%s)",
+                            self.clarify_id, resolved_text,
+                            getattr(getattr(interaction, "user", None), "display_name", "?"), resolved)
             except Exception as exc:
                 logger.error("Discord clarify resolve_gateway_clarify failed (id=%s): %s", self.clarify_id, exc)
                 resolved = False
             color = discord.Color
-            await self._finish(
-                interaction, color.green() if resolved else color.greyple(),
+            await self._finish(interaction, color.green() if resolved else color.greyple(),
                 t("platform.discord.prompt.answered_by", user=display_name, choice=choice) if resolved
                 else t("platform.discord.prompt.expired_footer"), log_edit_failure=True)
 

@@ -2362,7 +2362,7 @@ def _resolve_switch_context_length(agent, snapshot):
 def _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot) -> None:
     """Point the context compressor at the new model (rolls back the switch on failure)."""
     from agent.model_metadata import get_model_context_length
-    from agent.opencode_gemini import compressor_budget as _go_compressor_budget
+    from agent.opencode_gemini import compressor_budget as _go_compressor_budget, compressor_provider
     if custom_providers is None:
         try:
             from hermes_cli.config import get_compatible_custom_providers, load_config
@@ -2382,7 +2382,7 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
             context_length=new_context_length,
             base_url=agent.base_url,
             api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
-            provider=agent.provider,
+            provider=compressor_provider(agent),
             api_mode=agent.api_mode,
             **_go_compressor_budget(agent),
         )

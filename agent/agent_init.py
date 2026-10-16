@@ -1998,12 +1998,13 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:
+        from agent.opencode_gemini import compressor_provider
         agent.context_compressor = ContextCompressor(
             model=agent.model, threshold_percent=cs.threshold, protect_first_n=cs.protect_first,
             protect_last_n=cs.protect_last, summary_target_ratio=cs.target_ratio,
             summary_model_override=None, quiet_mode=agent.quiet_mode, base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""), config_context_length=_effective_context_length,
-            provider=agent.provider, api_mode=agent.api_mode,
+            provider=compressor_provider(agent), api_mode=agent.api_mode,
             abort_on_summary_failure=cs.abort_on_summary_failure,
             max_tokens=_compressor_max_tokens(agent), model_thresholds=cs.model_thresholds,
             threshold_tokens_cap=cs.threshold_tokens,
@@ -2225,6 +2226,7 @@ def _snapshot_primary_runtime(agent):
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
         # Engine state _try_activate_fallback() overwrites (getattr: plugin engines may lack them).
         "compressor_model": getattr(_cc, "model", agent.model),
+        "compressor_max_tokens": getattr(_cc, "max_tokens", None),
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url),
         "compressor_api_key": getattr(_cc, "api_key", ""),
         "compressor_provider": getattr(_cc, "provider", agent.provider),

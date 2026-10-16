@@ -29,6 +29,21 @@ def main_go_gemini_base(agent, base_url):
     return go_gemini_base(provider, getattr(agent, "model", ""), base_url)
 
 
+def compressor_provider(agent):
+    """Keep built-in Go provenance after the agent leaves its internal custom alias.
+
+    Plugin engines retain the runtime provider and their existing update contract.
+    During built-in construction there is no compressor yet.
+    """
+    from agent.context_compressor import ContextCompressor
+
+    cc = getattr(agent, "context_compressor", None)
+    if cc is None or isinstance(cc, ContextCompressor):
+        if main_go_gemini_base(agent, agent.base_url):
+            return "opencode-go"
+    return agent.provider
+
+
 def compressor_budget(agent):
     """Recompute the built-in output reservation without widening plugin ABI."""
     from agent.context_compressor import ContextCompressor

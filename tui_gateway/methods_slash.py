@@ -439,8 +439,12 @@ def _mirror_stop(sid, session, agent, arg) -> None:
 
 # name → mirror(sid, session, agent, arg); a falsy return means "no warning".
 def _mirror_autoprune(sid, session, agent, arg) -> str:
-    """An answered low-disk question drops its sticky notice (``later`` too: it re-arms in a week)."""
-    if arg:
+    """An answered low-disk question drops its sticky notice (``later`` too: it re-arms in a week);
+    ``status``, a typo or a failed save leave it up."""
+    from pathlib import Path
+    from hermes_cli.prune_advisor import answered
+    home = session.get("profile_home")
+    if arg and answered(Path(home) if home else None):
         _emit("notification.clear", sid, {"key": "sessions.auto_prune"})
     return ""
 

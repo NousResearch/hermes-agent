@@ -380,8 +380,10 @@ def _maybe_notify_auto_prune(sid: str, profile_home: str | None) -> None:
 
     def _work() -> None:
         advice = prune_advisor.advise(home)
-        if advice is not None:
+        if advice is not None and prune_advisor.should_ask(home) is not None:  # not answered meanwhile
             _emit("notification.show", sid, prune_advisor.notice_payload(advice))
+        else:
+            _AUTO_PRUNE_NOTIFIED.pop(str(home), None)
 
     from agent.memory_provider import spawn_context_thread
     spawn_context_thread(_work, name="auto-prune-advice").start()

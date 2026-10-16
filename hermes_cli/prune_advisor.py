@@ -229,6 +229,12 @@ def notice_payload(advice: Advice) -> dict:
             "key": NOTICE_KEY, "id": NOTICE_KEY}
 
 
+def answered(home: Optional[Path] = None) -> bool:
+    """True once the question is settled for now (a saved on/off, or a live ``later`` snooze):
+    the only state in which a shown notice may be withdrawn."""
+    return not undecided(home) or snoozed(home)
+
+
 def notice_due(home: Optional[Path], shown: dict) -> bool:
     """Per-process dedup that re-arms: a home already noticed is due again once the gate passes
     and a full snooze window has gone by since (so ``later`` really asks again in a week)."""

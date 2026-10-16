@@ -96,3 +96,43 @@ def test_later_re_arms_the_local_notice_after_the_snooze_window(home, monkeypatc
     assert not prune_advisor.notice_due(home, shown)  # same process, same window: once
     shown[str(home)] = time.time() - prune_advisor.SNOOZE_SECONDS - 1
     assert prune_advisor.notice_due(home, shown)  # a week later it asks again
+
+
+def test_only_a_settled_question_may_withdraw_the_notice(home, monkeypatch):
+    """`status`, a typo or a failed save leave the question open; on/off/later settle it."""
+    _disk(monkeypatch, free_gb=1)
+    assert not prune_advisor.answered(home)
+    prune_advisor.run_command("status", home)
+    prune_advisor.run_command("bogus", home)
+    assert not prune_advisor.answered(home)
+    prune_advisor.run_command("later", home)
+    assert prune_advisor.answered(home)
+
+
+def test_local_notice_is_neither_re_asked_after_an_answer_nor_spent_on_nobody(home, monkeypatch):
+    """Desktop/Ink path: an answer given while the estimate runs suppresses the publish, and a
+    notice no viewer received releases its claim so the next window still asks."""
+    import asyncio
+    from types import SimpleNamespace
+    from gateway import run_housekeeping_disk as rhd
+    from gateway.config import Platform
+    from gateway.session_events import SessionEvents
+    monkeypatch.setattr("gateway.session_policy.policy_for_source", lambda *_: SimpleNamespace(source="gui"))
+    _disk(monkeypatch, free_gb=1)
+    events = SessionEvents()  # no viewer attached: publish delivers to nobody
+    live = SimpleNamespace(source=SimpleNamespace(platform=Platform.LOCAL), event_stream=events)
+    authority = SimpleNamespace(sessions={"s1": live}, runner=None, db=SimpleNamespace(db_path=home / "state.db"))
+    ref = SimpleNamespace(session_id="s1")
+    rhd._LOCAL_NOTIFIED.clear()
+
+    asyncio.run(rhd.publish_local_auto_prune_notice(authority, ref))
+    assert events.sequence == 1 and str(home) not in rhd._LOCAL_NOTIFIED  # undelivered: claim released
+
+    real_advise = prune_advisor.advise
+    def advise_then_answer(h):
+        advice = real_advise(h)
+        prune_advisor.run_command("off", h)  # another window answers during the estimate
+        return advice
+    monkeypatch.setattr(prune_advisor, "advise", advise_then_answer)
+    asyncio.run(rhd.publish_local_auto_prune_notice(authority, ref))
+    assert events.sequence == 1  # nothing re-asked

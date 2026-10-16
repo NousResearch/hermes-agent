@@ -95,11 +95,14 @@ async def publish_local_auto_prune_notice(authority, ref) -> None:
     home = Path(authority.db.db_path).parent
     if not prune_advisor.notice_due(home, _LOCAL_NOTIFIED):
         return
-    _LOCAL_NOTIFIED[str(home)] = time.time()
+    _LOCAL_NOTIFIED[str(home)] = time.time()  # in-flight claim: one estimate per home at a time
     advice = await asyncio.to_thread(prune_advisor.advise, home)
-    if advice is None:
-        return
-    live.event_stream.publish(ref.session_id, prune_advisor.notice_payload(advice), event_type="notification.show")
+    # Answered (here or in another window) during the estimate: publishing would re-ask it.
+    delivered = (advice is not None and prune_advisor.should_ask(home) is not None
+                 and live.event_stream.publish(ref.session_id, prune_advisor.notice_payload(advice),
+                                               event_type="notification.show"))
+    if not delivered:
+        _LOCAL_NOTIFIED.pop(str(home), None)  # nobody saw it: the next window may ask
 
 
 def clear_local_auto_prune_notice(runner, source) -> None:

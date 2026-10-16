@@ -1,0 +1,421 @@
+"""Pre-claim model/credential probe for pinned cards (#122703).
+
+A card that pins ``model_override``/``provider_override`` dies at worker
+startup when the pin is unreachable — unknown provider, quota-walled 403, no
+credential — but as a clean ``rc=0`` exit AFTER the dispatcher already spent
+the claim, indistinguishable from success at the dispatch layer (two burns:
+t_85821c09, t_4dc09492 — respawn_guarded loops burned 3 runs each). The probe
+resolves the pin the way the worker would, BEFORE the claim is consumed; a
+failed probe releases the claim through the spawn-failure path.
+
+The dead-provider shape is hermetic: ``resolve_runtime_provider`` raises
+``AuthError`` locally for unknown provider names (verified against the real
+CLI: ``hermes -z ... --provider nonexistent-provider-xyz`` exits rc=1 in ~0.4s
+without touching the network), so these tests never need a live endpoint.
+"""
+from __future__ import annotations
+
+import json
+import os
+import stat
+from pathlib import Path
+
+import pytest
+
+from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
+
+DEAD_PROVIDER = "nonexistent-provider-xyz"
+
+
+@pytest.fixture
+def kanban_home(tmp_path, monkeypatch):
+    """Isolated HERMES_HOME with an empty kanban DB and no ambient probe knobs."""
+    home = tmp_path / ".hermes"
+    (home / "profiles" / "alice").mkdir(parents=True)
+    # Identity marker so resolve_profile_env()/profile_exists treat alice as live.
+    (home / "profiles" / "alice" / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("HERMES_KANBAN_PRECLAIM_PROBE", raising=False)
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    cache = getattr(kbd, "_preclaim_probe_cache", None)
+    if cache is not None:
+        cache.clear()
+    kb.init_db()
+    return home
+
+
+def _spawn_recorder():
+    calls: list[str] = []
+    return calls, lambda task, _workspace, board=None: (calls.append(task.id), 4242)[1]
+
+
+def _pinned_card(conn, **overrides):
+    kwargs: dict = dict(
+        title="pinned to a dead provider",
+        assignee="alice",
+        model_override="test-model",
+        provider_override=DEAD_PROVIDER,
+    )
+    kwargs.update(overrides)
+    tid = kb.create_task(conn, **kwargs)
+    conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (tid,))
+    conn.commit()
+    return tid
+
+
+def test_dead_provider_pin_never_claims(kanban_home):
+    """The core invariant (#122703): a card pinned to an unreachable provider
+    must not have its claim consumed. Verdict: card back in ready with the
+    claim released, no worker spawned, and the event chain carries an
+    observable reason — instead of a clean rc=0 worker exit after the claim
+    was spent."""
+    with kbc.connect() as conn:
+        tid = _pinned_card(conn)
+        spawns, spawn_fn = _spawn_recorder()
+        res = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        failure = task.last_failure_error or ""
+    # Invariants first so the RED on base is the behavioral claim itself
+    # (worker spawned / claim spent), not a missing-attribute error.
+    assert spawns == [], "worker must not be spawned on a dead pin"
+    assert task.status == "ready", "claim must be released back to the source phase"
+    assert task.claim_lock is None
+    assert res.spawned == []
+    # Feature surface (exists only with the patch):
+    assert res.preclaim_probe_failed == [tid]
+    assert "preclaim probe" in failure
+    assert "preclaim_probe_failed" in kinds
+    assert "spawn_failed" in kinds
+
+
+def test_probe_failure_counts_toward_circuit_breaker(kanban_home):
+    """The release rides the existing spawn-failure accounting: one probe
+    failure counts one failure; the breaker (default limit 2) parks the card
+    on the second — no new state machine, and a permanently dead pin cannot
+    retry-storm."""
+    with kbc.connect() as conn:
+        tid = _pinned_card(conn)
+        spawns, spawn_fn = _spawn_recorder()
+        kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready" and task.consecutive_failures == 1
+        res2 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        task = kb.get_task(conn, tid)
+    assert spawns == []
+    assert res2.preclaim_probe_failed == [tid]
+    assert task.status == "blocked", "second dead-pin failure must trip the breaker"
+
+
+def test_auth_pin_failure_not_cached_and_never_breaker(kanban_home, monkeypatch):
+    """An auth-shaped dead pin with no ``code`` (the credential-state shape:
+    a benched pool key, a pending ADC login — reviewer finding 1) rides the
+    live channel: never cached, never counted toward the breaker, and the
+    card stays claimable so the next tick can re-probe after the cooldown
+    lifts."""
+    calls = {"n": 0}
+
+    def auth_resolve(*args, **kwargs):
+        calls["n"] += 1
+        from hermes_cli.auth import AuthError
+
+        raise AuthError("Anthropic credentials are rate-limited for opus; other models remain available.")
+
+    import hermes_cli.runtime_provider as rp
+
+    monkeypatch.setattr(rp, "resolve_runtime_provider", auth_resolve)
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")  # next tick re-claims at once
+    with kbc.connect() as conn:
+        t1 = _pinned_card(conn, title="pin 1")
+        t2 = _pinned_card(conn, title="pin 2")
+        spawns, spawn_fn = _spawn_recorder()
+        res1 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        res2 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        task = kb.get_task(conn, t1)
+    assert calls["n"] == 4, "auth failures must re-probe per claim, never serve a cached verdict"
+    assert res1.preclaim_probe_failed == [t1, t2]
+    assert res2.preclaim_probe_failed == [t1, t2]
+    assert res1.rate_limited == [t1, t2], "code-less AuthError rides the live channel"
+    assert spawns == []
+    assert task.status == "ready" and task.consecutive_failures == 0, "no breaker accumulation for auth-shaped pins"
+
+
+def test_probe_verdict_cached_across_cards(kanban_home, monkeypatch):
+    """A fan-out of same-pinned cards probes ONCE — but only for SUCCESS
+    verdicts: failure caching was removed (a stale negative verdict pinned
+    cards across config fixes until a dispatcher restart — reviewer finding
+    2), so two claims = two probes even for the deterministic typo."""
+    calls = {"n": 0}
+
+    def counting_resolve(*args, **kwargs):
+        calls["n"] += 1
+        from hermes_cli.auth import AuthError
+
+        raise AuthError(f"Unknown provider '{DEAD_PROVIDER}'.", code="invalid_provider")
+
+    import hermes_cli.runtime_provider as rp
+
+    monkeypatch.setattr(rp, "resolve_runtime_provider", counting_resolve)
+    with kbc.connect() as conn:
+        t1 = _pinned_card(conn, title="pin 1")
+        t2 = _pinned_card(conn, title="pin 2")
+        spawns, spawn_fn = _spawn_recorder()
+        res1 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        res2 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+    assert calls["n"] == 4, "failure verdicts are never cached: each claim re-probes"
+    assert res1.preclaim_probe_failed == [t1, t2]
+    assert res2.preclaim_probe_failed == [t1, t2]
+    assert spawns == []
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, t1)
+    assert task.status == "blocked", "permanent typo still parks via the breaker after two attempts"
+
+
+def test_probe_success_verdict_cached_across_cards(kanban_home, monkeypatch):
+    """Success verdicts stay cached: a fan-out of healthy-pinned cards
+    resolves the pin once per process, keeping the probe off the open path."""
+    calls = {"n": 0}
+
+    def counting_resolve(*args, **kwargs):
+        calls["n"] += 1
+        return {"provider": "openrouter", "api_key": "sk-test", "api_mode": "chat"}
+
+    import hermes_cli.runtime_provider as rp
+
+    monkeypatch.setattr(rp, "resolve_runtime_provider", counting_resolve)
+    monkeypatch.setenv("HERMES_BIN", _write_fake_hermes(kanban_home, "echo PROBE_OK"))
+    with kbc.connect() as conn:
+        t1 = _pinned_card(conn, title="pin 1")
+        t2 = _pinned_card(conn, title="pin 2")
+        spawns, spawn_fn = _spawn_recorder()
+        res1 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        res2 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+    assert calls["n"] == 1, "success verdict must run once, then hit the cache"
+    assert spawns == [t1, t2], "both healthy-pinned cards claim and spawn"
+    assert res1.preclaim_probe_failed == [] and res2.preclaim_probe_failed == []
+
+
+def test_disabled_probe_keeps_upstream_behavior(kanban_home, monkeypatch):
+    """HERMES_KANBAN_PRECLAIM_PROBE=0 reverts to upstream behavior: the dead
+    pin card is claimed and spawned exactly as on main — the probe is
+    skippable, never a mandatory network tax on the open path."""
+    monkeypatch.setenv("HERMES_KANBAN_PRECLAIM_PROBE", "0")
+    with kbc.connect() as conn:
+        tid = _pinned_card(conn)
+        spawns, spawn_fn = _spawn_recorder()
+        res = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+    assert res.preclaim_probe_failed == []
+    assert spawns == [tid], "disabled probe must not block the claim"
+    assert res.spawned and res.spawned[0][0] == tid
+
+
+def test_unpinned_card_never_probed(kanban_home, monkeypatch):
+    """Only pinned cards pay the probe: an unpinned card claims and spawns
+    with the probe machinery completely absent (even a broken resolver must
+    not matter)."""
+    import hermes_cli.runtime_provider as rp
+
+    def explode(*args, **kwargs):
+        raise AssertionError("unpinned card must not reach the resolver")
+
+    monkeypatch.setattr(rp, "resolve_runtime_provider", explode)
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="no pin", assignee="alice")
+        conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (tid,))
+        conn.commit()
+        spawns, spawn_fn = _spawn_recorder()
+        res = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+    assert res.preclaim_probe_failed == []
+    assert spawns == [tid]
+
+
+def test_profile_home_resolution_failure_never_judges_pin(kanban_home, monkeypatch):
+    """A crashing profile resolver must not steer the probe at the wrong
+    home (reviewer minor): fail-open — no verdict is formed at all, the
+    claim proceeds, and a dead-under-profile pin is left to the worker's own
+    honest startup failure instead of a wrong-home judgment."""
+    import hermes_cli.profiles as profiles_mod
+
+    def explode(arg):
+        raise RuntimeError("profile resolution is broken on this host")
+
+    monkeypatch.setattr(profiles_mod, "resolve_profile_env", explode)
+    import hermes_cli.runtime_provider as rp
+
+    def dead_pin(*args, **kwargs):
+        from hermes_cli.auth import AuthError
+
+        raise AuthError(f"Unknown provider '{DEAD_PROVIDER}'.")
+
+    monkeypatch.setattr(rp, "resolve_runtime_provider", dead_pin)
+    with kbc.connect() as conn:
+        tid = _pinned_card(conn)
+        spawns, spawn_fn = _spawn_recorder()
+        res = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+    assert spawns == [tid], "resolver crash must fail open: claim proceeds, no wrong-home verdict"
+    assert res.preclaim_probe_failed == []
+
+
+def _write_fake_hermes(dir_: Path, body: str) -> str:
+    bin_path = dir_ / "fake-hermes"
+    bin_path.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    bin_path.chmod(bin_path.stat().st_mode | stat.S_IEXEC)
+    return str(bin_path)
+
+
+@pytest.fixture
+def patched_static_resolve(monkeypatch):
+    """Layer 1 passes (well-formed pin); layer 2 (live child) is under test."""
+    import hermes_cli.runtime_provider as rp
+
+    monkeypatch.setattr(
+        rp, "resolve_runtime_provider",
+        lambda *a, **k: {"provider": "openrouter", "api_key": "sk-test", "api_mode": "chat"},
+    )
+
+
+def test_live_probe_dead_child_releases_claim(kanban_home, monkeypatch, tmp_path, patched_static_resolve):
+    """Layer 2 (real one-shot child, sealed via HERMES_BIN): a well-formed pin
+    whose child exits non-zero (the 403/quota-wall shape) is caught before the
+    claim is spent — and released through the worker's rate-limit channel, NOT
+    the spawn-failure breaker: the run closes as ``rate_limited`` and
+    ``consecutive_failures`` stays untouched (the pre-claim twin of the
+    worker's EX_TEMPFAIL exit — a quota wall is transient, never the card's
+    fault)."""
+    monkeypatch.setenv(
+        "HERMES_BIN", _write_fake_hermes(tmp_path, 'echo "hermes -z: agent failed: 403 quota exceeded" >&2\nexit 1'),
+    )
+    with kbc.connect() as conn:
+        tid = _pinned_card(conn)
+        spawns, spawn_fn = _spawn_recorder()
+        res = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        task = kb.get_task(conn, tid)
+    assert spawns == []
+    assert res.preclaim_probe_failed == [tid]
+    assert res.rate_limited == [tid], "live-layer probe failure rides the rate-limit channel"
+    assert task.status == "ready"
+    assert task.consecutive_failures == 0, "a quota wall must not count toward the breaker"
+    assert "quota" in (task.last_failure_error or "")
+
+
+def test_quota_probe_failure_guard_and_breaker_interaction(kanban_home, monkeypatch, tmp_path, patched_static_resolve):
+    """Guard/breaker interaction for a quota-text probe failure (#122893
+    red-team): released as ``rate_limited``, the card is spaced by
+    ``rate_limit_cooldown`` on the following ticks — never parked by
+    ``blocker_auth`` on the stamped quota text, never breaker-tripped, no
+    matter how many ticks the quota window spans. Self-heals by design."""
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "9999")
+    monkeypatch.setenv(
+        "HERMES_BIN", _write_fake_hermes(tmp_path, 'echo "hermes -z: agent failed: 403 quota exceeded" >&2\nexit 1'),
+    )
+    with kbc.connect() as conn:
+        tid = _pinned_card(conn)
+        spawns, spawn_fn = _spawn_recorder()
+        res1 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        task = kb.get_task(conn, tid)
+        run_outcomes = [
+            r["outcome"]
+            for r in conn.execute(
+                "SELECT outcome FROM task_runs WHERE task_id = ? ORDER BY id DESC", (tid,),
+            ).fetchall()
+        ]
+        res2 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        res3 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        task_after = kb.get_task(conn, tid)
+    assert spawns == []
+    assert res1.preclaim_probe_failed == [tid]
+    assert res1.rate_limited == [tid]
+    assert run_outcomes == ["rate_limited"], "the probe release must close the run as rate_limited"
+    assert task.status == "ready"
+    assert task.consecutive_failures == 0
+    assert (tid, "rate_limit_cooldown") in res2.respawn_guarded, \
+        "stamped quota text must hit the rate-limit cooldown, not blocker_auth"
+    assert (tid, "rate_limit_cooldown") in res3.respawn_guarded
+    assert task_after.status == "ready", "a long quota window must never park or trip the card"
+    assert task_after.consecutive_failures == 0
+
+
+def test_transient_probe_failure_not_cached_recovers(kanban_home, monkeypatch, tmp_path, patched_static_resolve):
+    """Live-layer verdicts are never cached: a quota wall that heals between
+    ticks must recover on the very next claim. A cached transient verdict
+    would pin the card to a stale failure for the dispatcher's whole
+    lifetime — the exact burn the probe exists to prevent."""
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")  # next tick retries at once
+    monkeypatch.setenv(
+        "HERMES_BIN", _write_fake_hermes(tmp_path, 'echo "403 quota exceeded" >&2\nexit 1'),
+    )
+    with kbc.connect() as conn:
+        tid = _pinned_card(conn)
+        spawns, spawn_fn = _spawn_recorder()
+        res1 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        assert res1.rate_limited == [tid]
+        # Quota heals: the same pin now answers PROBE_OK.
+        monkeypatch.setenv("HERMES_BIN", _write_fake_hermes(tmp_path, "echo PROBE_OK"))
+        res2 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+    assert res1.preclaim_probe_failed == [tid]
+    assert res2.preclaim_probe_failed == [], "healed pin must re-probe, not replay a cached verdict"
+    assert spawns == [tid], "transient failure must recover on the next tick"
+    assert res2.spawned and res2.spawned[0][0] == tid
+
+
+def test_probe_internal_exception_fails_open(kanban_home, monkeypatch):
+    """The probe is a pre-flight optimization, never a new way to lose a
+    healthy card — or to kill the whole dispatch tick. An exception inside
+    the probe machinery itself fails OPEN: the claim proceeds to spawn and
+    the tick completes."""
+    def explode(*args, **kwargs):
+        raise RuntimeError("probe machinery blew up")
+
+    monkeypatch.setattr(kbd, "_preclaim_probe_verdict", explode)
+    with kbc.connect() as conn:
+        tid = _pinned_card(conn)
+        spawns, spawn_fn = _spawn_recorder()
+        res = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+    assert res.preclaim_probe_failed == []
+    assert spawns == [tid], "a broken probe must fail open — not spend the claim or the tick"
+    assert res.spawned and res.spawned[0][0] == tid
+
+
+def test_live_probe_timeout_fails_open(kanban_home, monkeypatch, tmp_path, patched_static_resolve):
+    """A probe that hangs is inconclusive, not fatal: fail-open, card spawns.
+    The probe must never become a new way to lose a healthy claim."""
+    monkeypatch.setenv("HERMES_KANBAN_PRECLAIM_PROBE", "1")  # 1s timeout
+    monkeypatch.setenv("HERMES_BIN", _write_fake_hermes(tmp_path, "sleep 30"))
+    with kbc.connect() as conn:
+        tid = _pinned_card(conn)
+        spawns, spawn_fn = _spawn_recorder()
+        res = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+    assert res.preclaim_probe_failed == []
+    assert spawns == [tid], "timed-out probe must fail open"
+
+
+def test_live_probe_healthy_child_claims(kanban_home, monkeypatch, tmp_path, patched_static_resolve):
+    """A healthy one-shot child proves the pin: the claim proceeds to spawn."""
+    monkeypatch.setenv("HERMES_BIN", _write_fake_hermes(tmp_path, "echo PROBE_OK"))
+    with kbc.connect() as conn:
+        tid = _pinned_card(conn)
+        spawns, spawn_fn = _spawn_recorder()
+        res = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+    assert res.preclaim_probe_failed == []
+    assert spawns == [tid]
+
+
+def test_review_lane_pinned_card_also_gated(kanban_home):
+    """Review-lane spawns share the same _dispatch_lane_task chokepoint: a
+    reviewer card pinned to a dead provider is released the same way (its run
+    restores source_status=review)."""
+    with kbc.connect() as conn:
+        tid = _pinned_card(conn, title="review pin", model_override="m", provider_override=DEAD_PROVIDER)
+        # Move the card through the review handoff the way an implementer does.
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (tid,))
+        conn.commit()
+        spawns, spawn_fn = _spawn_recorder()
+        res = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        task = kb.get_task(conn, tid)
+    assert res.preclaim_probe_failed == [tid]
+    assert spawns == []
+    assert task.status == "review", "review lane restores its own source phase"

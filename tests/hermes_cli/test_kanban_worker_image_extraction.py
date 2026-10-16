@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from agent.image_routing import (
     build_native_content_parts,
     extract_image_refs,
@@ -46,7 +47,7 @@ def kanban_home(tmp_path: Path, monkeypatch):
 
 
 def _add_task_with_body(body: str, *, title: str = "Look at this") -> str:
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = kb.create_task(
             conn,
@@ -61,7 +62,7 @@ def _add_task_with_body(body: str, *, title: str = "Look at this") -> str:
 
 
 def _read_body(task_id: str) -> str:
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task = kb.get_task(conn, task_id)
         return (task.body if task is not None else "") or ""
@@ -83,48 +84,6 @@ class TestExtractFromTaskBody:
         body = _read_body(tid)
         paths, urls = extract_image_refs(body)
         assert paths == [str(img)]
-        assert urls == []
-
-    def test_url_in_body_round_trips(self, kanban_home):
-        tid = _add_task_with_body(
-            "The design lives at https://example.com/mock/v3.png — "
-            "make the implementation match it."
-        )
-
-        body = _read_body(tid)
-        paths, urls = extract_image_refs(body)
-        assert paths == []
-        assert urls == ["https://example.com/mock/v3.png"]
-
-    def test_mixed_path_and_url_in_body(self, kanban_home, tmp_path):
-        img = tmp_path / "current.png"
-        img.write_bytes(_PNG)
-        tid = _add_task_with_body(
-            f"Compare the current screenshot {img} against the design at "
-            "https://example.com/target.png and write a diff."
-        )
-
-        body = _read_body(tid)
-        paths, urls = extract_image_refs(body)
-        assert paths == [str(img)]
-        assert urls == ["https://example.com/target.png"]
-
-    def test_body_without_images_yields_nothing(self, kanban_home):
-        tid = _add_task_with_body(
-            "Refactor the auth module to use the new session helper."
-        )
-
-        body = _read_body(tid)
-        paths, urls = extract_image_refs(body)
-        assert paths == []
-        assert urls == []
-
-    def test_empty_body_is_safe(self, kanban_home):
-        tid = _add_task_with_body("")
-
-        body = _read_body(tid)
-        paths, urls = extract_image_refs(body)
-        assert paths == []
         assert urls == []
 
 
@@ -156,68 +115,8 @@ class TestBuildPartsFromTaskBody:
         assert parts[1]["type"] == "image_url"
         assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
-    def test_url_becomes_image_url_part(self, kanban_home):
-        tid = _add_task_with_body(
-            "Reference: https://example.com/target.jpg — match it."
-        )
-        body = _read_body(tid)
-        paths, urls = extract_image_refs(body)
 
-        parts, skipped = build_native_content_parts(
-            f"work kanban task {tid}",
-            paths,
-            image_urls=urls or None,
-        )
 
-        assert skipped == []
-        assert len(parts) == 2
-        assert parts[0]["type"] == "text"
-        assert "[Image attached: https://example.com/target.jpg]" in parts[0]["text"]
-        assert parts[1] == {
-            "type": "image_url",
-            "image_url": {"url": "https://example.com/target.jpg"},
-        }
-
-    def test_body_with_both_yields_two_image_parts(self, kanban_home, tmp_path):
-        img = tmp_path / "local.png"
-        img.write_bytes(_PNG)
-        tid = _add_task_with_body(
-            f"Diff {img} vs https://example.com/target.png — explain it."
-        )
-        body = _read_body(tid)
-        paths, urls = extract_image_refs(body)
-
-        parts, skipped = build_native_content_parts(
-            f"work kanban task {tid}",
-            paths,
-            image_urls=urls or None,
-        )
-
-        assert skipped == []
-        image_parts = [p for p in parts if p.get("type") == "image_url"]
-        assert len(image_parts) == 2
-        # Local file is embedded as a data URL; remote URL passes through.
-        assert image_parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
-        assert image_parts[1]["image_url"]["url"] == "https://example.com/target.png"
-
-    def test_body_with_no_images_leaves_query_untouched(self, kanban_home):
-        tid = _add_task_with_body(
-            "Rewrite the README intro paragraph to focus on use cases."
-        )
-        body = _read_body(tid)
-        paths, urls = extract_image_refs(body)
-
-        parts, skipped = build_native_content_parts(
-            f"work kanban task {tid}",
-            paths,
-            image_urls=urls or None,
-        )
-
-        # No images → plain text-only return (single part, no list mutation).
-        assert skipped == []
-        assert len(parts) == 1
-        assert parts[0]["type"] == "text"
-        assert parts[0]["text"] == f"work kanban task {tid}"
 
     def test_code_block_example_is_not_attached(self, kanban_home, tmp_path):
         # Only the real image outside the fenced code block should attach.

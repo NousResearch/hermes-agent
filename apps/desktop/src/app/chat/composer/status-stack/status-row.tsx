@@ -1,11 +1,10 @@
 import { Fragment, memo, type ReactNode } from 'react'
 
 import { openAgentTerminal } from '@/app/right-sidebar/terminal/terminals'
+import { StatusPendingIcon } from '@/components/chat/status-pending-icon'
 import { StatusRow } from '@/components/chat/status-row'
-import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
-import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { capitalize } from '@/lib/text'
 import type { TodoStatus } from '@/lib/todos'
@@ -24,14 +23,27 @@ const TODO_GLYPHS: Record<Exclude<TodoStatus, 'in_progress' | 'pending'>, { icon
 
 // Left slot: braille spinner while running, otherwise a small status dot
 // (green = done, red = failed) so the slot is always filled and rows align.
-function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack']): ReactNode {
-  if (item.todoStatus === 'pending') {
+function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack'], historical = false): ReactNode {
+  if (item.type === 'goal') {
+    if (item.goalStatus === 'paused') {
+      return <Codicon className="text-muted-foreground/60" name="debug-pause" size="0.8rem" />
+    }
+
+    if (item.goalStatus === 'done') {
+      return <Codicon className="text-emerald-500/80" name="pass-filled" size="0.8rem" />
+    }
+
     return (
-      <span
-        aria-hidden
-        className="box-border size-[0.7rem] rounded-full border border-dashed border-muted-foreground/60"
+      <GlyphSpinner
+        ariaLabel={s.running}
+        className="text-[0.85rem] leading-none text-emerald-500/80"
+        spinner="braille"
       />
     )
+  }
+
+  if (item.todoStatus === 'pending' || (historical && item.todoStatus === 'in_progress')) {
+    return <StatusPendingIcon />
   }
 
   if (item.todoStatus && item.todoStatus !== 'in_progress') {
@@ -60,6 +72,8 @@ function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack']):
 
 interface StatusItemRowProps {
   item: ComposerStatusItem
+  /** Render a retained, non-running task snapshot. */
+  historical?: boolean
   /** Clear a finished background task from the stack. */
   onDismiss?: (id: string) => void
   /** Open the subagent's own session window, livestreamed by the gateway's
@@ -74,7 +88,13 @@ interface StatusItemRowProps {
  * Memoised + keyed by id so parent re-renders never remount it (the spinner
  * keeps ticking instead of resetting).
  */
-export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOpen, onStop }: StatusItemRowProps) {
+export const StatusItemRow = memo(function StatusItemRow({
+  historical = false,
+  item,
+  onDismiss,
+  onOpen,
+  onStop
+}: StatusItemRowProps) {
   const { t } = useI18n()
   const s = t.statusStack
   const failed = item.state === 'failed'
@@ -96,33 +116,19 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
   return (
     <Fragment>
       <StatusRow
-        leading={leadingGlyph(item, s)}
+        depth={Math.min(item.depth ?? 0, 4)}
+        dismiss={action ? { label: action.label, onDismiss: action.onClick } : undefined}
+        leading={leadingGlyph(item, s, historical)}
         onActivate={onActivate}
         trailing={
-          action ? (
-            <Tip label={action.label}>
-              <Button
-                aria-label={action.label}
-                className="-my-1 size-4 rounded-md text-muted-foreground/60 hover:text-foreground/90"
-                onClick={event => {
-                  event.stopPropagation()
-                  action.onClick()
-                }}
-                size="icon-xs"
-                type="button"
-                variant="ghost"
-              >
-                <Codicon name="close" size="0.75rem" />
-              </Button>
-            </Tip>
-          ) : canOpen ? (
+          canOpen ? (
             <Codicon aria-hidden className="text-muted-foreground/55" name="link-external" size="0.85rem" />
           ) : undefined
         }
       >
         <span
           className={cn(
-            'min-w-0 max-w-[18rem] truncate text-[0.73rem] leading-4',
+            'min-w-0 flex-1 truncate text-[0.73rem] leading-4',
             failed
               ? 'text-destructive/90'
               : item.todoStatus && item.todoStatus !== 'in_progress'
@@ -135,6 +141,11 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
         {item.type === 'subagent' && item.currentTool && (
           <span className="shrink-0 truncate text-[0.62rem] leading-4 text-muted-foreground/70">
             {toolLabel(item.currentTool)}
+          </span>
+        )}
+        {item.type === 'goal' && item.currentTool && (
+          <span className="shrink-0 truncate text-[0.62rem] leading-4 text-muted-foreground/70">
+            {item.currentTool}
           </span>
         )}
         {failed && typeof item.exitCode === 'number' && item.exitCode !== 0 && (

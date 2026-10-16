@@ -245,3 +245,11 @@ code { font-size: 0.875rem; }
     2px 2px;
 }
 
+/* RTL support — Arabic and any future right-to-left locale. The i18n provider
+   sets `dir` on <html>; Tailwind v4's logical spacing utilities (ms-/me-,
+   ps-/pe-) and logical properties then flip automatically. Scoped so the
+   default LTR layout is untouched. */
+html[dir="rtl"] {
+  direction: rtl;
+}
+

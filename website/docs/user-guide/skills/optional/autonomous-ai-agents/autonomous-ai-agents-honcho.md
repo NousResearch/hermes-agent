@@ -1,14 +1,14 @@
 ---
-title: "Honcho"
+title: "Honcho — Configure and troubleshoot Honcho memory for Hermes"
 sidebar_label: "Honcho"
-description: "Configure and use Honcho memory with Hermes -- cross-session user modeling, multi-profile peer isolation, observation config, dialectic reasoning, session su..."
+description: "Configure and troubleshoot Honcho memory for Hermes"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Honcho
 
-Configure and use Honcho memory with Hermes -- cross-session user modeling, multi-profile peer isolation, observation config, dialectic reasoning, session summaries, and context budget enforcement. Use when setting up Honcho, troubleshooting memory, managing profiles with Honcho peers, or tuning observation, recall, and dialectic settings.
+Configure and troubleshoot Honcho memory for Hermes.
 
 ## Skill metadata
 
@@ -21,7 +21,7 @@ Configure and use Honcho memory with Hermes -- cross-session user modeling, mult
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Honcho`, `Memory`, `Profiles`, `Observation`, `Dialectic`, `User-Modeling`, `Session-Summary` |
-| Related skills | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) |
+| Related skills | [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md) |
 
 ## Reference: full SKILL.md
 
@@ -43,6 +43,12 @@ Honcho provides AI-native cross-session user modeling. It learns who the user is
 - Configuring context budgets and session summary injection
 
 ## Setup
+
+Honcho is a plugin-catalog memory provider maintained by Plastic Labs. Install it once per machine (homes upgraded from a release that bundled Honcho get it automatically):
+
+```bash
+hermes plugins install honcho
+```
 
 ### Cloud (app.honcho.dev)
 

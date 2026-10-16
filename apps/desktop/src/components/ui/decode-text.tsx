@@ -1,5 +1,6 @@
 import { type ComponentProps, useEffect, useState } from 'react'
 
+import { prefersReducedMotion } from '@/hooks/use-media-query'
 import { cn } from '@/lib/utils'
 
 /**
@@ -36,7 +37,11 @@ export interface DecodeTextProps extends Omit<ComponentProps<'span'>, 'prefix'> 
   /** Run the decode. When false, renders the plain resolved text (used to
    *  freeze the word during exit choreography). */
   active?: boolean
-  /** Replay after the hold, or resolve once and stop. */
+  /** Replay after the hold (a progress surface such as the boot overlay), or
+   *  resolve once and stop. Off by default: a quiet placeholder that replays
+   *  forever is a 22 Hz setState ticker for as long as it is on screen — the
+   *  empty-zone "HERMES" mark alone held the idle renderer at ~16 commits/s
+   *  (#98394). */
   loop?: boolean
   /** Blinking dither-cursor square after the text. */
   cursor?: boolean
@@ -46,7 +51,7 @@ export function DecodeText({
   active = true,
   className,
   cursor = false,
-  loop = true,
+  loop = false,
   prefix = 0,
   text,
   ...props
@@ -57,6 +62,15 @@ export function DecodeText({
 
   useEffect(() => {
     if (!active) {
+      setTail(tailText)
+
+      return
+    }
+
+    // Under reduced motion, skip the scramble interval and render the fully
+    // resolved text immediately. The cursor blink (CSS animation) is also
+    // killed by the blanket reduced-motion CSS rule.
+    if (prefersReducedMotion()) {
       setTail(tailText)
 
       return
@@ -98,14 +112,12 @@ export function DecodeText({
       )}
       {...props}
     >
-      {cursor && <style>{'@keyframes decode-cursor { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }'}</style>}
       {staticPrefix}
       {tail}
       {cursor && (
         <span
           aria-hidden="true"
-          className="dither ml-0.5 inline-block size-2 shrink-0 -translate-y-px rounded-[1px]"
-          style={{ animation: 'decode-cursor 1s step-end infinite' }}
+          className="dither ml-0.5 inline-block size-2 shrink-0 -translate-y-px rounded-[1px] decode-cursor-blink"
         />
       )}
     </span>

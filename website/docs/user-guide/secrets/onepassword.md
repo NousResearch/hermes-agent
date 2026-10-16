@@ -93,6 +93,7 @@ From now on, every `hermes` invocation resolves the references at startup. You'l
 |---|---|
 | `hermes secrets onepassword setup` | Verify `op`, set account / token env var, enable |
 | `hermes secrets onepassword status` | Show config, binary, auth, and configured references |
+| `hermes secrets onepassword token` | Rotate the service-account token: validate with `op whoami`, then store it in `.env` |
 | `hermes secrets onepassword set ENV_VAR "op://…"` | Map an env var to a reference (stored stripped + validated) |
 | `hermes secrets onepassword remove ENV_VAR` | Drop a mapping |
 | `hermes secrets onepassword sync` | Dry-run: resolve references now and show what would apply |
@@ -136,10 +137,12 @@ secrets:
 | Symptom | Cause | Fix |
 |---|---|---|
 | `the op CLI was not found on PATH` | `op` not installed / not on PATH | Install the CLI, or set `secrets.onepassword.binary_path` |
-| `op read failed for 'op://…': …` | Locked session, expired token, or no vault access | `op signin`, refresh the token, or grant the service account access |
+| `op read failed for 'op://…': …` | Locked session, expired token, or no vault access | `op signin`, run `hermes secrets onepassword token` to rotate the service-account token, or grant the service account access |
 | `op read returned an empty value for 'op://…'` | The referenced field exists but is empty | Fix the item/field in 1Password (an empty value is never applied — your existing env var is left intact) |
 | `… is not an op:// secret reference` | A mapping value isn't an `op://` reference | Re-set it with the correct `op://vault/item/field` form |
 | `op read timed out` | Network blocked or 1Password slow | Check connectivity / the desktop app integration |
+
+Startup warnings now include a `→` remediation line telling you exactly which command fixes the failure.
 
 ## Caching
 
@@ -154,7 +157,7 @@ Successful, complete pulls are cached in-process and on disk under `<hermes_home
 
 - A 1Password service-account token can read every secret the account has access to. Store it in `~/.hermes/.env` (not `config.yaml`), and revoke + regenerate from 1Password if it leaks.
 - Hermes refuses to let a resolved value overwrite the token env var itself, even with `override_existing: true`.
-- The `op` child process gets a minimal allowlisted environment (auth/session vars + `PATH`/`HOME`), not a copy of the full `os.environ`, so post-dotenv provider credentials aren't all inherited by the child.
+- The `op` child process gets a minimal allowlisted environment (auth/session vars + `PATH`/`HOME` and the `op` config-location vars `OP_CONFIG_DIR`/`XDG_CONFIG_HOME`), not a copy of the full `os.environ`, so post-dotenv provider credentials aren't all inherited by the child. Set `OP_CONFIG_DIR` when `~/.config` is not writable by the Hermes user (common in containers).
 - References are validated to start with `op://`, and the reference is passed after a `--` option terminator so a crafted value can't be parsed as an `op` flag.
 
 ## When NOT to use this

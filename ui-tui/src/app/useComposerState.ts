@@ -5,43 +5,54 @@ import { join } from 'node:path'
 
 import { useStdin, withInkSuspended } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
-import type { ImageAttachResponse, InputDetectDropResponse } from '../gatewayTypes.js'
+import { droppedTokens, imageToken, nextImageIndex } from '../domain/attachments.js'
+import type { ClipboardPasteResponse, ImageAttachResponse, InputDetectDropResponse } from '../gatewayTypes.js'
 import { useCompletion } from '../hooks/useCompletion.js'
 import { useInputHistory } from '../hooks/useInputHistory.js'
 import { useQueue } from '../hooks/useQueue.js'
+import { t } from '../i18n/runtime.js'
 import { isUsableClipboardText, readClipboardText } from '../lib/clipboard.js'
 import { resolveEditor } from '../lib/editor.js'
+import { stageClipboardImage, stageImagePath } from '../lib/imageAttachments.js'
 import { readOsc52Clipboard } from '../lib/osc52.js'
 import { isRemoteShellSession } from '../lib/terminalSetup.js'
 import { pasteTokenLabel, stripTrailingPasteNewlines } from '../lib/text.js'
 
-import type { MaybePromise, PasteSnippet, UseComposerStateOptions, UseComposerStateResult } from './interfaces.js'
+import type {
+  ComposerPasteResult,
+  ComposerToken,
+  MaybePromise,
+  StateSetter,
+  UseComposerStateOptions,
+  UseComposerStateResult
+} from './interfaces.js'
 import { $isBlocked } from './overlayStore.js'
+import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
 import { getUiState } from './uiStore.js'
 
-const PASTE_SNIP_MAX_COUNT = 32
-const PASTE_SNIP_MAX_TOTAL_BYTES = 4 * 1024 * 1024
+const TOKEN_MAX_COUNT = 32
+const TOKEN_MAX_TOTAL_BYTES = 4 * 1024 * 1024
 
-const trimSnips = (snips: PasteSnippet[]): PasteSnippet[] => {
+const trimTokens = (tokens: ComposerToken[]): ComposerToken[] => {
   let total = 0
-  const out: PasteSnippet[] = []
+  const out: ComposerToken[] = []
 
-  for (let i = snips.length - 1; i >= 0; i--) {
-    const snip = snips[i]!
-    const size = snip.text.length
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const token = tokens[i]!
+    const size = token.text?.length ?? 0
 
-    if (out.length >= PASTE_SNIP_MAX_COUNT || total + size > PASTE_SNIP_MAX_TOTAL_BYTES) {
+    if (out.length >= TOKEN_MAX_COUNT || total + size > TOKEN_MAX_TOTAL_BYTES) {
       break
     }
 
     total += size
-    out.unshift(snip)
+    out.unshift(token)
   }
 
-  return out.length === snips.length ? snips : out
+  return out.length === tokens.length ? tokens : out
 }
 
 /** Insert text at the cursor position, adding spacing to separate from adjacent non-whitespace. */
@@ -54,6 +65,16 @@ function insertAtCursor(value: string, cursor: number, text: string): { cursor: 
     cursor: cursor + insert.length,
     value: value.slice(0, cursor) + insert + value.slice(cursor)
   }
+}
+
+/** Whether a paste crosses the configured line or character collapse threshold. */
+function shouldCollapsePaste(cleanedText: string, lineCount: number): boolean {
+  const pasteCollapseLines = getUiState().pasteCollapseLines
+  const pasteCollapseChars = getUiState().pasteCollapseChars
+  const linesHit = pasteCollapseLines > 0 && lineCount >= pasteCollapseLines
+  const charsHit = pasteCollapseChars > 0 && cleanedText.length >= pasteCollapseChars
+
+  return linesHit || charsHit
 }
 
 /**
@@ -97,30 +118,51 @@ export function looksLikeDroppedPath(text: string): boolean {
   return false
 }
 
-export function useComposerState({
-  gw,
-  onClipboardPaste,
-  onImageAttached,
-  submitRef
-}: UseComposerStateOptions): UseComposerStateResult {
-  const [input, setInput] = useState('')
-  const [inputBuf, setInputBuf] = useState<string[]>([])
-  const [pasteSnips, setPasteSnips] = useState<PasteSnippet[]>([])
+export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions): UseComposerStateResult {
+  const [input, setInputState] = useState('')
+  const [inputBuf, setInputBufState] = useState<string[]>([])
+  const composerRevision = useRef(0)
+
+  const setInputBuf = useCallback<StateSetter<string[]>>(next => {
+    composerRevision.current++
+    setInputBufState(next)
+  }, [])
+
+  const [tokens, setTokens] = useState<ComposerToken[]>([])
+  // Tokens and the input line are read from keystroke handlers that run several
+  // times before React re-renders, so the refs — not the state — are the source
+  // of truth for "what is in the composer right now".
+  const inputRef = useRef('')
+  const tokensRef = useRef<ComposerToken[]>([])
+
+  const setInput = useCallback<StateSetter<string>>(next => {
+    composerRevision.current++
+    inputRef.current = typeof next === 'function' ? next(inputRef.current) : next
+    setInputState(inputRef.current)
+  }, [])
+
+  const setComposerTokens = useCallback<StateSetter<ComposerToken[]>>(next => {
+    tokensRef.current = typeof next === 'function' ? next(tokensRef.current) : next
+    setTokens(tokensRef.current)
+  }, [])
+
   const isBlocked = useStore($isBlocked)
   const { querier } = useStdin() as { querier: Parameters<typeof readOsc52Clipboard>[0] }
 
   const {
+    stage,
     queueRef,
     queueEditRef,
+    queueDraft,
     queuedDisplay,
     queueEditIdx,
     enqueue,
     dequeue,
+    prependQ,
     removeQ,
-    replaceQ,
     setQueueEdit,
-    syncQueue
-  } = useQueue()
+    takeQ
+  } = useQueue(gw)
 
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
   const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, isBlocked, gw)
@@ -128,50 +170,195 @@ export function useComposerState({
   const clearIn = useCallback(() => {
     setInput('')
     setInputBuf([])
-    setPasteSnips([])
+    setComposerTokens([])
     setQueueEdit(null)
     setHistoryIdx(null)
     historyDraftRef.current = ''
-  }, [historyDraftRef, setQueueEdit, setHistoryIdx])
+  }, [historyDraftRef, setComposerTokens, setHistoryIdx, setInput, setInputBuf, setQueueEdit])
 
-  const handleResolvedPaste = useCallback(
-    async ({
-      bracketed,
-      cursor,
-      text,
-      value
-    }: Omit<PasteEvent, 'hotkey'>): Promise<null | { cursor: number; value: string }> => {
-      const cleanedText = stripTrailingPasteNewlines(text)
+  /**
+   * Deleting an `[[ Image N ]]` token IS how you unattach the image — there is
+   * no separate control. Reconcile on every edit so the gateway's
+   * `attached_images` never outlives the token the user just erased, which is
+   * what used to make a stale image ride along on the next unrelated turn.
+   */
+  const syncTokens = useCallback(
+    (value: string) => {
+      const gone = droppedTokens(tokensRef.current, value)
 
-      if (!cleanedText || !/[^\n]/.test(cleanedText)) {
-        if (bracketed) {
-          void onClipboardPaste(true)
+      if (!gone.length) {
+        return
+      }
+
+      for (const token of gone) {
+        if (token.kind === 'image' && !gw.isCanonical) {
+          void gw.request('image.detach', { path: token.path, session_id: getUiState().sid }).catch(() => {})
+        }
+      }
+
+      setComposerTokens(prev => prev.filter(token => !gone.includes(token)))
+    },
+    [gw, setComposerTokens]
+  )
+
+  /**
+   * Attach an image the gateway already resolved: a token at the cursor,
+   * followed by whatever non-path text came along with it (a drag-drop paste
+   * of `~/shot.png look at this` keeps the caption).
+   */
+  const attachImageToken = useCallback(
+    (
+      attached: ImageAttachResponse & { path?: string; mime?: string },
+      value: string,
+      cursor: number
+    ): ComposerPasteResult => {
+      const index = nextImageIndex(tokensRef.current)
+      const label = imageToken(index)
+
+      setComposerTokens(prev =>
+        trimTokens([
+          ...prev,
+          { index, kind: 'image', label, path: attached.path ?? '', ...(attached.mime ? { mime: attached.mime } : {}) }
+        ])
+      )
+
+      const withToken = insertAtCursor(value, cursor, label)
+      const remainder = attached.remainder?.trim() ?? ''
+
+      return remainder ? insertAtCursor(withToken.value, withToken.cursor, remainder) : withToken
+    },
+    [setComposerTokens]
+  )
+
+  const attachmentFlights = useRef(0)
+  const staleAttachments = useRef<Array<{ destination: SubmissionDestination; path: string }>>([])
+
+  const resolveAttachment = useCallback(
+    async <T extends { path?: string }>(
+      destination: SubmissionDestination,
+      revision: number,
+      request: Promise<T | null>,
+      accept: (attached: T | null) => ComposerPasteResult | null
+    ): Promise<ComposerPasteResult | null> => {
+      attachmentFlights.current++
+
+      try {
+        const attached = await request
+
+        if (isCurrentDestination(destination) && revision === composerRevision.current) {
+          return accept(attached)
+        }
+
+        if (attached?.path && !gw.isCanonical) {
+          staleAttachments.current.push({ destination, path: attached.path })
         }
 
         return null
+      } finally {
+        attachmentFlights.current--
+
+        // Detach is path-based: wait for concurrent replies before deciding
+        // whether that path belongs to a surviving visible attachment.
+        if (!attachmentFlights.current) {
+          for (const stale of staleAttachments.current.splice(0)) {
+            if (
+              isCurrentDestination(stale.destination) &&
+              tokensRef.current.some(token => token.kind === 'image' && token.path === stale.path)
+            ) {
+              continue
+            }
+
+            void gw.request('image.detach', { session_id: stale.destination.sid, path: stale.path }).catch(() => {})
+          }
+        }
+      }
+    },
+    [gw]
+  )
+
+  /**
+   * Pull an image off the system clipboard into the composer as a token.
+   *
+   * `quiet` is the empty-bracketed-paste probe: the terminal delivers an image
+   * paste as zero text, so we speculatively ask the gateway and stay silent if
+   * there was nothing there. An explicit `/paste` reports the miss.
+   */
+  const pasteClipboardImage = useCallback(
+    async (value: string, cursor: number, quiet: boolean): Promise<ComposerPasteResult | null> => {
+      const destination = captureDestination()
+      const revision = composerRevision.current
+      const { sid } = destination
+
+      if (!sid) {
+        return null
+      }
+
+      return resolveAttachment<ClipboardPasteResponse & { path?: string; mime?: string }>(
+        destination,
+        revision,
+        (gw.isCanonical
+          ? stageClipboardImage(gw, destination).then(image => (image ? { ...image, attached: true } : null))
+          : gw.request<ClipboardPasteResponse & { path?: string; mime?: string }>('clipboard.paste', {
+              session_id: sid
+            })
+        ).catch((error: Error) => {
+          if (!quiet) {
+            sys(t('canonical.queue.clipboardImageFailed', error.message))
+          }
+
+          return null
+        }),
+        r => {
+          if (r?.attached) {
+            return attachImageToken(r, value, cursor)
+          }
+
+          if (!quiet) {
+            sys(r?.message || 'No image found in clipboard')
+          }
+
+          return null
+        }
+      )
+    },
+    [attachImageToken, gw, resolveAttachment, sys]
+  )
+
+  const handleResolvedPaste = useCallback(
+    async ({ bracketed, cursor, text, value }: Omit<PasteEvent, 'hotkey'>): Promise<ComposerPasteResult | null> => {
+      const destination = captureDestination()
+      const revision = composerRevision.current
+      const cleanedText = stripTrailingPasteNewlines(text)
+
+      if (!cleanedText || !/[^\n]/.test(cleanedText)) {
+        return bracketed ? pasteClipboardImage(value, cursor, true) : null
       }
 
       const sid = getUiState().sid
 
       if (sid && looksLikeDroppedPath(cleanedText)) {
         try {
-          const attached = await gw.request<ImageAttachResponse>('image.attach', {
-            path: cleanedText,
-            session_id: sid
-          })
+          const next = await resolveAttachment<ImageAttachResponse & { path?: string; mime?: string }>(
+            destination,
+            revision,
+            gw.isCanonical
+              ? stageImagePath(cleanedText, gw, destination)
+              : gw.request<ImageAttachResponse & { path?: string }>('image.attach', {
+                  path: cleanedText,
+                  session_id: sid
+                }),
+            attached => (attached?.name ? attachImageToken(attached, value, cursor) : null)
+          )
 
-          if (attached?.name) {
-            onImageAttached?.(attached)
-            const remainder = attached.remainder?.trim() ?? ''
-
-            if (!remainder) {
-              return { cursor, value }
-            }
-
-            return insertAtCursor(value, cursor, remainder)
+          if (next) {
+            return next
           }
         } catch {
           // Fall back to generic file-drop detection below.
+        }
+
+        if (!(isCurrentDestination(destination) && revision === composerRevision.current)) {
+          return null
         }
 
         try {
@@ -179,6 +366,10 @@ export function useComposerState({
             session_id: sid,
             text: cleanedText
           })
+
+          if (!(isCurrentDestination(destination) && revision === composerRevision.current)) {
+            return null
+          }
 
           if (dropped?.matched && dropped.text) {
             return insertAtCursor(value, cursor, dropped.text)
@@ -188,13 +379,13 @@ export function useComposerState({
         }
       }
 
-      const lineCount = cleanedText.split('\n').length
-      const pasteCollapseLines = getUiState().pasteCollapseLines
-      const pasteCollapseChars = getUiState().pasteCollapseChars
-      const linesHit = pasteCollapseLines > 0 && lineCount >= pasteCollapseLines
-      const charsHit = pasteCollapseChars > 0 && cleanedText.length >= pasteCollapseChars
+      if (!(isCurrentDestination(destination) && revision === composerRevision.current)) {
+        return null
+      }
 
-      if (!linesHit && !charsHit) {
+      const lineCount = cleanedText.split('\n').length
+
+      if (!shouldCollapsePaste(cleanedText, lineCount)) {
         return {
           cursor: cursor + cleanedText.length,
           value: value.slice(0, cursor) + cleanedText + value.slice(cursor)
@@ -204,34 +395,33 @@ export function useComposerState({
       const label = pasteTokenLabel(cleanedText, lineCount)
       const inserted = insertAtCursor(value, cursor, label)
 
-      setPasteSnips(prev => trimSnips([...prev, { label, text: cleanedText }]))
+      const token: ComposerToken = { kind: 'paste', label, text: cleanedText }
+      setComposerTokens(prev => trimTokens([...prev, token]))
 
       void gw
         .request<{ path?: string }>('paste.collapse', { text: cleanedText })
         .then(r => {
           const path = r?.path
 
-          if (!path) {
+          if (!path || !isCurrentDestination(destination)) {
             return
           }
 
-          setPasteSnips(prev => prev.map(s => (s.label === label ? { ...s, path } : s)))
+          setComposerTokens(prev => prev.map(t => (t === token ? { ...t, path } : t)))
         })
         .catch(() => {})
 
       return inserted
     },
-    [gw, onClipboardPaste, onImageAttached]
+    [attachImageToken, gw, pasteClipboardImage, resolveAttachment, setComposerTokens]
   )
 
   const handleTextPaste = useCallback(
-    ({
-      bracketed,
-      cursor,
-      hotkey,
-      text,
-      value
-    }: PasteEvent): MaybePromise<null | { cursor: number; value: string }> => {
+    ({ bracketed, cursor, hotkey, text, value }: PasteEvent): MaybePromise<ComposerPasteResult | null> => {
+      // Clipboard reads can outlive a focus change, before any gateway RPC starts.
+      const destination = captureDestination()
+      const revision = composerRevision.current
+
       if (hotkey) {
         const preferOsc52 = isRemoteShellSession(process.env)
 
@@ -252,22 +442,81 @@ export function useComposerState({
             })
 
         return readPreferredText.then(async preferredText => {
+          if (!(isCurrentDestination(destination) && revision === composerRevision.current)) {
+            return null
+          }
+
           if (isUsableClipboardText(preferredText)) {
             return handleResolvedPaste({ bracketed: false, cursor, text: preferredText, value })
           }
 
-          void onClipboardPaste(false)
-
-          return null
+          // No text on the clipboard — an image paste looks exactly like this.
+          return pasteClipboardImage(value, cursor, false)
         })
       }
 
       return handleResolvedPaste({ bracketed: !!bracketed, cursor, text, value })
     },
-    [handleResolvedPaste, onClipboardPaste, querier]
+    [handleResolvedPaste, pasteClipboardImage, querier]
+  )
+
+  /**
+   * `/paste` and `/image` attach without a cursor of their own — the token
+   * lands at the end of whatever is currently typed.
+   */
+  const appendAttachment = useCallback(
+    (attach: (value: string, cursor: number) => Promise<ComposerPasteResult | null>) => {
+      const destination = captureDestination()
+      const revision = composerRevision.current
+      const current = inputRef.current
+
+      void attach(current, current.length).then(next => {
+        if (next && isCurrentDestination(destination) && revision === composerRevision.current) {
+          setInput(next.value)
+        }
+      })
+    },
+    [setInput]
+  )
+
+  const attachClipboardImage = useCallback(
+    () => appendAttachment((value, cursor) => pasteClipboardImage(value, cursor, false)),
+    [appendAttachment, pasteClipboardImage]
+  )
+
+  const attachImagePath = useCallback(
+    (path: string) =>
+      appendAttachment(async (value, cursor) => {
+        const destination = captureDestination()
+        const revision = composerRevision.current
+        const { sid } = destination
+
+        if (!sid || !path.trim()) {
+          return null
+        }
+
+        return resolveAttachment<ImageAttachResponse & { path?: string; mime?: string }>(
+          destination,
+          revision,
+          (gw.isCanonical
+            ? stageImagePath(path, gw, destination)
+            : gw.request<ImageAttachResponse & { path?: string }>('image.attach', { path, session_id: sid })
+          ).catch((e: Error) => {
+            if (isCurrentDestination(destination) && revision === composerRevision.current) {
+              sys(`error: ${e.message}`)
+            }
+
+            return null
+          }),
+          attached => (attached?.name ? attachImageToken(attached, value, cursor) : null)
+        )
+      }),
+    [appendAttachment, attachImageToken, gw, resolveAttachment, sys]
   )
 
   const openEditor = useCallback(async () => {
+    const destination = captureDestination()
+    const revision = composerRevision.current
     const dir = mkdtempSync(join(tmpdir(), 'hermes-'))
     const file = join(dir, 'prompt.md')
     const [cmd, ...args] = resolveEditor()
@@ -291,45 +540,64 @@ export function useComposerState({
         return
       }
 
+      if (!(isCurrentDestination(destination) && revision === composerRevision.current)) {
+        enqueue(text, text, destination)
+
+        return
+      }
+
       setInput('')
       setInputBuf([])
       submitRef.current(text)
     } finally {
       rmSync(dir, { force: true, recursive: true })
     }
-  }, [input, inputBuf, submitRef])
+  }, [enqueue, input, inputBuf, setInput, setInputBuf, submitRef])
 
   const actions = useMemo(
     () => ({
+      attachClipboardImage,
+      attachImagePath,
       clearIn,
+      stage,
       dequeue,
       enqueue,
       handleTextPaste,
       openEditor,
+      prependQueue: prependQ,
       pushHistory,
+      queueDraft,
       removeQueue: removeQ,
-      replaceQueue: replaceQ,
       setCompIdx,
+      setComposerTokens,
       setHistoryIdx,
       setInput,
       setInputBuf,
-      setPasteSnips,
       setQueueEdit,
-      syncQueue
+      takeQueue: takeQ,
+      syncTokens
     }),
     [
+      attachClipboardImage,
+      attachImagePath,
       clearIn,
+      stage,
       dequeue,
       enqueue,
       handleTextPaste,
       openEditor,
+      prependQ,
       pushHistory,
+      queueDraft,
       removeQ,
-      replaceQ,
       setCompIdx,
+      setComposerTokens,
       setHistoryIdx,
+      setInput,
       setQueueEdit,
-      syncQueue
+      takeQ,
+      setInputBuf,
+      syncTokens
     ]
   )
 
@@ -339,7 +607,8 @@ export function useComposerState({
       historyRef,
       queueEditRef,
       queueRef,
-      submitRef
+      submitRef,
+      tokensRef
     }),
     [historyDraftRef, historyRef, queueEditRef, queueRef, submitRef]
   )
@@ -352,11 +621,11 @@ export function useComposerState({
       historyIdx,
       input,
       inputBuf,
-      pasteSnips,
       queueEditIdx,
-      queuedDisplay
+      queuedDisplay,
+      tokens
     }),
-    [compIdx, compReplace, completions, historyIdx, input, inputBuf, pasteSnips, queueEditIdx, queuedDisplay]
+    [compIdx, compReplace, completions, historyIdx, input, inputBuf, queueEditIdx, queuedDisplay, tokens]
   )
 
   return {

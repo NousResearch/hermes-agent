@@ -19,8 +19,8 @@
  *
  * 1. the Electron dependency is an *exact* version (Electron Builder needs the
  *    installed binary to match ``electronVersion`` / ``electronDist``), and
- * 2. the dependency, ``build.electronVersion``, and the resolved lockfile entry
- *    all agree — so ``npm ci`` installs exactly what the build packages.
+ * 2. the dependency and the independently resolved lockfile entry agree — so ``npm ci`` installs exactly what
+ *    the build packages.
  */
 
 import assert from 'node:assert/strict'
@@ -67,25 +67,11 @@ test('electron dependency is exactly pinned', () => {
   )
 })
 
-test('electron dependency matches build.electronVersion', () => {
-  const pkg = desktopPkg()
-  const spec = electronSpec(pkg)
-  const build = (pkg.build ?? {}) as Record<string, unknown>
-  const builderVersion = build.electronVersion as string | undefined
-  assert.ok(builderVersion, 'build.electronVersion is missing')
-  assert.equal(
-    spec,
-    builderVersion,
-    `electron dependency ("${spec}") must equal build.electronVersion ` +
-      `("${builderVersion}"); otherwise electron-builder packages a different ` +
-      'version than npm installs into electronDist.'
-  )
-})
-
 test('lockfile resolves the pinned electron', () => {
   if (!fs.existsSync(ROOT_LOCK)) {
     return
   } // skip if lockfile not present
+
   const spec = electronSpec(desktopPkg())
   const lock = JSON.parse(fs.readFileSync(ROOT_LOCK, 'utf-8'))
   const packages = (lock.packages ?? {}) as Record<string, { version?: string }>

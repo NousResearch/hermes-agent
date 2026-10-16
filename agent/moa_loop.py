@@ -125,9 +125,9 @@ def _resolve_preset_cached(preset_name: str) -> tuple[dict[str, Any], Any]:
     (skips resolve_moa_preset's full validation of the moa block on every create())."""
     from hermes_cli.config import get_config_path, load_config
     from hermes_cli.moa_config import resolve_moa_preset
-    from utils import file_signature
+    from hermes_cli.config_backend import config_version
     try:
-        cfg_stamp = file_signature(get_config_path().stat())
+        cfg_stamp = config_version(get_config_path())
     except OSError:
         cfg_stamp = None
     moa_raw = load_config().get("moa") or {}

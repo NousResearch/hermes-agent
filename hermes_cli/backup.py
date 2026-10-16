@@ -15,7 +15,7 @@ import zlib
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, _get_platform_default_hermes_home, get_default_hermes_root, get_hermes_home,
@@ -27,6 +27,7 @@ from hermes_state_holders import read_only_db_uri
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
+from hermes_cli.config_backend import require_file_tooling, supports_file_tooling
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
 
@@ -35,10 +36,12 @@ from hermes_cli.backup_restore import (
     _default_new_file_mode,
     _detect_prefix,
     _extract_member_atomically,
+    _get_config_path_value,
     _import_db_member,
     _restore_auth_json,
     _restore_destination_epoch,
     _safe_restore_db,
+    _set_config_path_value,
     _validate_backup_zip,
 )
 
@@ -595,6 +598,7 @@ def run_backup(args) -> bool:
     the caller turns False into exit status 1 so a cron/systemd timer never publishes a "successful"
     archive that is missing state.db. Hard failures keep raising ``SystemExit``.
     """
+    require_file_tooling("`hermes backup`")
     hermes_root = get_default_hermes_root()
 
     if not hermes_root.is_dir():
@@ -731,6 +735,7 @@ def _import_member_rel(member: str, prefix: str) -> tuple[str, bool]:
 
 def run_import(args) -> Optional[int]:
     """Restore a Hermes backup; return 1 on damaged archives or incomplete restores."""
+    require_file_tooling("`hermes import`")
     zip_path = Path(args.zipfile).expanduser().resolve()
 
     if not zip_path.is_file():
@@ -761,12 +766,11 @@ def run_import(args) -> Optional[int]:
 
         print(f"Backup contains {file_count} files")
         print(f"Target: {display_hermes_home()}")
-
         if prefix:
             print(f"Detected archive prefix: {prefix!r} (will be stripped)")
 
         # Check for existing installation
-        has_config = (hermes_root / "config.yaml").exists()
+        has_config = (hermes_root / "config.yaml").exists()  # config-reader: ok — profile marker for the backup scope (file tooling)
         has_env = (hermes_root / ".env").exists()
 
         if (has_config or has_env) and not args.force:
@@ -863,7 +867,7 @@ def run_import(args) -> Optional[int]:
                         continue
                     profile_name = entry.name
                     # Only create wrappers for directories with config
-                    if not (entry / "config.yaml").exists() and not (entry / ".env").exists():
+                    if not (entry / "config.yaml").exists() and not (entry / ".env").exists():  # config-reader: ok — profile marker for the backup scope (file tooling)
                         continue
                     collision = check_alias_collision(profile_name)
                     if collision:
@@ -1246,6 +1250,13 @@ def create_quick_snapshot(
         )
 
 
+def _snapshot_state_files(files: Iterable[str]) -> list[str]:
+    """The state files a quick snapshot saves or restores. Under a config backend that is not a
+    local file, config.yaml is left out both ways: a leftover local copy is not the config, and
+    restoring one would not change it."""
+    return [rel for rel in files if rel != "config.yaml" or supports_file_tooling()]
+
+
 def _create_quick_snapshot_locked(
     label: Optional[str] = None,
     hermes_home: Optional[Path] = None,
@@ -1319,7 +1330,7 @@ def _create_quick_snapshot_locked(
     # recoverable database.
     oversized_skipped: list[str] = []
 
-    for rel in _QUICK_STATE_FILES:
+    for rel in _snapshot_state_files(_QUICK_STATE_FILES):
         src = home / rel
         if not src.exists():
             continue
@@ -1637,20 +1648,21 @@ def _restore_quick_snapshot_exclusive(snapshot_id: str, home: Path) -> bool:
                 return None
         return src, dst
 
+    files = _snapshot_state_files(meta.get("files", {}))
     homes = {home}
-    for rel in meta.get("files", {}):
+    for rel in files:
         entry = _entry_paths(rel)
         if entry and entry[1].suffix == ".db":
             homes.update([entry[1].absolute().parent, entry[1].resolve().parent])
     with exclusive_maintenance(homes):
         # Epoch safety is a whole-profile preflight: copying config first would
         # both partially roll back the profile and report a refused DB as success.
-        if not _snapshot_epochs_restorable(meta.get("files", {}), _entry_paths):
+        if not _snapshot_epochs_restorable(files, _entry_paths):
             return False
 
         restored = 0
         auth_restore_failed = False
-        for rel in meta.get("files", {}):
+        for rel in files:
             entry = _entry_paths(rel)
             if entry is None:
                 logger.error("Manifest path traversal blocked: %s", rel)
@@ -1872,26 +1884,6 @@ def _read_raw_yaml_dict(path: Path) -> Optional[dict[str, Any]]:
     except Exception:
         return None
     return data if isinstance(data, dict) else None
-
-
-def _get_config_path_value(data: dict[str, Any], dotted: tuple[str, ...]) -> Any:
-    node: Any = data
-    for key in dotted:
-        if not isinstance(node, dict):
-            return None
-        node = node.get(key)
-    return node
-
-
-def _set_config_path_value(data: dict[str, Any], dotted: tuple[str, ...], value: Any) -> None:
-    node = data
-    for key in dotted[:-1]:
-        child = node.get(key)
-        if not isinstance(child, dict):
-            child = {}
-            node[key] = child
-        node = child
-    node[dotted[-1]] = value
 
 
 def restore_config_model_settings_if_rewritten(

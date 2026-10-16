@@ -56,6 +56,24 @@ def _explicit_launch_skills(cli):
     return [name for name in requested if name not in auto] or None
 
 
+def _record_shell_hook_consent():
+    """Main's first-use shell-hook prompt, on this terminal. The gateway that registers the hooks
+    has no TTY; it reads the allowlist this writes when the session opens (create or resume).
+    ``--accept-hooks`` / ``HERMES_ACCEPT_HOOKS`` / ``hooks_auto_accept`` approve without asking.
+    A remote gateway has its own home and allowlist, and a bypass launch reads no profile hooks,
+    so nothing is asked for either."""
+    from hermes_cli.gateway_chat import env_launch_flags
+    flags = env_launch_flags()
+    if os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip() or flags.get("safe_mode") or flags.get("ignore_user_config"):
+        return
+    try:
+        from agent.shell_hooks import record_consent_from_config
+        from hermes_cli.config import load_config
+        record_consent_from_config(load_config())
+    except Exception:  # health: allow BLE001 -- consent is best effort; the gateway skips unapproved hooks
+        logger.warning("shell-hook consent check failed", exc_info=True)
+
+
 class CLIInitMixin:
     """HermesCLI constructor phases: display options, model/provider routing, turn limits, toolsets, checkpoints, prompt/reasoning, runtime state, session store and UI state."""
 
@@ -416,6 +434,7 @@ class CLIInitMixin:
         # including this process's own, claimed before the first turn. Hand the slot over around the
         # attach, then re-claim it for the id the gateway returned (main's exclusivity is kept).
         held = getattr(self, "_resumed", False) and getattr(self, "_active_session_lease", None) is not None
+        _record_shell_hook_consent()
         if held:
             self._release_active_session()
         sid = store.open_session(self, launch)

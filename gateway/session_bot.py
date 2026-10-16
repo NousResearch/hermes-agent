@@ -16,17 +16,26 @@ from gateway.platforms.event import MessageEvent
 from hermes_state_runtime import RuntimeStoreError, get_session_admission
 from tools.bot_live_delivery import _delivery_id, _read
 from gateway.session_bot_mailbox import (mailbox_lock, read_receipt, write_receipt,
-    scan_receipts, remember_receipt, track_receipt_task, withdraw_pin)
+    scan_receipts, remember_receipt, track_receipt_task, withdraw_pin, refuse_pin)
 
 
 _CANONICAL_RECEIPT_STATUSES = frozenset({
     'canonical', 'queued', 'claimed', 'ambiguous', 'settled', 'failed', 'cancelled',
 })
 _BOT_DM_MAX_CHARS = 16200
+# Admission refusals about the owner's state, not the delivery: with nothing committed the pin is
+# withdrawn and a same-id resend admits once it clears (a full FIFO, a drain for restart/update or
+# retirement, a fenced epoch or generation, storage, a live CLI holding the session, or a target
+# that moved before the write: the resend resolves it again). Every other refusal (permission_denied,
+# invalid_params, admission_conflict, profile_mismatch, ...) is final for that delivery: ``refuse_pin``.
+_OWNER_STATE_REFUSALS = frozenset({
+    'queue_full', 'runtime_draining', 'runtime_retired', 'stale_epoch', 'stale_generation',
+    'storage_unavailable', 'runtime_coordination_required', 'session_busy', 'not_found',
+})
 _PRODUCER_MAX_CHARS = 1024 * 1024
 
 
-def _canonical_record_error(path, record):
+def _canonical_record_error(path, record, required_strings=('admission_id', 'profile_home', 'session_id', 'principal_id')):
     """Return why an admission-backed receipt is unsafe for bulk recovery."""
     delivery_id = record.get('delivery_id')
     if not isinstance(delivery_id, str) or delivery_id != path.stem:
@@ -35,7 +44,6 @@ def _canonical_record_error(path, record):
         _delivery_id(delivery_id)
     except ValueError:
         return 'delivery id is invalid'
-    required_strings = ('admission_id', 'profile_home', 'session_id', 'principal_id')
     missing = [key for key in required_strings
                if not isinstance(record.get(key), str) or not record[key]]
     if missing:
@@ -49,7 +57,12 @@ def _canonical_record_error(path, record):
 
 
 def _record_shape_error(path, record):
-    """Validate the known canonical or legacy receipt shape for directory scans."""
+    """Validate the known canonical, refused or legacy receipt shape for directory scans."""
+    if record.get('refused') is True and 'admission_id' not in record:
+        # ``refuse_pin``: the canonical pin fields, terminal ``failed``, never admitted.
+        if record.get('status') != 'failed':
+            return 'refused receipt is not failed'
+        return _canonical_record_error(path, record, ('profile_home', 'session_id', 'principal_id'))
     if 'admission_id' in record or record.get('status') == 'canonical' or 'principal_id' in record:
         return _canonical_record_error(path, record)
     if 'owner' in record:
@@ -183,9 +196,13 @@ def _admission_outcome(authority, admission_id, fallback=None):
 def _retry_admission(authority, record):
     """The delivery's one retry admission id, read from the FIFO by its derived identity, so every
     reader (an in-memory record, the receipt file, an owner restart) follows the same retry."""
+    return _admission_at(authority, record['session_id'], _retry_identity(record['delivery_id']))
+
+
+def _admission_at(authority, session_id, request_id):
     with authority.db._read_ctx() as conn:
         row = conn.execute('SELECT admission_id FROM session_admissions WHERE target_session_id=? AND request_id=?',
-                           (record['session_id'], _retry_identity(record['delivery_id']))).fetchone()
+                           (session_id, request_id)).fetchone()
     return row[0] if row else None
 
 
@@ -286,8 +303,12 @@ async def _maybe_retry(authority, home, path, record):
     if not _retry_eligible(authority, record):
         return
     identity = _retry_identity(record['delivery_id'])
-    actor = Principal(record['principal_id'], authority.profile_id, frozenset({'session:submit', 'session:read'}),
-                      'bot-delivery-retry')
+    # The retry keeps the access its delivery was admitted on: ``operator`` is recorded only when the
+    # transport granted ``session:operator`` (a local delivery into api-peer's Bot Chat), and the
+    # session check below still pins the retry to the admitted target.
+    operator = {'session:operator'} if record.get('operator') is True else set()
+    actor = Principal(record['principal_id'], authority.profile_id,
+                      frozenset({'session:submit', 'session:read'} | operator), 'bot-delivery-retry')
     try:
         authority._require_admission_open()
         ref, live, entry = await _target(authority, actor)
@@ -471,6 +492,15 @@ async def deliver(connection, params):
     return await asyncio.shield(track_mutation(connection.authority, _deliver(connection, params)))
 
 
+def _require_same_delivery(record, actor, message, author, category):
+    """A delivery id names one delivery: the same message, principal, author and category (the
+    mailbox writer's identity), whether its receipt is admission-backed or refused."""
+    if (record['message'] != message or record['principal_id'] != actor.subject
+            or record.get('author') != author
+            or record.get('notification_category', 'result') != category):
+        raise RuntimeStoreError('admission_conflict')
+
+
 async def _deliver(connection, params):
     authority, actor = connection.authority, connection.actor
     home = _home(authority, actor, params.get('profile'))
@@ -498,23 +528,21 @@ async def _deliver(connection, params):
         root, record = await read_receipt(home, key)
         path = root / f'{key}.json'
         if record is not None and record.get('admission_id'):
-            if (record['message'] != message or record['principal_id'] != actor.subject
-                    or record.get('author') != author
-                    or record.get('notification_category', 'result') != category):
-                raise RuntimeStoreError('admission_conflict')
+            _require_same_delivery(record, actor, message, author, category)
             authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
             await _maybe_retry(authority, home, path, record)
             return await _publish_result(authority, home, record)
         await _migrate(authority, actor, home, root)
         _, record = await read_receipt(home, key)
         if record is not None and record.get('admission_id'):
-            if (record['message'] != message or record['principal_id'] != actor.subject
-                    or record.get('author') != author
-                    or record.get('notification_category', 'result') != category):
-                raise RuntimeStoreError('admission_conflict')
+            _require_same_delivery(record, actor, message, author, category)
             authority.authorize(actor, SessionRef(authority.profile_id, record['session_id']), 'session:submit')
             await _maybe_retry(authority, home, path, record)
             return await _publish_result(authority, home, record)
+        if record is not None and record.get('refused') is True:
+            _require_same_delivery(record, actor, message, author, category)
+            return {k: record[k] for k in ('status', 'refused', 'delivery_id', 'profile_home', 'session_id',
+                                           'message', 'reply', 'error', 'reason')}
         if record is not None:
             raise RuntimeStoreError('unknown_execution')
         ref, live, entry = await _target(authority, actor)
@@ -540,6 +568,8 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
     record = dict(legacy or {}, delivery_id=key, profile_home=str(home), session_id=ref.session_id,
         principal_id=actor.subject, message=message, status='ambiguous')
     record.update(notification)
+    if 'session:operator' in actor.capabilities:
+        record['operator'] = True  # admitted on operator access: its one retry keeps it (``_maybe_retry``)
     if author is not None:
         record['author'] = dict(author)
     # Preserve a foreign cancellation or claim that won after our legacy scan.
@@ -550,9 +580,16 @@ async def _admit(authority, actor, home, root, key, message, ref, live, entry, a
     try:
         receipt = await authority.admit_automation(authority.runner._adapter_for_source(live.source), event, 'bot:' + key)
     except RuntimeStoreError as exc:
-        if exc.reason == 'queue_full' and legacy is None:
-            # Refused inside the admit transaction before any INSERT: nothing to recover.
-            await withdraw_pin(home, key)
+        if _admission_at(authority, ref.session_id, 'bot:' + key) is not None:
+            raise  # committed after all: the pin stays the explicit unknown record
+        if exc.reason in _OWNER_STATE_REFUSALS:
+            if legacy is None:
+                # Refused before any INSERT, not for the delivery itself: the same-id resend admits.
+                await withdraw_pin(home, key)
+        else:
+            # Refused for good with nothing committed: a terminal receipt, not an unknown pin.
+            logging.getLogger(__name__).info('Bot Chat delivery %s refused (%s)', key, exc.reason)
+            await refuse_pin(home, key)
         raise
     record.update(status='canonical', admission_id=receipt.admission_id)
     record.update(_result(authority, record))

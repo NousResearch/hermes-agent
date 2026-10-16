@@ -9,6 +9,7 @@ import { getWidgetApp } from '../sdk/registry.js'
 import type { SlashHandler, SlashHandlerContext, SlashSubmission } from './interfaces.js'
 import { scoreSlashMenuItem } from './slash/fuzzyScore.js'
 import { findSlashCommand } from './slash/registry.js'
+import { temporaryRefusal } from './slash/temporary.js'
 import type { SlashRunCtx } from './slash/types.js'
 import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { getUiState } from './uiStore.js'
@@ -66,6 +67,12 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
     const runCtx: SlashRunCtx = { ...ctx, flight, guarded, guardedErr, sid, stale, ui }
 
     const found = findSlashCommand(parsed.name)
+
+    if (found && temporaryRefusal(found.name)) {
+      sys(temporaryRefusal(found.name)!)
+
+      return true
+    }
 
     if (found) {
       countTyped()

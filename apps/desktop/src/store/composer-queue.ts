@@ -9,6 +9,7 @@ import {
 } from './composer'
 import { $connection } from './session'
 import { knownOwnerForSession } from './session-states'
+import { isTemporarySession } from './temporary-chat-registry'
 
 /** Local owner routes use canonical admission; remote legacy queues stay local. */
 export function serverOwnsComposerQueue(sessionId: string | null | undefined): boolean {
@@ -195,7 +196,10 @@ const persistableState = (state: QueueState): QueueState => {
   const out: QueueState = {}
 
   for (const [sid, queue] of Object.entries(state)) {
-    out[sid] = queue.map(toPersistedEntry)
+    // A temporary chat's queue lives in memory only.
+    if (!isTemporarySession(sid)) {
+      out[sid] = queue.map(toPersistedEntry)
+    }
   }
 
   return out
@@ -207,10 +211,12 @@ const save = (state: QueueState) => {
   }
 
   try {
-    if (Object.keys(state).length === 0) {
+    const persisted = persistableState(state)
+
+    if (Object.keys(persisted).length === 0) {
       window.localStorage.removeItem(STORAGE_KEY)
     } else {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persistableState(state)))
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted))
     }
 
     storageCurrent = true

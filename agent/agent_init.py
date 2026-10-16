@@ -35,6 +35,8 @@ from agent.model_metadata import (
 )
 from agent.agent_init_ollama import _clamp_compressor_to_ollama_num_ctx, _configure_ollama_num_ctx
 from agent.process_bootstrap import _install_safe_stdio
+from agent.agent_init_banner import _print_key_banner
+from agent.temporary_chat import temporary_agent_options as _temporary_agent_options
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
@@ -726,18 +728,6 @@ def _setup_logging(agent):
         _ra().logger.info("Verbose logging enabled (third-party library logs suppressed)")
     # Quiet mode must NOT raise per-logger levels: isEnabledFor() runs before propagation and
     # would starve the root file handlers. Noise reduction belongs in hermes_logging.
-
-
-def _print_key_banner(key, label: str, warn_missing: bool = False) -> None:
-    """Masked credential line. ``key`` may be a callable Entra ID bearer provider (Azure
-    Foundry) — never invoke or inspect it. Keys ≤ 12 chars (incl. "dummy-key") are not shown."""
-    from agent.azure_identity_adapter import is_token_provider
-    if is_token_provider(key):
-        print("🔑 Using credentials: Microsoft Entra ID")
-    elif isinstance(key, str) and len(key) > 12:
-        print(f"🔑 Using {label}: {key[:8]}...{key[-4:]}")
-    elif warn_missing:
-        print("⚠️  Warning: API key appears invalid or missing")
 
 
 def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
@@ -2315,7 +2305,7 @@ def init_agent(
     checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
     requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None,
-    tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
+    tool_result_metadata_callback: Optional[Callable[..., dict]] = None, temporary: bool = False,
 ):
     from agent.safe_worker_policy import safe_worker_enabled
 
@@ -2325,6 +2315,8 @@ def init_agent(
         prefill_messages = []
         fallback_model = {}
     _install_safe_stdio()
+    skip_memory, skip_background_review, disabled_toolsets = _temporary_agent_options(
+        agent, temporary, skip_memory, skip_background_review, disabled_toolsets)
 
     _params = locals()
     for _name in _PASSTHROUGH_PARAMS:

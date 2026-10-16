@@ -203,8 +203,8 @@ def _maybe_title_session_at_turn_start(
     if not session_db or not session_id:
         return
     platform = str(getattr(agent, "platform", "") or "").lower()
-    if platform in _UNTITLED_PLATFORMS:
-        return
+    if platform in _UNTITLED_PLATFORMS or getattr(agent, "_temporary", False):
+        return  # a temporary chat leaves no title behind (and spends no aux call on one)
     try:
         from agent.message_content import flatten_message_text
         from agent.title_generator import apply_subagent_title, maybe_auto_title
@@ -1086,14 +1086,14 @@ def build_turn_context(
     _reset_per_turn_agent_state(agent)
 
     _preview_text = summarize_user_message_for_log(user_message)
-    _msg_preview = _preview_text[:80] + ("..." if len(_preview_text) > 80 else "")
+    from agent.temporary_chat import turn_log_preview
     _turn_fmt = (
         "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r"
     )
     _turn_args = [
         agent.session_id or "none", agent.model, agent.provider or "unknown",
         agent.platform or "unknown", len(conversation_history or []),
-        _msg_preview.replace("\n", " "),
+        turn_log_preview(agent, user_message, summarize_user_message_for_log),
     ]
     # Fork turns (background review, side questions) reuse the parent's session_id and
     # model; tag their turn-start line so logs can tell them apart (#118693).

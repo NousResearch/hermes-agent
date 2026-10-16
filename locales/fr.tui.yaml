@@ -1368,3 +1368,6 @@ userMessages.turn.layer.streaming.hintNoRetry: "Choisissez un autre modèle avec
 userMessages.turn.layer.streaming.title: "La connexion au fournisseur de modèle a été coupée en cours de réponse"
 userMessages.turn.notAnswered: "{0}. Votre message n'a pas reçu de réponse."
 userMessages.turn.withProvider: "{0} ({1})"
+session.lifecycle.temporaryBanner: "🕶  Discussion temporaire — non enregistrée dans l'historique, mémoire désactivée. Supprimée à la sortie."
+session.lifecycle.temporaryBlocked: "/{0} n'est pas disponible dans une discussion temporaire."
+status.temporary: "🕶 discussion temporaire · non enregistrée"

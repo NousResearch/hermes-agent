@@ -6,12 +6,14 @@ import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
 import { deFirstRun } from './de_first_run'
+import { deLanguage } from './de_language'
 import { deLocalModels } from './de_local_models'
 import { deModelMenu } from './de_model_menu'
 import { deNotices } from './de_notices'
 import { deOnboarding } from './de_onboarding'
 import { deProjects } from './de_projects'
 import { deSharedMetrics } from './de_shared_metrics'
+import { deTemporaryChat } from './de_temporary_chat'
 import { deThemePicker } from './de_theme_picker'
 import { deUpdateChannel } from './de_update_channel'
 import { defineLocale, type TranslationOverrides } from './define-locale'
@@ -21,6 +23,7 @@ export const deOverrides = {
   sharedMetrics: deSharedMetrics,
   firstRun: deFirstRun,
   intro: introDe,
+  ...deTemporaryChat,
   connectors: deConnectorCard,
   connectorsPage: {
     title: 'Konnektoren',
@@ -572,6 +575,7 @@ export const deOverrides = {
       'nav.cron': 'Geplante Jobs öffnen',
       'nav.agents': 'Agenten öffnen',
       'session.new': 'Neue Session',
+      'session.newTemporary': 'Neuer temporärer Chat',
       'session.newTab': 'Neuer Session-Tab',
       'session.newWindow': 'Neues Fenster',
       'session.next': 'Nächste Session',
@@ -670,15 +674,7 @@ export const deOverrides = {
     next: 'Nächster Treffer',
     previous: 'Vorheriger Treffer'
   },
-  language: {
-    label: 'Sprache',
-    description: 'Wählen Sie die Sprache der Desktop-Oberfläche.',
-    saving: 'Sprache wird gespeichert…',
-    saveError: 'Sprachupdate fehlgeschlagen',
-    switchTo: 'Sprache wechseln',
-    searchPlaceholder: 'Sprachen suchen…',
-    noResults: 'Keine Sprachen gefunden'
-  },
+  ...deLanguage,
   settings: {
     subpages: {
       appearanceTheme: 'Design',

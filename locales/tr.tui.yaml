@@ -1368,3 +1368,6 @@ userMessages.turn.layer.streaming.hintNoRetry: "/model ile başka bir model seç
 userMessages.turn.layer.streaming.title: "Model sağlayıcısına bağlantı yanıtın ortasında kesildi"
 userMessages.turn.notAnswered: "{0}. Mesajınız yanıtlanmadı."
 userMessages.turn.withProvider: "{0} ({1})"
+session.lifecycle.temporaryBanner: "🕶  Geçici sohbet — geçmişe kaydedilmez, bellek kapalı. Çıkışta silinir."
+session.lifecycle.temporaryBlocked: "/{0} geçici sohbette kullanılamaz."
+status.temporary: "🕶 geçici sohbet · kaydedilmez"

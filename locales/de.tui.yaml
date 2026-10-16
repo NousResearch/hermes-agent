@@ -1368,3 +1368,6 @@ userMessages.turn.layer.streaming.hintNoRetry: "Anderes Modell mit /model wähle
 userMessages.turn.layer.streaming.title: "Die Verbindung zum Modellanbieter ist mitten in der Antwort abgebrochen"
 userMessages.turn.notAnswered: "{0}. Ihre Nachricht wurde nicht beantwortet."
 userMessages.turn.withProvider: "{0} ({1})"
+session.lifecycle.temporaryBanner: "🕶  Temporärer Chat — wird nicht im Verlauf gespeichert, Gedächtnis ist aus. Wird beim Beenden gelöscht."
+session.lifecycle.temporaryBlocked: "/{0} ist in einem temporären Chat nicht verfügbar."
+status.temporary: "🕶 temporärer Chat · nicht gespeichert"

@@ -120,6 +120,8 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // stays; users who liked ⇧N can rebind it in the panel.
   { id: 'session.new', category: 'session', defaults: ['mod+n'] },
   { id: 'session.newTab', category: 'session', defaults: ['mod+t'] },
+  // ⌘⇧P / Ctrl+Shift+P — the browsers' private-window chord.
+  { id: 'session.newTemporary', category: 'session', defaults: ['mod+shift+p'] },
   { id: 'session.newWindow', category: 'session', defaults: ['mod+shift+n'] },
   // ⌃Tab / ⌃⇧Tab — the universal tab-cycle chord. Literally Control, not Cmd
   // (macOS reserves Cmd+Tab for app switching); see `ctrl` in combo.ts.

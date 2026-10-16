@@ -39,6 +39,8 @@ class CanonicalCreateParams(ProfileParams):
     editor: dict[str, JsonValue] | None = None
     title: str | None = None
     hidden: bool = False
+    # A temporary chat: never listed or searched, no memory, deleted when its viewer closes it.
+    temporary: bool = False
     follow_profile_config: bool | None = None
     service_tier: str | None = None
     cwd_explicit: bool | None = None

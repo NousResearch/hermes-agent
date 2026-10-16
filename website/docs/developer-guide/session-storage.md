@@ -593,6 +593,39 @@ db.clear_messages("sess_abc123")
 db.delete_session("sess_abc123")
 ```
 
+### Temporary chats
+
+A temporary chat (`hermes --temporary`, Desktop `session.create {temporary: true}`) is an ordinary
+row whose `model_config.temporary` holds an owner record (`pid`, `create_time`, `pidns`, `host`).
+`hermes_state_temporary.py` owns the contract: the row is born `hidden`, `list_sessions_rich` and
+every search route exclude it (`not_temporary_sql`), compression children inherit the marker inside
+`publish_compression_child`, it can never be pinned or unhidden, and only
+`delete_temporary_session` (which refuses non-temporary ids) removes it. The marker is stamped by
+`mark_session_temporary` after creation — never via the create-time `model_config`, because the
+create upsert would fill a NULL `model_config` on an existing saved row.
+
+```python
+db.mark_session_temporary("sess_abc123")           # hidden + owner = this process
+db.delete_temporary_session("sess_abc123", sessions_dir=home / "sessions")  # whole chain
+db.sweep_orphaned_temporary_sessions(keep_ids=live_ids)  # dead owner, or 72h idle if unverifiable
+```
+
+On the canonical gateway (`gateway/session_temporary.py`) the owner is the gateway process:
+`session.create {temporary}` stamps the row after its creation commit, the turn agent is built with
+`temporary=True`, the last viewer's `session.detach` with a close reason (`tui_close`, `cli_close`,
+`new_session`, …) deletes it, a viewerless chat is swept after 30 minutes, shutdown deletes what the
+gateway owns, `session.mutate branch` refuses it (`temporary_chat_cannot_branch`), and the live
+`session.list` and `search_sessions` (`hermes -c`) skip it.
+
+Ending a temporary chat leaves nothing recoverable in the store. The writer connection runs
+`PRAGMA secure_delete=ON`, so every page it frees (deletes, updates, FTS merges) is zero-filled.
+`delete_temporary_session` and the sweep also enable FTS5 `secure-delete` for the delete, then run a
+PASSIVE checkpoint and truncate the WAL once nothing is left to copy. Outside the store, a temporary
+chat never writes its words to `agent.log` (the turn line reads `<temporary chat>`), trajectories,
+`.hermes_history` (CLI and TUI recall older prompts but never store new ones), the spawn ledger's argv
+(`-q/--query` values are always replaced), or Desktop's localStorage (turn journal, composer queue
+and drafts stay in memory).
+
 
 ## Database Location
 

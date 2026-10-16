@@ -1368,3 +1368,6 @@ userMessages.turn.layer.streaming.hintNoRetry: "Scegli un altro modello con /mod
 userMessages.turn.layer.streaming.title: "La connessione al provider del modello è caduta a metà risposta"
 userMessages.turn.notAnswered: "{0}. Il tuo messaggio non ha ricevuto risposta."
 userMessages.turn.withProvider: "{0} ({1})"
+session.lifecycle.temporaryBanner: "🕶  Chat temporanea — non salvata nella cronologia, memoria disattivata. Eliminata all'uscita."
+session.lifecycle.temporaryBlocked: "/{0} non è disponibile in una chat temporanea."
+status.temporary: "🕶 chat temporanea · non salvata"

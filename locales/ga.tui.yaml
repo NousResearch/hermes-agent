@@ -1368,3 +1368,6 @@ userMessages.turn.layer.streaming.hintNoRetry: "Roghnaigh samhail eile le /model
 userMessages.turn.layer.streaming.title: "Thit an ceangal le soláthraí na samhla i lár an fhreagra"
 userMessages.turn.notAnswered: "{0}. Níor freagraíodh do theachtaireacht."
 userMessages.turn.withProvider: "{0} ({1})"
+session.lifecycle.temporaryBanner: "🕶  Comhrá sealadach — ní shábháiltear sa stair é, tá an chuimhne múchta. Scriosfar é nuair a fhágann tú."
+session.lifecycle.temporaryBlocked: "Níl /{0} ar fáil i gcomhrá sealadach."
+status.temporary: "🕶 comhrá sealadach · gan sábháil"

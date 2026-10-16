@@ -433,8 +433,12 @@ def _launch_tui(
     provider: Optional[str] = None, toolsets: object = None, skills: object = None,
     verbose: Optional[bool] = None, quiet: bool = False, query: Optional[str] = None,
     image: Optional[str] = None, worktree: bool = False, checkpoints: bool = False,
-    pass_session_id: bool = False, max_turns: Optional[int] = None, accept_hooks: bool = False):
+    pass_session_id: bool = False, max_turns: Optional[int] = None, accept_hooks: bool = False,
+    temporary: bool = False):
     """Replace current process with the TUI."""
+    if temporary and resume_session_id:  # same contract as the classic CLI: a temporary chat starts fresh
+        from agent.i18n import t
+        sys.exit(f"Error: {t('cli.session.temporary_resume_conflict')}")
     from hermes_cli.main import PROJECT_ROOT
     tui_dir = PROJECT_ROOT / "ui-tui"
 
@@ -522,6 +526,10 @@ def _launch_tui(
     # `hermes --tui` try to resume a non-existent session; only forward the id
     # argparse resolved for this invocation.
     env.pop("HERMES_TUI_RESUME", None)
+    # Internal hand-off like HERMES_TUI_RESUME: the Ink app creates every session temporary.
+    env.pop("HERMES_TUI_TEMPORARY", None)
+    if temporary:
+        env["HERMES_TUI_TEMPORARY"] = "1"
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 
@@ -533,7 +541,7 @@ def _launch_tui(
         except KeyboardInterrupt:
             code = 130
 
-        if code in {0, 130}:
+        if code in {0, 130} and not temporary:  # a temporary chat is gone: nothing to resume
             _print_tui_exit_summary(resume_session_id, active_session_file)
     finally:
         attached_session = _read_tui_active_session_file(active_session_file) or resume_session_id

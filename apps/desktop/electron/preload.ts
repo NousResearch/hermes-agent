@@ -529,6 +529,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:preview-nav', listener)
   },
+  onNewTemporaryChatRequested: callback => {
+    const listener = () => callback()
+    ipcRenderer.on('hermes:new-temporary-chat-requested', listener)
+
+    return () => ipcRenderer.removeListener('hermes:new-temporary-chat-requested', listener)
+  },
   onOpenFolderRequested: callback => {
     const listener = () => callback()
     ipcRenderer.on('hermes:open-folder-requested', listener)

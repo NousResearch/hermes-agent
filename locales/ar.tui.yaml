@@ -1368,3 +1368,6 @@ userMessages.turn.layer.streaming.hintNoRetry: "اختر نموذجًا آخر �
 userMessages.turn.layer.streaming.title: "انقطع الاتصال بمزوّد النموذج في منتصف الرد"
 userMessages.turn.notAnswered: "{0}. لم يُردّ على رسالتك."
 userMessages.turn.withProvider: "{0} ({1})"
+session.lifecycle.temporaryBanner: "🕶  محادثة مؤقتة — لا تُحفظ في السجل، والذاكرة معطلة. تُحذف عند الخروج."
+session.lifecycle.temporaryBlocked: "الأمر /{0} غير متاح في محادثة مؤقتة."
+status.temporary: "🕶 محادثة مؤقتة · غير محفوظة"

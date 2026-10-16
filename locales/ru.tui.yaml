@@ -1368,3 +1368,6 @@ userMessages.turn.layer.streaming.hintNoRetry: "Выберите другую м
 userMessages.turn.layer.streaming.title: "Соединение с провайдером модели прервалось посреди ответа"
 userMessages.turn.notAnswered: "{0}. На ваше сообщение не был получен ответ."
 userMessages.turn.withProvider: "{0} ({1})"
+session.lifecycle.temporaryBanner: "🕶  Временный чат — не сохраняется в истории, память отключена. Удаляется при выходе."
+session.lifecycle.temporaryBlocked: "/{0} недоступна во временном чате."
+status.temporary: "🕶 временный чат · не сохраняется"

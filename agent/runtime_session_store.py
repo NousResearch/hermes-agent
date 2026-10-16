@@ -436,6 +436,16 @@ class RuntimeSessionStore(RuntimeSessionCompressionMixin, RuntimeSessionLifecycl
         from hermes_state_sessions import _parse_model_config
         return _parse_model_config(self.get_session(session_id).get('model_config')).get(key, default)
 
+    def is_session_temporary(self, session_id):
+        from hermes_state_temporary import TEMPORARY_MODEL_CONFIG_KEY
+        return self.get_session_model_config_value(session_id, TEMPORARY_MODEL_CONFIG_KEY) is not None
+
+    def mark_session_temporary(self, session_id, owner=None):
+        # The owner stamped the row at ``session.create {temporary}`` (gateway.session_temporary); a
+        # worker never re-owns it (its pid is not the owner's, so the orphan sweep would reclaim it).
+        self._session(session_id)
+        return self.is_session_temporary(session_id)
+
     def update_conversation_model_config_value(self, session_id, key, update):
         # A worker owns exactly its session row, so the read-modify-write is that row's; the owner applies
         # the patch in its own transaction (``None`` removes the key, as on SessionDB).

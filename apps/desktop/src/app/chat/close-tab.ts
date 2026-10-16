@@ -6,6 +6,7 @@ import { isFocusWithin } from '@/lib/keybinds/combo'
 import { requestFreshSession } from '@/store/profile'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 import { closeSessionTile, nextSessionTileForWorkspace } from '@/store/session-states'
+import { endTemporaryChat } from '@/store/temporary-chat'
 
 /**
  * Close the MAIN tab. The workspace pane itself can't leave the tree, so
@@ -34,6 +35,7 @@ export function closeWorkspaceTab(loadSessionIntoWorkspace?: (storedSessionId: s
     const next = nextSessionTileForWorkspace()
 
     if (next) {
+      endTemporaryChat($selectedStoredSessionId.get() ?? '') // main's temporary chat is what closes
       closeSessionTile(next)
       loadSessionIntoWorkspace(next)
 
@@ -45,6 +47,8 @@ export function closeWorkspaceTab(loadSessionIntoWorkspace?: (storedSessionId: s
     return false
   }
 
+  // Closing a temporary chat's tab is the explicit "I'm done" — it ends (and deletes) the chat.
+  endTemporaryChat($selectedStoredSessionId.get() ?? '')
   requestFreshSession()
 
   return true

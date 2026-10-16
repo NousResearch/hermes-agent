@@ -101,6 +101,15 @@ test('canonical create retries retain identity', () => {
   expect(protocol.prepare('session.create', params).request_id).not.toBe(first.request_id)
 })
 
+test('canonical create carries a temporary chat, never a separate identity from a saved one', () => {
+  const protocol = new CanonicalDesktopProtocol()
+  const params = { source: 'desktop', profile: 'default', cols: 96, cwd: '/tmp' }
+  const temporary = protocol.prepare('session.create', { ...params, temporary: true })
+  expect(temporary).toMatchObject({ source: 'gui', temporary: true })
+  expect(protocol.prepare('session.create', params)).not.toHaveProperty('temporary')
+  expect(protocol.prepare('session.create', params).request_id).not.toBe(temporary.request_id)
+})
+
 test('canonical receipts preserve admission identity and replay restores fenced controls', () => {
   const protocol = new CanonicalDesktopProtocol()
   const receipt = protocol.result('prompt.submit', { session_id: 's', submission_id: 'input' }, { admission_id: 'admission', ref: { session_id: 's', profile_id: '/tmp/profile' }, status: 'queued' })

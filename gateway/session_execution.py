@@ -183,6 +183,8 @@ class GatewaySessionAgentMixin:
             # A local session's frozen budget (`--run-budget` / its profile's agent.run_budget_seconds);
             # None leaves the agent reading the owner's config, as before.
             run_budget_seconds=policy.run_budget_seconds if policy else None,
+            # A temporary chat (gateway.session_temporary): no memory, recall, review or title.
+            temporary=_session_is_temporary(runner, ctx.session_id),
         )
 
     def _resolve_turn_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr):
@@ -229,3 +231,8 @@ class GatewaySessionAgentMixin:
                     runner._enforce_agent_cache_cap()
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, sig)
         return agent, found.reused
+
+
+def _session_is_temporary(runner, session_id) -> bool:
+    from gateway.session_temporary import session_is_temporary
+    return session_is_temporary(getattr(runner._session_db, "_db", runner._session_db), session_id)

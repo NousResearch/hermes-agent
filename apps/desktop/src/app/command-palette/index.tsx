@@ -38,6 +38,7 @@ import {
   GitBranch,
   Globe,
   type IconComponent,
+  Incognito,
   Info,
   KeyRound,
   Layers3,
@@ -82,6 +83,7 @@ import { $connection, $cronSessions, $messagingSessions, $sessions } from '@/sto
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
 import { runGatewayRestart } from '@/store/system-actions'
+import { requestNewTemporaryChat } from '@/store/temporary-chat'
 import {
   $backendUpdateApply,
   $backendUpdateStatus,
@@ -864,6 +866,14 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             keywords: ['chat', 'create'],
             label: cc.nav.newChat.title,
             run: go(NEW_CHAT_ROUTE)
+          },
+          {
+            action: 'session.newTemporary',
+            icon: Incognito,
+            id: 'nav-new-temporary',
+            keywords: ['temporary', 'incognito', 'private', 'chat'],
+            label: t.temporaryChat.newChat,
+            run: requestNewTemporaryChat
           },
           ...(canOpenNewWindow()
             ? [

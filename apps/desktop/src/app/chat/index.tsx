@@ -81,6 +81,8 @@ import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
+import { TemporaryChatBadge } from './temporary/temporary-chat-badge'
+import { useTemporaryChat } from './temporary/use-temporary-chat'
 import { routedSessionIsLoading, threadLoadingState } from './thread-loading'
 import {
   backfillOlderTranscriptPage,
@@ -125,6 +127,11 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onDismissError?: (messageId: string) => void
 }
 
+/** A temporary chat is never pinned: a pin is "keep this", and the backend refuses it anyway. */
+function pinAction(selectedSessionId: null | string, temporary: boolean, onToggle: () => void) {
+  return selectedSessionId && !temporary ? onToggle : undefined
+}
+
 interface ChatHeaderProps {
   activeSessionId: null | string
   isRoutedSessionView: boolean
@@ -155,6 +162,7 @@ function ChatHeader({
   // second profile exists, so the open session's ownership is never ambiguous
   // (#66003). Single-profile users see the unchanged header.
   const showProfileTag = profiles.length > 1 && Boolean(activeStoredSession)
+  const temporary = useTemporaryChat(selectedSessionId || activeSessionId)
 
   // Pins live on the durable lineage-root id, but selectedSessionId is the live
   // (tip) id — resolve through the loaded row so the menu reflects the pin
@@ -182,10 +190,11 @@ function ChatHeader({
         }}
       >
         {showProfileTag && <ProfileTag className="pointer-events-auto mr-1.5" profile={activeStoredSession?.profile} />}
+        <TemporaryChatBadge className="pointer-events-auto mr-1.5" sessionId={selectedSessionId || activeSessionId} />
         <SessionActionsMenu
           align="start"
           onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
-          onPin={selectedSessionId ? onToggleSelectedPin : undefined}
+          onPin={pinAction(selectedSessionId, temporary, onToggleSelectedPin)}
           pinned={selectedIsPinned}
           profile={activeStoredSession?.profile}
           sessionId={selectedSessionId || activeSessionId || ''}

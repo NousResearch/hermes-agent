@@ -89,3 +89,18 @@ it('localizes the custom-personality fallback without translating its user-suppl
     expect(body).toContain('My Custom Voice')
   }
 })
+
+it('explains a temporary draft instead of greeting', async () => {
+  const { $temporaryDraft } = await import('@/store/temporary-chat')
+  $temporaryDraft.set(true)
+
+  try {
+    const { container } = render(<Fixture />)
+    const intro = container.querySelector('[data-slot="aui_intro"]')
+    expect(intro?.getAttribute('data-temporary')).toBe('true')
+    expect(intro?.textContent).toContain('Temporary chat')
+    expect(intro?.textContent).toContain('deleted when you leave the chat')
+  } finally {
+    $temporaryDraft.set(false)
+  }
+})

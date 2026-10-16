@@ -132,6 +132,8 @@ class SessionCreateParams(ProfileParams):
     service_tier: str | None = None
     close_on_disconnect: bool = False
     hidden: bool = False
+    # Temporary chat: never listed or searched, no memory, deleted when closed (session_temporary.py).
+    temporary: bool = False
     room_plumbing: bool = False
     follow_profile_config: bool = False
     # #65410: stable caller-chosen key so a retried create (response lost in

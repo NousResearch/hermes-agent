@@ -11,6 +11,7 @@ import sqlite3
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_state_temporary import inherit_temporary_marker
 from hermes_state_common import (
     _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression,
     _RESET_CHILD_SQL, _sql_json_extract, _sql_session_last_active, is_automatic_end_reason)
@@ -249,6 +250,8 @@ class SessionCompressionMixin:
         # Pin/archive are compression-lineage flags; canonical branch/reset verbs also publish through
         # here, and their child is its own conversation, so it starts unpinned and visible.
         continuation = not any(k in (model_config or {}) for k in ("_branched_from", "_reset_from"))
+        # A temporary chat's continuation is the same temporary chat: unlisted, unsearchable, deleted with it.
+        model_config, temporary = inherit_temporary_marker(model_config, parent["model_config"])
         # The child continues the parent's tools[] pin (the compaction refresh re-pinned it just
         # before publish), or its first hop to another surface re-derives the array.
         conn.execute(
@@ -274,6 +277,8 @@ class SessionCompressionMixin:
                 (parent["archived"] or 0) if continuation else 0,
                 (parent["auto_archived"] or 0) if continuation else 0),
         )
+        if temporary:
+            conn.execute("UPDATE sessions SET hidden = 1 WHERE id = ?", (child_session_id,))
 
     def publish_compression_child(
         self, *, parent_session_id: str, child_session_id: str, source: str,

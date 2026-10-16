@@ -322,8 +322,10 @@ def _owner_objects(authority, ref, *, include_fallback_evicted=False):
     agent = authority.agent(ref)
     session_id = physical_target(authority, ref) if include_fallback_evicted else None
     route = authority.sessions[ref.session_id].route if include_fallback_evicted else None
+    session_db = getattr(authority, 'db', None) if include_fallback_evicted else None
     return agent, subagent_records(
-        agent, session_id=session_id, route=route, include_fallback_evicted=include_fallback_evicted)
+        agent, session_id=session_id, session_db=session_db, route=route,
+        include_fallback_evicted=include_fallback_evicted)
 
 
 def physical_target(authority, ref):
@@ -379,9 +381,11 @@ def _has_fallback_evicted_ancestor(agent, target_sid, expected_db, route, regist
             continue
         if getattr(current, 'session_id', None) != target_sid:
             continue
-        if expected_db is not None and getattr(current, '_session_db', None) is not expected_db:
+        if (expected_db is not None or getattr(current, '_session_db', None) is not None) and getattr(current, '_session_db', None) is not expected_db:
             continue
-        if route is not None and isinstance(marker, str) and marker != route:
+        if route is not None and marker != route:
+            continue
+        if route is None and isinstance(marker, str) and getattr(current, 'gateway_session_key', None) not in (None, marker):
             continue
         return True
     return False

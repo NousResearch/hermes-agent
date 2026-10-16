@@ -1315,7 +1315,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             **usage,
             **({"persisted_turn": persisted_turn} if persisted_turn else {}),
         }
-        previewed = bool(result.get("response_previewed"))
+        previewed = result.get("response_previewed", False)
         viewer_meta = {}
         if local_sinks is not None:
             was_delivered = getattr(agent, "_interim_text_was_delivered", None)

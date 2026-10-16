@@ -298,7 +298,8 @@ async def test_service_tier_is_a_session_scoped_fast_override(tmp_path, monkeypa
 
 
 def test_completion_payload_forwards_billing_failure_and_response_flags():
-    """TUI-6: ``message.complete`` carries ``billing``, ``failure_reason``, ``warning``, ``response_previewed`` and ``response_transformed`` from the turn result."""
+    """TUI-6: ``message.complete`` carries ``billing``, ``failure_reason``, ``warning``, ``response_previewed`` and ``response_transformed`` from the turn result on local-viewer turns only."""
+    from agent.billing_links import build_billing_block
     from gateway.session import SessionSource
     from gateway.session_results import execution_result
     from gateway.session_settlement_recovery import completion_payload
@@ -306,13 +307,28 @@ def test_completion_payload_forwards_billing_failure_and_response_flags():
     from tests.gateway.test_local_viewer_events_submit import _gateway_runner, _SteeredAgent
     from tui_gateway.contracts.registry import EVENTS
 
+    billing = build_billing_block(
+        provider='openrouter', base_url='https://openrouter.ai/api/v1', model='gpt-x', message='Out of credits'
+    ).to_dict()
+    interim_probes = []
+
+    class _ViewerTurnAgent(_SteeredAgent):
+        def _interim_text_was_delivered(self, text):
+            interim_probes.append(text)
+            return True
+
+        def run_conversation(self, message, **kwargs):
+            out = super().run_conversation(message, **kwargs)
+            return {**out, 'final_response': 'partial answer', 'billing_block': billing,
+                    'warning': 'History changed during this turn'}
+
     runner = _gateway_runner()
     live = SimpleNamespace(tool_progress_mode=None)
     authority = SimpleNamespace(sessions={'sid': live}, profile_id='p', adopt_agent=lambda *a: None)
     ctx = TurnContext(
         source=SessionSource(platform=Platform.LOCAL, chat_id='sid', user_id='u'),
         message='hi', history=[], session_id='sid', session_key='key', user_config={},
-        AIAgent=_SteeredAgent, resolve_display_setting=lambda *_a: False,
+        AIAgent=_ViewerTurnAgent, resolve_display_setting=lambda *_a: False,
         _run_still_current=lambda: True, _hooks_ref=SimpleNamespace(loaded_hooks=False))
     captured = {}
     token = execution_result.set(captured)
@@ -323,12 +339,10 @@ def test_completion_payload_forwards_billing_failure_and_response_flags():
     finally:
         execution_result.reset(token)
 
-    from agent.billing_links import build_billing_block
-    assert captured['result']['billing_block'] == {'provider': 'openrouter', 'url': 'https://openrouter.ai/credits'}
-    billing = build_billing_block(
-        provider='openrouter', base_url='https://openrouter.ai/api/v1', model='gpt-x', message='Out of credits'
-    ).to_dict()
-    captured['result'].update(billing_block=billing, warning='History changed during this turn', response_previewed=True)
+    assert interim_probes == ['partial answer']
+    assert captured['result']['billing_block'] == billing
+    assert captured['result']['warning'] == 'History changed during this turn'
+    assert captured['result']['response_previewed'] is True
     complete = completion_payload(
         {'admission_id': 'a1', 'request_id': 'r1'}, {'outcome': 'failed'}, delivered['final_response'], captured)
     assert complete['billing'] == billing
@@ -339,18 +353,42 @@ def test_completion_payload_forwards_billing_failure_and_response_flags():
     EVENTS['message.complete'].payload.model_validate(
         {k: v for k, v in complete.items() if k not in ('content', 'admission_id', 'outcome')})
 
+    # Non-viewer (messaging) turns do not probe _interim_text_was_delivered or attach viewer_meta.
+    interim_probes.clear()
+    msg_ctx = TurnContext(
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id='sid', user_id='u'),
+        message='hi', history=[], session_id='sid', session_key='key', user_config={},
+        AIAgent=_ViewerTurnAgent, resolve_display_setting=lambda *_a: False,
+        _run_still_current=lambda: True, _hooks_ref=SimpleNamespace(loaded_hooks=False))
+    msg_captured = {}
+    token = execution_result.set(msg_captured)
+    try:
+        TurnRunner(_gateway_runner(), msg_ctx).run_sync()
+    finally:
+        execution_result.reset(token)
+    assert interim_probes == []
+    assert 'billing_block' not in msg_captured['result'] and 'warning' not in msg_captured['result']
+    assert msg_captured['result']['response_previewed'] is False
+
 
 def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
-    """TUI-4: ``_ChildProgressRelay`` events reach the viewer stream on ``Platform.LOCAL`` (including registered background children after the spawning turn settles, without borrowing a later turn's execution identity) and never on messaging platforms."""
+    """TUI-4: ``_ChildProgressRelay`` events reach the viewer stream on ``Platform.LOCAL`` (including registered background children descending from the spawning turn's agent after the turn settles, without borrowing a later turn's execution identity) and never on messaging platforms."""
+    import weakref
     from gateway.session_events import SessionEvents
     from tools.delegate_tool_progress import _build_child_progress_callback
     from tools.delegate_tool_registry import _register_subagent, _unregister_subagent
     from tui_gateway.contracts.registry import EVENTS
 
+    class _Parent:
+        pass
+
     published = []
     live = SimpleNamespace(tool_progress_mode=None, show_reasoning=False)
     turn = _turn(Platform.LOCAL, published, live=live)
-    parent = SimpleNamespace(_delegate_spinner=None, tool_progress_callback=turn.progress_callback)
+    parent = _Parent()
+    parent._delegate_spinner = None
+    parent.tool_progress_callback = turn.progress_callback
+    turn._ctx.agent_holder = [parent]
     ref = {'session_id': 'child-sess-1', 'delegation_id': 'deleg_12345678'}
     relay = _build_child_progress_callback(
         0, 'inspect viewer payloads', parent, 2,
@@ -385,7 +423,7 @@ def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
     assert published[4][1]['text'] == 'visible chain of thought'
     assert published[6][1]['status'] == 'completed' and published[6][1]['summary'] == 'all clear'
 
-    # Registered background child outliving the spawning turn publishes without borrowing the next turn's execution identity; unregistered stale callbacks are rejected.
+    # Registered background child descending from the turn's agent publishes without borrowing the next turn's execution identity; unregistered or foreign-parent children (even with matching owner_agent_session_id) are rejected.
     stream_frames = []
     live.event_stream = SessionEvents()
     live.event_stream.execution = {'admission_id': 'turn-b', 'execution_generation': 2}
@@ -394,10 +432,18 @@ def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
     stale_relay = _build_child_progress_callback(0, 'stale goal', parent, subagent_id='sa-stale')
     stale_relay('subagent.complete', status='completed', summary='stale finish')
     assert stream_frames == []
-    _register_subagent({'subagent_id': 'sa-0-abc12345', 'agent': SimpleNamespace(), 'owner_agent_session_id': 's'})
+    foreign_parent = _Parent()
+    foreign_child = SimpleNamespace(_delegate_parent_ref=weakref.ref(foreign_parent))
+    owned_child = SimpleNamespace(_delegate_parent_ref=weakref.ref(parent))
+    _register_subagent({'subagent_id': 'sa-foreign-same-sid', 'agent': foreign_child, 'owner_agent_session_id': 's'})
+    _register_subagent({'subagent_id': 'sa-0-abc12345', 'agent': owned_child, 'owner_agent_session_id': 's'})
     try:
+        foreign_relay = _build_child_progress_callback(0, 'foreign goal', parent, subagent_id='sa-foreign-same-sid')
+        foreign_relay('subagent.complete', status='completed', summary='foreign finish')
+        assert stream_frames == []
         relay('subagent.complete', status='completed', summary='late finish')
     finally:
+        _unregister_subagent('sa-foreign-same-sid')
         _unregister_subagent('sa-0-abc12345')
     assert len(stream_frames) == 1
     params = stream_frames[0]['params']
@@ -416,10 +462,10 @@ def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
 
 
 def test_subagent_roster_retains_running_child_after_fallback_evicts_parent():
-    """TUI-4 fallback roster: when ``_run_agent_evict_on_fallback`` evicts the parent after a successful provider fallback, ``subagent_records`` keeps the child visible for the owning profile and route without transferring control/tail ownership or leaking across profiles."""
+    """TUI-4 fallback roster: when ``_run_agent_evict_on_fallback`` evicts the parent after a successful provider fallback, ``_owner_objects`` and ``subagent_records`` keep the child visible for the owning profile DB and route without transferring control/tail ownership or leaking across independent DB or route mismatches."""
     import weakref
     from gateway.run_turn import GatewayTurnMixin
-    from gateway.session_ancillary import subagent_records
+    from gateway.session_ancillary import _owner_objects, subagent_records
     from tools.delegate_tool_registry import _register_subagent, _unregister_subagent
 
     class Parent:
@@ -429,51 +475,60 @@ def test_subagent_roster_retains_running_child_after_fallback_evicts_parent():
     original = Parent()
     original.session_id = 'same-parent'
     original._session_db = db_a
-    original.gateway_session_key = 'route'
+    original.gateway_session_key = 'route-a'
     original.model = 'fallback-model'
     original._provider_fallback_active = True
 
     replacement = Parent()
     replacement.session_id = original.session_id
     replacement._session_db = db_a
-    replacement.gateway_session_key = 'route'
+    replacement.gateway_session_key = 'route-a'
 
-    foreign_parent = Parent()
-    foreign_parent.session_id = original.session_id
-    foreign_parent._session_db = db_b
-    foreign_parent.gateway_session_key = 'foreign-route'
-    foreign_parent.model = 'fallback-model'
-    foreign_parent._provider_fallback_active = True
+    wrong_db_parent = Parent()
+    wrong_db_parent.session_id = original.session_id
+    wrong_db_parent._session_db = db_b
+    wrong_db_parent.gateway_session_key = 'route-a'
+    wrong_db_parent.model = 'fallback-model'
+    wrong_db_parent._provider_fallback_active = True
+
+    wrong_route_parent = Parent()
+    wrong_route_parent.session_id = original.session_id
+    wrong_route_parent._session_db = db_a
+    wrong_route_parent.gateway_session_key = 'route-b'
+    wrong_route_parent.model = 'fallback-model'
+    wrong_route_parent._provider_fallback_active = True
 
     unevicted = Parent()
     unevicted.session_id = original.session_id
     unevicted._session_db = db_a
 
     child = SimpleNamespace(_delegate_parent_ref=weakref.ref(original))
-    foreign_child = SimpleNamespace(_delegate_parent_ref=weakref.ref(foreign_parent))
+    wrong_db_child = SimpleNamespace(_delegate_parent_ref=weakref.ref(wrong_db_parent))
+    wrong_route_child = SimpleNamespace(_delegate_parent_ref=weakref.ref(wrong_route_parent))
     stale_child = SimpleNamespace(_delegate_parent_ref=weakref.ref(unevicted))
     _register_subagent({'subagent_id': 'fallback-child', 'agent': child, 'owner_agent_session_id': original.session_id})
-    _register_subagent({'subagent_id': 'foreign-child', 'agent': foreign_child, 'owner_agent_session_id': foreign_parent.session_id})
+    _register_subagent({'subagent_id': 'wrong-db-child', 'agent': wrong_db_child, 'owner_agent_session_id': original.session_id})
+    _register_subagent({'subagent_id': 'wrong-route-child', 'agent': wrong_route_child, 'owner_agent_session_id': original.session_id})
     _register_subagent({'subagent_id': 'stale-child', 'agent': stale_child, 'owner_agent_session_id': unevicted.session_id})
     try:
         assert [r['subagent_id'] for r in subagent_records(original)] == ['fallback-child']
         evicted = []
-        GatewayTurnMixin._run_agent_evict_on_fallback(
-            SimpleNamespace(_evict_cached_agent=evicted.append),
-            SimpleNamespace(session_key='route', agent_holder=[original], result_holder=[{'failed': False}]),
-        )
-        GatewayTurnMixin._run_agent_evict_on_fallback(
-            SimpleNamespace(_evict_cached_agent=evicted.append),
-            SimpleNamespace(session_key='foreign-route', agent_holder=[foreign_parent], result_holder=[{'failed': False}]),
-        )
-        assert evicted == ['route', 'foreign-route']
-        # After a replacement parent is built, and while no resident parent is cached, only this profile/route's fallback child stays in the read-only roster.
+        for route_key, parent_obj in (('route-a', original), ('route-a', wrong_db_parent), ('route-b', wrong_route_parent)):
+            GatewayTurnMixin._run_agent_evict_on_fallback(
+                SimpleNamespace(_evict_cached_agent=evicted.append),
+                SimpleNamespace(session_key=route_key, agent_holder=[parent_obj], result_holder=[{'failed': False}]),
+            )
+        assert evicted == ['route-a', 'route-a', 'route-b']
+        # After a replacement parent is built, and through _owner_objects when no resident parent is cached, only the matching (db_a, route-a) fallback child is returned.
         assert [r['subagent_id'] for r in subagent_records(replacement)] == ['fallback-child']
-        assert [r['subagent_id'] for r in subagent_records(None, session_id=original.session_id, session_db=db_a, route='route')] == ['fallback-child']
-        assert [r['subagent_id'] for r in subagent_records(None, session_id=original.session_id, session_db=db_b, route='foreign-route')] == ['foreign-child']
-        # Control and tail require exact resident-parent identity.
+        authority_a = SimpleNamespace(
+            db=db_a, runner=SimpleNamespace(), agent=lambda ref: None,
+            store=SimpleNamespace(_entries={'route-a': SimpleNamespace(session_id='same-parent')}),
+            sessions={'same-parent': SimpleNamespace(route='route-a', source=SimpleNamespace(platform=Platform.TELEGRAM))})
+        ref = SimpleNamespace(profile_id='p', session_id='same-parent')
+        assert [r['subagent_id'] for r in _owner_objects(authority_a, ref, include_fallback_evicted=True)[1]] == ['fallback-child']
+        assert _owner_objects(authority_a, ref, include_fallback_evicted=False)[1] == []
         assert subagent_records(replacement, include_fallback_evicted=False) == []
     finally:
-        _unregister_subagent('fallback-child')
-        _unregister_subagent('foreign-child')
-        _unregister_subagent('stale-child')
+        for sid in ('fallback-child', 'wrong-db-child', 'wrong-route-child', 'stale-child'):
+            _unregister_subagent(sid)

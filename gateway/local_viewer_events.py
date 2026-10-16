@@ -62,25 +62,19 @@ def show_reasoning(turn) -> bool:
     return getattr(live, "show_reasoning", None) is True
 
 
-def _is_active_session_subagent(turn, session_id: str, payload: dict) -> bool:
+def _is_active_session_subagent(turn, payload: dict) -> bool:
     subagent_id = payload.get("subagent_id")
     if not isinstance(subagent_id, str) or not subagent_id:
         return False
     import sys
     registry = sys.modules.get("tools.delegate_tool_registry")
-    if registry is None:
-        return False
-    ctx = getattr(turn, "_ctx", None)
-    holder = getattr(ctx, "agent_holder", None)
+    holder = getattr(getattr(turn, "_ctx", None), "agent_holder", None)
     turn_agent = holder[0] if isinstance(holder, list) and holder else None
-    target_sid = getattr(ctx, "session_id", None) or session_id
+    if registry is None or turn_agent is None:
+        return False
     with registry._active_subagents_lock:
         record = registry._active_subagents.get(subagent_id)
-        if record is None:
-            return False
-        if turn_agent is not None and registry._is_descendant_of(record.get("agent"), turn_agent):
-            return True
-        return bool(target_sid and record.get("owner_agent_session_id") == target_sid)
+        return record is not None and registry._is_descendant_of(record.get("agent"), turn_agent)
 
 
 def _publish_subagent(turn, event_type, payload) -> None:
@@ -89,7 +83,7 @@ def _publish_subagent(turn, event_type, payload) -> None:
         authority, session_id, generation = owner
         executing = getattr(authority, "executing", None)
         if isinstance(executing, dict) and executing.get(session_id) != generation:
-            if not _is_active_session_subagent(turn, session_id, payload):
+            if not _is_active_session_subagent(turn, payload):
                 return
             # A background delegate_task outlives the spawning turn's running claim; publish without borrowing a later turn's execution identity.
             live = authority.sessions.get(session_id)

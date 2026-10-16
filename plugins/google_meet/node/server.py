@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
-from plugins.google_meet._jsonfile import read_json
+from plugins.google_meet._jsonfile import read_json, say_queue_lock
 from utils import atomic_json_write
 from plugins.google_meet.node import protocol as _proto
 
@@ -45,7 +45,7 @@ def _rpc_say(payload: dict[str, Any], pm) -> dict[str, Any]:
         with contextlib.suppress(OSError):
             queue = Path(active["out_dir"]) / "say_queue.jsonl"
             queue.parent.mkdir(parents=True, exist_ok=True)
-            with queue.open("a", encoding="utf-8") as fh:
+            with say_queue_lock(queue), queue.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps({"text": text, "ts": time.time()}) + "\n")
             enqueued = True
     return {"ok": True, "enqueued": enqueued, "text": text}

@@ -600,14 +600,14 @@ def _rederive_per_model_route(model: str, runtime: dict) -> None:
     runtime["base_url"] = normalize_opencode_base_url(provider, api_mode, runtime.get("base_url"))
 
 
-def _startup_system_prompt(cfg: dict, task_id: str) -> str:
-    """Config ephemeral system prompt + HERMES_TUI_SKILLS preload block. Hard-fails only when EVERY requested
+def _startup_system_prompt(cfg: dict, task_id: str) -> tuple[str, str | None]:
+    """(Config ephemeral prompt, stable HERMES_TUI_SKILLS preload block). Hard-fails only when EVERY requested
     skill is missing (cli.py parity): a typo'd name must not auto-block the Kanban task."""
     from hermes_cli.config import resolve_ephemeral_system_prompt_from_config
     system_prompt = resolve_ephemeral_system_prompt_from_config(cfg)
     startup_skills = _parse_tui_skills_env()
     if not startup_skills:
-        return system_prompt
+        return system_prompt, None
     from agent.skill_commands import build_preloaded_skills_prompt, format_missing_skills
     skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(startup_skills, task_id=task_id)
     if missing_skills:
@@ -615,9 +615,7 @@ def _startup_system_prompt(cfg: dict, task_id: str) -> str:
             raise ValueError(format_missing_skills(missing_skills))
         logger.warning("Skipping %s. Continuing with: %s. List available skills with `hermes skills list`.",
                        format_missing_skills(missing_skills), ", ".join(loaded_skills))
-    if skills_prompt:
-        system_prompt = "\n\n".join(part for part in (system_prompt, skills_prompt) if part).strip()
-    return system_prompt
+    return system_prompt, skills_prompt or None
 
 
 def _make_agent(
@@ -641,7 +639,7 @@ def _make_agent(
     # Load hooks alongside the same profile config used to construct this agent.
     from agent.shell_hooks import register_from_config
     register_from_config(cfg)
-    system_prompt = _startup_system_prompt(cfg, session_id or key)
+    system_prompt, preloaded_skills_prompt = _startup_system_prompt(cfg, session_id or key)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     fallback_notice = runtime.pop("_fallback_notice", None)
     _pr = _load_provider_routing()
@@ -670,6 +668,7 @@ def _make_agent(
         # Builds that run before the record exists (branch, eager resume, compute host) pass it explicitly.
         user_id=auth_user_id if auth_user_id is not None else _session_auth_user_id(session),
         session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
+        preloaded_skills_prompt=preloaded_skills_prompt,
         checkpoints_enabled=_resolve_checkpoints_enabled(cfg),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),

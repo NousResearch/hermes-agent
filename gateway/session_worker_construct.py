@@ -7,7 +7,7 @@ and they ride the hydrated request beside ``turn_v1``. The child validates the c
 """
 import json
 
-KEYS = frozenset({'fallback_model', 'ephemeral_system_prompt', 'prefill_messages'})
+KEYS = frozenset({'fallback_model', 'ephemeral_system_prompt', 'preloaded_skills_prompt', 'prefill_messages'})
 
 
 def construct_inputs(authority, policy, chat_id):
@@ -16,6 +16,7 @@ def construct_inputs(authority, policy, chat_id):
     with owner_scope(authority):
         return {'fallback_model': _fallback_chain(authority, policy),
                 'ephemeral_system_prompt': _ephemeral_prompt(authority, policy, chat_id),
+                'preloaded_skills_prompt': policy.skills_prompt,
                 'prefill_messages': _prefill(authority, policy)}
 
 
@@ -34,15 +35,15 @@ def _fallback_chain(authority, policy):
 
 def _ephemeral_prompt(authority, policy, chat_id):
     """``TurnRunner``'s combined ephemeral prompt for a LOCAL turn (no platform context block):
-    the gateway prompt (``agent.system_prompt`` / ``display.personality`` / channel override) plus
-    the frozen ``-s`` skills blocks. API-time only, never part of the persisted system prefix.
+    the gateway prompt (``agent.system_prompt`` / ``display.personality`` / channel override).
+    Launch skills travel separately into the stable persisted system prefix.
     A bypass session never reads the profile: only its frozen launch additions apply."""
     configured = None
     resolve = getattr(authority.runner, '_get_system_prompt_for_channel', None)
     if not policy.ignore_user_config and resolve is not None:
         from gateway.config import Platform
         configured = resolve(Platform.LOCAL, chat_id or '')
-    return '\n\n'.join(p for p in (configured, policy.skills_prompt) if p) or None
+    return configured or None
 
 
 def _prefill(authority, policy):
@@ -59,9 +60,13 @@ def construct_kwargs(frame):
     inputs = json.loads(frame['policy'].get('request_json') or '{}').get('construct_v1')
     if inputs is None:
         return {}
+    # An already-hydrated request from an older owner has no dedicated skill field.
+    if isinstance(inputs, dict) and set(inputs) == KEYS - {'preloaded_skills_prompt'}:
+        inputs = {**inputs, 'preloaded_skills_prompt': None}
     if (not isinstance(inputs, dict) or set(inputs) != KEYS
             or not _dict_list(inputs['fallback_model']) or not _dict_list(inputs['prefill_messages'])
-            or not isinstance(inputs['ephemeral_system_prompt'], (str, type(None)))):
+            or not isinstance(inputs['ephemeral_system_prompt'], (str, type(None)))
+            or not isinstance(inputs['preloaded_skills_prompt'], (str, type(None)))):
         raise ValueError('invalid_managed_worker_bootstrap')
     return dict(inputs)
 

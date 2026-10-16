@@ -769,6 +769,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 agent.session_id, exc,
             )
 
+    from agent.launch_skills import restore_launch_skills
+    if stored_prompt:
+        restore_launch_skills(agent, stored_prompt)
     if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
         # NULL/empty rows never reach this probe: they already rebuild below.
         if _bot_chat_prompt_stale(agent, stored_prompt):
@@ -911,6 +914,11 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     # prompt — so TERMINAL_CWD sessions are not falsely rejected.
     stored_cwd = runtime_host_value(prompt, "Current working directory")
     if stored_cwd and stored_cwd != str(resolve_agent_cwd()):
+        return False
+    # Launch skills live in the stable tier; resume additions must rebuild to reach the model.
+    from agent.launch_skills import persisted_launch_skills
+    preloaded = getattr(agent, "preloaded_skills_prompt", None)
+    if isinstance(preloaded, str) and preloaded and preloaded != persisted_launch_skills(prompt):
         return False
     # Platform is deliberately NOT an identity field: a surface switch does not invalidate the
     # stored bytes, it only makes their interface section out of date, and that is corrected by

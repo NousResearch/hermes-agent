@@ -3110,6 +3110,8 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
 
 def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:
     """Refresh tool schemas and rebuild the system prompt at the commit boundary."""
+    from agent.launch_skills import restore_launch_skills
+    restore_launch_skills(agent)
     if getattr(agent, "_retain_seeded_system_prompt", False) is True:
         # Gateway hygiene / gateway /compress run a detached agent with a reduced toolset and no live
         # surface: its builder output drops the skills index, external provider blocks and tool guidance,
@@ -3137,8 +3139,6 @@ def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:
             "compaction tool-definition refresh failed; keeping the session's existing tool snapshot", exc_info=True
         )
 
-    # ALWAYS rebuild the prompt here: keeping old bytes meant prompt-builder changes
-    # never reached long sessions. Equal bytes keep KV; preserve object identity.
     # ALWAYS rebuild the prompt at the admitted-commit boundary (maintainer-directed, #95681 arc). The
     # previous "keep-prompt" containment branch put the OLD bytes back whenever the reloaded memory blocks
     # were already embedded — which meant prompt-builder changes (guidance diets, new blocks, renames) NEVER

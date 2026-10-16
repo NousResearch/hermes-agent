@@ -1152,8 +1152,6 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             apply_launch_yolo(ctx.session_key)
         platform_key = policy.platform if policy else ("cli" if ctx.source.platform == Platform.LOCAL else ctx.source.platform.value)
         combined_ephemeral = self._combined_ephemeral_prompt()
-        if policy and policy.skills_prompt:
-            combined_ephemeral = "\n\n".join(p for p in (combined_ephemeral, policy.skills_prompt) if p)
         max_iterations = policy.max_turns if policy else _current_max_iterations()
         from gateway.hosted_room_execution_policy import current_room_execution_policy
         room = current_room_execution_policy()

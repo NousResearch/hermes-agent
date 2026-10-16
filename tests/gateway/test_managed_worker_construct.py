@@ -192,9 +192,11 @@ def test_construct_inputs_follow_the_session_mode(tmp_path, monkeypatch):
     config_only = _bypass_policy({**launch, 'ignore_user_config': True}, private_secrets={})
     safe = _bypass_policy({**launch, 'safe_mode': True}, private_secrets={})
     assert construct_inputs(authority, ordinary, 'c') == {
-        'fallback_model': chain, 'ephemeral_system_prompt': 'SYS', 'prefill_messages': runner._prefill_messages}
+        'fallback_model': chain, 'ephemeral_system_prompt': 'SYS', 'preloaded_skills_prompt': None,
+        'prefill_messages': runner._prefill_messages}
     assert profile_reads == ['fallback', 'prompt']
-    empty = {'fallback_model': None, 'ephemeral_system_prompt': None, 'prefill_messages': None}
+    empty = {'fallback_model': None, 'ephemeral_system_prompt': None, 'preloaded_skills_prompt': None,
+             'prefill_messages': None}
     assert construct_inputs(authority, config_only, 'c') == empty
     assert construct_inputs(authority, safe, 'c') == empty and profile_reads == ['fallback', 'prompt']
     frame = {'policy': {'request_json': json.dumps({'construct_v1': construct_inputs(authority, ordinary, 'c')})}}

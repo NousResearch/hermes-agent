@@ -828,7 +828,8 @@ def _disabled_skill_names(platform: str | None = None) -> set:
 def _load_skill_blocks(
     identifiers: list[str], load, activation_note, task_id: str | None, *,
     missing_label=lambda ident: ident, disabled_names: set | None = None, disabled_as_missing: bool = False,
-    already_loaded: set | None = None,
+    already_loaded: set | None = None, already_loaded_paths: set[str] | None = None,
+    rendered_paths: list[str] | None = None,
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     """Load each distinct identifier via *load* and render its block; returns
     ``(loaded_names, missing, disabled, blocks)``. With *disabled_names*, members
@@ -857,11 +858,15 @@ def _load_skill_blocks(
             else:
                 disabled.append(skill_name or identifier)
             continue
-        if already_loaded and skill_name in already_loaded:
+        skill_path = str(loaded[1].resolve()) if loaded[1] is not None else None
+        if ((already_loaded and skill_name in already_loaded)
+                or (already_loaded_paths and skill_path in already_loaded_paths)):
             loaded_names.append(skill_name)
             continue
         blocks.append(_render_skill_block(loaded, activation_note(skill_name), task_id))
         loaded_names.append(skill_name)
+        if rendered_paths is not None and skill_path:
+            rendered_paths.append(skill_path)
     return loaded_names, missing, disabled, blocks
 
 
@@ -883,6 +888,7 @@ def build_preloaded_skills_prompt(
 
     if safe_worker_enabled():
         return "", [], list(skill_identifiers)
+    rendered_paths: list[str] = []
     loaded_names, missing, _disabled, prompt_parts = _load_skill_blocks(
         [(raw or "").strip() for raw in skill_identifiers],
         lambda identifier: _load_skill_payload(identifier, task_id=task_id),
@@ -890,9 +896,11 @@ def build_preloaded_skills_prompt(
                       "preloaded. Treat its instructions as active guidance for the duration of this "
                       "session unless the user overrides them.]"),
         task_id, missing_label=_missing_skill_label, disabled_names=_disabled_skill_names(),
-        disabled_as_missing=True, already_loaded=excluded_loaded_names,
+        disabled_as_missing=True, already_loaded=excluded_loaded_names, rendered_paths=rendered_paths,
     )
-    return "\n\n".join(prompt_parts), loaded_names, missing
+    from agent.launch_skills import annotate_launch_skills
+    rendered_names = [name for name in loaded_names if name not in (excluded_loaded_names or set())]
+    return annotate_launch_skills("\n\n".join(prompt_parts), rendered_names, rendered_paths), loaded_names, missing
 
 
 def resolve_auto_load_skills(user_config: dict | None = None) -> list[str]:
@@ -914,6 +922,7 @@ def resolve_auto_load_skills(user_config: dict | None = None) -> list[str]:
 
 def build_auto_load_prompt(
     task_id: str | None = None, user_config: dict | None = None, home_override: Path | None = None,
+    excluded_loaded_paths: set[str] | None = None,
 ) -> tuple[str, list[str], list[str]]:
     """Render ``skills.auto_load`` as fully loaded skill blocks for a new session; returns
     ``(prompt_text, loaded_names, missing)``. Missing and operator-disabled names are reported,
@@ -935,7 +944,7 @@ def build_auto_load_prompt(
             lambda name: (f'[IMPORTANT: The "{name}" skill is auto-loaded via config (skills.auto_load). '
                           "Treat its instructions as active guidance for the duration of this session unless "
                           "the user overrides them.]"),
-            task_id, disabled_names=_disabled_skill_names(), disabled_as_missing=True,
+            task_id, disabled_names=_disabled_skill_names(), disabled_as_missing=True, already_loaded_paths=excluded_loaded_paths,
         )
         return "\n\n".join(prompt_parts), loaded_names, missing
     finally:

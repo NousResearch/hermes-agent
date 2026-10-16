@@ -69,7 +69,7 @@ class LocalSessionPolicy:
     safe_mode: bool = False
     ignore_user_config: bool = False
     # `-s/--skills` blocks rendered once at creation (render_launch_skills): the session's
-    # ephemeral prompt never re-reads the skill files, like the CLI's startup preload.
+    # stable prompt never re-reads the skill files, like the CLI's startup preload.
     skills_prompt: str | None = None
     # Whether creation chose the coding posture (``agent.coding_context: focus`` in a client-named code
     # workspace). A following session replays this decision rather than re-probing its folder each turn: it

@@ -148,7 +148,15 @@ def _restore_plugin_prompt_sections(prompt: str) -> tuple:
     if end < 0:
         return ()
     after_end = end + len(PLUGIN_SECTIONS_END)
-    if not prompt[after_end:].startswith("\n\nConversation started:"):
+    tail = prompt[after_end:]
+    # Current prompts put the profile paragraph between plugin sections and the
+    # timestamp; older persisted prompts have the timestamp directly after them.
+    if tail.startswith("\n\nActive Hermes profile: "):
+        profile, separator, rest = tail[2:].partition("\n\n")
+        if "\n" in profile:
+            return ()
+        tail = separator + rest
+    if not tail.startswith("\n\nConversation started:"):
         return ()
     framed = prompt[start:after_end]
     restored = []
@@ -330,7 +338,11 @@ def _auto_load_parts(agent: Any) -> list[str]:
         try:
             if not is_truthy_value(os.environ.get("HERMES_IGNORE_RULES")):
                 from agent.skill_commands import build_auto_load_prompt
-                result = build_auto_load_prompt(task_id=getattr(agent, "session_id", None), home_override=_agent_home(agent))
+                from agent.launch_skills import preloaded_skill_paths
+                paths = preloaded_skill_paths(getattr(agent, "preloaded_skills_prompt", None))
+                exclusions = {"excluded_loaded_paths": paths} if paths else {}
+                result = build_auto_load_prompt(task_id=getattr(agent, "session_id", None),
+                                                home_override=_agent_home(agent), **exclusions)
             if result[2]:
                 logger.warning("skills.auto_load: skill(s) not found or disabled, skipped: %s", ", ".join(result[2]))
         except Exception:
@@ -754,6 +766,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     stable_parts.extend(_alibaba_identity_part(agent))
     # Pinned skills are per-agent constants (resolved once), so they live in the stable prefix.
     stable_parts.extend(_auto_load_parts(agent))
+    # Explicit startup skills are resolved before construction and cannot change
+    # during the session, so keep them in the reusable stable prefix too.
+    from agent.launch_skills import frame_launch_skills, launch_skills_locator
+    launch_frame = frame_launch_skills(getattr(agent, "preloaded_skills_prompt", None))
+    launch_offset = len(_join_tier(stable_parts)) + 2
+    stable_parts.append(launch_frame)
     # Coding posture: the operating brief stays in the stable prefix. The
     # environment block contains the current cwd/backend and belongs after
     # project context, not ahead of a large shared AGENTS.md block.
@@ -783,7 +801,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # The profile line names this home's path, so it rides in the volatile tier: the stable
     # prefix then stays byte-identical across every profile (and home) on the host.
     volatile_parts.append(_active_profile_line(agent))
-    volatile_parts.append(_timestamp_line(agent))
+    identity_trailer = _timestamp_line(agent)
+    # Keep the locator in the renderer's identity paragraph, before the optional
+    # runtime boundary. No-skill sessions retain their original prompt bytes.
+    if launch_frame:
+        identity_trailer += "\n" + launch_skills_locator(launch_offset)
+    volatile_parts.append(identity_trailer)
     # Keep the renderer-owned runtime anchor after all user/plugin prose so quoted
     # host examples cannot shadow it during persisted-prompt validation.
     if environment_hints:
@@ -834,6 +857,8 @@ def reconstruct_static_prefix(agent: Any, system_message: Optional[str] = None, 
     when the stored prompt literally starts with it; otherwise static stays
     None and the stored bytes are sent untouched.  A failed rebuild is memoized
     per stored prompt so the retry-loop hot path doesn't redo the file I/O."""
+    from agent.launch_skills import restore_launch_skills
+    restore_launch_skills(agent)
     stored = getattr(agent, "_cached_system_prompt", None)
     existing = getattr(agent, "_cached_system_prompt_static", None)
     if (

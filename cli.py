@@ -985,7 +985,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             logger.debug("browser backend notice failed", exc_info=True)
 
     def finalize_preloaded_skills(self) -> None:
-        """Join the background --skills preload and fold it into the prompt (idempotent).
+        """Join the background --skills preload (idempotent).
 
         Raises ``ValueError`` only when EVERY requested skill was unknown.
         """
@@ -1017,7 +1017,7 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             logger.warning("Skipping %s. Continuing with: %s. List available skills with `hermes skills list`.",
                            format_missing_skills(missing_skills), ", ".join(loaded_skills))
         if skills_prompt:
-            self.system_prompt = "\n\n".join(p for p in (self.system_prompt, skills_prompt) if p).strip()
+            self.preloaded_skills_prompt = skills_prompt
         self.preloaded_skills += [name for name in loaded_skills if name not in self.preloaded_skills]
 
     def _show_tool_availability_warnings(self):

@@ -1,4 +1,42 @@
-import type { GroupMessage } from './types'
+import type { GroupChat, GroupMessage } from './types'
+
+/** A token is the title-edit generation at the start of one async read-back.
+ * Track only keys edited while it is in flight, across every gateway. Tokens
+ * retire in finally, so this state cannot accumulate across completed jobs. */
+export function createThreadTitleReadFence() {
+  const active = new Set<Map<string, Set<string>>>()
+
+  return {
+    begin() {
+      const token = new Map<string, Set<string>>()
+
+      active.add(token)
+
+      return token
+    },
+    end(token: Map<string, Set<string>>) { active.delete(token) },
+    record(group: string, ids: string[]) {
+      if (!ids.length) { return }
+
+      for (const token of active) {
+        token.set(group, new Set([...(token.get(group) || []), ...ids]))
+      }
+    },
+    protect(token: Map<string, Set<string>>, current: Record<string, GroupChat>, merged: Record<string, GroupChat>) {
+      for (const [group, ids] of token) {
+        if (!current[group] || !merged[group] || !ids.size) { continue }
+        const titles = current[group].threadTitles || {}
+
+        merged[group] = { ...merged[group], threadTitles: {
+          ...merged[group].threadTitles,
+          ...Object.fromEntries([...ids].flatMap(id => Object.prototype.hasOwnProperty.call(titles, id) ? [[id, titles[id]]] : []))
+        } }
+      }
+
+      return merged
+    }
+  }
+}
 
 export const GROUP_THREAD_TITLE_CHARS = 120
 

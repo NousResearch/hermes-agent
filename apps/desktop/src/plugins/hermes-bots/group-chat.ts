@@ -12,7 +12,7 @@
 import { atom, host } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
-import { boundedThreadTitles, mergeThreadTitleEdits } from './group-thread-titles'
+import { boundedThreadTitles, createThreadTitleReadFence, mergeThreadTitleEdits } from './group-thread-titles'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
 import { displayName } from './labels'
 import { botRosterMeta } from './routing'
@@ -56,6 +56,7 @@ const GROUP_CHAT_SYNC_TEXT_CHARS = 1200
 const GROUP_CHAT_SYNC_TRUNCATION_MARK = '… [truncated]'
 const GROUP_CHAT_SYNC_IMAGE_CHARS = 24000
 let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
+const threadTitleReadFence = createThreadTitleReadFence()
 
 /** One room inside the bounded ui_meta projection: a compacted log plus the
  *  identity fields, without any of `GroupChat`'s runtime/orchestration state. */
@@ -490,6 +491,14 @@ export function mergeGroupChatSyncSnapshots(
     return keys
   }
 
+  const resolvedTitleEdits: Record<string, string[]> = {}
+
+  for (const [label, ids] of Object.entries(titleEdits)) {
+    for (const key of keysFor(label, localNorm)) {
+      resolvedTitleEdits[key] = [...new Set([...(resolvedTitleEdits[key] || []), ...ids])]
+    }
+  }
+
   const changed = new Set<string>()
 
   for (const label of changedRooms) {
@@ -601,7 +610,7 @@ export function mergeGroupChatSyncSnapshots(
         ...(Number(localRoom?.revision || 0) >= remoteRevision
           ? { ...remoteRoom?.threadTitles, ...localRoom?.threadTitles }
           : { ...localRoom?.threadTitles, ...remoteRoom?.threadTitles }),
-        ...Object.fromEntries((titleEdits[key] || []).flatMap(id =>
+        ...Object.fromEntries((resolvedTitleEdits[key] || []).flatMap(id =>
           Object.prototype.hasOwnProperty.call(localRoom?.threadTitles || {}, id)
             ? [[id, localRoom!.threadTitles![id]]] : []))
       },
@@ -1154,6 +1163,7 @@ async function flushGroupChatServerSync(connectionId?: string) {
   const job = groupChatSyncPendingByConnection.get(id)!
   groupChatSyncPendingByConnection.delete(id)
   groupChatSyncInFlightConnections.add(id)
+  const titleFence = threadTitleReadFence.begin()
 
   try {
     const remoteState = await groupChatRemoteSnapshot(job)
@@ -1186,6 +1196,7 @@ async function flushGroupChatServerSync(connectionId?: string) {
           tombstones: groupChatTombstones
         })
 
+        threadTitleReadFence.protect(titleFence, $groupChats.get(), mergedRooms)
         $groupChats.set(mergedRooms)
         await persistGroupChatRooms(mergedRooms)
       }
@@ -1227,6 +1238,10 @@ async function flushGroupChatServerSync(connectionId?: string) {
       throw new Error('Gateway did not advance group chat ui_meta revision')
     }
 
+    // This target acknowledged this job's title intent. A failed read-back
+    // may retry room reconciliation, but must not replay the consumed edit.
+    // Newer pending jobs and other targets retain their own intent maps.
+    job.titleEdits = {}
     const confirmedState = await groupChatRemoteSnapshot(job)
 
     if (remoteState.supportsCas && confirmedState.revision < writeRevision) {
@@ -1242,6 +1257,7 @@ async function flushGroupChatServerSync(connectionId?: string) {
         tombstones: groupChatTombstones
       })
 
+      threadTitleReadFence.protect(titleFence, $groupChats.get(), mergedRooms)
       $groupChats.set(mergedRooms)
       await persistGroupChatRooms(mergedRooms)
     }
@@ -1275,6 +1291,7 @@ async function flushGroupChatServerSync(connectionId?: string) {
       }
     }
   } finally {
+    threadTitleReadFence.end(titleFence)
     groupChatSyncInFlightConnections.delete(id)
 
     if (groupChatSyncPendingByConnection.has(id) && !groupChatSyncRetryTimers.has(id) && !groupChatSyncDisposed) {
@@ -1625,6 +1642,8 @@ export function updateGroupChat(
     }
   })
 
+  const changedTitleIds = Object.keys(next.threadTitles || {}).filter(id => next.threadTitles![id] !== previousTitles[id])
+  threadTitleReadFence.record(group, changedTitleIds)
   const bounded = trimGroupChatLog(next.log, next.watermarks)
   next.log = bounded.log
   next.watermarks = bounded.watermarks
@@ -1686,8 +1705,7 @@ export function updateGroupChat(
     scheduleGroupChatServerSync(all, {
       changedRooms: [group],
       titleEdits: {
-        [groupChatRoomKey(group, next)]: Object.keys(next.threadTitles || {}).filter(id =>
-          next.threadTitles![id] !== previousTitles[id])
+        [group]: changedTitleIds
       }
     })
   }

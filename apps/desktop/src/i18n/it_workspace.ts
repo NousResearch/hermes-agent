@@ -891,7 +891,7 @@ export const itWorkspace = {
       heartbeatEveryHours: (hours: number) => `ogni ${hours} h`,
       heartbeatEverySeconds: (seconds: number) => `ogni ${seconds} s`,
       heartbeatNext: (time: string) => `prossimo ${time}`,
-      heartbeatDueWaitingForIdle: 'in sospeso: in attesa di inattività',
+      dueWaitingForIdle: 'da eseguire — in attesa che l’agente sia libero',
       heartbeatActions: 'Azioni del heartbeat',
       pauseHeartbeat: 'Metti in pausa il heartbeat',
       resumeHeartbeat: 'Riprendi il heartbeat',

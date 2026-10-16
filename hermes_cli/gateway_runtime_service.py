@@ -149,7 +149,7 @@ def _systemd(home: Path, deadline: float) -> ExistingService | None:
     return found[0] if found else None
 
 
-def _s6(home: Path) -> ExistingService | None:
+def _s6(home: Path, deadline: float) -> ExistingService | None:
     """Find the container gateway slot that owns ``home``.
 
     TUI clients call ``ensure_gateway_runtime`` inside the Docker image too.
@@ -261,10 +261,8 @@ def _no_supervisor(home: Path, deadline: float) -> None:
 def discover_existing_gateway_service(home: Path, *, deadline: float) -> ExistingService | None:
     from hermes_cli.service_manager import _s6_running
 
-    if _s6_running():
-        return _s6(home)
-    backend = {"linux": _systemd, "darwin": _launchd, "win32": _windows,
-               "android": _no_supervisor}.get(sys.platform)
+    backend = _s6 if _s6_running() else {"linux": _systemd, "darwin": _launchd, "win32": _windows,
+                                         "android": _no_supervisor}.get(sys.platform)
     if backend is None:
         raise RuntimeStartError("unsupported_supervisor_platform")
     try:
@@ -283,6 +281,8 @@ def start_existing_gateway_service(service: ExistingService, *, deadline: float)
         from hermes_cli.service_manager import S6ServiceManager
         try:
             S6ServiceManager().start(service.start_argv[0])
+        except subprocess.TimeoutExpired:
+            raise TimeoutError from None
         except (OSError, RuntimeError, ValueError) as exc:
             raise RuntimeStartError("service_start_failed") from exc
         return

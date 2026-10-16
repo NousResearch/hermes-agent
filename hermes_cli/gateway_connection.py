@@ -14,6 +14,7 @@ import asyncio
 import logging
 import queue
 import threading
+import time
 
 from hermes_cli.gateway_client import DEFAULT_RPC_TIMEOUT, GatewayClientError
 
@@ -21,6 +22,17 @@ logger = logging.getLogger(__name__)
 
 DISCONNECTED = ("Gateway disconnected; turn outcome is unknown. Resume the printed session ID to check "
                 "whether it completed or was interrupted; do not resend the work.")
+# A request refused before it reached any socket: nothing is in doubt, so never the copy above.
+NOT_SENT = "Gateway disconnected before the request was sent; nothing was sent."
+# Resume refusals meaning the session itself is gone for this viewer (gateway/session_controls).
+_GONE = frozenset({"not_found", "permission_denied", "profile_mismatch"})
+
+
+def lost_before(frame, epoch) -> bool:
+    """``frame`` is a transport error from a connection older than ``epoch``: a reconnect replaced it,
+    so it is no outcome of anything submitted on ``epoch``."""
+    lost = getattr(frame, "connection_epoch", None)
+    return isinstance(frame, Exception) and lost is not None and epoch is not None and lost < epoch
 
 
 class SessionState:
@@ -80,6 +92,9 @@ class GatewayConnection:
         self.events: queue.Queue = queue.Queue()
         self.states: dict[str, SessionState] = {}
         self.client = None
+        # (client, epoch) of the open socket, swapped as one: a caller never pairs a socket with
+        # another life's epoch (``call_tagged``).
+        self._live = None
         self.loop = None
         self._thread = None
         self._ready = threading.Event()
@@ -87,6 +102,10 @@ class GatewayConnection:
         self._stop = None
         self._start_lock = threading.Lock()
         self.closed = False
+        # close() ends the viewer; a gateway hang-up (restart, idle exit, crash) lets the next call
+        # dial again. Each connect bumps ``epoch``, and its loss is tagged with it (``lost_before``).
+        self._detached = False
+        self.epoch = 0
         # /bg and /btw answers by task id (hermes_cli/gateway_side.py); created by whichever of the
         # waiter or the frame comes first, so an answer faster than the verb's reply is kept.
         self._side: dict[str, queue.Queue] = {}
@@ -95,9 +114,15 @@ class GatewayConnection:
     @classmethod
     def shared(cls):
         with cls._shared_lock:
-            if cls._shared is None or cls._shared.closed:
+            if cls._shared is None or cls._shared.final:
                 cls._shared = cls()
             return cls._shared
+
+    @property
+    def final(self) -> bool:
+        """No call dials again: the viewer closed it, or its first connect failed. ``closed`` is also
+        true while the gateway is hung up, which the next ``call()``/``start()`` redials."""
+        return self._detached or (self._error is not None and not self.epoch)
 
     def state(self, session_id) -> SessionState:
         state = self.states.get(session_id)
@@ -107,17 +132,36 @@ class GatewayConnection:
 
     # -- lifecycle ---------------------------------------------------------------------------
     def start(self, timeout=90):
-        with self._start_lock:
-            if self._thread is not None:
-                if self._error is not None:
-                    raise self._error
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._start_lock:
+                if self.final:
+                    if self._error is not None:
+                        raise self._error
+                    return
+                thread = self._thread
+                if thread is None or not thread.is_alive():
+                    from agent.memory_provider import spawn_context_thread
+
+                    if thread is not None:
+                        # The gateway hung up, or the last redial failed: dial again (``connect_gateway``
+                        # starts a gateway when none is running) and resubscribe this viewer's sessions.
+                        self._error = None
+                        self._ready.clear()
+                        self.closed = False
+                    thread = self._thread = spawn_context_thread(self._run, name="hermes-gateway-loop")
+                    thread.start()
+            # Every caller waits out a dial in progress, its own or another thread's.
+            if not self._ready.wait(max(deadline - time.monotonic(), 0)):
+                raise GatewayClientError("Gateway connection timed out; no local fallback")
+            if self._error is not None:
+                raise self._error
+            if self.client is not None or self.final:
                 return
-            self._thread = threading.Thread(target=self._run, name="hermes-gateway-loop", daemon=True)
-            self._thread.start()
-        if not self._ready.wait(timeout):
-            raise GatewayClientError("Gateway connection timed out; no local fallback")
-        if self._error is not None:
-            raise self._error
+            # Hung up right after that dial: let its loop end, then dial again.
+            thread.join(max(deadline - time.monotonic(), 0))
+            if time.monotonic() >= deadline:
+                raise GatewayClientError("Gateway connection timed out; no local fallback")
 
     def _run(self):
         try:
@@ -139,7 +183,11 @@ class GatewayConnection:
             connect = connect_gateway
         try:
             async with connect() as client:
+                if self.epoch:
+                    await self._resubscribe(client)
+                self.epoch += 1
                 self.client = client
+                self._live = (client, self.epoch)
                 self._ready.set()
                 pump = asyncio.create_task(self._pump(client))
                 stop = asyncio.create_task(self._stop.wait())
@@ -151,15 +199,36 @@ class GatewayConnection:
                 self._error = exc if isinstance(exc, GatewayClientError) else GatewayClientError(
                     f"Gateway connection failed; no local fallback ({type(exc).__name__})")
             else:
-                self.events.put(GatewayClientError(DISCONNECTED))
+                self._put_loss(GatewayClientError(DISCONNECTED))
         finally:
             self.client = None
+            self._live = None
+
+    def _put_loss(self, error):
+        error.connection_epoch = self.epoch
+        self.events.put(error)
+
+    async def _resubscribe(self, client):
+        """A new socket is a new viewer: the gateway streams a session's frames only to connections
+        that resumed it. Resume each session this viewer had open; one gone meanwhile is dropped. Any
+        other failure fails the reconnect: ready without the subscription, every prompt is refused on a
+        live socket that never redials, while a failed redial is retried by the next call."""
+        for session_id, state in list(self.states.items()):
+            if state.subscription_id is None:
+                continue
+            try:
+                state.adopt_snapshot(await client.rpc("session.resume", session_id=session_id))
+            except GatewayClientError as exc:
+                if str(exc) not in _GONE:
+                    raise
+                logger.debug("session.resume %s after reconnect: %s", session_id, exc)
+                state.subscription_id = None
 
     async def _pump(self, client):
         while True:
             frame = await client.events.get()
             if isinstance(frame, Exception):
-                self.events.put(frame)
+                self._put_loss(frame)
                 return
             params = frame.get("params") if isinstance(frame, dict) else None
             if isinstance(params, dict) and self._take_side(params):
@@ -190,6 +259,7 @@ class GatewayConnection:
             self._side.pop(task_id, None)
 
     def close(self):
+        self._detached = True
         loop, stop = self.loop, self._stop
         if loop is not None and stop is not None and not self.closed:
             try:
@@ -217,16 +287,22 @@ class GatewayConnection:
         return True
 
     def call(self, method, *, timeout=None, **params):
+        return self.call_tagged(method, timeout=timeout, **params)[0]
+
+    def call_tagged(self, method, *, timeout=None, **params):
+        """``(result, epoch)``: the epoch of the socket that carried the request, so work it admitted
+        is tied to that gateway life even if another caller redials before this one reads ``epoch``."""
         if self._thread is not None and threading.current_thread() is self._thread:
             raise RuntimeError("GatewayConnection.call() on the gateway loop thread would deadlock")
         self.start()
-        client, loop = self.client, self.loop
-        if client is None or loop is None:
-            raise GatewayClientError(DISCONNECTED)
+        live, loop = self._live, self.loop
+        if live is None or loop is None:
+            raise GatewayClientError(NOT_SENT)
+        client, epoch = live
         budget = DEFAULT_RPC_TIMEOUT if timeout is None else timeout
         future = asyncio.run_coroutine_threadsafe(client.rpc(method, _timeout=budget, **params), loop)
         try:
-            return future.result(budget + 5)
+            return future.result(budget + 5), epoch
         except TimeoutError as exc:
             future.cancel()
             raise GatewayClientError(f"Gateway did not answer {method}") from exc

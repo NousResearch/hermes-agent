@@ -719,23 +719,26 @@ def _enabled_config_names() -> set[str]:
 def _not_connected(wanted: set[str], scope) -> set[str]:
     with _core._lock:
         # A parked task stays registered (it self-probes) but serves nothing, as does one whose connect
-        # recorded an error since its last success.
+        # recorded an error since its last success, and a lazy registration whose first-use connect failed
+        # (a timed-out one leaves no task; one that never started has no error).
         serving_nothing = {name for name in wanted
-                           if (key := _resolve_server_key(name, scope, current=False)) in _core._servers
-                           and (key in _core._server_connect_errors
-                                or getattr(_core._servers[key], "_park_reason", None) is not None)}
+                           if ((key := _resolve_server_key(name, scope, current=False)) in _core._servers
+                               and (key in _core._server_connect_errors
+                                    or getattr(_core._servers[key], "_park_reason", None) is not None))
+                           or (key in _core._lazy_server_configs and key in _core._server_connect_errors)}
     return _unregistered(wanted, scope) | serving_nothing
 
 
 def mcp_servers_not_connected() -> list[str]:
     """Enabled ``mcp_servers`` entries the current registry scope has no live, connecting or lazy
-    registration for, in connect cooldown or not, or whose registration is parked or failed its
-    connect: after a reload, the servers that did not connect."""
+    registration for, in connect cooldown or not, or whose registration (lazy included) is parked or
+    failed its connect: after a reload, the servers that did not connect."""
     return sorted(_not_connected(_enabled_config_names(), _core._mcp_registry_scope()))
 
 
 def mcp_servers_ready() -> list[str]:
-    """Enabled ``mcp_servers`` entries the current registry scope serves now: live or lazily registered."""
+    """Enabled ``mcp_servers`` entries the current registry scope serves now: live, or lazily registered
+    and not failed on its first use."""
     wanted, scope = _enabled_config_names(), _core._mcp_registry_scope()
     with _core._lock:
         registered = {name for name in wanted

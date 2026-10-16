@@ -323,6 +323,36 @@ async def test_a_server_disabled_after_the_chat_picked_it_stops_on_resume_and_on
         store.close_all_db_handles()
 
 
+def test_a_lazy_server_whose_first_connect_failed_is_not_ready(tmp_path, monkeypatch):
+    """A lazy (schema-cache) registration that never started is ready. Once its first-use connect fails it keeps
+    the registration (a later use retries it) but serves nothing: a missing executable parks a registered
+    task, and a server that never answers its handshake times out and leaves no task at all."""
+    import sys
+    from tools import mcp_tool, mcp_tool_discovery as discovery
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from tools.mcp_tool_scope import _server_key
+    lazy = {'missing': {'command': str(tmp_path / 'no-such-mcp'), 'lazy': True, 'connect_timeout': 5},
+            'silent': {'command': sys.executable, 'args': ['-c', 'import sys; sys.stdin.read()'], 'lazy': True,
+                       'connect_timeout': 1}}
+    keys = {name: _server_key(name) for name in lazy}
+    monkeypatch.setattr(discovery._config, '_load_mcp_config', lambda: lazy)
+    for name, config in lazy.items():
+        monkeypatch.setitem(mcp_tool._lazy_server_configs, keys[name], config)
+    try:
+        assert (discovery.mcp_servers_ready(), discovery.mcp_servers_not_connected()) == (['missing', 'silent'], [])
+        for name, key in keys.items():
+            assert discovery._ensure_lazy_server_connected(name) is False
+            assert key in mcp_tool._lazy_server_configs and key in mcp_tool._server_connect_errors, name
+        assert keys['silent'] not in mcp_tool._servers
+        assert (discovery.mcp_servers_ready(), discovery.mcp_servers_not_connected()) == ([], ['missing', 'silent'])
+    finally:
+        shutdown_mcp_servers()
+        for state in (mcp_tool._server_connect_errors, mcp_tool._server_connect_failures,
+                      mcp_tool._server_connect_retry_after):
+            for key in keys.values():
+                state.pop(key, None)
+
+
 def test_not_connected_names_a_configured_server_in_cooldown(monkeypatch):
     from tools import mcp_tool, mcp_tool_discovery as discovery
     from tools.mcp_tool_scope import _server_key

@@ -82,6 +82,26 @@ def test_packaged_gateway_bootstrap_boots_the_root_it_is_given_or_names_why_it_c
     assert "unavailable" not in booted.stderr
 
 
+def _store_python_child(script: str, *args: str) -> subprocess.CompletedProcess:
+    """The helper on PM's store Python: a non-venv interpreter living under the runtime dir."""
+    child_env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+    child_env.update(PYTHONPATH=str(_ROOT), HERMES_PYTHON_SRC_ROOT=str(_ROOT),
+                     HERMES_RUNTIME_DIR=str(Path(sys.base_prefix).resolve().parent))
+    python = getattr(sys, "_base_executable", sys.executable)
+    return subprocess.run([python, "-S", str(_SCRIPTS / script), *args], cwd=_ROOT, env=child_env,
+                          capture_output=True, text=True, timeout=60, check=False)
+
+
+def test_store_python_without_a_generation_names_the_remedy():
+    """No committed generation is the one state no retry fixes: the client stops retrying and
+    shows the verdict once, so it must end with the user's next step, not leave a dead TUI."""
+    bootstrap = _store_python_child("gateway_bootstrap.py", "--start")
+    lines = bootstrap.stderr.strip().splitlines()
+    assert bootstrap.returncode == 1
+    assert lines[0] == "gateway unavailable: bootstrap_dependencies", bootstrap.stderr
+    assert lines[-1] == "gateway unavailable: run `hermes pm repair`, then restart the TUI", bootstrap.stderr
+
+
 def test_unreadable_install_state_is_retried_not_terminal():
     """An I/O error on the install state can be one-off: it takes the ordinary failure path the
     client retries, never the terminal verdict that ends the TUI's gateway for its lifetime."""

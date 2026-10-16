@@ -57,8 +57,8 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         "required_env": ("MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN", "MATRIX_USER_ID"),
     },
     "signal": {
-        "name": "Signal", "description": "Connect through a signal-cli REST bridge.",
-        "docs_url": "https://github.com/bbernhard/signal-cli-rest-api",
+        "name": "Signal", "description": "Connect through the native signal-cli HTTP daemon.",
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/signal",
         "env_vars": ("SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT", "SIGNAL_ALLOWED_USERS"),
         "required_env": ("SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT"),
     },

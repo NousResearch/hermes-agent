@@ -2928,6 +2928,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
         message_id: 'queued-1700000000000-source',
         queued: true,
         session_id: RUNTIME_SESSION_ID,
+        submission_id: expect.any(String),
         submitted_at: 1_700_000_000,
         text: 'queued message'
       },
@@ -3165,7 +3166,10 @@ describe('useComposerQueue source-session retention', () => {
           throw new Error('request timed out: prompt.submit')
         }
 
-        return { status: 'duplicate' } as never
+        // The canonical admission seam answers deduplication as terminal +
+        // outcome 'duplicate': the already-owned id is acknowledged, never a
+        // second turn.
+        return { admission_id: sourceId, status: 'terminal', outcome: 'duplicate' } as never
       }
 
       return {} as never
@@ -3245,6 +3249,7 @@ describe('useComposerQueue source-session retention', () => {
         message_id: entry.id,
         queued: true,
         session_id: 'rt-a-stale',
+        submission_id: entry.id,
         submitted_at: entry.queuedAt / 1000,
         text: entry.text
       },
@@ -3252,6 +3257,7 @@ describe('useComposerQueue source-session retention', () => {
         message_id: entry.id,
         queued: true,
         session_id: 'rt-a-abandoned',
+        submission_id: entry.id,
         submitted_at: entry.queuedAt / 1000,
         text: entry.text
       },
@@ -3259,6 +3265,7 @@ describe('useComposerQueue source-session retention', () => {
         message_id: entry.id,
         queued: true,
         session_id: 'rt-a-recovered',
+        submission_id: entry.id,
         submitted_at: entry.queuedAt / 1000,
         text: entry.text
       }

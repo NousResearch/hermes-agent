@@ -1,7 +1,7 @@
 ---
 name: xurl
-description: "X/Twitter via xurl CLI: post, search, DM, media, v2 API."
-version: 1.1.1
+description: "X/Twitter via xurl CLI: raw post search, posting, DM, media."
+version: 1.1.3
 author: xdevplatform + openclaw + Hermes Agent
 license: MIT
 platforms: [linux, macos]
@@ -20,7 +20,7 @@ metadata:
 
 Use this skill for:
 - posting, replying, quoting, deleting posts
-- searching posts and reading timelines/mentions
+- searching for raw posts (actual post JSON with IDs you can engage with) and reading timelines/mentions
 - liking, reposting, bookmarking
 - following, unfollowing, blocking, muting
 - direct messages
@@ -182,6 +182,8 @@ xurl delete 1234567890
 ```
 
 ### Reading & Search
+
+`xurl search` queries the X index as your authenticated account and returns raw post objects — IDs, authors, full text — so results can be immediately engaged with (reply, like, repost, quote). Use it when you need the actual posts rather than a summarized answer about a topic.
 
 ```bash
 xurl read 1234567890
@@ -389,12 +391,14 @@ xurl --app staging /2/users/me             # one-off against staging
 ## Agent Workflow
 
 1. Verify prerequisites: `xurl --help` and `xurl auth status`.
-2. **Check default app has credentials.** Parse the `auth status` output. The default app is marked with `▸`. If the default app shows `oauth2: (none)` but another app has a valid oauth2 user, tell the user to run `xurl auth default <that-app>` to fix it. This is the most common setup mistake — the user added an app with a custom name but never set it as default, so xurl keeps trying the empty `default` profile.
-3. If auth is missing entirely, stop and direct the user to the "One-Time User Setup" section — do NOT attempt to register apps or pass secrets yourself.
-4. Start with a cheap read (`xurl whoami`, `xurl user @handle`, `xurl search ... -n 3`) to confirm reachability.
-5. Confirm the target post/user and the user's intent before any write action (post, reply, like, repost, DM, follow, block, delete).
-6. Use JSON output directly — every response is already structured.
-7. Never paste `~/.xurl` contents back into the conversation.
+2. Before using `xurl search`, check intent. Reach for it when the task needs actual post objects, authenticated account context, or leads into an X write action — it is the right surface when the user wants posts they can engage with, not just a summary of a topic.
+3. **Check default app has credentials.** Parse the `auth status` output. The default app is marked with `▸`. If the default app shows `oauth2: (none)` but another app has a valid oauth2 user, tell the user to run `xurl auth default <that-app>` to fix it. This is the most common setup mistake — the user added an app with a custom name but never set it as default, so xurl keeps trying the empty `default` profile.
+4. If auth is missing entirely, stop and direct the user to the "One-Time User Setup" section — do NOT attempt to register apps or pass secrets yourself.
+5. Start with a cheap read (`xurl whoami`, `xurl user @handle`, `xurl search ... -n 3`) to confirm reachability.
+6. Confirm the target post/user and the user's intent before any write action (post, reply, like, repost, DM, follow, block, delete).
+7. Only the `xurl` command output (or the raw X API response) proves that a state-changing X action happened. Never report a write as done based on any other source — search results, summaries, or prior context.
+8. Use JSON output directly — every response is already structured.
+9. Never paste `~/.xurl` contents back into the conversation.
 
 ---
 

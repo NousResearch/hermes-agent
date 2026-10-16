@@ -52,11 +52,18 @@ hermes skills uninstall <skill-name>
 
 | 技能 | 描述 |
 |-------|-------------|
-| [**blender-mcp**](/user-guide/skills/optional/creative/creative-blender-mcp) | 通过 socket 连接 blender-mcp 插件，直接从 Hermes 控制 Blender。创建 3D 对象、材质、动画，并运行任意 Blender Python（bpy）代码。适用于用户希望在 Blender 中创建或修改任何内容的场景。 |
+| [**audiocraft-audio-generation**](/user-guide/skills/optional/creative/creative-audiocraft-audio-generation) | AudioCraft：MusicGen 文本转音乐、AudioGen 文本转音效。 |
 | [**concept-diagrams**](/user-guide/skills/optional/creative/creative-concept-diagrams) | 生成扁平、极简、支持亮色/暗色模式的 SVG 图表，输出为独立 HTML 文件，采用统一的教育视觉语言，包含 9 种语义色阶、句首大写排版及自动暗色模式。最适合教育和说明类内容。 |
+| [**heartmula**](/user-guide/skills/optional/creative/creative-heartmula) | HeartMuLa：根据歌词 + 标签生成类 Suno 风格的歌曲。 |
 | [**hyperframes**](/user-guide/skills/optional/creative/creative-hyperframes) | 使用 HyperFrames 创建基于 HTML 的视频合成、动态标题卡、社交叠层、字幕访谈视频、音频响应视觉效果及着色器转场。HTML 是视频的唯一来源。适用于用户希望制作任何视频内容的场景。 |
 | [**kanban-video-orchestrator**](/user-guide/skills/optional/creative/creative-kanban-video-orchestrator) | 规划、搭建并监控由 Hermes Kanban 支撑的多 agent 视频制作流水线。适用于用户希望制作任何类型视频的场景 — 叙事影片、产品/营销视频、MV、解说视频、ASCII/终端艺术、抽象/生成式循环等。 |
 | [**meme-generation**](/user-guide/skills/optional/creative/creative-meme-generation) | 通过选取模板并使用 Pillow 叠加文字来生成真实的 meme 图片，输出实际的 .png 文件。 |
+
+## data-science
+
+| 技能 | 描述 |
+|-------|-------------|
+| [**jupyter-notebook**](/user-guide/skills/optional/data-science/data-science-jupyter-notebook) | 通过实时 Jupyter kernel（hamelnb）进行迭代式 Python 开发。 |
 
 ## devops
 
@@ -89,6 +96,7 @@ hermes skills uninstall <skill-name>
 | [**excel-author**](/user-guide/skills/optional/finance/finance-excel-author) | 使用 openpyxl 无头构建可审计的 Excel 工作簿 — 蓝/黑/绿单元格规范、公式优先于硬编码、命名区域、余额校验、敏感性分析表。适用于财务模型、审计输出、对账。 |
 | [**lbo-model**](/user-guide/skills/optional/finance/finance-lbo-model) | 在 Excel 中构建杠杆收购模型 — 资金来源与用途、债务计划、现金清偿、退出倍数、IRR/MOIC 敏感性分析。与 excel-author 配合使用。适用于 PE 筛选、主导方案估值或 pitch 中的示意性 LBO。 |
 | [**merger-model**](/user-guide/skills/optional/finance/finance-merger-model) | 在 Excel 中构建增厚/摊薄（并购）模型 — 合并后利润表、协同效应、融资结构、每股收益影响。与 excel-author 配合使用。适用于并购 pitch、董事会材料或交易评估。 |
+| [**polymarket**](/user-guide/skills/optional/finance/finance-polymarket) | 查询 Polymarket：市场、价格、订单簿、历史数据。 |
 | [**pptx-author**](/user-guide/skills/optional/finance/finance-pptx-author) | 使用 python-pptx 无头构建 PowerPoint 演示文稿。与 excel-author 配合，制作每个数字均可追溯至工作簿单元格的模型支撑型幻灯片。适用于 pitch deck、投委会备忘录、盈利说明。 |
 | [**stocks**](/user-guide/skills/optional/finance/finance-stocks) | 通过 Yahoo 获取股票报价、历史数据、搜索、对比及加密货币行情。 |
 
@@ -136,6 +144,7 @@ hermes skills uninstall <skill-name>
 | [**pytorch-lightning**](/user-guide/skills/optional/mlops/mlops-pytorch-lightning) | 高层 PyTorch 框架，提供 Trainer 类、自动分布式训练（DDP/FSDP/DeepSpeed）、回调系统及极少样板代码。同一套代码可从笔记本扩展至超算。适用于希望训练循环简洁、同时保留完整 PyTorch 灵活性的场景。 |
 | [**qdrant-vector-search**](/user-guide/skills/optional/mlops/mlops-qdrant) | 高性能向量相似性搜索引擎，适用于 RAG 和语义搜索。适用于构建需要快速近邻搜索、带过滤的混合搜索或基于 Rust 高性能的可扩展向量存储的生产 RAG 系统。 |
 | [**sparse-autoencoder-training**](/user-guide/skills/optional/mlops/mlops-saelens) | 提供使用 SAELens 训练和分析稀疏自编码器（SAE）的指导，将神经网络激活分解为可解释特征。适用于发现可解释特征、分析叠加现象或研究神经网络内部结构的场景。 |
+| [**segment-anything-model**](/user-guide/skills/optional/mlops/mlops-models-segment-anything-model) | SAM：通过点、框、掩码进行零样本图像分割。 |
 | [**simpo-training**](/user-guide/skills/optional/mlops/mlops-simpo) | 用于 LLM 对齐的简单偏好优化（SimPO）。无需参考模型的 DPO 替代方案，性能更优（在 AlpacaEval 2.0 上提升 +6.4 分）。比 DPO 更高效。适用于希望简化偏好对齐流程的场景。 |
 | [**slime-rl-training**](/user-guide/skills/optional/mlops/mlops-slime) | 提供使用 slime（Megatron+SGLang 框架）进行 LLM RL 后训练的指导。适用于训练 GLM 模型、实现自定义数据生成工作流或需要紧密 Megatron-LM 集成以进行 RL 扩展的场景。 |
 | [**stable-diffusion-image-generation**](/user-guide/skills/optional/mlops/mlops-stable-diffusion) | 通过 HuggingFace Diffusers 使用 Stable Diffusion 模型进行最先进的文本到图像生成。适用于从文本 prompt 生成图像、图像到图像转换、图像修复或构建自定义扩散流水线的场景。 |
@@ -192,6 +201,12 @@ hermes skills uninstall <skill-name>
 | 技能 | 描述 |
 |-------|-------------|
 | [**page-agent**](/user-guide/skills/optional/web-development/web-development-page-agent) | 将 alibaba/page-agent 嵌入您自己的 Web 应用 — 一个纯 JavaScript 页内 GUI agent，以单个 `<script>` 标签或 npm 包形式提供，让您网站的终端用户可以用自然语言驱动 UI（如"点击登录，填写用户名..."）。 |
+
+## yuanbao
+
+| 技能 | 描述 |
+|-------|-------------|
+| [**yuanbao**](/user-guide/skills/optional/yuanbao/yuanbao-yuanbao) | 元宝（Yuanbao）群组：@提及用户、查询信息/成员。 |
 
 ---
 

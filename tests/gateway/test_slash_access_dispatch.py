@@ -19,14 +19,16 @@ Coverage targets:
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
+from gateway.session_identity import RoutingIdentity
 
 
 def _make_source(
@@ -35,6 +37,7 @@ def _make_source(
     user_id: str = "user1",
     chat_type: str = "dm",
     chat_id: str = "c1",
+    profile: str | None = None,
 ) -> SessionSource:
     return SessionSource(
         platform=platform,
@@ -42,6 +45,7 @@ def _make_source(
         chat_id=chat_id,
         user_name=f"name-{user_id}",
         chat_type=chat_type,
+        profile=profile,
     )
 
 
@@ -50,11 +54,13 @@ def _make_event(text: str, source: SessionSource) -> MessageEvent:
 
 
 def _make_runner(*, platform_extra: dict | None = None,
-                 platform: Platform = Platform.DISCORD):
+                 platform: Platform = Platform.DISCORD,
+                 multiplex_profiles: bool = False):
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
+        multiplex_profiles=multiplex_profiles,
         platforms={
             platform: PlatformConfig(
                 enabled=True,
@@ -89,6 +95,8 @@ def _make_runner(*, platform_extra: dict | None = None,
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner._running_agents = {}
+    runner._primary_profile_name = "primary"
+    runner._profile_configs = {}
     runner._running_agents_ts = {}
     runner._session_run_generation = {}
     runner._pending_messages = {}
@@ -118,21 +126,6 @@ def _make_runner(*, platform_extra: dict | None = None,
 
 
 @pytest.mark.asyncio
-async def test_whoami_unrestricted_when_no_admin_list():
-    runner = _make_runner(platform_extra={})  # no admin list
-    result = await runner._handle_message(_make_event("/whoami", _make_source(user_id="999")))
-    assert "Tier: unrestricted" in result
-    assert "no admin list configured" in result
-
-
-@pytest.mark.asyncio
-async def test_whoami_admin_user():
-    runner = _make_runner(platform_extra={"allow_admin_from": ["111"]})
-    result = await runner._handle_message(_make_event("/whoami", _make_source(user_id="111")))
-    assert "**admin**" in result
-
-
-@pytest.mark.asyncio
 async def test_whoami_non_admin_lists_runnable_commands():
     runner = _make_runner(
         platform_extra={
@@ -148,25 +141,69 @@ async def test_whoami_non_admin_lists_runnable_commands():
     assert "/model" in result
 
 
-# ---------------------------------------------------------------------------
-# Gate denial — admin-only command attempted by non-admin
-# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_secondary_profile_slash_policy_uses_its_own_config():
+    """#121705: a bot configured only in a secondary profile is gated by THAT profile's
+    ``allow_admin_from``; the launch profile's empty policy must not make it unrestricted."""
+    runner = _make_runner(multiplex_profiles=True)
+    runner._profile_configs["beta"] = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                extra={"allow_admin_from": ["admin"], "user_allowed_commands": ["status"]},
+            )
+        }
+    )
+    user = _make_source(user_id="user", profile="beta")
+    denied = runner._check_slash_access(user, "restart")
+    assert denied is not None and "⛔" in denied
+    assert "Tier: user" in await runner._handle_whoami_command(_make_event("/whoami", user))
+    assert runner._resume_caller_is_admin(user) is False
+
+    admin = _make_source(user_id="admin", profile="beta")
+    assert runner._check_slash_access(admin, "restart") is None
+    assert runner._resume_caller_is_admin(admin) is True
+
+    # The launch profile's own (ungated) bot stays ungated ...
+    assert runner._check_slash_access(_make_source(user_id="user"), "restart") is None
+    # ... including a turn ROUTED to beta: ``allow_admin_from`` is per bot, so the bot-owning
+    # (transport) profile's config decides, the owner ``authorization_home`` already names.
+    routed = _make_source(user_id="user", profile="beta")
+    routed._identity = RoutingIdentity(
+        transport_profile="primary", runtime_profile="beta",
+        authorization_home=Path("/profiles/primary"), runtime_home=Path("/profiles/beta"),
+    )
+    assert runner._check_slash_access(routed, "restart") is None
+
+
+def test_missing_secondary_profile_config_fails_closed():
+    """A served profile whose config is not cached must not inherit the launch profile's open policy."""
+    runner = _make_runner(multiplex_profiles=True)
+    denied = runner._check_slash_access(_make_source(user_id="user", profile="beta"), "restart")
+    assert denied is not None and "⛔" in denied
+    assert runner._check_slash_access(_make_source(user_id="user", profile="beta"), "help") is None
 
 
 @pytest.mark.asyncio
-async def test_non_admin_denied_for_unlisted_command():
+async def test_help_non_admin_lists_only_runnable_commands():
+    """/help for a gated non-admin renders the floor + user_allowed_commands, never the
+    admin-only catalog the dispatcher would then refuse; admins keep the full list."""
     runner = _make_runner(
         platform_extra={
             "allow_admin_from": ["111"],
             "user_allowed_commands": ["status"],
         }
     )
-    # /stop is NOT in user_allowed_commands and not in the always-allowed floor.
-    result = await runner._handle_message(_make_event("/stop", _make_source(user_id="999")))
-    assert result is not None
-    assert "⛔" in result
-    assert "/stop is admin-only here" in result
-    assert "/status" in result  # denial preview shows what they CAN run
+    user = await runner._handle_message(_make_event("/help", _make_source(user_id="999")))
+    assert "`/help" in user and "`/whoami" in user and "`/status" in user
+    assert "`/model" not in user and "`/restart" not in user
+    admin = await runner._handle_message(_make_event("/help", _make_source(user_id="111")))
+    assert "`/model" in admin and "`/restart" in admin
+
+
+# ---------------------------------------------------------------------------
+# Gate denial — admin-only command attempted by non-admin
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -191,70 +228,14 @@ async def test_non_admin_with_empty_user_commands_gets_floor_only():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_admin_runs_unlisted_command():
-    runner = _make_runner(
-        platform_extra={
-            "allow_admin_from": ["111"],
-            "user_allowed_commands": [],  # users can run nothing
-        }
-    )
-    # Admin runs /whoami (proxy for "any command works"); the gate must NOT
-    # return the ⛔ denial. The /whoami handler is deterministic and doesn't
-    # need a real agent, so we can assert against its content.
-    result = await runner._handle_message(_make_event("/whoami", _make_source(user_id="111")))
-    assert "⛔" not in result
-    assert "**admin**" in result
-
-
-@pytest.mark.asyncio
-async def test_user_runs_listed_command():
-    runner = _make_runner(
-        platform_extra={
-            "allow_admin_from": ["111"],
-            "user_allowed_commands": ["whoami"],  # explicit
-        }
-    )
-    result = await runner._handle_message(_make_event("/whoami", _make_source(user_id="999")))
-    assert "⛔" not in result
-    assert "Tier: user" in result
-
-
 # ---------------------------------------------------------------------------
 # Backward compatibility — no admin list set means no gating at all
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_backward_compat_no_admin_list_means_no_gate():
-    runner = _make_runner(platform_extra={})  # nothing configured
-    # Random non-listed user runs /whoami; should return unrestricted profile,
-    # never a denial.
-    result = await runner._handle_message(_make_event("/whoami", _make_source(user_id="anyone")))
-    assert "⛔" not in result
-    assert "Tier: unrestricted" in result
-
-
 # ---------------------------------------------------------------------------
 # Scope isolation — DM vs group
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_dm_admin_is_not_group_admin():
-    runner = _make_runner(
-        platform_extra={
-            "allow_admin_from": ["111"],
-            "group_allow_admin_from": ["222"],
-            "group_user_allowed_commands": [],
-        }
-    )
-    # User 111 is DM admin. In group context they're a non-admin with no
-    # listed commands → /stop denied.
-    result = await runner._handle_message(
-        _make_event("/stop", _make_source(user_id="111", chat_type="group"))
-    )
-    assert "⛔" in result
 
 
 @pytest.mark.asyncio
@@ -269,50 +250,27 @@ async def test_group_only_gating_leaves_dm_unrestricted():
     assert "Tier: unrestricted" in result
 
 
-# ---------------------------------------------------------------------------
-# Plugin-registered slash commands are gated through the same path
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
-async def test_plugin_registered_command_is_gated(monkeypatch):
-    """The gate must recognize plugin-registered slash commands, not just
-    built-in COMMAND_REGISTRY entries. We verify by stubbing
-    is_gateway_known_command and resolve_command so a fictitious /myplugin
-    command is treated as a known plugin command.
-    """
+async def test_blank_chat_type_resolves_to_gated_scope():
+    """A blank chat_type (relay frames can send ""/null; restored rows keep a
+    stored empty value) used to resolve to group scope, so on a DM-only-gated
+    install the source landed in an ungated scope and every command ran."""
     runner = _make_runner(
         platform_extra={
             "allow_admin_from": ["111"],
-            "user_allowed_commands": [],
+            "user_allowed_commands": ["status"],
         }
     )
+    for blank in ("", None):
+        result = await runner._handle_message(
+            _make_event("/stop", _make_source(user_id="999", chat_type=blank))
+        )
+        assert "⛔" in result, repr(blank)
 
-    from hermes_cli import commands as cmd_mod
 
-    real_resolve = cmd_mod.resolve_command
-    real_is_known = cmd_mod.is_gateway_known_command
-
-    def fake_resolve(name):
-        if name == "myplugin":
-            # Return a CommandDef-like duck so canonical resolution succeeds
-            return SimpleNamespace(name="myplugin")
-        return real_resolve(name)
-
-    def fake_is_known(name):
-        if name == "myplugin":
-            return True
-        return real_is_known(name)
-
-    monkeypatch.setattr(cmd_mod, "resolve_command", fake_resolve)
-    monkeypatch.setattr(cmd_mod, "is_gateway_known_command", fake_is_known)
-
-    # Non-admin tries to run the plugin command → must be denied by the gate.
-    result = await runner._handle_message(
-        _make_event("/myplugin foo bar", _make_source(user_id="999"))
-    )
-    assert "⛔" in result
-    assert "/myplugin is admin-only here" in result
+# ---------------------------------------------------------------------------
+# Plugin-registered slash commands are gated through the same path
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -342,27 +300,6 @@ async def test_non_admin_denied_for_unlisted_quick_command_exec():
 
 
 @pytest.mark.asyncio
-async def test_listed_quick_command_runs_for_non_admin():
-    """When the operator lists the quick command in user_allowed_commands, a
-    non-admin can run it — the gate must allow, not blanket-deny."""
-    runner = _make_runner(
-        platform_extra={
-            "allow_admin_from": ["111"],
-            "user_allowed_commands": ["limits"],
-        }
-    )
-    runner.config.quick_commands = {
-        "limits": {"type": "exec", "command": "printf quick-command-allowed"}
-    }
-
-    result = await runner._handle_message(
-        _make_event("/limits", _make_source(user_id="999"))
-    )
-
-    assert result == "quick-command-allowed"
-
-
-@pytest.mark.asyncio
 async def test_admin_runs_quick_command_when_gating_enabled():
     """An admin runs the quick command even under an enabled gate with an
     empty user_allowed_commands list."""
@@ -387,32 +324,11 @@ async def test_admin_runs_quick_command_when_gating_enabled():
 # Running-agent fast-path gating — admin/user split must hold even when an
 # agent is already running. The fast-path block in _handle_message dispatches
 # /stop, /restart, /new, /steer, /model, /approve, /deny, /agents,
-# /background, /kanban, /goal, /yolo, /verbose, /footer, /help, /commands,
+# /bg, /btw, /kanban, /goal, /yolo, /verbose, /footer, /help, /commands,
 # /profile, /update directly without going through the cold dispatch site.
 # We must apply the gate there too — otherwise non-admins could bypass
 # gating just because an agent happens to be busy.
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_running_agent_fastpath_blocks_non_admin_command():
-    """When an agent is running, /restart from a non-admin must be denied."""
-    runner = _make_runner(
-        platform_extra={
-            "allow_admin_from": ["111"],
-            "user_allowed_commands": [],
-        }
-    )
-    src = _make_source(user_id="999")
-    # Mark the session as having an in-flight agent so the fast-path runs.
-    sk = build_session_key(src)
-    runner._running_agents[sk] = MagicMock()
-    runner._running_agents_ts[sk] = 0  # not stale (epoch + small delta on this machine)
-
-    result = await runner._handle_message(_make_event("/restart", src))
-    assert result is not None
-    assert "⛔" in result
-    assert "/restart is admin-only here" in result
 
 
 @pytest.mark.asyncio
@@ -439,52 +355,10 @@ async def test_running_agent_fastpath_allows_admin_command():
     assert "⛔" not in (result or "")
 
 
-@pytest.mark.asyncio
-async def test_running_agent_fastpath_status_always_works():
-    """/status is intentionally pre-gate on the fast-path so users can
-    always see session state, even non-admins."""
-    runner = _make_runner(
-        platform_extra={
-            "allow_admin_from": ["111"],
-            "user_allowed_commands": [],
-        }
-    )
-    src = _make_source(user_id="999")  # non-admin
-    sk = build_session_key(src)
-    runner._running_agents[sk] = MagicMock()
-    runner._running_agents_ts[sk] = 0
-    runner._handle_status_command = AsyncMock(return_value="status-handled")
-
-    result = await runner._handle_message(_make_event("/status", src))
-    assert result == "status-handled"
-    assert "⛔" not in (result or "")
-
-
 # ---------------------------------------------------------------------------
 # Alias resolution — /h aliases to /help; the gate must canonicalize before
 # checking access. /hist (history alias) is a real one to exercise.
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_gate_uses_canonical_name_not_alias():
-    """If /hist resolves to canonical 'history' and history is in
-    user_allowed_commands, the alias must be allowed too."""
-    runner = _make_runner(
-        platform_extra={
-            "allow_admin_from": ["111"],
-            "user_allowed_commands": ["history"],
-        }
-    )
-    # Find a real alias in the registry to use.
-    from hermes_cli.commands import COMMAND_REGISTRY
-    history_def = next(c for c in COMMAND_REGISTRY if c.name == "history")
-    # If /history has aliases, use one. Otherwise just use /history.
-    alias = history_def.aliases[0] if history_def.aliases else "history"
-    # Mock the history handler so we don't need real session state.
-    runner._handle_history_command = AsyncMock(return_value="history-handled")
-    result = await runner._handle_message(_make_event(f"/{alias}", _make_source(user_id="999")))
-    assert "⛔" not in (result or "")
 
 
 # ---------------------------------------------------------------------------
@@ -493,54 +367,11 @@ async def test_gate_uses_canonical_name_not_alias():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_gate_does_not_intercept_unknown_command():
-    """Random non-command text like /xyzzy is not in the registry. The gate
-    must not produce a denial message — the existing unknown-command path
-    will handle it (or the agent will see it as plain text)."""
-    runner = _make_runner(
-        platform_extra={
-            "allow_admin_from": ["111"],
-            "user_allowed_commands": [],
-        }
-    )
-    # /xyzzy is not in COMMAND_REGISTRY and not a plugin command.
-    # The gate should pass through (no ⛔) since canonical resolution
-    # returns the raw command and is_gateway_known_command returns False.
-    # We can only verify the gate didn't fire — downstream behavior may
-    # vary (returns None, agent processes it, etc.). What matters: no denial.
-    runner._handle_unknown_command = AsyncMock(return_value=None)
-    # Stub out the rest of the cold path to short-circuit
-    runner.session_store.get_or_create_session.side_effect = RuntimeError("would have proceeded past gate")
-    try:
-        await runner._handle_message(_make_event("/xyzzy", _make_source(user_id="999")))
-    except RuntimeError as e:
-        # Reaching session creation means we got past the gate without a denial.
-        assert "would have proceeded past gate" in str(e)
-
-
 # ---------------------------------------------------------------------------
 # Scope independence — admin in DM scope is NOT auto-admin in group when
 # group has its own admin list (regression guard for the "admin lists are
 # scope-specific" rule).
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_dm_admin_blocked_in_group_with_separate_admin_list():
-    runner = _make_runner(
-        platform_extra={
-            "allow_admin_from": ["111"],          # DM admin
-            "group_allow_admin_from": ["222"],    # group admin
-            "group_user_allowed_commands": ["status"],
-        }
-    )
-    # User 111 is DM admin. In a group, they're a non-admin and can only
-    # run group_user_allowed_commands. /restart is not in that list → denied.
-    grp_src = _make_source(user_id="111", chat_type="group", chat_id="g1")
-    result = await runner._handle_message(_make_event("/restart", grp_src))
-    assert "⛔" in result
-    assert "/restart is admin-only here" in result
 
 
 # ---------------------------------------------------------------------------

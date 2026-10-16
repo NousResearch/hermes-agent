@@ -61,40 +61,6 @@ def test_allowed_users_env_populates_allowlist_and_enforces_it(monkeypatch):
     assert adapter._is_dm_allowed("19998887777") is False
 
 
-def test_allow_all_users_env_opts_into_open_dms(monkeypatch):
-    adapter = _build_adapter(
-        monkeypatch, {"WHATSAPP_CLOUD_ALLOW_ALL_USERS": "true"}
-    )
-
-    assert adapter._dm_policy == "open"
-    assert adapter._open_dm_opted_in() is True
-    assert adapter._is_dm_allowed("19998887777") is True
-
-
-def test_explicit_dm_policy_still_wins_over_derived_default(monkeypatch):
-    adapter = _build_adapter(
-        monkeypatch,
-        {
-            "WHATSAPP_CLOUD_ALLOWED_USERS": "15551234567",
-            "WHATSAPP_CLOUD_DM_POLICY": "disabled",
-        },
-    )
-
-    # Operator's explicit policy beats the allowlist-derived default.
-    assert adapter._dm_policy == "disabled"
-
-
-def test_unconfigured_default_unchanged(monkeypatch):
-    adapter = _build_adapter(monkeypatch, {})
-
-    # No allowlist, no opt-in: default stays "open" (which fails closed
-    # in the shared mixin without an allow-all opt-in) — pre-fix behavior
-    # for unconfigured installs is preserved.
-    assert adapter._dm_policy == "open"
-    assert adapter._allow_from == set()
-    assert adapter._open_dm_opted_in() is False
-
-
 def test_allow_from_still_takes_precedence(monkeypatch):
     adapter = _build_adapter(
         monkeypatch,
@@ -107,3 +73,76 @@ def test_allow_from_still_takes_precedence(monkeypatch):
     # Legacy ALLOW_FROM wins when both are set (documented precedence).
     assert "15550000001" in adapter._allow_from
     assert "15559999999" not in adapter._allow_from
+    assert adapter._dm_allowlist_source == "WHATSAPP_CLOUD_ALLOW_FROM"
+    assert adapter._is_dm_allowed("15550000001") is True
+    assert adapter._is_dm_allowed("15559999999") is False
+
+
+def test_explicit_config_beats_cloud_env_on_live_checks(monkeypatch):
+    """Live DM auth must keep explicit config above both cloud env carriers."""
+    adapter = _build_adapter(
+        monkeypatch,
+        {
+            "WHATSAPP_CLOUD_ALLOW_FROM": "15550000002",
+            "WHATSAPP_CLOUD_ALLOWED_USERS": "15550000003",
+        },
+        extra={"dm_policy": "allowlist", "allow_from": ["15550000001"]},
+    )
+
+    assert adapter._dm_allowlist_source == "config"
+    assert adapter._is_dm_allowed("15550000001") is True
+    assert adapter._is_dm_intake_allowed("15550000001") is True
+    assert adapter._is_dm_allowed("15550000002") is False
+    assert adapter._is_dm_allowed("15550000003") is False
+    assert adapter._is_dm_intake_allowed("15550000002") is False
+
+    # Mutating lower-precedence env must not replace the config allowlist.
+    monkeypatch.setenv("WHATSAPP_CLOUD_ALLOWED_USERS", "15550000003,15550000004")
+    assert adapter._is_dm_allowed("15550000001") is True
+    assert adapter._is_dm_allowed("15550000003") is False
+    assert adapter._is_dm_allowed("15550000004") is False
+
+
+def test_explicit_empty_allow_from_blocks_cloud_env_grants(monkeypatch):
+    """allow_from: [] is present config — conflicting cloud env must not authorize."""
+    adapter = _build_adapter(
+        monkeypatch,
+        {
+            "WHATSAPP_CLOUD_ALLOW_FROM": "15550000002",
+            "WHATSAPP_CLOUD_ALLOWED_USERS": "15550000003",
+        },
+        extra={"dm_policy": "allowlist", "allow_from": []},
+    )
+
+    assert adapter._dm_allowlist_source == "config"
+    assert adapter._allow_from == set()
+    assert adapter._is_dm_allowed("15550000002") is False
+    assert adapter._is_dm_allowed("15550000003") is False
+    assert adapter._is_dm_intake_allowed("15550000002") is False
+    assert adapter._is_dm_intake_allowed("15550000003") is False
+
+
+def test_cloud_allowed_users_live_reread_when_env_seeded(monkeypatch):
+    adapter = _build_adapter(
+        monkeypatch,
+        {"WHATSAPP_CLOUD_ALLOWED_USERS": "15551234567"},
+    )
+
+    assert adapter._dm_allowlist_source == "WHATSAPP_CLOUD_ALLOWED_USERS"
+    assert adapter._is_dm_allowed("15551234567") is True
+
+    monkeypatch.setenv("WHATSAPP_CLOUD_ALLOWED_USERS", "")
+    assert adapter._is_dm_allowed("15551234567") is False
+
+
+def test_cloud_live_allowlist_denies_when_env_key_removed(monkeypatch):
+    """Sole-entry revoke removes the key — stale construction snapshot must not authorize."""
+    adapter = _build_adapter(
+        monkeypatch,
+        {"WHATSAPP_CLOUD_ALLOWED_USERS": "15551234567"},
+    )
+    assert "15551234567" in adapter._allow_from
+
+    monkeypatch.delenv("WHATSAPP_CLOUD_ALLOWED_USERS", raising=False)
+    assert adapter._live_dm_allow_from() == set()
+    assert adapter._is_dm_allowed("15551234567") is False

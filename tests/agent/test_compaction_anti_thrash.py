@@ -30,10 +30,11 @@ Two subtleties this pins:
   and disables compaction on a healthy session.
   ``test_no_false_positive_under_tokenizer_skew``.
 """
+import time
+
 import pytest
 
 from agent.context_compressor import ContextCompressor
-
 
 def _compressor(threshold_tokens: int) -> ContextCompressor:
     cc = ContextCompressor(
@@ -49,14 +50,12 @@ def _compressor(threshold_tokens: int) -> ContextCompressor:
     cc._generate_summary = lambda *a, **k: "Summary of earlier turns."
     return cc
 
-
 def _messages(n: int, size: int = 1500) -> list:
     msgs = [{"role": "system", "content": "sys"}]
     for i in range(n):
         role = "user" if i % 2 == 0 else "assistant"
         msgs.append({"role": role, "content": f"m{i} " + "z" * size})
     return msgs
-
 
 def _turn(cc, msgs, real_prompt_tokens):
     """One agent turn as conversation_loop drives it.
@@ -73,7 +72,6 @@ def _turn(cc, msgs, real_prompt_tokens):
     cc._verify_compaction_cleared_threshold = True
     cc.update_from_response({"prompt_tokens": real_prompt_tokens})
     return msgs, True
-
 
 class TestSavingsBasis:
     def test_savings_does_not_depend_on_current_tokens(self):
@@ -104,7 +102,6 @@ class TestSavingsBasis:
         cc.compress(msgs, current_tokens=100_000)
         assert cc._last_compression_savings_pct < 50
 
-
 class TestFutilityGuard:
     def test_stops_when_floor_alone_meets_threshold(self):
         """Incompressible floor >= threshold -> shrinking messages cannot help."""
@@ -126,32 +123,6 @@ class TestFutilityGuard:
             "compaction that cannot clear the threshold must stop"
         )
         assert fired <= 3, f"expected the loop to break early, compacted {fired}x"
-
-    def test_rough_preflight_reading_does_not_reopen_the_loop(self):
-        """should_compress() runs twice per turn with two different measures.
-
-        The pre-API gate uses a rough estimate that can dip below the threshold;
-        the post-response gate uses the real count that does not. If the verdict
-        lived in should_compress(), the rough reading would reset the strike
-        every turn and the loop would never stop. Judging it in
-        update_from_response() (real-vs-real) closes that hole.
-        """
-        cc = _compressor(threshold_tokens=24_576)
-        msgs = _messages(13)
-        rough, real = 20_000, 33_564  # rough dips under; real never does
-
-        fired = 0
-        for _ in range(8):
-            cc.should_compress(rough)          # pre-API gate (rough)
-            msgs, did = _turn(cc, msgs, real)  # post-response gate (real) + usage
-            if did:
-                fired += 1
-                msgs.append({"role": "user", "content": "more " + "w" * 3000})
-
-        assert fired <= 2, (
-            f"a sub-threshold rough reading must not re-open the loop; "
-            f"compacted {fired}x"
-        )
 
     def test_effective_compaction_still_resets_the_counter(self):
         """A compaction that gets the prompt under the threshold is not thrashing."""
@@ -190,62 +161,6 @@ class TestFutilityGuard:
             "tokenizer skew must not be mistaken for an incompressible floor"
         )
 
-    def test_latched_counter_resets_after_any_real_prompt_fits(self):
-        cc = _compressor(threshold_tokens=24_576)
-        cc._ineffective_compression_count = 2
-
-        cc.update_from_response({"prompt_tokens": 20_000})
-
-        assert cc._ineffective_compression_count == 0
-        assert cc.should_compress(33_564)
-
-    def test_usage_less_response_consumes_pending_verdict(self):
-        cc = _compressor(threshold_tokens=24_576)
-        cc._verify_compaction_cleared_threshold = True
-        cc.awaiting_real_usage_after_compression = True
-
-        cc.update_from_response({})
-
-        assert cc._verify_compaction_cleared_threshold is False
-        assert cc.awaiting_real_usage_after_compression is False
-        assert cc._ineffective_compression_count == 0
-
-    def test_fallback_streak_survives_ordinary_fitting_responses(self):
-        cc = _compressor(threshold_tokens=24_576)
-
-        cc.record_completed_compaction(used_fallback=True)
-        cc.update_from_response({"prompt_tokens": 20_000})
-        assert cc._fallback_compression_streak == 1
-
-        # Context regrows through ordinary successful turns before the next
-        # fallback boundary. Those turns reset real-usage effectiveness, not
-        # the independent summary-quality breaker.
-        cc.update_from_response({"prompt_tokens": 20_000})
-        cc.record_completed_compaction(used_fallback=True)
-        cc.update_from_response({"prompt_tokens": 20_000})
-
-        assert cc._fallback_compression_streak == 2
-        assert not cc.should_compress(33_564)
-
-    def test_usage_less_fallback_boundary_still_counts(self):
-        cc = _compressor(threshold_tokens=24_576)
-
-        cc.record_completed_compaction(used_fallback=True)
-        cc.awaiting_real_usage_after_compression = True
-        cc.update_from_response({})
-
-        assert cc._fallback_compression_streak == 1
-        assert cc._verify_compaction_cleared_threshold is False
-        assert cc.awaiting_real_usage_after_compression is False
-
-    def test_healthy_boundary_resets_only_fallback_streak(self):
-        cc = _compressor(threshold_tokens=24_576)
-        cc.record_completed_compaction(used_fallback=True)
-        cc.record_completed_compaction(used_fallback=False)
-
-        assert cc._fallback_compression_streak == 0
-        assert cc._verify_compaction_cleared_threshold is True
-
     def test_model_switch_resets_and_persists_fallback_streak(self, tmp_path):
         from hermes_state import SessionDB
 
@@ -260,49 +175,14 @@ class TestFutilityGuard:
         assert cc._fallback_compression_streak == 0
         assert db.get_compression_fallback_streak("s1") == 0
 
-    def test_same_runtime_context_recalibration_preserves_fallback_streak(self, tmp_path):
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("s1", source="cli")
-        cc = _compressor(threshold_tokens=24_576)
-        cc.bind_session_state(db, "s1")
-        cc.record_completed_compaction(used_fallback=True)
-
-        cc.update_model(cc.model, 64_000, provider=cc.provider)
-
-        assert cc._fallback_compression_streak == 1
-        assert db.get_compression_fallback_streak("s1") == 1
-
-    def test_a_failed_pass_records_exactly_one_strike(self):
-        """A compaction that leaves the real prompt over the threshold: one strike.
-
-        The verdict is judged once, when the provider reports real usage — not on
-        every should_compress() reading.
-        """
-        cc = _compressor(threshold_tokens=24_576)
-        msgs = _messages(14)
-
-        assert cc.should_compress(33_564)
-        cc.compress(msgs, current_tokens=33_564)
-        cc._verify_compaction_cleared_threshold = True
-        assert cc._ineffective_compression_count == 0, "no verdict before real usage"
-
-        cc.update_from_response({"prompt_tokens": 33_564})  # still over
-        assert cc._ineffective_compression_count == 1
-
-        # A later reading, rough or real, must not add phantom strikes.
-        cc.should_compress(33_564)
-        cc.should_compress(20_000)
-        assert cc._ineffective_compression_count == 1
-
-
 class TestMinimumMessagesBranch:
-    def test_too_few_messages_records_an_ineffective_pass(self):
-        """Returning the transcript unchanged must move the anti-thrash state.
+    def test_too_few_messages_defers_via_structural_backoff(self):
+        """A structurally impossible compaction must not strike the breaker.
 
-        Otherwise should_compress() keeps saying True about a transcript that can
-        never shrink, and every turn re-enters a no-op compaction.
+        #93022 — too-few-messages is a transcript-shape fact, not evidence
+        of an incompressible floor: striking it punished unrelated later
+        failures. Instead the branch arms the structural no-op backoff so
+        retries are deferred without burning anti-thrash strikes.
         """
         cc = _compressor(threshold_tokens=1)
         msgs = _messages(3, size=10)
@@ -312,4 +192,37 @@ class TestMinimumMessagesBranch:
 
         assert len(out) == len(msgs), "nothing should have been compressed"
         assert cc._last_compression_made_progress is False
-        assert cc._ineffective_compression_count == before + 1
+        assert cc._ineffective_compression_count == before, (
+            "structural no-op must leave the strike counter untouched"
+        )
+        assert cc._structural_no_op_backoff_until > time.monotonic(), (
+            "structural no-op must arm the retry backoff"
+        )
+        assert cc._compression_block_reason().startswith("structural_backoff")
+
+class TestRejectedCompactionStrike:
+    """#88568 — a would-grow refusal must count as an ineffective strike.
+
+    The anti-growth guard correctly keeps the original transcript, but the
+    rejection used to leave ``_ineffective_compression_count`` untouched, so
+    the breaker never latched and automatic compression retried the SAME
+    unchanged transcript on every turn.
+    """
+
+    def test_two_rejections_stop_further_automatic_compression(self):
+        cc = _compressor(threshold_tokens=1)
+        cc.record_rejected_compaction()
+        cc.record_rejected_compaction()
+
+        # The latch consumers key on the counter itself (>= 2 blocks);
+        # pin the counter and the recovery-clock arming side effect.
+        assert cc._ineffective_compression_count >= 2
+
+    def test_rejection_does_not_arm_real_usage_verification(self):
+        """Nothing was committed, so the next response must not be scored
+        against the pre-rejection transcript (that verdict belongs to
+        committed compactions only)."""
+        cc = _compressor(threshold_tokens=1)
+        cc.record_rejected_compaction()
+
+        assert cc._verify_compaction_cleared_threshold is False

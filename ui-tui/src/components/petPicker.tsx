@@ -2,10 +2,12 @@ import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useMemo, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
+import { useT } from '../i18n/useT.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, windowItems } from './overlayControls.js'
+import { chipRowProps, clampOverlayWidth } from './overlayPrimitives.js'
 
 const VISIBLE = 10
 const MIN_WIDTH = 40
@@ -30,16 +32,21 @@ interface Gallery {
  * (install-on-demand). The mascot lights up live once `usePet` next polls —
  * no restart. This is the interactive sibling of the text `/pet <slug>` path.
  */
-export function PetPicker({ gw, onClose, t }: PetPickerProps) {
+export function PetPicker({ gw, maxWidth, onClose, t }: PetPickerProps) {
   const [gallery, setGallery] = useState<Gallery | null>(null)
   const [query, setQuery] = useState('')
   const [idx, setIdx] = useState(0)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
+  const T = useT()
+  const P = T.pickers.pet
+  const C = T.pickers.common
 
   const { stdout } = useStdout()
-  const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  // Optional maxWidth lets grid layouts hand the picker its cell budget.
+  const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
+  const width = clampOverlayWidth(preferredWidth, maxWidth)
 
   useEffect(() => {
     gw.request<Gallery>('pet.gallery')
@@ -117,14 +124,14 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
   })
 
   if (loading) {
-    return <Text color={t.color.muted}>loading pets…</Text>
+    return <Text color={t.color.muted}>{P.loading}</Text>
   }
 
   if (err && !gallery) {
     return (
       <Box flexDirection="column" width={width}>
-        <Text color={t.color.label}>error: {err}</Text>
-        <OverlayHint t={t}>Esc cancel</OverlayHint>
+        <Text color={t.color.label}>{C.error(err)}</Text>
+        <OverlayHint t={t}>{P.escCancelHint}</OverlayHint>
       </Box>
     )
   }
@@ -134,26 +141,27 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.accent}>
-        Pets
+        {P.title}
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {query ? `filter: ${query}` : 'type to filter'} · {view.length} pet{view.length === 1 ? '' : 's'}
+        {query ? C.filter(query) : C.typeToFilter} ·{' '}
+        {view.length === 1 ? P.petCountOne(1) : P.petCountOther(view.length)}
       </Text>
 
-      {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
+      {offset > 0 && <Text color={t.color.muted}>{C.moreAbove(offset)}</Text>}
 
       {view.length === 0 ? (
-        <Text color={t.color.muted}>{query ? `no pets match "${query}"` : 'no pets available'}</Text>
+        <Text color={t.color.muted}>{query ? P.noMatches(query) : P.noneAvailable}</Text>
       ) : (
         items.map((pet, i) => {
           const at = offset + i === idx
           const isActive = enabled && pet.slug === active
           const mark = isActive ? '●' : pet.installed ? '✓' : ' '
-          const tag = pet.installed ? '' : pet.curated ? ' · official' : ''
+          const tag = pet.installed ? '' : pet.curated ? P.officialTag : ''
 
           return (
-            <Text bold={at} color={at ? t.color.accent : t.color.muted} inverse={at} key={pet.slug} wrap="truncate-end">
+            <Text color={t.color.muted} {...chipRowProps(t, at)} key={pet.slug} wrap="truncate-end">
               {at ? '▸ ' : '  '}
               {mark} {pet.displayName}
               <Text color={at ? t.color.accent : t.color.muted}>
@@ -166,18 +174,21 @@ export function PetPicker({ gw, onClose, t }: PetPickerProps) {
         })
       )}
 
-      {offset + VISIBLE < view.length && <Text color={t.color.muted}> ↓ {view.length - offset - VISIBLE} more</Text>}
+      {offset + VISIBLE < view.length && (
+        <Text color={t.color.muted}>{C.moreBelow(view.length - offset - VISIBLE)}</Text>
+      )}
 
-      {err ? <Text color={t.color.label}>error: {err}</Text> : null}
-      {busy ? <Text color={t.color.accent}>adopting…</Text> : null}
+      {err ? <Text color={t.color.label}>{C.error(err)}</Text> : null}
+      {busy ? <Text color={t.color.accent}>{P.adopting}</Text> : null}
 
-      <OverlayHint t={t}>↑/↓ select · Enter adopt · type to filter · Esc cancel</OverlayHint>
+      <OverlayHint t={t}>{P.hint}</OverlayHint>
     </Box>
   )
 }
 
 interface PetPickerProps {
   gw: GatewayClient
+  maxWidth?: number
   onClose: () => void
   t: Theme
 }

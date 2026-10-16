@@ -1,0 +1,614 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { ReactNode } from 'react'
+import { MemoryRouter } from 'react-router'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { type I18nContextValue, I18nProvider, useI18n } from '@/i18n'
+import { $freeTierSignIn } from '@/store/free-tier-sign-in'
+
+import { formatMoney } from './billing-amounts'
+import {
+  billingDevFixtures,
+  loggedOutBillingState,
+  loggedOutSubscriptionState,
+  okBilling,
+  okSubscription,
+  postTrainBillingState,
+  postTrainSubscriptionState,
+  todayBillingState,
+  todaySubscriptionState
+} from './fixtures.test-util'
+
+import { BillingSettings } from './index'
+
+const apiMocks = vi.hoisted(() => ({
+  charge: vi.fn(),
+  chargeStatus: vi.fn(),
+  fetchBillingState: vi.fn(),
+  fetchSubscriptionState: vi.fn(),
+  openExternal: vi.fn(),
+  previewSubscriptionChange: vi.fn(),
+  resumeSubscription: vi.fn(),
+  scheduleSubscriptionChange: vi.fn(),
+  stepUp: vi.fn(),
+  updateAutoReload: vi.fn()
+}))
+
+vi.mock('./api', () => ({
+  // Pass-through provider — the mocked useBillingApi ignores any override anyway.
+  BillingApiProvider: ({ children }: { children: ReactNode }) => children,
+  useBillingApi: () => ({
+    charge: apiMocks.charge,
+    chargeStatus: apiMocks.chargeStatus,
+    fetchBillingState: apiMocks.fetchBillingState,
+    fetchSubscriptionState: apiMocks.fetchSubscriptionState,
+    previewSubscriptionChange: apiMocks.previewSubscriptionChange,
+    resumeSubscription: apiMocks.resumeSubscription,
+    scheduleSubscriptionChange: apiMocks.scheduleSubscriptionChange,
+    stepUp: apiMocks.stepUp,
+    updateAutoReload: apiMocks.updateAutoReload
+  })
+}))
+
+function renderBilling(initialEntries: string[] = ['/settings?tab=billing']) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+  render(
+    <MemoryRouter initialEntries={initialEntries}>
+      <QueryClientProvider client={client}>
+        <BillingSettings />
+      </QueryClientProvider>
+    </MemoryRouter>
+  )
+
+  return client
+}
+
+beforeEach(() => {
+  apiMocks.fetchBillingState.mockResolvedValue(okBilling(todayBillingState))
+  apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(todaySubscriptionState))
+  Object.defineProperty(window, 'hermesDesktop', {
+    configurable: true,
+    value: {
+      openExternal: apiMocks.openExternal
+    }
+  })
+})
+
+afterEach(() => {
+  cleanup()
+  vi.clearAllMocks()
+})
+
+describe('BillingSettings', () => {
+  it('changes billing shell language without losing the credit amount or issuing a charge', async () => {
+    apiMocks.fetchBillingState.mockResolvedValue(okBilling(postTrainBillingState))
+    apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(postTrainSubscriptionState))
+    let language!: I18nContextValue
+
+    function Surface() {
+      language = useI18n()
+
+      return <BillingSettings />
+    }
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <MemoryRouter>
+        <I18nProvider configClient={null} initialLocale="zh">
+          <QueryClientProvider client={client}>
+            <Surface />
+          </QueryClientProvider>
+        </I18nProvider>
+      </MemoryRouter>
+    )
+    await screen.findByText('支付与额度')
+    expect(screen.getByText('余额')).toBeTruthy()
+    const input = screen.getByRole('spinbutton', { name: '自定义充值金额' }) as HTMLInputElement
+    fireEvent.change(input, { target: { value: '37' } })
+    await act(() => language.setLocale('zh-hant'))
+    expect(screen.getByText('支付與額度')).toBeTruthy()
+    expect(screen.getByText('餘額')).toBeTruthy()
+    expect((screen.getByRole('spinbutton', { name: '自訂儲值金額' }) as HTMLInputElement).value).toBe('37')
+    expect(apiMocks.charge).not.toHaveBeenCalled()
+    apiMocks.charge.mockResolvedValue({
+      ok: false,
+      refusal: { kind: 'stripe_unavailable', message: '', retryAfter: 120 },
+      idempotencyKey: 'fixture-charge'
+    })
+    fireEvent.click(screen.getByRole('button', { name: '購買' }))
+    await screen.findByText(/Stripe 遇到問題/)
+    await act(() => language.setLocale('zh'))
+    expect(screen.getByText(/Stripe 遇到问题/)).toBeTruthy()
+    expect(apiMocks.charge).toHaveBeenCalledTimes(1)
+    expect(apiMocks.charge).toHaveBeenCalledWith('37', undefined)
+    expect(screen.getAllByText(postTrainSubscriptionState.current!.tier_name!).length).toBeGreaterThan(0)
+    client.clear()
+  })
+
+  it('renders the post-train payload with enabled buy controls and card provenance', async () => {
+    apiMocks.fetchBillingState.mockResolvedValue(okBilling(postTrainBillingState))
+    apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(postTrainSubscriptionState))
+
+    renderBilling()
+
+    expect(await screen.findByText('$142.50')).toBeTruthy()
+    expect(screen.getByText('Visa •••• 4242 - subscription card')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '$25' }).hasAttribute('disabled')).toBe(false)
+    expect(screen.getByRole('button', { name: '$50' }).hasAttribute('disabled')).toBe(false)
+    expect(screen.getByRole('button', { name: '$100' }).hasAttribute('disabled')).toBe(false)
+    expect(screen.getByRole('spinbutton', { name: 'Custom credit amount' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Buy$/ }).hasAttribute('disabled')).toBe(false)
+  })
+
+  it('disables buy controls when no card is on file', async () => {
+    const fixture = billingDevFixtures['no-card']
+
+    apiMocks.fetchBillingState.mockResolvedValue(fixture.billing)
+    apiMocks.fetchSubscriptionState.mockResolvedValue(fixture.subscription)
+
+    renderBilling()
+
+    // No card → the payment row collapses to a single "Add payment method" link.
+    expect(await screen.findByRole('button', { name: /Add payment method/ })).toBeTruthy()
+    expect(screen.queryByText('No card on file')).toBeNull()
+    expect(screen.getByRole('button', { name: '$25' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: '$50' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: '$100' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('spinbutton', { name: 'Custom credit amount' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: /^Buy$/ }).hasAttribute('disabled')).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: /^Buy$/ }))
+
+    expect(apiMocks.charge).not.toHaveBeenCalled()
+  })
+
+  it('saves enabled auto-refill edits and refreshes billing state', async () => {
+    const client = renderBilling()
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+
+    apiMocks.updateAutoReload.mockResolvedValue({ data: { ok: true }, ok: true })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage' }))
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Auto-refill threshold' }), {
+      target: { value: '15' }
+    })
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Auto-refill reload-to amount' }), {
+      target: { value: '20' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() =>
+      expect(apiMocks.updateAutoReload).toHaveBeenCalledWith({
+        enabled: true,
+        reload_to_usd: '20',
+        threshold_usd: '15'
+      })
+    )
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['billing', 'state'] }))
+    expect(await screen.findByText('Auto-refill updated.')).toBeTruthy()
+  })
+
+  it('rejects auto-refill amounts outside the billing bounds', async () => {
+    renderBilling()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage' }))
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Auto-refill threshold' }), {
+      target: { value: '7.50' }
+    })
+
+    expect(screen.getByText(`Threshold: minimum is ${formatMoney(10)}.`, { collapseWhitespace: false })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Save' }).hasAttribute('disabled')).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(apiMocks.updateAutoReload).not.toHaveBeenCalled()
+  })
+
+  it('renders the enabled auto-refill row without crashing when the card is null', async () => {
+    apiMocks.fetchBillingState.mockResolvedValue(
+      okBilling({ ...todayBillingState, auto_reload: { ...todayBillingState.auto_reload, card: null } })
+    )
+
+    renderBilling()
+
+    expect(await screen.findByText('Charges $10 automatically when your balance falls below $5.')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Manage' })).toBeTruthy()
+  })
+
+  it('requires inline confirmation before disabling auto-refill', async () => {
+    renderBilling()
+
+    apiMocks.updateAutoReload.mockResolvedValue({ data: { ok: true }, ok: true })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }))
+
+    expect(screen.getByText('Turn off auto-refill?')).toBeTruthy()
+    expect(apiMocks.updateAutoReload).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Turn off' }))
+
+    // The gateway requires threshold + top_up_amount even to disable, so the current
+    // amounts ride along (todayBillingState: threshold $5, reload-to $10).
+    await waitFor(() =>
+      expect(apiMocks.updateAutoReload).toHaveBeenCalledWith({
+        enabled: false,
+        reload_to_usd: '10',
+        threshold_usd: '5'
+      })
+    )
+  })
+
+  it('opens auto-refill edit without a validation error even when the saved config is below the minimum', async () => {
+    // todayBillingState: threshold $5 with min_usd $10 — invalid, but opening
+    // Manage must stay silent until the user edits or attempts to save (spec §9).
+    renderBilling()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage' }))
+
+    expect(screen.getByRole('spinbutton', { name: 'Auto-refill threshold' })).toBeTruthy()
+    expect(screen.queryByText(`Threshold: minimum is ${formatMoney(10)}.`, { collapseWhitespace: false })).toBeNull()
+    // Save is disabled because the prefilled config is invalid — but no error yet.
+    expect(screen.getByRole('button', { name: 'Save' }).hasAttribute('disabled')).toBe(true)
+  })
+
+  it('navigates to the in-app plans grid from the plan card and back', async () => {
+    const fixture = billingDevFixtures['free-personal']
+
+    apiMocks.fetchBillingState.mockResolvedValue(fixture.billing)
+    apiMocks.fetchSubscriptionState.mockResolvedValue(fixture.subscription)
+
+    renderBilling()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'View plans' }))
+
+    expect(await screen.findByText('Plans')).toBeTruthy()
+    // No subscription → the free tier is the inert current plan, the three paid
+    // tiers are "Choose ↗" upgrades (no "subscribe to Free").
+    expect(screen.getByText('Current plan')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: /Choose/ }).length).toBe(3)
+    expect(screen.queryByRole('button', { name: 'Downgrade' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to billing' }))
+
+    expect(await screen.findByRole('button', { name: 'View plans' })).toBeTruthy()
+  })
+
+  it('renders the current marker and an actionable downgrade when deep-linked to the plans grid', async () => {
+    const fixture = billingDevFixtures['subscriber-personal']
+
+    apiMocks.fetchBillingState.mockResolvedValue(fixture.billing)
+    apiMocks.fetchSubscriptionState.mockResolvedValue(fixture.subscription)
+
+    renderBilling(['/settings?tab=billing&bview=plans'])
+
+    expect(await screen.findByText('Current plan')).toBeTruthy()
+    // Free sits below Plus → an in-app (enabled) "Downgrade" button, not disabled.
+    expect(screen.getByRole('button', { name: 'Downgrade' }).hasAttribute('disabled')).toBe(false)
+    // Super + Ultra are upgrades.
+    expect(screen.getAllByRole('button', { name: /Choose/ }).length).toBe(2)
+  })
+
+  it('falls back to overview (no live Choose grid) when a team deep-links bview=plans', async () => {
+    // Default beforeEach uses todaySubscriptionState (context: 'team') — no in-app
+    // plans capability, so the URL must not surface a grid of Choose buttons.
+    renderBilling(['/settings?tab=billing&bview=plans'])
+
+    expect(await screen.findByText('Payment & credits')).toBeTruthy()
+    expect(screen.queryByText('Plans')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Choose/ })).toBeNull()
+  })
+
+  it('falls back to overview when a non-changer personal account deep-links bview=plans', async () => {
+    apiMocks.fetchSubscriptionState.mockResolvedValue(
+      okSubscription({ ...todaySubscriptionState, can_change_plan: false, context: 'personal' })
+    )
+
+    renderBilling(['/settings?tab=billing&bview=plans'])
+
+    expect(await screen.findByText('Payment & credits')).toBeTruthy()
+    expect(screen.queryByText('Plans')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Choose/ })).toBeNull()
+  })
+
+  it('runs an in-app downgrade: preview → confirm → schedule with the tier id → refetch → overview', async () => {
+    const fixture = billingDevFixtures['subscriber-personal']
+
+    apiMocks.fetchBillingState.mockResolvedValue(fixture.billing)
+    apiMocks.fetchSubscriptionState.mockResolvedValue(fixture.subscription)
+    apiMocks.previewSubscriptionChange.mockResolvedValue({
+      data: {
+        effect: 'scheduled',
+        effective_at: '2026-08-15T00:00:00Z',
+        monthly_credits_delta: '-88',
+        ok: true,
+        target_tier_name: 'Free'
+      },
+      ok: true
+    })
+    apiMocks.scheduleSubscriptionChange.mockResolvedValue({ data: { ok: true }, ok: true })
+
+    const client = renderBilling(['/settings?tab=billing&bview=plans'])
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Downgrade' }))
+
+    await waitFor(() => expect(apiMocks.previewSubscriptionChange).toHaveBeenCalledWith('cltier000free0000personal'))
+    expect(await screen.findByText(/No charge now/)).toBeTruthy()
+    // Credits delta renders as signed dollars, not the raw wire string "-88".
+    expect(screen.getByText(/Monthly credits change: −\$88\/mo\./)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm downgrade' }))
+
+    await waitFor(() => expect(apiMocks.scheduleSubscriptionChange).toHaveBeenCalledWith('cltier000free0000personal'))
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['billing', 'subscription'] }))
+    // Scheduled → back on the overview.
+    expect(await screen.findByText('Payment & credits')).toBeTruthy()
+    expect(screen.queryByText('Plans')).toBeNull()
+  })
+
+  it('surfaces the step-up affordance when scheduling a downgrade needs approval', async () => {
+    const fixture = billingDevFixtures['subscriber-personal']
+
+    apiMocks.fetchBillingState.mockResolvedValue(fixture.billing)
+    apiMocks.fetchSubscriptionState.mockResolvedValue(fixture.subscription)
+    apiMocks.previewSubscriptionChange.mockResolvedValue({
+      data: { effect: 'scheduled', effective_at: '2026-08-15T00:00:00Z', ok: true, target_tier_name: 'Free' },
+      ok: true
+    })
+    apiMocks.scheduleSubscriptionChange.mockResolvedValue({
+      ok: false,
+      refusal: { kind: 'insufficient_scope', message: 'billing:manage required' }
+    })
+
+    renderBilling(['/settings?tab=billing&bview=plans'])
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Downgrade' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm downgrade' }))
+
+    expect(await screen.findByText('Remote Spending needs approval:')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Verify to continue' })).toBeTruthy()
+    // The failed schedule offers a retry in place.
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
+    expect(apiMocks.scheduleSubscriptionChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('undoes a scheduled downgrade from the plan card via resume', async () => {
+    const fixture = billingDevFixtures['pending-downgrade']
+
+    apiMocks.fetchBillingState.mockResolvedValue(fixture.billing)
+    apiMocks.fetchSubscriptionState.mockResolvedValue(fixture.subscription)
+    apiMocks.resumeSubscription.mockResolvedValue({ data: { ok: true }, ok: true })
+
+    const client = renderBilling()
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+
+    expect(await screen.findByText('Changes to Free on Aug 15.')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
+
+    await waitFor(() => expect(apiMocks.resumeSubscription).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['billing', 'subscription'] }))
+  })
+
+  it('locks out the other downgrade tiles and Back while a schedule is in flight', async () => {
+    // Current = Ultra so Free/Plus/Super are all downgrades (three tiles).
+    apiMocks.fetchBillingState.mockResolvedValue(billingDevFixtures['subscriber-personal'].billing)
+    apiMocks.fetchSubscriptionState.mockResolvedValue(
+      okSubscription({
+        ...todaySubscriptionState,
+        can_change_plan: true,
+        context: 'personal',
+        current: { ...todaySubscriptionState.current, tier_id: 't_ultra', tier_name: 'Ultra' },
+        tiers: [
+          {
+            dollars_per_month_display: '$0',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '0.1',
+            name: 'Free',
+            tier_id: 't_free',
+            tier_order: 0
+          },
+          {
+            dollars_per_month_display: '$20',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '22',
+            name: 'Plus',
+            tier_id: 't_plus',
+            tier_order: 1
+          },
+          {
+            dollars_per_month_display: '$100',
+            is_current: false,
+            is_enabled: true,
+            monthly_credits: '110',
+            name: 'Super',
+            tier_id: 't_super',
+            tier_order: 2
+          },
+          {
+            dollars_per_month_display: '$200',
+            is_current: true,
+            is_enabled: true,
+            monthly_credits: '220',
+            name: 'Ultra',
+            tier_id: 't_ultra',
+            tier_order: 3
+          }
+        ]
+      })
+    )
+    apiMocks.previewSubscriptionChange.mockResolvedValue({
+      data: { effect: 'scheduled', effective_at: '2026-08-15T00:00:00Z', ok: true, target_tier_name: 'Free' },
+      ok: true
+    })
+
+    let settleSchedule: (value: unknown) => void = () => {}
+    apiMocks.scheduleSubscriptionChange.mockReturnValue(
+      new Promise(resolve => {
+        settleSchedule = resolve
+      })
+    )
+
+    renderBilling(['/settings?tab=billing&bview=plans'])
+
+    const downgrades = await screen.findAllByRole('button', { name: 'Downgrade' })
+    expect(downgrades.length).toBe(3)
+
+    fireEvent.click(downgrades[0])
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm downgrade' }))
+
+    // Scheduling in flight → the two remaining tiles + Back are disabled.
+    await waitFor(() => {
+      const remaining = screen.getAllByRole('button', { name: 'Downgrade' })
+      expect(remaining.length).toBe(2)
+      expect(remaining.every(btn => btn.hasAttribute('disabled'))).toBe(true)
+    })
+    expect(screen.getByRole('button', { name: 'Back to billing' }).hasAttribute('disabled')).toBe(true)
+
+    settleSchedule({ data: { ok: true }, ok: true })
+  })
+
+  it('disables Undo while the resume is in flight', async () => {
+    const fixture = billingDevFixtures['pending-downgrade']
+
+    apiMocks.fetchBillingState.mockResolvedValue(fixture.billing)
+    apiMocks.fetchSubscriptionState.mockResolvedValue(fixture.subscription)
+
+    let settleResume: (value: unknown) => void = () => {}
+    apiMocks.resumeSubscription.mockReturnValue(
+      new Promise(resolve => {
+        settleResume = resolve
+      })
+    )
+
+    renderBilling()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Undo' }))
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Undoing…' }).hasAttribute('disabled')).toBe(true))
+
+    settleResume({ data: { ok: true }, ok: true })
+  })
+
+  it('moves focus into the confirm panel (role=status) when a downgrade opens', async () => {
+    const fixture = billingDevFixtures['subscriber-personal']
+
+    apiMocks.fetchBillingState.mockResolvedValue(fixture.billing)
+    apiMocks.fetchSubscriptionState.mockResolvedValue(fixture.subscription)
+    apiMocks.previewSubscriptionChange.mockResolvedValue({
+      data: { effect: 'scheduled', effective_at: '2026-08-15T00:00:00Z', ok: true, target_tier_name: 'Free' },
+      ok: true
+    })
+
+    renderBilling(['/settings?tab=billing&bview=plans'])
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Downgrade' }))
+
+    const panel = await screen.findByRole('status')
+
+    expect(panel.getAttribute('aria-live')).toBe('polite')
+    expect(panel).toBe(panel.ownerDocument.activeElement)
+  })
+
+  it('renders auto-refill mutation refusals and step-up affordance', async () => {
+    renderBilling()
+
+    apiMocks.updateAutoReload.mockResolvedValue({
+      ok: false,
+      refusal: {
+        kind: 'insufficient_scope',
+        message: 'billing:manage required'
+      }
+    })
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Manage' }))
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Auto-refill threshold' }), {
+      target: { value: '15' }
+    })
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Auto-refill reload-to amount' }), {
+      target: { value: '20' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(await screen.findByText('Remote Spending needs approval:')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Verify to continue' })).toBeTruthy()
+  })
+
+  it('keeps disabled auto-refill portal-only with no enable control', async () => {
+    apiMocks.fetchBillingState.mockResolvedValue(okBilling(postTrainBillingState))
+    apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(postTrainSubscriptionState))
+
+    renderBilling()
+
+    expect((await screen.findAllByText('Off')).length).toBeGreaterThan(0)
+    expect(screen.getByText('Turn on auto-refill from the portal')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /enable/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Manage' })).toBeNull()
+  })
+
+  it('disables buy controls while polling and renders the settled outcome', async () => {
+    let settleStatus: (value: unknown) => void = () => {}
+
+    const statusPromise = new Promise(resolve => {
+      settleStatus = resolve
+    })
+
+    apiMocks.fetchBillingState.mockResolvedValue(okBilling(postTrainBillingState))
+    apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(postTrainSubscriptionState))
+    apiMocks.charge.mockResolvedValue({
+      data: {
+        charge_id: 'ch_123',
+        ok: true
+      },
+      idempotencyKey: 'key-1',
+      ok: true
+    })
+    apiMocks.chargeStatus.mockReturnValue(statusPromise)
+
+    renderBilling()
+
+    fireEvent.click(await screen.findByRole('button', { name: /^Buy$/ }))
+
+    expect(await screen.findByText('Processing… checking settlement')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '$25' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: '$50' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('spinbutton', { name: 'Custom credit amount' }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: /^Buy$/ }).hasAttribute('disabled')).toBe(true)
+
+    settleStatus({
+      data: {
+        amount_usd: '25',
+        ok: true,
+        status: 'settled'
+      },
+      ok: true
+    })
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(`${formatMoney(25)} added. Balance is refreshing.`, { collapseWhitespace: false })
+      ).toBeTruthy()
+    )
+  })
+
+  it('renders logged-out as a connect card whose sign-in opens the shared dialog', async () => {
+    apiMocks.fetchBillingState.mockResolvedValue(okBilling(loggedOutBillingState))
+    apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(loggedOutSubscriptionState))
+    $freeTierSignIn.set({ status: 'closed' })
+
+    renderBilling()
+
+    expect(await screen.findByText('Connect your Nous account')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect($freeTierSignIn.get()).toEqual({ status: 'requested' })
+    expect(apiMocks.openExternal).not.toHaveBeenCalled()
+    $freeTierSignIn.set({ status: 'closed' })
+    expect(screen.queryByText('Payment method')).toBeNull()
+    expect(screen.queryByText('Usage')).toBeNull()
+  })
+})

@@ -324,12 +324,14 @@ class SessionMaintenanceMixin:
         return len(rows)
 
     def _spillover_refs(self, conn, session_ids) -> set:
-        """Spillover archive basenames the to-be-deleted sessions' messages point at. Runs
-        INSIDE the delete transaction, before the DELETEs take those messages away, so the
-        owning pointers are captured while they still exist (#126351)."""
+        """Spillover archive basenames the to-be-deleted sessions' (and their delegate
+        children's) messages point at. Runs INSIDE the delete transaction, before the
+        DELETEs take those messages away, so the owning pointers are captured while they
+        still exist (#126351)."""
+        from hermes_state_sessions import _collect_delegate_child_ids
         from tools.tool_result_storage import spillover_names_in_text
         names: set = set()
-        for chunk in _id_chunks(list(session_ids)):
+        for chunk in _id_chunks([*session_ids, *_collect_delegate_child_ids(conn, list(session_ids))]):
             rows = conn.execute(
                 f"SELECT content, api_content FROM messages WHERE session_id IN ({_placeholders(chunk)})"
                 " AND (content LIKE '%spillover/%' OR api_content LIKE '%spillover/%')",

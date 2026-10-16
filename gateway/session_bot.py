@@ -315,7 +315,14 @@ def _result(authority, record):
         status, reply = _admission_outcome(authority, record['admission_id'], record)
     error = reason = None
     if status == 'failed':
-        error, reason = _failure(authority, current)
+        try:
+            error, reason = _failure(authority, current)
+        except RuntimeStoreError as exc:
+            if exc.reason != 'not_found':
+                raise
+            # Its admission aged out after the chat was deleted: the receipt's own answer stands.
+            from tools.bot_failure_reasons import UNKNOWN
+            error, reason = record.get('error') or 'Bot Chat delivery failed', record.get('reason') or UNKNOWN
     return {k: v for k, v in dict(status=status, delivery_id=record['delivery_id'],
         profile_home=record['profile_home'], session_id=record['session_id'],
         admission_id=record['admission_id'], message=record['message'], reply=reply,

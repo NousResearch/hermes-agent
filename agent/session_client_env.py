@@ -110,10 +110,11 @@ def retry_matches(committed: dict, request: dict) -> bool:
 
 
 @contextmanager
-def client_env_scope(env, *, local=True):
+def client_env_scope(env, *, local=True, rules=None):
     """Bind one session's client environment (``None``: the gateway's own) for this context; ``local``
-    is the gateway's own proof, frozen in the session's policy, that the client runs on this host."""
-    token = _BOUND.set(None if env is None else (env, bool(local)))
+    is the gateway's own proof, frozen in the session's policy, that the client runs on this host;
+    ``rules`` the normalisation rules frozen with it (``client_env_rules``; ``None``: the built-ins)."""
+    token = _BOUND.set(None if env is None else (env, bool(local), rules))
     try:
         yield
     finally:
@@ -146,12 +147,16 @@ def tool_env() -> dict[str, str]:
 def toolchain_environ(base=None) -> dict[str, str]:
     """The environment this session's tool subprocesses start from (``base``: the gateway's). Unbound
     (messaging, cron, Desktop) or a client not attached locally: unchanged. A local shell client's
-    session: its toolchain replaces the gateway's, and a built-in toolchain name it did not export is
-    unset, as in main's process: one client's venv never reaches another's session through the daemon
-    it started."""
+    session: its toolchain replaces the gateway's, and every toolchain name it did not export (built-in,
+    or configured for its profile when the session was created) is unset, as in main's process: one
+    client's venv or GEM_HOME never reaches another's session through the daemon it started. PATH is
+    the exception: a client that sent none runs with the gateway's."""
     env = dict(os.environ if base is None else base)
     bound = _BOUND.get()
     if bound is None or not bound[1]:
         return env
-    kept = {k: v for k, v in env.items() if k == 'PATH' or not (k in TOOL_ENV or k.startswith(TOOL_ENV_PREFIXES))}
+    rules = bound[2] or {'names': TOOL_ENV, 'prefixes': TOOL_ENV_PREFIXES, 'secret': None}
+    names = {name for name in rules['names'] if _travels(name, rules['secret'])}
+    prefixes = tuple(rules['prefixes'])
+    kept = {k: v for k, v in env.items() if k == 'PATH' or not (k in names or k.startswith(prefixes))}
     return kept | tool_env()

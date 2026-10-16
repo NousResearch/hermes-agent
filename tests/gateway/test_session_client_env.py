@@ -306,6 +306,40 @@ async def test_a_copied_staged_receipt_is_never_judged_by_its_own_filtered_map(t
 
 
 @pytest.mark.asyncio
+async def test_configured_toolchain_names_a_local_client_omitted_never_leak_from_the_daemon(tmp_path, monkeypatch):
+    """Client A exported a configured extra (``terminal.client_env_passthrough``) and auto-started the
+    gateway, seeding the daemon's environment; client B's session, which did not export it, runs its tools
+    without it. PATH is the documented exception (a client that sent none keeps the gateway's)."""
+    import sys
+    from gateway.session_policy import policy_scope
+    from tools.code_execution_env import _build_child_env
+    from tools.environments.local import _make_run_env
+    from tools.process_registry import ProcessRegistry
+    home = _home(tmp_path, _CONFIG + 'terminal: {client_env_passthrough: [GEM_HOME]}\n')
+    monkeypatch.setenv('GEM_HOME', '/alpha')
+    monkeypatch.setenv('PATH', '/daemon/bin:/usr/bin:/bin')
+    owner, connection = await _owner(home, monkeypatch)
+
+    def seen(policy):
+        with policy_scope(policy, authority=owner):
+            envs = (_make_run_env({}), ProcessRegistry._spawn_env({}), _build_child_env(
+                rpc_endpoint='s', rpc_token='t', tmpdir=str(tmp_path), child_python=sys.executable))
+            backend = _make_run_env({'GEM_HOME': '/configured'})['GEM_HOME']  # terminal.env still wins
+        return [env.get('GEM_HOME') for env in envs], envs[0]['PATH'].split(':')[0], backend
+    try:
+        _, mine = _create(owner, connection.actor, home, 'a', client_env={'GEM_HOME': '/a', 'PATH': '/client/bin'})
+        _, other = _create(owner, connection.actor, home, 'b', client_env={'PATH': '/client/bin'})
+        _, bare = _create(owner, connection.actor, home, 'c', client_env={})
+        assert seen(mine) == (['/a'] * 3, '/client/bin', '/configured')
+        assert seen(other) == ([None] * 3, '/client/bin', '/configured')
+        assert seen(bare) == ([None] * 3, '/daemon/bin', '/configured')
+        assert _make_run_env({})['GEM_HOME'] == '/alpha'  # messaging/cron/Desktop: the gateway's own
+    finally:
+        await connection.close()
+        owner.db.close()
+
+
+@pytest.mark.asyncio
 async def test_host_values_apply_only_over_a_gateway_proven_local_attach(tmp_path, monkeypatch):
     """Toolchain and path-valued values are the client's only when the gateway itself proves the attach is
     on its host: the connection redeemed a ticket minted over the gateway's private control socket

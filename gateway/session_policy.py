@@ -82,7 +82,8 @@ class LocalSessionPolicy:
     # ticket): only host-free values were kept, and its tools run with the gateway's own toolchain.
     client_env_remote: bool = False
     # The rules that map was normalised by (``client_env_rules``: allowlist, secret filter, locality) as
-    # plain data: an exact retry is judged by them, never by the profile's current ones.
+    # plain data: an exact retry is judged by them, never by the profile's current ones, and the session's
+    # tools run without every toolchain name they cover that the client did not send.
     client_env_rules_json: str | None = None
 
     def client_env(self):
@@ -90,7 +91,8 @@ class LocalSessionPolicy:
 
     def client_env_scope(self):
         from agent.session_client_env import client_env_scope
-        return client_env_scope(self.client_env(), local=not self.client_env_remote)
+        rules = None if self.client_env_rules_json is None else json.loads(self.client_env_rules_json)
+        return client_env_scope(self.client_env(), local=not self.client_env_remote, rules=rules)
 
     def config(self, authority=None, *, secrets=True):
         return self.effective(authority, secrets=secrets)[0]

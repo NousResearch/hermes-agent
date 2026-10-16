@@ -143,6 +143,11 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/dashboard/theme",
   "/api/dashboard/font",
   "/api/dashboard/plugins",
+  // The Plugins page's WRITES: install/enable/disable/update/remove of agent plugins
+  // target a profile home on the backend, and the installed list above already
+  // follows the switcher — without this prefix the page read one profile and
+  // wrote the dashboard's own (#138094).
+  "/api/dashboard/agent-plugins",
   // The shared-metrics answer is one per profile (telemetry.shared_metrics in its config.yaml).
   "/api/shared-metrics",
 ];

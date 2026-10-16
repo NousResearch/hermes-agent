@@ -123,9 +123,8 @@ _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
 def _worker_memory_max_bytes() -> int:
     """Finite per-worker cgroup limit that can never widen host risk.
     ``TERMINAL_LOCAL_MEMORY_MAX_MB`` is honored only when it *tightens* the safe
-    bound (min of the gateway's cgroup-v2 ``memory.max`` and half of physical RAM,
-    with no arbitrary host-size cap), so an oversized override cannot exceed the
-    enclosing slice.
+    bound (min of the gateway's cgroup-v2 ``memory.max`` and half of physical RAM),
+    so an oversized override cannot exceed the enclosing slice.
 
     The proposed local-memory-guard environment override is honored when it tightens the safe bound, so this
     isolation composes with PR #57121 instead of inventing a second knob.

@@ -372,7 +372,16 @@ function SidebarSessionRowImpl({
       <SidebarRowShell
         actions={card ? undefined : actionsNode}
         className={cn(
-          'group row-hover relative',
+          // Session rows must keep the height their content needs. The list is
+          // a flex column inside a scroller, and a flex item defaults to
+          // flex-shrink: 1 — so once the list is longer than the scroller every
+          // row is compressed down to its min-height and whatever does not fit
+          // overflows visibly onto the row below. Anything that grows a row (a
+          // wrapped title, a longer model name, a wider UI font) therefore
+          // overlapped its neighbour, and the row only ever escaped it while its
+          // content stayed under the minimum. The scroller should absorb the
+          // extra length, never the row's own box.
+          'group row-hover relative shrink-0',
           card && SIDEBAR_ROW_CARD_MIN_H,
           // Density-aware minimum heights for the inline (non-card) row: the
           // metadata / preview lines below need the extra rows (#68119).

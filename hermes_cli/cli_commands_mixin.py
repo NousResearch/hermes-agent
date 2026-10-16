@@ -752,9 +752,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             if not 1 <= idx <= len(snaps):
                 return print(f"  {_t('snapshot.invalid_number', max=len(snaps))}")
             snap_id = snaps[idx - 1]["id"]
-        # Close our SessionDB first so the restore doesn't contend with this process's live connection.
+        # Close our own SessionDB first (restore contention); an open gateway session's store must stay.
         local_session_db = getattr(self, "_session_db", None)
-        if local_session_db is not None:
+        if local_session_db is not None and not getattr(self, "_gateway_session_open", False):
             with suppress(Exception):
                 local_session_db.close()
                 self._session_db = None
@@ -1094,22 +1094,22 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         from gateway.slash_commands_branch_thread import parse_branch_args
         _, branch_name = parse_branch_args(_command_arg(cmd_original))
         now = datetime.now()
-        new_session_id = self._new_session_id(now, branch_of=self.session_id)  # the gateway's branch child
-        branch_title = branch_name or self._session_db.get_next_title_in_lineage(
-            self._session_db.get_session_title(self.session_id) or "branch")
-        parent_session_id = self.session_id
-        # Create the child BEFORE ending the parent: a failed create_session must leave the session the
-        # user is still on open, not ended with end_reason="branched" and no branch (#11030).
+        from tools.approval_yolo import transfer_session_yolo, with_session_yolo
+        # Create the child BEFORE ending the parent: a failed create_session or gateway branch (or its /yolo
+        # carry) must leave the session the user is still on open, not ended "branched" with no branch (#11030).
         # The stable ``_branched_from`` marker keeps the branch visible in /resume + /sessions even after the
         # parent is re-ended with a different end_reason; with_session_yolo keeps a live /yolo on the branch.
-        # The child sends the parent's exact system prompt: a row without one makes the branch's first turn rebuild
-        # (re-probing the workspace), losing the copied transcript's warm cache whenever the repo moved since.
-        parent_prompt = getattr(self.agent, "_cached_system_prompt", None)
-        if not isinstance(parent_prompt, str) or not parent_prompt:
-            with suppress(Exception):
-                parent_prompt = (self._session_db.get_session(parent_session_id) or {}).get("system_prompt")
-        from tools.approval_yolo import transfer_session_yolo, with_session_yolo
+        # The child sends the parent's exact system prompt: a row without one makes the branch's first turn
+        # rebuild (re-probing the workspace), losing the copied transcript's warm cache if the repo moved since.
         try:
+            new_session_id = self._new_session_id(now, branch_of=self.session_id)  # the gateway's branch child
+            branch_title = branch_name or self._session_db.get_next_title_in_lineage(
+                self._session_db.get_session_title(self.session_id) or "branch")
+            parent_session_id = self.session_id
+            parent_prompt = getattr(self.agent, "_cached_system_prompt", None)
+            if not isinstance(parent_prompt, str) or not parent_prompt:
+                with suppress(Exception):
+                    parent_prompt = (self._session_db.get_session(parent_session_id) or {}).get("system_prompt")
             self._session_db.create_session(
                 session_id=new_session_id, source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                 model=self.model, parent_session_id=parent_session_id, system_prompt=parent_prompt or None,

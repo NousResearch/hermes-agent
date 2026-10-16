@@ -600,7 +600,7 @@ def _scan_gateway_pids(
         command_lc = command.lower().replace("\\", "/")
         if current_profile_name:
             # Token equality, not substring: `-p ops` must not claim (or SIGTERM) an `-p ops-2` gateway.
-            if profile_flag_value(command_lc) == current_profile_name_lc:
+            if profile_flag_value(command) == current_profile_name_lc:
                 return True
             return command_line_names_hermes_home(command_lc, current_home_lc)
 
@@ -608,7 +608,7 @@ def _scan_gateway_pids(
         # accepts (``--profile=ops`` slipped past a substring test, so a default-profile fallback stop
         # could SIGTERM the named gateway) or a HERMES_HOME= naming another home. An explicit
         # ``--profile default`` names this home (#100817).
-        if profile_flag_value(command_lc) not in (None, "default"):
+        if profile_flag_value(command) not in (None, "default"):
             return False
         if hermes_home_assignments(command_lc):
             return command_line_names_hermes_home(command_lc, current_home_lc)
@@ -4659,12 +4659,6 @@ from hermes_cli.gateway_setup_wizard import (
     _clean_discord_ids,
     _prompt_allowlist_var,
     _setup_standard_platform,
-    _WEIXIN_DM_POLICIES,
-    _WEIXIN_GROUP_NOTE,
-    _setup_weixin,
-    _setup_qqbot,
-    _signal_line_input,
-    _setup_signal,
     _builtin_setup_fn,
     _configure_platform,
     _wizard_offer_service_action,

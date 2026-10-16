@@ -22,6 +22,7 @@ from hermes_state_common import (
     _shape_preview, _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY,
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
+    _source_match_clause,
 )
 from hermes_state_compression import _CHAIN_CAP
 
@@ -113,7 +114,7 @@ def _session_filter_where(
     *, exclude_children: bool = False, source: str | None = None, sources: list[str] | None = None,
     session_key: str | None = None, exclude_sources: list[str] | None = None, cwd_prefix: str | None = None,
     min_message_count: int = 0, archived_only: bool = False, include_archived: bool = False,
-    include_subagents: bool = False,
+    include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
 ) -> tuple[list[str], list[Any]]:
     """Shared ``sessions s`` WHERE builder so counts line up with listed rows. ``exclude_children``
     hides sub-agent runs and compression continuations but keeps branch/reset children
@@ -134,8 +135,9 @@ def _session_filter_where(
     # legacy heuristic (parent ended with 'branched' before the child started), covering branch sessions
     # created before the marker existed.
     include_sources = [source] if source else list(sources or [])
+    source_clause, source_params = _source_match_clause(include_sources, local_created_sources)
     for clause, values in (
-        (f"s.source IN ({_session_ids_placeholders(include_sources)})", include_sources),
+        (source_clause, source_params),
         ("s.session_key = ?", [session_key] if session_key else []),
         (f"s.source NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
         (_cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
@@ -1325,18 +1327,20 @@ class SessionSessionsMixin:
         order_by_last_active: bool = False, include_archived: bool = False, archived_only: bool = False,
         id_query: str | None = None, search_query: str | None = None, compact_rows: bool = False,
         include_pinned: bool = False, session_key: str | None = None, include_hidden: bool = False,
-        include_subagents: bool = False,
+        include_subagents: bool = False, local_created_sources: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         """List sessions with preview and ``last_active`` in one query. ``order_by_last_active`` sorts
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
         ``include_pinned`` back-fills pins the page missed, still obeying the other
         filters except archived: a pin is an explicit keep, so a pinned row stamped
-        archived must still return."""
+        archived must still return. ``local_created_sources`` restricts ``source='local'``
+        rows to those surfaces before LIMIT/OFFSET."""
         self.flush_token_counts()  # rows carry token/cost totals
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived, include_subagents=include_subagents,
+            local_created_sources=local_created_sources,
         )
         # The archived-only view is the recovery surface for rows that dropped out of every
         # default list: a session that is archived AND hidden (Bot Mode marks its sessions
@@ -1420,7 +1424,7 @@ class SessionSessionsMixin:
                 exclude_children=not include_children, source=source, sources=sources,
                 session_key=session_key, exclude_sources=exclude_sources, cwd_prefix=cwd_prefix,
                 min_message_count=min_message_count, archived_only=False, include_archived=True,
-                include_subagents=include_subagents,
+                include_subagents=include_subagents, local_created_sources=local_created_sources,
             )
             if not include_hidden and not archived_only:
                 pinned_clauses.append("s.hidden = 0")
@@ -1532,16 +1536,18 @@ class SessionSessionsMixin:
 
     def search_sessions(
         self, source: str | Sequence[str] | None = None, limit: int = 20, offset: int = 0,
-        workspace_key: str | None = None,
+        workspace_key: str | None = None, local_created_sources: Sequence[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Sessions MRU-first with a computed ``last_active``; ``workspace_key`` scopes to one workspace
-        so ``hermes -c``/``--resume`` picks its last session. ``source`` may be one label or several."""
+        so ``hermes -c``/``--resume`` picks its last session. ``source`` may be one label or several.
+        ``local_created_sources`` restricts ``source='local'`` rows before LIMIT/OFFSET."""
         where_clauses = []
         params: list = []
         if source:
             sources = [source] if isinstance(source, str) else list(source)
-            where_clauses.append(f"s.source IN ({','.join('?' * len(sources))})")
-            params.extend(sources)
+            clause, bound = _source_match_clause(sources, local_created_sources)
+            where_clauses.append(clause)
+            params.extend(bound)
         if workspace_key:
             ws_clause, ws_params = _workspace_key_clause(workspace_key)
             where_clauses.append(ws_clause)

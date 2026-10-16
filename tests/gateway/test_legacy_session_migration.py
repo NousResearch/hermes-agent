@@ -17,7 +17,9 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
     from hermes_state_runtime import RuntimeStoreError
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    config = {'platform_toolsets': {'cli': []}}
+    # A code folder under focus: the row's saved cwd must not adopt it into the coding posture.
+    (tmp_path / 'pyproject.toml').write_text('[project]\nname = "old"\n')
+    config = {'platform_toolsets': {'cli': []}, 'agent': {'coding_context': 'focus'}}
     monkeypatch.setattr(run, '_load_gateway_config', lambda: config)
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     db = store._db
@@ -57,6 +59,7 @@ async def test_legacy_history_adoption_is_native_owned_atomic_and_retryable(tmp_
     assert db.get_session('old-cli')['parent_session_id'] == original['parent_session_id']
     policy = runner.adapters[Platform.LOCAL].policies[ref.session_id]
     assert policy.model == 'old-model' and policy.cwd == str(tmp_path)
+    assert not policy.coding_posture and 'coding' not in policy.toolsets
     config['platform_toolsets']['cli'] = ['terminal']
     authority.sessions.clear()
     await authority.attach(native, ref)

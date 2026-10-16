@@ -194,6 +194,7 @@ def test_oneshot_unit_dispatcher_scope_wraps_or_warns_never_dooms_silently(
 
 @pytest.mark.platforms("linux")
 def test_real_user_systemd_scope_preserves_worker_context(
+    request,
     worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from tools import process_registry
@@ -207,6 +208,8 @@ def test_real_user_systemd_scope_preserves_worker_context(
     # User-manager transient units outlive pytest's temporary directories.
     task = replace(task, id=f"t_candidate_{uuid4().hex}")
     unit = f"hermes-worker-kanban-{task.id}-run-{task.current_run_id}.scope"
+    # Only this freshly named scope is test-owned; the live-system guard still refuses every other unit.
+    request.node.live_system_guard_owned_units = {unit}
     receipt = workspace / "worker-receipt.json"
     script = (
         "import json, os, pathlib, sys, time; "

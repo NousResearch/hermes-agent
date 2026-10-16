@@ -41,7 +41,7 @@ def test_no_scrub_is_byte_preserving_except_explicit_extra():
     assert build_subprocess_env(base, scrub_secrets=False, extra={"HERMES_HOME": "/caller"})["HERMES_HOME"] == "/caller"
 
 
-def test_e2e_scrubbed_env_resolves_bare_hermes_under_minimal_parent_path(monkeypatch):
+def test_e2e_scrubbed_env_resolves_bare_hermes_under_minimal_parent_path(monkeypatch, tmp_path):
     """Regression for #92998/#93082: a gateway launched by systemd/cron with a
     minimal PATH (no hermes console-script dir) must still hand cron job
     children an env whose PATH resolves bare ``hermes``.
@@ -60,8 +60,10 @@ def test_e2e_scrubbed_env_resolves_bare_hermes_under_minimal_parent_path(monkeyp
     ):
         pytest.skip("no real hermes console-script install available")
 
-    # Simulate the service-manager minimal PATH: hermes dir absent.
-    minimal_path = os.pathsep.join(["/usr/bin", "/bin"])
+    # Simulate the service-manager minimal PATH: hermes dir absent. An empty directory, not
+    # /usr/bin:/bin — a distro-packaged hermes (/usr/bin/hermes) would already be on those.
+    minimal_path = str(tmp_path / "service-manager-bin")
+    os.mkdir(minimal_path)
     monkeypatch.setenv("PATH", minimal_path)
     assert shutil.which("hermes", path=minimal_path) is None
 

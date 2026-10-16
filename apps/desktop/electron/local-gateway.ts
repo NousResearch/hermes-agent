@@ -71,8 +71,11 @@ export interface GatewayEndpoint {
   code_sha?: string | null
 }
 
-/** Restarts a ready owner whose code differs from this client's; true when a restart was requested. */
-export type StaleGatewayRestart = (endpoint: GatewayEndpoint, stale: { gateway: string; client: string }) => Promise<boolean>
+/** Requests a restart of a ready owner whose code differs from this client's. Resolves as soon as the
+ *  restart is requested: `{ done }` settles when the restart client exits; null when none was requested.
+ *  Never awaited to completion before re-discovery: a supervised restart waits for the old owner to
+ *  drain, and a turn parked on approval/clarify there waits for an answer only this window can give. */
+export type StaleGatewayRestart = (endpoint: GatewayEndpoint, stale: { gateway: string; client: string }) => Promise<null | { done: Promise<void> }>
 
 /** The profile whose `hermes --profile P gateway restart` replaces the process behind `endpoint`:
  *  the multiplexer root (`default`) for a served secondary, else the endpoint's own profile home. */
@@ -98,28 +101,21 @@ export function createStaleGatewayRestarter(
     const pending = restarts.get(key)
 
     if (pending && !pending.done) {
-      await pending.promise
-
-      return true
+      return { done: pending.promise }
     }
 
     if (pending) {
       log(`[gateway] owner still runs ${stale.gateway} (this Hermes is ${stale.client}) after a restart; attaching as-is`)
 
-      return false
+      return null
     }
 
     log(`[gateway] owner runs ${stale.gateway} but this Hermes is ${stale.client}; restarting it`)
-    const entry = { done: false, promise: restart(gatewayOwnerProfile(endpoint)) }
+    const entry = { done: false, promise: restart(gatewayOwnerProfile(endpoint)).catch(() => undefined) }
     restarts.set(key, entry)
+    void entry.promise.then(() => { entry.done = true })
 
-    try {
-      await entry.promise
-    } finally {
-      entry.done = true
-    }
-
-    return true
+    return { done: entry.promise }
   }
 }
 
@@ -166,6 +162,42 @@ function assertLocalGatewayEndpoint(endpoint: GatewayEndpoint): void {
   }
 }
 
+/** Poll interval while a requested stale-owner restart is in flight. */
+export const STALE_RESTART_POLL_MS = 1000
+
+/** `gateway ensure`'s drain_reason for a restart's after-turn wait (gateway/drain_control.py RESTART_WAIT_REASON). */
+const RESTART_WAIT_REASON = 'restart_wait'
+
+/** A restart's after-turn wait that still hands out its endpoint: attachable, like Python's `attachable()`. */
+function isRestartWait(payload: Record<string, any>): boolean {
+  return payload.state === 'draining' && payload.reason_code === RESTART_WAIT_REASON && Boolean(payload.endpoint)
+}
+
+/** Re-ensure while a stale-owner restart runs, without waiting for it to finish (#139041): the first
+ *  answer that is no longer the stale owner wins — its restart wait (attach to answer a parked
+ *  prompt), or a replacement. Once the restart client exits, whatever answers next is final. */
+async function reensureDuringRestart(
+  run: () => Promise<{ code: number; stdout: string; stderr?: string }>,
+  done: Promise<void>,
+  staleInstance: string
+): Promise<{ result: { code: number; stdout: string; stderr?: string }; payload: Record<string, any> }> {
+  let finished = false
+  void done.then(() => { finished = true })
+
+  for (;;) {
+    const last = finished
+    const result = await run()
+    const payload = parseGatewayEnsureOutput(result)
+    const restartWait = isRestartWait(payload)
+    const replaced = payload.state === 'ready' && payload.endpoint?.instance_id !== staleInstance
+
+    if (last || restartWait || replaced) {return { result, payload }}
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([done, new Promise(resolve => { timer = setTimeout(resolve, STALE_RESTART_POLL_MS) })])
+    clearTimeout(timer)
+  }
+}
+
 export async function ensureLocalGateway(
   run: () => Promise<{ code: number; stdout: string; stderr?: string }>,
   beforeEnsure?: () => Promise<void>,
@@ -178,17 +210,24 @@ export async function ensureLocalGateway(
 
   // Attaching would pin a stale owner (503 "Restart required" forever): replace it once, then
   // take whatever answers the re-ensure.
-  if (stale && await restartStale!(payload.endpoint, stale)) {
-    result = await run()
-    payload = parseGatewayEnsureOutput(result)
+  const restart = stale ? await restartStale!(payload.endpoint, stale) : null
+
+  if (restart) {
+    ({ result, payload } = await reensureDuringRestart(run, restart.done, payload.endpoint.instance_id))
   }
 
-  if (result.code !== 0 || payload.state !== 'ready') {
+  // A graceful restart's after-turn wait still owns its turns (#139041): attach to it so a turn parked
+  // on approval/clarify can be answered; new input queues for the next owner, and the next dial after
+  // the owner exits reaches its replacement.
+  const restartWait = isRestartWait(payload)
+
+  if (!restartWait && (result.code !== 0 || payload.state !== 'ready')) {
     // A refused replacement (another install's or a newer Hermes's gateway) names its remedy in
     // `detail`; a start that died carries its own output there. Either beats a pointer elsewhere.
     const detail = typeof payload.detail === 'string' && payload.detail.trim() ? ` ${payload.detail.trim().split(/\r?\n/)[0]}.` : ''
+    const recovery = payload.reason_code === 'update_paused' ? 'restart' : 'status'
 
-    throw new Error(`Gateway ${payload.state || 'inaccessible'} (${payload.reason_code || 'ensure_failed'}).${detail} Use hermes gateway status for recovery.`)
+    throw new Error(`Gateway ${payload.state || 'inaccessible'} (${payload.reason_code || 'ensure_failed'}).${detail} Use hermes gateway ${recovery} for recovery.`)
   }
 
   const endpoint: GatewayEndpoint = payload.endpoint
@@ -316,10 +355,35 @@ function shellQuote(file: string): string {
   return `'${file.replace(/'/g, `'\\''`)}'`
 }
 
-/** The batched sidebar names its owner in `recents_profile` (the gateway checks that selector);
- *  every other profile-scoped route uses `profile`. */
+// Exact `/api/profiles/<suffix>` collection paths, mirroring the gateway's native-http scope check
+// (hermes_cli/dashboard_auth/native_http.py::_check_profile_scope). Matched on the whole suffix, so a
+// profile NAMED `projects` or `sessions` still gets its own ticket on `/api/profiles/projects/soul`.
+const PROFILE_COLLECTION_ROUTES = new Set([
+  'active', 'import', 'projects/tree', 'sessions', 'sessions/pull-requests', 'sessions/sidebar'
+])
+
+/** The batched sidebar names its owner in `recents_profile`. A named profile route carries its
+ *  owner in the first path segment; all other profile-scoped routes use `profile`. */
 function scopedProfileOf(url: URL): null | string {
-  return url.searchParams.get(url.pathname.replace(/\/+$/, '') === '/api/profiles/sessions/sidebar' ? 'recents_profile' : 'profile')
+  const pathname = url.pathname.replace(/\/+$/, '')
+
+  if (pathname === '/api/profiles/sessions/sidebar') {
+    return url.searchParams.get('recents_profile')
+  }
+
+  const prefix = '/api/profiles/'
+  const suffix = pathname.startsWith(prefix) ? pathname.slice(prefix.length) : ''
+  const segment = suffix.split('/', 1)[0]
+
+  if (segment && !PROFILE_COLLECTION_ROUTES.has(suffix)) {
+    try {
+      return decodeURIComponent(segment)
+    } catch {
+      return null
+    }
+  }
+
+  return url.searchParams.get('profile')
 }
 
 /** The endpoint a `?profile=<name>` request is scoped to on a shared host descriptor: the same
@@ -343,6 +407,24 @@ export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: s
   return { ...endpoint, profile_id: home, control_home: endpoint.control_home || endpoint.profile_id }
 }
 
+/** `routedGatewayEndpoint` bound to the home the gateway reserved for the routed profile. It serves
+ *  `profiles/<name>` at that directory's resolved home, so a symlinked or junction-linked named
+ *  profile mints for its target; the gateway still refuses a home it does not serve. */
+export async function routedTicketEndpoint(endpoint: GatewayEndpoint, urlOrProfile: string, launchHome: string): Promise<GatewayEndpoint> {
+  const routed = routedGatewayEndpoint(endpoint, urlOrProfile, launchHome)
+
+  // The endpoint's own home and the root it was routed from are advertised: they keep their checks.
+  if (routed.profile_id === endpoint.profile_id || routed.profile_id === routed.control_home) {return routed}
+
+  const home = await reservedHome(routed.profile_id).catch(error => {
+    // Not stale: re-ensuring the shared connection cannot bring a deleted profile back.
+    if (isMissingNodeError(error)) {throw new Error(`Profile '${path.basename(routed.profile_id)}' does not exist: no directory at ${routed.profile_id}`)}
+    throw error
+  })
+
+  return { ...routed, profile_id: home }
+}
+
 /** What a native grant is minted for: the URL's own profile selector or, when it names none, a
  *  JSON body's `profile`. The gateway checks both against the grant, and a session write such as
  *  `PATCH /api/sessions/<id>` names its owner in the body alone. */
@@ -361,7 +443,7 @@ export async function nativeGatewayHttpHeaders(descriptor: { gatewayEndpoint: Ga
   const purpose = method.toUpperCase() === 'POST' && new URL(url).pathname.replace(/\/$/, '') === '/api/profiles'
     ? 'native-profile-create' : 'native-http'
 
-  return { 'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(routedGatewayEndpoint(descriptor.gatewayEndpoint, nativeGrantRoute(url, body), launchHome), purpose) }
+  return { 'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(await routedTicketEndpoint(descriptor.gatewayEndpoint, nativeGrantRoute(url, body), launchHome), purpose) }
 }
 
 // The installed runtime's own ticket client: every Windows mint (SID-validated pipe), and a POSIX
@@ -389,6 +471,51 @@ function isMissingNodeError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException)?.code
 
   return code === 'ENOENT' || code === 'ENOTDIR'
+}
+
+/** Python's `posixpath.realpath`: each ordinary component keeps the spelling it was given, and a
+ *  symlink is replaced by its target text, joined onto the prefix resolved so far (an absolute
+ *  target restarts from `/`). Unlike Python it throws for a missing component instead of keeping it. */
+async function posixRealpath(dir: string): Promise<string> {
+  const rest = dir.split('/').reverse()
+  let resolved = dir.startsWith('/') ? '/' : process.cwd()
+  let links = 0
+
+  while (rest.length) {
+    const name = rest.pop()
+
+    if (!name || name === '.') {continue}
+
+    if (name === '..') {
+      resolved = resolved.slice(0, resolved.lastIndexOf('/')) || '/'
+
+      continue
+    }
+
+    const next = resolved === '/' ? `/${name}` : `${resolved}/${name}`
+
+    if (!(await fs.lstat(next)).isSymbolicLink()) {
+      resolved = next
+
+      continue
+    }
+
+    if (++links > 40) {throw Object.assign(new Error(`Too many levels of symbolic links: ${dir}`), { code: 'ELOOP' })}
+    const target = await fs.readlink(next)
+
+    if (target.startsWith('/')) {resolved = '/'}
+    rest.push(...target.split('/').reverse())
+  }
+
+  return resolved
+}
+
+/** The home the gateway reserves for `dir`: its `Path.resolve()`. On POSIX that keeps the given
+ *  spelling of every ordinary component, where macOS realpath(3) answers a case-insensitive volume
+ *  in its stored letter case (#138754). Windows mints through the runtime bridge, whose
+ *  `Path.resolve()` is the final on-disk path, as Node's realpath is. */
+export async function reservedHome(dir: string): Promise<string> {
+  return process.platform === 'win32' ? fs.realpath(dir) : posixRealpath(dir)
 }
 
 async function resolveControlSocket(home: string): Promise<string> {
@@ -434,7 +561,8 @@ export async function mintLocalGatewayTicket(endpoint: GatewayEndpoint, purpose:
   const groupWritable: string[] = []
 
   for (const dir of new Set([home, controlHome])) {
-    if (await fs.realpath(dir) !== dir) {throw new Error('Noncanonical gateway profile')}
+    // Identity, not spelling: an advertised home is refused only when it leads somewhere else.
+    if (await reservedHome(dir) !== dir) {throw new Error('Noncanonical gateway profile')}
 
     if (await privateNode(dir, 'home')) {groupWritable.push(dir)}
   }

@@ -71,10 +71,6 @@ function mutationSummary(operation: string, value: Record<string, unknown>): str
 // stored parent id; the authority has ONE branch, a `branch` mutation on the parent, whose child
 // is a local route the authority can restore (a legacy-minted child has no local policy and every
 // resume on it answers not_found).
-// The socket is bound to a profile already; only a sibling the host multiplexes rides as `profile`.
-export function siblingRoute(profile: unknown): string | null {
-  return typeof profile === 'string' && profile && profile !== 'default' ? profile : null
-}
 
 // A message-level branch (`count` = the selected prefix) keeps rows through `through_message_id`.
 // Without that durable id the authority would copy the whole history, so it refuses instead.
@@ -137,7 +133,8 @@ export function splitRewindSubmit(params: Record<string, unknown>): { rewind: Re
 // Session verbs only the legacy sidecar implements: it looks the session up in its own table,
 // which never holds an owner session, and answers `session not found` (read by the renderer as a
 // reaped runtime). Refused by name until the owner serves them.
-const SIDECAR_SESSION_VERBS = new Set(['handoff.request', 'handoff.state', 'handoff.fail', 'preview.restart'])
+// `preview.restart` is served by the owner (gateway/session_tui_side.py).
+const SIDECAR_SESSION_VERBS = new Set(['handoff.request', 'handoff.state', 'handoff.fail'])
 
 // `config.set` keys the owner serves (tui_gateway/contracts/canonical_projections.py::CanonicalConfigSetParams;
 // gateway/session_tui_config.py), with the keys that take a `scope` (`reasoning --global`, the
@@ -417,8 +414,10 @@ export class CanonicalDesktopProtocol {
 
     if (unsupported.length) { throw new Error(`Canonical gateway does not support explicit session options: ${unsupported.join(', ')}`) }
 
+    // RT-26: the picked profile always rides, `default` included: a socket launched as a named
+    // profile (active-profile.json) reads an omitted profile as its own launch profile.
     const result = Object.fromEntries(Object.entries(params).filter(([key, value]) =>
-      ['request_id', 'cwd', 'model', 'provider', 'toolsets', 'reasoning', 'title', 'hidden', 'follow_profile_config', 'service_tier', 'cwd_explicit'].includes(key) || (key === 'profile' && siblingRoute(value))))
+      ['request_id', 'cwd', 'model', 'provider', 'toolsets', 'reasoning', 'title', 'hidden', 'follow_profile_config', 'service_tier', 'cwd_explicit'].includes(key) || (key === 'profile' && typeof value === 'string' && value !== '')))
 
     const key = JSON.stringify(result)
     const requestId = params.request_id ?? this.creates.get(key) ?? crypto.randomUUID()

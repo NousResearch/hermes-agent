@@ -76,6 +76,7 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 from plugins.platforms.discord.adapter import DiscordAdapter
+from tests.gateway._discord_sdk_fixtures import make_thread
 
 
 class FakeTree:
@@ -386,7 +387,7 @@ async def test_dispatch_thread_session_builds_thread_event(adapter):
 
 def test_build_slash_event_preserves_thread_context(adapter):
     interaction = SimpleNamespace(
-        channel=_FakeThreadChannel(channel_id=555, name="Planning"),
+        channel=_fake_thread_channel(channel_id=555, name="Planning"),
         channel_id=555,
         user=SimpleNamespace(display_name="Jezza", id=42),
     )
@@ -456,9 +457,6 @@ async def test_rename_thread_edits_only_when_current_name_matches(adapter):
 # ------------------------------------------------------------------
 
 
-import discord as _discord_mod
-
-
 class _FakeTextChannel:
     """A channel that is NOT a discord.Thread or discord.DMChannel."""
 
@@ -476,23 +474,10 @@ class _FakeTextChannel:
         return _empty()
 
 
-class _FakeThreadChannel(_discord_mod.Thread):
-    """isinstance(ch, discord.Thread) → True."""
-
-    def __init__(self, channel_id=200, name="existing-thread", guild_name="TestGuild", parent_id=100):
-        # Don't call super().__init__ — mock Thread is just an empty type
-        self.id = channel_id
-        self.name = name
-        self.guild = SimpleNamespace(name=guild_name, id=1)
-        self.topic = None
-        self.parent = SimpleNamespace(id=parent_id, name="general", guild=SimpleNamespace(name=guild_name, id=1))
-
-    def history(self, *args, **kwargs):
-        async def _empty():
-            return
-            yield  # pragma: no cover — make this an async generator
-
-        return _empty()
+def _fake_thread_channel(channel_id=200, name="existing-thread", guild_name="TestGuild", parent_id=100):
+    channel = make_thread(channel_id=channel_id, name=name, guild_name=guild_name,
+                          guild_id=1, parent_id=parent_id)
+    return channel
 
 
 def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza"):
@@ -635,7 +620,7 @@ def test_build_slash_event_routes_guild_profile_like_messages(adapter, monkeypat
         "/new",
     )
     thread_event = adapter._build_slash_event(
-        SimpleNamespace(channel=_FakeThreadChannel(channel_id=555), channel_id=555, guild_id=None, user=user),
+        SimpleNamespace(channel=_fake_thread_channel(channel_id=555), channel_id=555, guild_id=None, user=user),
         "/status",
     )
 

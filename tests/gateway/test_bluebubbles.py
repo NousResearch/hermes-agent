@@ -583,3 +583,57 @@ class TestBlueBubblesGateBeforeDownload:
         assert response.status == 200
         assert download.await_count == downloads
         assert len(handled) == handled_count
+
+
+class TestBlueBubblesCredentialRedaction:
+    """verify that passwords in urls and exceptions are redacted across all error sinks."""
+
+    def test_redact_helper_strips_password_query(self):
+        from gateway.platforms.bluebubbles import _redact
+
+        raw = "request to http://localhost:1234/api/v1/ping?password=my_super_secret_pw failed"
+        redacted = _redact(raw)
+        assert "my_super_secret_pw" not in redacted
+        assert "password=[REDACTED]" in redacted
+
+    @pytest.mark.asyncio
+    async def test_api_json_and_post_message_redact_password_on_error(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, password="ultra_sensitive_token_123")
+
+        class MockErrorClient:
+            async def get(self, url, **kwargs):
+                req = httpx.Request("GET", url)
+                res = httpx.Response(500, request=req)
+                raise httpx.HTTPStatusError("server error on " + url, request=req, response=res)
+
+            async def post(self, url, **kwargs):
+                req = httpx.Request("POST", url)
+                res = httpx.Response(500, request=req)
+                raise httpx.HTTPStatusError("server error on " + url, request=req, response=res)
+
+        adapter.client = MockErrorClient()
+
+        # _api_get / _api_json raises sanitized exception
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await adapter._api_get("/api/v1/ping")
+        assert "ultra_sensitive_token_123" not in str(exc_info.value)
+        assert "[REDACTED]" in str(exc_info.value)
+
+        # _post_message returns SendResult with sanitized error
+        res = await adapter._post_message("/api/v1/message/text", {"dummy": 1})
+        assert not res.success
+        assert "ultra_sensitive_token_123" not in res.error
+        assert "[REDACTED]" in res.error
+
+        # httpx.ConnectError exception type is preserved and sanitized
+        class MockConnectErrorClient:
+            async def get(self, url, **kwargs):
+                raise httpx.ConnectError("connection refused to " + url)
+
+        adapter.client = MockConnectErrorClient()
+        with pytest.raises(httpx.ConnectError) as exc_info:
+            await adapter._api_get("/api/v1/ping")
+        assert "ultra_sensitive_token_123" not in str(exc_info.value)
+        assert "[REDACTED]" in str(exc_info.value)
+
+

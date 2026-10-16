@@ -52,11 +52,21 @@ const REMOTE_PROBE_TIMEOUT_SECS = 15
 // No-mux tunnels are one `ssh -N -L` child each; a transient child death
 // (network blip, sshd restart, laptop resume) used to instantly poison
 // isAlive() and cascade upstream into a full teardown that SIGTERM'd a
-// healthy backend (#96266). Instead, restart the child a bounded number of
-// times; consecutive pre-readiness failures exhaust the budget and only then
-// is the connection reported dead.
-const DEFAULT_TUNNEL_RESTART_LIMIT = 5
+// healthy backend (#96266). Instead, restart the child as long as the outage
+// stays inside a bounded time window; only a tunnel that cannot hold up for
+// the whole window is reported dead.
+
+// Tunnel flaps are budgeted as a TIME WINDOW, not a lifetime count: what
+// matters is whether the tunnel comes back while the caller still cares about
+// its request. A count cannot tell one outage that burns five restarts in
+// twenty seconds (a real, unrecoverable failure) from five isolated flaps
+// hours apart (each individually survivable) — the old count summed both into
+// a dead connection.
+const DEFAULT_TUNNEL_RESTART_WINDOW_MS = 90_000
 const DEFAULT_TUNNEL_RESTART_DELAY_MS = 1_000
+// A tunnel that stays up this long has genuinely recovered: forget the window
+// so the next isolated flap starts a fresh one.
+const DEFAULT_TUNNEL_RESTART_STABLE_MS = 60_000
 const CONTROL_PERSIST_SECONDS = 300
 const CONTROL_FORWARD_KEEPALIVE_MS = Math.min(60_000, Math.floor((CONTROL_PERSIST_SECONDS * 1_000) / 2))
 
@@ -685,8 +695,9 @@ class SshConnection {
   _connectTimeoutMs: number
   _execTimeoutMs: number
   _forwardTimeoutMs: number
-  _tunnelRestartLimit: number
+  _tunnelRestartWindowMs: number
   _tunnelRestartDelayMs: number
+  _tunnelRestartStableMs: number
   _opened: boolean
   _mux: boolean
   _posixRemote: boolean | null = null
@@ -735,9 +746,10 @@ class SshConnection {
     this._connectTimeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS
     this._execTimeoutMs = opts.execTimeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS
     this._forwardTimeoutMs = opts.forwardTimeoutMs ?? DEFAULT_FORWARD_TIMEOUT_MS
-    this._tunnelRestartLimit = opts.tunnelRestartLimit ?? DEFAULT_TUNNEL_RESTART_LIMIT
+    this._tunnelRestartWindowMs = opts.tunnelRestartWindowMs ?? DEFAULT_TUNNEL_RESTART_WINDOW_MS
     this._tunnelRestartDelayMs = opts.tunnelRestartDelayMs ?? DEFAULT_TUNNEL_RESTART_DELAY_MS
     this._controlKeepaliveTimer = null
+    this._tunnelRestartStableMs = opts.tunnelRestartStableMs ?? DEFAULT_TUNNEL_RESTART_STABLE_MS
     this._opened = false
   }
 
@@ -1141,11 +1153,11 @@ class SshConnection {
   }
 
   // A ready no-mux tunnel child died. Deliberate teardown (cancelForward /
-  // close) and superseded tunnels stay dead; otherwise restart the child up to
-  // the bounded budget, and only mark the tunnel (and thus the connection)
-  // unhealthy once the budget is exhausted. The budget is cumulative per
-  // forward — a tunnel that keeps dying immediately after confirming readiness
-  // must not restart forever.
+  // close) and superseded tunnels stay dead; otherwise restart the child as
+  // long as the outage stays inside one time window, and only mark the tunnel
+  // (and thus the connection) unhealthy when it fails to hold up for the whole
+  // window. The window — not a lifetime count — is what distinguishes an
+  // unrecoverable outage from isolated flaps spread over hours.
   _handleNoMuxTunnelFlap(tunnel: any, spec: string, args: string[], localPort: number | string, cause: string) {
     if (tunnel.stopping || this._tunnels.get(spec) !== tunnel) {
       tunnel.alive = false
@@ -1153,19 +1165,24 @@ class SshConnection {
       return
     }
 
-    if (tunnel.restarts >= this._tunnelRestartLimit) {
+    const now = Date.now()
+
+    if (tunnel.flapWindowStart !== null && now - tunnel.flapWindowStart >= this._tunnelRestartWindowMs) {
       tunnel.alive = false
       this._logLine(
-        `tunnel 127.0.0.1:${localPort} down (${cause}); restart budget exhausted (${this._tunnelRestartLimit})`
+        `tunnel 127.0.0.1:${localPort} down (${cause}); restart window exhausted ` +
+          `(${this._tunnelRestartWindowMs}ms, ${tunnel.restarts} restarts)`
       )
 
       return
     }
 
+    tunnel.flapWindowStart = tunnel.flapWindowStart ?? now
     tunnel.restarts += 1
+    this._cancelStableReset(tunnel)
     this._logLine(
       `tunnel 127.0.0.1:${localPort} flapped (${cause}); restarting ` +
-        `(${tunnel.restarts}/${this._tunnelRestartLimit}) in ${this._tunnelRestartDelayMs}ms`
+        `(${tunnel.restarts} in window) in ${this._tunnelRestartDelayMs}ms`
     )
 
     const timer: any = setTimeout(() => {
@@ -1181,6 +1198,7 @@ class SshConnection {
         () => {
           tunnel.alive = true
           this._logLine(`tunnel 127.0.0.1:${localPort} restarted`)
+          this._scheduleStableReset(tunnel)
         },
         (error: any) => {
           // A restart that never confirmed readiness may leave its child
@@ -1195,11 +1213,35 @@ class SshConnection {
     tunnel.restartTimer = timer
   }
 
+  // A tunnel that has held up for the stability period has really recovered:
+  // drop the window so the next isolated flap starts a fresh one (and the log
+  // line above counts restarts *within* the current window).
+  _scheduleStableReset(tunnel: any) {
+    this._cancelStableReset(tunnel)
+
+    const timer: any = setTimeout(() => {
+      tunnel.stableTimer = null
+      tunnel.flapWindowStart = null
+      tunnel.restarts = 0
+    }, this._tunnelRestartStableMs)
+
+    timer.unref?.()
+    tunnel.stableTimer = timer
+  }
+
+  _cancelStableReset(tunnel: any) {
+    if (tunnel.stableTimer) {
+      clearTimeout(tunnel.stableTimer)
+      tunnel.stableTimer = null
+    }
+  }
+
   // Establish a local→remote forward. Mux: `-O forward` against the master.
   // No-mux: spawn a persistent `ssh -N -L` child that IS the tunnel; ready when
   // the local port accepts. A child dying AFTER readiness is a tunnel flap and
-  // is restarted with a bounded budget (#96266); only an exhausted budget (or
-  // a deliberate cancel/close) marks the connection unhealthy for isAlive().
+  // is restarted while the outage stays inside the restart window (#96266);
+  // only an exhausted window (or a deliberate cancel/close) marks the
+  // connection unhealthy for isAlive().
   async forward(localPort, remotePort, remoteHost = '127.0.0.1') {
     const spec = forwardSpec(localPort, remotePort, remoteHost)
     this._logLine(`forwarding 127.0.0.1:${localPort} -> ${remoteHost}:${remotePort}`)
@@ -1216,7 +1258,16 @@ class SshConnection {
         target(this.user, this.host)
       ]
 
-      const tunnel: any = { alive: true, child: null, restarts: 0, restartTimer: null, stopping: false }
+      const tunnel: any = {
+        alive: true,
+        child: null,
+        flapWindowStart: null,
+        restarts: 0,
+        restartTimer: null,
+        stableTimer: null,
+        stopping: false
+      }
+
       this._tunnels.set(spec, tunnel)
 
       try {
@@ -1267,6 +1318,7 @@ class SshConnection {
       if (tunnel) {
         tunnel.stopping = true
         tunnel.alive = false
+        this._cancelStableReset(tunnel)
 
         if (tunnel.restartTimer) {
           clearTimeout(tunnel.restartTimer)
@@ -1314,6 +1366,7 @@ class SshConnection {
       for (const [spec, tunnel] of this._tunnels) {
         tunnel.stopping = true
         tunnel.alive = false
+        this._cancelStableReset(tunnel)
 
         if (tunnel.restartTimer) {
           clearTimeout(tunnel.restartTimer)

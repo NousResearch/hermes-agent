@@ -180,13 +180,16 @@ export function useComposerSubmit({
   // if the turn has already ended, or a steer is not possible, queue it so it
   // runs next. This holds for hidden setup notes and for visible messages a
   // button sends on the user's behalf alike.
-  const externalSubmitRef = useRef({ busy, dispatchSubmit, onSteer, onSteerHidden })
-  externalSubmitRef.current = { busy, dispatchSubmit, onSteer, onSteerHidden }
+  const externalSubmitRef = useRef({ busy, dispatchSubmit, onSteer, onSteerHidden, onSubmit })
+  externalSubmitRef.current = { busy, dispatchSubmit, onSteer, onSteerHidden, onSubmit }
 
   useLayoutEffect(
     () =>
-      onComposerSubmitRequest(({ surfaceId: requestedSurfaceId, target, text, displayKind }) => {
+      onComposerSubmitRequest(detail => {
+        const { surfaceId: requestedSurfaceId, target, text, displayKind, onResult } = detail
+
         if (
+          !detail.claimed &&
           target === scope.target &&
           surfaceId !== null &&
           requestedSurfaceId === surfaceId &&
@@ -194,6 +197,31 @@ export function useComposerSubmit({
           !inputDisabled
         ) {
           const current = externalSubmitRef.current
+
+          if (onResult) {
+            detail.claimed = true
+
+            if (current.busy) {
+              onResult(false)
+            } else {
+              // A widget sends its own text without clearing the user's draft.
+              try {
+                void Promise.resolve(
+                  current.onSubmit(text, {
+                    composerScope: activeQueueSessionKeyRef.current,
+                    submission_id: crypto.randomUUID()
+                  })
+                ).then(
+                  accepted => onResult(accepted !== false),
+                  () => onResult(false)
+                )
+              } catch {
+                onResult(false)
+              }
+            }
+
+            return
+          }
 
           if (!current.busy) {
             current.dispatchSubmit(text, undefined, displayKind)

@@ -895,6 +895,82 @@ Migration for **rss-reader** (#115972): replace the stubbed `/preview` → 501 �
 chain with `<SandboxedFrame src={article.url} title={article.title} />` inside
 the workspace page; drop the leftover `.rss-browser-frame-host webview` CSS.
 
+### Fenced transcript renderers
+
+`TRANSCRIPT_CODE_BLOCK_AREA` lets a plugin render a complete, explicitly named
+fence in an assistant message. This is useful for structured forms, charts and
+declarative UI languages that need multiline payloads rather than directive
+attributes. The host does not implement a component catalog or interpret the
+payload. The plugin validates it and returns `fallback` when it cannot render it.
+
+```javascript
+import { TRANSCRIPT_CODE_BLOCK_AREA, Button, host } from '@hermes/plugin-sdk'
+import { jsx } from 'react/jsx-runtime'
+
+export default {
+  id: 'example-form',
+  register(ctx) {
+    ctx.register({
+      id: 'form',
+      area: TRANSCRIPT_CODE_BLOCK_AREA,
+      data: {
+        language: 'example-form',
+        render: ({ code, fallback, busy, readOnly, submitInteraction }) => {
+          if (code.trim() !== 'confirm') return fallback
+          return jsx(Button, {
+            disabled: busy || readOnly,
+            onClick: async () => {
+              const accepted = await submitInteraction('Please review my selection.')
+              // Show success only if the originating composer accepted it.
+              if (!accepted) host.notify({ kind: 'info', message: 'Open the original chat and try again.' })
+            },
+            children: 'Ask Hermes to review'
+          })
+        }
+      }
+    })
+  }
+}
+```
+
+The model emits a fenced `example-form` block whose body is `confirm`. Explain
+the language and its schema in the plugin's skill, using the existing skill and
+composer APIs for guidance. Registration alone does not alter the model prompt
+or advertise support on other clients. A2UI/OpenUI adapters can use this same
+hook without adding a vendor-specific flag to the gateway contract.
+
+The SDK exports `TranscriptCodeBlockContribution`, `TranscriptCodeBlockProps`
+and `TranscriptCodeBlockOrigin`. Props include untrusted `code`, `language`,
+`busy`, `readOnly`, the normal code `fallback`, and a frozen `origin` identifying
+the connection/profile, stored session, message, native text-part index and
+fence index. The first enabled registration for an exact language wins.
+
+Host behavior:
+
+- Only visible assistant text supplies a scope. Reasoning, tool output, user
+  text, scratchpads and previews keep their normal rendering.
+- Unclaimed, streaming, literally unclosed or ambiguously located fences keep
+  the existing code rendering. The initial hook supports top-level fences;
+  Markdown examples nested inside another fence do not become widgets.
+  Identical fences within one text part stay code: Markdown's chunk-local line
+  positions cannot distinguish their origins. Distinct payloads and fences in
+  separate native text parts retain their own indexes.
+- Registered renderers use a local error boundary. A render failure restores
+  the original code block. Invalid data should return `fallback` directly.
+- `submitInteraction(text)` is a normal, visible Hermes request. Call it only
+  from an explicit user action. Local editing must not submit automatically.
+  It does not execute tools or mark a draft as sent.
+- The callback resolves `true` only after the originating composer's submit
+  accepts. Busy, read-only, hidden, unmounted or replaced surfaces, changed
+  message text, changed session/owner, disabled contributions and concurrent
+  duplicate submissions return `false`. It never falls through to the active
+  chat. Blank requests and requests over 64 KiB are refused. The user's unsent
+  composer draft is preserved, including when submission fails.
+
+As with other Desktop plugins, renderer code is trusted installed code, not a
+sandbox for arbitrary JavaScript. Treat model payloads as data, apply schema and
+resource limits, and preserve Hermes's ordinary approval flow.
+
 ### Transcript directives — inline components the model addresses
 
 `TRANSCRIPT_DIRECTIVE_AREA` makes the transcript itself a contribution area.

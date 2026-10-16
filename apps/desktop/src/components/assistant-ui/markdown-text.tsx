@@ -46,6 +46,7 @@ import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
+import { TranscriptCodeBlock } from './transcript-code-block'
 import { paragraphPlainText, TranscriptDirectiveLeaf, useResolvedParagraph } from './transcript-directive'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
@@ -738,10 +739,21 @@ function MarkdownTextSurface({
             return <ArtifactCard code={props.code} detection={artifact} streaming={isStreaming} />
           }
 
-          return (
+          const fallback = (
             <RichCodeBlock
               code={props.code}
               fallback={<SyntaxHighlighter {...props} defer={isStreaming} />}
+              language={props.language}
+              streaming={isStreaming}
+            />
+          )
+
+          return previewOnly || scratchpad ? (
+            fallback
+          ) : (
+            <TranscriptCodeBlock
+              code={props.code}
+              fallback={fallback}
               language={props.language}
               streaming={isStreaming}
             />

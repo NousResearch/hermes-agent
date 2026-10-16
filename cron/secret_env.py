@@ -353,7 +353,9 @@ def scrub_secret_values(text: str, values: Iterable[str]) -> str:
     comes back as LF) and a child writing in text mode doubles it first (CR CR LF -> LF LF)."""
     variants = {form for value in values if value
                 for form in (value, value.strip(), _LINE_BREAKS.sub("", value))}
-    for variant in sorted((v for v in variants if v.strip()), key=len, reverse=True):
+    # Ranked by length without breaks: a pattern matches any break run, so raw length misorders them.
+    for variant in sorted((v for v in variants if v.strip()), reverse=True,
+                          key=lambda v: (len(_LINE_BREAKS.sub("", v)), len(v))):
         # Edge breaks dropped: a pattern opening on [\r\n]+ backtracks quadratically on blank runs.
         pattern = r"[\r\n]+".join(map(re.escape, _LINE_BREAKS.split(variant.strip("\r\n"))))
         text = re.sub(pattern, lambda _match: SECRET_ENV_REDACTION, text)

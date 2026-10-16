@@ -326,6 +326,14 @@ def test_scrub_multiline_value_does_not_overmatch():
         assert scrub_secret_values(text, [value]) == text
 
 
+def test_scrub_replaces_the_longer_secret_whole_even_when_the_shorter_has_more_breaks():
+    from cron.secret_env import SECRET_ENV_REDACTION, scrub_secret_values
+
+    inner, outer = "FAKE-IN" + "\r\n" * 10 + "FAKE-NER", "OUT-FAKE-IN\nFAKE-NER-OUT"
+    assert len(inner) > len(outer)
+    assert scrub_secret_values(f"x={outer}", [inner, outer]) == f"x={SECRET_ENV_REDACTION}"
+
+
 # ---------------------------------------------------------------------------
 # WinCredBackend (fake advapi32 — the real credential store is never read)
 # ---------------------------------------------------------------------------

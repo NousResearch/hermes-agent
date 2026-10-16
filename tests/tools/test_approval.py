@@ -535,6 +535,8 @@ class TestSensitiveRedirectPattern:
         authorized_keys = Path.home() / ".ssh" / "authorized_keys"
         for command in (
             "echo x > $HERMES_HOME/.env",
+            # The 1Password bootstrap env load_hermes_dotenv() reads after .env.
+            "echo OP_SERVICE_ACCOUNT_TOKEN=x > ~/.hermes/.op.env",
             "cat key >> $HOME/.ssh/authorized_keys",
             "cat key >> ~/.ssh/authorized_keys",
             f"cat key >> {authorized_keys}",

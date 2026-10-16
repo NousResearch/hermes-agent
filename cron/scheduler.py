@@ -378,11 +378,12 @@ def _upsert_incident_for_failure(
 
 def _resolve_incidents_for_recovered_job(job: dict) -> None:
     """Best-effort: a successful run marks the job's open incidents ``resolved`` (never touches an
-    operator ``closed`` ack). Store errors log at debug; delivery is unaffected."""
+    operator ``closed`` ack) — except a suppressed monitor tick, which proves nothing about the
+    job's own work (``cron.monitor``). Store errors log at debug; delivery is unaffected."""
     try:
-        from cron.incidents import close_incidents_for_recovered_job
+        from cron.monitor import resolve_incidents_after_run
 
-        close_incidents_for_recovered_job(job["id"])
+        resolve_incidents_after_run(job)
     except Exception as exc:
         logger.debug("Incident store unavailable for job %s (delivery unaffected): %s", job["id"], exc)
 
@@ -1582,7 +1583,7 @@ def _apply_monitor_gate(
     monitor_context)``. Monitor context is runtime data and must remain distinct from a
     user-authored ``extra_prompt`` so the prompt scanner keeps its strict user-input boundary.
     """
-    from cron.monitor import check_monitor, job_has_monitor
+    from cron.monitor import check_monitor, flag_no_change_tick, job_has_monitor
 
     if not job_has_monitor(job):
         return None, extra_prompt, None
@@ -1604,9 +1605,9 @@ def _apply_monitor_gate(
     if not _mon.changed:
         # Unchanged: silent no_change tick (ledger doc kept; SILENT_MARKER blocks delivery).
         logger.info("Job '%s': monitor output unchanged — suppressing agent run", job_id)
-        return (
-            True, f"{header}**Status:** no_change (agent run suppressed)\n", SILENT_MARKER, None,
-        ), extra_prompt, None
+        flag_no_change_tick(job)
+        return (True, f"{header}**Status:** no_change (agent run suppressed)\n",
+                SILENT_MARKER, None), extra_prompt, None
     # Changed (or first run): pass monitor output through the runtime-data seam. Keep any manual
     # per-run prompt separate: it remains user input and is therefore still strict-scanned.
     return None, extra_prompt, _mon.context_block

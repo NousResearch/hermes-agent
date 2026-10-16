@@ -61,6 +61,12 @@ def finish_completed_run(d, fire_owner: Optional[str], execution_id: str, *, rec
         update_job(job["id"], {"last_delivery_queued": None})
         job["last_delivery_queued"] = None
     mark_kwargs: dict = {"delivery_error": d.delivery_error}
+    from cron.monitor import suppressed_tick
+    if suppressed_tick(job):
+        # The fire ran no agent work (an unchanged monitor tick): its record write must leave the
+        # last real run's failure state alone, or every poll would "recover" a still-failing job
+        # and restart its alert cadence (cron.monitor, #140178).
+        mark_kwargs["neutral_tick"] = True
     from cron.scheduler_authority import journal_path
     journal = journal_path(job['id'], execution_id)
     if not job.get('no_agent'):

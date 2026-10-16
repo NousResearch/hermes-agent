@@ -542,6 +542,12 @@ the job later fails with the *same* error, the resolved incident re-opens as
 `detected` and you are alerted again. Acknowledged (`closed`) incidents are
 the exception: a success leaves them alone, and a repeat stays silent.
 
+A monitor job's unchanged ticks (`no_change`) are not successes in this sense:
+they suppress the agent run, so they neither resolve an open incident nor reset
+the failure streak. Only a run that actually did the job's work counts as a
+recovery, which is what keeps `failure_repeat_alert_hours` and the streak nudge
+effective for monitor-gated jobs.
+
 Incident lifecycle: `detected` (failure recorded) → `alerted` (at least one
 failure ping reached delivery; `alerted_at` is the latest one and starts the
 reminder cooldown) → `resolved` (the job ran OK afterwards; re-opens on a

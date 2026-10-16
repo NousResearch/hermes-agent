@@ -32,6 +32,7 @@ from hermes_constants import get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
 from cron.jobs_invariants import _validate_job_mode_invariants
+from cron.jobs_run_outcome import _record_run_outcome
 from cron.scheduler_ownership import _claim_owner_is_dead
 from cron import store_health
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
@@ -2334,43 +2335,6 @@ def note_fire_forward_failure(job_id: str, detail: str) -> bool:
     return _with_job(job_id, apply, False)
 
 
-def _record_run_outcome(
-    job: dict[str, Any], success: bool, error: Optional[str], delivery_error: Optional[str],
-    status: Optional[str], now: str,
-) -> None:
-    """Stamp one completed run onto *job*: status fields, failure streak, alert markers, claims."""
-    job["last_run_at"] = now
-    job.pop("manual_run_at", None)
-    # The transient manual-run context is single-fire: the run that just completed consumed it.
-    job.pop("manual_run_prompt", None)
-    delivery_failed = isinstance(delivery_error, str) and bool(delivery_error.strip())
-    job["last_status"] = status or (
-        "error" if not success else ("delivery_failed" if delivery_failed else "ok"))
-    job["last_error"] = None if success else error
-    if success:
-        # Healthy run: drop the alert-once dedup markers so a FUTURE break re-alerts, and clear
-        # the forward-failure stamp so it only describes CURRENT auto-fire health.
-        job.pop("preflight_alerted", None)
-        job.pop("last_fire_error", None)
-        job["failure_streak"] = 0
-    else:
-        # Consecutive agent-failure streak; delivery failures do NOT count
-        # (scheduler._failure_streak_nudge).
-        job["failure_streak"] = int(job.get("failure_streak") or 0) + 1
-        # Sticky last-failure stamp (#118354): the next success resets last_status and
-        # failure_streak, which erases the only job-level trace that a run ever failed —
-        # a monitor sampling jobs.json then sees a permanently green job. last_failure
-        # survives success (latest failure wins); the recency window is the consumer's
-        # call. Delivery failures keep their own sticky last_delivery_error.
-        job["last_failure"] = {"at": now, "detail": error or (status or "run failed")}
-    job["last_delivery_error"] = delivery_error
-    # Clear both claims: the run is over, so the job is claimable again.
-    job["fire_claim"] = None
-    job.pop("pending_slot", None)
-    if job.get("run_claim") is not None:  # keep key absence for legacy records
-        job["run_claim"] = None
-
-
 def _advance_after_run(job: dict[str, Any], now: str, *, ladder_rung: bool = False) -> None:
     """Bump ``repeat.completed`` and recompute ``next_run_at``; retire the record as a terminal
     completion when the repeat limit is reached or a one-shot has no further run.
@@ -2434,7 +2398,7 @@ def mark_job_run(
     model_unreachable: bool = False,
     ladder_rung: bool = False,
     quota_hold_seconds: Optional[float] = None,
-    recover_consumed_fire: bool = False,
+    recover_consumed_fire: bool = False, neutral_tick: bool = False,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2443,6 +2407,11 @@ def mark_job_run(
     ``last_status = "delivery_failed"`` (never "ok") while ``failure_streak`` is left alone. An
     explicit ``status`` (e.g. "blocked_config") overrides the derived value. False when the fence
     can't be taken, the job is missing, or ``expected_fire_owner`` no longer holds the fire claim.
+
+    ``neutral_tick``: this fire ran no agent work (an unchanged monitor tick, ``cron.monitor``), so
+    the stamp leaves the last real run's failure state alone — status, error, streak, alert markers
+    — while still owning the slot (``last_run_at``, ``repeat.completed``, claims). See
+    ``cron.jobs_run_outcome._record_run_outcome``.
 
     ``model_unreachable``: this failed run never reached the model (transient network/DNS error,
     zero API calls). Recurring jobs then get a bounded automatic re-run — ``next_run_at`` is pulled
@@ -2468,7 +2437,7 @@ def mark_job_run(
                     job_id)
                 return False
         now = _hermes_now().isoformat()
-        _record_run_outcome(job, success, error, delivery_error, status, now)
+        _record_run_outcome(job, success, error, delivery_error, status, now, neutral_tick)
         if execution_id is not None:  # retire ids recovery can no longer replay; latest stays last
             from cron.scheduler_authority import replayable_completions as live
             job["canonical_completions"] = [*live(job_id, job.get("canonical_completions")), execution_id]

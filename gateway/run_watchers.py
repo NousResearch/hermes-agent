@@ -246,3 +246,22 @@ class GatewaySessionWatchersMixin:
             except Exception as exc:
                 logger.debug("Session stall watcher error: %s", exc)
             await _interruptible_sleep(self, max(1, int(float(interval))))
+
+    async def _session_bridge_watcher(self) -> None:
+        """Session bridge (patch 0005): mirror local desktop/tui/webui sessions into the
+        ``org.hermes.sessions`` Matrix room and steer them from thread replies. Opt-in via
+        ``matrix.extra.session_bridge``; runs one long-lived SessionBridge. A crash respawns
+        through the supervisor; a disabled/credential-less config returns immediately."""
+        from gateway.session_bridge import make_bridge_from_config
+        await asyncio.sleep(10)  # let platform adapters connect first
+        while self._running:
+            bridge = make_bridge_from_config(self.config)
+            if bridge is None:
+                return
+            try:
+                await bridge.run()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("session-bridge crashed, restarting in 30s: %s", exc)
+                await _interruptible_sleep(self, 30)

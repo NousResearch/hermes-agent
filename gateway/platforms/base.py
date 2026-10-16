@@ -423,6 +423,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from gateway import agent_status as _agent_status
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
 from gateway.platforms.base_exec_approval import (
@@ -4389,6 +4390,9 @@ class BasePlatformAdapter(ABC):
         self, event: MessageEvent, session_key: str, text_content: str, metadata: dict[str, Any],
         is_ephemeral_response: bool, ephemeral_ttl: int, record_delivery: Callable) -> None:
         """Normal-lane final: the ledger bracket plus the message-id owner's ephemeral delete."""
+        if _agent_status.supported(self):
+            # Agent protocol: the reply says how the run ended (set by the gateway's turn).
+            metadata = _agent_status.with_status(metadata, getattr(event, "_agent_status", None))
         result, delivery_adapter = await self.send_final_ledgered(
             event, session_key, text_content, metadata,
             reply_to=_reply_anchor_for_event(event), is_ephemeral_response=is_ephemeral_response)

@@ -127,6 +127,12 @@ def _matrix_voice_metadata_for_file(path: Path) -> dict[str, Any]:
             logger.debug("Matrix: failed to build voice waveform for %s", path, exc_info=True)
     return metadata
 
+# Agent protocol (https://github.com/phrac/fluxchat/blob/main/docs/agent-protocol.md): run state and
+# prompt choices in message content, so clients can show buttons instead of decoding reactions.
+# Callers opt in by putting a ``fluxchat_agent`` dict in ``metadata``.
+_AGENT_STATUS_KEY = "org.fluxchat.agent"
+
+
 _MATRIX_BANG_COMMAND_RE = re.compile(r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$", re.DOTALL)
 
 
@@ -351,6 +357,10 @@ class _MatrixApprovalPrompt:
     resolved: bool = False
     requester_user_id: str | None = None
     expires_at: float | None = None
+    # Prompt text and its agent-protocol choices, to edit it out of "waiting" once settled.
+    text: str = ""
+    agent_choices: list = field(default_factory=list)
+    agent_run: str | None = None
     bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
 
 
@@ -796,6 +806,7 @@ class MatrixAdapter(BasePlatformAdapter):
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
     splits_long_messages = True  # send() chunks via truncate_message(max_message_length)
     typed_command_prefix = "!"  # clients reserve typed "/" for local commands; "!command" always reaches Hermes
+    AGENT_STATUS = True  # agent protocol: the gateway passes run state in metadata["fluxchat_agent"]
     # Class-level defaults keep object.__new__-built test instances working.
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
     _SPLIT_THRESHOLD = DEFAULT_MAX_MESSAGE_LENGTH - 100
@@ -814,6 +825,12 @@ class MatrixAdapter(BasePlatformAdapter):
     @property
     def _crypto_db_path(self) -> Path:
         return (self._store_dir or _get_hermes_dir("platforms/matrix/store", "matrix/store")) / "crypto.db"
+
+    @property
+    def _run_state_path(self) -> Path:
+        """In-flight run state (👀 + status bubble), resolved like the crypto store: connect()
+        pins the profile dir, out-of-scope reads fall back to the default one."""
+        return (self._store_dir or _get_hermes_dir("platforms/matrix/store", "matrix/store")) / "in_flight_runs.json"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATRIX)
@@ -871,6 +888,9 @@ class MatrixAdapter(BasePlatformAdapter):
         self._process_notices: bool = self._extra_truthy(config, "process_notices", "MATRIX_PROCESS_NOTICES", "false")
         self._reactions_enabled: bool = str(_extra_or_secret(config.extra, "reactions", "MATRIX_REACTIONS", "true")).lower() not in {"false", "0", "no"}
         self._pending_reactions: dict[tuple[str, str], str] = {}
+        # Agent protocol: (room, request event) -> (progress bubble event, its text), settled to
+        # done / failed when the run ends so clients don't keep showing it as working.
+        self._agent_status_bubbles: dict[tuple[str, str], tuple[str, str]] = {}
         # Let the final message land before redacting reactions ("missing event" in some
         # clients). 5s is empirically safe; if it must be tunable, use config.yaml not env.
         self._reaction_redaction_delay_seconds = 5.0
@@ -1350,6 +1370,8 @@ class MatrixAdapter(BasePlatformAdapter):
         self._sync_task = asyncio.create_task(self._sync_loop())
         self._mark_connected()
         self._wire_plugin_handlers(self._client)  # plugin-registered native handlers
+        with suppress(Exception):  # best effort: a failed cleanup must not fail the connect
+            await self._settle_orphaned_runs()
         return True
 
     async def disconnect(self) -> None:
@@ -1390,6 +1412,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 self.format_message(content), self.max_message_length, len_fn=self.message_len_fn):
             msg_content = self._build_text_message_content(chunk)
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
+            agent_status = (metadata or {}).get("fluxchat_agent")
+            if isinstance(agent_status, dict):
+                msg_content[_AGENT_STATUS_KEY] = agent_status
             try:
                 last_event_id = await self._send_room_message(chat_id, msg_content)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
@@ -1404,7 +1429,115 @@ class MatrixAdapter(BasePlatformAdapter):
                 except Exception as retry_exc:
                     logger.error("Matrix: failed to send to %s after retry: %s", chat_id, retry_exc)
                     return SendResult(success=False, error=str(retry_exc))
+        self._remember_status_bubble(chat_id, last_event_id, content, (metadata or {}).get("fluxchat_agent"))
         return SendResult(success=True, message_id=last_event_id)
+
+    def _remember_status_bubble(self, chat_id: str, event_id: Optional[str], text: str, status: Any) -> None:
+        """Agent protocol: track the run's working message, to settle it when the run ends.
+
+        Only the FIRST working message of a run is the bubble. Later working sends (step
+        logs, heartbeats) are progress: re-tracking them moved the settle target off the
+        bubble, which then stayed ``state=working`` on the wire forever (The Battlefront
+        repro, 2026-10-12). An edit of the tracked bubble itself still refreshes its
+        remembered text, so a restart settles it with the latest progress.
+        """
+        if (not event_id or not isinstance(status, dict) or status.get("state") != "working"
+                or not status.get("run") or status.get("choices")):  # a settled prompt isn't the bubble
+            return
+        key = (chat_id, str(status["run"]))
+        if (existing := self._agent_status_bubbles.get(key)) is not None:
+            if existing[0] != str(event_id):
+                return  # a later working send is progress, not the bubble
+            if existing[1] == text:
+                return  # re-editing the same text: nothing new to persist
+        self._agent_status_bubbles[key] = (str(event_id), text)
+        self._save_in_flight_runs()
+
+    def _load_in_flight_runs(self) -> dict[tuple[str, str], tuple[str, str]]:
+        """The status bubbles in flight when the gateway last died, keyed by (room, run).
+        (👀 event ids are recovered separately: see _settle_orphaned_runs.)"""
+        try:
+            raw = json.loads(self._run_state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except Exception as exc:
+            logger.debug("Matrix: could not read in-flight run state: %s", exc)
+            return {}
+        if not isinstance(raw, dict) or not isinstance(raw.get("bubbles"), dict):
+            return {}
+        out = {}
+        for key, bubble in raw["bubbles"].items():
+            parts = str(key).split("\x1f", 1)
+            if len(parts) == 2 and isinstance(bubble, list) and len(bubble) == 2:
+                out[(parts[0], parts[1])] = (str(bubble[0]), str(bubble[1]))
+        return out
+
+    def _save_in_flight_runs(self) -> None:
+        """Persist the runs still in flight (their 👀 event ids and working bubbles), so a
+        restart can settle them instead of leaving dead runs showing as working on the wire
+        forever. A crash between write and settle re-settles harmlessly: redacting a gone
+        reaction and re-editing a settled bubble are both no-ops."""
+        state = {
+            "runs": [f"{room}\x1f{run}" for room, run in sorted(self._pending_reactions)],
+            "eyes": {f"{room}\x1f{run}": ev for (room, run), ev in self._pending_reactions.items()},
+            "bubbles": {f"{room}\x1f{run}": list(b) for (room, run), b in self._agent_status_bubbles.items()},
+        }
+        try:
+            path = self._run_state_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(state), encoding="utf-8")
+            tmp.replace(path)
+        except Exception as exc:
+            logger.debug("Matrix: could not save in-flight run state: %s", exc)
+
+    async def _settle_orphaned_runs(self) -> None:
+        """A gateway killed mid-run never reached on_processing_complete: its 👀 is still on
+        the request and its status bubble still says working. On connect, take both back."""
+        try:
+            raw = json.loads(self._run_state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except Exception as exc:
+            logger.debug("Matrix: could not read in-flight run state: %s", exc)
+            return
+        if not isinstance(raw, dict) or not raw.get("runs"):
+            return
+        eyes_map, bubbles = raw.get("eyes") or {}, self._load_in_flight_runs()
+        settled = 0
+        for key in raw.get("runs", []):
+            room, _, run = str(key).partition("\x1f")
+            if not room or not run:
+                continue
+            eyes_event_id = self._pending_reactions.pop((room, run), None) or eyes_map.get(key)
+            if eyes_event_id:
+                await self._redact_reaction(room, eyes_event_id, "gateway restarted mid-run")
+                settled += 1
+            bubble = self._agent_status_bubbles.pop((room, run), None) or bubbles.get((room, run))
+            if bubble:
+                status = {"v": 1, "run": run, "state": "failed", "result": "interrupted by a gateway restart"}
+                with suppress(Exception):
+                    await self.edit_message(room, bubble[0], bubble[1], agent_status=status)
+                settled += 1
+        self._pending_reactions.clear()
+        self._agent_status_bubbles.clear()
+        self._save_in_flight_runs()
+        if settled:
+            logger.info("Matrix: settled %d run signal(s) left over from before the restart", settled)
+
+    async def _settle_status_bubble(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Agent protocol: edit the run's working message to how the run ended."""
+        msg_id, room_id = event.message_id, event.source.chat_id
+        bubble = self.__dict__.get("_agent_status_bubbles", {}).pop((room_id, msg_id), None)
+        if not bubble:
+            return
+        status = dict(getattr(event, "_agent_status", None) or {"v": 1, "run": msg_id, "state": "done"})
+        if outcome != ProcessingOutcome.SUCCESS:
+            status["state"] = "failed"
+        try:
+            await self.edit_message(room_id, bubble[0], bubble[1], agent_status=status)
+        except Exception as exc:
+            logger.debug("Matrix: couldn't settle the status of run %s: %s", msg_id, exc)
 
     async def _send_room_message(self, chat_id: str, msg_content: dict[str, Any]) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""
@@ -1470,9 +1603,15 @@ class MatrixAdapter(BasePlatformAdapter):
     async def stop_typing(self, chat_id: str) -> None:
         await self._set_typing(chat_id, 0)
 
-    async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
+    async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False,
+                           agent_status: Optional[dict[str, Any]] = None,
+                           metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        if agent_status is None and isinstance((metadata or {}).get("fluxchat_agent"), dict):
+            agent_status = metadata["fluxchat_agent"]
         formatted = self.format_message(content)
         new_content = self._build_text_message_content(formatted)
+        if agent_status:
+            new_content[_AGENT_STATUS_KEY] = agent_status
         msg_content: dict[str, Any] = {"msgtype": "m.text", "body": f"* {formatted}", "m.new_content": new_content}
         if "m.mentions" in new_content:
             msg_content["m.mentions"] = new_content["m.mentions"]
@@ -1480,6 +1619,8 @@ class MatrixAdapter(BasePlatformAdapter):
             msg_content["format"] = "org.matrix.custom.html"
             msg_content["formatted_body"] = f'* {new_content["formatted_body"]}'
         msg_content["m.relates_to"] = {"rel_type": "m.replace", "event_id": message_id}
+        if agent_status:
+            msg_content[_AGENT_STATUS_KEY] = agent_status
         if _content_bytes(msg_content) > _MAX_CONTENT_BYTES:
             # The top-level copy is only the fallback for clients without edit support (edit-aware
             # clients render m.new_content); shorten it rather than double the event past the cap.
@@ -1494,7 +1635,10 @@ class MatrixAdapter(BasePlatformAdapter):
             # JSON escaping grows a character at most sixfold (\u00XX).
             fallback = formatted.encode("utf-8")[: max(0, room // 6)].decode("utf-8", "ignore")
             msg_content["body"] = f"* {fallback}…"
-        return await self._send_content_event(chat_id, msg_content)
+        result = await self._send_content_event(chat_id, msg_content)
+        if result.success:
+            self._remember_status_bubble(chat_id, message_id, content, agent_status)
+        return result
 
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
@@ -1688,6 +1832,15 @@ class MatrixAdapter(BasePlatformAdapter):
             f"{t('platform.matrix.approval.legend_intro')}\n" + "\n".join(t(self._EA_LEGEND_KEYS[c]) for c in choices))
         reactions = tuple(self._EA_REACTIONS[c] for c in choices)
         session_key, chat_id = prompt.session_key, prompt.chat_id
+        # Agent protocol: the same choices, labelled as the prompt's own actions are.
+        labels = {choice: label for label, choice, _style in prompt.actions}
+        agent_choices = [{"key": self._EA_REACTIONS[c], "label": labels.get(c) or c} for c in choices]
+        metadata = dict(prompt.metadata or {})
+        # The gateway may have named the run (``run``); the prompt keeps it when it settles.
+        given = metadata.get("fluxchat_agent")
+        run = given.get("run") if isinstance(given, dict) else None
+        metadata["fluxchat_agent"] = {"v": 1, "state": "waiting", "choices": agent_choices,
+                                      **({"run": run} if run else {})}
 
         def _make(message_id, requester, expires_at):
             old_event = self._approval_prompt_by_session.get(session_key)
@@ -1696,9 +1849,9 @@ class MatrixAdapter(BasePlatformAdapter):
             self._approval_prompt_by_session[session_key] = message_id
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
-                expires_at=expires_at)
+                expires_at=expires_at, text=text, agent_choices=agent_choices, agent_run=run)
         return await self._send_reaction_prompt(
-            chat_id, text, prompt.metadata, _make, self._approval_prompts_by_event, reactions, "approval")
+            chat_id, text, metadata, _make, self._approval_prompts_by_event, reactions, "approval")
 
     async def send_model_picker(
         self, chat_id: str, providers: list, current_model: str, current_provider: str, session_key: str,
@@ -2019,6 +2172,14 @@ class MatrixAdapter(BasePlatformAdapter):
             "Matrix: callback fired — event %s from %s in %s", getattr(event, "event_id", "?"), sender, room_id)
         if self._is_self_sender(sender):
             return
+        # Session-bridge room (patch 0005): desktop-session mirroring owns this room —
+        # its events are OUTPUT and remote replies are steered by the bridge itself, so
+        # the gateway's Matrix session machinery must never answer here (double-reply).
+        with suppress(ImportError):
+            from gateway.session_bridge import is_bridge_room
+            if is_bridge_room(room_id):
+                logger.debug("Matrix: ignoring event in session-bridge room %s", room_id)
+                return
         # Bridge/system identities must never reach the pairing flow (echo loop once paired).
         # Ignore own messages (case-insensitive; also drops when our own user_id hasn't been resolved yet —
         # see _is_self_sender docstring and issue #15763).
@@ -2474,13 +2635,17 @@ class MatrixAdapter(BasePlatformAdapter):
             reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
             if reaction_event_id:
                 self._pending_reactions[(room_id, msg_id)] = reaction_event_id
+                self._save_in_flight_runs()
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         msg_id, room_id = event.message_id, event.source.chat_id
+        await self._settle_status_bubble(event, outcome)
+        self._save_in_flight_runs()  # the bubble settled; drop the run from the restart file
         if not self._reactions_enabled or not msg_id or not room_id or outcome == ProcessingOutcome.CANCELLED:
             return
         eyes_event_id = self._pending_reactions.pop((room_id, msg_id), None)
         if eyes_event_id:
+            self._save_in_flight_runs()
             self._schedule_reaction_redaction(room_id, eyes_event_id, "processing complete")
         await self._send_reaction(room_id, msg_id, "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c")
 
@@ -2550,6 +2715,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s)",
                     count, prompt.session_key, choice, sender)
                 await self._redact_bot_approval_reactions(room_id, prompt)
+                await self._settle_agent_prompt(room_id, prompt)
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
         return True
@@ -2629,11 +2795,24 @@ class MatrixAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("Matrix: failed to send invalid reaction feedback: %s", exc)
 
+    async def _settle_agent_prompt(self, room_id: str, prompt: Any) -> None:
+        """Agent protocol: edit a settled prompt out of "waiting" so clients drop its buttons."""
+        if not getattr(prompt, "agent_choices", None) or not getattr(prompt, "text", ""):
+            return
+        try:
+            run = getattr(prompt, "agent_run", None)
+            await self.edit_message(room_id, prompt.message_id, prompt.text,
+                                    agent_status={"v": 1, "state": "working", "choices": prompt.agent_choices,
+                                                  **({"run": run} if run else {})})
+        except Exception as exc:
+            logger.debug("Matrix: couldn't settle agent prompt %s: %s", prompt.message_id, exc)
+
     async def _expire_matrix_approval_prompt(self, room_id: str, target_event_id: str, prompt: Any) -> None:
         prompt.resolved = True
         self._approval_prompts_by_event.pop(target_event_id, None)
         self._approval_prompt_by_session.pop(prompt.session_key, None)
         await self._redact_bot_approval_reactions(room_id, prompt)
+        await self._settle_agent_prompt(room_id, prompt)
         await self._send_invalid_reaction_feedback(
             room_id, target_event_id,
             t("platform.matrix.approval.expired"))

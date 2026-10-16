@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from agent.i18n import t
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import canonicalize_replay_history
+from gateway import agent_status as _agent_status
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
@@ -652,11 +653,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
         if _renders_exec_approval_buttons(type(adapter)):
+            metadata = ctx._status_thread_metadata
+            if _agent_status.supported(adapter) and (run := ctx.inbound_message_id or ctx.event_message_id):
+                # Agent protocol: the prompt names the run it holds up.
+                metadata = _agent_status.with_status(metadata, {"run": str(run)})
             try:
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc, metadata=ctx._status_thread_metadata, **flags,
+                        description=desc, metadata=metadata, **flags,
                     ),
                     "send_exec_approval scheduling error",
                 )

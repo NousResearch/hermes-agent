@@ -86,6 +86,20 @@ def test_windows_update_budgets_nest_on_upstream_and_fork_runners() -> None:
         assert budgets[name][1] >= budgets[name][0], name
 
 
+def test_canary_publisher_runs_only_on_upstream() -> None:
+    # The tag job reads the public Nous channel and fails closed when the
+    # record names a different repository. On a fork that is a daily red run,
+    # not a skipped publisher. Prune follows the tag result, so it stays idle.
+    workflow = yaml.safe_load(_read(".github/workflows/canary-release.yml"))
+    tag = workflow["jobs"]["tag"]["if"]
+    prune = workflow["jobs"]["prune"]["if"]
+    assert tag == (
+        "github.repository == 'NousResearch/hermes-agent' && "
+        "github.ref_name == github.event.repository.default_branch"
+    )
+    assert "skipped" in prune
+
+
 def test_standard_nix_runner_has_bounded_parallelism() -> None:
     workflow = _read(".github/workflows/nix.yml")
     assert "runs-on: ubuntu-latest" in workflow

@@ -11,15 +11,7 @@ docs_url: https://github.com/ojusave/render-hermes-plugin#readme
 readme: true
 # The package uses portable skills and HTTPS; live validation was on macOS arm64.
 platforms: []
-description: >-
-  Deploy, debug and manage Render applications with 20 unchanged skills from
-  render-oss/skills and Render's hosted MCP connection. Disclosure: sends tool
-  requests to mcp.render.com using RENDER_API_KEY from Hermes's active profile.
-  Account permissions apply and resource changes can incur charges. The server
-  is untrusted, so tools without a read-only annotation require approval.
-  Skills can guide local file edits, shell commands and Render CLI operations.
-  No custom runtime code, hooks, telemetry or self-updater. Separate from the
-  Render Sandboxes terminal plugin.
+description: "Deploy, debug and manage Render applications with 20 unchanged skills from render-oss/skills and Render's hosted MCP connection. Disclosure — connects Hermes to Render's hosted MCP server (mcp.render.com) with your RENDER_API_KEY; the server is marked untrusted so tools without a read-only annotation need approval; account permissions apply and changes can incur Render charges; bundled skills guide shell commands, file edits and Render CLI installs (including the vendor's curl | sh installer)."
 known_issues:
   - "render-docker is excluded because its upstream Dockerfile cleanup example triggers a critical scanner rule."
   - "Render's list_workspaces lacks a read-only annotation and requires approval; unattended calls are denied."
@@ -31,3 +23,4 @@ capabilities:
   provides_middleware: []
   requires_env:
     - RENDER_API_KEY
+requires_hermes: ">=0.21.6"

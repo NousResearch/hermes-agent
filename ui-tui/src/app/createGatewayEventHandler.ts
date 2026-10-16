@@ -11,7 +11,6 @@ import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup
 import { usageFromTick } from '../domain/usage.js'
 import type {
   AnyGatewayEvent,
-  CommandsCatalogResponse,
   ConfigFullResponse,
   DelegationStatusResponse,
   GatewaySkin,
@@ -47,6 +46,7 @@ import { markBubbleShown, newlyStartedRows } from './pendingBubbles.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { forgetServerRequest } from './serverRequestStore.js'
 import { noteCanonicalCompletion } from './slash/canonicalSessionCommands.js'
+import { loadSlashCatalog } from './slashCatalog.js'
 import { reportStartupLatency } from './startupLatency.js'
 import { markNextSubmitVoice } from './submissionCore.js'
 import { captureDestination, isCurrentDestination } from './submissionDestination.js'
@@ -915,32 +915,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       void rpc('wake.start', { surface: 'tui' }).catch(() => undefined)
     }
 
-    // Bound to the live session when one exists (reconnect): project-local
-    // skills follow the session's repo. Before the first session the gateway
-    // uses the same workspace it seeds a new session with.
-    const catalogSid = getUiState().sid
-
-    rpc<CommandsCatalogResponse>('commands.catalog', catalogSid ? { session_id: catalogSid } : {})
-      .then(r => {
-        if (!r?.pairs) {
-          return
-        }
-
-        setCatalog({
-          canon: (r.canon ?? {}) as Record<string, string>,
-          categories: r.categories ?? [],
-          pairs: r.pairs as [string, string][],
-          skillCount: (r.skill_count ?? 0) as number,
-          sub: (r.sub ?? {}) as Record<string, string[]>
-        })
-
-        if (r.warning) {
-          turnController.pushActivity(String(r.warning), 'warn')
-        }
-      })
-      .catch((e: unknown) =>
-        turnController.pushActivity(t('gatewayMsg.startup.commandCatalogUnavailable', rpcErrorMessage(e)), 'info')
-      )
+    // The pre-session catalog; useSlashCatalog owns every session-bound load, reconnects included.
+    if (!getUiState().sid) {
+      void loadSlashCatalog(rpc, null, setCatalog)
+    }
 
     // Keep the recovery target until resume succeeds, including across a second
     // disconnect during setup or history loading. Recovery never resends the prompt.

@@ -163,10 +163,10 @@ def _reply_anchor_for_event(event) -> str | None:
     platform = _platform_name(getattr(source, "platform", None))
     thread_id = getattr(source, "thread_id", None)
     raw_message = getattr(event, "raw_message", None)
-    if (platform == "slack" and isinstance(raw_message, dict)
-            and raw_message.get("_hermes_no_thread_response")):
-        # Slack reaction handoff = new top-level message; a message_id anchor would make
-        # _resolve_thread_ts() reply in a nonexistent thread.
+    if getattr(event, "internal", False) or (platform == "slack" and isinstance(raw_message, dict)
+                                             and raw_message.get("_hermes_no_thread_response")):
+        # A synthetic wake's message_id is its producer identity, not a platform id (Telegram int()s
+        # it; #52694). A Slack reaction handoff is a new top-level message, not a thread reply.
         return None
     if platform == "telegram" and thread_id:
         # Forum topics route by topic metadata (no reply); DM-topic lanes reply to the triggering

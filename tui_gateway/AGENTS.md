@@ -166,9 +166,11 @@ that message through `prompt.submit`, retaining their own durable input identity
 Resolution itself does not start a turn or change the cached system prompt; the
 normal durable admission path owns FIFO, retries, approvals, and execution.
 
-All other commands return `unsupported_command`, including shell quick commands,
-plugin execution, bundles, runtime/config mutation, approval/secret slash shortcuts,
-and lifecycle commands. Use the existing generation-bound control RPCs where
+`type: exec` quick commands and plugin slash commands require `session:control` and
+run through the messaging gateway's own dispatch (`gateway/run_inbound_hooks.py`: slash
+access policy, 30 s sanitized-env exec with redacted output, plugin session env).
+All other commands return `unsupported_command`, including bundles, runtime/config
+mutation, approval/secret slash shortcuts, and lifecycle commands. Use the existing generation-bound control RPCs where
 available. Catalog presence alone does not imply execution support. No legacy
 fallback is installed on the canonical transport.
 

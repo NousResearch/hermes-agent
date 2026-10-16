@@ -11,7 +11,8 @@ LEGACY_PREFIX = 'gateway.local_legacy.v1:'
 # (``chat --source tool``) are CLI runs that printed ``hermes --resume <id>``: adopted for resume like
 # ``cli`` and keeping their label, so human pickers still hide them (INTERNAL_LISTING_SOURCES).
 # ``desktop`` is the label main's Desktop stored; it is adopted as the ``gui`` creation source.
-LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'oneshot', 'tool'})
+# ``acp`` is main's in-process editor server (Zed, VS Code, JetBrains): adopted under its own source.
+LEGACY_LOCAL_SOURCES = frozenset({'cli', 'tui', 'gui', 'desktop', 'oneshot', 'tool', 'acp'})
 # Legacy labels that are not creation sources of their own (session_policy.SURFACES).
 LEGACY_CREATION_SOURCES = {'desktop': 'gui'}
 

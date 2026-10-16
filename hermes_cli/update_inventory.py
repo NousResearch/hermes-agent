@@ -202,8 +202,11 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
                 if pid in seen:
                     continue  # one multiplex gateway answers identify for several homes — one record per process
                 seen.add(pid)
-                declared = record.get("supervisor")
-                sup = str(declared) if declared else supervisor(pid)
+                from gateway.control_socket import launch_supervisor
+
+                # The protocol's "none" (manual or desktop) is no answer: classify it outside-in.
+                declared = launch_supervisor(record)
+                sup = declared if declared else supervisor(pid)
             else:
                 # Verified identity, not bare PID existence: a ``stopped`` record whose PID was recycled
                 # by an unrelated process fabricated a phantom gateway the restart phase could never

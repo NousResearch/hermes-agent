@@ -5,7 +5,16 @@ from __future__ import annotations
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from tools import delegate_tool
+
+
+class _RaisingCancelHandle:
+    """A scheduled handle whose cancel raises (W4: ``_Heartbeat.stop()`` is unguarded today)."""
+
+    def cancel(self, wait=None):
+        raise RuntimeError("periodic scheduler cancel failed")
 
 
 class _SlowUnwindingChild:
@@ -101,3 +110,27 @@ def test_timeout_does_not_close_child_while_worker_is_unwinding(monkeypatch):
     assert not child.close_while_running, (
         "timed-out child.close() raced its still-running conversation thread"
     )
+
+
+def test_cleanup_releases_registry_entry_when_heartbeat_stop_raises():
+    """W4: a raising ``heartbeat.stop()`` must never skip the ONLY registry release.
+
+    ``stop()`` precedes ``_unregister_subagent`` in the finally path and nothing retries:
+    one raise left the record in ``_active_subagents`` for process life."""
+    child = _SlowUnwindingChild()
+    parent = SimpleNamespace(session_id="parent-guard", _current_task_id=None)
+    heartbeat = delegate_tool._start_heartbeat(child, parent, 0)
+    heartbeat.handle = _RaisingCancelHandle()
+    delegate_tool._register_subagent(
+        {"subagent_id": "sa-guard", "agent": child, "goal": "guard the registry release", "status": "running"}
+    )
+    run = delegate_tool._ChildRun(child, parent, 0, "g", "sa-guard", None, heartbeat=heartbeat)
+    try:
+        run.cleanup(heartbeat=heartbeat, child_pool=None, leased_cred_id=None, close_deferred=False)
+    except Exception as exc:  # the RED shape on the unfixed tree
+        pytest.fail(f"cleanup must never raise (heartbeat stop was unguarded): {exc!r}")
+    finally:
+        # Hygiene on the RED path: never leak the probe record into other tests.
+        delegate_tool._unregister_subagent("sa-guard", agent=child)
+
+    assert "sa-guard" not in delegate_tool._active_subagents

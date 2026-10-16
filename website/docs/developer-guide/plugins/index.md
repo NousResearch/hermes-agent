@@ -463,7 +463,7 @@ returns an `AccountUsageSnapshot` (plan, session/weekly windows with
 ### Use your own OAuth client (Google and other APIs)
 
 A plugin that calls a third-party API with the user's own OAuth client (a
-Google Cloud "Desktop app" client, a Microsoft or Notion app) does not run the
+Google Cloud "Desktop app" client, for example) does not run the
 consent flow, store the refresh token or refresh it. Declare the client and
 Hermes owns the grant:
 

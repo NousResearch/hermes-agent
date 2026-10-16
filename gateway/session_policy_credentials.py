@@ -66,6 +66,8 @@ def policy_identity(policy):
         data.pop('editor_mcp_json', None)
     if not data.get('coding_posture'):
         data.pop('coding_posture', None)
+    if data.get('client_env_json') is None:
+        data.pop('client_env_json', None)
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 

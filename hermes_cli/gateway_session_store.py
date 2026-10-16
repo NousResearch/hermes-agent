@@ -65,6 +65,7 @@ class GatewaySessionStore:
         self.snapshots: dict[str, dict] = {}
         self.current: dict | None = None
         self._reader = None
+        self._create_parameters = None
 
     def __bool__(self):
         return not self.connection.final
@@ -156,8 +157,18 @@ class GatewaySessionStore:
         params["row_cwd"] = os.getcwd() if record_cwd and local and params["source"] in CLI_FAMILY_SOURCES else ""
         if title:
             params["title"] = title
+        params.update(self.client_env())
         snapshot = self.call("session.create", request_id=uuid.uuid4().hex, **params)
         return self._adopt(snapshot)
+
+    def client_env(self):
+        """This shell's ``client_env`` when the gateway takes it (one ``runtime.describe`` per store)."""
+        from hermes_cli.gateway_chat import client_env_policy
+        if self._create_parameters is None:
+            described = self.call("runtime.describe")
+            contract = described.get("session_create") if isinstance(described, dict) else None
+            self._create_parameters = list((contract or {}).get("parameters") or [])
+        return client_env_policy(self._create_parameters)
 
     def branch(self, session_id, title=None):
         """``session.mutate branch``: the gateway forks the whole active transcript into a child it
@@ -459,7 +470,9 @@ def create_titled_session(title):
     params["source"] = "cli"  # main's titled row is `cli` (hermes_cli.main._create_titled_session)
     params["row_cwd"] = ""
     try:
-        snapshot = session_store().call("session.create", request_id=uuid.uuid4().hex, title=title, **params)
+        store = session_store()
+        params.update(store.client_env())
+        snapshot = store.call("session.create", request_id=uuid.uuid4().hex, title=title, **params)
     except GatewayClientError as exc:
         logger.warning("Failed to create titled session %r on the gateway: %s", title, exc)
         return None

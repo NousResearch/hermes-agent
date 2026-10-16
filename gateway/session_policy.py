@@ -15,7 +15,7 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
                            'yolo', 'safe_mode', 'ignore_user_config',
                            'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
-                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd'})
+                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd', 'client_env'})
 # Sections a ``follow_profile_config`` session re-reads from the owning profile's CURRENT config each
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
 FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
@@ -75,6 +75,12 @@ class LocalSessionPolicy:
     # workspace). A following session replays this decision rather than re-probing its folder each turn: it
     # drops the posture when its profile leaves ``focus``, and one created outside it never gains it later.
     coding_posture: bool = False
+    # The shell-launched client's allowlisted environment (``agent.session_client_env``), bound for this
+    # session's turns only; None when the client sent none (Desktop, a session from before the field).
+    client_env_json: str | None = None
+
+    def client_env(self):
+        return None if self.client_env_json is None else json.loads(self.client_env_json)
 
     def config(self, authority=None, *, secrets=True):
         return self.effective(authority, secrets=secrets)[0]
@@ -341,7 +347,15 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     # configured cwd unless the user picked this folder for the session.
     if params.get('cwd_explicit') is True or terminal_uses_host_cwd(terminal):
         terminal['TERMINAL_CWD'] = cwd
-    request = {k: v for k, v in params.items() if k not in {'request_id', 'api_key'}}
+    client_env = None
+    if 'client_env' in params:
+        from agent.session_client_env import accept_client_env
+        try:
+            client_env = json.dumps(accept_client_env(params['client_env'], config), sort_keys=True)
+        except ValueError as exc:
+            _refuse('client_env', str(exc))
+    # Values stay out of the request: ``launch_request`` is echoed to every viewer of the session.
+    request = {k: v for k, v in params.items() if k not in {'request_id', 'api_key', 'client_env'}}
     request.setdefault('source', 'cli')
     from gateway.session_local_mcp import private_editor_request
     private_editor_request(request, private_secrets)
@@ -350,7 +364,7 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     return LocalSessionPolicy(source, SURFACES[source], cwd, model, tuple(sorted(enabled)),
                               json.dumps(config), json.dumps(request, sort_keys=True), json.dumps(terminal),
                               safe_mode=safe_mode, ignore_user_config=ignore_user_config,
-                              coding_posture=coding_posture)
+                              coding_posture=coding_posture, client_env_json=client_env)
 
 
 def terminal_uses_host_cwd(terminal):
@@ -793,6 +807,7 @@ def restore_policy(data):
                 or type(policy.safe_mode) is not bool or type(policy.ignore_user_config) is not bool
                 or not isinstance(policy.skills_prompt, (str, type(None)))
                 or type(policy.coding_posture) is not bool
+                or not _valid_client_env(policy.client_env_json)
                 or (policy.safe_mode and not policy.ignore_user_config)):
             raise ValueError('invalid policy')
         from dataclasses import replace
@@ -805,6 +820,13 @@ def restore_policy(data):
         return replace(policy, toolsets=tuple(policy.toolsets))
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeStoreError('storage_unavailable') from exc
+
+
+def _valid_client_env(value):
+    if value is None:
+        return True
+    env = json.loads(value) if isinstance(value, str) else None
+    return isinstance(env, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())
 
 
 def policy_for_source(runner, source):
@@ -849,6 +871,7 @@ def policy_scope(policy, *, authority=None):
     cwd_token = set_session_cwd(policy.cwd)
     terminal_token = set_terminal_scope(terminal)
     policy_token = _ACTIVE_POLICY.set(active)
+    from agent.session_client_env import client_env_scope
     from gateway.session_local_editor import editor_scope
     try:
         from agent.auxiliary_task_config import session_auxiliary_scope
@@ -856,7 +879,8 @@ def policy_scope(policy, *, authority=None):
         # Auxiliary tasks read the session's frozen section, never live config.yaml (a rotated key there).
         auxiliary = policy.config(authority).get('auxiliary') if authority is not None else None
         aux_scope = session_auxiliary_scope(auxiliary) if authority is not None else contextlib.nullcontext()
-        with editor_scope(policy), editor_mcp_scope(authority, policy), aux_scope:
+        with (editor_scope(policy), editor_mcp_scope(authority, policy), aux_scope,
+              client_env_scope(policy.client_env())):
             yield
     finally:
         _ACTIVE_POLICY.reset(policy_token)

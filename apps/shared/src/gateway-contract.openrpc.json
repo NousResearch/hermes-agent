@@ -8839,6 +8839,21 @@
             "default": false,
             "title": "Verbose",
             "type": "boolean"
+          },
+          "client_env": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Client Env"
           }
         },
         "title": "CanonicalCreateParams",

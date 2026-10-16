@@ -238,7 +238,9 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         saved = local_receipt(authority.db, sid)
         original = restore_policy(saved['policy'])
         from hermes_state_local import same_create_request
-        if not same_create_request(original.request_json, policy.request_json):
+        from agent.session_client_env import retry_matches
+        if (not same_create_request(original.request_json, policy.request_json)
+                or not retry_matches(original.client_env_json, params)):
             raise RuntimeStoreError('invalid_params', field='request_id',
                                     detail='a resumed request_id must carry the same frozen request')
         import hmac

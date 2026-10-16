@@ -28,7 +28,8 @@ def commit_local_session(db, *, epoch, receipt):
                 saved = json.loads(old[0])
                 same = all(saved[k] == receipt[k] for k in (
                     'profile_id', 'principal_id', 'request_id', 'session_id', 'route'))
-                same = same and same_create_request(saved['policy']['request_json'], receipt['policy']['request_json'])
+                same = (same and same_create_request(saved['policy']['request_json'], receipt['policy']['request_json'])
+                        and saved['policy'].get('client_env_json') == receipt['policy'].get('client_env_json'))
             except (ValueError, TypeError, KeyError) as exc:
                 raise RuntimeStoreError('storage_unavailable') from exc
             if not same:

@@ -47,6 +47,24 @@ def env_launch_flags() -> dict:
     return {field: True for field, name in _ENV_LAUNCH_FLAGS if is_truthy_value(os.environ.get(name))}
 
 
+def shell_client_env() -> dict:
+    """This shell's allowlisted environment (``agent.session_client_env``) with the extra names of the
+    profile's effective config (managed layer included), as the gateway reads them. A bypass launch's
+    owner freezes code defaults, so it reads no profile."""
+    from agent.session_client_env import collect_client_env
+    if {'safe_mode', 'ignore_user_config'} & set(env_launch_flags()):
+        return collect_client_env()
+    from hermes_cli.config import get_config_path
+    from hermes_cli.config_effective import load_user_config_effective
+    return collect_client_env(config=load_user_config_effective(get_config_path()))
+
+
+def client_env_policy(parameters) -> dict:
+    """``client_env`` for a new session (main's process read these from its shell; the shared gateway
+    applies them to this session only), or nothing for a gateway that predates the field."""
+    return {"client_env": shell_client_env()} if "client_env" in parameters else {}
+
+
 def bypass_launch(args) -> bool:
     """--safe-mode / --ignore-user-config (or their env opt-ins): the owner freezes code defaults,
     the client reads no profile."""
@@ -190,6 +208,7 @@ async def run_gateway_chat(args, emitter=None):
             if create_if_missing:
                 policy["title"] = title
             policy.update(env_launch_flags())
+            policy.update(client_env_policy(parameters))
             cwd = await asyncio.to_thread(_caller_cwd, args)
             if "cwd" in parameters:
                 policy["cwd"] = cwd

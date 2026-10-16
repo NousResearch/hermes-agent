@@ -215,6 +215,7 @@ export function NarrowOverlays() {
           // through text. Contract: `[data-glass-opaque]` in styles.css.
           data-glass-opaque=""
           data-narrow-overlay={revealed.id}
+          data-narrow-pane-overlay=""
           onMouseLeave={onMouseLeave}
           ref={overlayRef}
           // Match the pane's docked width (sessions ~237px, files its rail

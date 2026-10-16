@@ -1879,8 +1879,9 @@ static token) authenticates with the native grant your `ctx.rest` calls carry.
 Desktop's main process mints it for the active profile and attaches it as a
 header to that one dial, so it never appears in a URL your code sees. The grant
 is bound to your plugin's namespace and that profile; the gateway refuses the
-upgrade if the plugin is disabled for the profile or for the gateway's launch
-profile.
+upgrade if the plugin is disabled for that profile (the launch profile's setting
+does not apply). A secondary profile's plugin that runs in its plugin host gets
+HTTP 501 instead, because the host does not carry websockets yet.
 
 When the socket gives up (your polling fallback is then the only feed):
 

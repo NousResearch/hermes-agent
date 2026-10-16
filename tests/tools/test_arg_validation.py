@@ -57,11 +57,15 @@ def test_execute_code_does_not_treat_command_as_an_alias(monkeypatch):
     monkeypatch.setattr("model_tools.registry.dispatch", dispatch)
     rejected = _call("execute_code", {"command": "print(1)"}, "command-only")
     assert "missing required argument(s): code" in rejected["error"]
+    assert "terminal(command=...)" in rejected["error"]
+    assert "execute_code(code=...)" in rejected["error"]
     assert seen == []
 
     args = {"code": "print(1)", "command": "print(2)"}
     result = _call("execute_code", args, "code-and-command")
     assert "command" in result["error"] and "NOT invoked" in result["error"]
+    assert "terminal(command=...)" in result["error"]
+    assert "execute_code(code=...)" in result["error"]
     assert seen == []
     valid = _call("execute_code", {"code": "print(1)"}, "corrected-code")
     assert valid["output"] == "ran code"
@@ -322,3 +326,45 @@ def test_registered_zero_argument_tool_rejects_invented_arguments(monkeypatch):
     monkeypatch.setattr("tools.arg_validation.registry", isolated)
     assert validate_tool_args("no_args", {}) is None
     assert "NOT invoked" in json.loads(validate_tool_args("no_args", {"invented": 1}))["error"]
+
+
+@pytest.mark.parametrize("extra", [{"timeout": 60}, {"workdir": "/tmp"}, {"invented": True}])
+def test_execute_code_unrelated_argument_errors_do_not_suggest_switching_tools(monkeypatch, extra):
+    seen = []
+    monkeypatch.setattr("model_tools.registry.dispatch", lambda *args, **kwargs: seen.append(args))
+    result = _call("execute_code", {"code": "print(1)", **extra}, "code-unrelated-argument")
+    assert "NOT invoked" in result["error"]
+    assert next(iter(extra)) in result["error"]
+    assert "terminal(command=...)" not in result["error"]
+    assert seen == []
+
+
+def test_tool_owned_hint_cannot_bypass_rejection_and_valid_calls_skip_it(monkeypatch):
+    from tools.registry import ToolRegistry
+
+    isolated = ToolRegistry()
+    hints, executed = [], []
+
+    def broken_hint(args):
+        hints.append(args)
+        args.clear()
+        raise RuntimeError("hint unavailable")
+
+    isolated.register(
+        name="hinted_tool", toolset="test",
+        schema={"name": "hinted_tool", "parameters": {
+            "type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"],
+        }},
+        handler=lambda args, **kwargs: executed.append(dict(args)) or json.dumps({"answer": args["query"]}),
+        argument_error_hint=broken_hint,
+    )
+    for module in ["model_tools", "tools.arg_coercion", "tools.arg_validation"]:
+        monkeypatch.setattr(f"{module}.registry", isolated)
+    args = {"wrong_key": "value"}
+    result = _call("hinted_tool", args, "broken-hint")
+    assert "missing required argument(s): query" in result["error"]
+    assert "NOT invoked" in result["error"]
+    assert args == {"wrong_key": "value"}
+    assert executed == [] and len(hints) == 1
+    assert _call("hinted_tool", {"query": "hello"}, "valid-hint") == {"answer": "hello"}
+    assert executed == [{"query": "hello"}] and len(hints) == 1

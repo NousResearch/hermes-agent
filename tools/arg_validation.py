@@ -69,6 +69,21 @@ def _validation_parameters(tool_name: str) -> Optional[dict]:
     return params
 
 
+def _argument_error(tool_name: str, args: Dict[str, Any], message: str) -> str:
+    """Keep the shared rejection, appending optional correction advice owned by the tool."""
+    entry = registry.get_entry(tool_name)
+    hint_fn = getattr(entry, "argument_error_hint", None)
+    if hint_fn is not None:
+        try:
+            hint = hint_fn(dict(args))
+            if isinstance(hint, str) and hint.strip():
+                message += " " + hint.strip()
+        except Exception:
+            # Broken advice must never bypass validation or obscure the original error.
+            logger.debug("Argument correction hint unavailable for %s", tool_name, exc_info=True)
+    return tool_error(message)
+
+
 def validate_tool_args(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
     """Check required and supported argument names; return an error JSON or ``None``.
 
@@ -92,7 +107,8 @@ def validate_tool_args(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
                if key not in args and not any(alias in args for alias in aliases.get(key, ()))]
     valid = ", ".join(properties) or "none"
     if missing:
-        return tool_error(
+        return _argument_error(
+            tool_name, args,
             f"{tool_name} is missing required argument(s): {', '.join(missing)}. "
             f"The tool was NOT invoked. Valid arguments: {valid}.")
 
@@ -105,7 +121,8 @@ def validate_tool_args(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
                if key not in properties and key not in extra_keys
                and not any(re.search(pattern, key) for pattern in patterns)]
     if unknown:
-        return tool_error(
+        return _argument_error(
+            tool_name, args,
             f"{tool_name} does not accept argument(s): {', '.join(unknown)}. "
             f"The tool was NOT invoked. Valid arguments: {valid}.")
     return None

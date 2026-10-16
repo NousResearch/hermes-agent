@@ -45,47 +45,68 @@ def configured_names(config) -> frozenset:
     return frozenset(name.strip() for name in raw if isinstance(name, str) and name.strip()) if isinstance(raw, list) else frozenset()
 
 
-def _travels(name: str) -> bool:
+def _travels(name: str, secret=None) -> bool:
     """A toolchain name may travel unless it is a credential by execute_code's secret policy (even when
     listed: ``NODE_AUTH_TOKEN`` matches ``NODE_``; secrets reach tools through ``terminal.env_passthrough``)
-    or a Hermes control name (a delegated child's markers, Kanban pins)."""
-    return not is_secret_env_name(name) and not name.startswith('HERMES_')
+    or a Hermes control name (a delegated child's markers, Kanban pins). ``secret``: a session's frozen
+    copy of that policy's substrings."""
+    hidden = is_secret_env_name(name) if secret is None else any(s in name.upper() for s in secret)
+    return not hidden and not name.startswith('HERMES_')
 
 
-def allowed(name: str, extra: frozenset = frozenset()) -> bool:
-    if name in BEHAVIOUR_ENV:
-        return True
-    return _travels(name) and (name in TOOL_ENV or name.startswith(TOOL_ENV_PREFIXES) or name in extra)
+def client_env_rules(config, *, local=True) -> dict:
+    """The normalisation rules (plain data) a session's map is filtered by, frozen with it: an exact retry
+    is judged by these, never by the profile's allowlist or the secret policy as they are later. A client
+    not proven ``local`` keeps only the values that name nothing on this host (prompt, provider request)."""
+    from tools.code_execution_env import _SECRET_SUBSTRINGS
+    return {'behaviour': [n for n in BEHAVIOUR_ENV if local or n not in HOST_BEHAVIOUR],
+            'names': sorted(set(TOOL_ENV) | configured_names(config)) if local else [],
+            'prefixes': list(TOOL_ENV_PREFIXES) if local else [], 'secret': list(_SECRET_SUBSTRINGS)}
+
+
+def _kept(name: str, rules: dict) -> bool:
+    return name in rules['behaviour'] or (_travels(name, rules['secret']) and (
+        name in rules['names'] or name.startswith(tuple(rules['prefixes']))))
 
 
 def collect_client_env(environ=None, config=None) -> dict[str, str]:
     """Client side: this shell's allowlisted values (the profile's extra names included)."""
     environ = os.environ if environ is None else environ
-    extra = configured_names(config)
-    return {name: value for name, value in environ.items() if isinstance(value, str) and allowed(name, extra)}
+    rules = client_env_rules(config)
+    return {name: value for name, value in environ.items() if isinstance(value, str) and _kept(name, rules)}
 
 
-def accept_client_env(value, config, *, local=True) -> dict[str, str]:
-    """Gateway side: the validated map, filtered again against the session profile's own allowlist; for a
-    client not proven ``local`` only the values that name nothing on this host (prompt, provider request).
+def normalise_client_env(value, rules) -> dict[str, str]:
+    """The validated map filtered by ``rules`` (``None``: unfiltered, for a map frozen before rules were).
     Raises ``ValueError`` for anything but a bounded flat string-to-string map."""
     if (not isinstance(value, dict) or len(value) > _MAX_NAMES
             or any(not isinstance(k, str) or not isinstance(v, str) for k, v in value.items())
             or sum(len(k) + len(v) for k, v in value.items()) > _MAX_BYTES):
         raise ValueError('client_env must be a map of variable names to string values')
-    extra = configured_names(config)
-    return {name: value[name] for name in sorted(value) if allowed(name, extra)
-            and (local or (name in BEHAVIOUR_ENV and name not in HOST_BEHAVIOUR))}
+    return {name: value[name] for name in sorted(value) if rules is None or _kept(name, rules)}
 
 
-def retry_matches(committed_json, params) -> bool:
-    """Whether a retried ``session.create`` carries the client environment its committed session froze.
-    The committed (normalised) map decides, never the current allowlist: every stored name must come back
-    with its value; names the gateway filtered out at creation do not count, whatever the rules are now."""
-    if committed_json is None:
-        return 'client_env' not in params
-    value = params.get('client_env')
-    return isinstance(value, dict) and all(value.get(k) == v for k, v in json.loads(committed_json).items())
+def accept_client_env(value, config, *, local=True) -> dict[str, str]:
+    """Gateway side: the map filtered by the session profile's own current rules."""
+    return normalise_client_env(value, client_env_rules(config, local=local))
+
+
+def retry_matches(committed: dict, request: dict) -> bool:
+    """Whether a retried ``session.create`` (``request``: its params) carries the client environment the
+    committed session (``committed``: its stored policy) froze. The complete retried map, normalised by
+    the rules frozen with the session, must equal the stored one: an added name those rules keep, a
+    missing stored name or a changed value is a different request; one they drop never counts. Staging
+    and the transactional commit both judge by this. A session committed without a map (Desktop, one
+    from before the field) still matches only a retry that sends none."""
+    stored = committed.get('client_env_json')
+    if stored is None or 'client_env' not in request:
+        return stored is None and 'client_env' not in request
+    rules = committed.get('client_env_rules_json')
+    try:
+        sent = normalise_client_env(request['client_env'], None if rules is None else json.loads(rules))
+    except ValueError:
+        return False
+    return sent == json.loads(stored)
 
 
 @contextmanager

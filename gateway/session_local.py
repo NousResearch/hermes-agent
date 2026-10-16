@@ -269,7 +269,7 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         from hermes_state_local import same_create_request
         from agent.session_client_env import retry_matches
         if (not same_create_request(original.request_json, policy.request_json)
-                or not retry_matches(original.client_env_json, params)):
+                or not retry_matches(saved['policy'], params)):
             raise RuntimeStoreError('invalid_params', field='request_id',
                                     detail='a resumed request_id must carry the same frozen request')
         import hmac
@@ -304,9 +304,13 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
     entry = SessionEntry(route, sid, now, now, origin=source, platform=Platform.LOCAL)
     # Prefill is read now, at creation (main's CLI: at startup), and held only if this attempt commits.
     from gateway.session_worker_construct import stage_session_prefill
-    return stage_session_prefill(authority, policy, {
+    staged = stage_session_prefill(authority, policy, {
         'profile_id': authority.profile_id, 'principal_id': actor.subject, 'request_id': request_id,
         'session_id': sid, 'route': route, 'entry': entry.to_dict(), 'policy': asdict(policy)})
+    # Owner memory, never stored: an overlapping create's commit judges this request's own map by the
+    # winner's committed rules, as a sequential retry is.
+    staged.client_request = {k: params[k] for k in ('client_env',) if k in params}
+    return staged
 
 
 def publish_local_policy(authority, session_id):

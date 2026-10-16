@@ -14,6 +14,12 @@ def commit_local_session(db, *, epoch, receipt):
     ``on_create`` (owner memory, never stored) is published by the transaction that creates the row
     and withdrawn if that transaction fails: an exact retry, a refused or a losing attempt adds none."""
     on_create = getattr(receipt, 'on_create', None)
+    request = getattr(receipt, 'client_request', None)  # the staged request's own client_env, never stored
+    if request is None:
+        if receipt['policy'].get('client_env_json') is not None:
+            # Lost (a copy): never judge a retry by this attempt's own filtered map instead.
+            raise RuntimeStoreError('invalid_params')
+        request = {}
     if on_create is not None:
         on_create.read()  # its file read: in the caller's thread, outside the write transaction
     encoded = _json(receipt)
@@ -28,8 +34,9 @@ def commit_local_session(db, *, epoch, receipt):
                 saved = json.loads(old[0])
                 same = all(saved[k] == receipt[k] for k in (
                     'profile_id', 'principal_id', 'request_id', 'session_id', 'route'))
+                from agent.session_client_env import retry_matches
                 same = (same and same_create_request(saved['policy']['request_json'], receipt['policy']['request_json'])
-                        and saved['policy'].get('client_env_json') == receipt['policy'].get('client_env_json'))
+                        and retry_matches(saved['policy'], request))
             except (ValueError, TypeError, KeyError) as exc:
                 raise RuntimeStoreError('storage_unavailable') from exc
             if not same:

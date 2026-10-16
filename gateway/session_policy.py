@@ -81,6 +81,9 @@ class LocalSessionPolicy:
     # The client sent one over an attach the gateway could not prove is on its host (no gateway-minted
     # ticket): only host-free values were kept, and its tools run with the gateway's own toolchain.
     client_env_remote: bool = False
+    # The rules that map was normalised by (``client_env_rules``: allowlist, secret filter, locality) as
+    # plain data: an exact retry is judged by them, never by the profile's current ones.
+    client_env_rules_json: str | None = None
 
     def client_env(self):
         return None if self.client_env_json is None else json.loads(self.client_env_json)
@@ -355,14 +358,15 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
     # configured cwd unless the user picked this folder for the session.
     if params.get('cwd_explicit') is True or terminal_uses_host_cwd(terminal):
         terminal['TERMINAL_CWD'] = cwd
-    client_env = None
+    client_env = rules = None
     if 'client_env' in params:
-        from agent.session_client_env import accept_client_env
+        from agent.session_client_env import client_env_rules, normalise_client_env
+        rules = client_env_rules(config, local=client_local)
         try:
-            client_env = json.dumps(accept_client_env(params['client_env'], config, local=client_local),
-                                    sort_keys=True)
+            client_env = json.dumps(normalise_client_env(params['client_env'], rules), sort_keys=True)
         except ValueError as exc:
             _refuse('client_env', str(exc))
+        rules = json.dumps(rules, sort_keys=True)
     # Values stay out of the request: ``launch_request`` is echoed to every viewer of the session.
     request = {k: v for k, v in params.items() if k not in {'request_id', 'api_key', 'client_env'}}
     request.setdefault('source', 'cli')
@@ -374,7 +378,8 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True,
                               json.dumps(config), json.dumps(request, sort_keys=True), json.dumps(terminal),
                               safe_mode=safe_mode, ignore_user_config=ignore_user_config,
                               coding_posture=coding_posture, client_env_json=client_env,
-                              client_env_remote=client_env is not None and not client_local)
+                              client_env_remote=client_env is not None and not client_local,
+                              client_env_rules_json=rules)
 
 
 def terminal_uses_host_cwd(terminal):
@@ -818,6 +823,7 @@ def restore_policy(data):
                 or not isinstance(policy.skills_prompt, (str, type(None)))
                 or type(policy.coding_posture) is not bool
                 or not _valid_client_env(policy.client_env_json) or type(policy.client_env_remote) is not bool
+                or not _valid_client_env(policy.client_env_rules_json, list)
                 or (policy.safe_mode and not policy.ignore_user_config)):
             raise ValueError('invalid policy')
         from dataclasses import replace
@@ -832,11 +838,13 @@ def restore_policy(data):
         raise RuntimeStoreError('storage_unavailable') from exc
 
 
-def _valid_client_env(value):
+def _valid_client_env(value, kind: type = str):
+    """A stored client map (names to strings) or its rules (``kind=list``: rule names to string lists)."""
     if value is None:
         return True
     env = json.loads(value) if isinstance(value, str) else None
-    return isinstance(env, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in env.items())
+    return isinstance(env, dict) and all(isinstance(k, str) and isinstance(v, kind) and (
+        kind is str or all(isinstance(item, str) for item in v)) for k, v in env.items())
 
 
 def policy_for_source(runner, source):

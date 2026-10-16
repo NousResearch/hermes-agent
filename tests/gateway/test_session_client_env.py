@@ -213,6 +213,99 @@ async def test_exact_retry_is_judged_by_the_committed_map_not_the_current_allowl
 
 
 @pytest.mark.asyncio
+async def test_exact_retry_compares_the_complete_map_under_its_committed_rules(tmp_path, monkeypatch):
+    """The retry, normalised by the rules committed with its session (allowlist, secret filter, locality),
+    must equal the committed map: a name those rules keep added, a stored one dropped or a value changed
+    is a different request; a name they would have dropped is ignored, whatever the rules are now."""
+    from gateway.session_local import create_local_session
+    from hermes_state_runtime import RuntimeStoreError
+    home = _home(tmp_path, _CONFIG + 'terminal: {client_env_passthrough: [GEM_HOME]}\n')
+    owner, connection = await _owner(home, monkeypatch)
+    base = {'source': 'cli', 'cwd': str(home), 'toolsets': []}
+
+    def create(request_id, env, local=True):
+        return create_local_session(owner, connection.actor, {**base, 'request_id': request_id, 'client_env': env},
+                                    client_local=local)
+    env = {'GEM_HOME': '/gems', 'PATH': '/client/bin'}
+    try:
+        ref, empty = create('x', env), create('e', {})
+        remote = create('r', {'PATH': '/a', 'HERMES_EPHEMERAL_SYSTEM_PROMPT': 'P'}, local=False)
+        (home / 'config.yaml').write_text(_CONFIG + 'terminal: {client_env_passthrough: [BUNDLE_PATH]}\n')
+        assert create('x', {**env, 'BUNDLE_PATH': '/b', 'NODE_AUTH_TOKEN': 't', 'HERMES_YOLO_MODE': '1'}) == ref
+        for added in ({'VIRTUAL_ENV': '/venv'}, {'NVM_DIR': '/nvm'}, {'HERMES_EPHEMERAL_SYSTEM_PROMPT': 'P'}):
+            with pytest.raises(RuntimeStoreError):
+                create('x', {**env, **added})
+        assert create('e', {'BUNDLE_PATH': '/b'}) == empty  # not allowlisted when 'e' committed
+        for sent in ({'PATH': '/client/bin'}, {'GEM_HOME': '/g'}, 'PATH=/x'):
+            with pytest.raises(RuntimeStoreError):
+                create('e', sent)
+        # Committed without the gateway's proof of locality: host values were dropped then, so they are now.
+        assert create('r', {'PATH': '/b', 'HERMES_EPHEMERAL_SYSTEM_PROMPT': 'P'}) == remote
+        with pytest.raises(RuntimeStoreError):
+            create('r', {'PATH': '/a', 'HERMES_EPHEMERAL_SYSTEM_PROMPT': 'Q'})
+    finally:
+        await connection.close()
+        owner.db.close()
+
+
+@pytest.mark.asyncio
+async def test_overlapping_retries_across_an_allowlist_change_agree_with_sequential_ones(tmp_path, monkeypatch):
+    """Two creates of one request_id staged on either side of an allowlist edit: the transactional commit
+    judges the loser by the winner's committed rules, exactly as a sequential retry would be."""
+    from gateway.session_local import stage_local_session
+    from hermes_state_local import commit_local_session, local_receipt
+    from hermes_state_runtime import RuntimeStoreError
+    home = _home(tmp_path, _CONFIG + 'terminal: {client_env_passthrough: [GEM_HOME]}\n')
+    owner, connection = await _owner(home, monkeypatch)
+    env = {'GEM_HOME': '/gems', 'BUNDLE_PATH': '/bundle', 'PATH': '/client/bin'}
+
+    def stage(sent):
+        return stage_local_session(owner, connection.actor, {'request_id': 'o', 'source': 'cli', 'cwd': str(home),
+                                                             'toolsets': [], 'client_env': sent}, client_local=True)
+    try:
+        first = stage(env)
+        (home / 'config.yaml').write_text(_CONFIG + 'terminal: {client_env_passthrough: [BUNDLE_PATH]}\n')
+        same, added = stage(env), stage({**env, 'VIRTUAL_ENV': '/venv'})
+        assert all(isinstance(receipt, dict) for receipt in (first, same, added))  # all staged before the row
+        commit_local_session(owner.db, epoch=owner.epoch, receipt=first)
+        saved = local_receipt(owner.db, first['session_id'])
+        assert commit_local_session(owner.db, epoch=owner.epoch, receipt=same)['policy'] == saved['policy']
+        with pytest.raises(RuntimeStoreError):
+            commit_local_session(owner.db, epoch=owner.epoch, receipt=added)
+        assert local_receipt(owner.db, first['session_id']) == saved
+    finally:
+        await connection.close()
+        owner.db.close()
+
+
+@pytest.mark.asyncio
+async def test_a_copied_staged_receipt_is_never_judged_by_its_own_filtered_map(tmp_path, monkeypatch):
+    """An overlapping create's own ``client_env`` is owner memory on its staged receipt. A plain copy has lost
+    it, and its filtered map (an allowlist edit dropped GEM_HOME) equals the winner's: the commit refuses it."""
+    from gateway.session_local import stage_local_session
+    from hermes_state_local import commit_local_session
+    from hermes_state_runtime import RuntimeStoreError
+    home = _home(tmp_path, _CONFIG + 'terminal: {client_env_passthrough: [GEM_HOME]}\n')
+    owner, connection = await _owner(home, monkeypatch)
+
+    def stage(sent):
+        return stage_local_session(owner, connection.actor, {'request_id': 'c', 'source': 'cli', 'cwd': str(home),
+                                                             'toolsets': [], 'client_env': sent}, client_local=True)
+    try:
+        first = stage({'PATH': '/client/bin'})
+        (home / 'config.yaml').write_text(_CONFIG)
+        added = stage({'PATH': '/client/bin', 'GEM_HOME': '/gems'})
+        commit_local_session(owner.db, epoch=owner.epoch, receipt=first)
+        with pytest.raises(RuntimeStoreError):
+            commit_local_session(owner.db, epoch=owner.epoch, receipt=added)
+        with pytest.raises(RuntimeStoreError):
+            commit_local_session(owner.db, epoch=owner.epoch, receipt=dict(added))
+    finally:
+        await connection.close()
+        owner.db.close()
+
+
+@pytest.mark.asyncio
 async def test_host_values_apply_only_over_a_gateway_proven_local_attach(tmp_path, monkeypatch):
     """Toolchain and path-valued values are the client's only when the gateway itself proves the attach is
     on its host: the connection redeemed a ticket minted over the gateway's private control socket

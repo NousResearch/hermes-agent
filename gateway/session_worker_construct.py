@@ -71,6 +71,8 @@ class StagedReceipt(dict):
     """A creation receipt plus owner memory ``commit_local_session`` publishes only from the
     transaction that creates the session (never persisted: the receipt itself is the dict)."""
     on_create: '_PrefillPublication | None' = None
+    # The request's own ``client_env`` (stage_local_session), for an overlapping create's retry check.
+    client_request: 'dict | None' = None
 
 
 class _PrefillPublication:

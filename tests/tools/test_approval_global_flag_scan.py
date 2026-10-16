@@ -44,23 +44,54 @@ for prefix in ("rclone lsf $HOME/.hermes --recursive --files-only", "hermes", "d
 ''')
 
 
-def test_value_whitespace_decisions_are_unchanged():
-    # The fix must not move any approval decision: docker/podman values follow exactly one
-    # whitespace character, as before, while hermes values may follow a whitespace run.
+def test_value_whitespace_runs_reach_the_container_verb():
+    # docker/podman values may follow a whitespace run, like hermes values always could: the shell
+    # collapses the run before docker sees the command, so a value behind two spaces used to end the
+    # flag group and hide the verb (#130511). Single-space commands keep their exact decisions.
     _run('''
 from tools.approval_detection import detect_dangerous_command
 cases = {
     "docker --log-level debug stop app": True,
     "docker --log-level\\tdebug stop app": True,
-    "docker --log-level  debug stop app": False,
-    "docker --log-level  debug -H ssh://prod ps": False,
-    "docker --log-level  debug --context prod ps": False,
-    "podman --log-level  debug --remote ps": False,
-    "podman --log-level  debug --url tcp://prod ps": False,
-    "docker compose --project-name  demo down": False,
+    "docker --log-level  debug stop app": True,
+    "docker --log-level  debug -H ssh://prod ps": True,
+    "docker --log-level  debug --context prod ps": True,
+    "podman --log-level  debug --remote ps": True,
+    "podman --log-level  debug --url tcp://prod ps": True,
+    "docker compose --project-name  demo down": True,
     "docker compose --project-name demo  down": True,
     "hermes --config  x.yaml gateway restart": True,
 }
 for command, dangerous in cases.items():
     assert detect_dangerous_command(command)[0] is dangerous, command
+''')
+
+
+def test_whitespace_run_before_a_value_cannot_hide_the_verb():
+    # The measured #130511 spellings: two spaces (or tabs) between a container flag and its value
+    # used to leave the lifecycle verb past the flag group's reach. Harmless verbs stay benign.
+    _run('''
+from tools.approval_detection import detect_dangerous_command
+dangerous = {
+    "docker --log-level  warn stop web": True,
+    "docker --log-level  warn restart web": True,
+    "docker --log-level  warn kill web": True,
+    "docker --log-level\\t\\twarn stop web": True,
+    "docker compose --profile  prod down": True,
+}
+benign = {
+    "docker --log-level  warn ps": False,
+    "docker --log-level  warn logs web": False,
+    "docker compose --profile  prod config": False,
+    # compose must directly follow docker; a flag before the subcommand stays out with one space
+    # too, so the whitespace alignment does not reach it either.
+    "docker --log-level warn compose down": False,
+    "docker --log-level  warn compose down": False,
+    # podman has no lifecycle rule (its grammar feeds the remote-daemon rules, covered above);
+    # the verb stays out with one space too.
+    "podman --log-level warn stop web": False,
+    "podman --log-level  warn stop web": False,
+}
+for command, expected in {**dangerous, **benign}.items():
+    assert detect_dangerous_command(command)[0] is expected, command
 ''')

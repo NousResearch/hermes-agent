@@ -102,6 +102,25 @@ class TestSignalConnectCleanup:
         assert adapter.client is None
         assert adapter._platform_lock_identity is None
 
+    @pytest.mark.asyncio
+    async def test_publishes_connected_runtime_status_after_healthcheck(self, monkeypatch):
+        """Regression for #138709: a healthy Signal daemon must update the Messaging status card."""
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=MagicMock(status_code=200))
+        mock_client.aclose = AsyncMock()
+
+        with patch("gateway.platforms.signal.httpx.AsyncClient", return_value=mock_client), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch.object(adapter, "_write_runtime_status_safe") as write_status:
+            try:
+                assert await adapter.connect() is True
+                write_status.assert_called_once_with(
+                    "connected", platform_state="connected", error_code=None, error_message=None,
+                )
+            finally:
+                await adapter.disconnect()
+
 
 class TestSignalHelpers:
 

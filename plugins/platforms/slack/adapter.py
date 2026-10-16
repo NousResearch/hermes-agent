@@ -2988,6 +2988,7 @@ class SlackAdapter(BasePlatformAdapter):
         CHUNK = 10
         chunks = [images[i : i + CHUNK] for i in range(0, len(images), CHUNK)]
         delivered = False
+        error = None
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
@@ -3012,7 +3013,9 @@ class SlackAdapter(BasePlatformAdapter):
                 fallback = await super().send_multiple_images(
                     chat_id, chunk, metadata, human_delay=human_delay)
                 delivered = delivered or fallback.success
-        return SendResult(success=delivered, error=None if delivered else "all images failed to send")
+                if error is None and fallback.error:
+                    error = fallback.error
+        return SendResult(success=delivered, error=error if delivered else "all images failed to send")
 
     @staticmethod
     async def _collect_image_uploads(

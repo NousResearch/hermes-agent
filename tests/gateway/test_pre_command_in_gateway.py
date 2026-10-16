@@ -432,7 +432,7 @@ def test_commands_the_cli_refuses_on_the_gateway_fire_nothing(monkeypatch, capsy
 
 def _authority(state):
     from types import SimpleNamespace
-    live = SimpleNamespace(source=object())
+    live = SimpleNamespace(source=object(), route='agent:main:local:dm:s1')
     return SimpleNamespace(sessions={'s1': live}, runner=object(), profile_id='/tmp/home',
                            _handle=lambda _ref: SimpleNamespace(execution_state=state))
 
@@ -482,7 +482,7 @@ def test_a_hung_pre_command_callback_is_bounded_and_each_session_keeps_its_order
     monkeypatch.setattr('hermes_cli.plugins._resolve_hook_callback_timeout', lambda: 0.5)
     monkeypatch.setattr('gateway.session_local.authorize_local_source', lambda _r, _s: True)
     monkeypatch.setattr('gateway.run._profile_runtime_scope', lambda _home: nullcontext())
-    live = SimpleNamespace(source=object())
+    live = SimpleNamespace(source=object(), route='agent:main:local:dm:s1')
     authority = SimpleNamespace(sessions=dict.fromkeys('ABC', live), runner=object(), profile_id='/tmp/home',
                                 _handle=lambda _ref: SimpleNamespace(execution_state='idle'))
 
@@ -540,7 +540,7 @@ def test_callbacks_waiting_out_their_bound_hold_no_worker_another_session_needs(
     monkeypatch.setattr('hermes_cli.plugins._resolve_hook_callback_timeout', lambda: 30)
     monkeypatch.setattr('gateway.session_local.authorize_local_source', lambda _r, _s: True)
     monkeypatch.setattr('gateway.run._profile_runtime_scope', lambda _home: nullcontext())
-    live = SimpleNamespace(source=object())
+    live = SimpleNamespace(source=object(), route='agent:main:local:dm:s1')
     authority = SimpleNamespace(sessions=dict.fromkeys([*slow, 'fresh'], live), runner=object(),
                                 profile_id='/tmp/home', _handle=lambda _ref: SimpleNamespace(execution_state='idle'))
 

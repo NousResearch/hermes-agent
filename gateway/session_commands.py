@@ -279,9 +279,10 @@ def _pre_command(authority, ref, canonical, alias, arg):
         logger.warning('pre_command for /%s dropped: %d deliveries already queued for this session', canonical, pending)
         return None
 
-    def fire():
+    def fire():  # bound to the session it fires for: a key-less inject_message from the hook lands there
+        from gateway.session_context import scoped_session_key
         from hermes_cli.plugins import fire_pre_command_hook
-        with _profile_runtime_scope(home):
+        with _profile_runtime_scope(home), scoped_session_key(live.route):
             fire_pre_command_hook(surface='cli', command=canonical, alias_used=alias, args_raw=arg,
                                   session_key=ref.session_id, platform='cli')
 

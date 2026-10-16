@@ -85,10 +85,10 @@ describe('model visibility', () => {
     expect(visible.has(modelVisibilityKey('ollama', 'qwen3:latest'))).toBe(true)
   })
 
-  it('folds a date-pinned snapshot into its rolling alias when present', () => {
+  it('keeps a date-pinned snapshot as its own family when the base id is present', () => {
     const families = collapseModelFamilies(['claude-opus-4-5', 'claude-opus-4-5-20251101'])
 
-    expect(families.map(f => f.id)).toEqual(['claude-opus-4-5'])
+    expect(families.map(f => f.id)).toEqual(['claude-opus-4-5', 'claude-opus-4-5-20251101'])
   })
 
   it('keeps a date-pinned snapshot standing alone when it has no alias', () => {

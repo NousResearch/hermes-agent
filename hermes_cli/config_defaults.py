@@ -1838,6 +1838,11 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a task-name header and "The agent cannot see this
         # message" footer. False = clean output.
         "wrap_response": True,
+        # With wrap_response on, False keeps the header but drops the "To stop or manage this
+        # job" footer.
+        "wrap_footer": True,
+        # "plain" (default) or "markdown": header labels as inline code, job name in bold.
+        "wrap_style": "plain",
         "delivery": {  # Delivery behaviour for cron output sent through a live gateway adapter.
             # Mark cron deliveries FINAL so the platform pushes them (Telegram's "important" mode
             # otherwise sends with disable_notification=True and briefs look undelivered). False =

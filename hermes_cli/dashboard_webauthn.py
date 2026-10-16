@@ -412,6 +412,31 @@ def _write_webauthn_block(rp_id: str, rp_name: str, origins: list) -> tuple:
     return str(config_path), str(backup) if backup else None
 
 
+def _topology_advisory(origins: list[str]) -> None:
+    """Post-write deployment note for public-https origins.
+
+    The wizard only stages the webauthn block; the server's bind and proxy
+    trust are LAUNCH-TIME decisions (``hermes dashboard --host`` defaults to
+    127.0.0.1 and there is no config key for it). A written https origin that
+    the dashboard never serves is the silent top cause of "config written but
+    enrolment fails" — the reverse-proxy topology must exist at launch, and
+    without ``dashboard.trusted_proxies`` uvicorn ignores X-Forwarded-Proto
+    (fail-closed), so the provider sees plain http and stays LAN-basic-only.
+    """
+    public_https = [o for o in origins
+                    if o.startswith("https://") and "localhost" not in o]
+    if not public_https:
+        return
+    print("⚠ Deployment note: passkeys need the dashboard reachable at the origin, "
+          "serving https:")
+    print(f"  for {public_https[0]} behind a reverse proxy, launch with:")
+    print("    hermes dashboard --host 0.0.0.0        # the 127.0.0.1 default cannot serve the origin")
+    print("  and in config.yaml under 'dashboard:' add:")
+    print("    trusted_proxies: [<proxy IP>]   # without it X-Forwarded-Proto is ignored (fail-closed);")
+    print("                                    # the provider then sees http and the passkey form never shows")
+    print("  LAN plain-http access stays password-only by design.")
+
+
 def cmd_webauthn_setup(args) -> None:
     """Write the ``dashboard.webauthn`` block: ``hermes dashboard webauthn setup``."""
     import logging
@@ -478,6 +503,7 @@ def cmd_webauthn_setup(args) -> None:
     print(f"  rp_name: {rp_name}")
     print(f"  origins: {', '.join(origins)}")
     print(f"  config {resolution}.")
+    _topology_advisory(origins)
     print()
     print("Next:")
     print("  1. Restart the dashboard process — the passkey provider registers at boot.")

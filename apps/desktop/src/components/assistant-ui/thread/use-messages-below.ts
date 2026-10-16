@@ -14,9 +14,16 @@ interface MessagesBelowOptions {
   scrollRef: RefObject<HTMLElement | null>
   isAtBottom: boolean
   paneVisible: boolean
-  rows: ReactNode
   sessionKey: string | null | undefined
   sessionId: string | null
+  /**
+   * Retained for call-site compat; intentionally IGNORED. Content changes are
+   * observed via MutationObserver + reader.invalidate() below, so threading the
+   * per-flush `rows` ReactNode through the effect deps would tear down and
+   * rebuild scroll/Resize/Mutation observers (plus a querySelectorAll snapshot)
+   * on every streaming token.
+   */
+  rows?: ReactNode
 }
 
 interface GroupSummary {
@@ -164,7 +171,6 @@ export function useMessagesBelow({
   scrollRef,
   isAtBottom,
   paneVisible,
-  rows,
   sessionKey,
   sessionId
 }: MessagesBelowOptions) {
@@ -239,5 +245,10 @@ export function useMessagesBelow({
       resize.disconnect()
       mutations.disconnect()
     }
-  }, [contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey, sessionId])
+    // NOTE: no `rows` dep — the MutationObserver above already schedules a
+    // re-measure when counted message structure changes. Re-subscribing per
+    // streaming flush would rebuild observers + the group snapshot per token.
+    // The below-count must still update while scrolled up and streaming (the
+    // pill increments as the tail grows), so measurement itself stays live.
+  }, [contentRef, scrollRef, isAtBottom, paneVisible, sessionKey, sessionId])
 }

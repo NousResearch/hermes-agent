@@ -68,8 +68,11 @@ function transcriptTailKey(storedSessionId: string, profile?: TranscriptProfileS
   return scope ? JSON.stringify([scope.connectionId, scope.profile, storedSessionId]) : storedSessionId
 }
 
-function matchingTailEntries(storedSessionId: string): Array<[string, TranscriptTailState]> {
-  return Object.entries($transcriptTailBySessionId.get()).filter(([key]) => {
+function matchingTailEntriesIn(
+  map: Record<string, TranscriptTailState>,
+  storedSessionId: string
+): Array<[string, TranscriptTailState]> {
+  return Object.entries(map).filter(([key]) => {
     if (key === storedSessionId) {
       return true
     }
@@ -82,6 +85,10 @@ function matchingTailEntries(storedSessionId: string): Array<[string, Transcript
       return false
     }
   })
+}
+
+function matchingTailEntries(storedSessionId: string): Array<[string, TranscriptTailState]> {
+  return matchingTailEntriesIn($transcriptTailBySessionId.get(), storedSessionId)
 }
 
 /**
@@ -108,6 +115,27 @@ function resolveTailEntry(
   const matches = matchingTailEntries(storedSessionId)
 
   return matches.length === 1 ? matches[0] : undefined
+}
+
+/**
+ * Pure selector over a `$transcriptTailBySessionId` snapshot for
+ * `useStoreSelector`: re-renders only when THIS session's entry ref changes,
+ * not on writes to other sessions' keys (a plain `useStore(map)` re-renders
+ * the whole chat on any background backfill). Returns the shared entry ref —
+ * never a fresh object — so `Object.is` bail-out holds.
+ */
+export function selectTranscriptTail(
+  map: Record<string, TranscriptTailState>,
+  storedSessionId: string,
+  profile?: TranscriptProfileScope
+): TranscriptTailState | undefined {
+  if (profile !== undefined) {
+    return map[transcriptTailKey(storedSessionId, profile)]
+  }
+
+  const matches = matchingTailEntriesIn(map, storedSessionId)
+
+  return matches.length === 1 ? matches[0][1] : undefined
 }
 
 /**

@@ -77,12 +77,9 @@ import {
   workspaceCwdForNewSession
 } from './session'
 import { tombstoneSessions, untombstoneSessions } from './session-removal'
-import {
-  $attentionSessionIds,
-  clearAllSessionStates,
-  getRecentlySettledSessionIds,
-  publishSessionState
-} from './session-states'
+import { clearAllSessionStates, publishSessionState } from './session-states'
+import { getRecentlySettledSessionIds } from './session-states-expiry'
+import { $attentionSessionIds } from './session-states-status-sets'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => makeSessionInfo({ id: 'live', ...over })
 

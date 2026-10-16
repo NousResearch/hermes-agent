@@ -88,10 +88,8 @@ import {
 } from '@/store/session'
 import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
 import {
-  $attentionSessionIds,
   $sessionOwnerHoldRevision,
   $sessionTiles,
-  $workingSessionIds,
   foregroundSessionScopes,
   forgetProfileOnlyRuntimeOwners,
   liveSessionScopes,
@@ -100,6 +98,7 @@ import {
   recordSessionEventScope,
   resetTileRuntimeBindings
 } from '@/store/session-states'
+import { $attentionSessionIds, $workingSessionIds } from '@/store/session-states-status-sets'
 import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warning'
 import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 

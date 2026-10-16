@@ -8,12 +8,12 @@ import { $onBattery } from '@/store/power'
 import { $activeSessionId } from '@/store/session'
 import {
   $sessionStates,
-  $workingSessionIds,
   clearAllSessionStates,
   LIVE_TURN_EVENT_SILENCE_MS,
   noteSessionEvent,
   publishSessionState
 } from '@/store/session-states'
+import { $workingSessionIds } from '@/store/session-states-status-sets'
 import { loadArchivedSessions } from '@/store/sidebar-archive'
 
 import { useBackgroundSync } from './use-background-sync'

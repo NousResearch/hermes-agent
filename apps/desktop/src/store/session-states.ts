@@ -35,7 +35,6 @@ import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pan
 import type { WorkspaceMode } from '@/contrib/types'
 import { finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messages'
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
-import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -93,6 +92,7 @@ import {
   type SessionOwnerScope,
   type SessionProfileRoute
 } from './session-request-router'
+import { clearSettled, clearSettledGrace, markSettled, sweepDeadLightweightStates } from './session-states-expiry'
 import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
@@ -102,6 +102,60 @@ import { isBrowserWindow, isSecondaryWindow } from './windows'
 // ---------------------------------------------------------------------------
 
 export const $sessionStates = atom<Record<string, ClientSessionState>>({})
+
+// Status-version gate for the derived sets in `session-states-status-sets`
+// ($working/$attention/$draftSessionIds). `$sessionStates` is republished on EVERY message delta
+// (tens/sec per streaming turn), but set membership only depends on the key
+// set + busy/needsInput/storedSessionId (+ messages.length for drafts). Each
+// producer write diffs those O(1) fields and bumps only what changed, so the
+// computeds return their cached array without walking all runtimes on
+// status-quiet tokens.
+//
+// Correctness net: the listener below treats ANY notification the producer
+// did not account for as a status change and invalidates both versions.
+// Direct `$sessionStates.set` writes (tests, future call sites) therefore
+// degrade to a recompute, never a stale sidebar dot. It is registered before
+// the computeds, so it always runs first.
+let busyStatusVersion = 0
+let draftStatusVersion = 0
+let statusWriteAccounted = false
+
+$sessionStates.listen(() => {
+  if (statusWriteAccounted) {
+    statusWriteAccounted = false
+  } else {
+    busyStatusVersion += 1
+    draftStatusVersion += 1
+  }
+})
+
+/** Diff the status-relevant fields of a producer write and bump what changed. */
+function noteStatusWrite(prev: ClientSessionState | null | undefined, next: ClientSessionState): void {
+  if (
+    !prev ||
+    prev.busy !== next.busy ||
+    prev.needsInput !== next.needsInput ||
+    prev.storedSessionId !== next.storedSessionId
+  ) {
+    busyStatusVersion += 1
+  }
+
+  if (
+    !prev ||
+    prev.busy !== next.busy ||
+    prev.storedSessionId !== next.storedSessionId ||
+    (prev.messages?.length ?? -1) !== (next.messages?.length ?? -1)
+  ) {
+    draftStatusVersion += 1
+  }
+
+  statusWriteAccounted = true
+}
+
+/** Current status versions for the derived sets in `session-states-status-sets`. */
+export function statusSetVersions(): { busy: number; draft: number } {
+  return { busy: busyStatusVersion, draft: draftStatusVersion }
+}
 
 // ---------------------------------------------------------------------------
 // Event-source scopes: which registry connection's socket (or local secondary
@@ -381,6 +435,7 @@ function clearEventSilence(runtimeId: string) {
   const timer = sessionEventSilenceTimers.get(runtimeId)
 
   silentTurnChecks.delete(runtimeId)
+  sessionEventSilenceLastReset.delete(runtimeId)
 
   if (timer) {
     clearTimeout(timer)
@@ -546,6 +601,11 @@ async function onEventSilence(runtimeId: string) {
 /** Record that this session just produced an event. A live turn that then goes
  *  silent is checked against its backend; a turn still receiving events, or
  *  waiting on the user, is not. */
+const sessionEventSilenceLastReset = new Map<string, number>()
+// The 45s silence window barely moves per token: re-arm at most once a
+// second instead of clear+setTimeout on every gateway event (~30/s).
+const EVENT_SILENCE_REARM_QUANTUM_MS = 1000
+
 export function noteSessionEvent(runtimeId: string) {
   if (!runtimeId) {
     return
@@ -553,12 +613,20 @@ export function noteSessionEvent(runtimeId: string) {
 
   const current = $sessionStates.get()[runtimeId]
 
-  clearEventSilence(runtimeId)
-
   if (!isLiveTurnAwaitingEvents(current)) {
+    clearEventSilence(runtimeId)
+
     return
   }
 
+  const now = Date.now()
+
+  if (sessionEventSilenceTimers.has(runtimeId) && now - (sessionEventSilenceLastReset.get(runtimeId) ?? 0) < EVENT_SILENCE_REARM_QUANTUM_MS) {
+    return
+  }
+
+  clearEventSilence(runtimeId)
+  sessionEventSilenceLastReset.set(runtimeId, now)
   sessionEventSilenceTimers.set(
     runtimeId,
     setTimeout(() => void onEventSilence(runtimeId), LIVE_TURN_EVENT_SILENCE_MS)
@@ -566,18 +634,34 @@ export function noteSessionEvent(runtimeId: string) {
 }
 
 const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
+// Re-arm at most once a minute: re-arming on every busy publish is 2×
+// clear+setTimeout churn per streaming token for a 5min window that barely
+// moves (a firing hint is cleared by the next token anyway).
+const sessionWatchdogLastArm = new Map<string, number>()
+const WATCHDOG_REARM_QUANTUM_MS = 60_000
 
 function armWatchdog(runtimeId: string) {
+  const now = Date.now()
+
+  if (
+    sessionWatchdogTimers.has(runtimeId) &&
+    now - (sessionWatchdogLastArm.get(runtimeId) ?? 0) < WATCHDOG_REARM_QUANTUM_MS
+  ) {
+    return
+  }
+
   const existing = sessionWatchdogTimers.get(runtimeId)
 
   if (existing) {
     clearTimeout(existing)
   }
 
+  sessionWatchdogLastArm.set(runtimeId, now)
   sessionWatchdogTimers.set(
     runtimeId,
     setTimeout(() => {
       sessionWatchdogTimers.delete(runtimeId)
+      sessionWatchdogLastArm.delete(runtimeId)
       const current = $sessionStates.get()[runtimeId]
 
       if (current?.busy) {
@@ -594,34 +678,11 @@ function clearWatchdog(runtimeId: string) {
     clearTimeout(t)
     sessionWatchdogTimers.delete(runtimeId)
   }
+
+  sessionWatchdogLastArm.delete(runtimeId)
 }
 
-// --- Settle grace: keeps a just-finished session in the sidebar merge set ---
-const SESSION_SETTLE_GRACE_MS = 30 * 1000
-const settledExpiry = new Map<string, number>()
-
-function markSettled(storedId: string) {
-  settledExpiry.set(storedId, Date.now() + SESSION_SETTLE_GRACE_MS)
-}
-
-function clearSettled(storedId: string) {
-  settledExpiry.delete(storedId)
-}
-
-/** Stored ids whose turn ended within the grace window. Prunes expired. */
-export function getRecentlySettledSessionIds(now: number = Date.now()): string[] {
-  const live: string[] = []
-
-  for (const [id, expiry] of settledExpiry) {
-    if (expiry > now) {
-      live.push(id)
-    } else {
-      settledExpiry.delete(id)
-    }
-  }
-
-  return live
-}
+// Settle grace + dead-state pruning live in ./session-states-expiry (ratchet offset).
 
 /** The session id the live HashRouter route names, or null when the route has
  *  no session opinion (new-chat draft, reserved/overlay/contributed page, or
@@ -873,11 +934,16 @@ export function publishSessionState(runtimeId: string, state: ClientSessionState
 
   if (prev && evictable(runtimeId, state)) {
     handleTransition(prev, state, runtimeId)
+    // Account for the busy/needsInput edge BEFORE the release below: it
+    // publishes a lightweight state, not the transition itself, so without
+    // this the version gate would keep serving the pre-transition sets.
+    noteStatusWrite(prev, state)
     releaseSessionTranscript(runtimeId, state)
 
     return
   }
 
+  noteStatusWrite(prev, state)
   $sessionStates.set({ ...current, [runtimeId]: state })
   handleTransition(prev, state, runtimeId)
 }
@@ -903,7 +969,23 @@ export function releaseSessionTranscript(runtimeId: string, state?: ClientSessio
   const lightweight =
     Array.isArray(retained.messages) && retained.messages.length === 0 ? retained : { ...retained, messages: [] }
 
+  // Only messages.length can have changed here (busy/needsInput/storedSessionId
+  // are retained verbatim), and only the draft set reads it.
+  if (lightweight !== retained) {
+    draftStatusVersion += 1
+  }
+
+  statusWriteAccounted = true
   $sessionStates.set({ ...current, [runtimeId]: lightweight })
+
+  const swept = sweepDeadLightweightStates($sessionStates.get(), (rt, storedId) => runtimeReferenced(rt, storedId))
+
+  if (swept) {
+    busyStatusVersion += 1
+    draftStatusVersion += 1
+    statusWriteAccounted = true
+    $sessionStates.set(swept)
+  }
 }
 
 export function dropSessionState(runtimeId: string) {
@@ -927,6 +1009,10 @@ export function dropSessionState(runtimeId: string) {
   }
 
   const { [runtimeId]: _dropped, ...rest } = current
+  // A removed runtime may have carried busy/needsInput/draft membership.
+  busyStatusVersion += 1
+  draftStatusVersion += 1
+  statusWriteAccounted = true
   $sessionStates.set(rest)
 }
 
@@ -941,20 +1027,25 @@ export function clearAllSessionStates() {
   }
 
   sessionWatchdogTimers.clear()
+  sessionWatchdogLastArm.clear()
 
   for (const timer of sessionEventSilenceTimers.values()) {
     clearTimeout(timer)
   }
 
   sessionEventSilenceTimers.clear()
+  sessionEventSilenceLastReset.clear()
   silentTurnChecks.clear()
-  settledExpiry.clear()
+  clearSettledGrace()
   unconfirmedReconnectSettles.clear()
   clearAllProviderWaits()
   sessionScopeByRuntimeId.clear()
   sessionOwnerByRuntimeId.clear()
   forgetPendingRuntimeTabs()
   $stalledSessionIds.set([])
+  busyStatusVersion += 1
+  draftStatusVersion += 1
+  statusWriteAccounted = true
   $sessionStates.set({})
 }
 
@@ -1052,97 +1143,6 @@ export function reconcileBusyStatesOnReconnect(scope?: string) {
     setTurnStartedAt(null)
   }
 }
-
-// Derived per-session status sets — pure projections of `$sessionStates` (which
-// holds `busy`/`needsInput` per runtime), keeping the data flow one-directional:
-// gateway event → cache → $sessionStates → computed views.
-//
-// Perf: `$sessionStates` is republished on EVERY message delta (tens/sec during
-// a turn), but these sets only change on busy/needsInput edges. `stableArray`
-// keeps the prior reference when membership is unchanged so `computed` skips the
-// emit — otherwise the whole sidebar + every row re-renders per token.
-// Published under every id the conversation answers to, not just its current
-// tip: consumers hold whichever id they were created with, and compression
-// rotates the tip out from under them (see lineageAliases).
-//
-// A conversation that has not been persisted yet has no stored id at all, and
-// dropping it here is what left the FIRST turn of a new chat with no running
-// indicator anywhere — no dot, no row arc — for as long as it took the backend
-// to hand one back. Its runtime id is the right fallback because until a stored
-// id exists the two are the same value (submit.ts: "an unpersisted
-// conversation's queue key IS its runtime id"), so the row matches; once a
-// session is persisted its runtime id is nobody's key and the fallback is inert.
-const storedIds = (
-  states: Record<string, ClientSessionState>,
-  sessions: readonly SessionInfo[],
-  pred: (s: ClientSessionState) => boolean
-) => {
-  const ids = new Set<string>()
-
-  for (const [runtimeId, state] of Object.entries(states)) {
-    if (!pred(state)) {
-      continue
-    }
-
-    for (const alias of lineageAliases(state.storedSessionId ?? runtimeId, sessions)) {
-      ids.add(alias)
-    }
-  }
-
-  return [...ids]
-}
-
-let workingIds: readonly string[] = []
-export const $workingSessionIds = computed(
-  [$sessionStates, $sessions],
-  (states, sessions) =>
-    (workingIds = stableArray(
-      workingIds,
-      storedIds(states, sessions, s => s.busy)
-    ))
-)
-
-let attentionIds: readonly string[] = []
-export const $attentionSessionIds = computed(
-  [$sessionStates, $sessions],
-  (states, sessions) =>
-    (attentionIds = stableArray(
-      attentionIds,
-      storedIds(states, sessions, s => s.needsInput)
-    ))
-)
-
-// An open session nothing has ever been sent to — the ⌘T tab whose backend
-// session exists but is unlisted, or a tile still waiting on its first send.
-// `blankDraftTile`'s predicate, read as a status rather than as a slot to spend.
-//
-// The row's own `message_count` is the tiebreaker, and it is load-bearing: a
-// session RESUMING also holds an empty message list for the moment between
-// binding its runtime and loading its transcript, and calling that a draft
-// would flash the wrong mark on a conversation with years of history in it.
-let draftIds: readonly string[] = []
-export const $draftSessionIds = computed([$sessionStates, $sessions], (states, sessions) => {
-  const unsent = (state: ClientSessionState) => {
-    if (state.busy || state.messages.length > 0) {
-      return false
-    }
-
-    const storedId = state.storedSessionId
-
-    // No stored id is the ⌘T tab that hasn't reached the backend yet: a draft
-    // by definition, and no row to consult. Asking anyway would match a row on
-    // an empty lineage root.
-    if (!storedId) {
-      return true
-    }
-
-    const row = sessions.find(session => sessionMatchesStoredId(session, storedId))
-
-    return !row || row.message_count === 0
-  }
-
-  return (draftIds = stableArray(draftIds, storedIds(states, sessions, unsent)))
-})
 
 // ---------------------------------------------------------------------------
 // Session tiles.

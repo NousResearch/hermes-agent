@@ -597,6 +597,121 @@ def test_gc_removes_fetch_cache_archives(pm_env):
         "the live package entry survives gc"
 
 
+def test_gc_dry_run_reports_without_deleting(pm_env, capsys):
+    """The store is writable space; a sweep that deletes on sight destroys
+    entries the user placed by hand. `--dry-run` must show the exact removal
+    list without touching the filesystem. Expired partials are probed under
+    their own locks (nothing unlinked) so the list is the full picture a real
+    gc would act on — superseded generations stay out of it and are named
+    as unscanned in the summary."""
+    import os
+    import time
+    from types import SimpleNamespace
+
+    from pm.cli import cmd_gc
+    from pm.download_state import GC_GRACE_SECONDS
+    from pm import paths
+    from pm.install import ensure
+
+    _, runtime, *_ = pm_env
+    ensure("faketool", base_env={})
+    orphan = runtime / "orphan-9.9-nowhere"
+    orphan.mkdir()
+    partial = paths.partials_root() / "deadbeef.part"
+    partial.parent.mkdir(parents=True, exist_ok=True)
+    partial.write_bytes(b"stale bytes")
+    stale = time.time() - GC_GRACE_SECONDS - 60
+    os.utime(partial, (stale, stale))
+    cmd_gc(SimpleNamespace(dry_run=True))
+    out = capsys.readouterr().out
+    assert "would remove orphan-9.9-nowhere" in out
+    assert "would remove partials/deadbeef.part" in out
+    assert "generations not scanned" in out
+    assert orphan.is_dir(), "dry run must not delete anything"
+    assert partial.is_file(), "dry run must not unlink the expired partial"
+
+    cmd_gc(None)
+    assert not orphan.exists()
+    assert not partial.exists(), "a real gc still collects the expired partial"
+
+
+def test_gc_dry_run_does_not_initialise_the_store(pm_env, capsys):
+    """A dry run deletes nothing, so it must not create anything either:
+    on a machine with no store yet (only a leftover partials dir) a dry gc
+    reports the would-be removal while leaving both the store root and its
+    lock file uncreated."""
+    import os
+    import time
+    from types import SimpleNamespace
+
+    from pm.cli import cmd_gc
+    from pm.download_state import GC_GRACE_SECONDS
+    from pm import paths
+
+    _, runtime, *_ = pm_env
+    partial = paths.partials_root() / "cafe.part"
+    partial.parent.mkdir(parents=True, exist_ok=True)
+    partial.write_bytes(b"stale bytes")
+    stale = time.time() - GC_GRACE_SECONDS - 60
+    os.utime(partial, (stale, stale))
+    cmd_gc(SimpleNamespace(dry_run=True))
+    out = capsys.readouterr().out
+    assert "would remove partials/cafe.part" in out
+    assert partial.is_file(), "dry run must not unlink the expired partial"
+    assert not runtime.exists(), "dry run must not create the store root"
+    assert not (runtime / ".install.lock").exists(), "dry run must not create the lock file"
+    assert not (paths.partials_root() / ".locks").exists(), (
+        "dry run must not create partial lock inodes"
+    )
+
+
+def test_gc_keeps_entries_pinned_in_the_keep_list(pm_env):
+    """A `.gc-keep` pin (one entry name per line, `#` comments) is the
+    safety valve for hand-placed store content; only unpinned orphans
+    sweep."""
+    from pm.cli import cmd_gc
+    from pm.install import ensure
+
+    _, runtime, *_ = pm_env
+    ensure("faketool", base_env={})
+    pinned = runtime / "my-tool"
+    pinned.mkdir()
+    (runtime / ".gc-keep").write_text(
+        "my-tool  # portable CLI placed by hand\n\n# orphans below still sweep\n",
+        encoding="utf-8",
+    )
+    orphan = runtime / "orphan-9.9-nowhere"
+    orphan.mkdir()
+    cmd_gc(None)
+    assert pinned.is_dir(), "an entry pinned in .gc-keep must survive the sweep"
+    assert (runtime / ".gc-keep").is_file()
+    assert not orphan.exists()
+
+
+def test_gc_dry_run_reports_set_asides_without_deleting(pm_env, capsys):
+    """A set-aside (`.reclaim-*`) is an install leftover whose hold was still
+    alive at replace time; a real gc reclaims it. A dry run must report it in
+    the removal list yet leave it on disk — `--dry-run` deletes nothing."""
+    from types import SimpleNamespace
+
+    from pm.cli import cmd_gc
+    from pm.install import ensure
+
+    _, runtime, *_ = pm_env
+    ensure("faketool", base_env={})
+    set_aside = runtime / ".reclaim-deadbeef"
+    set_aside.mkdir()
+    (set_aside / "held.dll").write_bytes(b"mapped")
+    cmd_gc(SimpleNamespace(dry_run=True))
+    out = capsys.readouterr().out
+    assert "would remove .reclaim-deadbeef" in out
+    assert set_aside.is_dir(), "dry run must not reclaim a set-aside"
+    assert (set_aside / "held.dll").is_file()
+
+    cmd_gc(None)
+    assert not set_aside.exists(), "a real gc still reclaims the set-aside"
+
+
 def test_env_for_never_installs(pm_env):
     from pm import env_for
 

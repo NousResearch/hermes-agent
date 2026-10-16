@@ -15,7 +15,8 @@ import type {
   McpServerCreate,
   SkillInfo,
   SkillHubResult,
-} from "@/lib/api";
+} from "@/lib/api-types";
+import { McpNetworkFields } from "@/components/McpNetworkFields";
 import {
   buildMcpServerCreate,
   emptyMcpServerDraft,
@@ -588,6 +589,9 @@ export default function ProfileBuilderPage() {
 
                 {mcpDraft.transport === "http" ? (
                   <>
+                    <McpNetworkFields id="pb-mcp" network={mcpDraft.network} transport={mcpDraft.httpTransport}
+                      onNetworkChange={network => setMcpDraft({ ...mcpDraft, network })}
+                      onTransportChange={httpTransport => setMcpDraft({ ...mcpDraft, httpTransport })} />
                     <div className="grid gap-1.5">
                       <Label htmlFor="pb-mcp-url">URL</Label>
                       <Input

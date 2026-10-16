@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { ChatWorkspacesResponse } from "@/lib/api";
+import type { ChatWorkspacesResponse } from "@/lib/api-types";
 import { abbreviateHomePath, workspaceOptions } from "@/lib/chat-workspaces";
 
 const base: ChatWorkspacesResponse = {

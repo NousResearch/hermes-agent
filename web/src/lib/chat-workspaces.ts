@@ -4,7 +4,7 @@
  * a phone remembers the repo it drives.
  */
 
-import type { ChatWorkspacesResponse } from "@/lib/api";
+import type { ChatWorkspacesResponse } from "@/lib/api-types";
 
 export interface WorkspaceOption {
   value: string;

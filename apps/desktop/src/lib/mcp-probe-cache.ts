@@ -21,7 +21,16 @@ export const probeCache = new Map<string, { at: number; result: McpTestResult }>
 // — means a same-name edit (url/command/env change) or a same-named server in
 // another profile MISSES the cache instead of showing a stale probe.
 export const serverFingerprint = (server: Record<string, unknown>): string =>
-  JSON.stringify([server.url, server.command, server.args, server.env, server.headers, server.transport, server.auth])
+  JSON.stringify([
+    server.url,
+    server.command,
+    server.args,
+    server.env,
+    server.headers,
+    server.transport,
+    server.auth,
+    server.url ? (server.network ?? 'local') : undefined
+  ])
 
 export const probeKey = (name: string, server: Record<string, unknown> | undefined, profileKey: string): string =>
   `${profileKey}::${name}::${serverFingerprint(server ?? {})}`

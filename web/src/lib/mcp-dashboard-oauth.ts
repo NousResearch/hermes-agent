@@ -1,4 +1,4 @@
-import type { McpOAuthFlow } from "./api";
+import type { McpOAuthFlow } from "./api-types";
 
 type CompleteOptions = {
   serverName: string;

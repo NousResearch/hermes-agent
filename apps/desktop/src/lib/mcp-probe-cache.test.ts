@@ -39,6 +39,17 @@ describe('probeKey', () => {
     )
   })
 
+  it('canonicalizes legacy omission to local and invalidates other network namespaces', () => {
+    const server = { url: 'http://localhost:8080/mcp', network: 'local' }
+    expect(probeKey('unity', { url: server.url }, 'default')).toBe(probeKey('unity', server, 'default'))
+    expect(probeKey('unity', { url: server.url }, 'default')).not.toBe(
+      probeKey('unity', { ...server, network: 'auto' }, 'default')
+    )
+    expect(probeKey('unity', server, 'default')).not.toBe(
+      probeKey('unity', { ...server, network: 'windows' }, 'default')
+    )
+  })
+
   it('ignores non-connection fields so cosmetic edits still hit the cache', () => {
     const server = { url: 'https://api.example/mcp' }
     expect(probeKey('s', server, 'default')).toBe(probeKey('s', { ...server, description: 'hi' }, 'default'))

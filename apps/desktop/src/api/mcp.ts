@@ -80,6 +80,8 @@ export function addMcpServer(
   body: {
     name: string
     url?: string
+    network?: 'auto' | 'local' | 'windows'
+    transport?: 'http' | 'sse'
     command?: string
     args?: string[]
     env?: Record<string, string>
@@ -87,11 +89,13 @@ export function addMcpServer(
   },
   profile?: ProfileScope
 ): Promise<McpServerSummary> {
+  const requestBody = body.url && body.network === undefined ? { ...body, network: 'auto' as const } : body
+
   return window.hermesDesktop.api<McpServerSummary>({
     ...capabilityScoped(profile),
     path: '/api/mcp/servers',
     method: 'POST',
-    body
+    body: requestBody
   })
 }
 
@@ -124,13 +128,14 @@ export function getMcpCatalog(profile?: ProfileScope): Promise<McpCatalogRespons
 export function installMcpCatalogEntry(
   name: string,
   env: Record<string, string> = {},
-  profile?: ProfileScope
+  profile?: ProfileScope,
+  network?: 'auto' | 'local' | 'windows'
 ): Promise<{ ok: boolean; name?: string; pid?: number; action?: string; background?: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean; name?: string; pid?: number; action?: string; background?: boolean }>({
     ...capabilityScoped(profile),
     path: '/api/mcp/catalog/install',
     method: 'POST',
-    body: { name, env, enable: true },
+    body: { name, env, enable: true, ...(network ? { network } : {}) },
     timeoutMs: 60_000
   })
 }

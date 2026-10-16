@@ -769,12 +769,12 @@ def recorded_catalog_install(name: str) -> Iterator[None]:
         record_mcp_install("catalog", name, "success")
 
 
-def install_entry(entry: CatalogEntry, *, enable: bool = True, preloaded_env: Optional[dict[str, str]] = None) -> None:
+def install_entry(entry: CatalogEntry, *, enable: bool = True, preloaded_env: Optional[dict[str, str]] = None, network: Optional[str] = None) -> None:
     with recorded_catalog_install(entry.name):
-        _install_entry(entry, enable=enable, preloaded_env=preloaded_env)
+        _install_entry(entry, enable=enable, preloaded_env=preloaded_env, network=network)
 
 
-def _install_entry(entry: CatalogEntry, *, enable: bool, preloaded_env: Optional[dict[str, str]]) -> None:
+def _install_entry(entry: CatalogEntry, *, enable: bool, preloaded_env: Optional[dict[str, str]], network: Optional[str] = None) -> None:
     """Install a catalog entry end-to-end.
 
     Order: git clone + bootstrap (if any); credential prompts (``auth.env``) to .env; write
@@ -784,6 +784,19 @@ def _install_entry(entry: CatalogEntry, *, enable: bool, preloaded_env: Optional
     ``preloaded_env`` carries env values already supplied by the caller (e.g.
     the dashboard form); they skip the interactive prompt.
     """
+    from tools.mcp_windows import InvalidMcpNetworkError, validate_mcp_network_config
+
+    if network is None and entry.transport.type == "http":
+        existing = installed_servers().get(entry.name)
+        # A fresh catalog install is a new user choice and may opt into auto.
+        # Reinstalling a legacy entry with no field must preserve its historical
+        # backend-local authority rather than silently crossing namespaces.
+        network = "auto" if existing is None else existing.get("network")
+    if network is not None:
+        try:
+            validate_mcp_network_config({"url": entry.transport.url, "network": network})
+        except InvalidMcpNetworkError as exc:
+            raise CatalogError(str(exc)) from exc
     print()
     _say(f"  Installing MCP '{entry.name}'", Colors.CYAN + Colors.BOLD)
     if entry.description:
@@ -825,6 +838,8 @@ def _install_entry(entry: CatalogEntry, *, enable: bool, preloaded_env: Optional
         if not spec.secret and spec.name in env_values:
             server_cfg = _inline_non_secret_value(server_cfg, spec.name, env_values[spec.name])
     server_cfg["enabled"] = enable
+    if network is not None:
+        server_cfg["network"] = network
 
     from hermes_cli.mcp_config import _save_mcp_server
 

@@ -97,6 +97,9 @@ def test_next_managed_turn_reads_the_previous_workers_background_output(tmp_path
     home, user = tmp_path / 'state', tmp_path / 'user'
     home.mkdir(mode=0o700)
     user.mkdir()
+    # The terminal backend spawns `bash -lic`; Ubuntu's /etc/bash.bashrc prints a sudo hint on stdout
+    # for sudo-group users whose HOME has no ~/.hushlogin (CI runners are in that group).
+    (user / '.hushlogin').touch()
     peer = ThreadingHTTPServer(('127.0.0.1', 0), Model)
     threading.Thread(target=peer.serve_forever, daemon=True).start()
     url = f'http://127.0.0.1:{peer.server_port}/v1'

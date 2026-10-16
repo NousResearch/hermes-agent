@@ -730,3 +730,45 @@ def test_unrequested_park_is_never_reported_as_update_complete(monkeypatch, tmp_
 
     stash_mod._park_stashed_changes(stash_ref)
     assert stash_mod._unrestored_autostash_notice() is None
+
+
+def _no_op_plan(stash_ref):
+    return update_cmd._CheckoutPlan(
+        auto_stash_ref=stash_ref, commit_count=0, in_place_update=True,
+        parked_branch_switched=False, prompt_for_restore=True, switch_block_reason=None,
+        upstream_checked=True)
+
+
+@pytest.mark.parametrize('keep,discard', [(True, False), (False, True), (False, False), (True, True)])
+def test_no_op_update_settles_the_stash_with_the_requested_disposition(monkeypatch, keep, discard):
+    """#140165: an already-up-to-date run settles the autostash with the same dispositions
+    ``_pull_updates`` uses, so ``--keep-stash`` never meets the default-Yes restore prompt."""
+    calls = {'parked': [], 'discarded': [], 'restored': []}
+
+    class _Stash:
+        PROJECT_ROOT = Path('/unused')
+
+        @staticmethod
+        def _park_stashed_changes(stash_ref):
+            calls['parked'].append(stash_ref)
+
+        @staticmethod
+        def _discard_stashed_changes(git_cmd, root, stash_ref):
+            calls['discarded'].append(stash_ref)
+
+        @staticmethod
+        def _restore_stashed_changes(git_cmd, root, stash_ref, *, prompt_user, **kwargs):
+            calls['restored'].append((stash_ref, prompt_user))
+
+    monkeypatch.setattr(update_cmd, '_m', lambda: _Stash)
+    monkeypatch.setattr(update_cmd, '_capture_head_sha', lambda *_: 'abc123')
+    monkeypatch.setattr(update_cmd, '_complete_source_update', lambda request: None)
+    update_cmd._finish_already_up_to_date(
+        ['git'], 'main', 'main', _no_op_plan('stash-ref'), gw_input_fn=None,
+        completion_request={}, keep_stash=keep, discard_local_changes=discard)
+    # discard outranks keep_stash, mirroring _pull_updates' finally.
+    if discard:
+        assert calls['discarded'] == ['stash-ref'] and calls['parked'] == []
+    elif keep:
+        assert calls['parked'] == ['stash-ref'] and calls['discarded'] == []
+    assert calls['restored'] == ([] if (keep or discard) else [('stash-ref', True)])

@@ -72,6 +72,7 @@ hermes pets doctor
 | Browse the gallery | `hermes pets list [query] [--limit N]` |
 | List installed pets | `hermes pets list --installed` |
 | Install a pet | `hermes pets install <slug> [--select] [--force]` |
+| Import an exported pet | `hermes pets import <path> [--slug <s>] [--name <n>] [--select] [--force]` |
 | Set the active pet | `hermes pets select [slug]` (omit slug for a picker) |
 | Resize the pet everywhere | `hermes pets scale <factor>` (e.g. `0.5`, clamped 0.1–3.0) |
 | Preview/animate | `hermes pets show [slug] [--state <s>] [--cycle] [--once] [--mode <m>] [--scale <f>]` |
@@ -122,6 +123,25 @@ Generation uses the active [image-generation provider](./image-generation.md), b
 - Resolution order prefers Nous Portal → OpenAI → OpenRouter.
 - If no reference-capable backend is configured, generation surfaces an actionable error pointing you to `hermes tools` → Image Generation. (Installing/adopting existing gallery pets needs no image backend.)
 - Override the backend with the `HERMES_PET_IMAGE_PROVIDER` env var (e.g. `HERMES_PET_IMAGE_PROVIDER=openrouter`).
+
+## Importing a pet
+
+`hermes pets import <path>` installs a pet you already hold as files — the counterpart of the desktop's **Export** action:
+
+```bash
+hermes pets import ~/Downloads/boba.zip     # a pet exported from the desktop
+hermes pets import ./my-fairy/ --select     # a folder holding pet.json + the spritesheet
+hermes pets import ./fairy.zip --slug fairy --name Fairy
+```
+
+- **Input** is an exported `.zip` or a folder holding `pet.json` and the spritesheet. A sheet on
+  its own works too: the slug then comes from the file name, or from `--slug`.
+- **Files are copied verbatim**, so a manifest written by another tool survives the round trip —
+  only `spritesheetPath` is corrected when the sheet carries an unusual name.
+- The sheet must be a readable image at least one 192×208 cell in size. A grid that isn't a
+  whole number of cells still imports (the renderer derives the grid from the image) but is
+  flagged in the log.
+- An installed pet with the same slug is **never overwritten silently** — re-run with `--force` to replace it.
 
 ## Desktop app
 

@@ -334,6 +334,72 @@ def test_android_python_reaches_the_unmanaged_start(tmp_path, monkeypatch):
     assert spawned == [home.resolve()]
 
 
+def test_s6_runtime_ensure_starts_the_registered_gateway_slot(tmp_path, monkeypatch):
+    """A Docker TUI client starts its s6 gateway instead of probing systemd."""
+    from hermes_cli import gateway_runtime_service as service
+    from hermes_cli import service_manager
+
+    home = tmp_path / "data"
+    home.mkdir()
+    scandir = tmp_path / "run-service"
+    (scandir / "gateway-default").mkdir(parents=True)
+    started = []
+
+    class FakeS6ServiceManager:
+        def __init__(self):
+            self.scandir = scandir
+
+        def is_running(self, name):
+            assert name == "gateway-default"
+            return False
+
+        def start(self, name):
+            started.append(name)
+
+    monkeypatch.setattr(service_manager, "_s6_running", lambda: True)
+    monkeypatch.setattr(service_manager, "S6ServiceManager", FakeS6ServiceManager)
+    read_text = Path.read_text
+    monkeypatch.setattr(Path, "read_text", lambda path, *args, **kwargs: (
+        str(home) if str(path).replace("\\", "/") == "/run/s6/container_environment/HERMES_HOME"
+        else read_text(path, *args, **kwargs)))
+    monkeypatch.setattr(service, "_systemd", lambda *_args: pytest.fail("s6 must not probe systemd"))
+
+    found = service.discover_existing_gateway_service(home, deadline=time.monotonic() + 5)
+
+    assert found is not None and found.backend == "s6"
+    service.start_existing_gateway_service(found, deadline=time.monotonic() + 5)
+    assert started == ["gateway-default"]
+
+
+def test_s6_command_timeout_ends_at_the_runtime_deadline(tmp_path, monkeypatch):
+    """A hung s6-svstat or s6-svc reaches ensure as its deadline, not an uncaught TimeoutExpired."""
+    from hermes_cli import gateway_runtime_service as service
+    from hermes_cli import service_manager
+
+    home = tmp_path / "data"
+    home.mkdir()
+    scandir = tmp_path / "run-service"
+    (scandir / "gateway-default").mkdir(parents=True)
+
+    def hang(cmd, *_args, timeout=5, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(service_manager, "_s6_running", lambda: True)
+    monkeypatch.setattr(service_manager, "_s6_run", hang)
+    monkeypatch.setattr(service_manager.S6ServiceManager, "__init__",
+                        lambda self: setattr(self, "scandir", scandir))
+    read_text = Path.read_text
+    monkeypatch.setattr(Path, "read_text", lambda path, *args, **kwargs: (
+        str(home) if str(path).replace("\\", "/") == "/run/s6/container_environment/HERMES_HOME"
+        else read_text(path, *args, **kwargs)))
+
+    with pytest.raises(TimeoutError):
+        service.discover_existing_gateway_service(home, deadline=time.monotonic() + 5)
+    stopped = service.ExistingService("s6", ("gateway-default",), False)
+    with pytest.raises(TimeoutError):
+        service.start_existing_gateway_service(stopped, deadline=time.monotonic() + 5)
+
+
 def test_windows_startup_folder_entry_still_restarts_a_stopped_owner(tmp_path, monkeypatch):
     """The Startup-folder fallback is login persistence only (no start verb, no identity): with it
     present and no Scheduled Task registered, ensure takes the same detached direct spawn manual

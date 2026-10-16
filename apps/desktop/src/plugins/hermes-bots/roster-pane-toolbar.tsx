@@ -27,6 +27,7 @@ interface renderRosterToolbarProps {
   roster: RosterRow[]
   setCreateOpen: (value: boolean) => void
   setGroupCreateOpen: (value: boolean) => void
+  setPairOpen: (value: boolean) => void
   setSectionDialog: (
     value: null | { bot?: RosterRow; mode: 'create' } | { id: string; mode: 'rename'; name: string }
   ) => void
@@ -52,6 +53,7 @@ export function renderRosterToolbar({
   roster,
   setCreateOpen,
   setGroupCreateOpen,
+  setPairOpen,
   setSectionDialog,
   showRosterTools,
   showRosterSearch,
@@ -112,6 +114,10 @@ export function renderRosterToolbar({
               >
                 <Codicon className="mr-1.5" name="organization" />
                 {b.group.newTitle}
+              </DropdownMenuItem>
+              <DropdownMenuItem disabled={activeSourceRoster.length < 2} onSelect={() => setPairOpen(true)}>
+                <Codicon className="mr-1.5" name="git-merge" />
+                Introduce bots
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onSelect={() => setSectionDialog({ mode: 'create' })}>

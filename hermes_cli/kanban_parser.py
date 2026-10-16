@@ -276,6 +276,10 @@ _SPECS = [
     _cmd("claim", [
         _TASK_ID,
         _arg("--ttl", type=int, default=kb.DEFAULT_CLAIM_TTL_SECONDS, help="Claim TTL in seconds (default: 900)"),
+        _arg("--allow-session", action="store_true",
+             help="Allow claiming a dispatcher-managed task from a session context "
+                  "(no heartbeat; the claim is reclaimed once the TTL expires - "
+                  "only use for short tasks that finish inside the lease)"),
     ], help="Atomically claim a ready task (prints resolved workspace path)"),
     _cmd("comment", [
         _TASK_ID,

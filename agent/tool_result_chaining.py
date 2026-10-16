@@ -9,6 +9,10 @@ sibling ``_tool_result_hint`` key on the tool message - kept out of ``content`` 
 content stays a parseable JSON string; each wire path folds the hint into the
 model-visible text at request-build time (``fold_tool_result_hint``).
 ``resolve_tool_result_refs`` substitutes references in tool arguments before dispatch.
+Advertised path components are restricted to plain identifiers (anything else degrades
+to the generic ``field`` placeholder) and the assembled hint is delimiter-neutralized
+before it is stored - the hint is folded outside the untrusted-content wrapper, so
+result-derived names must never carry delimiter material across that boundary.
 
 References resolve against results committed before dispatch: earlier turns, earlier
 batches, and earlier sequential calls of the same batch. Concurrent same-batch
@@ -23,8 +27,11 @@ one - while embedded references (part of a larger string) substitute as text.
 Command-like arguments (``terminal`` command, ``execute_code`` code) only resolve
 whole-value references, stringified: their value is executed verbatim, so an embedded
 reference could let untrusted result content alter a command the model authored - it
-passes through untouched instead. Every successful resolution logs at debug level
-(call id, path, resolved size - never the value).
+passes through untouched instead. MCP execution tools (a remote ``exec``, a VM command
+runner) are NOT covered by that guard - the harness cannot know their argument
+semantics, so embedded references still substitute there; keep untrusted result
+sources away from them. Every successful resolution logs at debug level (call id,
+path, resolved size - never the value).
 """
 
 import json
@@ -32,12 +39,25 @@ import logging
 import re
 from typing import Any
 
+from agent.tool_dispatch_helpers import _DELIMITER_TOKEN_RE, _neutralize_delimiters
+
 logger = logging.getLogger(__name__)
 
 _TOOL_RESULT_REF_RE = re.compile(r"\{\{tool_result:([^{}]+)\}\}")
 _MAX_TOOL_RESULT_REF_BYTES = 20 * 1024 * 1024  # per-result cap
 _MAX_TOOL_RESULT_REFS = 32  # entry cap
 _MAX_TOOL_RESULT_REF_TOTAL_BYTES = 64 * 1024 * 1024  # total budget; oldest evicted first
+
+# Advertised hint path components are restricted to plain identifiers that do not
+# themselves carry the delimiter token. The hint is folded into model-visible text
+# OUTSIDE the untrusted-result wrapper (transports append it after
+# ``_maybe_wrap_untrusted`` runs) and is never re-wrapped, so a content-derived key
+# must not be emitted verbatim - a key containing ``</untrusted_tool_result>`` would
+# close the trust boundary early. Anything else degrades to the generic ``.field``
+# placeholder the model swaps for the real name; the resolver is unchanged (it still
+# accepts the real key). Excluding token-carrying identifiers keeps the defang below
+# a pure backstop: it never rewrites a path the hint advertised.
+_HINT_KEY_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 # Command-like arguments: their value is executed verbatim (shell command / script
 # source). Embedded references are never substituted there, so untrusted result
@@ -49,6 +69,21 @@ _COMMAND_LIKE_ARGS: dict[str, frozenset[str]] = {
     "terminal": frozenset({"command"}),
     "execute_code": frozenset({"code"}),
 }
+
+
+def _hint_key_component(key: Any) -> str | None:
+    """A hint path component safe to advertise verbatim: a plain identifier that
+    does not carry the delimiter token (list indices are integers we synthesize);
+    ``None`` when the caller must degrade to the generic ``field`` placeholder."""
+    if isinstance(key, int) and not isinstance(key, bool):
+        return str(key)
+    if (
+        isinstance(key, str)
+        and _HINT_KEY_RE.fullmatch(key)
+        and _DELIMITER_TOKEN_RE.search(key) is None
+    ):
+        return key
+    return None
 
 
 def remember_tool_result(agent, tool_call_id: str, result: Any) -> None:
@@ -93,15 +128,19 @@ def tool_result_reference_hint(tool_call_id: str, result: Any) -> str:
     if isinstance(payload, dict) and payload:
         top_key = ("structuredContent" if "structuredContent" in payload
                    else next(iter(payload)))
+        safe_top = _hint_key_component(top_key)
         top_value = payload[top_key]
         if isinstance(top_value, str):
             try:
                 top_value = json.loads(top_value)
             except (TypeError, ValueError):
                 pass
+        if safe_top is None:
+            # A content-derived top-level key: never advertise it (see _HINT_KEY_RE).
+            ref = f"{{{{tool_result:{tool_call_id}.field}}}}"
         # Dive one more level through a double-encoded container so the hint
         # lands on a real structure, e.g. structuredContent.result.folders.
-        if isinstance(top_value, (dict, list)) and top_value:
+        elif isinstance(top_value, (dict, list)) and top_value:
             if isinstance(top_value, dict):
                 inner_key = next(iter(top_value))
                 inner_value = top_value[inner_key]
@@ -113,13 +152,17 @@ def tool_result_reference_hint(tool_call_id: str, result: Any) -> str:
                     inner_value = json.loads(inner_value)
                 except (TypeError, ValueError):
                     pass
-            ref = (f"{{{{tool_result:{tool_call_id}.{top_key}.{inner_key}.field}}}}"
-                   if isinstance(inner_value, (dict, list))
-                   else f"{{{{tool_result:{tool_call_id}.{top_key}.{inner_key}}}}}")
+            safe_inner = _hint_key_component(inner_key)
+            if safe_inner is None:
+                ref = f"{{{{tool_result:{tool_call_id}.{safe_top}.field}}}}"
+            elif isinstance(inner_value, (dict, list)):
+                ref = f"{{{{tool_result:{tool_call_id}.{safe_top}.{safe_inner}.field}}}}"
+            else:
+                ref = f"{{{{tool_result:{tool_call_id}.{safe_top}.{safe_inner}}}}}"
         elif isinstance(top_value, (dict, list)):
-            ref = f"{{{{tool_result:{tool_call_id}.{top_key}.field}}}}"
+            ref = f"{{{{tool_result:{tool_call_id}.{safe_top}.field}}}}"
         else:
-            ref = f"{{{{tool_result:{tool_call_id}.{top_key}}}}}"
+            ref = f"{{{{tool_result:{tool_call_id}.{safe_top}}}}}"
     elif isinstance(payload, list) and payload:
         # A top-level list: the first index is a resolvable path.
         ref = f"{{{{tool_result:{tool_call_id}.0}}}}"
@@ -127,7 +170,10 @@ def tool_result_reference_hint(tool_call_id: str, result: Any) -> str:
         # Empty containers: `.field` is a replace-me placeholder the model swaps
         # for a real leaf name (an empty payload has no resolvable path to show).
         ref = f"{{{{tool_result:{tool_call_id}.field}}}}"
-    return f"\n\n[Reusable tool result: {ref}]"
+    # Defense in depth: defang any live delimiter token before the hint is stored.
+    # The gate above never advertises a key this would rewrite, so it only ever
+    # fires on the call id (the one advertised component the gate does not cover).
+    return _neutralize_delimiters(f"\n\n[Reusable tool result: {ref}]")
 
 
 def fold_tool_result_hint(content: Any, hint: Any, *, part_type: str = "text") -> Any:

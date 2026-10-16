@@ -1,10 +1,11 @@
 """Empty / thinking-only final-response recovery ladder for the conversation turn loop.
 
 Runs when the model returned no visible text after ``<think>`` blocks. Ladder order is
-load-bearing: partial-stream recovery → reuse prior turn content (housekeeping tools only)
-→ one post-tool-call nudge → thinking-only prefill continuation (×2) → empty-response
-retries (budgeted, deterministic-empty short-circuit) → fallback provider → terminal
-``(empty)`` sentinel. Nothing here imports ``agent.conversation_loop`` at module level.
+load-bearing: partial-stream recovery → runtime-notification quiet exit → reuse prior
+turn content (housekeeping tools only) → one post-tool-call nudge → thinking-only
+prefill continuation (×2) → empty-response retries (budgeted, deterministic-empty
+short-circuit) → fallback provider → terminal ``(empty)`` sentinel. Nothing here imports
+``agent.conversation_loop`` at module level.
 """
 
 from __future__ import annotations
@@ -22,6 +23,31 @@ from agent.turn_recovery import interruptible_backoff_sleep
 logger = logging.getLogger("agent.conversation_loop")
 
 _INLINE_THINK_RE = re.compile(r'<think>|<thinking>|<reasoning>', re.IGNORECASE)
+
+# The persisted user-row display kinds of runtime notifications the gateway stages as
+# their own turn (background-process completions, async delegation results). Mirrors
+# gateway.response_filters.PRODUCER_NOTICE_DISPLAY_KINDS; agent/ cannot import gateway/.
+_RUNTIME_NOTIFICATION_DISPLAY_KINDS = frozenset({"process_complete", "async_delegation_complete"})
+
+# Loop exit stamped when a runtime-notification turn ends with the model adding nothing.
+NOTIFICATION_NO_REPLY_EXIT = "notification_no_reply"
+
+
+def _notification_turn_without_tool_round(messages: list[dict[str, Any]]) -> bool:
+    """True when the latest user row is a runtime notification no tool has followed.
+
+    Scans back to the turn's user row: a ``tool`` row first means the model already
+    acted on the notification (mid-task, keeps the full empty-response ladder), and any
+    other user row (a steer, a recovery nudge) is the message the model is answering.
+    """
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "tool":
+            return False
+        if msg.get("role") == "user":
+            return msg.get("display_kind") in _RUNTIME_NOTIFICATION_DISPLAY_KINDS
+    return False
 
 
 @dataclass
@@ -174,6 +200,19 @@ def recover_empty_response(
         # A streamed fragment isn't a confirmed preview: gateway fallback delivery
         # sends the text plus the abnormal-turn explanation.
         agent._response_was_previewed = False
+        return _verdict("break")
+
+    # Runtime-notification turn (a background-process completion or delegation result the
+    # gateway staged as its own user row): an empty reply means "nothing to add", so end
+    # the turn quietly (no nudge, no paid retries, no provider switch, no sentinel row).
+    # Only when no tool ran this turn; a model that acted on the notification is mid-task
+    # and keeps the ladder below unchanged.
+    if _notification_turn_without_tool_round(messages):
+        _turn_exit_reason = NOTIFICATION_NO_REPLY_EXIT
+        logger.info(
+            "Empty response on a runtime-notification turn: ending the turn without a reply",
+        )
+        final_response = ""
         return _verdict("break")
 
     # Prior turn had real content + ONLY housekeeping tools: model is done, reuse it.

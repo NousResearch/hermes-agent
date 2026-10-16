@@ -797,6 +797,38 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     });
     term.open(host);
 
+    // Touch scrolling (iOS Safari/Firefox): xterm's viewport doesn't pan on
+    // touch, so the gesture falls through to the page (pull-to-refresh /
+    // rubber-band). Claim vertical swipes and scroll the transcript instead.
+    host.style.touchAction = "none";
+    host.style.overscrollBehavior = "contain";
+    let touchY: number | null = null;
+    let touchRemainder = 0;
+    const onTouchStart = (ev: TouchEvent) => {
+      touchY = ev.touches.length === 1 ? ev.touches[0].clientY : null;
+      touchRemainder = 0;
+    };
+    const onTouchMove = (ev: TouchEvent) => {
+      if (touchY === null || ev.touches.length !== 1) return;
+      const y = ev.touches[0].clientY;
+      const lineHeight = Math.max(10, host.clientHeight / Math.max(1, term.rows));
+      touchRemainder += (touchY - y) / lineHeight;
+      touchY = y;
+      const lines = Math.trunc(touchRemainder);
+      if (lines !== 0) {
+        term.scrollLines(lines);
+        touchRemainder -= lines;
+      }
+      ev.preventDefault();
+    };
+    const onTouchEnd = () => {
+      touchY = null;
+    };
+    host.addEventListener("touchstart", onTouchStart, { passive: true });
+    host.addEventListener("touchmove", onTouchMove, { passive: false });
+    host.addEventListener("touchend", onTouchEnd, { passive: true });
+    host.addEventListener("touchcancel", onTouchEnd, { passive: true });
+
     // IME composition guard (fixes #52111).
     //
     // React 18's root-level event delegation intercepts keydown events with

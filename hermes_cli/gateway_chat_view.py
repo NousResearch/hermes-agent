@@ -388,6 +388,16 @@ class GatewayChatView:
         if self.resume_footer:
             print(resume_footer(self.session_id), flush=True)
 
+    @staticmethod
+    def _report_silent_interrupt(text, result):
+        """A restart or stop drain settles a finite turn interrupted with no reply: say so on stderr
+        instead of exiting 130 silently. It is never replayed."""
+        if text or not result.get("interrupted"):
+            return
+        reason = result.get("interrupt_message")
+        print(f"Turn interrupted{f' ({reason})' if isinstance(reason, str) and reason else ''}; "
+              "it was not retried. Resume this session to continue.", file=sys.stderr)
+
     def _write_usage_file(self, result, outcome):
         """``-z --usage-file``: the same JSON ledger the in-process one-shot wrote."""
         from hermes_cli.oneshot import _write_usage_file
@@ -448,6 +458,7 @@ class GatewayChatView:
                 if self.emitter is not None:
                     return self.emitter.emit_result({**result, "final_response": text},
                                                     session_id=self.session_id, exit_code=exit_code)
+                self._report_silent_interrupt(text, result)
                 print(text, flush=True)
                 # Same stderr exit contract as the legacy -Q path: automation wrappers read the
                 # durable id from this line, and it names the physical row (a compaction may have

@@ -86,6 +86,80 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
         assert payload.get("kind") == "capability"
 
 
+def test_unblock_requeues_a_triage_card(kanban_home: Path) -> None:
+    """Once the operator has resolved the cause, ``unblock_task`` is the supported
+    requeue for a loop-broken ``triage`` card: parent re-gated landing, failure
+    counters reset, and the loop memory kept so one more same-kind block goes
+    straight back to ``triage``."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="x", kind="capability")
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        kb.block_task(conn, tid, reason="x", kind="capability")
+        assert kb.get_task(conn, tid).status == "triage"
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET consecutive_failures = 3 WHERE id = ?", (tid,))
+
+        assert kb.unblock_task(conn, tid) is True
+        card = kb.get_task(conn, tid)
+        assert card.status == "ready"
+        assert card.current_run_id is None
+        assert card.consecutive_failures == 0
+        assert card.block_recurrences == kb.BLOCK_RECURRENCE_LIMIT
+        assert kb.list_events(conn, tid)[-1].kind == "unblocked"
+
+        # Loop memory deliberately survives: a same-kind re-block re-triages at once.
+        _make_running_again(conn, tid)
+        kb.block_task(conn, tid, reason="x", kind="capability")
+        assert kb.get_task(conn, tid).status == "triage"
+
+
+def test_unblock_triage_card_lands_todo_under_open_parent(kanban_home: Path) -> None:
+    """Requeuing a triage card is parent re-gated like every other unblock. The
+    reachable shape: the child triaged while the parent was done, the parent was
+    then reopened (the reopen sweep leaves ``triage`` descendants alone), so the
+    operator unblock must land in ``todo`` instead of spawning a gated child."""
+    with kbc.connect_closing() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='done' WHERE id=?", (parent,))
+        child = _running_task(conn, title="child", parents=(parent,))
+        kb.block_task(conn, child, reason="x", kind="needs_input")
+        kb.unblock_task(conn, child)
+        _make_running_again(conn, child)
+        kb.block_task(conn, child, reason="x", kind="needs_input")
+        assert kb.get_task(conn, child).status == "triage"
+
+        # The parent reopens after the child triaged; triage is not swept.
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (parent,))
+
+        assert kb.unblock_task(conn, child) is True
+        assert kb.get_task(conn, child).status == "todo"
+
+
+def test_cli_unblock_requeues_triage_card(
+    kanban_home: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``hermes kanban unblock`` no longer refuses a triage card with the old
+    not-blocked/scheduled error."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        kb.block_task(conn, tid, reason="x", kind="capability")
+        kb.unblock_task(conn, tid)
+        _make_running_again(conn, tid)
+        kb.block_task(conn, tid, reason="x", kind="capability")
+        assert kb.get_task(conn, tid).status == "triage"
+
+    args = argparse.Namespace(task_ids=[tid], reason=None)
+    assert kanban_cli._cmd_unblock(args) == 0
+    out = capsys.readouterr().out
+    assert f"Unblocked {tid}" in out
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "ready"
+
+
 # ---------------------------------------------------------------------------
 # Dependency routing
 # ---------------------------------------------------------------------------

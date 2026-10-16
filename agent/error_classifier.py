@@ -369,6 +369,8 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = (
 _AUTH_PATTERNS = (
     "invalid api key", "invalid_api_key", "gateway_auth_failed", "authentication", "unauthorized",
     "forbidden", "invalid token", "token expired", "token revoked", "access denied",
+    # Anthropic-compatible HTTP-200 SSE errors can carry only this auth diagnostic.
+    "access token has been revoked",
     # Codex backend rejecting an OAuth access token without a usable
     # ``chatgpt_account_id`` claim; arrives as a bare ``detail`` string.
     "failed to extract accountid from token",

@@ -163,10 +163,9 @@ export function laneSwitchTarget(
 export const NO_PROJECT_ID = '__no_project__'
 
 /**
- * A session with nowhere to be placed: no cwd and no recorded repo root. These
- * are the rows the Home bucket owns, and the only ones the live overlay can
- * hand it — a row WITH a cwd that the backend still couldn't place (junk root,
- * deleted workspace) needs the backend's probes, so it waits for the snapshot.
+ * A session with nowhere to be placed from its own workspace fields: no cwd
+ * and no recorded repo root. Other unplaceable rows still need the backend's
+ * tree to establish their owner.
  */
 export const isDetachedSession = (session: SessionInfo): boolean =>
   !(session.cwd || '').trim() && !(session.git_repo_root || '').trim()
@@ -800,11 +799,9 @@ export function overlayRepoLanes(
 }
 
 /**
- * Home's overlay: its rows have no cwd to place, so this is a plain upsert of
- * detached live sessions into its single lane — a brand-new project-less chat
- * shows the instant it's created, matching the flat Recents list. A chat the
- * authoritative owner map gives to a named project stays out, even while its
- * live copy is briefly detached (else it lists in both places).
+ * Home's overlay upserts every live session no named project owns. This keeps
+ * unplaceable cwd rows visible while the all-profiles tree is unhydrated; once
+ * the backend snapshots a named owner, that owner remains exclusive.
  */
 function overlayHomeLane(
   project: SidebarProjectTree,
@@ -820,14 +817,14 @@ function overlayHomeLane(
 
   const belongs = (session: SessionInfo): boolean => !removed.has(session.id) && !ownedElsewhere(session)
   const lane = project.repos[0]?.groups[0]
-  const detached = live.filter(session => isDetachedSession(session) && belongs(session))
+  const homeless = live.filter(belongs)
   const kept = (lane?.sessions ?? []).filter(belongs)
 
-  if (!detached.length && kept.length === (lane?.sessions.length ?? 0)) {
+  if (!homeless.length && kept.length === (lane?.sessions.length ?? 0)) {
     return project
   }
 
-  const sessions = detached.reduce(upsertSession, kept)
+  const sessions = homeless.reduce(upsertSession, kept)
   const nextLane = { id: NO_PROJECT_ID, label: project.label, path: null, sessions }
 
   return {

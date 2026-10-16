@@ -1148,13 +1148,17 @@ describe('overlayLiveLanes', () => {
     expect(overlaid.sessionCount).toBe(1)
   })
 
-  it('leaves Home alone for a session that has a cwd', () => {
-    // A cwd-carrying row the backend hasn't placed yet (junk root, deleted
-    // workspace) needs its probes — guessing here would flicker it into Home
-    // and back out on the next snapshot.
+  it('lists an unclaimed session with an unplaceable cwd in Home', () => {
+    // The backend files unplaceable cwd values (such as the bare home dir or
+    // a deleted workspace) in Home. The unhydrated all-profiles snapshot has
+    // no rows to establish that ownership, so the live overlay must retain
+    // every session no named project claims.
     const home = homeNode([])
 
-    expect(overlayLiveLanes(home, [makeCwdSession('/www/app', { id: 'fresh' })])).toBe(home)
+    const overlaid = overlayLiveLanes(home, [makeCwdSession('/Users/nolan', { id: 'fresh' })])
+
+    expect(overlaid.repos[0].groups[0].sessions.map(session => session.id)).toEqual(['fresh'])
+    expect(overlaid.sessionCount).toBe(1)
   })
 
   // #77591 C: compression rotates the live id (root -> tip) while the snapshot

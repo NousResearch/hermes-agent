@@ -5,10 +5,11 @@ encrypted CDN; ``qr_login`` backs the gateway setup wizard."""
 from __future__ import annotations
 
 import asyncio, base64, contextlib, hashlib, json, logging, mimetypes, os, re, secrets, tempfile, textwrap, time, uuid
+from collections import OrderedDict
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ LONG_POLL_TIMEOUT_MS, API_TIMEOUT_MS, CONFIG_TIMEOUT_MS, QR_TIMEOUT_MS = 35_000,
 MAX_CONSECUTIVE_FAILURES, RETRY_DELAY_SECONDS, BACKOFF_DELAY_SECONDS = 3, 2, 30
 SESSION_EXPIRED_ERRCODE, RATE_LIMIT_ERRCODE = -14, -2  # -2: iLink frequency limit — backoff and retry
 MESSAGE_DEDUP_TTL_SECONDS = 300
+QUOTE_CACHE_MAX_ENTRIES = 1000
 MEDIA_IMAGE, MEDIA_VIDEO, MEDIA_FILE, MEDIA_VOICE = 1, 2, 3, 4  # getuploadurl media_type
 ITEM_TEXT, ITEM_IMAGE, ITEM_VOICE, ITEM_FILE, ITEM_VIDEO = 1, 2, 3, 4, 5  # item_list entry types
 MSG_TYPE_BOT, MSG_STATE_FINISH = 2, 2
@@ -241,6 +243,51 @@ class TypingTicketCache:
 
     def set(self, user_id: str, ticket: str) -> None:
         self._cache[user_id] = (ticket, time.time())
+
+
+class QuoteCache:
+    """Bounded in-memory LRU cache of message bodies, keyed by ``(conversation_id, message_id)``.
+
+    Newer WeChat clients quote messages by server message id only (``ref_msg.svr_id``), without embedding the
+    quoted body, so inbound and outbound bodies are remembered here and resolved when such a quote arrives.
+    Conversation-scoped keys keep replies in one chat from bleeding into another; the cache is memory-only, so
+    quotes whose source predates the process (or was evicted) resolve to an explicit not-cached placeholder.
+    """
+
+    def __init__(self, max_entries: int = QUOTE_CACHE_MAX_ENTRIES):
+        self._max_entries = max(1, int(max_entries))
+        self._entries: OrderedDict[Tuple[str, str], str] = OrderedDict()
+
+    def remember(self, conversation_id: str, message_ids: Iterable[str], body: str) -> None:
+        """Store ``body`` under every non-empty id; no-op for an empty body."""
+        conversation_id = str(conversation_id or "").strip()
+        body = str(body or "")
+        if not conversation_id or not body.strip():
+            return
+        for raw_id in message_ids:
+            message_id = str(raw_id or "").strip()
+            if not message_id:
+                continue
+            key = (conversation_id, message_id)
+            self._entries[key] = body
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._max_entries:
+                self._entries.popitem(last=False)
+
+    def resolve(self, conversation_id: str, ref: Dict[str, Any]) -> str:
+        """Body remembered for ``ref`` — ``svr_id`` first, then ``message_item.msg_id`` — else ``""``."""
+        ref = ref if isinstance(ref, dict) else {}
+        message_item = ref.get("message_item") if isinstance(ref.get("message_item"), dict) else {}
+        for candidate in (ref.get("svr_id"), (message_item or {}).get("msg_id")):
+            message_id = str(candidate or "").strip()
+            if not message_id:
+                continue
+            key = (str(conversation_id or "").strip(), message_id)
+            body = self._entries.get(key)
+            if body:
+                self._entries.move_to_end(key)
+                return body
+        return ""
 
 
 def _parse_aes_key(aes_key_b64: str) -> bytes:
@@ -520,7 +567,93 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return True if text in {"1", "true", "yes", "on"} else False if text in {"0", "false", "no", "off"} else default
 
 
-def _extract_text(item_list: list[dict[str, Any]]) -> str:
+# Descriptor labels remembered for, and shown when quoting, messages whose content is media rather than text.
+_QUOTE_ITEM_LABELS: Dict[int, str] = {ITEM_IMAGE: "[图片]", ITEM_VIDEO: "[视频]", ITEM_VOICE: "[语音]"}
+_QUOTE_MEDIA_LABELS: Dict[int, str] = {MEDIA_IMAGE: "[图片]", MEDIA_VIDEO: "[视频]", MEDIA_VOICE: "[语音]"}
+
+
+def _quote_cache_body(item_list: List[Dict[str, Any]], text: str) -> str:
+    """Body remembered for quote resolution: the message text, else a descriptor for its first media item."""
+    if str(text or "").strip():
+        return text
+    for item in item_list or []:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type == ITEM_FILE:
+            file_name = str((item.get("file_item") or {}).get("file_name") or "").strip()
+            return f"[文件: {file_name}]" if file_name else "[文件]"
+        label = _QUOTE_ITEM_LABELS.get(item_type) if isinstance(item_type, int) else None
+        if label:
+            return label
+    return ""
+
+
+def _quote_media_label(media_type: int, file_name: str = "") -> str:
+    """Descriptor remembered for an outbound attachment, mirroring the inbound media labels."""
+    if media_type == MEDIA_FILE:
+        file_name = str(file_name or "").strip()
+        return f"[文件: {file_name}]" if file_name else "[文件]"
+    return _QUOTE_MEDIA_LABELS.get(media_type, "[文件]")
+
+
+def _nth_index_of(text: str, value: str, occurrence: Any, from_index: int = 0) -> int:
+    """Index of the ``occurrence``-th (0-based) occurrence of ``value`` at/after ``from_index``; -1 if absent."""
+    if not value or not isinstance(occurrence, int) or isinstance(occurrence, bool) or occurrence < 0:
+        return -1
+    position = from_index
+    for current in range(occurrence + 1):
+        position = text.find(value, position)
+        if position < 0:
+            return -1
+        if current < occurrence:
+            position += len(value)
+    return position
+
+
+def _partial_quote_candidate(full_text: str, partial: Dict[str, Any], relative_end: bool) -> str:
+    """One candidate for the selected fragment: ``relative_end`` searches the end token after the start token."""
+    start, end = str(partial.get("start") or ""), str(partial.get("end") or "")
+    begin = _nth_index_of(full_text, start, partial.get("startindex"))
+    if begin < 0:
+        return ""
+    search_from = begin + len(start) if relative_end else 0
+    stop = _nth_index_of(full_text, end, partial.get("endindex"), search_from)
+    if stop < begin:
+        return ""
+    return full_text[begin:stop + len(end)]
+
+
+def _resolve_partial_quote(full_text: str, partial: Dict[str, Any]) -> str:
+    """Resolve the substring a user selected when quoting (``partial_text``).
+
+    ``start``/``end`` are substring tokens and ``startindex``/``endindex`` are 0-based occurrence counts. The end
+    token is searched both from the start of the message and after the start token (both interpretations have been
+    observed); a ``quotemd5``, when sent, picks the candidate it verifies, and the fragment is never fabricated —
+    when nothing locates or verifies, ``""`` is returned so the caller falls back to the full body.
+    """
+    start, end = str(partial.get("start") or ""), str(partial.get("end") or "")
+    if not full_text or not start or not end:
+        return ""
+    candidates: List[str] = []
+    for relative_end in (False, True):
+        candidate = _partial_quote_candidate(full_text, partial, relative_end)
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    if not candidates:
+        return ""
+    expected_md5 = str(partial.get("quotemd5") or "").strip().lower()
+    if not expected_md5:
+        return candidates[0]
+    for candidate in candidates:
+        if hashlib.md5(candidate.encode("utf-8")).hexdigest() == expected_md5:
+            return candidate
+    return ""
+
+
+def _extract_text(item_list: List[Dict[str, Any]], resolve_ref: Optional[Callable[[Dict[str, Any]], str]] = None) -> str:
+    """Extract a message body from ``item_list``. ``resolve_ref`` — bound to the conversation by the caller —
+    resolves ID-only quoted refs from the local quote cache and is threaded through the nested ref walk."""
     for item in item_list:
         if item.get("type") == ITEM_TEXT:
             text = str((item.get("text_item") or {}).get("text") or "")
@@ -529,10 +662,19 @@ def _extract_text(item_list: list[dict[str, Any]]) -> str:
             if ref_item.get("type") in {ITEM_IMAGE, ITEM_VIDEO, ITEM_FILE, ITEM_VOICE}:
                 title = ref.get("title") or ""
                 return f"[引用媒体: {title}]\n{text}".strip() if title else f"[引用媒体]\n{text}".strip()
-            if ref_item:
-                parts = [p for p in (str(ref["title"]) if ref.get("title") else "", _extract_text([ref_item])) if p]
-                if parts:
-                    return f"[引用: {' | '.join(parts)}]\n{text}".strip()
+            inline = _extract_text([ref_item], resolve_ref=resolve_ref) if ref_item else ""
+            parts = [p for p in (str(ref.get("title")) if ref.get("title") else "", inline) if p]
+            if ref and not inline:
+                # ID-only quote: newer clients send only the referenced message's server id, so resolve the body
+                # from the caller's cache-backed resolver — and degrade to an explicit placeholder when the
+                # content is not cached, instead of silently dropping the fact that a reply was quoting.
+                resolved = resolve_ref(ref) if resolve_ref else ""
+                if resolved:
+                    parts.append(resolved)
+                elif not parts:
+                    return f"[引用: 内容未缓存]\n{text}".strip()
+            if parts:
+                return f"[引用: {' | '.join(parts)}]\n{text}".strip()
             return text
     for item in item_list:
         if item.get("type") == ITEM_VOICE:
@@ -706,6 +848,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._poll_session = self._send_session = None  # type: Optional[aiohttp.ClientSession]
         self._poll_task: Optional[asyncio.Task] = None
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
+        self._quote_cache = QuoteCache()
         self._account_id = _extra_or_secret(extra, "account_id")
         self._token = str(config.token or extra.get("token") or _wx_secret("WEIXIN_TOKEN", "")).strip()
         self._base_url = _extra_or_secret(extra, "base_url", ILINK_BASE_URL).rstrip("/")
@@ -872,15 +1015,20 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         assert self._poll_session is not None
         sender_id = str(message.get("from_user_id") or "").strip()
         message_id = str(message.get("message_id") or "").strip()
-        if not sender_id or sender_id == self._account_id or (message_id and self._dedup.is_duplicate(message_id)):
+        if not sender_id or (message_id and self._dedup.is_duplicate(message_id)):
+            return
+        item_list = message.get("item_list") or []
+        chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
+        text = _extract_text(item_list, resolve_ref=partial(self._resolve_quote_reference, effective_chat_id))
+        if sender_id == self._account_id:
+            # Own-account echo (iLink can redeliver messages this account sent): never dispatched to the agent,
+            # but remembered so replies quoting it can still be resolved by server message id.
+            self._remember_quote(effective_chat_id, message_id, item_list, text)
             return
         # Secondary content-fingerprint dedup: upstream re-sends identical text under new message_ids.
-        item_list = message.get("item_list") or []
-        text = _extract_text(item_list)
         if text and self._dedup.is_duplicate(f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"):
             logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
             return
-        chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
         if chat_type == "group":
             if not self._is_group_allowed(effective_chat_id):
                 return
@@ -898,6 +1046,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 await self._collect_media(candidate, media_paths, media_types)
         if not text and not media_paths:
             return
+        # Only messages that actually reach the agent are remembered for future quote resolution.
+        self._remember_quote(effective_chat_id, message_id, item_list, text)
         source = self.build_source(chat_id=effective_chat_id, chat_type=chat_type, user_id=sender_id, user_name=sender_id)
         event = MessageEvent(
             text=text, message_type=_message_type_from_media(media_types, text), source=source, raw_message=message,
@@ -907,6 +1057,26 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
+
+    def _remember_quote(self, chat_id: str, message_id: str, item_list: List[Dict[str, Any]], text: str) -> None:
+        """Remember a message body (its text, else a media descriptor) under its server message ids."""
+        body = _quote_cache_body(item_list, text)
+        if not body:
+            return
+        item_ids = [str((item or {}).get("msg_id") or "") for item in item_list if isinstance(item, dict)]
+        self._quote_cache.remember(chat_id, [message_id, *item_ids], body)
+
+    def _resolve_quote_reference(self, conversation_id: str, ref: Dict[str, Any]) -> str:
+        """Resolve one quoted ref from the local cache, preferring a verified ``partial_text`` fragment."""
+        body = self._quote_cache.resolve(conversation_id, ref)
+        if not body:
+            return ""
+        partial = ref.get("partial_text") if isinstance(ref, dict) else None
+        if isinstance(partial, dict):
+            fragment = _resolve_partial_quote(body, partial)
+            if fragment:
+                return fragment
+        return body
 
     async def _collect_media(self, item: dict[str, Any], media_paths: list[str], media_types: list[str]) -> None:
         spec = _INBOUND_MEDIA.get(item.get("type"))
@@ -1012,6 +1182,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                         continue
                     self._rate_limit_events.clear()
                     self._rate_limit_circuit_until = 0.0
+                    # Best-effort: remember the server-assigned id so replies can quote this message (ref_msg.svr_id).
+                    self._quote_cache.remember(chat_id, [str((resp or {}).get("message_id") or "").strip()], chunk)
                     return
                 except Exception as exc:
                     last_error = exc
@@ -1155,9 +1327,10 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             "ciphertext_size": len(ciphertext), "plaintext_size": rawsize, "filename": Path(path).name, "rawfilemd5": rawfilemd5}
         if media_type == MEDIA_VOICE and path.endswith(".silk"):
             item_kwargs.update(encode_type=6, sample_rate=24000, bits_per_sample=16)
+        formatted_caption = self.format_message(caption)
         item_lists: list[list[dict[str, Any]]] = [[item_builder(**item_kwargs)]]
         if caption:
-            item_lists.insert(0, [{"type": ITEM_TEXT, "text_item": {"text": self.format_message(caption)}}])
+            item_lists.insert(0, [{"type": ITEM_TEXT, "text_item": {"text": formatted_caption}}])
         last_message_id = ""
         for item_list in item_lists:
             last_message_id = f"hermes-weixin-{uuid.uuid4().hex}"
@@ -1167,6 +1340,11 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     context_token=context_token, client_id=last_message_id)
                 ret, errcode = (resp.get("ret"), resp.get("errcode")) if resp and isinstance(resp, dict) else (None, None)
                 if (ret is None or ret == 0) and (errcode is None or errcode == 0):
+                    # Best-effort: remember each delivered part (formatted caption or media descriptor) under its
+                    # server-assigned id, so replies quoting the caption or the attachment can be resolved.
+                    is_caption = bool(item_list) and item_list[0].get("type") == ITEM_TEXT
+                    body = formatted_caption if is_caption else _quote_media_label(media_type, Path(path).name)
+                    self._quote_cache.remember(chat_id, [str((resp or {}).get("message_id") or "").strip()], body)
                     break
                 # Same stale-session fallback as _send_text_chunk: re-send once without context_token. Clearing the
                 # token also covers the remaining item lists (caption, then media) and bounds this loop.

@@ -1372,11 +1372,16 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
     # ids that coincidentally match native providers' static catalogs.
     resolved_in_current_catalog = False
     if is_aggregator(st.target_provider) and not st.resolved_alias:
-        catalog = list_provider_models(st.target_provider)
-        if catalog:
-            matched = _aggregator_catalog_match(st.new_model, catalog)
-            if matched is not None:
-                st.new_model, resolved_in_current_catalog = matched, True
+        # A bare name another configured provider declares must fall through to step d.5 instead of
+        # being swallowed here: the catalog's bare-part match would silently keep the session on the
+        # (metered) aggregator (#132117). The catalog match below still owns names nobody declares.
+        cfg_matches = _configured_provider_matches(st.new_model, st.user_providers, st.custom_providers)
+        if not (cfg_matches and current_provider not in cfg_matches):
+            catalog = list_provider_models(st.target_provider)
+            if catalog:
+                matched = _aggregator_catalog_match(st.new_model, catalog)
+                if matched is not None:
+                    st.new_model, resolved_in_current_catalog = matched, True
 
     # Steps d.5 / e only apply while the request is still unrouted on the current provider.
     if st.resolved_alias or resolved_in_current_catalog or st.target_provider != current_provider:

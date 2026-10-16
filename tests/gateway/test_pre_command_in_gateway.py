@@ -480,7 +480,7 @@ def test_only_the_escape_hatches_skip_pre_command_during_a_turn(monkeypatch, sta
 
 def test_a_hung_pre_command_callback_is_bounded_and_each_session_keeps_its_order(monkeypatch):
     """``pre_command`` runs through the hook dispatcher's bounded path (``plugins.hook_callback_timeout``,
-    abandoned worker, suppression), on the gateway's own observer workers, never the loop's shared
+    abandoned worker, suppression), each delivery on a thread of its own, never the loop's shared
     executor. A callback that hangs for session A's first command: session B's observers run at once,
     A's next command waits only for the bound and skips the still-running callback (never overlapping
     or reordering it), later commands skip it, no extra worker piles up, and a session's backlog is capped."""

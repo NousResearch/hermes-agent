@@ -312,9 +312,9 @@ async def _pre_command_before(authority, ref, canonical, alias, arg):
 
 
 async def observe_command(connection, ref, params):
-    """``command.observe``: a recognized command the classic CLI runs in its own process on this
-    session. ``pre_command`` fires here, in the session's profile, after the reply: the CLI never waits
-    on a plugin and never loads one. Plain data only (the command name as typed and its arguments)."""
+    """``command.observe``: a recognized command the classic CLI or Ink runs itself on this session.
+    ``pre_command`` fires here, in the session's profile, after the reply: the client never waits on a
+    plugin and never loads one. Plain data only (the command name as typed and its arguments)."""
     from hermes_cli.commands import resolve_command
     from hermes_cli.profiles import profile_matches_home
     authority, actor = connection.authority, connection.actor

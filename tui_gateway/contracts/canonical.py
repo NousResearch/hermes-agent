@@ -138,7 +138,7 @@ class CommandObserveResult(Result):
 
 
 canonical_method("command.observe", params=CommandObserveParams, result=CommandObserveResult,
-                 doc="Fire-only: a recognized command the classic CLI runs in its own process; the gateway fires "
+                 doc="Fire-only: a recognized command the classic CLI or the TUI runs itself; the gateway fires "
                      "`pre_command` for it in the session's profile after replying (`queued` false: not fired).")
 
 

@@ -170,7 +170,9 @@ def _host_state_dir() -> str:
         return override
     state_home = os.environ.get("XDG_STATE_HOME") or ""
     if not os.path.isabs(state_home):
-        state_home = os.path.join(os.path.expanduser("~"), ".local", "state")
+        # ``HERMES_REAL_HOME`` is what Hermes-spawned subprocesses carry when their ``HOME`` is repointed.
+        home = os.environ.get("HERMES_REAL_HOME") or os.path.expanduser("~")
+        state_home = os.path.join(home, ".local", "state")
     return os.path.join(state_home, "hermes", "gateway-locks")
 
 

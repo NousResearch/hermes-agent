@@ -221,8 +221,28 @@ def test_relative_xdg_state_home_is_ignored(monkeypatch, tmp_path):
     from gateway import status
 
     monkeypatch.delenv("HERMES_GATEWAY_LOCK_DIR", raising=False)
+    monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", "relative/state")
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
 
     assert status._get_lock_dir().is_absolute()
     assert status._get_lock_dir() == tmp_path / ".local" / "state" / "hermes" / status._LOCKS_DIRNAME
+
+
+def test_lock_dir_is_the_same_under_a_repointed_profile_home(monkeypatch, tmp_path):
+    """In a container the terminal tool runs with ``HOME=$HERMES_HOME/home``. Its ``hermes`` must
+    meet the supervised gateway (plain ``HOME``) in one rendezvous dir, or doctor reports no gateway."""
+    from gateway import status
+
+    real, hermes_home = tmp_path / "real", tmp_path / "hermes"
+    (hermes_home / "home").mkdir(parents=True)
+    for name in ("HERMES_GATEWAY_LOCK_DIR", "XDG_STATE_HOME", "HERMES_REAL_HOME"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    monkeypatch.setenv("HOME", str(real))
+    gateway_dir = status._get_lock_dir()
+    monkeypatch.setenv("HOME", str(hermes_home / "home"))
+    monkeypatch.setenv("HERMES_REAL_HOME", str(real))
+
+    assert status._get_lock_dir() == gateway_dir == real / ".local" / "state" / "hermes" / status._LOCKS_DIRNAME

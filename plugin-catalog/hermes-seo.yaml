@@ -1,0 +1,32 @@
+name: hermes-seo
+title: Hermes SEO
+repo: https://github.com/yuzushi-dev/hermes-seo
+sha: 5f04951e8fddc8b869378236a7ff5b584a0d023d
+version: "0.1.0"
+description: >-
+  Native Hermes port of Claude SEO 2.4.2: 45 SEO workflow and specialist
+  skills, a credential-scoped hermes_seo_run tool, an isolated Python runtime,
+  and advisory JSON-LD feedback. Derived from Claude SEO 2.4.2 (MIT; FLOW
+  prompt materials CC BY 4.0). Disclosure: the plugin starts local subprocesses;
+  setup downloads Python packages and optionally Chromium; audits fetch
+  user-selected websites; separately configured provider integrations send
+  data to their named services and may incur charges. Skills request approval
+  before paid or mutating operations, but the tool does not enforce approvals.
+  Native tool subprocesses run in the Hermes host plugin process, not a Docker
+  terminal sandbox, and script arguments may name host-visible paths. Google
+  OAuth workflows are disabled until Hermes provides a profile-scoped route.
+  Provider credentials use the active Hermes profile vault. Runtime state stays
+  in Hermes plugin data storage. No telemetry, bundled credentials, background
+  process, or self-updater.
+maintainer: yuzushi-dev
+tier: community
+category: tools
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/yuzushi-dev/hermes-seo#readme
+image: https://raw.githubusercontent.com/yuzushi-dev/hermes-seo/5f04951e8fddc8b869378236a7ff5b584a0d023d/assets/hermes-seo-card.png
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [hermes_seo_run]
+  provides_hooks: [transform_tool_result]
+  provides_middleware: []
+  requires_env: []

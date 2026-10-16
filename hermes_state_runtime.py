@@ -246,7 +246,9 @@ def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, 
     return db._execute_write(write)
 
 
-def cancel_session_input(db, *, epoch: int, admission_id: str) -> dict:
+def cancel_session_input(db, *, epoch: int, admission_id: str, outcome: str = 'cancelled') -> dict:
+    """End a queued admission unrun: ``cancelled`` by its author, ``refused`` by the owner's pre-claim
+    check (a viewer turn whose lane moved on)."""
     def write(conn):
         _epoch(conn, epoch)
         row = _admission(conn, admission_id)
@@ -255,7 +257,7 @@ def cancel_session_input(db, *, epoch: int, admission_id: str) -> dict:
         if row['status'] == 'started':
             raise RuntimeStoreError('stale_generation')
         if row['status'] == 'queued':
-            conn.execute("UPDATE session_admissions SET status='terminal',outcome='cancelled' WHERE admission_id=?", (admission_id,))
+            conn.execute("UPDATE session_admissions SET status='terminal',outcome=? WHERE admission_id=?", (outcome, admission_id))
         return _row(_admission(conn, admission_id))
     return db._execute_write(write)
 

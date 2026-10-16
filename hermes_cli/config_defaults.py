@@ -2109,12 +2109,7 @@ DEFAULT_CONFIG = {
         "delivery_ledger": True,
         # Seconds to wait for one platform to connect at startup/reconnect; raise on "discord
         # connect timed out" loops (many slash commands to sync). 0/negative = wait forever. Bridged
-        # to HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT, which wins if set explicitly.
-        # Seconds the gateway waits for a single messaging platform to finish connecting during startup (and
-        # on reconnect). Discord in particular can blow past the old fixed 30s when an account has many
-        # slash commands to sync (#19776: 90-173 skills → ~28-31s sync). Raise this if your gateway hits
-        # "discord connect timed out" / "Timeout waiting for connection to Discord" restart loops. ``0`` or
-        # negative disables the timeout entirely (wait indefinitely).
+        # to HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT, which wins if set explicitly (#19776).
         "platform_connect_timeout": 30,
         # Event-loop liveness watchdog: a daemon thread probes the asyncio loop; after consecutive
         # missed probes it dumps all-thread stacks and hard-exits with the service-restart code so
@@ -2195,6 +2190,11 @@ DEFAULT_CONFIG = {
         # supervisor can't hammer the process. max_starts <= 0 disables. Env escape hatches:
         # HERMES_GATEWAY_MAX_STARTS / HERMES_GATEWAY_START_WINDOW_S.
         "respawn_storm": {"max_starts": 5, "window_seconds": 120},
+        # Local divergence (TUI-8, #134889; gateway/session_viewer_turn.py): a local viewer's turn on a
+        # messaging session answers only in its panel, a historical row is adopted as the viewer's own
+        # local session, and a lane without a routing entry admits a viewer turn only if recovery would
+        # land it in that very row. false = upstream behaviour.
+        "session": {"viewer_replies_stay_local": False},
         # Prefix user messages IN THE MODEL'S CONTEXT with a timestamp (e.g. "[Tue 2026-04-28
         # 13:40:53 CEST]") for temporal awareness. Persisted transcripts stay clean (timestamp is
         # message metadata regardless), so enabling later surfaces past send-times too.

@@ -1261,6 +1261,13 @@ class SessionStore(
         Prompt pins follow non-boundary repoints by default; /resume opts out explicitly because it
         starts a different conversation on the same routing key.
         """
+        from hermes_state_local_migration import adopted_away_from
+        db = self._db_for_key(session_key)
+        if db is not None and adopted_away_from(db, target_session_id, session_key):
+            # Local divergence (#134889): a viewer-adopted row is a local session; no lane takes it back.
+            logger.warning("Session switch for %s refused: %s was adopted by a local viewer",
+                           session_key, target_session_id)
+            return None
         with self._lock:
             old_entry = self._entry_locked(session_key)
             if old_entry is None:

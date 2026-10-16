@@ -34,6 +34,50 @@ def validate_legacy_row(db, row):
         raise RuntimeStoreError('not_found')
 
 
+# Local divergence (NousResearch/hermes-agent#134889): upstream binds only unrouted local history. With
+# ``gateway.session.viewer_replies_stay_local`` a local viewer who continues a historical messaging row (one
+# its lane's route has moved past) adopts it as its own local session (gateway/session_viewer_adoption.py),
+# as main's in-process TUI did by resuming any row under ``platform="tui"``.
+# Pre-adoption columns of a viewer-adopted row (``scripts/local_adopt_rollback.py`` restores them): the
+# identity ``bind_legacy_target`` rewrites and the end stamp the first turn's ``reopen_local_session``
+# clears, so a rolled-back row is history of its old lane again, not an open session.
+PREIMAGE_PREFIX = 'local_adopt_preimage:'
+IDENTITY_COLUMNS = ('session_key', 'chat_id', 'user_id', 'chat_type', 'origin_json', 'ended_at', 'end_reason')
+
+
+def adopted_away_from(db, session_id, session_key):
+    """True when *session_id* is a viewer-adopted row and *session_key* is not its local route: a
+    repoint (``/resume``, handoff, branch) would hand the local session back to another lane."""
+    if not isinstance(db.get_meta(PREIMAGE_PREFIX + session_id), str):
+        return False
+    row = db.get_session(session_id)
+    return row is not None and row.get('session_key') != session_key
+
+
+def validate_viewer_row(db, row):
+    """A messaging row a local viewer may adopt: this profile's and keyed. That its lane's route no
+    longer names it is checked by the caller against the gateway's routing index
+    (``gateway/session_viewer_adoption.py``), which may live in another profile's store.
+
+    ``validate_legacy_row``'s other refusals do not apply, deliberately: a routed messaging row with
+    ``session_key``/``chat_id``/``origin_json`` IS what is adopted (its identity goes to the preimage,
+    and the lane it belonged to already routes elsewhere), and ``legacy_account_label`` vets a Desktop
+    account stamp, whereas this ``user_id`` is the platform sender the viewer principal replaces."""
+    if (row['source'] in LEGACY_LOCAL_SOURCES or not row.get('session_key')
+            or row.get('profile_name') not in (None, '', db._own_profile_name() or 'default')):
+        raise RuntimeStoreError('not_found')
+
+
+def _validate_bind_target(db, conn, row, receipt):
+    if not receipt.get('viewer_adoption'):
+        validate_legacy_row(db, row)
+        return
+    validate_viewer_row(db, row)
+    conn.execute('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)', (PREIMAGE_PREFIX + row['id'], _json({
+        'columns': {column: row.get(column) for column in IDENTITY_COLUMNS},
+        'adopted_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'actor': receipt['principal_id']})))
+
+
 def bind_legacy_target(db, conn, receipt):
     target = receipt['legacy_session_id']
     if target != receipt['session_id']:
@@ -41,7 +85,7 @@ def bind_legacy_target(db, conn, receipt):
     row = conn.execute('SELECT * FROM sessions WHERE id=?', (target,)).fetchone()
     if row is None:
         raise RuntimeStoreError('not_found')
-    validate_legacy_row(db, dict(row))
+    _validate_bind_target(db, conn, dict(row), receipt)
     from hermes_state_mutation_binding import BINDING_PREFIX
     imported = conn.execute('SELECT value FROM state_meta WHERE key=?', (BINDING_PREFIX + target,)).fetchone()
     if imported and json.loads(imported[0]) != [receipt['profile_id'], receipt['principal_id']]:

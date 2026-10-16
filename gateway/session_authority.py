@@ -130,8 +130,10 @@ class SessionAuthority:
                 from gateway.session_local_recovery import restore_local_session
                 restore_local_session(self, ref.session_id)
             else:
-                from gateway.session_api import restore_api_session
-                restore_api_session(self, ref.session_id)
+                from gateway.session_route_recovery import restore_routed_session
+                if restore_routed_session(self, ref.session_id) is None:
+                    from gateway.session_api import restore_api_session
+                    restore_api_session(self, ref.session_id)
         from gateway.config import Platform
         source = self.sessions[ref.session_id].source
         if (source is not None and source.platform == Platform.LOCAL
@@ -464,6 +466,11 @@ class SessionAuthority:
             payload['local_operator_v1'] = {
                 'profile_id': self.profile_id, 'session_id': request.ref.session_id,
                 'principal_id': actor.subject}
+        from gateway.session_viewer_adoption import adopt_moved_row
+        adopt_moved_row(self, actor, request.ref, payload)
+        if 'local_operator_v1' in payload:
+            from gateway.session_viewer_turn import require_current_lane
+            require_current_lane(self, request.ref)
         def admit():
             try:
                 return admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
@@ -555,7 +562,7 @@ class SessionAuthority:
             self._publish_pending(ref)
         return row
 
-    def _settle_cancelled(self, ref, admission_id):
+    def _settle_cancelled(self, ref, admission_id, *, outcome='cancelled', text=''):
         # The only place a queued row becomes terminal: every observer kind that waits on
         # the admission (native delivery, API/webhook/hosted waiters, ACP and viewer streams)
         # settles here, or a cancelled row that never reaches _drain blocks them forever.
@@ -568,7 +575,8 @@ class SessionAuthority:
             live.event_stream.execution = {'authority_epoch': self.epoch, 'admission_id': admission_id}
             try:
                 live.event_stream.publish(ref.session_id, {
-                    'text': '', 'content': '', 'admission_id': admission_id, 'outcome': 'cancelled'})
+                    'text': text, 'content': text, 'admission_id': admission_id, 'outcome': outcome,
+                    **({'error': text} if text else {})})
             finally:
                 live.event_stream.execution = running
         # Published once: a later exact retry re-collects media but never repeats the completion.
@@ -818,6 +826,11 @@ class SessionAuthority:
             if first is not None and live.source.platform == Platform.API_SERVER:
                 from gateway.session_api_turn import check_api_turn
                 check_api_turn(self, ref, first['payload'])
+            if first is not None and 'local_operator_v1' in first['payload']:
+                # A /new between admission and claim moves the lane's route on (TUI-8).
+                from gateway.session_viewer_turn import refuse_moved_head
+                if await refuse_moved_head(self, ref, first):
+                    return False, first
             if first is not None and self._classic_turn_holds(live.route):
                 # A classic turn (fallback wake, CLI handoff, legacy resume) holds the route's slot:
                 # a claim now would hand this row to its busy path and settle it unrun. The head

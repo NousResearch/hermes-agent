@@ -37,9 +37,19 @@ def local_source(authority, chat_id, user_id):
     return source
 
 
+def local_session_adapter(authority):
+    """*authority*'s ``LocalSessionAdapter``, registered on first use; None when another object
+    holds the LOCAL slot of its adapter map."""
+    from gateway.session_local import LocalSessionAdapter
+    adapters = local_adapter_map(authority)
+    adapter = adapters.get(Platform.LOCAL)
+    if adapter is None:
+        adapter = adapters[Platform.LOCAL] = LocalSessionAdapter(authority)
+    return adapter if isinstance(adapter, LocalSessionAdapter) and adapter.authority is authority else None
+
+
 def restore_local_session(authority, sid):
     from gateway.session_authority import LiveSession
-    from gateway.session_local import LocalSessionAdapter
     from gateway.session_policy import restore_policy
     receipt = local_receipt(authority.db, sid)
     try:
@@ -70,12 +80,8 @@ def restore_local_session(authority, sid):
         if isinstance(exc, RuntimeStoreError):
             raise
         raise RuntimeStoreError('storage_unavailable') from exc
-    adapters = local_adapter_map(authority)
-    adapter = adapters.get(Platform.LOCAL)
+    adapter = local_session_adapter(authority)
     if adapter is None:
-        adapter = LocalSessionAdapter(authority)
-        adapters[Platform.LOCAL] = adapter
-    if not isinstance(adapter, LocalSessionAdapter) or adapter.authority is not authority:
         raise RuntimeStoreError('runtime_draining')
     live = authority.sessions.get(sid)
     if live is None:

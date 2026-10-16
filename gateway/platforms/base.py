@@ -970,8 +970,8 @@ def _parse_docker_volume_mounts() -> list[tuple[Path, Path]]:
     mounts: list[tuple[Path, Path]] = []
     for entry in parsed if isinstance(parsed, list) else ():
         spec = entry.strip() if isinstance(entry, str) else ""
-        # Prefer the first ':/' so absolute container paths are unambiguous.
-        sep = spec.find(":/")
+        # First ':/' past any Windows drive colon (``C:/data:/workspace``) splits host from container.
+        sep = spec.find(":/", 2 if re.match(r"[A-Za-z]:[/\\]", spec) else 0)
         if sep <= 0:
             continue
         container_raw = spec[sep + 1:].split(":", 1)[0]  # starts with /
@@ -979,9 +979,8 @@ def _parse_docker_volume_mounts() -> list[tuple[Path, Path]]:
         host_expanded = os.path.expanduser(spec[:sep])
         if not (host_expanded.startswith("/") or (len(host_expanded) > 1 and host_expanded[1] == ":")):
             continue
-        host_path, container_path = _resolve_path(Path(host_expanded)), Path(container_raw)
-        if host_path is not None and container_path.is_absolute():
-            mounts.append((host_path, container_path))
+        if (host_path := _resolve_path(Path(host_expanded))) is not None:  # container_raw is POSIX on any OS
+            mounts.append((host_path, Path(container_raw)))
     return mounts
 
 
@@ -1069,13 +1068,14 @@ def _cache_dir_container_mounts() -> list[tuple[Path, Path]]:
         return []
 
 
-def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str) -> None:
+def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str, quiet: bool = False) -> None:
     """Name WHY a container-absolute MEDIA path failed translation (otherwise the only signal is
-    the generic "Skipping unsafe MEDIA directive path" line). Docker-only; host rejections quiet.
+    the generic "Skipping unsafe MEDIA directive path" line). Docker-only; host rejections and ``quiet``
+    callers (fs routes, which also see ordinary host paths) stay silent.
 
     See #93950.
     """
-    if not _docker_env_active():
+    if quiet or not _docker_env_active():
         return
     logger.warning("Docker MEDIA path %s did not resolve to a host sandbox file (%s%s); "
                    "the producing container's sandbox directory may not exist yet or "
@@ -1083,10 +1083,10 @@ def _warn_unresolved_docker_media(candidate: Path, session_key: str, reason: str
                    f", session_key={session_key}" if session_key else "")
 
 
-def _translate_docker_container_media_path(candidate: Path, session_key: str = "") -> Optional[Path]:
+def _translate_docker_container_media_path(candidate: Path, session_key: str = "", *, quiet: bool = False) -> Optional[Path]:
     """Container-absolute path -> host path via longest-prefix match over ``docker_volumes``, the
     auto-mounted cache dirs (``/root/.hermes/...``), persistent ``/workspace`` and ``/root``."""
-    if not candidate.is_absolute():
+    if not candidate.as_posix().startswith("/"):  # POSIX even on Windows gateways (not is_absolute)
         return None
     # In-process gateways (Desktop, `hermes serve`) may not have bridged terminal.* config into
     # TERMINAL_* env yet; the bridge is idempotent.
@@ -1105,7 +1105,7 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
         mounts.extend(
             (root, Path("/root")) for root in _docker_persistent_sandbox_roots(session_key, "home"))
     if not mounts:
-        _warn_unresolved_docker_media(candidate, session_key, "no sandbox mounts resolved")
+        _warn_unresolved_docker_media(candidate, session_key, "no sandbox mounts resolved", quiet)
         return None
     # Longest container-prefix match; equal-length prefixes are tried in insertion order.
     candidate_posix = candidate.as_posix()
@@ -1113,14 +1113,14 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
                for prefix in (container_root.as_posix().rstrip("/") or "/",)
                if candidate_posix == prefix or candidate_posix.startswith(prefix + "/")]
     if not matched:
-        _warn_unresolved_docker_media(candidate, session_key, "no mounted prefix matches")
+        _warn_unresolved_docker_media(candidate, session_key, "no mounted prefix matches", quiet)
         return None
     for host_root, container_root, _score in sorted(matched, key=lambda m: -m[2]):
         translated = _resolve_path(host_root / candidate.relative_to(container_root), strict=True)
         if translated is not None and (
                 translated == host_root or _path_is_within(translated, host_root)):
             return translated
-    _warn_unresolved_docker_media(candidate, session_key, "host file missing from sandbox")
+    _warn_unresolved_docker_media(candidate, session_key, "host file missing from sandbox", quiet)
     return None
 
 
@@ -2075,13 +2075,10 @@ class BasePlatformAdapter(ABC):
         from gateway.stream_events import ToolCallChunk
         if not isinstance(event, ToolCallChunk):
             return None
-        from agent.display import get_tool_emoji, prepare_tool_preview
+        from agent.display import get_tool_emoji, prepare_tool_preview, verbose_tool_args_text
         emoji, tool = get_tool_emoji(event.tool_name, default='⚙️'), event.tool_name
         if mode == "verbose" and event.args:
-            import json
-            args_str = json.dumps(event.args, ensure_ascii=False, default=str)
-            if preview_max_len > 0 and len(args_str) > preview_max_len:
-                args_str = args_str[:preview_max_len - 3] + "..."
+            args_str = verbose_tool_args_text(event.args, preview_max_len, self.supports_code_blocks)
             return t("gateway.progress.tool_verbose", emoji=emoji, tool=tool, keys=list(event.args.keys()), args=args_str)
         if not event.preview:
             return t("gateway.progress.tool_pending", emoji=emoji, tool=tool)

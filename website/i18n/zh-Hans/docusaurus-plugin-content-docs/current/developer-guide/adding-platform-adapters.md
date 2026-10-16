@@ -680,7 +680,7 @@ async def disconnect(self):
 
 | 适配器 | 模式 | 复杂度 | 适合参考的场景 |
 |---------|---------|------------|-------------------|
-| `bluebubbles.py` | REST + webhook | 中 | 简单 REST API 集成 |
-| `weixin.py` | 长轮询 + CDN | 高 | 媒体处理、加密 |
+| `plugins/platforms/bluebubbles/adapter.py` | REST + webhook | 中 | 简单 REST API 集成 |
+| `plugins/platforms/weixin/adapter.py` | 长轮询 + CDN | 高 | 媒体处理、加密 |
 | `wecom_callback.py` | 回调/webhook | 中 | HTTP 服务器、AES 加密、多应用 |
 | `plugins/platforms/irc/adapter.py` | 长轮询 + IRC 协议 | 高 | 带作用域令牌锁的全功能插件适配器 |

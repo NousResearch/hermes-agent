@@ -70,6 +70,57 @@ def _dict_list(value):
     return value is None or (isinstance(value, list) and all(isinstance(e, dict) for e in value))
 
 
+def route_runtime(policy, frozen, model, key):
+    """``(runtime, fallback_entry)`` for a launch-policy route: the session's FROZEN config and launch
+    credential, walking its own fallback chain on an AuthError. The one resolver an in-process turn
+    (``_resolve_policy_agent_runtime``) and a key-less managed worker (``worker_api_key``) share."""
+    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_with_fallback
+    from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
+    provider = (frozen.get('model') or {}).get('provider')
+    launch_url = json.loads(policy.request_json).get('base_url')
+    if launch_url:
+        # The creation request is immutable identity, not the current selection: once a canonical
+        # model mutation moved the route off the launch endpoint, the policy's selection wins.
+        from hermes_cli.route_identity import normalize_route_base_url
+        if normalize_route_base_url(launch_url) != normalize_route_base_url((frozen.get('model') or {}).get('base_url')):
+            launch_url = None
+    # Every rung reads the session's FROZEN config, never live config.yaml: a later
+    # ``model.base_url`` edit must not carry this route's frozen credential to the new host
+    # (R2-M2). The auth-store pool is not config, so refresh/rotation still applies.
+    with frozen_runtime_config(frozen):
+        runtime = _resolve_named_custom_runtime(requested_provider=provider,
+            explicit_api_key=key, explicit_base_url=launch_url,
+            target_model=model, config=frozen)
+        if runtime is not None:
+            return runtime, None
+        # Only a bound launch key is explicit: the frozen ``model.api_key`` is config, which the
+        # resolver already reads from the frozen scope, so a URL-matched credential pool still
+        # serves (and rotates on) the frozen endpoint.
+        # Same resolution-time walker the in-process one-shot used (#81209): an AuthError
+        # from the frozen primary (expired token, Portal down, exhausted pool) tries the
+        # route's own ``fallback_providers`` before the turn is refused. Only a launch URL is
+        # explicit (classic one-shot parity): the frozen ``model.base_url`` is resolved by
+        # the provider chain, which keeps the credential pool an explicit URL would drop.
+        return resolve_runtime_with_fallback(frozen, requested=provider,
+            explicit_api_key=key, explicit_base_url=launch_url, target_model=model)
+
+
+def worker_api_key(policy, construct):
+    """Child side, for a worker launched without a key (every Kanban run): the route's own credential,
+    resolved as the in-process turn resolves it, from this process's profile home (its HERMES_HOME and
+    ``.env``). A fallback entry's key belongs to another provider and model, so the primary never
+    carries it; the agent's own fallback chain switches all three together (#139155).
+
+    A primary AuthError walks the chain the agent will actually get: the owner's per-turn
+    ``construct_v1`` chain (an ordinary session's refreshed profile fallbacks) when it was sent,
+    the frozen snapshot's otherwise (older owner)."""
+    frozen, model = policy.effective()
+    if 'fallback_model' in construct:
+        frozen = {**frozen, 'fallback_providers': construct['fallback_model'] or [], 'fallback_model': None}
+    runtime, fallback_entry = route_runtime(policy, frozen, model, None)
+    return runtime.get('api_key') if fallback_entry is None else None
+
+
 def checkpoint_agent_kwargs(config):
     """``AIAgent`` checkpoint arguments from a config dict (every turn: the gateway's live config, a
     managed worker's frozen session snapshot). The gateway bypasses ``load_config()``, so defaults

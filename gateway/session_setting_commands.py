@@ -5,19 +5,12 @@ next turn reads its settings from its live session and frozen policy, not from t
 per-platform snapshot, so a handler that changes a setting also applies it here: one behaviour
 for every surface, held by the gateway.
 """
+from types import SimpleNamespace
 
 
 def local_live(runner, source):
     """The ``LiveSession`` of the local session ``source`` belongs to, else None (messaging chats)."""
-    from gateway.config import Platform
-    if source is None or getattr(source, 'platform', None) != Platform.LOCAL:
-        return None
-    from gateway.session_authorities import all_authorities
-    for authority in all_authorities(runner):
-        live = getattr(authority, 'sessions', {}).get(source.chat_id)
-        if live is not None and live.source.platform == Platform.LOCAL:
-            return live
-    return None
+    return local_authority_live(runner, source)[1]
 
 
 def local_policy(runner, source):
@@ -57,3 +50,38 @@ def local_live_for_route(runner, session_key):
             if live.route == session_key and live.source.platform == Platform.LOCAL:
                 return live
     return None
+
+
+def local_authority_live(runner, source):
+    """``(authority, live)`` owning the local session ``source`` belongs to, else ``(None, None)``."""
+    from gateway.config import Platform
+    if source is None or getattr(source, 'platform', None) != Platform.LOCAL:
+        return None, None
+    from gateway.session_authorities import all_authorities
+    for authority in all_authorities(runner):
+        live = getattr(authority, 'sessions', {}).get(source.chat_id)
+        if live is not None and live.source.platform == Platform.LOCAL:
+            return authority, live
+    return None, None
+
+
+def defer_local_model_pick(authority, live, result, effort=''):
+    """A typed ``/model`` on a local session: the resolved target becomes the session's canonical
+    ``model`` mutation, committed by the owner at the next turn boundary (the typed command is
+    itself the running admission). One writer, so the next request, ``sessions.model`` and
+    ``session.info`` move together, or the commit is announced as a refusal."""
+    import uuid
+    from gateway.session_contract import SessionRef
+    from gateway.session_deferred_pick import defer_pick
+    from hermes_state_local import local_receipt
+    sid = live.source.chat_id
+    owner = SimpleNamespace(subject=local_receipt(authority.db, sid)['principal_id'])
+    # The alias the user typed, not the bare model it names: two aliases may name one model on one
+    # provider at different endpoints, and re-resolving the bare id picks the first such alias.
+    payload = {'model': result.resolved_via_alias or result.new_model}
+    if result.target_provider:
+        payload['provider'] = result.target_provider
+    if effort:
+        payload['reasoning'] = effort  # `--reasoning <level>`: committed in the same selection
+    defer_pick(authority, owner, SessionRef(authority.profile_id, sid),
+               {'request_id': 'typed-model:' + uuid.uuid4().hex, 'payload': payload})

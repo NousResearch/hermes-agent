@@ -70,11 +70,14 @@ def _dict_list(value):
     return value is None or (isinstance(value, list) and all(isinstance(e, dict) for e in value))
 
 
-def route_runtime(policy, frozen, model, key):
+def route_runtime(policy, frozen, model, key, *, fallback=True):
     """``(runtime, fallback_entry)`` for a launch-policy route: the session's FROZEN config and launch
-    credential, walking its own fallback chain on an AuthError. The one resolver an in-process turn
+    credential, walking its own fallback chain on an AuthError unless ``fallback=False`` (a session
+    control asking which route the session itself runs). The one resolver an in-process turn
     (``_resolve_policy_agent_runtime``) and a key-less managed worker (``worker_api_key``) share."""
-    from hermes_cli.runtime_provider import frozen_runtime_config, resolve_runtime_with_fallback
+    from hermes_cli.runtime_provider import (
+        frozen_runtime_config, resolve_runtime_provider, resolve_runtime_with_fallback,
+    )
     from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
     provider = (frozen.get('model') or {}).get('provider')
     launch_url = json.loads(policy.request_json).get('base_url')
@@ -101,6 +104,10 @@ def route_runtime(policy, frozen, model, key):
         # route's own ``fallback_providers`` before the turn is refused. Only a launch URL is
         # explicit (classic one-shot parity): the frozen ``model.base_url`` is resolved by
         # the provider chain, which keeps the credential pool an explicit URL would drop.
+        if not fallback:
+            # Takes no config argument: it reads `frozen` only through the frozen_runtime_config scope above, so it must stay inside that `with`.
+            return resolve_runtime_provider(requested=provider, target_model=model,
+                explicit_base_url=launch_url, explicit_api_key=key), None
         return resolve_runtime_with_fallback(frozen, requested=provider,
             explicit_api_key=key, explicit_base_url=launch_url, target_model=model)
 

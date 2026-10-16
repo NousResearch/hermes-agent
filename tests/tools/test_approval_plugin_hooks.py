@@ -153,7 +153,7 @@ class TestSmartModeFiresHooks:
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
         monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
-        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: verdict)
+        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: (verdict, ""))
 
     @pytest.mark.parametrize(
         ("guard", "value", "verdict", "approved", "choice", "pattern_key"),
@@ -209,7 +209,7 @@ class TestSmartModeFiresHooks:
 
         def decide(*_):
             events.append("smart_approve")
-            return "approve"
+            return "approve", ""
 
         monkeypatch.setattr(approval_smart, "_smart_approve", decide)
         with patch(
@@ -312,7 +312,7 @@ class TestSmartModeFiresHooks:
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
         monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
-        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: next(verdicts))
+        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: (next(verdicts), ""))
         captured = []
         with patch(
             "hermes_cli.plugins.invoke_hook",

@@ -809,6 +809,7 @@ export interface SessionResumeResult {
     command?: string
     description?: string
     request_id?: string
+    smart_reason?: string
     smart_denied?: boolean
   }
   // Server→client requests still unanswered for this session (clarify, sudo,

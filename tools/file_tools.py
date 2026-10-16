@@ -689,11 +689,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # Failed reads cannot establish whole-file knowledge.
         _err = result_dict.get("error") or ""
         if isinstance(_err, str) and _err.startswith("File not found:"):
-            from tools.tool_result_storage import expired_archive_hint
-            _expired = expired_archive_hint(path)
-            if _expired:
-                result_dict["expired"] = True
-                result_dict["hint"] = _expired
+            from tools.tool_result_storage import expired_archive_fields
+            result_dict.update(expired_archive_fields(path))
             _record_not_found("read", resolved_str, task_id, json.dumps(result_dict, ensure_ascii=False))
         if _err or result_dict.get("is_binary"):
             return json.dumps(result_dict, ensure_ascii=False)

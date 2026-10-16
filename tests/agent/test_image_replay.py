@@ -63,6 +63,31 @@ def _rebuilt_request(tmp_path, live_turns):
     return [m for m in request if m["role"] == "user"]
 
 
+def test_replay_window_is_resolved_once_per_turn(tmp_path):
+    """Every request of one turn (each tool-loop iteration) sends the same bytes, even if the config
+    changes mid-turn; the next turn picks the change up."""
+    _config()
+    live, _ = _live_turn(tmp_path, "label.png", "What is on this label?")
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="s", source="api_server")
+    db.append_message("s", role="user", content=_durable_content(live["content"]), timestamp=1000.0)
+    db.append_message("s", role="assistant", content="reply", timestamp=1001.0)
+    history = db.get_messages_as_conversation("s") + [{"role": "user", "content": "and the expiry date?"}]
+    agent = _Agent()
+
+    def first_user_row():
+        request, _ = build_api_messages(
+            agent, history, current_turn_user_idx=len(history) - 1,
+            ext_prefetch_cache="", plugin_user_context="", moa_config=None, active_system_prompt="")
+        return next(m for m in request if m["role"] == "user")["content"]
+
+    assert first_user_row() == live["content"]
+    _config(mode="text")
+    assert first_user_row() == live["content"]  # same turn: unchanged wire bytes
+    agent._current_turn_timestamp += 60  # next turn
+    assert isinstance(first_user_row(), str)
+
+
 @pytest.mark.parametrize("mode,replayed", [("native", True), ("text", False)])
 def test_rebuilt_turn_resends_the_image_byte_identical_only_for_native_input(tmp_path, mode, replayed):
     _config(mode=mode)

@@ -255,5 +255,6 @@ vision:
 
 - The bytes come from the copy Hermes already keeps for every attached image under `cache/documents/native-inputs/` in the profile. Nothing new is stored, and the database and session messages API stay text only.
 - A re-sent message is byte-identical to the request that first carried the image, so the provider's prompt cache stays valid. The request changes only when a newer image pushes one out of the window.
+- Replay reaches only images whose kept copy still exists. On the gateway and API server, that copy is removed once it is older than the media-cache age (24 hours), so a follow-up more than a day later sees `[screenshot]` again. The removal can also happen in the middle of a session, which changes the request once.
 - Images outside the window, images sent as remote URLs (they can expire, which would fail every later turn), and retained files that are missing or changed keep the `[screenshot]` text.
 - With `agent.image_input_mode: text`, or a model without native vision, nothing is re-sent. A value that is not a non-negative integer logs a warning and disables the replay.

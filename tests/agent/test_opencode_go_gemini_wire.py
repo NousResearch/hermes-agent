@@ -222,3 +222,16 @@ def test_go_native_round_trip_over_real_loopback():
     assert seen[0][0] == "/inference/go/v1/models/gemini-fixture:generateContent"
     assert seen[0][1]["x-goog-api-key"] == "synthetic-only"
     assert seen[0][2]["contents"][0]["parts"][0]["text"] == "fixture"
+
+
+def test_unrelated_compressor_keeps_existing_output_reservation():
+    from types import SimpleNamespace
+    from agent.context_compressor import ContextCompressor
+    from agent.opencode_gemini import compressor_budget
+    cc = ContextCompressor(model="fixture", config_context_length=100000, max_tokens=4096,
+                           provider="custom", base_url="https://example.test/v1")
+    agent = SimpleNamespace(provider="custom", requested_provider="custom", model="fixture-next",
+                            base_url="https://example.test/v1", max_tokens=None, context_compressor=cc)
+    cc.update_model("fixture-next", 100000, provider="custom", base_url=agent.base_url,
+                    **compressor_budget(agent))
+    assert cc.max_tokens == 4096

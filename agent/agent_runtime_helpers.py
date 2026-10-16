@@ -2416,6 +2416,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "runtime_capabilities": dict(getattr(agent, "runtime_capabilities", {}) or {}),
         "compressor_model": getattr(cc, "model", agent.model),
+        "compressor_max_tokens": getattr(cc, "max_tokens", None),
         "compressor_base_url": getattr(cc, "base_url", agent.base_url),
         "compressor_api_key": getattr(cc, "api_key", ""),
         "compressor_provider": getattr(cc, "provider", agent.provider),

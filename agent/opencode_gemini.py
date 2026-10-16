@@ -33,7 +33,10 @@ def compressor_budget(agent):
     """Recompute the built-in output reservation without widening plugin ABI."""
     from agent.context_compressor import ContextCompressor
     from agent.agent_init import _compressor_max_tokens
-    if isinstance(agent.context_compressor, ContextCompressor):
+    cc = agent.context_compressor
+    if not isinstance(cc, ContextCompressor):
+        return {}
+    if main_go_gemini_base(agent, agent.base_url) or go_gemini_base(cc.provider, cc.model, cc.base_url):
         return {"max_tokens": _compressor_max_tokens(agent) or 0}
     return {}
 

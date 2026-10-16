@@ -85,10 +85,7 @@ jobs:
       desktop_updater: ${{ steps.gate-lanes.outputs.desktop_updater }}
       rust: ${{ steps.gate-lanes.outputs.rust }}
       remote_backends: ${{ steps.gate-lanes.outputs.remote_backends }}
-<<<<<<< HEAD
-=======
       catalog: ${{ steps.gate-lanes.outputs.catalog }}
->>>>>>> upstream/main
       docker_meta: ${{ steps.gate-lanes.outputs.docker_meta }}
       e2e: ${{ steps.gate-lanes.outputs.e2e }}
       e2e_upgrade: ${{ steps.gate-lanes.outputs.e2e_upgrade }}
@@ -207,8 +204,6 @@ jobs:
     with:
       commit: ${{ inputs.commit }}
 
-<<<<<<< HEAD
-=======
   catalog-tests:
     name: Catalog tests
     needs: detect
@@ -220,7 +215,6 @@ jobs:
     with:
       commit: ${{ inputs.commit }}
 
->>>>>>> upstream/main
   remote-backends:
     name: Remote terminal backends
     needs: detect
@@ -440,10 +434,7 @@ jobs:
       - js-tests
       - rust-tests
       - remote-backends
-<<<<<<< HEAD
-=======
       - catalog-tests
->>>>>>> upstream/main
       - bootstrap-installer
       - e2e-desktop
       - e2e-desktop-core

@@ -48,20 +48,13 @@ DEFAULT = {
     "desktop_updater": True,
     "rust": True,
     "remote_backends": True,
-<<<<<<< HEAD
-=======
     "catalog": True,
->>>>>>> upstream/main
 }
 
 SLOW_LANES = {"docker", "nix", "e2e", "e2e_upgrade", "e2e_desktop_core", "e2e_desktop_update"}
 
 
-<<<<<<< HEAD
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, bootstrap=False, desktop_updater=False, rust=False, docker_meta=False, python_prod=None, nix=False, docker=None, e2e=False, e2e_upgrade=False, e2e_desktop_core=False, e2e_desktop_update=False, remote_backends=False) -> dict[str, bool]:
-=======
 def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_lock=False, npm_lock=False, bootstrap=False, desktop_updater=False, rust=False, docker_meta=False, python_prod=None, nix=False, docker=None, e2e=False, e2e_upgrade=False, e2e_desktop_core=False, e2e_desktop_update=False, remote_backends=False, catalog=False) -> dict[str, bool]:
->>>>>>> upstream/main
     # python_prod tracks python except for tests-only diffs; default it to
     # python so the majority of cases don't need to spell it out.
     #
@@ -90,10 +83,7 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_
         "desktop_updater": desktop_updater,
         "rust": rust,
         "remote_backends": remote_backends,
-<<<<<<< HEAD
-=======
         "catalog": catalog,
->>>>>>> upstream/main
     }
 
 
@@ -605,11 +595,8 @@ _REAL_UPDATE_LANES = (
     ("tests-os.yml", "install-update-e2e", "windows-install-update-e2e.yml", "e2e_upgrade"),
     # Not an update suite, but the same contract: the real SSH/Docker backend lane.
     ("ci.yaml", "remote-backends", "remote-backends.yml", "remote_backends"),
-<<<<<<< HEAD
-=======
     # Catalog-only PRs skip the suite, so their catalog tests must gate the merge.
     ("ci.yaml", "catalog-tests", "catalog-tests.yml", "catalog"),
->>>>>>> upstream/main
 )
 
 

@@ -69,12 +69,9 @@ outputs:
   remote_backends:
     description: Run the SSH and Docker terminal backends against a real sshd and Docker daemon.
     value: ${{ steps.classify.outputs.remote_backends }}
-<<<<<<< HEAD
-=======
   catalog:
     description: Run the plugin-catalog tests (catalog-only diffs run these instead of the Python suite).
     value: ${{ steps.classify.outputs.catalog }}
->>>>>>> upstream/main
 
 runs:
   using: composite

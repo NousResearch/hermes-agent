@@ -22,6 +22,16 @@ from __future__ import annotations
 
 import pytest
 
+# Import the process-bootstrap chain at collection time, BEFORE the per-test
+# ``_forbid_real_hermes_home_io`` guard is installed. ``agent.process_bootstrap``
+# imports ``hermes_bootstrap``, whose module body runs ``activate_dependencies()``
+# and stats ``<checkout-parent>/manifest.json`` — on a default install that parent
+# is the real ``~/.hermes``. Tests that import run_agent / conversation_loop lazily
+# inside a fixture or production helper would run that I/O with the guard active and
+# trip it; test_run_agent.py sidesteps this with a module-level ``import run_agent``.
+# One eager import here closes the same window for every file in this directory.
+import agent.process_bootstrap  # noqa: F401
+
 
 @pytest.fixture(autouse=True)
 def _fresh_structured_output_memo(monkeypatch):

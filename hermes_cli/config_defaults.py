@@ -762,7 +762,7 @@ DEFAULT_CONFIG = {
         # seconds a streamed call goes without a substantive chunk before it fails fast into
         # retry/fallback; None = built-in 60s default. Independent of "timeout" (the overall request
         # budget) — raising "timeout" alone does not widen this window. See #108104.
-        "compression": _aux(120, no_progress_timeout=None),
+        "compression": _aux(120, no_progress_timeout=None, local_override={}),
         "skills_hub": _aux(30),
         "approval": _aux(30),   # classifier — a fast/cheap model is recommended
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like

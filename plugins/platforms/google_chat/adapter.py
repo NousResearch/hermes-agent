@@ -15,6 +15,7 @@ import contextvars
 import importlib
 import json
 import logging
+import mimetypes
 import os
 import random
 import re
@@ -1025,7 +1026,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if data is None:
             return None, mime
         # cache_* helpers take ``ext`` for media and a positional filename for docs.
-        filename = name.split("/")[-1] if name else "attachment"
+        # ``name`` is the attachment RESOURCE name (spaces/…/attachments/<id>) — the
+        # user-visible filename is ``contentName``. Keying the cache on the bare id
+        # left documents extension-less, so read_file keyed on the extension and
+        # reported "Binary file (PDF document) — cannot display as text" (#132200).
+        content_name = (attachment.get("contentName") or "").strip()
+        filename = (_Path(content_name).name if content_name else "") or (
+            name.split("/")[-1] if name else "attachment"
+        )
+        if "." not in filename and mime:
+            filename += mimetypes.guess_extension(mime.split(";")[0].strip()) or ""
         ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
         for prefix, cache_fn, default_ext in _MEDIA_CACHERS:
             if mime.startswith(prefix):

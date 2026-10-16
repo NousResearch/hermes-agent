@@ -291,6 +291,38 @@ async def test_a_server_that_fails_to_start_is_unavailable_on_every_reload(tmp_p
         store.close_all_db_handles()
 
 
+@pytest.mark.asyncio
+async def test_a_server_disabled_after_the_chat_picked_it_stops_on_resume_and_on_reload(tmp_path, monkeypatch):
+    """A chat whose launch pick names a server keeps it only while config enables it: once it is disabled, a
+    resume (and, for another chat, ``reload.mcp``) commits a generation without it whose definition is the
+    disabled one, so neither the session nor a managed worker starts it, and reload does not list it."""
+    home = _home(monkeypatch)
+    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    store, authority = await _owner_authority(home)
+    _reloadable(authority, monkeypatch)
+    owner, later = _connect(authority), _connect(authority)
+    try:
+        resumed, reloaded = [(await _call(owner, 'session.create', request_id=request, source='cli', cwd=str(tmp_path),
+                                          toolsets=['terminal', 'old']))['session_id'] for request in ('a', 'b')]
+        generations = {sid: _generation(store, sid) for sid in (resumed, reloaded)}
+        (home / 'config.yaml').write_text(CONFIG.replace('{command: old-mcp}', '{command: old-mcp, enabled: false}'))
+        await _call(later, 'session.resume', session_id=resumed)
+        result = await _call(owner, 'reload.mcp', session_id=reloaded, confirm=True)
+        assert result['session'] == 'applied' and result['session_servers'] == [], result
+        for sid in (resumed, reloaded):
+            frame = _worker_frame(authority, sid, monkeypatch)
+            servers, toolsets = _worker_servers(frame, monkeypatch)
+            assert 'terminal' in toolsets and 'old' not in toolsets and 'old' not in servers, (toolsets, servers)
+            assert json.loads(frame['policy']['config_json'])['mcp_servers']['old']['enabled'] is False
+            from gateway.session_policy import policy_for_source
+            assert 'old' not in policy_for_source(authority.runner, authority.sessions[sid].source).toolsets
+            assert _generation(store, sid) == generations[sid] + 1
+    finally:
+        for connection in (owner, later):
+            await connection.close()
+        store.close_all_db_handles()
+
+
 def test_not_connected_names_a_configured_server_in_cooldown(monkeypatch):
     from tools import mcp_tool, mcp_tool_discovery as discovery
     from tools.mcp_tool_scope import _server_key

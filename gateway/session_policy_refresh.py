@@ -97,12 +97,19 @@ def _mcp_servers(policy, config, live, toolsets, secrets, replaced):
     if policy.editor_mcp_json is not None:
         return toolsets
     request = json.loads(policy.request_json)
+    sections = [section if isinstance(section, dict) else {} for section in (config.get('mcp_servers'), live.get('mcp_servers'))]
+    pick = request.get('toolsets')
+    if pick is not None:
+        # A server the launch pick names that config has since disabled or removed leaves the pick: it no
+        # longer validates, and keeping the frozen definitions would start the server the user turned off.
+        gone = (set(sections[0]) | set(sections[1])) - enabled_mcp_server_names(live)
+        pick = [name for name in pick if not isinstance(name, str)
+                or (name[4:] if name.startswith('mcp-') and name not in sections[1] else name) not in gone]
     try:
-        selected = _resolve_toolsets({'toolsets': request['toolsets']} if 'toolsets' in request else {},
+        selected = _resolve_toolsets({} if pick is None else {'toolsets': pick},
                                      json.loads(json.dumps(live)), policy.source, policy.safe_mode, policy.coding_posture)
     except RuntimeStoreError:
-        return toolsets  # the launch pick no longer validates against the profile: keep the frozen servers
-    sections = [section if isinstance(section, dict) else {} for section in (config.get('mcp_servers'), live.get('mcp_servers'))]
+        return toolsets  # the rest of the launch pick no longer validates against the profile: keep the frozen servers
     if 'mcp_servers' in live:
         config['mcp_servers'] = json.loads(json.dumps(live['mcp_servers']))
         _extract_config_secrets(config['mcp_servers'], secrets, ('mcp_servers',))

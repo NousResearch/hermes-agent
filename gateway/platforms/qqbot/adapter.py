@@ -1618,22 +1618,34 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     # ── Typing indicator ──
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """C2C-only input notify, debounced to ~50s (API shows a 60s indicator);
-        needs the last inbound msg_id from ``_last_msg_id``."""
+        """C2C-only input notify, debounced to ~50s (API shows a 60s indicator)."""
         msg_id = self._last_msg_id.get(chat_id)
         now = time.time()
         if (
-            not self.is_connected or self._guess_chat_type(chat_id) != "c2c" or not msg_id
+            not self.is_connected or self._guess_chat_type(chat_id) != "c2c"
             or now - self._typing_sent_at.get(chat_id, 0.0) < self._TYPING_DEBOUNCE_SECONDS
         ):
             return
         try:
             body = {
                 "msg_type": MSG_TYPE_INPUT_NOTIFY,
-                "msg_id": msg_id,
                 "input_notify": {"input_type": 1, "input_second": self._TYPING_INPUT_SECONDS},
                 "msg_seq": self._next_msg_seq(chat_id)}
-            await self._api_request("POST", f"/v2/users/{chat_id}/messages", body)
+            if msg_id:
+                body["msg_id"] = msg_id
+                try:
+                    await self._api_request("POST", f"/v2/users/{chat_id}/messages", body)
+                except RuntimeError as exc:
+                    if "QQ Bot API error [400]" not in str(exc):
+                        raise
+                    # QQ expires passive-reply msg_id values after a short window. Drop only the
+                    # unchanged cached id so later refreshes use the accepted active form directly.
+                    if self._last_msg_id.get(chat_id) == msg_id:
+                        self._last_msg_id.pop(chat_id, None)
+                    body.pop("msg_id")
+                    await self._api_request("POST", f"/v2/users/{chat_id}/messages", body)
+            else:
+                await self._api_request("POST", f"/v2/users/{chat_id}/messages", body)
             self._typing_sent_at[chat_id] = now
         except Exception as exc:
             logger.debug("[%s] send_typing failed: %s", self._log_tag, exc)

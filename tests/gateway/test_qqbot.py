@@ -47,11 +47,73 @@ class TestQQAdapterInit:
         adapter = self._make(app_id="a", client_secret="b")
         assert adapter._dm_policy == "pairing"
 
-
-
     def test_allow_from_parsing_string(self):
         adapter = self._make(app_id="a", client_secret="b", allow_from="x, y , z")
         assert adapter._allow_from == ["x", "y", "z"]
+
+
+
+# ---------------------------------------------------------------------------
+# Typing indicator
+# ---------------------------------------------------------------------------
+
+class TestTypingIndicator:
+    """Regression coverage for QQ passive-reply expiry (#137103)."""
+
+    @pytest.mark.asyncio
+    async def test_prefers_passive_notify_while_msg_id_is_valid(self):
+        from gateway.platforms.qqbot import QQAdapter
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._chat_type_map["user-1"] = "c2c"
+        adapter._last_msg_id["user-1"] = "current-message"
+        requests = []
+
+        async def request(_method, _path, body):
+            requests.append(dict(body))
+            return {}
+
+        adapter._api_request = request  # type: ignore[assignment]
+
+        await adapter.send_typing("user-1")
+
+        assert len(requests) == 1
+        assert requests[0]["msg_id"] == "current-message"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_active_notify_after_passive_msg_id_rejected(self):
+        from gateway.platforms.qqbot import QQAdapter
+
+        adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._chat_type_map["user-1"] = "c2c"
+        adapter._last_msg_id["user-1"] = "expired-message"
+        requests = []
+
+        async def request(_method, _path, body):
+            requests.append(dict(body))
+            if "msg_id" in body:
+                raise RuntimeError("QQ Bot API error [400]: passive reply expired")
+            return {}
+
+        adapter._api_request = request  # type: ignore[assignment]
+
+        await adapter.send_typing("user-1")
+
+        assert len(requests) == 2
+        assert requests[0]["msg_id"] == "expired-message"
+        assert "msg_id" not in requests[1]
+        assert adapter._last_msg_id.get("user-1") is None
+        assert "user-1" in adapter._typing_sent_at
+
+        adapter._typing_sent_at["user-1"] = 0
+        await adapter.send_typing("user-1")
+
+        assert len(requests) == 3
+        assert "msg_id" not in requests[2]
 
 
 

@@ -289,6 +289,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._middleware: dict[str, list[Callable]] = {}
         self._plugin_tool_names: set[str] = set()
         self._plugin_platform_names: set[str] = set()
+        self._plugin_service_names: set[str] = set()
         self._cli_commands: dict[str, dict] = {}
         self._plugin_commands: dict[str, dict] = {}
         self._system_prompt_sections: dict[str, PluginSystemPromptSection] = {}

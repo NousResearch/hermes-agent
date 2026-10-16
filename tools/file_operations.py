@@ -716,19 +716,18 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def _exec_python_snippet(self, snippet: str, py: str | None = None) -> ExecuteResult:
         """Run a Python ``snippet`` in the terminal backend's interpreter.
 
-        Base64-encodes the snippet so it survives every shell/quoting layer
-        as pure ASCII: Windows ``subprocess`` list-arg quoting and ``bash``
-        double-quote processing both eat backslashes, which otherwise
-        corrupts Windows paths (``C:\\Users\\x``) and byte literals
-        (``b'\\xfe\\xff'``) embedded in a ``-c`` program. ``exec`` decodes
-        and runs it unchanged.
+        The snippet is the program on stdin (``python -``), so no shell or
+        quoting layer sees it: Windows ``subprocess`` list-arg quoting and
+        ``bash`` double-quote processing both eat backslashes, which would
+        corrupt Windows paths (``C:\\Users\\x``) and byte literals
+        (``b'\\xfe\\xff'``) embedded in a ``-c`` program. Every backend
+        transports ``stdin_data`` byte-exact. A base64 ``exec`` one-liner
+        would also survive quoting, but EDR static engines flag that exact
+        shape as a Metasploit stager (#122463).
         """
-        encoded = base64.b64encode(snippet.encode("utf-8")).decode("ascii")
         if py is None:
             py = self._python_interpreter_cmd()
-        return self._exec(
-            f"{py} -c \"import base64; exec(base64.b64decode('{encoded}').decode())\""
-        )
+        return self._exec(f"{py} -", stdin_data=snippet)
 
     def _try_read_utf16(self, path: str, offset: int, limit: int,
                         file_size: int) -> Optional[ReadResult]:

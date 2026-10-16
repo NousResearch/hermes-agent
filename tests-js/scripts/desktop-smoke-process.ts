@@ -285,8 +285,9 @@ export function assertBackendOrigin(backend: BackendProcess, root: string, origi
     return
   }
 
-  // PM's Windows .cmd fallback encodes the installation-bound bootstrap;
-  // POSIX launchers pass that same script directly as Python's -c argument.
+  // POSIX launchers pass the installation-bound bootstrap directly as Python's -c
+  // argument; a Windows .cmd minted before #122463 base64-encoded that same script.
+  // Since #122463 the .cmd runs a sibling script, whose path names the install root.
   const encoded = /base64\.b64decode\('([A-Za-z0-9+/=]+)'\)/.exec(backend.command)?.[1]
   const command = encoded ? Buffer.from(encoded, 'base64').toString('utf8') : backend.command
   // Source venvs may resolve to system Python; their entry script still lives in the installation.

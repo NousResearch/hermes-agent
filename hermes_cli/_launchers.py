@@ -101,6 +101,12 @@ def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.
 #: Publish-UserCommand and hermes_cli/_install_repair.py.
 WINDOWS_BIN_LAUNCHERS = ("hermes", "hermes-acp")
 
+#: The Windows ``.cmd`` fallback runs ``<name>-script.py`` beside it (setuptools'
+#: convention). Never ``<name>.py``: with ``.PY`` in PATHEXT that would resolve
+#: as the command itself. gateway.status and update_cmd_windows match the
+#: ``hermes`` script by this basename.
+CMD_SCRIPT_SUFFIX = "-script.py"
+
 #: command name -> (entry module, callable) — mirrors pyproject.toml
 #: [project.scripts].
 ENTRY_POINTS = {
@@ -294,15 +300,25 @@ def mint_launcher(
     except (OSError, BadZipFile, KeyError):
         pass
 
-    # The script is data to Python, not interpolated shell source.
-    import base64
-    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
-    code = f"import base64; exec(base64.b64decode('{encoded}'))"
+    # The script lives in a sibling file the .cmd hands to Python, never in the
+    # command line. EDR static engines flag the base64 `exec` one-liner that used
+    # to carry it as a Metasploit stager (#122463), and inlined the script had
+    # also grown past cmd.exe's 8191-character line limit.
+    script_path = out_dir / f"{name}{CMD_SCRIPT_SUFFIX}"
+    if _write_atomic(script_path, lambda p: p.write_text(script, encoding="utf-8")) is None:
+        return None
     body = (
         "@echo off\r\n"
-        f'"{python_exe}" -I -c "{code}" %*\r\n'
+        f'"{python_exe}" -I "%~dp0{script_path.name}" %*\r\n'
     )
-    return _write_atomic(out_dir / f"{name}.cmd", lambda p: p.write_text(body, encoding="utf-8"))
+    cmd_path = out_dir / f"{name}.cmd"
+    target = _write_atomic(cmd_path, lambda p: p.write_text(body, encoding="utf-8"))
+    if target is None and not cmd_path.exists():
+        # A true orphan: no .cmd anywhere references it. Only the failed replace leaves one
+        # behind, and that .cmd runs this very script, so removing it would break the command
+        # the user already has instead of merely missing a retry.
+        script_path.unlink(missing_ok=True)
+    return target
 
 
 # A killed move can tear the repair's own code (``hermes_bootstrap``, ``hermes_cli``). With the
@@ -620,7 +636,8 @@ def _launcher_python(target: Path) -> Path | None:
             return None
         lines = text.splitlines()
         if suffix == ".cmd":
-            # "@echo off", then '"<python>" -I -c "<code>" %*'. The file's
+            # "@echo off", then '"<python>" -I "%~dp0<name>-script.py" %*'
+            # (older mints: '"<python>" -I -c "<code>" %*'). The file's
             # own \r\n pair gains a translated extra \r on Windows writes,
             # so the command may sit past a blank line — never assume its index.
             line = next((entry for entry in lines[1:] if entry.strip()), None)

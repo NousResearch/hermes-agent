@@ -186,15 +186,38 @@ class GatewayTurnPersistenceMixin:
         (display.runtime_footer.enabled=false)."""
         from gateway.run import _load_gateway_config, _platform_config_key, _terminal_scope_cwd
         try:
-            from gateway.runtime_footer import build_footer_line as _bfl
+            from gateway.runtime_footer import build_footer_line as _bfl, resolve_footer_config as _rfc
+            _user_config = _load_gateway_config()
+            _platform_key = _platform_config_key(source.platform)
+            _account_usage = agent_result.get("account_usage")
+            _account_label = None
+            if _account_usage is not None:
+                _account_label = (
+                    getattr(_account_usage, "account_label", None)
+                    or getattr(_account_usage, "plan", None)
+                )
+            _footer_cfg = agent_result.get("footer_config") or _rfc(_user_config, _platform_key)
+            _reasoning_effort = agent_result.get("reasoning_effort")
+            if _reasoning_effort is None:
+                _reasoning_cfg = getattr(self, "_reasoning_config", None)
+                if isinstance(_reasoning_cfg, dict):
+                    _reasoning_effort = (
+                        "none" if _reasoning_cfg.get("enabled") is False
+                        else _reasoning_cfg.get("effort")
+                    )
             return _bfl(
-                user_config=_load_gateway_config(),
-                platform_key=_platform_config_key(source.platform), model=agent_result.get("model"),
+                user_config=_user_config,
+                platform_key=_platform_key, model=agent_result.get("model"),
                 context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                 context_length=agent_result.get("context_length") or None,
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
                 requested_model=agent_result.get("requested_model"),
                 served_model=agent_result.get("served_model"),
+                provider=agent_result.get("provider"),
+                account_label=_account_label,
+                account_usage=_account_usage,
+                reasoning_effort=_reasoning_effort,
+                resolved_config=_footer_cfg,
             )
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)

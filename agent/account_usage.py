@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import math
+from decimal import Decimal, InvalidOperation
+from urllib.parse import urlparse
 from dataclasses import dataclass
 from datetime import datetime, timezone, UTC
 from typing import TYPE_CHECKING, Any, Callable, Optional
@@ -396,10 +398,14 @@ def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
 
 def _usage_windows(
     source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False,
+    label_fn: Optional[Callable[[dict, str], str]] = None,
     model_scoped: frozenset[str] | set[str] = frozenset(),
 ) -> list[AccountUsageWindow]:
     """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent.
-    ``model_scoped`` keys build windows that cap only a model family, never the account."""
+
+    ``label_fn`` can customize labels from each provider window. ``model_scoped`` keys
+    describe limits scoped to a model family, not the whole account.
+    """
     windows: list[AccountUsageWindow] = []
     for key, label in mapping:
         window = source.get(key) or {}
@@ -410,7 +416,9 @@ def _usage_windows(
         if fraction and used <= 1:
             used *= 100
         windows.append(AccountUsageWindow(
-            label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key)),
+            label=label_fn(window, label) if label_fn else label,
+            used_percent=used,
+            reset_at=_parse_dt(window.get(reset_key)),
             scope="model" if key in model_scoped else "account",
         ))
     return windows
@@ -633,8 +641,8 @@ def _fetch_anthropic_account_usage(
 ) -> Optional[AccountUsageSnapshot]:
     # An explicit api_key (live agent / per-credential pool read) must not be shadowed by
     # the ambient OAuth singleton: fetch_account_usage(base_url, api_key) promises to
-    # report THAT credential's usage. An API key answers the OAuth usage endpoint with
-    # 401, so only an OAuth-shaped token reaches the fetch.
+    # report the credential that owns the request, not whichever account OAuth last
+    # activated in this process. Fall back only when no explicit credential was supplied.
     explicit = str(api_key or "").strip()
     token = explicit or (resolve_anthropic_token() or "").strip()
     if not token:
@@ -695,9 +703,104 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     return _snapshot("openrouter", "credits_api", windows, details)
 
 
+def _money_symbol(currency: str) -> str:
+    normalized = currency.strip().upper()
+    if normalized == "CNY":
+        return "¥"
+    if normalized == "USD":
+        return "$"
+    return f"{normalized} " if normalized else ""
+
+
+def _decimal_or_none(value: Any) -> Optional[Decimal]:
+    try:
+        parsed = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    return parsed if parsed.is_finite() else None
+
+
+def _format_money(value: Decimal, currency: str) -> str:
+    return f"{_money_symbol(currency)}{value:.2f}"
+
+
+def _is_deepseek_base_url(base_url: Optional[str]) -> bool:
+    try:
+        host = urlparse(str(base_url or "")).hostname or ""
+    except Exception:
+        return False
+    host = host.lower().strip(".")
+    return host == "deepseek.com" or host.endswith(".deepseek.com")
+
+
+def _resolve_deepseek_balance_url(base_url: Optional[str]) -> str:
+    parsed = urlparse(str(base_url or "").strip() or "https://api.deepseek.com")
+    scheme = parsed.scheme or "https"
+    netloc = parsed.netloc or parsed.path or "api.deepseek.com"
+    return f"{scheme}://{netloc.rstrip('/')}/user/balance"
+
+
+def _fetch_deepseek_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+    if api_key:
+        runtime = {
+            "base_url": (base_url or "https://api.deepseek.com").strip(),
+            "api_key": str(api_key).strip(),
+        }
+    else:
+        runtime = resolve_runtime_provider(
+            requested="deepseek",
+            explicit_base_url=base_url,
+            explicit_api_key=api_key,
+        )
+    token = str(runtime.get("api_key", "") or "").strip()
+    if not token:
+        return None
+    resolved_base_url = str(runtime.get("base_url", "") or base_url or "https://api.deepseek.com")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=10.0) as client:
+        response = client.get(_resolve_deepseek_balance_url(resolved_base_url), headers=headers)
+        response.raise_for_status()
+    payload = response.json() or {}
+    details: list[str] = []
+    for info in payload.get("balance_infos") or []:
+        if not isinstance(info, dict):
+            continue
+        currency = str(info.get("currency") or "").strip().upper()
+        total = _decimal_or_none(info.get("total_balance"))
+        if total is None:
+            continue
+        parts = [f"Balance: {_format_money(total, currency)}"]
+        if currency:
+            parts[0] += f" {currency}"
+        subparts: list[str] = []
+        granted = _decimal_or_none(info.get("granted_balance"))
+        topped_up = _decimal_or_none(info.get("topped_up_balance"))
+        if granted is not None and granted > 0:
+            subparts.append(f"granted {_format_money(granted, currency)}")
+        if topped_up is not None and topped_up > 0:
+            subparts.append(f"topped up {_format_money(topped_up, currency)}")
+        if subparts:
+            parts.append(f"({', '.join(subparts)})")
+        details.append(" ".join(parts))
+    unavailable_reason = None
+    if payload.get("is_available") is False and not details:
+        unavailable_reason = "DeepSeek API balance is insufficient."
+    return AccountUsageSnapshot(
+        provider="deepseek",
+        source="balance_api",
+        fetched_at=_utc_now(),
+        title="Account balance",
+        details=tuple(details),
+        unavailable_reason=unavailable_reason,
+    )
+
+
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
-    "openrouter": _fetch_openrouter_account_usage,
+    "openrouter": _fetch_openrouter_account_usage, "deepseek": _fetch_deepseek_account_usage,
 }
 
 # Picker per-credential variants: same parsers/fetch shape, but a failure is never repaired by
@@ -740,6 +843,10 @@ def fetch_account_usage(
     fetcher = _READ_ONLY_USAGE_FETCHERS.get(slug) if read_only else None
     if fetcher is None:
         fetcher = _USAGE_FETCHERS.get(slug)
+    # DeepSeek-compatible custom providers expose the same balance endpoint. Keep normal
+    # provider/plugin dispatch untouched when the custom base URL is not a DeepSeek host.
+    if fetcher is None and _is_deepseek_base_url(base_url):
+        fetcher = _fetch_deepseek_account_usage
     import time as _time
 
     started = _time.monotonic()

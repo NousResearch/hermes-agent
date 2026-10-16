@@ -118,6 +118,28 @@ class TestMcpList:
         assert "enabled" in out
 
 
+    def test_list_redacts_sensitive_url_query_values(self, tmp_path, capsys):
+        _seed_config(tmp_path, {
+            "remote": {"url": "https://a.b?code=supersecret"},
+        })
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()
+        out = capsys.readouterr().out
+        assert "code=***" in out
+        assert "supersecret" not in out
+
+    def test_list_handles_non_string_url_values(self, tmp_path, capsys):
+        _seed_config(tmp_path, {
+            "remote": {"url": 12345},
+        })
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()
+        out = capsys.readouterr().out
+        assert "12345" in out
+
+
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_remove
 # ---------------------------------------------------------------------------
@@ -273,6 +295,50 @@ class TestMcpAdd:
         assert "env" not in srv
 
 
+    def test_add_redacts_sensitive_url_query_values(self, tmp_path, capsys, monkeypatch):
+        """Setup must not display raw credential-bearing endpoint URLs."""
+        def mock_probe(name, config, **kw):
+            return []
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        inputs = iter(["n", ""])  # no auth, save
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="ink", url="https://example.test/mcp?access_token=supersecret"
+        ))
+        out = capsys.readouterr().out
+        assert "access_token=***" in out
+        assert "supersecret" not in out
+
+    def test_add_redacts_probe_failure_diagnostics(self, tmp_path, capsys, monkeypatch):
+        """Add failure output must not leak credential-bearing URLs."""
+        def mock_probe(name, config, **kw):
+            raise ConnectionError(
+                "connect failed: https://example.test/mcp?access_token=supersecret"
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        inputs = iter(["n", ""])  # no auth, do not save on failure
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="ink", url="https://example.test/mcp?access_token=supersecret"
+        ))
+        out = capsys.readouterr().out
+        assert "Failed to connect" in out
+        assert "access_token=***" in out
+        assert "supersecret" not in out
+
+
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_test
 # ---------------------------------------------------------------------------
@@ -348,6 +414,64 @@ class TestMcpTest:
         assert captured["inner_timeout"] == 300.0
         assert captured["outer_timeout"] == 310.0
         assert captured["shutdown"] is True
+
+
+    def test_test_redacts_sensitive_url_query_values(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {
+            "ink": {"url": "https://example.test/mcp?x-amz-signature=supersecret&x=1"},
+        })
+
+        def mock_probe(name, config, **kw):
+            return []
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="ink"))
+        out = capsys.readouterr().out
+        assert "x-amz-signature=***" in out
+        assert "supersecret" not in out
+
+    def test_test_handles_non_string_url_values(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {
+            "ink": {"url": 12345},
+        })
+
+        def mock_probe(name, config, **kw):
+            return []
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="ink"))
+        out = capsys.readouterr().out
+        assert "Transport: HTTP → 12345" in out
+
+    def test_test_redacts_probe_failure_diagnostics(self, tmp_path, capsys, monkeypatch):
+        """Test failure output must not leak credential-bearing URLs."""
+        _seed_config(tmp_path, {
+            "ink": {"url": "https://example.test/mcp?access_token=supersecret"},
+        })
+
+        def mock_probe(name, config, **kw):
+            raise ConnectionError(
+                "connect failed: https://example.test/mcp?access_token=supersecret"
+            )
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="ink"))
+        out = capsys.readouterr().out
+        assert "Connection failed" in out
+        assert "access_token=***" in out
+        assert "supersecret" not in out
 
 
 # ---------------------------------------------------------------------------

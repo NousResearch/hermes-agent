@@ -10,7 +10,8 @@ from typing import Any
 
 from agent.i18n import t
 from hermes_cli.commands import (
-    COMMAND_REGISTRY, _is_gateway_available, _iter_plugin_command_entries, _resolve_config_gates)
+    COMMAND_REGISTRY, _is_gateway_available, _iter_plugin_command_entries,
+    _resolve_config_gates)
 
 # Logger name parity with the origin module (tests capture "hermes_cli.commands").
 logger = logging.getLogger("hermes_cli.commands")
@@ -93,9 +94,12 @@ def telegram_bot_commands(*, include_plugins: bool = True) -> list[tuple[str, st
     selected bare); plugin commands needing arguments are excluded (may lack a no-arg fallback)."""
     pairs = [(cmd.name, cmd.describe()) for cmd in _gateway_available_commands()]
     if include_plugins:
-        pairs += [(n, d) for n, d, hint in _iter_plugin_command_entries()
+        pairs += [(n, _truncate_desc(d, 256)) for n, d, hint in _iter_plugin_command_entries()
                   if not _requires_argument(hint)]
-    return [(tg, _normalize_telegram_desc(desc)) for name, desc in pairs if (tg := _sanitize_telegram_name(name))]
+    return [
+        (tg, _normalize_telegram_desc(desc))
+        for name, desc in pairs if (tg := _sanitize_telegram_name(name))
+    ]
 
 
 # Telegram allows 100 BotCommands; the 60-slot default keeps every built-in plus common skill

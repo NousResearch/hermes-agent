@@ -18,7 +18,7 @@ import {
   rosterWatermarks,
   saveSelectedRosterBot
 } from './bot-state'
-import { CANONICAL_CHAT_TITLE, notifyBotOpenFailure, openBotCanonicalChat, prepareBotSource } from './canonical-chat'
+import { isStaleBotChatTile, notifyBotOpenFailure, openBotCanonicalChat, prepareBotSource } from './canonical-chat'
 import { $botMeta, botActivitySession, botRosterKey, botSelectionKey, newBotChat } from './data'
 import { $groupChats, $groupChatWorkspace } from './group-chat'
 import { openGroupChat } from './group-chat-view'
@@ -139,7 +139,12 @@ export function trackInboundActivity(roster: RosterRow[]) {
  *  forceResume re-pulls the transcript. Only while that chat is the FOCUSED
  *  session — a group room or another tab owning the center must not be
  *  yanked away by background activity — and never mid-turn, when the
- *  activity is the turn itself, already streaming. */
+ *  activity is the turn itself, already streaming.
+ *
+ *  BACKGROUND wake: passed through as `background` so the refresh runs
+ *  refreshInPlace and never navigates — this fires on roster activity,
+ *  not a user gesture, so whatever route is showing stays showing (issue
+ *  121874). */
 function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowWhileBusy?: boolean } = {}) {
   const canonicalIds = [bot.canonical_session?.id, bot.canonical_session?.resolved_id].filter(Boolean).map(String)
   const focused = String(host.state.focusedStoredSessionId?.get?.() || '')
@@ -149,7 +154,10 @@ function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowW
   }
 
   const generation = getBotOpenGeneration()
-  void openBotCanonicalChat(bot, () => generation === getBotOpenGeneration()).catch(() => {
+  void openBotCanonicalChat(bot, {
+    background: true,
+    openingStillCurrent: () => generation === getBotOpenGeneration()
+  }).catch(() => {
     /* the next click or reclaim event re-resolves it */
   })
 }
@@ -189,13 +197,12 @@ function focusExistingBotTab(bot: RosterRow): null | { registryId: string; store
     return null
   }
 
-  const isStaleTile = (tile: { storedSessionId: string; workspaceTabTitle?: string }) =>
-    typeof tile.workspaceTabTitle === 'string' &&
-    tile.workspaceTabTitle === CANONICAL_CHAT_TITLE &&
-    !canonicalIds.includes(String(tile.storedSessionId))
-
   try {
-    const focused = host.focusOpenWorkspaceSession(botWorkspaceOwnerKey(bot), isStaleTile, canonicalIds)
+    const focused = host.focusOpenWorkspaceSession(
+      botWorkspaceOwnerKey(bot),
+      isStaleBotChatTile(canonicalIds),
+      canonicalIds
+    )
 
     return typeof focused === 'string' && focused
       ? { registryId: String(canonical!.id), storedSessionId: focused }
@@ -317,7 +324,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
   }
 
   try {
-    const opened = await openBotCanonicalChat(bot, () => generation === getBotOpenGeneration())
+    const opened = await openBotCanonicalChat(bot, { openingStillCurrent: () => generation === getBotOpenGeneration() })
 
     if (generation !== getBotOpenGeneration()) {
       settlePendingBotOpen(generation)

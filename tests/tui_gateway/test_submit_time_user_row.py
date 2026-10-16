@@ -133,6 +133,7 @@ def test_completion_receipt_covers_only_committed_current_turn_rows(monkeypatch,
             "row_ids": [row["_row_id"] for row in rows[-2:]],
             "final_assistant_row_id": rows[-1]["_row_id"],
             "complete": True,
+            "user_row_ids": [rows[-2]["_row_id"]],
         }
         # Compression can discard an already-streamed segment even while the old prefix survives.
         agent.context_compressor = SimpleNamespace(compression_count=1)
@@ -143,7 +144,8 @@ def test_completion_receipt_covers_only_committed_current_turn_rows(monkeypatch,
         current[-1]["content"] = "not flushed"
         partial, _, _ = server._complete_turn_payload(session, st, None, 80)
         assert partial["persisted_turn"] == {
-            "user_row_id": rows[-2]["_row_id"], "row_ids": [rows[-2]["_row_id"]], "complete": False}
+            "user_row_id": rows[-2]["_row_id"], "row_ids": [rows[-2]["_row_id"]], "complete": False,
+            "user_row_ids": [rows[-2]["_row_id"]]}
         # No authoritative current-turn anchor: never infer from matching text or positions in old history.
         agent._persist_user_message_idx = None
         missing, _, _ = server._complete_turn_payload(session, st, None, 80)
@@ -188,6 +190,25 @@ def test_failed_build_drops_the_staged_row_and_a_later_turn_never_adopts_it(monk
         rows = db.get_messages_as_conversation(key, include_inactive=True)
         assert [(r["role"], r["content"]) for r in rows] == [
             ("user", "please refactor the login page"), ("user", "please refactor the login page")]
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_the_staged_submit_row_carries_the_uid_its_db_row_was_written_with(monkeypatch, tmp_path):
+    """The turn adopts the staged dict as its user message; if it lacked the row's uid, the next host copy
+    (in-place compaction) would mint a second identity for the same message."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, _key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    try:
+        with session["history_lock"]:
+            session["running"] = True
+            server._start_inflight_turn(session, "please refactor the login page")
+        assert server._persist_session_row_for_submit("rid", session, "please refactor the login page", None) is None
+        staged = session["_submit_user_row"]
+        stored = db._conn.execute("SELECT message_uid FROM messages WHERE id = ?", (staged["_row_id"],)).fetchone()
+        assert staged.get("message_uid") == stored[0]
     finally:
         server._sessions.pop(sid, None)
         db.close()

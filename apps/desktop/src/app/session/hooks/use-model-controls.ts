@@ -7,21 +7,30 @@ import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isBusySessionModelSwitch } from '@/lib/gateway-rpc'
 import { surfaceModelSwitchConfirm } from '@/lib/guarded-model-switch'
-import { moaPickRemoved, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { notifyError } from '@/store/notifications'
+import {
+  customDefaultSupersedesPick,
+  moaPickRemoved,
+  modelOptionsQueryKey,
+  requestModelOptions
+} from '@/lib/model-options'
+import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
   $currentModel,
   $currentProvider,
+  $currentReasoningEffortWire,
   getComposerSelectionGeneration,
   getCurrentModelSource,
   markComposerSelectionManual,
   setCurrentModel,
   setCurrentModelSource,
-  setCurrentProvider
+  setCurrentProvider,
+  setCurrentReasoningEffortWire
 } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
+
+import { beginModelPick, isPickSuperseded, type ModelPickSnapshot, settleModelPick } from './model-pick-ledger'
 
 interface ModelControlsOptions {
   cacheOwnerConnectionId?: string
@@ -110,6 +119,9 @@ export function useModelControls({
   // only fills an EMPTY selection so a user's pick (plain UI state in
   // $currentModel) survives the lifecycle refreshes that fire on boot / fresh
   // draft / session events. A live session owns the footer, so skip entirely.
+  // Two provably-stale manual picks are the exception and reseed from the
+  // profile default: the virtual `moa` provider (#90244) and a bare provider
+  // slug the default has migrated to its `custom:<key>` form (#81922).
   const refreshCurrentModel = useCallback(
     async (force = false) => {
       // A forced profile swap opens a new intent epoch; an older in-flight
@@ -135,10 +147,22 @@ export function useModelControls({
         // `Model · moa: default` forever (#90244).
         const manualPick = () => Boolean($currentModel.get()) && getCurrentModelSource() === 'manual'
 
-        const staleMoaPick = () =>
-          !force && manualPick() && ($currentProvider.get() || '').trim().toLowerCase() === 'moa'
+        const pickProvider = () => ($currentProvider.get() || '').trim()
 
-        if (manualPick() && !force && !staleMoaPick()) {
+        const staleMoaPick = () => !force && manualPick() && pickProvider().toLowerCase() === 'moa'
+
+        // A SECOND exception: a bare provider slug can be a stale spelling of a
+        // `custom:<key>` profile default (#87035 aliases the two spellings for
+        // one endpoint). Shipping the bare form resolves the NATIVE provider and
+        // silently drops the entry's `extra_body` (#81922), so the pick must
+        // reseed. Only a bare slug qualifies — a pick that already names a
+        // provider class is a distinct choice and stays sticky — and the profile
+        // default is a backend fact, so this needs the same `getGlobalModelInfo`
+        // fetch the empty / default-sourced path already makes.
+        const maybeSupersededPick = () =>
+          !force && manualPick() && pickProvider() !== '' && !pickProvider().includes(':')
+
+        if (manualPick() && !force && !staleMoaPick() && !maybeSupersededPick()) {
           return
         }
 
@@ -179,7 +203,10 @@ export function useModelControls({
           profileRefreshEpochRef.current !== profileRefreshEpoch ||
           $activeSessionId.get() ||
           getComposerSelectionGeneration() !== selectionGeneration ||
-          (manualPick() && !force && !reseedStaleMoa)
+          (manualPick() &&
+            !force &&
+            !reseedStaleMoa &&
+            !customDefaultSupersedesPick($currentProvider.get(), result.provider ?? ''))
         ) {
           return
         }
@@ -232,13 +259,20 @@ export function useModelControls({
       const liveSessionId = 'sessionId' in selection ? (selection.sessionId ?? null) : primaryRuntimeId
       const touchesPrimary = !liveSessionId || liveSessionId === primaryRuntimeId
 
-      const prevModel = touchesPrimary ? $currentModel.get() : ($sessionStates.get()[liveSessionId!]?.model ?? '')
+      const readSnapshot = (): ModelPickSnapshot => {
+        const tileState = touchesPrimary ? undefined : $sessionStates.get()[liveSessionId!]
 
-      const prevProvider = touchesPrimary
-        ? $currentProvider.get()
-        : ($sessionStates.get()[liveSessionId!]?.provider ?? '')
+        return {
+          model: touchesPrimary ? $currentModel.get() : (tileState?.model ?? ''),
+          provider: touchesPrimary ? $currentProvider.get() : (tileState?.provider ?? ''),
+          reasoningEffortWire: touchesPrimary
+            ? $currentReasoningEffortWire.get()
+            : (tileState?.reasoningEffortWire ?? ''),
+          source: getCurrentModelSource()
+        }
+      }
 
-      const prevSource = getCurrentModelSource()
+      const before = readSnapshot()
       const liveGatewayProfile = cacheProfile || $activeGatewayProfile.get()
 
       const paintSelection = () => {
@@ -247,11 +281,13 @@ export function useModelControls({
           setCurrentProvider(selection.provider)
           markComposerSelectionManual()
         } else if (liveSessionId) {
-          // Optimistic tile paint — session.info will confirm; rollback on error.
+          // Optimistic tile paint — session.info will confirm; rollback on error. The wire stamp
+          // belongs to the old route, so it is withdrawn until session.info re-stamps it.
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
             ...state,
             model: selection.model,
-            provider: selection.provider
+            provider: selection.provider,
+            reasoningEffortWire: ''
           }))
         }
       }
@@ -260,20 +296,23 @@ export function useModelControls({
         updateModelOptionsCache(liveSessionId, provider, model, touchesPrimary && !liveSessionId, liveGatewayProfile)
       }
 
-      const rollbackSelection = () => {
+      const restoreSnapshot = (snapshot: ModelPickSnapshot) => {
         if (touchesPrimary) {
-          setCurrentModel(prevModel)
-          setCurrentProvider(prevProvider)
-          setCurrentModelSource(prevSource)
+          setCurrentModel(snapshot.model)
+          setCurrentProvider(snapshot.provider)
+          // The setters withdraw the wire stamp on a change; the old route's stamp is still true.
+          setCurrentReasoningEffortWire(snapshot.reasoningEffortWire)
+          setCurrentModelSource(snapshot.source)
         } else if (liveSessionId) {
           sessionTileDelegate()?.updateSession(liveSessionId, state => ({
             ...state,
-            model: prevModel,
-            provider: prevProvider
+            model: snapshot.model,
+            provider: snapshot.provider,
+            reasoningEffortWire: snapshot.reasoningEffortWire
           }))
         }
 
-        cacheSelection(prevProvider, prevModel)
+        cacheSelection(snapshot.provider, snapshot.model)
       }
 
       paintSelection()
@@ -283,6 +322,22 @@ export function useModelControls({
       // $currentModel/$currentProvider and applies it as that session's override.
       if (!liveSessionId) {
         return true
+      }
+
+      // Overlapping picks on one session settle through the shared ledger: a
+      // failed pick repaints the newest pick still in flight, else the last
+      // confirmed selection — never its own pre-pick snapshot, which may be an
+      // earlier pick's optimistic paint that never applied. A primary session
+      // switch while config.set is in flight means nothing is repainted. The
+      // composer selection generation is deliberately not consulted: effort
+      // steps and preset edits bump it without touching the model.
+      const pickToken = beginModelPick(liveSessionId, before, readSnapshot())
+
+      // The snapshot to repaint after this pick failed to apply, or null to leave the paint alone.
+      const settleUnapplied = () => {
+        const repaint = settleModelPick(liveSessionId, pickToken, false)
+
+        return repaint && !(touchesPrimary && $activeSessionId.get() !== liveSessionId) ? repaint : null
       }
 
       // The PRIMARY profile's main agent lets the gateway decide persistence
@@ -319,6 +374,12 @@ export function useModelControls({
           void queryClient.invalidateQueries({
             queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId, cacheOwnerConnectionId)
           })
+        } else {
+          notify({
+            id: `model-pick-deferred-${liveSessionId}`,
+            kind: 'info',
+            message: t.shell.modelMenu.pickDeferred(selection.model)
+          })
         }
       }
 
@@ -326,7 +387,16 @@ export function useModelControls({
         const result = await requestSwitch()
 
         if (result?.confirm_required) {
-          rollbackSelection()
+          // A newer pick already owns the pill; asking to confirm this one
+          // would only offer to undo it.
+          const restored = settleUnapplied()
+
+          if (!restored) {
+            return false
+          }
+
+          restoreSnapshot(restored)
+          let retryToken: null | number = null
           // ONE shared applier for guarded switches (#95293): the same
           // confirm flow the Bots editor routes through — never fork this
           // logic per surface.
@@ -335,7 +405,6 @@ export function useModelControls({
           void surfaceModelSwitchConfirm({
             confirmMessage: result.confirm_message,
             failureMessage: copy.modelSwitchFailed,
-            finish: finishSwitch,
             // Staleness guard — the session or model can move on while the
             // dialog is open. Answering it must not clobber the newer choice:
             // bail (with a notice) if the live state no longer matches the
@@ -343,23 +412,42 @@ export function useModelControls({
             isStale: () =>
               touchesPrimary
                 ? $activeSessionId.get() !== liveSessionId ||
-                  $currentModel.get() !== prevModel ||
-                  $currentProvider.get() !== prevProvider
+                  $currentModel.get() !== restored.model ||
+                  $currentProvider.get() !== restored.provider
                 : !liveSessionId ||
-                  $sessionStates.get()[liveSessionId]?.model !== prevModel ||
-                  $sessionStates.get()[liveSessionId]?.provider !== prevProvider,
+                  $sessionStates.get()[liveSessionId]?.model !== restored.model ||
+                  $sessionStates.get()[liveSessionId]?.provider !== restored.provider,
             model: selection.model,
+            // The confirmed retry is a fresh pick in the ledger: it joins whatever is still in
+            // flight, becomes the confirmed selection when it applies, and settles like any pick
+            // when it fails — so an older pick failing later cannot restore what it replaced.
             repaint: () => {
+              const retryBefore = readSnapshot()
               paintSelection()
               cacheSelection(selection.provider, selection.model)
+              retryToken = beginModelPick(liveSessionId, retryBefore, readSnapshot())
             },
             requestConfirmed: () => requestSwitch(true),
-            rollback: rollbackSelection
+            finish: result => {
+              if (retryToken !== null) {
+                settleModelPick(liveSessionId, retryToken, true)
+              }
+
+              finishSwitch(result)
+            },
+            rollback: () => {
+              const repaint = retryToken === null ? restored : settleModelPick(liveSessionId, retryToken, false)
+
+              if (repaint && !(touchesPrimary && $activeSessionId.get() !== liveSessionId)) {
+                restoreSnapshot(repaint)
+              }
+            }
           })
 
           return false
         }
 
+        settleModelPick(liveSessionId, pickToken, true)
         finishSwitch(result)
 
         return true
@@ -370,16 +458,30 @@ export function useModelControls({
         // what the NEXT turn runs anyway. Current gateways never take this
         // path — they answer `deferred`.
         if (isBusySessionModelSwitch(err)) {
+          settleModelPick(liveSessionId, pickToken, true)
+
           return true
         }
 
-        rollbackSelection()
-        notifyError(err, copy.modelSwitchFailed)
+        // An abandoned pick (a newer one was made, or the user left the chat)
+        // is not the user's current choice; its failure is not worth a toast.
+        const abandoned =
+          isPickSuperseded(liveSessionId, pickToken) || (touchesPrimary && $activeSessionId.get() !== liveSessionId)
+
+        const restored = settleUnapplied()
+
+        if (restored) {
+          restoreSnapshot(restored)
+        }
+
+        if (!abandoned) {
+          notifyError(err, copy.modelSwitchFailed)
+        }
 
         return false
       }
     },
-    [cacheOwnerConnectionId, cacheProfile, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
+    [cacheOwnerConnectionId, cacheProfile, copy, queryClient, requestGateway, t, updateModelOptionsCache]
   )
 
   return { applySavedMainModel, followDefaultModel, refreshCurrentModel, selectModel }

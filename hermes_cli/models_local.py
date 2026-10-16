@@ -593,8 +593,7 @@ def ollama_model_supports_thinking(
     import httpx
 
     server_url = (base_url or "").strip().rstrip("/")
-    if server_url.endswith("/v1"):
-        server_url = server_url[:-3]
+    server_url = server_url.removesuffix("/v1")
     bare_model = _strip_ollama_cloud_suffix((model or "").strip())
     if not server_url or not bare_model:
         return None

@@ -30,6 +30,7 @@ import {
   writeProviderHome
 } from './harness'
 import { assertTranscriptOracle, installDuplicateSampler, type OracleTarget } from './oracle'
+import { shellQuote } from './process-census'
 import { type RecordedCompletion, startScriptedProvider } from './provider'
 
 const nonce = Math.random()
@@ -91,7 +92,6 @@ test('clarify and approval prompts round-trip exactly once', async () => {
         { text: [`${A(1)} `, 'noted ', 'your ', 'choice'] }
       ])
       await send(page, `${U(1)} ask me`, 'Enter', ws)
-      // The open (unanswered) clarify form: single-question or batch shape.
       const openForms = page.locator('form[data-clarify-choices], form[data-clarify-batch]').filter({ visible: true })
       await expect(openForms).toHaveCount(1, { timeout: 120_000 })
       await expect(viewport(page).getByText(question)).toHaveCount(1)
@@ -122,7 +122,7 @@ test('clarify and approval prompts round-trip exactly once', async () => {
       provider.script(U(2), [
         {
           text: [`${AI(2)} `, 'needs ', 'approval'],
-          toolCalls: [{ name: 'terminal', args: { command: `rm -rf ${victim}` } }]
+          toolCalls: [{ name: 'terminal', args: { command: `rm -rf ${shellQuote(victim)}` } }]
         },
         { text: [`${A(2)} `, 'deleted ', 'it'] }
       ])
@@ -144,7 +144,7 @@ test('clarify and approval prompts round-trip exactly once', async () => {
       provider.script(U(3), [
         {
           text: [`${AI(3)} `, 'needs ', 'approval'],
-          toolCalls: [{ name: 'terminal', args: { command: `rm -rf ${victim}` } }]
+          toolCalls: [{ name: 'terminal', args: { command: `rm -rf ${shellQuote(victim)}` } }]
         },
         { text: [`${A(3)} `, 'left ', 'it ', 'alone'] }
       ])

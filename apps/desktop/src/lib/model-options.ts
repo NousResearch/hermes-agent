@@ -2,7 +2,8 @@ import type { ModelCapabilities, ModelOptionProvider, ModelOptionsResult } from 
 
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
 
-type CatalogProviderIdentity = Pick<ModelOptionProvider, 'aliases' | 'name' | 'slug'>
+type CatalogProviderIdentity = Partial<Pick<ModelOptionProvider, 'aliases' | 'name'>> &
+  Pick<ModelOptionProvider, 'slug'>
 
 /** True when `currentProvider` is this catalog row — slug, display name, or
  *  a custom-provider alias (`custom:<key>` vs the bare config key, #87035). */
@@ -18,6 +19,15 @@ export function catalogProviderMatches(provider: CatalogProviderIdentity, curren
   )
 }
 
+/** The catalog row for `currentProvider`, matched the same way as
+ *  `catalogProviderMatches` (so a saved `custom:<key>` finds its row). */
+export function findCatalogProvider<T extends CatalogProviderIdentity>(
+  providers: readonly T[],
+  currentProvider: string
+): T | undefined {
+  return providers.find(row => catalogProviderMatches(row, currentProvider))
+}
+
 /** The catalog's option support for the current pick, or undefined while the
  *  catalog is loading / doesn't say. Callers treat undefined as "assume
  *  reasoning" so controls never flicker away during the fetch. */
@@ -26,7 +36,7 @@ export function currentModelCapabilities(
   provider: string,
   model: string
 ): ModelCapabilities | undefined {
-  return options?.providers?.find(row => catalogProviderMatches(row, provider))?.capabilities?.[model]
+  return findCatalogProvider(options?.providers ?? [], provider)?.capabilities?.[model]
 }
 
 // A picked (provider, model) pair is never retargeted from catalog membership.
@@ -62,6 +72,32 @@ export function moaPickRemoved(
   const row = providers.find(p => (p.slug || p.name || '').toLowerCase() === 'moa')
 
   return !(row?.models ?? []).includes(model)
+}
+
+/** A bare provider slug is the pre-migration spelling of a custom entry. The
+ *  catalog aliases `custom:<key>` with the bare config key (#87035), so a pick
+ *  still carrying `nvidia` and a profile default of `custom:nvidia` name the
+ *  SAME endpoint — the pick's spelling is simply stale, not a distinct choice.
+ *  Shipping the bare slug resolves the NATIVE provider instead of the custom
+ *  entry, silently dropping the entry's `extra_body` (e.g.
+ *  `thinking: {type: adaptive}`) that the user configured (#81922).
+ *
+ *  Only a bare slug can be superseded: a pick that already names a provider
+ *  class (`custom:<other>`, `moa`, `openai-codex`) is a different endpoint and
+ *  keeps the sticky behavior. The bare slug must be the default's own key, so
+ *  an unrelated manual pick (`anthropic` while the default is `custom:nvidia`)
+ *  is never clobbered. */
+export function customDefaultSupersedesPick(pickProvider: string, defaultProvider: string): boolean {
+  const pick = (pickProvider || '').trim().toLowerCase()
+  const fallback = (defaultProvider || '').trim().toLowerCase()
+
+  if (!pick || pick === fallback || !fallback.startsWith('custom:')) {
+    return false
+  }
+
+  const key = fallback.slice('custom:'.length).trim()
+
+  return key.length > 0 && pick === key
 }
 
 interface ModelOptionsRequest {

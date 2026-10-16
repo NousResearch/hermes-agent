@@ -20,7 +20,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `NOUS_INFERENCE_BASE_URL` | 直接覆盖 Nous 推理端点 |
 | `AI_GATEWAY_API_KEY` | Vercel AI Gateway API 密钥（[ai-gateway.vercel.sh](https://ai-gateway.vercel.sh)） |
 | `AI_GATEWAY_BASE_URL` | 覆盖 AI Gateway base URL（默认：`https://ai-gateway.vercel.sh/v1`） |
-| `OPENAI_API_KEY` | 自定义 OpenAI 兼容端点的 API 密钥（与 `OPENAI_BASE_URL` 配合使用） |
+| `OPENAI_API_KEY` | 自定义 OpenAI 兼容端点的 API 密钥（与 `OPENAI_BASE_URL` 配合使用）。设置 `OPENAI_BASE_URL` 后，它只会发送到该 URL 完全相同的源（scheme、主机和端口），绝不会发送到同一主机的其他端口或 `http://` |
 | `OPENAI_BASE_URL` | 自定义端点的 base URL（VLLM、SGLang 等） |
 | `COPILOT_GITHUB_TOKEN` | 用于 Copilot API 的 GitHub token——最高优先级（OAuth `gho_*` 或细粒度 PAT `github_pat_*`；经典 PAT `ghp_*` **不支持**） |
 | `GH_TOKEN` | GitHub token——Copilot 第二优先级（也供 `gh` CLI 使用） |
@@ -159,7 +159,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 
 ### Langfuse 可观测性
 
-内置 [`observability/langfuse`](../user-guide/features/built-in-plugins.md#observabilitylangfuse) 插件的环境变量。在 `~/.hermes/.env` 中设置。在这些变量生效之前，还必须启用该插件（`hermes plugins enable observability/langfuse`，或在 `hermes plugins` 中勾选）。
+官方目录插件 [`langfuse`](https://github.com/NousResearch/hermes-official-plugins/tree/main/langfuse)（原内置的 `observability/langfuse`）的环境变量。在 `~/.hermes/.env` 中设置。在这些变量生效之前，必须先安装该插件（`hermes plugins install langfuse`）。
 
 | 变量 | 描述 |
 |----------|-------------|
@@ -170,6 +170,8 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `HERMES_LANGFUSE_RELEASE` | trace 上的发布/版本标签 |
 | `HERMES_LANGFUSE_SAMPLE_RATE` | SDK 采样率 0.0–1.0（默认：`1.0`） |
 | `HERMES_LANGFUSE_MAX_CHARS` | 序列化载荷的每字段截断长度（默认：`12000`） |
+| `HERMES_LANGFUSE_MAX_DEPTH` | 捕获的工具输入/输出保留的嵌套深度，超出部分变为 `<max-depth>`（默认：`4`；无效值会告警并使用默认值） |
+| `HERMES_LANGFUSE_CAPTURE` | 内容捕获模式：`metadata`（不含内容）、`sanitized`（默认：密钥脱敏 + 截断）或 `full`（仅截断） |
 | `HERMES_LANGFUSE_DEBUG` | `true` 可将详细插件日志输出到 `agent.log` |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | 标准 Langfuse SDK 变量名。当对应的 `HERMES_LANGFUSE_*` 未设置时作为回退。 |
 
@@ -322,6 +324,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `EMAIL_SMTP_HOST` | 邮件适配器的 SMTP 主机名 |
 | `EMAIL_SMTP_PORT` | SMTP 端口 |
 | `EMAIL_ALLOWED_USERS` | 允许向 bot 发送消息的逗号分隔邮箱地址 |
+| `EMAIL_AUTHSERV_ID` | 接收服务器在最上层 `Authentication-Results` 中写入的精确 authserv-id；除非已禁用发件人认证（`EMAIL_TRUST_FROM_HEADER=true`），否则必须设置 |
 | `EMAIL_HOME_ADDRESS` | 主动邮件投递的默认收件人 |
 | `EMAIL_HOME_ADDRESS_NAME` | 邮件主目标的显示名称 |
 | `EMAIL_POLL_INTERVAL` | 邮件轮询间隔（秒） |
@@ -403,8 +406,9 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `MATRIX_AUTO_THREAD` | 为房间消息自动创建线程（默认：`true`） |
 | `MATRIX_DM_MENTION_THREADS` | 在私聊中被 `@mention` 时创建线程（默认：`false`） |
 | `MATRIX_RECOVERY_KEY` | 设备密钥轮换后交叉签名验证的恢复密钥。推荐用于启用了交叉签名的 E2EE 设置。 |
-| `HASS_TOKEN` | Home Assistant 长期访问 token（启用 HA 平台 + 工具） |
-| `HASS_URL` | Home Assistant URL（默认：`http://homeassistant.local:8123`） |
+| `HASS_TOKEN` | Home Assistant 插件：长期访问 token（启用 HA 平台 + 工具；需要插件目录中的 `homeassistant` 插件，见 [Home Assistant](../user-guide/messaging/homeassistant.md)） |
+| `HASS_URL` | Home Assistant 插件：Home Assistant URL（默认：`http://homeassistant.local:8123`） |
+| `HASS_HOME_CHANNEL` | Home Assistant 插件：裸名 `deliver: homeassistant`（cron、webhook）的默认通知目标 |
 | `WEBHOOK_ENABLED` | 启用 webhook 平台适配器（`true`/`false`） |
 | `WEBHOOK_PORT` | 接收 webhook 的 HTTP 服务器端口（默认：`8644`） |
 | `WEBHOOK_SECRET` | webhook 签名验证的全局 HMAC 密钥（当路由未指定自己的密钥时作为回退） |

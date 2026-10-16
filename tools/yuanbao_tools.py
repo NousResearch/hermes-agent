@@ -85,7 +85,7 @@ async def _members(adapter, group_code: str) -> list:
     return raw.get("members", [])
 
 
-async def _resolve_dm_recipient(adapter, group_code: str, name: str) -> Tuple[str, str]:
+async def _resolve_dm_recipient(adapter, group_code: str, name: str) -> tuple[str, str]:
     """Resolve ``name`` to (user_id, nickname) via the group member list; >1 partial match raises
     with ``candidates`` for disambiguation instead of guessing."""
     if not group_code:
@@ -493,12 +493,3 @@ for _schema, _handler, _emoji in _TOOLS:
         name=_schema["name"], toolset="hermes-yuanbao", schema=_schema, handler=_handler,
         check_fn=_check_yuanbao, is_async=True, emoji=_emoji,
     )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-from typing import Optional  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

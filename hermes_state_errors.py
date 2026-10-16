@@ -40,7 +40,7 @@ _TRANSIENT_SQLITE_MARKERS = (
 _SQLITE_LOCK_CODES = (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
 
 
-def _sqlite_primary_code(exc_or_str) -> "int | None":
+def _sqlite_primary_code(exc_or_str) -> int | None:
     """Primary result code (extended codes keep it in the low byte); None when unknown."""
     code = getattr(exc_or_str, "sqlite_errorcode", None)
     return code & 0xFF if isinstance(code, int) else None
@@ -170,6 +170,10 @@ class SessionTurnLeaseLostError(RuntimeError):
     """A transcript write presented a turn-lease holder that no longer owns it.
     Fail-fast fencing (no ``_execute_write`` retry): a later writer may already
     be persisting a newer turn, and landing this one would interleave a stale reply."""
+
+
+class SessionActiveWriteGuardError(RuntimeError):
+    """Raised when an active turn lease or compression lock rejects session deletion."""
 
 
 class StateDbReplacedError(RuntimeError):

@@ -43,7 +43,7 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 | `-Manifest` / `-ProtocolVersion` | 查看引导 GUI 使用的阶段协议。 |
 | `-Stage NAME -Json` | 执行单个阶段并输出结果帧。 |
 
-当前脚本不接受 `-NoVenv`、`-SkipSetup` 或 `-Tag`。
+当前脚本不接受 `-NoVenv` 或 `-Tag`；`-SkipSetup` 仍被接受，作为 `-NonInteractive` 的已弃用别名，以便旧的安装包装脚本继续兼容。
 
 ### MSIX / App Installer 和 Microsoft Store
 

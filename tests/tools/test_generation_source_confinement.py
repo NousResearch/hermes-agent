@@ -80,7 +80,7 @@ class TestConfineSourceImages:
 
         secret = tmp_path / "id_rsa"
         secret.write_bytes(b"HOST-PRIVATE-KEY")
-        url, refs, err = igt._confine_source_images(str(secret), None, "t1")
+        _url, _refs, err = igt._confine_source_images(str(secret), None, "t1")
         assert err is not None
         payload = json.loads(err)
         assert payload["success"] is False

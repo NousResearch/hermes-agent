@@ -6,6 +6,7 @@ ran a terminal), remote backends get the translated in-sandbox path (probed for 
 else a copy in the sandbox temp dir; (3) ``enforce_turn_budget``."""
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -23,6 +24,11 @@ STORAGE_DIR = os.path.join(tempfile.gettempdir(), "hermes-results")
 SPILLOVER_SUBDIR = "cache/spillover"
 SPILLOVER_MAX_AGE_HOURS = 24
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
+# The exact key set tools/mcp_tool_handlers.py::_render_call_tool_result emits. A JSON object whose
+# keys stay inside this set is that handler's own envelope, never an arbitrary tool's JSON payload.
+_MCP_ENVELOPE_KEYS = frozenset({"result", "structuredContent", "_meta"})
+_ENVELOPE_METADATA_TAG = "<mcp-result-metadata>"
+_ENVELOPE_METADATA_CLOSING_TAG = "</mcp-result-metadata>"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
 
@@ -173,6 +179,47 @@ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) 
     return content[:last_nl + 1 if last_nl > max_chars // 2 else max_chars], True
 
 
+def _pageable_text(content: str) -> str:
+    """Rewrite an MCP handler result envelope into the text it wraps, else return *content*.
+
+    ``tools/mcp_tool_handlers.py::_render_call_tool_result`` hands the model a JSON string
+    (``{"result": <text>, ...}``) so structured metadata survives inline delivery. Persisting
+    that string verbatim put a multi-hundred-KB document on ONE line with escaped newlines, so
+    the ``read_file`` offset/limit pagination the ``<persisted-output>`` block recommends could
+    not be used at all (#90426).
+
+    Recognized by SHAPE, not by tool name: the envelope is the only JSON object in the codebase
+    whose keys are a subset of ``{"result", "structuredContent", "_meta"}`` with a non-empty
+    string ``result``. That keeps opaque JSON from any other tool verbatim, and it also covers
+    the aggregate path (``enforce_turn_budget`` persists under ``_BUDGET_TOOL_NAME``, so a
+    ``mcp__``-prefix test would miss exactly the results it has to fix).
+
+    Sibling members are appended after the text in a delimited metadata block instead of being
+    dropped: they are the structured payloads ``_render_call_tool_result`` deliberately keeps
+    for the model (#115430), and the spill file is the only copy left once the envelope is
+    replaced by the preview. Anything unrecognized — unparseable JSON, a non-object, an unknown
+    key, a missing/empty/non-string ``result`` (e.g. a structuredContent-only result, which has
+    no pageable text) — is persisted verbatim, exactly as before.
+    """
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return content
+    if not isinstance(payload, dict) or not payload or not set(payload) <= _MCP_ENVELOPE_KEYS:
+        return content
+    text = payload.get("result")
+    if not isinstance(text, str) or not text:
+        return content
+    extras = {key: value for key, value in payload.items() if key != "result"}
+    if not extras:
+        return text
+    try:
+        metadata = json.dumps(extras, ensure_ascii=False, indent=1, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return text
+    return f"{text}\n\n{_ENVELOPE_METADATA_TAG}\n{metadata}\n{_ENVELOPE_METADATA_CLOSING_TAG}\n"
+
+
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     """Write content into the sandbox via env.execute(); True on success. Content goes through
     stdin, not the command string: Linux ``MAX_ARG_STRLEN`` caps one argv element at 128 KB,
@@ -245,7 +292,7 @@ def extract_persisted_path(content: str) -> str | None:
 
 def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, env=None,
                               config: BudgetConfig = DEFAULT_BUDGET,
-                              threshold: int | float | None = None) -> str:
+                              threshold: float | None = None) -> str:
     """Layer 2: persist an oversized result, return preview + path. ``threshold`` overrides
     ``config.resolve_threshold(tool_name)``; falls back to inline truncation when no write
     location succeeds."""
@@ -253,16 +300,19 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
         threshold = config.resolve_threshold(tool_name)
     if threshold == float("inf") or len(content) <= threshold:
         return content
+    # The size decision above stays on the raw inline result (that is what cost context); the file
+    # and the preview carry the pageable text inside an MCP envelope (#90426).
+    persisted_content = _pageable_text(content)
     filename = _safe_result_filename(tool_use_id)
-    preview, has_more = generate_preview(content, max_chars=config.preview_size)
+    preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
 
     def _persisted(path: str, host_suffix: str = "") -> str:
         logger.info("Persisted large tool result: %s (%s, %d chars -> %s%s)",
-                    tool_name, tool_use_id, len(content), path, host_suffix)
-        return _build_persisted_message(preview, has_more, len(content), path)
+                    tool_name, tool_use_id, len(persisted_content), path, host_suffix)
+        return _build_persisted_message(preview, has_more, len(persisted_content), path)
 
     # Always persist host-side first: cache/spillover is the single canonical home.
-    host_path = _write_to_spillover(content, filename)
+    host_path = _write_to_spillover(persisted_content, filename)
     host_side = _is_host_side_env(env)
     if host_side and host_path is not None:
         return _persisted(host_path)
@@ -274,7 +324,7 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
             return _persisted(visible, f" [host: {host_path}]")
         remote_path = f"{_resolve_storage_dir(env)}/{filename}"
         try:
-            if _write_to_sandbox(content, remote_path, env):
+            if _write_to_sandbox(persisted_content, remote_path, env):
                 return _persisted(remote_path)
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
@@ -284,14 +334,38 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
             "Full output could not be saved to sandbox.]")
 
 
+def _content_text_size(content) -> int:
+    """Characters of TEXT a tool message carries: a string's length, or the summed text parts of a multimodal
+    part list (image parts are governed by the vision embed budget, and a list's ``len`` counts parts)."""
+    if isinstance(content, list):
+        return sum(len(p.get("text") or "") for p in content if isinstance(p, dict) and p.get("type") == "text")
+    return len(content or "")
+
+
+def _spill_largest_text_part(parts: list, tool_use_id: str, env, config: BudgetConfig) -> tuple[list, int]:
+    """Persist the largest non-persisted text part of a multimodal list; ``(new parts, chars saved)``."""
+    texts = [(i, p["text"]) for i, p in enumerate(parts) if isinstance(p, dict) and p.get("type") == "text"
+             and isinstance(p.get("text"), str) and PERSISTED_OUTPUT_TAG not in p["text"]]
+    if not texts:
+        return parts, 0
+    idx, text = max(texts, key=lambda t: len(t[1]))
+    replacement = maybe_persist_tool_result(content=text, tool_name=_BUDGET_TOOL_NAME,
+                                            tool_use_id=f"{tool_use_id}_part{idx}", env=env, config=config, threshold=0)
+    if replacement == text:
+        return parts, 0
+    return [*parts[:idx], {**parts[idx], "text": replacement}, *parts[idx + 1:]], len(text) - len(replacement)
+
+
 def enforce_turn_budget(tool_messages: list[dict], env=None,
                         config: BudgetConfig = DEFAULT_BUDGET) -> list[dict]:
     """Layer 3: persist the largest non-persisted results first until the turn's aggregate is
-    under budget. Mutates the list in-place and returns it."""
-    sizes = [len(msg.get("content", "")) for msg in tool_messages]
+    under budget. Mutates the list in-place and returns it. A multimodal result (part list) counts its
+    text characters and spills its largest text part; its images stay inline."""
+    sizes = [_content_text_size(msg.get("content", "")) for msg in tool_messages]
     total_size = sum(sizes)
     candidates = [(i, size) for i, size in enumerate(sizes)
-                  if PERSISTED_OUTPUT_TAG not in tool_messages[i].get("content", "")]
+                  if isinstance(tool_messages[i].get("content"), list)
+                  or PERSISTED_OUTPUT_TAG not in tool_messages[i].get("content", "")]
     if total_size <= config.turn_budget:
         return tool_messages
     for idx, size in sorted(candidates, key=lambda x: x[1], reverse=True):
@@ -299,6 +373,13 @@ def enforce_turn_budget(tool_messages: list[dict], env=None,
             break
         content = tool_messages[idx]["content"]
         tool_use_id = tool_messages[idx].get("tool_call_id", f"budget_{idx}")
+        if isinstance(content, list):
+            parts, saved = _spill_largest_text_part(content, tool_use_id, env, config)
+            if saved:
+                total_size -= saved
+                tool_messages[idx]["content"] = parts
+                logger.info("Budget enforcement: persisted a text part of tool result %s (%d chars)", tool_use_id, saved)
+            continue
         replacement = maybe_persist_tool_result(
             content=content, tool_name=_BUDGET_TOOL_NAME, tool_use_id=tool_use_id,
             env=env, config=config, threshold=0)
@@ -308,13 +389,3 @@ def enforce_turn_budget(tool_messages: list[dict], env=None,
             logger.info("Budget enforcement: persisted tool result %s (%d chars)",
                         tool_use_id, size)
     return tool_messages
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import uuid  # noqa: F401,E402
-
-HEREDOC_MARKER = "HERMES_PERSIST_EOF"
-# ---- END PLUGIN-COMPAT ----

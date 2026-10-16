@@ -22,7 +22,7 @@ from hermes_constants import (
     display_hermes_home,
 )
 from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
-from hermes_state_holders import read_only_db_uri
+from hermes_cli.sqlite_safe_read import open_sqlite_readonly
 
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
@@ -362,7 +362,7 @@ def _query_ro_sqlite(path: Path, fn):
     """Run ``fn(conn)`` on a read-only connection to *path*; return ``(value, None)`` or ``(None, exc)``."""
     conn = None
     try:
-        conn = sqlite3.connect(read_only_db_uri(path), uri=True, timeout=1.0)
+        conn = open_sqlite_readonly(path, connect_fn=sqlite3.connect, timeout=1.0)
         return fn(conn), None
     except Exception as exc:
         return None, exc

@@ -27,7 +27,9 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
 def read_only_db_uri(db_path) -> str:
     """``file:`` URI for a ``mode=ro`` open. ``as_uri()`` percent-encodes ``?``/``#`` in the home
     path; a raw ``f"file:{path}?mode=ro"`` truncates there and opens the wrong (empty) database."""
-    return Path(db_path).resolve().as_uri() + "?mode=ro"
+    from hermes_cli.sqlite_safe_read import read_only_db_uri as safe_read_uri
+
+    return safe_read_uri(db_path)
 
 
 logger = logging.getLogger(__name__)

@@ -239,7 +239,9 @@ def count_notify_subs(
     query = "SELECT COUNT(*) FROM kanban_notify_subs"
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
-    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    from hermes_cli.sqlite_safe_read import open_sqlite_readonly
+
+    conn = open_sqlite_readonly(path, connect_fn=sqlite3.connect)
     try:
         try:
             row = conn.execute(query, params).fetchone()

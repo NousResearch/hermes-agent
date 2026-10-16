@@ -40,18 +40,41 @@ def minimax_profile(request):
 
 
 class TestMinimaxAuxModelM3:
-    """MiniMax profile aux model is the new frontier M3, not the stale M2.7.
+    """MiniMax profile aux model tracks the current Flash tier.
 
-    The catalog top entry is ``MiniMax-M3`` in
-    ``hermes_cli.models._PROVIDER_MODELS['minimax']`` and the
-    user-facing ``model.default`` for a Token-Plan install is M3,
-    so pinning the aux default to the same model keeps the runtime
-    consistent (same auth, same billing pool, same rate limits, no
-    surprise 2x-cost highspeed variant). M3 was released 2026-06-01
-    — picking it as the aux default matches the forward-looking
-    catalog order rather than the pre-M3 era.
+    ``default_aux_model`` is documented as the *cheap* model for auxiliary
+    tasks (compression / vision / summarization), and the catalog top entry is
+    now ``MiniMax-M3.1-Flash-Preview`` in
+    ``hermes_cli.models._PROVIDER_MODELS['minimax']``.  Pinning it to the
+    frontier model made every aux call pay frontier rates on the same auth,
+    billing pool and rate limits; leaving it on a superseded id silently kept
+    serving and billing the old model.
+
+    All three profiles resolve to the Flash tier: M3.1-Flash-Preview is served
+    on the OAuth / Coding-Plan route too (probe-verified against
+    ``api.minimax.io/anthropic``: HTTP 200, ``model`` echoed verbatim), so the
+    earlier "M3 is not on the OAuth tier, stay on M2.7" carve-out no longer
+    applies.
     """
 
+    @pytest.mark.parametrize(
+        "provider_id,expected",
+        [
+            ("minimax", "MiniMax-M3.1-Flash-Preview"),
+            ("minimax-cn", "MiniMax-M3.1-Flash-Preview"),
+            ("minimax-oauth", "MiniMax-M3.1-Flash-Preview"),
+        ],
+    )
+    def test_profile_advertises_expected_aux_model(self, provider_id, expected):
+        import model_tools  # noqa: F401
+        import providers
+
+        profile = providers.get_provider_profile(provider_id)
+        assert profile is not None
+        assert profile.default_aux_model == expected, (
+            f"{provider_id} default_aux_model drifted to "
+            f"{profile.default_aux_model!r}, expected {expected!r}"
+        )
 
     def test_consumer_api_returns_non_empty_for_each_provider(self, minimax_profile):
         from agent.auxiliary_client import _get_aux_model_for_provider

@@ -80,8 +80,9 @@ def legacy_launch_params(row):
     billing_base_url = row.get('billing_base_url')
     if 'base_url' not in route and isinstance(billing_base_url, str) and billing_base_url.strip():
         route['base_url'] = billing_base_url.strip()
-        # The reader drops a bare ``custom``/``auto`` billing provider: that endpoint is a custom
-        # route, never one to pair with the profile's provider.
+        # The reader returns a bare ``custom`` billing provider with its endpoint and drops ``auto``:
+        # an endpoint left without a provider is a custom route, never one to pair with the
+        # profile's provider.
         route.setdefault('provider', 'custom')
     if row['source'] == 'acp' and 'cwd' not in params and Path(str(saved.get('cwd') or '')).is_absolute():
         params['cwd'] = saved['cwd']

@@ -322,6 +322,11 @@ describe('watchDeadSessionPrune', () => {
       $sessions.set([row('a')])
       vi.advanceTimersByTime(1_000)
       $sessions.set([row('a'), row('b')])
+      // jsdom queues a 0 ms storage-event timer for every localStorage write
+      // (the pinned-id persistence above included), so drain those first: the
+      // contract under test is that the churn does not stack a SECOND sweep
+      // timer, not that the environment holds no timers at all.
+      await vi.advanceTimersByTimeAsync(0)
       expect(vi.getTimerCount()).toBe(1)
 
       vi.advanceTimersByTime(1_000)

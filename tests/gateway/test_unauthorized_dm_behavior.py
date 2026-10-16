@@ -26,6 +26,8 @@ def _clear_auth_env(monkeypatch) -> None:
         "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS", "WECOM_ALLOWED_USERS",
         "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
+        "WHATSAPP_MODE",
+        "WHATSAPP_DM_POLICY",
         "TELEGRAM_ALLOW_ALL_USERS",
         "DISCORD_ALLOW_ALL_USERS",
         "WHATSAPP_ALLOW_ALL_USERS",
@@ -222,6 +224,7 @@ def test_telegram_group_users_mixed_sender_and_legacy_chat(monkeypatch):
 @pytest.mark.asyncio
 async def test_unauthorized_dm_pairs_by_default(monkeypatch):
     _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_MODE", "bot")
     config = GatewayConfig(
         platforms={Platform.WHATSAPP: PlatformConfig(enabled=True)},
     )
@@ -259,6 +262,118 @@ async def test_unauthorized_bot_dm_is_never_offered_a_pairing_code(monkeypatch):
     assert result is None
     runner.pairing_store.generate_code.assert_not_called()
     adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_self_chat_never_sends_pairing_code(monkeypatch):
+    """Self-chat is the owner's number, not a public bot (#84706).
+
+    WHATSAPP_DM_POLICY=pairing used to win and text strangers a pairing
+    code. Self-chat must stay silent even with that policy and an allowlist.
+    """
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_MODE", "self-chat")
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000000")
+    monkeypatch.setenv("WHATSAPP_DM_POLICY", "pairing")
+
+    config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True,
+                extra={"dm_policy": "pairing", "mode": "self-chat"},
+            ),
+        },
+    )
+    runner, adapter = _make_runner(Platform.WHATSAPP, config)
+
+    result = await runner._handle_message(
+        _make_event(
+            Platform.WHATSAPP,
+            "15559999999@s.whatsapp.net",
+            "15559999999@s.whatsapp.net",
+        )
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_omitted_mode_preserves_pairing_compatibility(monkeypatch):
+    """Legacy installs without WHATSAPP_MODE retain the pairing default."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True,
+                extra={"dm_policy": "pairing"},
+            ),
+        },
+    )
+    runner, adapter = _make_runner(Platform.WHATSAPP, config)
+    runner.pairing_store.generate_code.return_value = "ABC12DEF"
+
+    result = await runner._handle_message(
+        _make_event(
+            Platform.WHATSAPP,
+            "15551234567@s.whatsapp.net",
+            "15551234567@s.whatsapp.net",
+        )
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_called_once()
+    adapter.send.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "scoped_mode, yaml_mode, expected",
+    [(None, None, "pair"), ("bot", "self-chat", "pair"),
+     ("self-chat", "bot", "ignore"), (None, "self-chat", "ignore"),
+     (None, "bot", "pair")],
+)
+def test_whatsapp_mode_uses_owning_profile(monkeypatch, tmp_path, scoped_mode, yaml_mode, expected):
+    """A scoped miss never borrows the default profile's self-chat mode; env beats YAML."""
+    from agent import secret_scope
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("WHATSAPP_MODE", "self-chat")
+    previous_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({"WHATSAPP_MODE": scoped_mode} if scoped_mode else {})
+    try:
+        adapter = WhatsAppAdapter(PlatformConfig(extra={"mode": yaml_mode} if yaml_mode else {}))
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(previous_multiplex)
+
+    config = GatewayConfig(platforms={Platform.WHATSAPP: PlatformConfig(extra={"mode": "self-chat"})})
+    runner, _default_adapter = _make_runner(Platform.WHATSAPP, config)
+    runner._profile_adapters = {"coder": {Platform.WHATSAPP: adapter}}
+
+    assert runner._get_unauthorized_dm_behavior(Platform.WHATSAPP, profile="coder") == expected
+
+
+def test_whatsapp_platform_pair_override_beats_self_chat_safety(monkeypatch):
+    """A per-platform pair override remains an explicit opt-in."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True,
+                extra={
+                    "mode": "self-chat",
+                    "unauthorized_dm_behavior": "pair",
+                },
+            ),
+        },
+    )
+    runner, _adapter = _make_runner(Platform.WHATSAPP, config)
+
+    assert runner._get_unauthorized_dm_behavior(Platform.WHATSAPP) == "pair"
 
 
 @pytest.mark.asyncio

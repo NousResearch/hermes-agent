@@ -54,23 +54,25 @@ def _receipt(tmp_path):
 
 
 @pytest.mark.parametrize("days_ago", [6, 8])
-def test_a_settled_receipt_keeps_its_answer_after_its_chat_is_deleted(tmp_path, days_ago):
+def test_a_settled_receipt_keeps_its_answer_after_its_chat_is_deleted(tmp_path, days_ago, caplog):
     from gateway.session_bot import recover_bot_deliveries
     db = _receipt_then_deleted(tmp_path, status="settled", days_ago=days_ago)
     try:
         asyncio.run(recover_bot_deliveries(SimpleNamespace(db=db, waiters={})))
+        assert "not recovered" not in caplog.text  # answered, not merely skipped by the guard
         record = _receipt(tmp_path)
         assert (record["status"], record["reply"]) == ("settled", "pong")
     finally:
         db.close()
 
 
-def test_a_failed_receipt_keeps_its_error_after_its_chat_expired(tmp_path):
+def test_a_failed_receipt_keeps_its_error_after_its_chat_expired(tmp_path, caplog):
     from gateway.session_bot import recover_bot_deliveries
     db = _receipt_then_deleted(tmp_path, status="failed", days_ago=8,
                                error="HTTP 401 invalid api key", reason="auth")
     try:
         asyncio.run(recover_bot_deliveries(SimpleNamespace(db=db, waiters={})))
+        assert "not recovered" not in caplog.text  # answered, not merely skipped by the guard
         record = _receipt(tmp_path)
         assert (record["status"], record["error"], record["reason"]) == ("failed", "HTTP 401 invalid api key", "auth")
     finally:

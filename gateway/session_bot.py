@@ -557,7 +557,8 @@ async def recover_bot_deliveries(authority):
                     await _maybe_retry(authority, home, path, record)
             except RuntimeStoreError as exc:
                 # One receipt the store cannot answer must not stop the owner (and, multiplexed, every
-                # profile with it): log it, leave the file for the next start, recover the rest.
+                # profile with it): log it and recover the rest. The next start reads it again (a
+                # retry already pinned on it is then admitted once).
                 logging.getLogger(__name__).error('Bot delivery %s not recovered: %s',
                                                   record.get('delivery_id'), exc.reason)
                 continue

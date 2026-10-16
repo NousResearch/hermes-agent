@@ -21,9 +21,8 @@ class RuntimeSessionCompressionMixin:
         result = self._apply('compression.append', dict(messages=messages,
             compression_lock_holder=compression_lock_holder, turn_lease_holder=turn_lease_holder,
             turn_lease_ttl_seconds=turn_lease_ttl_seconds))
-        from agent.runtime_session_store import apply_row_annotations
-        apply_row_annotations(messages, result['annotations'])
-        return result['count']
+        from agent.runtime_session_store import apply_append_result
+        return apply_append_result(messages, result)
 
     def get_session(self, session_id):
         if session_id != self.scope['session_id']:

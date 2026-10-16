@@ -225,12 +225,13 @@ def worker_watermark(db, conn, sid, payload):
                                   (sid,)).fetchone()[0]}
 
 
-def _handoff_messages(conn, sid, messages):
+def _handoff_messages(conn, sid, messages, *, admission_claims=False):
     from hermes_state_runtime import HANDOFF_MESSAGE_FIELDS
+    fields = HANDOFF_MESSAGE_FIELDS | {'_delegation_delivery_claims'} if admission_claims else HANDOFF_MESSAGE_FIELDS
     if not isinstance(messages, list) or len(messages) > 1000:
         raise RuntimeStoreError('invalid_params')
     for msg in messages:
-        if not isinstance(msg, dict) or set(msg) - HANDOFF_MESSAGE_FIELDS or msg.get('role') not in ('user', 'assistant', 'system', 'tool'):
+        if not isinstance(msg, dict) or set(msg) - fields or msg.get('role') not in ('user', 'assistant', 'system', 'tool'):
             raise RuntimeStoreError('invalid_params')
         if '_row_id' in msg and not conn.execute('SELECT 1 FROM messages WHERE session_id=? AND id=?',
                                                  (sid, msg['_row_id'])).fetchone():
@@ -420,15 +421,14 @@ def worker_compression_cleanup(db, conn, sid, payload):
 
 def worker_compression_append(db, conn, sid, payload):
     _fields(payload, ('messages', 'compression_lock_holder', 'turn_lease_holder', 'turn_lease_ttl_seconds'))
-    _handoff_messages(conn, sid, payload['messages'])
+    _handoff_messages(conn, sid, payload['messages'], admission_claims=True)
     for key in ('compression_lock_holder', 'turn_lease_holder'):
         if payload[key] is not None:
             _text(payload[key])
     if not 0.1 <= _number(payload['turn_lease_ttl_seconds']) <= 3600:
         raise RuntimeStoreError('invalid_params')
-    count = db._append_messages_in_transaction(conn, sid, **payload)
-    from hermes_state_runtime import row_annotations
-    return {'count': count, 'annotations': row_annotations(payload['messages'])}
+    from hermes_state_runtime import worker_append_result
+    return worker_append_result(db, conn, sid, **payload)
 
 
 def worker_turn_cleanup(db, conn, sid, payload):

@@ -49,7 +49,7 @@ class WorkerDelegationLedger:
         return self.store._apply('delegation.dispatch', {
             key: record.get(key, '') for key in ('delegation_id', 'parent_session_id', 'session_key',
                 'origin_ui_session_id', 'origin_session_id', 'dispatched_at')} | {'task': {
-            key: record[key] for key in ('goal', 'goals', 'context', 'toolsets', 'role', 'model', 'is_batch', 'task_indexes')
+            key: record[key] for key in ('goal', 'goals', 'context', 'toolsets', 'role', 'model', 'is_batch', 'task_indexes', 'result_delivery', 'parent_turn_id')
             if key in record}})['value']
 
     def complete(self, event, result):
@@ -75,6 +75,14 @@ class WorkerDelegationLedger:
 
     def drop(self, delegation_id, claim_id):
         return self.store._apply('delegation.drop', {'delegation_id': delegation_id, 'claim_id': claim_id})['value']
+
+    def status(self, delegation_id, claim_id=''):
+        return self.store._apply('delegation.status', {
+            'delegation_id': delegation_id, 'claim_id': claim_id})['value']
+
+    def renew(self, delegation_id, claim_id):
+        return self.store._apply('delegation.renew', {
+            'delegation_id': delegation_id, 'claim_id': claim_id})['value']
 
     def unscheduled(self, delegation_id):
         return self.store._apply('delegation.unscheduled', {'delegation_id': delegation_id})['value']

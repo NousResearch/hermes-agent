@@ -653,13 +653,14 @@ class TestShrinkImagePartsHelper:
         """Bytes-triggered shrink must ALSO honour the active per-side cap.
 
         Adversarial-review regression (#48013, round 2): an image over BOTH the
-        4 MB byte budget AND the per-side pixel cap can be byte-shrunk yet stay
-        over the cap (``_resize_image_for_vision`` returns a best-effort blob
-        when it exhausts its halving budget on a very-high-aspect image).  The
-        byte-path accept gate originally checked only ``len(resized) < len(url)``
-        and reported success, so the caller retried and the provider re-rejected
-        on dimensions — re-bricking the session.  The fix re-checks the pixel
-        cap on the byte path too; a still-over-cap result must be unshrinkable.
+        4 MB byte budget AND the per-side pixel cap can come back byte-shrunk yet
+        over the cap, because the resizer hands the untouched file back whenever
+        it cannot measure it (no Pillow, an undecodable or bomb-sized source).
+        The byte-path accept gate originally checked only
+        ``len(resized) < len(url)`` and reported success, so the caller retried
+        and the provider re-rejected on dimensions — re-bricking the session.
+        The fix re-checks the pixel cap on the byte path too; a still-over-cap
+        result must be unshrinkable.
         """
         agent = _make_agent()
         # On the BYTE path, _decode_pixels is called once — on the RESIZED blob.

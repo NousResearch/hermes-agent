@@ -351,6 +351,60 @@ def test_discard_dead_record_retracts_a_live_looking_pid_only_once_the_host_lock
         child.wait(timeout=10)
 
 
+# Holds the host lock like a running gateway until killed.
+_HOLDER_CHILD = """
+import sys, time
+sys.path.insert(0, {tree!r})
+from gateway import host_rendezvous as hr
+assert hr.claim_host_lock(hr.ROLE_GATEWAY)[0] is hr.HostLockOutcome.ACQUIRED
+print("held", flush=True)
+time.sleep(60)
+"""
+
+
+@pytest.mark.platforms("posix")
+def test_another_process_holding_the_host_lock_is_observed_and_its_exit_frees_the_file(host_dir):
+    """The parent never owns the lock here, so every answer comes from probing the lock file.
+
+    Held by a child: the probe reports held and restart cleanup keeps a live-looking record.
+    Child killed: the same lock file still exists, reads free, and the cleanup retracts the record.
+    """
+    from gateway.status import get_process_start_time
+
+    tree = _tree()
+    sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    holder = subprocess.Popen(
+        [sys.executable, "-u", "-c", _HOLDER_CHILD.format(tree=tree)], cwd=tree,
+        env={**os.environ, "HERMES_GATEWAY_LOCK_DIR": str(host_dir / "locks")},
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        record = _gateway_record(
+            pid=sleeper.pid,
+            create_time=hr.process_create_time(sleeper.pid),
+            start_time=get_process_start_time(sleeper.pid),
+            home=str(host_dir),
+        )
+        hr.ensure_host_state_dir()
+        hr.record_path(hr.ROLE_GATEWAY).write_text(json.dumps(record.to_json()), encoding="utf-8")
+        assert not hr.owns_host_lock(hr.ROLE_GATEWAY)
+        assert hr.host_lock_is_held(hr.ROLE_GATEWAY) is True
+        assert hr.discard_dead_record(hr.ROLE_GATEWAY) is False
+        assert hr.record_path(hr.ROLE_GATEWAY).exists()
+
+        holder.kill()
+        holder.wait(timeout=10)
+        assert hr.lock_path(hr.ROLE_GATEWAY).exists()
+        assert hr.host_lock_is_held(hr.ROLE_GATEWAY) is False
+        assert hr.discard_dead_record(hr.ROLE_GATEWAY) is True
+        assert not hr.record_path(hr.ROLE_GATEWAY).exists()
+    finally:
+        holder.kill()
+        sleeper.kill()
+        holder.wait(timeout=10)
+        sleeper.wait(timeout=10)
+
+
 # Claims the host lock and publishes on demand, like a gateway starting during a restart.
 _CLAIMER_CHILD = """
 import json, sys

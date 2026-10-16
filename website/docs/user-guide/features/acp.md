@@ -20,6 +20,9 @@ Hermes over stdio. Editors can render:
 - approval prompts
 - streamed thinking / response chunks
 
+Provider reasoning streams as thinking chunks unless `display.show_reasoning` is
+`false` in `config.yaml`.
+
 Other hosts can use the same protocol to route collaboration events into
 Hermes. ACP is a good fit when you want Hermes to keep its existing identity,
 provider setup, memory, skills, and tools while another application owns the

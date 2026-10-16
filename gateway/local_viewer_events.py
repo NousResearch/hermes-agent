@@ -56,10 +56,22 @@ def wire(turn, agent) -> dict:
 
 
 def show_reasoning(turn) -> bool:
-    """The session's ``show_reasoning`` display flag (``config.set``), off until a viewer sets it."""
+    """The session's ``show_reasoning`` display flag (``config.set``, ``/reasoning show|hide``).
+
+    Off until a viewer sets it, except on an ACP launch: an editor shows reasoning in its thought
+    pane and has no ``config.set`` to ask for it, so an unset flag follows the session's frozen
+    ``display.show_reasoning`` (default on), as main's in-process ACP server always streamed it."""
     owner = getattr(turn, "_approval_owner", None)
     live = owner[0].sessions.get(owner[1]) if owner is not None else None
-    return getattr(live, "show_reasoning", None) is True
+    flag = getattr(live, "show_reasoning", None)
+    if flag is None and live is not None:
+        from gateway.session_policy import active_policy
+        policy = active_policy()
+        if policy is not None and policy.source == "acp":
+            from utils import is_truthy_value
+            display = policy.config(owner[0], secrets=False).get("display") or {}
+            return is_truthy_value(display.get("show_reasoning", True), default=True)
+    return flag is True
 
 
 def publish_progress(turn, event_type, name, preview, kwargs) -> None:

@@ -3001,6 +3001,9 @@ class _RunDelivery:
     agent_declared: bool = False
     incident_acked: bool = False
     failure_incident_id: Optional[str] = None
+    # Optional terminal classification (e.g. "cancelled", "interrupted") that must survive the
+    # generic success/failure mark; finish_completed_run writes it as the run's final status.
+    terminal_status: Optional[str] = None
     side_effect_ownership_lost: bool = False
     # Cron agent session that produced this run (best-effort; None when unknown). Threaded to the
     # pre_result_delivery hook so a plugin can attribute an externally posted card.

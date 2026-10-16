@@ -1092,7 +1092,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 logger.warning(
                     "Background process %s completion targets "
                     "permanently-gone session %s (user boundary such as "
-                    "/new); dropping notification (output remains available via process(action='log')).",
+                    "/new); dropping notification (output remains available via process_manage(action='log')).",
                     evt.get("session_id") or "<unknown>", parent_session_id,
                 )
             claim.proceed = False

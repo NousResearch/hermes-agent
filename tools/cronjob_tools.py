@@ -608,7 +608,7 @@ def _try_dispatch_background_run(
 
     dispatch = dispatch_async_delegation(
         goal=f"Manual run of cron job '{job_name}' ({job_id})",
-        context=("Triggered via cronjob(action='run'). The job executed in its own "
+        context=("Triggered via cronjob_manage(action='run'). The job executed in its own "
                  "fresh cron session; this block reports its outcome."),
         toolsets=None, role="cron_run", model=job.get("model"), session_key=session_key,
         parent_session_id=str(session_id) if session_id else None, runner=_runner,
@@ -978,7 +978,7 @@ def _resolve_job_or_error(job_id: str):
         })
     if not job:
         return None, _dumps(
-            {"success": False, "error": f"Job with ID or name '{job_id}' not found. Use cronjob(action='list') to inspect jobs."},
+            {"success": False, "error": f"Job with ID or name '{job_id}' not found. Use cronjob_manage(action='list') to inspect jobs."},
         )
     return job, None
 

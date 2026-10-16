@@ -5048,17 +5048,34 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
         if n_messages <= _min_for_compress:
-# A transcript this short can still be enormous when a handful of
+            # A transcript this short can still be enormous when a handful of
             # tool results are huge (e.g. a 7-message session sitting 46K+
             # tokens over threshold). Try the cheap Phase-1 prune — including
             # its protected-region pressure pass (#61932) — before conceding
             # the no-op: it needs no LLM call and can shrink the transcript
             # even when there aren't enough messages for a real compaction.
+            #
+            # Second-pass behaviour: if this prune shrinks the transcript but
+            # the result is STILL over threshold, the turn proceeds undersized.
+            # The next should_compress cycle re-runs, finds nothing left to
+            # prune, and lands in the original no-op branch below — which
+            # correctly starts counting ineffectiveness. The ladder terminates
+            # properly; do not "fix" the counter bump away.
             pruned_messages, pruned_count = self._prune_old_tool_results(
                 messages, protect_tail_count=self.protect_last_n,
                 protect_tail_tokens=self.tail_token_budget,
             )
-            if pruned_messages != messages:
+            if pruned_count:
+                # The prune is write-free: archive what it shortens (byte-exact, each stub naming its
+                # file) exactly as a full compaction does, so no tool result is lost to a bare stub.
+                from tools.tool_result_storage import archive_compaction_drops
+
+                pruned_messages, _written, kept = archive_compaction_drops(
+                    self._drop_blank_echoes(messages), self._drop_blank_echoes(pruned_messages),
+                    getattr(self, "_session_id", "") or "",
+                )
+                pruned_count -= kept
+            if pruned_count:
                 self._last_compression_made_progress = True
                 telemetry["failure_class"] = None
                 telemetry["chunk_count"] = 0

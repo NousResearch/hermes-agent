@@ -2244,6 +2244,12 @@ class TestInsufficientMessagesStillPrunesToolResults:
         # Materially smaller (well over half) without requiring the exact
         # ratio, which is sensitive to the token estimator's internals.
         assert total_after < total_before * 0.6
+        # Protected head/tail rows must survive verbatim — the other half of
+        # the prune-before-noop contract (protect_first_n/protect_last_n).
+        assert result[0] == messages[0]
+        assert result[1] == messages[1]
+        assert result[-1] == messages[-1]
+        assert result[-2] == messages[-2]
         # The prune-and-return path must not be scored as an ineffective
         # compaction — it made real progress, unlike the old no-op.
         assert c._ineffective_compression_count == before_count

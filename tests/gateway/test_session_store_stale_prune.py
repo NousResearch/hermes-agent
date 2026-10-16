@@ -57,6 +57,8 @@ def _db_returning(rows: dict) -> MagicMock:
     """SessionDB mock where get_session maps session_id -> row dict."""
     db = MagicMock()
     db.get_session.side_effect = lambda sid: rows.get(sid)
+    # This legacy recovery fake has no committed native empty-context projection.
+    db._read_ctx.return_value.__enter__.return_value.execute.return_value.fetchone.return_value = None
     return db
 
 

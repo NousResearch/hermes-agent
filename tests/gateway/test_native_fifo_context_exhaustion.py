@@ -569,3 +569,28 @@ async def test_completion_snapshot_obeys_empty_reset_not_ordinary_compression(
     assert len(
         list_session_admissions(native.authority.db, session_id=claimed.ref.session_id)
     ) == (3 if empty_reset else 4)
+
+
+@pytest.mark.parametrize("recorded_reset", [False, True])
+def test_projection_owns_only_a_recorded_reset_when_the_target_is_missing(
+    tmp_path, recorded_reset
+):
+    from hermes_state import SessionDB
+    from hermes_state_native_context_reset import PREFIX, reset_projection
+    from hermes_state_runtime import RuntimeStoreError
+
+    db = SessionDB(tmp_path / "state.db")
+    try:
+        if recorded_reset:
+            db._execute_write(
+                lambda conn: conn.execute(
+                    "INSERT INTO state_meta(key,value) VALUES(?,?)",
+                    (PREFIX + "missing", "{}"),
+                )
+            )
+            with pytest.raises(RuntimeStoreError, match="not_found"):
+                reset_projection(db, "prior", "missing", "route")
+        else:
+            assert reset_projection(db, "prior", "missing", "route") is None
+    finally:
+        db.close()

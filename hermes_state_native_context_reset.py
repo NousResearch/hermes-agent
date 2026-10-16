@@ -216,7 +216,17 @@ def reset_projection(db, previous_id, target_id, route):
                     "SELECT parent_session_id FROM sessions WHERE id=?", (root,)
                 ).fetchone()
                 if row is None:
-                    raise RuntimeStoreError("not_found")
+                    if (
+                        root != target_id
+                        or conn.execute(
+                            "SELECT 1 FROM state_meta WHERE key=?",
+                            (PREFIX + target_id,),
+                        ).fetchone()
+                    ):
+                        raise RuntimeStoreError("not_found")
+                    # No verified empty reset owns this target. Leave ordinary
+                    # route/compression recovery to its existing resolver.
+                    return None
                 parent = row[0]
                 step = (
                     conn.execute(_CHAIN_STEP_SQL, (parent,)).fetchone()

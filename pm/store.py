@@ -6,6 +6,7 @@ import os
 import platform
 import shutil
 import stat
+import struct
 import sys
 import threading
 import tempfile
@@ -100,18 +101,40 @@ def _is_bionic_libc() -> bool:
 
 
 def _elf_loader_is_musl(binary: Path) -> bool | None:
-    """Read an ELF's interpreter string without executing foreign bytes."""
+    """Read PT_INTERP directly: PIEs can store it far beyond the ELF header."""
     try:
         with binary.resolve().open("rb") as handle:
-            head = handle.read(8192)
-    except OSError:
+            ident = handle.read(16)
+            if ident[:4] != b"\x7fELF":
+                return None
+            endian = {1: "<", 2: ">"}[ident[5]]
+            header_format, program_format, offset_index, size_index = {
+                1: ("HHIIIIIHHHHHH", "IIIIIIII", 1, 4),
+                2: ("HHIQQQIHHHHHH", "IIQQQQQQ", 2, 5),
+            }[ident[4]]
+            header_struct = struct.Struct(endian + header_format)
+            header = header_struct.unpack(handle.read(header_struct.size))
+            program_struct = struct.Struct(endian + program_format)
+            file_size = os.fstat(handle.fileno()).st_size
+            table_offset, entry_size, count = header[4], header[8], header[9]
+            if entry_size < program_struct.size or table_offset + entry_size * count > file_size:
+                return None
+            for index in range(count):
+                handle.seek(table_offset + index * entry_size)
+                program = program_struct.unpack(handle.read(program_struct.size))
+                if program[0] == 3:  # PT_INTERP
+                    offset, size = program[offset_index], program[size_index]
+                    if offset + size > file_size:
+                        return None
+                    handle.seek(offset)
+                    loader = handle.read(size).rstrip(b"\0")
+                    if b"ld-musl-" in loader:
+                        return True
+                    if b"ld-linux" in loader or b"/libc.so" in loader:
+                        return False
+                    return None
+    except (OSError, IndexError, KeyError, struct.error):
         return None
-    if not head.startswith(b"\x7fELF"):
-        return None
-    if b"ld-musl-" in head:
-        return True
-    if b"ld-linux" in head:
-        return False
     return None
 
 

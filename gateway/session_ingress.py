@@ -15,6 +15,11 @@ admission_author = ContextVar('admission_author', default=None)
 executing_admission = ContextVar('executing_admission', default=False)
 # Set by a busy-path caller that must be released once its input is durably queued.
 busy_acceptance = ContextVar('busy_acceptance', default=None)
+# ``_validate_native`` clauses about the message's own content, safe to name to the sender's chat.
+_CONTENT_CLAUSES = frozenset({
+    'text', 'auto_skill', 'channel_prompt', 'channel_context', 'reply_expected',
+    'media_urls', 'media_types', 'media_text_inlined', 'media_types_length', 'media_text_inlined_length',
+})
 
 
 async def admit_message(authority, event):
@@ -23,6 +28,13 @@ async def admit_message(authority, event):
     try:
         receipt = await authority.admit_native(event)
     except RuntimeStoreError as exc:
+        if exc.reason == 'invalid_params' and exc.field:
+            # Refused before commit (_validate_native): a refusal notice instead of a generic turn error.
+            # The reply reaches the whole chat, so only content clauses are named; trust and provenance
+            # clauses (and any new one) stay generic, and gateway.log keeps the clause (``_refuse``).
+            named = f'{exc.reason}: {exc.field}' if exc.field in _CONTENT_CLAUSES else exc.reason
+            return (f'⚠️ Hermes refused this message ({named}), so it was not saved '
+                    'or answered. Ask the operator to check gateway.log.')
         if exc.reason != 'queue_full':
             raise
         # Nothing was committed (main's busy-queue cap): say so instead of a generic turn error.

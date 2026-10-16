@@ -32683,6 +32683,84 @@
         "title": "RollbackRestoreResult",
         "type": "object"
       },
+      "RollbackSessionDiffParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "RollbackSessionDiffParams",
+        "type": "object"
+      },
+      "RollbackSessionDiffResult": {
+        "additionalProperties": false,
+        "description": "``gateway/session_tui_ops.py::_session_diff``: ``CheckpointManager.session_diff`` under the\nsession's frozen checkpoint policy (``enabled: false`` when that policy does not checkpoint).\n``diff`` is bounded to fit one frame; ``diff_lines`` counts the whole body.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "success": {
+            "default": false,
+            "title": "Success",
+            "type": "boolean"
+          },
+          "stat": {
+            "default": "",
+            "title": "Stat",
+            "type": "string"
+          },
+          "diff": {
+            "default": "",
+            "title": "Diff",
+            "type": "string"
+          },
+          "diff_lines": {
+            "default": 0,
+            "title": "Diff Lines",
+            "type": "integer"
+          },
+          "empty": {
+            "default": false,
+            "title": "Empty",
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "RollbackSessionDiffResult",
+        "type": "object"
+      },
       "Room": {
         "additionalProperties": false,
         "description": "``gateway/hosted_rooms.py::_room_from_row`` plus the branch-only keys ``create`` (legacy\nadoption), ``state`` (``authority_claim``) and ``rename`` (``event``) add.",
@@ -46663,6 +46741,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/AdmissionStatus"
+        }
+      }
+    },
+    {
+      "name": "rollback.session_diff",
+      "summary": "The classic CLI's /diff session: everything changed since the session's earliest retained checkpoint, as data for its terminal renderer.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/RollbackSessionDiffParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/RollbackSessionDiffResult"
         }
       }
     },

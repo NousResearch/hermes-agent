@@ -107,7 +107,9 @@ class ActivityTrackingMixin:
 
         now_mono = time.monotonic()
         last_mono = getattr(self, "_session_activity_last_persist_mono", 0.0)
-        if (now_mono - last_mono) < SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS:
+        # 0.0 is the never-persisted / reset sentinel and always writes through: CLOCK_MONOTONIC is
+        # roughly host uptime, so on a freshly booted VM ``now_mono`` itself can be under the interval.
+        if last_mono and (now_mono - last_mono) < SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS:
             return
         self._session_activity_last_persist_mono = now_mono
         try:

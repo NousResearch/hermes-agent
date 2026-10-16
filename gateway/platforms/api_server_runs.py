@@ -1104,6 +1104,13 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         logger.warning("Provider resolution failed for run=%s: %s", run_id, exc)
         _finish("failed", error=exc.user_text())
     except Exception as exc:
+        if getattr(exc, "reason", None) == "admission_queued":
+            # Still queued at a retiring owner: the next owner runs it once, and GET /v1/runs/{id}
+            # reads that row. A run.failed here would invite a poller to resubmit it.
+            self._set_run_status(run_id, "queued", last_event="run.queued")
+            with suppress(Exception):
+                loop.call_soon(run.put_event, _run_event(run_id, "run.queued", message=str(exc)))
+            return
         logger.exception("[api_server] run %s failed", run_id)
         _finish("failed", error=_redact_api_error_text(exc))
     finally:

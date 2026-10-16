@@ -2948,7 +2948,7 @@ export const ruOverrides = {
       heartbeatEveryHours: hours => `каждые ${hours}ч`,
       heartbeatEverySeconds: seconds => `каждые ${seconds}с`,
       heartbeatNext: time => `следующий ${time}`,
-      heartbeatDueWaitingForIdle: 'пора — ожидание простоя',
+      dueWaitingForIdle: 'пора — ожидание простоя',
       heartbeatActions: 'Действия пульса',
       pauseHeartbeat: 'Приостановить пульс',
       resumeHeartbeat: 'Возобновить пульс',

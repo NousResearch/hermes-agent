@@ -1,6 +1,6 @@
 name: hermes-wslc-sandbox
 repo: https://github.com/Yicheng-Mark/hermes-wslc-sandbox
-sha: 0758102796b9cf069ff2ee6170531f6227862fd8
+sha: ef75fbb71782c08028074013aee3fc212d621c02
 version: "0.1.0"
 description: "Run Hermes' terminal, file and execute_code tools in a Linux container on Microsoft's WSL Containers (wslc) runtime, so Windows users who run WSL Containers get a sandbox without Docker Desktop. Disclosure — the plugin spawns the wslc CLI (one short-lived process per command, plus one long-lived container per environment) and every call runs inside that container; containers have outbound network access unless docker_network is false; persistent sandboxes are left stopped on disk until removed; host environment variables enter the container only when named in docker_forward_env, and only paths listed in docker_volumes are bind-mounted. wslc rejects --cap-drop, --security-opt, --pids-limit, --init and --storage-opt, so this sandbox is not capability-dropped the way the Docker backend's is, container_disk is reported but not enforced, and dangerous-command approval deliberately stays enabled for this backend. The plugin reads no credentials, stores none, and makes no network calls of its own."
 maintainer: Yicheng-Mark

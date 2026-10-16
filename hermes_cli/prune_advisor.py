@@ -37,7 +37,8 @@ _SNOOZE_FILE = ".auto_prune_prompt.json"
 # The prunable share is read fresh each time through the session index.
 _ESTIMATE_FILE = ".auto_prune_estimate.json"
 TOTAL_BYTES_TTL = 7 * 86400
-# The classic CLI asks from a stored estimate only: it never reads the store at startup.
+# The classic CLI asks from a stored estimate only: it never reads the store at startup. One older
+# than this still asks (scaled to the current file) and is refreshed in the background meanwhile.
 CLI_ADVICE_TTL = 86400
 
 
@@ -236,25 +237,27 @@ def _cached_total_bytes(home: Optional[Path], db_bytes: int) -> Optional[int]:
     return int(total * db_bytes / base)
 
 
-def cached_advice(home: Optional[Path] = None) -> Optional[Advice]:
-    """:func:`advise` from the last stored estimate (under :data:`CLI_ADVICE_TTL` old, same
-    retention), with the live disk snapshot; None when it must be measured first. No DB read."""
+def cached_advice(home: Optional[Path] = None) -> tuple[Optional[Advice], bool]:
+    """``(advice, stale)`` from the last stored estimate for the same retention, scaled to the
+    live file and disk; ``(None, True)`` when nothing usable is stored. No DB read. A stale one
+    (over :data:`CLI_ADVICE_TTL`) still answers: refusing it would let a user who launches less
+    often than the TTL miss the question forever."""
     snap = should_ask(home)
     if snap is None:
-        return None
+        return None, False
     sessions = _effective_sessions(home) or {}
     retention = _retention_days(sessions)
     stored = _read_estimate(home)
     est = stored.get("advice")
     try:
-        fresh = time.time() - float(stored["advice_at"]) <= CLI_ADVICE_TTL
-        if not (fresh and isinstance(est, dict) and int(est["retention_days"]) == retention):
-            return None
+        if not (isinstance(est, dict) and int(est["retention_days"]) == retention):
+            return None, True
+        stale = time.time() - float(stored["advice_at"]) > CLI_ADVICE_TTL
         reclaim = int(est["reclaim_bytes"]) * snap.db_bytes // max(int(est["db_bytes"]), 1)
         return Advice(snap, retention, int(est["prunable"]), int(est["total"]), min(reclaim, snap.db_bytes),
-                      True, bool(sessions.get("vacuum_after_prune", True)))
+                      True, bool(sessions.get("vacuum_after_prune", True))), stale
     except (KeyError, TypeError, ValueError):
-        return None
+        return None, True
 
 
 def _row_bytes_sql(db) -> str:
@@ -395,11 +398,12 @@ def offer_interactive(*, cprint, ask=input) -> Optional[bool]:
     or the user chose later."""
     if should_ask() is None:
         return None
-    advice = cached_advice()
-    if advice is None:
-        # Never read the store on the startup path: measure in the background and ask next launch.
+    advice, stale = cached_advice()
+    if stale:
+        # Never read the store on the startup path: (re)measure in the background for next launch.
         from agent.memory_provider import spawn_context_thread
         spawn_context_thread(advise, name="auto-prune-estimate").start()
+    if advice is None:
         return None
     cprint("")
     cprint("☤ " + advice_lines(advice)[0])

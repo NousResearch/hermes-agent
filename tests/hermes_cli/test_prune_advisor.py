@@ -217,3 +217,22 @@ def test_full_scan_total_is_measured_once_and_reused(home, monkeypatch):
     (home / prune_advisor._ESTIMATE_FILE).write_text(__import__("json").dumps(stale), encoding="utf-8")
     prune_advisor.advise(home)
     assert prune_advisor._read_estimate(home)["total_bytes_at"] > stale["total_bytes_at"]  # a week on: re-measured
+
+
+def test_cli_launches_further_apart_than_the_estimate_ttl_still_ask(home, monkeypatch):
+    """A stored estimate older than CLI_ADVICE_TTL still asks (and is refreshed in the background):
+    otherwise a user who launches every other day would never see the question."""
+    import json
+    import agent.memory_provider as mp
+    _disk(monkeypatch, free_gb=1)
+    prune_advisor.advise(home)
+    path = home / prune_advisor._ESTIMATE_FILE
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["advice_at"] = time.time() - prune_advisor.CLI_ADVICE_TTL - 3600
+    path.write_text(json.dumps(data), encoding="utf-8")
+    started = []
+    monkeypatch.setattr(mp, "spawn_context_thread", lambda target, **kw: type(
+        "T", (), {"start": lambda self: started.append(target)})())
+    asked = []
+    prune_advisor.offer_interactive(cprint=lambda *_: None, ask=lambda q: asked.append(q) or "")
+    assert len(asked) == 1 and len(started) == 1  # asked now, refreshed for next time

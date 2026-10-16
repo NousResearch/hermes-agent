@@ -81,6 +81,8 @@ async def probe():
         for name, body, extra_headers in (
             ("session", {"session_id": "parent"}, {}),
             ("caller_history", {"session_id": "parent", "conversation_history": snapshot}, {}),
+            ("caller_history_again", {"session_id": "parent", "conversation_history": snapshot}, {}),
+            ("caller_history_no_session", {"conversation_history": snapshot}, {}),
             ("response_chain", {"previous_response_id": "resp-seed"}, {}),
             ("declared_key", {}, {"X-Hermes-Session-Key": "fixture-key"}),
         ):

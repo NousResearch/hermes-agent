@@ -1,15 +1,18 @@
 import { useEffect } from 'react'
 
+import { $activeConnectionId } from '@/store/connections'
 import { refreshFleetRoster } from '@/store/fleet-roster'
 import { $gatewayState } from '@/store/session'
 
 /**
  * Keep the fleet roster fresh for the profile rail while more than one
  * gateway is registered: pull on mount, when the window regains focus or
- * visibility, immediately when the connection registry changes, and when the
- * gateway (re)opens. No timer — the multi-connection contract rules out
- * periodic fleet polling from the sidebar, and a 60s stale window in the store
- * absorbs focus churn.
+ * visibility, immediately when the connection registry changes, immediately
+ * after the active gateway changes — a switch is what dials (and pools) a
+ * source that was connect-on-demand a moment ago, and the last-used write it
+ * ends with raises no registry event — and when the gateway (re)opens. No
+ * timer — the multi-connection contract rules out periodic fleet polling from
+ * the sidebar, and a 60s stale window in the store absorbs focus churn.
  *
  * The open edge matters on a cold start: the first pull races `gateway
  * ensure`, whose boot outlives the roster's per-source deadline, so This
@@ -35,6 +38,9 @@ export function useFleetRoster(enabled: boolean): void {
     window.addEventListener('focus', onFocus)
     document.addEventListener('visibilitychange', onVisibility)
     const offRegistry = window.hermesDesktop?.connections?.onChanged?.(() => void refreshFleetRoster({ force: true }))
+    // listen (not subscribe): the mount pull above already covers the current
+    // source; this fires only when the active gateway actually moves.
+    const offActive = $activeConnectionId.listen(() => void refreshFleetRoster({ force: true }))
     let wasOpen = $gatewayState.get() === 'open'
 
     const offGateway = $gatewayState.listen(state => {
@@ -51,6 +57,7 @@ export function useFleetRoster(enabled: boolean): void {
       window.removeEventListener('focus', onFocus)
       document.removeEventListener('visibilitychange', onVisibility)
       offRegistry?.()
+      offActive()
       offGateway()
     }
   }, [enabled])

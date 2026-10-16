@@ -531,7 +531,7 @@ _git_bash_bin_dirs_cache: "list[str] | None" = None
 
 
 def _git_bash_bin_dirs() -> list[str]:
-    """Git Bash's coreutils dirs in ``/etc/profile`` order (mingw first so coreutils
+    """Git Bash's coreutils dirs in ``/etc/profile`` order (native toolchain first so coreutils
     beat System32 lookalikes); ``[]`` off Windows. A non-login ``bash -c`` (fallback
     when ``bash -l`` is broken) never sources ``/etc/profile``, so without these
     ``cat``/``mktemp``/``mv`` are missing and commands exit 127."""
@@ -548,9 +548,9 @@ def _compute_git_bash_bin_dirs() -> list[str]:
         return []
     parent = os.path.dirname(os.path.dirname(bash))  # bash in <root>\bin or <root>\usr\bin (MinGit)
     root = os.path.dirname(parent) if os.path.basename(parent).lower() == "usr" else parent
-    subs = ("mingw64/bin", "ucrt64/bin", "clangarm64/bin", "mingw32/bin", "usr/local/bin", "usr/bin", "bin")
-    dirs = (os.path.join(root, *sub.split("/")) for sub in subs)
-    return list(dict.fromkeys(d for d in dirs if os.path.isdir(d)))
+    from hermes_platform.resolver.known_dirs import windows_git_bash_bin_dirs
+
+    return windows_git_bash_bin_dirs(root)
 
 
 def _prepend_missing_path_entries(existing_path: str, dirs: list[str]) -> str:

@@ -466,8 +466,8 @@ def _portable_git_candidates() -> list:
     candidates = []
     with suppress(Exception):
         roots = [get_default_hermes_root(), Path(get_hermes_home())]
-        for arch in ("mingw64", "ucrt64", "clangarm64"):
-            for root in roots:
+        for root in roots:
+            for arch in ("mingw64", "ucrt64", "clangarm64"):
                 candidates.append(root / "git" / arch / "libexec" / "git-core" / "git.exe")
     return candidates
 

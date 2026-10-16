@@ -121,12 +121,10 @@ class TestGitTrampolineSelfHeal:
         monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: profile_home)
 
         candidates = _portable_git_candidates()
-        assert candidates[0] == (
-            root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
-        )
-        assert candidates[1] == (
-            profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
-        )
+        shared = [i for i, path in enumerate(candidates) if path.is_relative_to(root / "git")]
+        profile = [i for i, path in enumerate(candidates) if path.is_relative_to(profile_home / "git")]
+        assert shared and profile
+        assert max(shared) < min(profile)
 
     def test_portable_git_candidates_includes_ucrt64_and_clangarm64(self, tmp_path, monkeypatch):
         import hermes_constants

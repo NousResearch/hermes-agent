@@ -291,6 +291,9 @@ class TestGitBashCoreutilsOnPath:
 
     @pytest.mark.platforms("windows")
     def test_derives_dirs_from_clangarm64_portablegit_layout(self, monkeypatch):
+        from hermes_platform.host import facts
+
+        monkeypatch.setattr(facts, "native_arch", lambda: "arm64")
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)
         monkeypatch.setattr(local_mod, "_find_bash", lambda: "/pg/bin/bash.exe")
         existing = {"/pg/clangarm64/bin", "/pg/usr/bin", "/pg/bin"}
@@ -300,6 +303,27 @@ class TestGitBashCoreutilsOnPath:
         norm = [d.replace("\\", "/") for d in dirs]
         assert "/pg/usr/bin" in norm
         assert norm.index("/pg/clangarm64/bin") < norm.index("/pg/usr/bin")
+
+    @pytest.mark.platforms("windows")
+    @pytest.mark.parametrize(
+        ("arch", "active"), [("amd64", "ucrt64"), ("arm64", "clangarm64"), ("x86", "mingw32")]
+    )
+    def test_only_native_toolchain_precedes_coreutils(self, tmp_path, monkeypatch, arch, active):
+        from hermes_platform.host import facts
+
+        root = tmp_path / "Git"
+        prefixes = ("mingw64", "ucrt64", "clangarm64", "mingw32")
+        for prefix in (*prefixes, "usr"):
+            (root / prefix / "bin").mkdir(parents=True)
+        (root / "bin").mkdir()
+        monkeypatch.setattr(local_mod, "_find_bash", lambda: str(root / "bin" / "bash.exe"))
+        monkeypatch.setattr(facts, "native_arch", lambda: arch)
+
+        dirs = local_mod._compute_git_bash_bin_dirs()
+
+        toolchains = {str(root / prefix / "bin") for prefix in prefixes}
+        assert [path for path in dirs if path in toolchains] == [str(root / active / "bin")]
+        assert dirs.index(str(root / active / "bin")) < dirs.index(str(root / "usr" / "bin"))
 
     @pytest.mark.platforms("linux")
     def test_empty_off_windows(self, monkeypatch):

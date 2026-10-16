@@ -831,19 +831,38 @@ def _provider_has_credentials(pid: str) -> bool:
         return False
 
 
+def excluded_canonical_slugs(excluded: Optional[list] = None) -> set[str]:
+    """Canonical slugs hidden by ``model_catalog.excluded_providers`` (read from config when
+    ``excluded`` is None), matched case-insensitively against the slug or any alias."""
+    if excluded is None:
+        try:
+            from hermes_cli.config import load_config
+            excluded = (load_config().get("model_catalog") or {}).get("excluded_providers")
+        except _CONFIG_ERRORS:
+            excluded = None
+    names = {str(p).strip().lower() for p in excluded or [] if p} if isinstance(excluded, list) else set()
+    if not names:
+        return set()
+    hidden = {p.slug for p in CANONICAL_PROVIDERS if p.slug.lower() in names}
+    hidden |= {canonical for alias, canonical in _PROVIDER_ALIASES.items() if alias.lower() in names}
+    return hidden
+
+
 def list_available_providers() -> list[dict[str, str]]:
-    """``{id, label, aliases, authenticated}`` per listed provider (shared with ``hermes model`` / ``/model``)."""
+    """``{id, label, aliases, authenticated}`` per listed provider (shared with ``hermes model`` / ``/model``),
+    minus ``model_catalog.excluded_providers``."""
     from hermes_cli.models_catalog_static import listed_canonical_providers
     aliases_for: dict[str, list[str]] = {}
     for alias, canonical in _PROVIDER_ALIASES.items():
         aliases_for.setdefault(canonical, []).append(alias)
+    hidden = excluded_canonical_slugs()
     return [
         {
             "id": pid,
             "label": _PROVIDER_LABELS.get(pid, pid),
             "aliases": aliases_for.get(pid, []),
             "authenticated": _provider_has_credentials(pid)}
-        for pid in [p.slug for p in listed_canonical_providers()] + ["custom"]]
+        for pid in [p.slug for p in listed_canonical_providers() if p.slug not in hidden] + ["custom"]]
 
 
 def parse_model_input(

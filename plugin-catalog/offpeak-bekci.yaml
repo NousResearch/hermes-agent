@@ -1,6 +1,22 @@
+# KATALOG GİRDİSİ (yerel kopya) — hermes-agent `plugin-catalog/offpeak-bekci.yaml` girdisinin tek kaynağı.
+# PR: https://github.com/NousResearch/hermes-agent/pull/139797 — dal `add-offpeak-bekci`, fork `onkanat/hermes-agent`.
+# Katalog kuralları: hermes-agent/plugin-catalog/README.md (madde 1-17); `sha` 40-hex zorunlu.
+#
+# GÖVDE EŞİTLİĞİ (ölçülür, iddia edilmez): PR'a giden dosya bu dosyanın yorumsuz gövdesidir —
+# `name:` satırından sonrası birebir aynı olmalı. Doğrulama:
+#   sed -n '/^name:/,$p' plugin-catalog/offpeak-bekci.yaml | shasum -a 256
+#   16.10.2026 (0.1.1): 82ec8096a4dbc3b24da977b684dd7314ff0c4f42f5442c3f07b2dd8331a8a320
+#
+# PIN KURALI: pin = YAYIN AĞACINI taşıyan, yayınlanmış son içerik commit'i (bir commit kendi hash'ini
+# taşıyamaz → sabit nokta yok; `sha:` satırını tazeleyen defterleme commit'i onun üstüne biner).
+# Şu an `555dff2…` = main ucu: 0.1.1 yükü + kapı/hijyen düzeltmeleri. Pin tazeleme gerekçesi
+# (0.1.0 → 0.1.1): `/offpeak-durum` varsayılanı OKUNUR rapor oldu, makine biçimi `json` argümanına
+# taşındı; iki yarı (sunucu + masaüstü) BİRLİKTE güncellenmelidir.
+#
+# TEMİZ KLONDA KABUL (atlanmaz): git clone https://github.com/onkanat/hermes-offpeak-bekci /tmp/x #   && git -C /tmp/x checkout 555dff262a37a35f615dc03f82320db3bf34ccca #   && hermes plugins validate /tmp/x --install-deps   → EXIT=0 (16.10.2026: geçti)
 name: offpeak-bekci
 repo: https://github.com/onkanat/hermes-offpeak-bekci
-sha: 555dff262a37a35f615dc03f82320db3bf34ccca
+sha: a3427af7e6344cf7070b45afc69d21c9126a6201
 title: Off-Peak Bekçi
 description: >-
   Ollama Cloud off-peak penceresini görünür kılar: masaüstü durum çubuğu rozeti pencerenin
@@ -39,7 +55,7 @@ description: >-
 maintainer: onkanat
 tier: community
 category: desktop
-version: "0.1.1"
+version: "0.1.2"
 requires_hermes: ">=0.22.2"
 docs_url: https://github.com/onkanat/hermes-offpeak-bekci#readme
 platforms: []

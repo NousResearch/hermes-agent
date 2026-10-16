@@ -565,14 +565,18 @@ def _drain_lease_queue(session_id: str, conversation_history):
     ``_LEASE_DRAIN_MAX_RECORDS`` records and ``_LEASE_DRAIN_MAX_BYTES`` of bodies - and everything
     that does not fit stays queued, in order, for the next turn. Any unexpected failure leaves the
     transcript untouched — a turn admitted normally must not die because of what is in the spool.
+
+    Nothing spooled means the caller's OWN list comes back, not a copy: an in-memory transcript
+    seeded before its row exists is passed by identity, and the admission keeps that identity when
+    no mail joined it.
     """
     history = list(conversation_history or [])
     if not session_id:
-        return history, []
+        return conversation_history, []
     try:
         home = _lease_queue_home()
         if not os.path.isdir(_lease_queue_dir(home)):
-            return history, []
+            return conversation_history, []
         from tools.bot_live_delivery import claim_lease_delivery, complete_lease_delivery
 
         bodies: List[str] = []
@@ -607,7 +611,7 @@ def _drain_lease_queue(session_id: str, conversation_history):
                     "Queued delivery %s drained but not settled", delivery_id, exc_info=True,
                 )
         if not bodies:
-            return history, drained
+            return conversation_history, drained
         text = "\n\n".join(bodies)
         if history and history[-1].get("role") == "user":
             merged = dict(history[-1])
@@ -621,7 +625,7 @@ def _drain_lease_queue(session_id: str, conversation_history):
         return history, drained
     except Exception:
         logger.warning("Could not drain queued deliveries for %s", session_id, exc_info=True)
-        return list(conversation_history or []), []
+        return conversation_history, []
 
 
 def _lease_not_acquired_result(agent, session_id: str, conversation_history, *, waited: bool) -> dict[str, Any]:

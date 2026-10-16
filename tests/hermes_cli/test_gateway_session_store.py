@@ -60,7 +60,8 @@ def test_new_session_is_created_on_the_gateway_and_its_id_adopted(store, monkeyp
     db, client = store
     sid = db.open_session(cli(), {"model": "m1", "toolsets": ["file", "web"], "provider": None})
     assert sid == "local-new"
-    method, params = client.calls[0]
+    # The store asks the owner's create contract first (does it take ``client_env``?).
+    method, params = next(call for call in client.calls if call[0] != "runtime.describe")
     assert method == "session.create"
     assert params["model"] == "m1" and params["toolsets"] == ["file", "web"] and params["source"] == "cli"
     assert "provider" not in params and params["cwd"]

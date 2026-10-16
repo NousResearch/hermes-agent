@@ -1,5 +1,5 @@
-// Shell notice strings: the remote-display toast, the butterbar and send-outcome toasts;
-// `Translations` spreads this in.
+// Shell notice strings: the remote-display toast, the butterbar, send-outcome toasts and the
+// keep-awake offer; `Translations` spreads this in.
 export interface NoticeTranslations {
   remoteDisplayBanner: {
     message: (reason: string) => string
@@ -16,6 +16,9 @@ export interface NoticeTranslations {
     /** Typed /undo /retry /steer /queue lines (the Ink TUI's wording on the same gateway). */
     sessionCommands: SessionCommandNotices
   }
+
+  /** Once per computer, after a timed sleep interrupted a turn with keep-awake off. */
+  keepAwakeOffer: { title: string; message: string; action: string }
 }
 
 export interface SessionCommandNotices {

@@ -1,5 +1,5 @@
 import { requestGatewayForAgent, requestGatewayForProfile, type SpawnPriority } from '@/store/gateway'
-import { $profiles } from '@/store/profile'
+import { $profiles, refreshProfiles } from '@/store/profile'
 
 /** Plugin-facing profile routing for `host.requestProfile` and friends. */
 
@@ -103,4 +103,29 @@ export async function pluginRouteStillRegistered(route: PluginProfileRoute): Pro
   } catch {
     return false
   }
+}
+
+/** Credential-free route discovery, optionally limited to one captured connection. */
+export async function pluginProfileRoutes(connectionId?: string) {
+  const desktop = window.hermesDesktop
+  const getProfileRoutes = desktop?.getProfileRoutes
+
+  if (!getProfileRoutes) {
+    throw new Error('Hermes Desktop connection routing unavailable')
+  }
+
+  let profiles = $profiles.get()
+
+  if (!connectionId) {
+    try {
+      profiles = await refreshProfiles()
+    } catch {
+      // Route inventory is a read: a transient backend failure falls back to
+      // the last cache. Electron always adds the primary Desktop profile.
+    }
+  }
+
+  const names = profiles.map(profile => profile.name)
+
+  return connectionId ? getProfileRoutes(names, connectionId) : getProfileRoutes(names)
 }

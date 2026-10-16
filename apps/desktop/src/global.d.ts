@@ -53,7 +53,7 @@ declare global {
       // Credential-free routes across the union connection registry. The
       // optional profile list is used only by the single-local v1 fallback;
       // endpoint and auth material never crosses the IPC boundary.
-      getProfileRoutes: (profiles: string[]) => Promise<DesktopPluginProfileRoute[]>
+      getProfileRoutes: (profiles: string[], connectionId?: string) => Promise<DesktopPluginProfileRoute[]>
       // Loopback origin serving the YouTube player wrapper (packaged file:// renderer).
       getEmbedHostOrigin?: () => Promise<string>
       // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend

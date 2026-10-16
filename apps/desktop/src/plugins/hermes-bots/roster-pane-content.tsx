@@ -13,7 +13,8 @@ interface RosterContentProps {
   b: ReturnType<typeof useBots>
   staleNotice: string | number | null
   isLoading: boolean
-  initialRosterLoading: boolean
+  rosterDiscoveryPending: boolean
+  loadingLabel: string
   roster: RosterRow[]
   error: ReturnType<typeof useRoster>['error']
   gatewayUp: boolean
@@ -40,11 +41,40 @@ interface RosterContentProps {
   renderHiddenGatewaySection: ReturnType<typeof rosterSectionRenderers>['renderHiddenGatewaySection']
 }
 
+function renderRosterNoMatch({
+  b,
+  query,
+  selectedGateway,
+  rosterDiscoveryPending
+}: Pick<RosterContentProps, 'b' | 'query' | 'selectedGateway' | 'rosterDiscoveryPending'>) {
+  if (rosterDiscoveryPending) {
+    return null
+  }
+
+  return (
+    <div aria-live="polite" className="flex min-h-0 flex-1 flex-col" role="status">
+      <PanelEmpty
+        description={
+          query.trim()
+            ? selectedGateway
+              ? b.roster.noMatchQueryOn(query.trim(), String(selectedGateway.label))
+              : b.roster.noMatchQuery(query.trim())
+            : selectedGateway
+              ? b.roster.noMatchFiltersOn(String(selectedGateway.label))
+              : b.roster.noMatchFilters
+        }
+        icon="search"
+      />
+    </div>
+  )
+}
+
 export function renderRosterContent({
   b,
   staleNotice,
   isLoading,
-  initialRosterLoading,
+  rosterDiscoveryPending,
+  loadingLabel,
   roster,
   error,
   gatewayUp,
@@ -77,9 +107,20 @@ export function renderRosterContent({
           {staleNotice}
         </div>
       ) : null}
-      {(isLoading || initialRosterLoading) && !roster.length ? (
-        <div className="flex flex-1 items-center justify-center">
+      {rosterDiscoveryPending && roster.length > 0 ? (
+        <div
+          aria-live="polite"
+          className="flex items-center gap-2 px-3 py-2 text-xs text-(--ui-text-tertiary)"
+          role="status"
+        >
+          <GlyphSpinner spinner="breathe" />
+          <span>{b.roster.loadingGatewayBots}</span>
+        </div>
+      ) : null}
+      {(isLoading || rosterDiscoveryPending) && !roster.length ? (
+        <div aria-live="polite" className="flex flex-1 flex-col items-center justify-center gap-2" role="status">
           <GlyphSpinner className="text-(--ui-text-tertiary)" spinner="breathe" />
+          <span className="text-xs text-(--ui-text-tertiary)">{loadingLabel}</span>
         </div>
       ) : error && !roster.length ? (
         <div className="grid gap-2 px-3 py-4 text-xs text-(--ui-text-tertiary)">
@@ -111,20 +152,7 @@ export function renderRosterContent({
           </Button>
         </div>
       ) : rosterRows.length === 0 && matchingHiddenBots.length === 0 ? (
-        <div aria-live="polite" className="flex min-h-0 flex-1 flex-col" role="status">
-          <PanelEmpty
-            description={
-              query.trim()
-                ? selectedGateway
-                  ? b.roster.noMatchQueryOn(query.trim(), String(selectedGateway.label))
-                  : b.roster.noMatchQuery(query.trim())
-                : selectedGateway
-                  ? b.roster.noMatchFiltersOn(String(selectedGateway.label))
-                  : b.roster.noMatchFilters
-            }
-            icon="search"
-          />
-        </div>
+        renderRosterNoMatch({ b, query, selectedGateway, rosterDiscoveryPending })
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain" data-slot="bots-roster">
           <div className="grid w-full min-w-0 gap-0.5 px-1.5 pb-2">

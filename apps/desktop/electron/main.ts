@@ -420,6 +420,7 @@ import {
   buildRegistryProfileRoutes,
   isLocalEnumerationFailure,
   localRouteFallbackProfiles,
+  profileRouteConnections,
   undialedSshRouteSeeds
 } from './plugin-profile-routes'
 import { createPortalSession, resolvePortalBaseUrl } from './portal-session'
@@ -513,7 +514,11 @@ import {
   revalidateRemoteConnection,
   revalidateSuspectPooledRemoteBackends
 } from './remote-liveness'
-import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
+import {
+  resolveRemoteOauthTicket,
+  rosterSourceEnumerationTimeoutMs,
+  withRosterEnumerationDeadline
+} from './remote-oauth-ticket'
 import { createRemoteOwnerCache } from './remote-owner-cache'
 import { remoteSessionCookies } from './remote-session-cookies'
 import {
@@ -14829,7 +14834,7 @@ ipcMain.handle('hermes:local-backend:probe', async () => {
 ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
 )
-ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) => {
+ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames, connectionId) => {
   const fallbackProfileNames = Array.isArray(rawProfileNames)
     ? rawProfileNames
         .filter(name => typeof name === 'string')
@@ -14838,7 +14843,13 @@ ipcMain.handle('hermes:plugin-profile-routes', async (_event, rawProfileNames) =
         .slice(0, 256)
     : []
 
-  const registry = readDesktopConnectionsRegistry()
+  const currentRegistry = readDesktopConnectionsRegistry()
+
+  const registry = {
+    ...currentRegistry,
+    connections: profileRouteConnections(currentRegistry.connections, connectionId)
+  }
+
   const enumerations = await enumerateRegistryAgentSources(registry)
   let agents = buildAgentRoster(enumerations, { primaryConnectionId: registry.primary })
 
@@ -15207,22 +15218,6 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
   // the renderer painted stale rows for the entire outage (and the roster IPC
   // hung >30s in live repro). Bound each source's enumeration; a timeout is
   // reported like any other unreachable source and retried on the next poll.
-  const withEnumerationDeadline = async <T>(work: Promise<T>, timeoutMs: number): Promise<T> => {
-    let timer: ReturnType<typeof setTimeout> | null = null
-
-    try {
-      return await Promise.race([
-        work,
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => reject(new Error('roster enumeration timed out')), timeoutMs)
-        })
-      ])
-    } finally {
-      if (timer !== null) {
-        clearTimeout(timer)
-      }
-    }
-  }
 
   return withoutInteractiveOauthLogin(() =>
     Promise.all(
@@ -15277,7 +15272,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
             // Claim-guarded (#90812): this ~5s roster poll can race a renderer's
             // own reconnect dial for the same connection; coalescing avoids
             // bootstrapping a second SSH tunnel / remote dashboard.
-            const descriptor: any = await withEnumerationDeadline(
+            const descriptor: any = await withRosterEnumerationDeadline(
               Promise.resolve(
                 backendDialClaims.run(backendScopeKey(connection.id, null), () =>
                   ensureRegistryBackend(connection.id, null)

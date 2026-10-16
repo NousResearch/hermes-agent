@@ -132,3 +132,66 @@ def test_ws_client_thread_and_its_loop_callbacks_carry_the_adapter_profile_scope
 
     asyncio.run(scenario())
     assert seen == {"ws_thread": ("routed", "routed-value"), "loop_callback": ("routed", "routed-value")}
+
+
+def test_drive_comment_dispatch_binds_the_launch_profile_scope():
+    """The PRIMARY profile's adapter is created and connected outside any profile scope (only
+    secondaries connect inside ``_profile_runtime_scope``), so a lark callback hop reaches the
+    dispatch with an EMPTY context. The comment handler runs its own ``AIAgent`` and resolves
+    provider credentials, so the dispatch must bind the launch profile's runtime scope itself —
+    otherwise multiplex's fail-closed secret read kills every default-profile mention with
+    ``UnscopedSecretError``, and no gateway restart can change that (empty is the steady state)."""
+    from plugins.platforms.feishu import adapter as fa
+    from plugins.platforms.feishu import feishu_comment as fc
+
+    launch_home = Path(get_hermes_home())
+    (launch_home / ".env").write_text("FEISHU_PROBE_TOKEN=launch-value\n", encoding="utf-8")
+    set_multiplex_active(True)
+    seen = {}
+
+    async def _fake_handler(client, data, self_open_id=""):
+        seen["turn"] = _observe(launch_home)
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        # A bare adapter (the class handles ``object.__new__`` instances on purpose): real methods
+        # keep their normal binding, only __init__-state is stubbed.
+        stub = object.__new__(fa.FeishuAdapter)
+        stub._loop = loop
+        stub._client = object()
+        stub._bot_open_id = "ou_bot"
+        with patch.object(fc, "handle_drive_comment_event", _fake_handler):
+            stub._on_drive_comment_event(SimpleNamespace(event={}))
+            await asyncio.sleep(0.2)  # the hop is scheduled on the loop, not run inline
+
+    try:
+        # Precondition: with multiplex on and no scope bound, the credential read fails closed.
+        assert _observe(launch_home) == ("routed", "<unscoped>")
+        asyncio.run(scenario())
+    finally:
+        set_multiplex_active(False)
+
+    assert seen["turn"] == ("routed", "launch-value")
+
+
+def test_comment_session_cache_key_is_namespaced_per_profile(routed_scope):
+    """One gateway process serves every profile: the per-document history cache key must carry the
+    profile home, or a second profile commenting on the same document reads the first profile's
+    transcript back as its own context."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from plugins.platforms.feishu import feishu_comment as fc
+
+    routed_key = fc._session_key("docx", "shared_doc_token")
+    assert str(routed_scope) in routed_key
+
+    other_home = routed_scope.parent / "other"
+    other_home.mkdir(parents=True)
+    token = set_hermes_home_override(str(other_home))
+    try:
+        other_key = fc._session_key("docx", "shared_doc_token")
+    finally:
+        reset_hermes_home_override(token)
+
+    assert other_key != routed_key  # no cross-profile history leak
+    assert fc._session_key("docx", "shared_doc_token") == routed_key  # stable within one profile
+    assert fc._session_key("docx", "another_token") != fc._session_key("docx", "shared_doc_token")

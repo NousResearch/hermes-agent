@@ -10,6 +10,7 @@ import {
   collectRelaunchArgs,
   describeUpdaterHandoffFailure,
   launcherInstallDirectory,
+  launcherInstallRoot,
   MARKER_SELF_ADOPT_EPOCH_MS,
   observeUpdaterHandoff,
   resolvePosixScriptHandoff,
@@ -497,6 +498,20 @@ test.skipIf(process.platform === 'win32')('launcherInstallDirectory stays null w
 
     assert.equal(launcherInstallDirectory(launcher), null)
   }
+})
+
+// A failed probe (timeout, a launcher mid-replacement) must not stick: the ticket resolver retries
+// after a failure, and a cached miss would keep the override rootless until Desktop restarts.
+test.skipIf(process.platform === 'win32')('launcherInstallRoot retries a failed probe and caches the root it then reports', async () => {
+  const dir = await realpathMkdtemp('launcher-root-')
+  const reported = await fs.realpath(await fs.mkdir(path.join(dir, 'hermes-agent')).then(() => path.join(dir, 'hermes-agent')))
+  const launcher = await writeLauncher(dir, 'exit 3')
+
+  assert.equal(launcherInstallRoot(launcher), undefined)
+  await writeLauncher(dir, `printf 'Hermes Agent v0.22.1\\nInstall directory: ${reported}\\n'`)
+  assert.equal(launcherInstallRoot(launcher), reported)
+  await writeLauncher(dir, 'exit 3')
+  assert.equal(launcherInstallRoot(launcher), reported)
 })
 
 async function realpathMkdtemp(prefix: string): Promise<string> {

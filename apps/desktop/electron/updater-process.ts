@@ -114,17 +114,22 @@ export function launcherTargetsInstallation(launcher: string, root: string): boo
 
 // A launcher's install directory cannot move while this process lives, and the
 // backend resolver runs once per surface (startup, TUI resume, pool backends),
-// so the HERMES_DESKTOP_HERMES rung probes each launcher path at most once.
-const launcherInstallRoots = new Map<string, string | undefined>()
+// so the HERMES_DESKTOP_HERMES rung memoizes each launcher's root. Only a root is
+// cached: a failed or timed-out probe is retried on the next call, matching the
+// ticket resolver's own retry after a failure.
+const launcherInstallRoots = new Map<string, string>()
 
 /** The root a launcher reports, memoized: ticketRuntimeFor() mints gateway
  *  tickets from a command backend only when it names its installation root. */
 export function launcherInstallRoot(launcher: string): string | undefined {
-  if (!launcherInstallRoots.has(launcher)) {
-    launcherInstallRoots.set(launcher, launcherInstallDirectory(launcher) ?? undefined)
-  }
+  const cached = launcherInstallRoots.get(launcher)
 
-  return launcherInstallRoots.get(launcher)
+  if (cached !== undefined) {return cached}
+  const root = launcherInstallDirectory(launcher) ?? undefined
+
+  if (root !== undefined) {launcherInstallRoots.set(launcher, root)}
+
+  return root
 }
 
 /** The real install directory a launcher's `--version` reports, or null. */

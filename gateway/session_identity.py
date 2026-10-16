@@ -15,6 +15,7 @@ receiving bot's own profile — so nothing here changes the wire format or any h
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 from contextlib import suppress
 import weakref
@@ -111,7 +112,7 @@ def transport_profile_of(source: Any) -> Optional[str]:
     return identity.transport_profile if identity is not None and identity.multiplexed else None
 
 
-def replace_source(source: "SessionSource", **changes: Any) -> "SessionSource":
+def replace_source(source: SessionSource, **changes: Any) -> SessionSource:
     """:func:`dataclasses.replace` that keeps the wire-invisible provenance (transport ref,
     authorization home, identity). A plain ``replace`` silently produces a source the runner
     can only route through heuristics."""
@@ -129,7 +130,7 @@ def _name(value: Any) -> Optional[str]:
 
 
 def canonical_identity(
-    source: "SessionSource", *, runner: Any, adapter: Any = None,
+    source: SessionSource, *, runner: Any, adapter: Any = None,
     transport_profile: Optional[str] = None, primary_home: Optional[Path] = None,
 ) -> Optional[RoutingIdentity]:
     """The identity already pinned on *source*, else :func:`resolve_identity` — the one call every
@@ -149,7 +150,7 @@ def canonical_identity(
 
 
 def restore_identity(
-    source: "SessionSource", *, runner: Any, transport_profile: Optional[str],
+    source: SessionSource, *, runner: Any, transport_profile: Optional[str],
 ) -> Optional[RoutingIdentity]:
     """Pin the identity of a source rebuilt from durable state (``SessionEntry.origin``, a
     ``sessions`` row, a cached copy) — no live adapter, so ``transport=None``: the restored row of the
@@ -189,7 +190,7 @@ def restore_identity(
 
 
 def resolve_identity(
-    source: "SessionSource", *, runner: Any, adapter: Any = None,
+    source: SessionSource, *, runner: Any, adapter: Any = None,
     transport_profile: Optional[str] = None, primary_home: Optional[Path] = None,
 ) -> RoutingIdentity:
     """Resolve and pin the :class:`RoutingIdentity` of an inbound *source*.
@@ -271,3 +272,19 @@ def resolve_identity(
         multiplexed=True, transport=transport_ref, transport_inferred=transport_inferred)
     setattr(source, _IDENTITY_ATTR, identity)
     return identity
+
+
+def authenticated_subject(identity):
+    """Keep private native receipts stable; namespace every dashboard identity.
+
+    Only the private bootstrap stamps profile/instance/capabilities. A dashboard
+    provider named 'local' (or a subject resembling a UID) is not native provenance.
+    Historical remote bare-subject receipts cannot be assigned to a first caller.
+    """
+    subject = str(identity.get('user_id') or 'unbound')
+    if (identity.get('provider') == 'local' and identity.get('profile_id')
+            and identity.get('instance_id') and 'capabilities' in identity):
+        return subject
+    return 'auth:v1:' + json.dumps(
+        [identity.get('provider') or '', identity.get('issuer') or '', subject],
+        separators=(',', ':'), ensure_ascii=True)

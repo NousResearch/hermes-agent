@@ -718,7 +718,7 @@ class AmbiguousAliasError(Exception):
         super().__init__(f"alias {alias!r} matches {len(candidates)} models on {provider}")
 
 
-def _ambiguous_alias_message(err: "AmbiguousAliasError") -> str:
+def _ambiguous_alias_message(err: AmbiguousAliasError) -> str:
     """User-facing disambiguation list for an ambiguous alias."""
     shown = err.candidates[:10]
     lines = "\n".join(f"  {i}. {m}" for i, m in enumerate(shown, 1))
@@ -835,7 +835,7 @@ def _external_process_match(catalog: list[str], aliases: dict[str, str], typed: 
 
 
 def get_authenticated_provider_slugs(
-    current_provider: str = "", user_providers: dict = None, custom_providers: list | None = None
+    current_provider: str = "", user_providers: dict | None = None, custom_providers: list | None = None
 ) -> list[str]:
     """Slugs of providers that have credentials (models.dev in-memory cache + disk catalog cache;
     stale catalogs warm in the background, never in this call)."""
@@ -981,7 +981,7 @@ def _duplicates_configured_row(
                  if identity == row or (provider_key == row_slug.lower() and identity[1:3] == row[1:3])), None)
 
 
-def _current_provider_match(st: "_Switch", cfg_matches: dict[str, str]) -> Optional[str]:
+def _current_provider_match(st: _Switch, cfg_matches: dict[str, str]) -> Optional[str]:
     """The slug in *cfg_matches* the session already runs on: an exact hit, or — for a session on
     the compat projection slug (``custom:relay``) of ``providers.relay`` — that row's slug, so a
     same-provider switch keeps the caller's slug instead of flipping it (#112788)."""
@@ -1105,7 +1105,7 @@ def _config_declares_model(
     return False
 
 
-def _apply_direct_alias_endpoint(st: "_Switch", da: DirectAlias) -> None:
+def _apply_direct_alias_endpoint(st: _Switch, da: DirectAlias) -> None:
     """Route a direct alias to its own base_url and decide its credential (mutates ``st``).
 
     Credentials were resolved against the DEFAULT provider; carrying that key onto the alias
@@ -1740,7 +1740,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
 def switch_model(
     raw_input: str, current_provider: str, current_model: str, current_base_url: str = "",
     current_api_key: str = "", is_global: bool = False, explicit_provider: str = "",
-    user_providers: dict = None, custom_providers: list | None = None) -> ModelSwitchResult:
+    user_providers: dict | None = None, custom_providers: list | None = None) -> ModelSwitchResult:
     """Core model-switching pipeline shared between CLI and gateway.
 
     Route (PATH A with ``--provider``, else PATH B) -> credentials -> validation -> result; each
@@ -1790,7 +1790,7 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
                 model_cfg.get("base_url"), result.base_url, model_cfg.get("provider"), result.target_provider):
             updates["context_length"] = None
     target = str(result.target_provider or "").strip().lower()
-    route_changed = _route_changed(model_cfg, result)
+    route_changed = selection_route_changed(model_cfg, result)
     stale = ["api_key", "api"] if (not target.startswith("custom") or route_changed) else []
     if route_changed:
         stale += ["key_env", "api_key_env"]
@@ -1800,8 +1800,9 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     return updates
 
 
-def _route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
-    """Provider or endpoint differs between the on-disk ``model:`` block and the switch target."""
+def selection_route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
+    """Provider or endpoint differs between a ``model:`` block and the switch target. The one
+    route-identity test for endpoint-bound credentials (inline keys, ``key_env``, launch keys)."""
     from hermes_cli.route_identity import normalize_route_base_url
     if str(model_cfg.get("provider") or "").strip().lower() != str(result.target_provider or "").strip().lower():
         return True
@@ -1811,8 +1812,12 @@ def _route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
 def apply_model_selection(model_cfg: Any, result: ModelSwitchResult) -> dict:
     """Apply the canonical shape to an in-memory ``model:`` dict (``None`` = key removed) for
     callers that save a whole config document they are already mutating."""
+    return _merge_selection_updates(model_cfg, model_selection_config_updates(result, model_cfg))
+
+
+def _merge_selection_updates(model_cfg: Any, updates: dict[str, Any]) -> dict:
     model_cfg = dict(model_cfg) if isinstance(model_cfg, dict) else {}
-    for key, value in model_selection_config_updates(result, model_cfg).items():
+    for key, value in updates.items():
         if value is None:
             model_cfg.pop(key, None)
         else:
@@ -1824,15 +1829,36 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     """Write a successful :func:`switch_model` result to ``config_path`` (default:
     ``HERMES_HOME/config.yaml`` — the context override or ``HERMES_HOME`` at call time).
 
-    Targeted key writes, not a whole-``model:`` rewrite: a block rewrite destroys sibling keys the
-    user set there (``model_slots``, ``model_fallback``, ...). ``should_clear_context_pin`` can do
-    cold-start disk I/O — async callers run this on a worker thread."""
+    Build the complete selection from one raw snapshot, preserving sibling settings and secret
+    references, then publish once. Per-key publication can leave a mixed route after a failed
+    write or an overlapping selection. ``should_clear_context_pin`` can do cold-start disk I/O
+    — async callers run this on a worker thread.
+
+    The replace deletes keys missing from the snapshot, so every route decision (and its disk
+    I/O) is made from a pre-read BEFORE the snapshot; read -> merge -> replace is then a pure
+    in-memory section. Only when another writer changed ``model:`` in between are the updates
+    recomputed against the fresh block. ``_CONFIG_LOCK`` is in-process only: a cross-process
+    config lock, once one exists, must wrap the same section."""
     from pathlib import Path
-    from hermes_cli.config import get_config_path, read_user_config_raw
-    from utils import atomic_roundtrip_yaml_update
+    from hermes_cli.config import _CONFIG_LOCK, atomic_config_replace, get_config_path, read_user_config_raw
     path = Path(config_path) if config_path else get_config_path()
-    for key, value in model_selection_config_updates(result, read_user_config_raw(path).get("model")).items():
-        atomic_roundtrip_yaml_update(path, f"model.{key}", value)
+    planned_from = read_user_config_raw(path).get("model")
+    updates = model_selection_config_updates(result, planned_from)
+    with _CONFIG_LOCK:
+        config = read_user_config_raw(path)
+        model_cfg = config.get("model")
+        if model_cfg != planned_from:
+            updates = model_selection_config_updates(result, model_cfg)
+        merged = _merge_selection_updates(model_cfg, updates)
+        if isinstance(model_cfg, dict):
+            # A YAML anchor on ``model:`` reused elsewhere (``vision: *route``) loads as ONE shared
+            # dict; edit it in place so every alias carries the new route, as the shared node on
+            # disk will. A fresh copy left the alias stale and the round-trip merge wrote it back.
+            model_cfg.clear()
+            model_cfg.update(merged)
+        else:
+            config["model"] = merged
+        atomic_config_replace(path, config)
     try:  # owner-only: config files contain API keys
         os.chmod(path, 0o600)
     except (OSError, NotImplementedError):

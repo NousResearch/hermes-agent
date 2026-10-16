@@ -5,6 +5,7 @@ import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting } from '@/store/compaction'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
+import { pendingSnapshotFence, reconcilePendingSubmissions } from '@/store/pending-submissions'
 import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts } from '@/store/prompts'
 import {
@@ -132,6 +133,21 @@ function maybeRebindPaneToRebuiltRuntime(ctx: GatewayEventContext): boolean {
   return true
 }
 
+/** Project the runtime's pending-submission receipts onto the durable
+ *  session's composer queue (keyed by stored id when known). */
+function reconcileSessionInfoPendingSubmissions(ctx: GatewayEventContext): void {
+  const { deps, event, payload, sessionId } = ctx
+
+  if (sessionId) {
+    const storedId =
+      payload?.stored_session_id ?? deps.sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId ?? sessionId
+
+    // A canonical frame's own place in the session's event order fences absence-based retirement.
+    reconcilePendingSubmissions(storedId, (payload as Record<string, unknown>)?.pending_submissions,
+      pendingSnapshotFence(event.replay_epoch, event.seq))
+  }
+}
+
 /** session.info / session.usage / session.title. */
 export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, explicitSid, isActiveEvent, occurredAt, fromActiveSource } = ctx
@@ -154,6 +170,8 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // conversation already on screen — if so, re-bind the pane so every
     // subsequent isActiveEvent gate keeps matching (#93942 scenario B).
     const rebound = maybeRebindPaneToRebuiltRuntime(ctx)
+
+    reconcileSessionInfoPendingSubmissions(ctx)
 
     // Apply session-scoped fields when the event targets the active
     // session, OR when it's a global broadcast and we have no session.
@@ -400,7 +418,17 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
           const withinPreStartGrace =
             typeof armedAt === 'number' && Date.now() - armedAt < PRE_TURN_LIVE_SETTLE_GRACE_MS
 
-          if (state.awaitingResponse && !state.sawAssistantPayload && !state.turnLive && withinPreStartGrace) {
+          // The owner stamps its claimed execution on the event params, not the payload.
+          const authoritative =
+            typeof event.authority_epoch === 'number' && typeof event.execution_generation === 'number'
+
+          if (
+            !authoritative &&
+            state.awaitingResponse &&
+            !state.sawAssistantPayload &&
+            !state.turnLive &&
+            withinPreStartGrace
+          ) {
             return state
           }
 

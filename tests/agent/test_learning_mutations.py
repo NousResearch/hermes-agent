@@ -186,13 +186,13 @@ def test_edit_memory_keeps_concurrent_memory_tool_add(home, monkeypatch):
                                     lambda: lm.edit_node("memory:memory:0", "alpha rewritten")],
                          ids=["delete", "edit"])
 def test_memory_drift_is_refused_with_backup_like_memory_tool(home, mutate):
-    """Hand-edited content that wouldn't round-trip through the § parser is what
-    the memory tool's drift guard exists for: snapshot to .bak, refuse, leave the
-    file untouched. A Journey mutation must not reformat it silently."""
+    """Free-form text appended without § delimiters (one "entry" past the whole-store
+    limit) is what the memory tool's drift guard exists for: snapshot to .bak, refuse,
+    leave the file untouched. A Journey mutation must not flatten it silently."""
     from tools.memory_tool_store import _drift_error
 
     path = home / "memories" / "MEMORY.md"
-    raw = "alpha note\n§\n\n§\nbeta note\n"
+    raw = "alpha note\n§\nbeta note\n\n## Vendor Master\n" + "x" * 2300 + "\n"
     path.write_text(raw, encoding="utf-8")
 
     res = mutate()

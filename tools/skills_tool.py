@@ -4,11 +4,12 @@ holding SKILL.md (YAML frontmatter + instructions) plus optional references/, te
 scripts/. `skills_list` returns name/description only; `skill_view` returns full content and
 linked files. Sibling modules (skills_tool_setup / _plugin / _dedup) re-export here."""
 
+import contextvars
 import json
 import logging
 import os
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -17,15 +18,14 @@ from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
-from tools.skills_tool_setup import (  # noqa: F401
+from tools.skills_tool_setup import (
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
-from tools.skills_tool_plugin import (  # noqa: F401
+from tools.skills_tool_plugin import (
     MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH, _INJECTION_PATTERNS, _fail, _json,
     _mark_background_review_read, _preprocess_skill, _read_skill_text, _safe_frontmatter,
     _serve_plugin_skill, _serve_skill_file, _truncate_description)
-from tools.skills_tool_dedup import (  # noqa: F401
-    _check_skill_view_dedup, _record_skill_view, reset_skill_view_dedup)
+from tools.skills_tool_dedup import dedup_skill_view, reset_skill_view_dedup
 from tools.skill_provenance import is_background_review
 
 logger = logging.getLogger(__name__)
@@ -93,9 +93,14 @@ def _skill_lookup_path_error(name: str) -> Optional[str]:
     return None
 
 
-def load_env() -> Dict[str, str]:
+def load_env() -> dict[str, str]:
     """Snapshot of HERMES_HOME/.env for the post-skill secret-capture diff (same tokenizer that
-    installs the profile scope, so a captured value never differs from the served one)."""
+    installs the profile scope, so a captured value never differs from the served one). A frozen-policy
+    worker never opens the profile ``.env``: ``hermes_cli.config.load_env`` owns that short-circuit."""
+    from agent.safe_worker_policy import worker_config_snapshot
+
+    if worker_config_snapshot() is not None:
+        return {}
     from agent.secret_scope import load_env_file
 
     return load_env_file(get_hermes_home() / ".env")
@@ -104,6 +109,21 @@ def load_env() -> Dict[str, str]:
 def set_secret_capture_callback(callback) -> None:
     global _secret_capture_callback
     _secret_capture_callback = callback
+
+
+# A turn-scoped capture callback (the session owner binds one per local-viewer turn): it wins over the
+# process-global slot and over the gateway-surface "unsupported" hint, because that turn's viewer can
+# answer. A ContextVar, so tool worker threads started with ``propagate_context_to_thread`` inherit it.
+_turn_secret_capture = contextvars.ContextVar("turn_secret_capture", default=None)
+
+
+@contextmanager
+def bind_turn_secret_capture(callback):
+    token = _turn_secret_capture.set(callback)
+    try:
+        yield
+    finally:
+        _turn_secret_capture.reset(token)
 
 
 def _skill_utils_delegate(attr: str):
@@ -141,7 +161,7 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     return None
 
 
-def _parse_tags(tags_value) -> List[str]:
+def _parse_tags(tags_value) -> list[str]:
     """Tags from frontmatter: a parsed list, "[a, b]", or "a, b"."""
     if not tags_value:
         return []
@@ -153,7 +173,7 @@ def _parse_tags(tags_value) -> List[str]:
     return [t.strip().strip("\"'") for t in tags_value.split(",") if t.strip()]
 
 
-def _is_skill_disabled(*names: str, platform: str = None) -> bool:
+def _is_skill_disabled(*names: str, platform: str | None = None) -> bool:
     """Any of *names* disabled in config (one config load)? Platform precedence: explicit arg,
     ``HERMES_PLATFORM``, session ``HERMES_SESSION_PLATFORM``. A globally-disabled skill stays disabled on every platform
     (keep in sync with agent.skill_utils.get_disabled_skill_names)."""
@@ -174,7 +194,7 @@ def _is_skill_disabled(*names: str, platform: str = None) -> bool:
         return False
 
 
-def _skill_search_dirs() -> Tuple[List[Tuple[int, Path]], Path]:
+def _skill_search_dirs() -> tuple[list[tuple[int, Path]], Path]:
     """(``(tier, dir)`` roots in precedence order, active_skills_dir) — the shared
     ``agent.skill_utils.get_skill_search_roots`` order with the live profile dir (dropped if absent)."""
     from agent.skill_utils import TIER_LOCAL, get_skill_search_roots
@@ -184,7 +204,7 @@ def _skill_search_dirs() -> Tuple[List[Tuple[int, Path]], Path]:
     return roots, active_skills_dir
 
 
-def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False) -> List[Dict[str, Any]]:
+def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False) -> list[dict[str, Any]]:
     """Every scanned skill resolved by ``agent.skill_utils.resolve_skill_catalog`` (status /
     load_name / tier / path), visible ones only unless *include_hidden*; cached per session.
     Resolution runs over ALL files first — skill_view ignores platform/disabled gates when
@@ -232,7 +252,7 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
     return [dict(s) for s in skills]
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+def _find_all_skills(*, skip_disabled: bool = False) -> list[dict[str, Any]]:
     """Loadable skills (name, description, category): ``name`` is what skill_view() accepts —
     the declared name, or the exact relative path for a same-tier duplicate. Shadowed and
     unloadable copies are left out. ``skip_disabled=True`` ignores disabled state (config UI)."""
@@ -240,12 +260,12 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
             for s in _skill_catalog(skip_disabled=skip_disabled) if s["load_name"]]
 
 
-def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _sort_skills(skills: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Keep every skill listing path ordered the same way."""
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
-def skills_list(category: str = None, task_id: str = None) -> str:
+def skills_list(category: str | None = None, task_id: str | None = None) -> str:
     """Tier 1 listing: name + description (+ category) only; ``task_id`` is handler parity."""
     try:
         _skills_dir().mkdir(parents=True, exist_ok=True)
@@ -345,7 +365,7 @@ def _collect_skill_candidates(name, local_category_name, all_dirs):
     Every copy is returned so the caller resolves them via ``agent.skill_utils.pick_skill_candidate``
     (cross-tier precedence; a same-tier tie of different skills is refused, never guessed)."""
     from agent.skill_utils import iter_skill_index_files
-    candidates: List[Tuple[Optional[Path], Path]] = []
+    candidates: list[tuple[Optional[Path], Path]] = []
     seen_md: set = set()
 
     def _record(sd: Optional[Path], smd: Path) -> None:
@@ -404,10 +424,10 @@ def _skill_linked_files(skill_dir: Optional[Path]) -> dict:
     return files
 
 
-def _skill_readiness(frontmatter: Dict[str, Any], skill_name: str) -> Tuple[dict, dict]:
+def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict, dict]:
     """Resolve required env vars / credential files (prompting for secrets where the surface
     allows) and register what's available for sandboxes. Returns ``(fields, extras)``: fields go
-    before ``_source_path`` in the skill_view result, extras after — key order is tool output."""
+    before the readiness extras in the skill_view result — key order is tool output."""
     required_env_vars = _get_required_environment_variables(frontmatter)
     from tools.terminal_scope import terminal_env
     backend = str(terminal_env("TERMINAL_ENV", "local")).strip().lower() or "local"
@@ -548,7 +568,7 @@ def _log_security_warnings(name: str, skill_md: Path, content: str, all_dirs, ac
 
 
 def skill_view(
-    name: str, file_path: str = None, task_id: str = None, preprocess: bool = True) -> str:
+    name: str, file_path: str | None = None, task_id: str | None = None, preprocess: bool = True) -> str:
     """View a skill (SKILL.md) or a file within its directory, as JSON. ``name`` is a skill name
     or path ("axolotl", "03-fine-tuning/axolotl"); "plugin:skill" resolves plugin-provided
     skills. ``preprocess`` applies the configured SKILL.md template / inline shell rendering;
@@ -639,8 +659,6 @@ def skill_view(
             "linked_files": linked_files if linked_files else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'" if linked_files else None,
             **readiness,
-            # Internal: absolute source path for the repeat-view dedup fingerprint.
-            "_source_path": str(skill_md),
             **readiness_extras}
         if deps_note:
             result["deps_note"] = deps_note
@@ -696,8 +714,8 @@ registry.register(
 
 def _skill_view_with_bump(args, **kw):
     """Invoke skill_view, then bump view_count/use on success (best-effort). Repeat-view dedup
-    mirrors read_file's unchanged-stub: a SAME, unchanged skill file already loaded in this
-    session returns a short stub (cache cleared on context compression)."""
+    mirrors read_file's unchanged-stub: a result byte-identical to one already served for the
+    same skill file in this session returns a short stub (cache cleared on context compression)."""
     name = args.get("name", "")
     task_id = kw.get("task_id")
     # The background-review fork shares the parent's task_id (prefix-cache parity). A stub there
@@ -705,13 +723,12 @@ def _skill_view_with_bump(args, **kw):
     # possibly-pruned transcript copy (#95976). No dedup in the fork; None also keeps its views
     # out of the parent's bucket.
     dedup_task_id = None if is_background_review() else task_id
-    if (stub := _check_skill_view_dedup(dedup_task_id, name, args.get("file_path"))) is not None:
-        return stub
     result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
     with suppress(Exception):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
-            _record_skill_view(dedup_task_id, name, args.get("file_path"), parsed)
+            if (stub := dedup_skill_view(dedup_task_id, name, args.get("file_path"), parsed, result)) is not None:
+                return stub
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
                 from tools.skill_usage import bump_use, bump_view
                 bump_view(str(resolved))

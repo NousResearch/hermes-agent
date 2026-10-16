@@ -256,6 +256,8 @@ export const arChrome = {
       copyPath: 'نسخ المسار',
       removeFromSidebar: 'إخفاء من الشريط الجانبي',
       createdInPreviousContext: 'أُنشئ المشروع على الاتصال أو الملف الشخصي السابق. عُد إليه؛ لم يُكتب ملف IDEA.md.',
+      hiddenFromSidebar: 'أُخفي من الشريط الجانبي',
+      undoHide: 'تراجع',
       createFailed: 'تعذّر إنشاء المشروع',
       deleteConfirm: 'هذا يزيل المشروع المحفوظ من Hermes. تبقى الملفات ومستودعات git وأشجار العمل دون تغيير.',
       startWork: 'شجرة عمل جديدة',
@@ -347,6 +349,7 @@ export const arChrome = {
     paneControls: 'تحكم اللوحات',
     appControls: 'تحكم التطبيق',
     modelMenu: {
+      pickDeferred: (model: string) => `سيُطبَّق ${model} بدءًا من رسالتك التالية`,
       search: 'البحث عن نموذج...',
       noModels: 'لا توجد نماذج',
       editModels: 'تحرير النماذج',
@@ -361,6 +364,11 @@ export const arChrome = {
       cacheRead: 'قراءة من الذاكرة المؤقتة',
       priceTitle: (input: string, output: string, cache: string) =>
         `الإدخال ${input}/Mtok · الإخراج ${output}/Mtok` + (cache ? ` · قراءة من الذاكرة المؤقتة ${cache}/Mtok` : ''),
+      localSetup: {
+        title: 'تشغيل محلي · مجاني وخاص',
+        text: (model: string, size: string) => `${model} يناسب هذا الجهاز · تنزيل ${size}`,
+        action: 'إعداد'
+      },
       limited: 'محدود',
       limitedUntil: (time: string) => `محدود حتى ${time}`,
       limitedTip: (provider: string, time: null | string) =>
@@ -431,7 +439,10 @@ export const arChrome = {
       showTerminal: 'إظهار الطرفية',
       hideTerminal: 'إخفاء الطرفية',
       gateway: 'البوابة',
-      gatewayReady: 'البوابة جاهزة',
+      backend: 'الخلفية',
+      messagingStopped: 'الرسائل متوقفة',
+      messagingDegraded: name => `${name} متوقف`,
+      gatewayReady: 'جاهز',
       gatewayNeedsSetup: 'البوابة تحتاج إعدادا',
       gatewayUnavailable: 'الاستدلال غير متاح',
       gatewayChecking: 'جار فحص البوابة',

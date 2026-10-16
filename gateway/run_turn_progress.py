@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import json
 import logging
 import queue
 import re
@@ -291,13 +290,11 @@ class GatewayTurnProgressMixin:
         ctx.last_was_terminal_block[0] = code is not None
         if verbose:
             if code is None and args:
-                from agent.display import get_tool_preview_max_len
-                pl = get_tool_preview_max_len()
-                args_str = json.dumps(args, ensure_ascii=False, default=str)
+                from agent.display import get_tool_preview_max_len, verbose_tool_args_text
                 # tool_preview_length 0 (default) = no truncation in verbose mode; the user asked
                 # for full detail and platform message-length limits handle the rest.
-                if pl > 0 and len(args_str) > pl:
-                    args_str = args_str[:pl - 3] + "..."
+                args_str = verbose_tool_args_text(args, get_tool_preview_max_len(),
+                                                  getattr(adapter, "supports_code_blocks", False))
                 code = t("gateway.progress.tool_verbose", emoji=emoji, tool=tool_name, keys=list(args.keys()), args=args_str)
             elif code is None:
                 code = (t("gateway.progress.tool_preview", emoji=emoji, tool=tool_name, preview=preview) if preview

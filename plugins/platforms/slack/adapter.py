@@ -60,6 +60,10 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
 
 logger = logging.getLogger(__name__)
 
+
+class SlackMediaDeliveryError(RuntimeError):
+    """Slack accepted an upload request but the posted message did not contain a file."""
+
 # User-Agent prefix (``HermesAgent/<version>``) for platform-partner attribution of API calls.
 from hermes_cli.version_info import get_version_info
 
@@ -2924,13 +2928,71 @@ class SlackAdapter(BasePlatformAdapter):
                 result = await self._client_for(chat_id, metadata).files_upload_v2(
                     channel=chat_id, **source, filename=filename, initial_comment=caption or "",
                     thread_ts=thread_ts)
+                await self._verify_uploaded_file_message(
+                    chat_id, result, metadata, thread_ts=thread_ts)
                 self._record_uploaded_file_thread(chat_id, thread_ts, metadata)
                 return SendResult(success=True, raw_response=result)
+            except SlackMediaDeliveryError:
+                # Slack already accepted the upload. Never upload the same file again when
+                # readback cannot prove that the attachment landed; that can create duplicates.
+                raise
             except Exception as exc:
                 if not self._is_retryable_upload_error(exc) or attempt >= attempts - 1:
                     raise
                 logger.debug("[Slack] %s retry %d/2 for %s: %s", label, attempt + 1, file_path, exc)
                 await asyncio.sleep(1.5 * (attempt + 1))
+
+    @staticmethod
+    def _uploaded_message_ts(result: Any, chat_id: str) -> str:
+        """Extract the message timestamp created by ``files_upload_v2``."""
+        payload = _slack_response_payload(result)
+        direct = payload.get("ts") or payload.get("message_ts")
+        if direct:
+            return str(direct)
+        file_objects = list(payload.get("files") or [])
+        if isinstance(payload.get("file"), dict):
+            file_objects.append(payload["file"])
+        for file_obj in file_objects:
+            shares = file_obj.get("shares")
+            if isinstance(shares, dict):
+                for visibility in ("public", "private"):
+                    channel_shares = shares.get(visibility, {}).get(chat_id, [])
+                    for share in channel_shares:
+                        if isinstance(share, dict) and share.get("ts"):
+                            return str(share["ts"])
+            if file_obj.get("timestamp"):
+                return str(file_obj["timestamp"])
+        return ""
+
+    async def _verify_uploaded_file_message(
+        self, chat_id: str, result: Any, metadata: Optional[dict[str, Any]], *,
+        thread_ts: Optional[str] = None,
+    ) -> None:
+        """Read back the exact posted message; API success alone is not attachment delivery."""
+        message_ts = self._uploaded_message_ts(result, chat_id)
+        if not message_ts:
+            raise SlackMediaDeliveryError(
+                "Slack attachment delivery failed: upload response contained no posted message timestamp")
+        # conversations.replies requires the thread root timestamp. A file uploaded into a
+        # thread has its own child timestamp, so query the root and locate that exact child.
+        root_ts = thread_ts or message_ts
+        try:
+            readback = await self._client_for(chat_id, metadata).conversations_replies(
+                channel=chat_id, ts=root_ts, inclusive=True, limit=100)
+        except Exception as exc:
+            raise SlackMediaDeliveryError(
+                f"Slack attachment delivery could not be verified for message {message_ts}: {exc}") from exc
+        messages = _slack_response_payload(readback).get("messages") or []
+        posted = next(
+            (message for message in messages
+             if isinstance(message, dict) and str(message.get("ts") or "") == message_ts),
+            None)
+        if not posted:
+            raise SlackMediaDeliveryError(
+                f"Slack attachment delivery failed: posted message {message_ts} was missing on readback")
+        if not posted.get("files"):
+            raise SlackMediaDeliveryError(
+                f"Slack attachment delivery failed: posted message {message_ts} files is empty")
 
     async def _upload_file(
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
@@ -2961,6 +3023,10 @@ class SlackAdapter(BasePlatformAdapter):
             label = f"{kind.capitalize()} upload"
             return await self._upload_with_retry(
                 chat_id, file_path, filename, caption, thread_ts, metadata, label)
+        except SlackMediaDeliveryError as e:
+            logger.error("[%s] %s", self.name, e)
+            await self._send_failure_notice(chat_id, caption, str(e), reply_to, metadata)
+            return SendResult(success=False, error=str(e))
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
                 "[%s] Failed to send %s %s: %s", self.name, kind, file_path, e, exc_info=True)
@@ -3000,11 +3066,16 @@ class SlackAdapter(BasePlatformAdapter):
                 logger.info(
                     "[Slack] Sending %d image(s) in single files_upload_v2 (chunk %d/%d)",
                     len(file_uploads), chunk_idx + 1, len(chunks))
-                await self._client_for(chat_id, metadata).files_upload_v2(
+                result = await self._client_for(chat_id, metadata).files_upload_v2(
                     channel=chat_id, file_uploads=file_uploads, initial_comment=initial_comment,
                     thread_ts=thread_ts)
+                await self._verify_uploaded_file_message(
+                    chat_id, result, metadata, thread_ts=thread_ts)
                 self._record_uploaded_file_thread(chat_id, thread_ts, metadata)
                 delivered = True
+            except SlackMediaDeliveryError as e:
+                logger.error("[Slack] %s", e)
+                await self.emit_media_warning(chat_id, str(e), metadata=metadata)
             except Exception as e:
                 logger.warning(
                     "[Slack] Multi-image files_upload_v2 failed (chunk %d/%d), falling back to per-image: %s",
@@ -3446,6 +3517,10 @@ class SlackAdapter(BasePlatformAdapter):
             return await self._upload_file(chat_id, image_path, caption, reply_to, metadata)
         except FileNotFoundError:
             return SendResult(success=False, error=f"Image file not found: {image_path}")
+        except SlackMediaDeliveryError as e:
+            logger.error("[%s] %s", self.name, e)
+            await self._send_failure_notice(chat_id, caption, str(e), reply_to, metadata)
+            return SendResult(success=False, error=str(e))
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
                 "[%s] Failed to send local Slack image %s: %s", self.name, image_path, e, exc_info=True
@@ -6622,20 +6697,27 @@ async def _standalone_upload_file(
     payload = _slack_response_payload(result)
     if payload.get("ok") is False:
         return send_error(f"Slack API error: {payload.get('error', 'unknown')}")
-    # files_upload_v2 responses vary by sdk version; prefer file timestamp when present.
-    message_id = None
-    if payload:
-        file_obj = payload.get("file") or {}
-        shares = file_obj.get("shares") or {}
-        for share_bucket in shares.values():
-            if isinstance(share_bucket, dict):
-                for entries in share_bucket.values():
-                    if isinstance(entries, list) and entries:
-                        message_id = entries[0].get("ts") or message_id
-                        break
-            if message_id:
-                break
-        message_id = message_id or file_obj.get("timestamp") or payload.get("ts")
+    message_id = SlackAdapter._uploaded_message_ts(result, chat_id)
+    if not message_id:
+        return send_error(
+            "Slack attachment delivery failed: upload response contained no posted message timestamp")
+    root_ts = thread_id or message_id
+    try:
+        readback = _slack_response_payload(await client.conversations_replies(
+            channel=chat_id, ts=root_ts, inclusive=True, limit=100))
+    except Exception as exc:
+        return send_error(
+            f"Slack attachment delivery could not be verified for message {message_id}: {exc}")
+    posted = next(
+        (message for message in (readback.get("messages") or [])
+         if isinstance(message, dict) and str(message.get("ts") or "") == message_id),
+        None)
+    if not posted:
+        return send_error(
+            f"Slack attachment delivery failed: posted message {message_id} was missing on readback")
+    if not posted.get("files"):
+        return send_error(
+            f"Slack attachment delivery failed: posted message {message_id} files is empty")
     return {"success": True, "message_id": message_id, "raw": result}
 
 
@@ -6693,7 +6775,15 @@ async def _standalone_send_media(
                 initial_comment=(formatted_caption or "") if caption_pending else "",
                 thread_id=thread_id)
             if upload_result.get("error"):
-                warnings.append(f"Failed to send media {media_path}: {upload_result['error']}")
+                reason = str(upload_result["error"])
+                warnings.append(f"Failed to send media {media_path}: {reason}")
+                try:
+                    failure_post = await _standalone_post_text(
+                        client, chat_id, reason, unfurl_kwargs, thread_id)
+                    last_message_id = failure_post.get("ts") or last_message_id
+                except Exception:
+                    logger.warning(
+                        "[Slack] Attachment-failure notice send failed", exc_info=True)
                 continue
             uploaded_any = True
             caption_pending = False
@@ -6702,8 +6792,13 @@ async def _standalone_send_media(
             warning = f"Failed to send media {media_path}: {e}"
             logger.error("[Slack] %s", warning, exc_info=True)
             warnings.append(warning)
-    if last_message_id is None and not uploaded_any and not text_to_send.strip():
-        result: dict[str, Any] = {"error": "No deliverable text or media remained after processing"}
+    if not uploaded_any and media_files:
+        result: dict[str, Any] = {
+            "error": warnings[-1] if warnings else "Slack attachment delivery failed",
+            "message_id": last_message_id,
+        }
+    elif last_message_id is None and not text_to_send.strip():
+        result = {"error": "No deliverable text or media remained after processing"}
     else:
         result = {
             "success": True, "platform": "slack", "chat_id": chat_id, "message_id": last_message_id}

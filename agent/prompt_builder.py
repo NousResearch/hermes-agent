@@ -662,7 +662,9 @@ def hud_surface_note(valid_tool_names: set[str] | None = None,
 DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
 _MEDIA_NATIVE = (
-    "You can send files natively: write MEDIA:/absolute/path/to/file in your response. "
+    "You can send files natively: create final deliverables directly under the allowed delivery root "
+    "$HERMES_HOME/cache/generated, then write MEDIA:/absolute/path/to/file in your response. Do not create "
+    "them in Downloads or cache/scratch and copy them after the fact; there is no copy-and-retry fallback. "
 )
 
 _LOCAL_CRON_DELIVERY_NOTE = (
@@ -704,8 +706,8 @@ PLATFORM_HINTS = {
     ),
     "slack": (
         "You are in a Slack workspace communicating with your user. Standard markdown is auto-converted to Slack "
-        "formatting (bold, headers, links, code); tables are NOT supported — use bullet lists or labeled lines. You "
-        "can send media files natively: include MEDIA:/absolute/path/to/file in your response. Images (.png, .jpg, "
+        "formatting (bold, headers, links, code); tables are NOT supported — use bullet lists or labeled lines. "
+        f"{_MEDIA_NATIVE}Images (.png, .jpg, "
         ".webp) are uploaded as photo attachments, audio as file attachments. You can also include image URLs in "
         "markdown format ![alt](url) and they will be uploaded as attachments."
     ),

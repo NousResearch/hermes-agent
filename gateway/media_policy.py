@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,41 @@ def media_delivery_allow_dirs() -> str:
     if cfg is not None:
         return _allow_dirs_str(cfg.get("media_delivery_allow_dirs"))
     return os.environ.get(_ALLOW_DIRS_ENV, "")
+
+
+def media_delivery_deny_dirs() -> str:
+    """Operator roots where model-emitted paths must never auto-attach.
+
+    This is config-only rather than another process-wide environment bridge, so a multiplexed
+    profile cannot leak its policy into a sibling and standalone entrypoints read their own home.
+    """
+    cfg = _routed_gateway_cfg()
+    if cfg is None:
+        cfg = _load_gateway_cfg()
+    return _allow_dirs_str(cfg.get("media_delivery_deny_dirs"))
+
+
+def operator_denies_media_path(path: Path) -> bool:
+    """Whether *path* is equal to or below an operator deny root."""
+    raw = media_delivery_deny_dirs()
+    if not raw:
+        return False
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    for chunk in raw.split(os.pathsep):
+        for item in chunk.split(","):
+            candidate = Path(os.path.expanduser(item.strip()))
+            if not item.strip() or not candidate.is_absolute():
+                continue
+            try:
+                root = candidate.resolve(strict=False)
+                resolved.relative_to(root)
+                return True
+            except (OSError, RuntimeError, ValueError):
+                continue
+    return False
 
 
 def media_delivery_trust_recent() -> bool:

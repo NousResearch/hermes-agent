@@ -1125,8 +1125,8 @@ def _translate_docker_container_media_path(candidate: Path, session_key: str = "
 
 
 def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[str]:
-    """Safe absolute file path for native media delivery, else None. Default: any existing
-    regular file outside the credential / system denylist (symmetric with inbound). Strict
+    """Safe absolute file path for native media delivery, else None. Operator deny roots always
+    win. Default: any regular file outside the credential/system denylist. Strict mode
     (``HERMES_MEDIA_DELIVERY_STRICT=1``, public bots where prompt injection must not exfiltrate
     host secrets): MUST be under a Hermes cache, an operator root (``HERMES_MEDIA_ALLOW_DIRS``),
     or freshly produced within the recency window. Symlinks are resolved before any check."""
@@ -1146,13 +1146,13 @@ def validate_media_delivery_path(path: str, session_key: str = "") -> Optional[s
         resolved = _resolve_path(expanded, strict=True)
     if resolved is None or not resolved.is_file():
         return None
-    # Cache / operator allowlist is trusted unconditionally, regardless of mode.
+    from gateway.media_policy import media_delivery_strict, operator_denies_media_path
+    if operator_denies_media_path(resolved):
+        return None
     for root in _media_delivery_allowed_roots():
         resolved_root = _resolve_path(root, expand=True)
         if resolved_root is not None and _path_is_within(resolved, resolved_root):
             return str(resolved)
-    # Non-strict (default): anything not denylisted (/etc, /proc, ~/.ssh, Hermes-root secrets).
-    from gateway.media_policy import media_delivery_strict
     if not media_delivery_strict():
         return None if _path_under_denied_prefix(resolved) else str(resolved)
     # Strict: recency trust for fresh files (pandoc -o /tmp/x.pdf); denylist still applies.

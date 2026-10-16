@@ -142,6 +142,14 @@ DEFAULT_CONFIG = {
         # otherwise wedge the turn until the idle watchdog discards the already-billed response
         # (#103864). 0 skips the drain. Well-behaved endpoints close immediately and never wait this long.
         "stream_drain_timeout": 2.0,
+        # Opt-in protection for provider image patch ceilings. Rewrites only the
+        # request-local message copy; persisted history and source files are untouched.
+        "openai_image_patch_preflight": False,
+        "openai_image_patch_max_patches": 30000,
+        "openai_image_patch_target_patches": 27000,
+        "openai_image_patch_target_ratio": 0.9,
+        # Case-insensitive model globs to bypass (all models are eligible by default).
+        "openai_image_patch_excluded_models": [],
         # Empty-response retry guard. Empty retries re-send the full input at full price; this stops
         # re-billing deterministic empties (unsignaled refusals, zero output tokens) while failing
         # open on ambiguous evidence (missing usage, any tokens, model/provider change).
@@ -2210,8 +2218,7 @@ DEFAULT_CONFIG = {
         # host 127.0.0.1:7890"). Per-platform vars (DISCORD_PROXY, TELEGRAM_PROXY, ...) are still
         # honored.
         "trust_env": True,
-        # Media delivery. False: any emitted file path is delivered natively unless under the
-        # credential/system denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env, auth.json). True:
+        # Media delivery. False: paths deliver except the credential/system denylist; True:
         # files must be under the Hermes cache, media_delivery_allow_dirs, or fresher than
         # trust_recent_files_seconds — recommended for public-facing gateways so prompt injection
         # can't exfiltrate host secrets. Bridged to HERMES_MEDIA_DELIVERY_STRICT.
@@ -2221,6 +2228,7 @@ DEFAULT_CONFIG = {
         # os.pathsep-separated string; tildes expanded. Bridged to HERMES_MEDIA_ALLOW_DIRS. Honored
         # in both modes.
         "media_delivery_allow_dirs": [],
+        "media_delivery_deny_dirs": [],
         # Trust files whose mtime is within trust_recent_files_seconds even outside the cache/
         # allowlist (e.g. `pandoc -o /tmp/report.pdf`); system paths stay blocked. False =
         # pure-allowlist mode. Bridged to HERMES_MEDIA_TRUST_RECENT_FILES. Only consulted when

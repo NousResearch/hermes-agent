@@ -7243,7 +7243,7 @@ def _resolve_call_client(
                 client, final_model = fb_client, fb_model
                 if async_mode:
                     client, final_model = _to_async_client(
-                        fb_client, fb_model or "", is_vision=(task == "vision"))
+                        fb_client, fb_model or "", is_vision=(task in ("vision", "ocr")))
                 resolved_provider = fb_label or resolved_provider
                 effective_provider = resolved_provider
             # Auto/custom with no credentials: walk the full auto chain (not just OpenRouter).
@@ -7522,7 +7522,7 @@ def _refreshed_nous_step(route: _LadderRoute, kwargs: dict[str, Any], message: s
         lookup_model=route.resolved_model, lookup_task=route.task, async_mode=route.async_mode,
         base_url=route.resolved_base_url, api_key=route.resolved_api_key,
         api_mode=route.resolved_api_mode, main_runtime=route.main_runtime,
-        is_vision=(route.task == "vision"),
+        is_vision=(route.task in ("vision", "ocr")),
     )
     if refreshed_client is None:
         return None
@@ -8227,7 +8227,7 @@ async def _async_call_llm_impl(
         fb_client, fb_model, fb_label = args
         # The converted client drops the sync client's route tags: classify on the sync client's backend.
         classify_as = _candidate_classification_provider(fb_client, fb_model, fb_label, task)
-        fb_client, _ = _to_async_client(fb_client, fb_model or "", is_vision=(task == "vision"))
+        fb_client, _ = _to_async_client(fb_client, fb_model or "", is_vision=(task in ("vision", "ocr")))
         return await _call_fallback_candidate_async(fb_client, fb_model, fb_label, classify_as=classify_as, **kw)
     return await _drive_ladder_async(
         _start_recovery_ladder(failure, req, retry_kwargs, task=task, async_mode=True, route_info=route_info),

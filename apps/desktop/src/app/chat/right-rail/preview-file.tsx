@@ -773,6 +773,9 @@ export function LocalFilePreview({
   // signal and it flips just once when crossing the clean↔dirty boundary.
   // `selfReload` re-runs the load after a save without the parent.
   const [editing, setEditing] = useState(false)
+  // Markdown edits open in live preview (rendered in place, source at the
+  // caret); the header toggle flips to raw source without remounting.
+  const [editView, setEditView] = useState<'rendered' | 'source'>('rendered')
   const draftRef = useRef('')
   const baselineRef = useRef('')
   const editorScopeRef = useRef('')
@@ -964,8 +967,11 @@ export function LocalFilePreview({
     return () => setPreviewDirty(target.url, false)
   }, [target.url, editing, dirty])
 
-  const beginEdit = () => {
+  const isMarkdownFile = (state.language || target.language) === 'markdown'
+
+  const beginEdit = (view: 'rendered' | 'source' = 'rendered') => {
     const text = state.text ?? ''
+    setEditView(view)
     editorScopeRef.current = fileEditScopeKey()
     baselineRef.current = text
     draftRef.current = text
@@ -981,6 +987,9 @@ export function LocalFilePreview({
   // subscribed across renders without recreating itself or going stale.
   const beginEditRef = useRef(beginEdit)
   beginEditRef.current = beginEdit
+  // Edit opens in the view you were reading: rendered → live preview, source →
+  // raw source. Written by the read view on each render.
+  const editViewForModeRef = useRef<'rendered' | 'source'>('rendered')
 
   // Bare `e` enters edit mode when the file pane is hovered or focused and no
   // typable field has focus — a fast, button-free path (double-click felt laggy
@@ -1007,7 +1016,7 @@ export function LocalFilePreview({
       }
 
       event.preventDefault()
-      beginEditRef.current()
+      beginEditRef.current(editViewForModeRef.current)
     }
 
     window.addEventListener('keydown', onKeyDown)
@@ -1093,9 +1102,9 @@ export function LocalFilePreview({
     return (
       <div className="flex h-full flex-col overflow-hidden bg-transparent">
         <PreviewModeSwitcher
-          active="source"
-          modes={[]}
-          onSelect={() => {}}
+          active={isMarkdownFile ? editView : 'source'}
+          modes={isMarkdownFile ? ['rendered', 'source'] : []}
+          onSelect={mode => setEditView(mode === 'source' ? 'source' : 'rendered')}
           trailing={<EditControls dirty={dirty} onCancel={cancelEdit} onSave={() => void saveEdit()} saving={saving} />}
         />
         {conflict && (
@@ -1130,6 +1139,7 @@ export function LocalFilePreview({
             filePath={filePath}
             initialValue={baselineRef.current}
             key={editorKey}
+            livePreview={isMarkdownFile && editView === 'rendered'}
             onCancel={cancelEdit}
             onChange={handleEditorChange}
             onSave={() => void saveEdit()}
@@ -1231,6 +1241,8 @@ export function LocalFilePreview({
     // outranks the diff-first default.
     const mode = userMode && modes.includes(userMode) ? userMode : onSelectRendered ? 'source' : autoMode
 
+    editViewForModeRef.current = mode === 'source' ? 'source' : 'rendered'
+
     const selectMode = (next: PreviewViewMode) => {
       if (next === 'rendered' && onSelectRendered) {
         onSelectRendered()
@@ -1264,7 +1276,7 @@ export function LocalFilePreview({
               <Tip label={`${t.preview.edit} (e)`}>
                 <button
                   className="flex items-center gap-1 text-[0.625rem] font-bold text-muted-foreground underline-offset-4 transition-colors hover:text-foreground"
-                  onClick={beginEdit}
+                  onClick={() => beginEdit(editViewForModeRef.current)}
                   type="button"
                 >
                   <Pencil className="size-3" />

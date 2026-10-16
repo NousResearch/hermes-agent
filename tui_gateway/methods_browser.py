@@ -49,6 +49,7 @@ def _cdp_http_reachable(parsed, timeout: float = 2.0) -> bool:
 
 def _connect_local_default(port: int, system: str, announce) -> str | None:
     """Discover (or launch) the default local debug browser → CDP URL, or None after announcing."""
+    from agent.deadline import poll_until
     from hermes_cli.browser_connect import (
         discover_local_cdp_url, find_free_debug_port, launch_chrome_debug, local_port_in_use,
         manual_chrome_debug_command)
@@ -71,11 +72,7 @@ def _connect_local_default(port: int, system: str, announce) -> str | None:
     launch = launch_chrome_debug(launch_port, system)
     if launch.launched:
         # Bounded wait: the whole connect must finish inside the client RPC timeout.
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline:
-            if discovered := discover_local_cdp_url(launch_port, timeout=1.0):
-                break
-            time.sleep(0.5)
+        discovered = poll_until(lambda: discover_local_cdp_url(launch_port, timeout=1.0), 10.0, 0.5)
     if discovered:
         announce(f"Chromium-family browser launched and listening on port {launch_port}")
         return discovered

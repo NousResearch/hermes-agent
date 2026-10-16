@@ -84,13 +84,14 @@ describe('publish-time eviction', () => {
 })
 
 describe('closeSessionTile eviction', () => {
-  it("drops a settled session's state on close — no later publish may come", () => {
+  it('releases a settled transcript on close but retains its background-work identity', () => {
     $sessionTiles.set([{ runtimeId: 'rt-1', storedSessionId: 'stored-1' }])
     publishSessionState('rt-1', state('stored-1', { busy: false }))
 
     closeSessionTile('stored-1')
 
-    expect($sessionStates.get()['rt-1']).toBeUndefined()
+    expect($sessionStates.get()['rt-1']?.messages).toEqual([])
+    expect($sessionStates.get()['rt-1']).toMatchObject({ storedSessionId: 'stored-1', busy: false })
   })
 
   it("keeps a busy session's state on close — the background turn is still running", () => {

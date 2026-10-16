@@ -27,6 +27,7 @@ import {
   type ComposerStatusItem,
   dismissBackgroundProcess,
   groupStatusItems,
+  needsBackgroundRefresh,
   refreshBackgroundProcesses,
   type StatusGroup,
   stopBackgroundProcess
@@ -48,7 +49,8 @@ import { SubagentSection } from './subagent-section'
 import { useSubagentSnapshot } from './use-subagent-snapshot'
 
 // Slow safety-net poll for silent exits (processes without notify_on_complete
-// emit no event when they die). Only armed while a running row is on screen.
+// emit no event when they die) and for results still owed to the agent.
+// Only armed while such a row is on a visible pane.
 const BACKGROUND_POLL_MS = 5_000
 
 // A localhost/loopback preview is only meaningful while its dev server is up, so
@@ -187,9 +189,12 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   // poll (event-driven refreshes in use-message-stream still land through the
   // store) and resume it on reveal via `paneVisible` in the dep array.
   const paneVisible = usePaneVisible()
+  // An exited process whose notice has not reached the agent yet still needs
+  // the poll, or its Monitoring state would never learn of the settle.
+  const needsBackgroundPoll = allGroups.some(g => g.type === 'background' && g.items.some(needsBackgroundRefresh))
 
   useEffect(() => {
-    if (!sessionId || !hasRunningBackground || !paneVisible) {
+    if (!sessionId || !needsBackgroundPoll || !paneVisible) {
       return
     }
 
@@ -200,7 +205,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
     }, BACKGROUND_POLL_MS)
 
     return () => clearInterval(timer)
-  }, [hasRunningBackground, sessionId, paneVisible])
+  }, [needsBackgroundPoll, sessionId, paneVisible])
 
   const openAgents = () => navigate(AGENTS_ROUTE)
 

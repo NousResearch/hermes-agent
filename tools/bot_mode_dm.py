@@ -824,7 +824,8 @@ def _delivery_main(args: list[str]) -> int:
         return 1
 
 
-# agent-context helpers (mirror system_prompt.py's resolution)
+# agent-context helpers. ``_session_title`` is the Bot Chat gate;
+# system_prompt uses it so the protocol section and the tool agree.
 
 
 def _agent_home(agent: Any) -> str:
@@ -837,14 +838,23 @@ def _agent_home(agent: Any) -> str:
 
 
 def _session_title(agent: Any) -> str:
-    title = str(getattr(agent, "_session_title_hint", "") or "").strip()
-    if title:
-        return title
+    """Title the Bot Chat gate reads.
+
+    A pending hint wins only until the stored row is the canonical chat. A
+    stale hint (this window was opened before the row was titled, or resumed
+    without ``pending_title``) must not keep ``message_agent`` off once the
+    database title is exactly ``Bot Chat``.
+    """
+    hint = str(getattr(agent, "_session_title_hint", "") or "").strip()
+    db_title = ""
     with contextlib.suppress(Exception):
         sdb, sid = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
         if sdb and sid:
-            return str(sdb.get_session_title(sid) or "").strip()
-    return ""
+            db_title = str(sdb.get_session_title(sid) or "").strip()
+    from tools.bot_mode_probe import BOT_CHAT_TITLE
+    if db_title == BOT_CHAT_TITLE:
+        return db_title
+    return hint or db_title
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised as a background process

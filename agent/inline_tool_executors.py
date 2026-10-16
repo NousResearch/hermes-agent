@@ -313,8 +313,8 @@ INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
 }
 
 # ``invoke_tool`` (concurrent path) consults the memory manager right after these three
-# names and before the remaining inline tools; ``message_agent`` falls through to the
-# registry there (Bot Mode DM is only injected into the sequential path's schema).
+# names and before the remaining inline tools. ``message_agent`` stays in that table:
+# a bridge unwrap can land it here, and the registry has no handler for it.
 INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES = frozenset({"todo_list", "session_search", "memory"})
 
 
@@ -322,13 +322,11 @@ def resolve_invoke_tool_executor(agent, function_name: str) -> Optional[InlineTo
     """Inline executor for ``invoke_tool`` (concurrent path), or None for registry dispatch.
 
     Precedence: todo_list/session_search/memory, then memory-manager tools, then the
-    remaining inline tools (``message_agent`` excluded).
+    remaining inline tools, including injected ``message_agent``.
     """
     if function_name in INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES:
         return INLINE_TOOL_EXECUTORS[function_name]
     memory_manager = agent._memory_manager
     if memory_manager and memory_manager.has_tool(function_name):
         return lambda agent, args, ctx: agent._memory_manager.handle_tool_call(function_name, args)
-    if function_name == "message_agent":
-        return None
     return INLINE_TOOL_EXECUTORS.get(function_name)

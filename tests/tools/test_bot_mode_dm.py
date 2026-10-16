@@ -141,6 +141,29 @@ def test_config_toggle_disables_injection(tmp_path):
     assert agent.tools == []
 
 
+def test_stale_hint_does_not_hide_canonical_bot_chat(tmp_path):
+    """A window opened before the row was titled must still see Bot Chat.
+
+    The hint used to win unconditionally, so a stale non-chat hint kept
+    ``message_agent`` off after the stored title was already canonical.
+    """
+    home = _managed_home(tmp_path)
+    agent = _FakeAgent(home, title="Bot Chat")
+    agent._session_title_hint = "Scratch"
+    assert bot_mode_dm._session_title(agent) == "Bot Chat"
+    assert bot_mode_dm.message_agent_authorized(agent) is True
+    assert bot_mode_dm.ensure_message_agent_tool(agent) is True
+
+
+def test_pending_hint_wins_until_row_is_bot_chat(tmp_path):
+    """A not-yet-persisted title must not be overwritten by an older row."""
+    home = _managed_home(tmp_path)
+    agent = _FakeAgent(home, title="Ordinary chat")
+    agent._session_title_hint = "Draft"
+    assert bot_mode_dm._session_title(agent) == "Draft"
+    assert bot_mode_dm.message_agent_authorized(agent) is False
+
+
 def test_schema_never_in_global_registry():
     """message_agent must not be registered/toolset-reachable anywhere."""
     from tools.registry import registry

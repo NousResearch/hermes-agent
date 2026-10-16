@@ -222,7 +222,9 @@ async def auth_login(request: Request, provider: str, next: str = ""):
     if not getattr(p, "supports_session", True):
         raise _http(404, f"Provider does not support interactive login: {provider!r}")
     safe_next = _validate_post_login_target(next)
-    if getattr(p, "supports_password", False):
+    # Credential providers (password form / WebAuthn ceremony) are mediated by the
+    # /login page, never by the OAuth redirect dance; start_login would raise.
+    if getattr(p, "supports_password", False) or getattr(p, "supports_webauthn", False):
         login_url = f"{_prefix(request)}/login"
         if safe_next:
             login_url = f"{login_url}?next={quote(safe_next, safe='')}"
@@ -324,7 +326,7 @@ async def auth_native_authorize(
             client_ip=_client_ip(request))
     except native_flow.NativeFlowError as e:
         raise _http(503, str(e))
-    if getattr(p, "supports_password", False):
+    if getattr(p, "supports_password", False) or getattr(p, "supports_webauthn", False):
         _audit(request, AuditEvent.NATIVE_AUTHORIZE_START, provider=p.name)
         resp = RedirectResponse(url=f"{_prefix(request)}/login", status_code=302)
         _set_pkce(resp, request, {"provider": p.name, "broker": broker_state})

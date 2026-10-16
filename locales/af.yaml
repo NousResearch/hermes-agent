@@ -73,6 +73,8 @@ gateway:
     next_turn_only: "    (slegs volgende beurt — herstel na een antwoord)"
     switch_cancelled: "🟡 Modelwisseling gekanselleer. Huidige model onveranderd ({model})."
     guard_confirm: "⚠️ **{title}**\n\n{message}\n\n_Teks-alternatief: antwoord `{prefix}approve` om te wissel of `{prefix}cancel` om die huidige model te behou._"
+    err_once_local: "`--once` is not available in this session; use `/model <name>` and switch back after the turn."
+    local_next_turn: "Applies from your next message."
   agents:
     header: "🤖 **Aktiewe Agente & Take**"
     active_agents: "**Aktiewe agente:** {count}"

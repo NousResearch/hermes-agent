@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
+from hermes_state_keys import CRON_PRINCIPAL_ID
 from hermes_state_pidns import persistent_record_pidns_checkable, pid_namespace_id
 from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
 from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
@@ -353,6 +354,26 @@ def _placeholders(items) -> str:
     return ",".join("?" for _ in range(items if isinstance(items, int) else len(items)))
 
 
+def _source_match_clause(sources, local_created_sources=None) -> tuple[str, list]:
+    """``sessions s`` source predicate. With ``local_created_sources``, a ``source='local'`` row
+    matches only when ``created_source`` is one of those surfaces; the placeholder ``'unknown'``
+    is not a surface and stays unmatched until an upsert stamps the real creator."""
+    labels = list(sources or [])
+    if not labels:
+        return "", []
+    surfaces = list(local_created_sources or ())
+    if not surfaces:
+        return f"s.source IN ({_placeholders(labels)})", labels
+    non_local = [item for item in labels if item != "local"]
+    local_sql = f"(s.source = 'local' AND s.created_source IN ({_placeholders(surfaces)}))"
+    if not non_local:
+        return local_sql, list(surfaces)
+    return (
+        f"(s.source IN ({_placeholders(non_local)}) OR {local_sql})",
+        [*non_local, *surfaces],
+    )
+
+
 # Ids per ``IN (?,...)`` list: SQLite caps bound parameters at SQLITE_MAX_VARIABLE_NUMBER (999 on builds
 # < 3.32, 32766 after); a bulk prune of a cron-heavy store bound tens of thousands of ids into one list and
 # died with "too many SQL variables". Every IN-list over session ids goes through ``_id_chunks``.
@@ -381,6 +402,8 @@ CREATE TABLE IF NOT EXISTS system_prompts (
 
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
+    runtime_revision INTEGER NOT NULL DEFAULT 0,
+    runtime_generation INTEGER NOT NULL DEFAULT 0,
     source TEXT NOT NULL,
     created_source TEXT,
     user_id TEXT,
@@ -501,6 +524,60 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
 );
 
+CREATE TABLE IF NOT EXISTS runtime_epoch (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    epoch INTEGER NOT NULL CHECK (epoch > 0),
+    instance_id TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS session_admissions (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    admission_id TEXT NOT NULL UNIQUE,
+    request_id TEXT NOT NULL,
+    principal_id TEXT NOT NULL,
+    target_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,
+    lineage_json TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    payload_digest TEXT NOT NULL,
+    intent TEXT NOT NULL CHECK (intent IN ('queue','steer','redirect')),
+    status TEXT NOT NULL CHECK (status IN ('queued','started','unknown','terminal')),
+    outcome TEXT,
+    owner_epoch INTEGER,
+    generation INTEGER,
+    UNIQUE (principal_id, target_session_id, request_id),
+    CHECK (status != 'started' OR (owner_epoch IS NOT NULL AND generation IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS session_admissions_pending
+    ON session_admissions(target_session_id, status, seq);
+-- Cron run history finds a job's unified-runtime runs by the scheduler principal's request ids
+-- (``cron:<job>:<execution>``); without this a lookup walked
+-- every cron admission of every job. Partial: interactive turns, the bulk of admissions, pay
+-- nothing for it. The constant leading column gives the planner equality + range over a covering
+-- index, so it beats the UNIQUE autoindex's bare principal_id prefix even without ANALYZE stats.
+-- The WHERE is built from CRON_PRINCIPAL_ID, the literal the run queries inline, so they cannot drift.
+CREATE INDEX IF NOT EXISTS idx_session_admissions_cron_request
+    ON session_admissions(principal_id, request_id, target_session_id) WHERE principal_id = '""" + CRON_PRINCIPAL_ID + """';
+CREATE TABLE IF NOT EXISTS worker_executions (
+    execution_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE RESTRICT,
+    kind TEXT NOT NULL CHECK (kind IN ('cron','child','compute','kanban')),
+    owner_epoch INTEGER NOT NULL,
+    generation INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('registered','running','unknown','terminal')),
+    adoption_digest TEXT NOT NULL,
+    last_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_sequence >= 0)
+);
+-- Lineage-wide worker exclusion (claim/register/reset) probes every row of a conversation's lineage
+-- inside the write transaction; without this each probe scanned the whole (only-growing) table.
+CREATE INDEX IF NOT EXISTS idx_worker_executions_session_status
+    ON worker_executions(session_id, status);
+CREATE TABLE IF NOT EXISTS worker_receipts (
+    execution_id TEXT NOT NULL REFERENCES worker_executions(execution_id) ON DELETE RESTRICT,
+    sequence INTEGER NOT NULL CHECK (sequence > 0),
+    payload_digest TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    PRIMARY KEY (execution_id, sequence)
+);
+
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -608,6 +685,8 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     owner_pid INTEGER,
     owner_started_at INTEGER,
     task_json TEXT,
+    -- Owner-side execution fence (unified runtime).
+    owner_execution_id TEXT,
     delivery_claim TEXT,
     delivery_claimed_at REAL,
     -- Mirrors the delegation tool's own CREATE TABLE (tools/async_delegation.py
@@ -646,7 +725,20 @@ CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
 """
 
 # Indexes on later-added columns must run AFTER _reconcile_columns(), or executescript fails on legacy DBs.
+# sessions_runtime_ledger_delete_guard: every delete path in this release retires a session's ledger rows
+# (session_admissions / worker_executions, ON DELETE RESTRICT) first, so only a release that predates the
+# gateway runtime reaches it. Such a release (schema_version 31 too, and it never refuses a newer schema)
+# otherwise dies on the bare FK with no hint. It prints the RAISE text verbatim and buckets errors by phrase,
+# so the text must stay free of the words it reads as storage damage, lock contention or disk trouble.
 DEFERRED_INDEX_SQL = """
+DROP TRIGGER IF EXISTS sessions_runtime_ledger_delete_guard;
+CREATE TRIGGER IF NOT EXISTS sessions_runtime_ledger_delete_guard
+BEFORE DELETE ON sessions
+WHEN EXISTS (SELECT 1 FROM session_admissions WHERE target_session_id = old.id)
+  OR EXISTS (SELECT 1 FROM worker_executions WHERE session_id = old.id)
+BEGIN
+    SELECT RAISE(ABORT, 'Refused to delete a session that has gateway runtime history: state.db was upgraded by a newer Hermes, and this older Hermes cannot delete such sessions. Downgrading is unsupported. Run hermes update to go back to the newer release, or restore the pre-update snapshot: https://hermes-agent.nousresearch.com/docs/getting-started/updating#rolling-back-to-an-older-release');
+END;
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_display_page
@@ -753,6 +845,13 @@ CREATE INDEX IF NOT EXISTS idx_sessions_tool_names
 -- a small candidate set before compression-chain and preview hydration.
 CREATE INDEX IF NOT EXISTS idx_sessions_effective_activity
     ON sessions(COALESCE(last_activity_at, started_at) DESC, started_at DESC);
+-- CLI/TUI listings match gateway rows stored as source='local' by created_source,
+-- before LIMIT. created_source is reconciled onto legacy DBs, so this index lives
+-- here rather than in SCHEMA_SQL. A source-only index would walk every local row
+-- (Desktop and TUI included) to find one surface.
+CREATE INDEX IF NOT EXISTS idx_sessions_local_created_started
+    ON sessions(created_source, started_at DESC)
+    WHERE source = 'local';
 """
 
 

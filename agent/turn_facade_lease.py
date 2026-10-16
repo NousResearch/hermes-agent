@@ -366,6 +366,7 @@ def admit_durable_turn_lease(
     ):
         admission.early_result = _lease_admission_result(
             agent, db, session_id, conversation_history, inbound_delivery,
+            waited=announced,
         )
         return admission
 
@@ -502,19 +503,21 @@ def _lease_waiter_observation(db, session_id: str) -> Dict[str, Any]:
 
 
 def _lease_admission_result(
-    agent, db, session_id: str, conversation_history, inbound_delivery,
+    agent, db, session_id: str, conversation_history, inbound_delivery, *, waited: bool,
 ) -> Dict[str, Any]:
     """Early result for a turn that could not take the conversation's lease.
 
     A human turn keeps the fail-closed timeout: nothing is spooled on its behalf, so the caller must
     resend. An inbound delivery is spooled onto the CONVERSATION and the result reports the queue
     admission instead, because that message has an owner waiting on it and no retry of its own.
+    ``waited`` is forwarded to the timeout arm unchanged: it decides whether the interrupt message
+    names a wait the user was told about, or one that landed before the first attempt.
     """
     message = ""
     if inbound_delivery and not getattr(agent, "_interrupt_requested", False):
         message = str(inbound_delivery.get("message") or "").strip()
     if not message:
-        return _lease_not_acquired_result(agent, session_id, conversation_history)
+        return _lease_not_acquired_result(agent, session_id, conversation_history, waited=waited)
     observation = _lease_waiter_observation(db, session_id)
     try:
         from tools.bot_live_delivery import enqueue_lease_delivery
@@ -531,7 +534,7 @@ def _lease_admission_result(
             "Could not queue the inbound delivery for %s; reporting the lease timeout instead",
             session_id, exc_info=True,
         )
-        return _lease_not_acquired_result(agent, session_id, conversation_history)
+        return _lease_not_acquired_result(agent, session_id, conversation_history, waited=waited)
     notice = (
         "Another Hermes process is using this session. Your message was queued and will be the "
         "first thing the next turn on this session reads."
@@ -621,7 +624,9 @@ def _drain_lease_queue(session_id: str, conversation_history):
         return list(conversation_history or []), []
 
 
-def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> dict[str, Any]:
+def _lease_not_acquired_result(agent, session_id: str, conversation_history, *, waited: bool) -> dict[str, Any]:
+    """``waited``: another holder was seen (the user was told so), not merely an interrupt that
+    landed before the first acquisition attempt, which no other process was involved in."""
     base = {"messages": list(conversation_history or []), "api_calls": 0, "completed": False}
     if getattr(agent, "_interrupt_requested", False):
         logger.info("session turn lease wait aborted by interrupt: %s", session_id)
@@ -633,6 +638,8 @@ def _lease_not_acquired_result(agent, session_id: str, conversation_history) -> 
             "final_response": (
                 "Stopped waiting for another Hermes process on this session. "
                 "Your message was not processed."
+                if waited else
+                "Stopped before this turn started. Your message was not processed."
             ),
             **base,
             "interrupted": True,

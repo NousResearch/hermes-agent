@@ -480,7 +480,10 @@ class AuthorityConnection:
             ref = resolve_titled_session(self.authority, self.actor, params['title'])
         else:
             from gateway.session_local_migration import resolve_local_target
+            from gateway.session_policy_refresh import refresh_settled
             from hermes_state_local_migration import LEGACY_LOCAL_SOURCES
+            # Another viewer's refresh mid-cleanup has committed a policy it has not published yet.
+            await refresh_settled(self.authority, ref.session_id)
             row = self.authority.db.get_session(ref.session_id)
             if row and row['source'] in LEGACY_LOCAL_SOURCES:
                 ref = resolve_local_target(self.authority, self.actor,

@@ -559,6 +559,51 @@ async def test_the_next_command_after_a_terminal_refresh_runs_on_the_new_backend
         store.close_all_db_handles()
 
 
+@pytest.mark.asyncio
+async def test_a_second_resume_during_terminal_cleanup_waits_for_the_refresh(tmp_path, monkeypatch, caplog):
+    """A refresh that moves the terminal binding commits, then tears the session's sandbox down (10-15 s on a
+    remote backend) before it publishes. A second viewer attaching meanwhile waits for that refresh instead of
+    failing ``storage_unavailable`` on a stored policy ahead of the live one, and commits nothing itself: one
+    generation, each environment torn down once."""
+    import logging
+    import threading
+    from tools import terminal_tool_lifecycle
+    home = _home(monkeypatch)
+    store, authority = await _owner_authority(home)
+    entered, release, cleaned = threading.Event(), threading.Event(), []
+
+    def held_cleanup(key):
+        cleaned.append(key)
+        entered.set()
+        assert release.wait(10)
+    monkeypatch.setattr(terminal_tool_lifecycle, 'cleanup_vm', held_cleanup)
+    owner, first, second = _connect(authority), _connect(authority), _connect(authority)
+    resumes = []
+    try:
+        sid = (await _call(owner, 'session.create', request_id='t', source='cli', cwd=str(tmp_path)))['session_id']
+        generation = store._db.get_session(sid)['runtime_generation']
+        (home / 'config.yaml').write_text(AFTER)
+        resume = {'id': 1, 'method': 'session.resume', 'params': {'session_id': sid}}
+        resumes.append(asyncio.create_task(first.dispatch(resume)))
+        await async_wait_until(entered.is_set, what='the first refresh to start its terminal cleanup')
+        with caplog.at_level(logging.DEBUG, logger='gateway.session_policy_refresh'):
+            resumes.append(asyncio.create_task(second.dispatch(resume)))
+            await async_wait_until(lambda: resumes[1].done() or 'waits for its policy refresh' in caplog.text,
+                                   what='the second resume to finish or wait')
+        assert not resumes[1].done(), resumes[1].result()
+        release.set()
+        replies = await asyncio.gather(*resumes)
+        assert [reply['result']['execution_generation'] for reply in replies] == [generation + 1] * 2, replies
+        assert store._db.get_session(sid)['runtime_generation'] == generation + 1
+        assert cleaned and len(cleaned) == len(set(cleaned)), cleaned
+    finally:
+        release.set()
+        await asyncio.gather(*resumes, return_exceptions=True)
+        for connection in (owner, first, second):
+            await connection.close()
+        store.close_all_db_handles()
+
+
 def test_a_skipped_resume_refresh_warns_unless_the_session_is_busy(monkeypatch, caplog):
     """A turn running or queued is the expected skip; a revoked credential or an unreadable profile leaves a
     silent no-refresh, so it is a WARNING."""

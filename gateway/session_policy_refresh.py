@@ -152,9 +152,38 @@ def _rebind(authority, session_id, old, policy, fresh, replaced):
     return bind_launch_key(authority, session_id, policy, launch_key(authority, old), config_secrets=secrets)
 
 
+def _in_flight(authority):
+    found = getattr(authority, '_policy_refreshes', None)
+    if found is None:
+        found = authority._policy_refreshes = {}
+    return found
+
+
+async def refresh_settled(authority, session_id):
+    """Wait out a refresh of *session_id* in flight. Its commit lands before its terminal cleanup (a sandbox
+    teardown can take 10-15 s) and its publication; an attach meanwhile would find the stored policy ahead
+    of the live one, which restore_local_session refuses."""
+    refreshes = _in_flight(authority)
+    while (running := refreshes.get(session_id)) is not None and not running.done():
+        logger.debug('Session %s waits for its policy refresh to publish', session_id)
+        await asyncio.wait({running})  # its outcome is its caller's; a cancelled waiter leaves it running
+
+
 async def commit_refresh(authority, ref, *, mcp_only=False):
     """Commit an idle local session's refresh as its next policy generation: True when one was committed,
-    False when nothing moved. Raises the store's refusal (``session_busy`` while a turn runs or waits)."""
+    False when nothing moved. Raises the store's refusal (``session_busy`` while a turn runs or waits).
+    One refresh per session at a time, run to its publication even when the caller is cancelled: a second
+    waits for the first, then usually finds nothing moved."""
+    from gateway.session_runtime_workers import track_mutation
+    await refresh_settled(authority, ref.session_id)
+    refreshes = _in_flight(authority)
+    task = refreshes[ref.session_id] = track_mutation(authority, _commit_refresh(authority, ref, mcp_only))
+    task.add_done_callback(lambda done: refreshes.pop(ref.session_id, None) if refreshes.get(ref.session_id)
+                           is done else None)
+    return await asyncio.shield(task)
+
+
+async def _commit_refresh(authority, ref, mcp_only):
     from gateway.session_runtime_workers import tracked_write
     from hermes_state_mutation_prepared import commit_refreshed_policy
     prepared = await asyncio.to_thread(_prepare, authority, ref.session_id, mcp_only)

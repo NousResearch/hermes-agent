@@ -14,6 +14,13 @@ export const arCapabilities = {
   },
   skills: {
     plugins: {
+      kanbanToolsHint:
+        'يعرض مفتاح Desktop اللوحة. يمنح مفتاح Agent أدوات Kanban لمحادثات CLI وDesktop لهذا الملف الشخصي، ولا يشغّل موزّع المهام.',
+      kanbanToolsUnavailable:
+        'لا يعرض هذا الخادم Kanban في إعدادات الأدوات. حدّث Hermes على الخادم المحدد لتفعيل أدوات الوكيل من هنا.',
+      kanbanToolsUpdateBackend: 'حدّث الخادم',
+      kanbanToolsSaved: (profile: string) =>
+        `حُفظت إعدادات أدوات Kanban للملف ${profile}. افتح محادثة جديدة لتطبيقها؛ لن تتغير المحادثات الحالية.`,
       pageBlurb: 'يمكن للإضافة توسيع هذا التطبيق أو الوكيل أو كليهما — ولكل جزء مفتاح تشغيل مستقل.'
     },
     tabSkills: 'المهارات',

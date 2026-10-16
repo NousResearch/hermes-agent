@@ -1971,6 +1971,10 @@ export interface Translations extends NoticeTranslations {
       emptyHint: string
       loadFailed: string
       toggleFailed: (name: string) => string
+      kanbanToolsHint: string
+      kanbanToolsUnavailable: string
+      kanbanToolsUpdateBackend: string
+      kanbanToolsSaved: (profile: string) => string
       toolsetOn: (name: string, profile: string) => string
       toolsetOff: (name: string, profile: string) => string
       toolsetToggleFailed: (name: string) => string

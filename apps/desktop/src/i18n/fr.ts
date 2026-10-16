@@ -2537,6 +2537,10 @@ export const frOverrides = {
     skillArchivedMessage: 'Restaurable via hermes curator restore.',
     tabPlugins: 'Plugins',
     plugins: {
+      kanbanToolsHint: 'Le bouton Desktop affiche le tableau. Le bouton Agent autorise les outils Kanban dans les conversations CLI et Desktop de ce profil, sans démarrer le répartiteur.',
+      kanbanToolsUnavailable: 'Ce backend ne propose pas encore Kanban dans les paramètres des outils. Mettez à jour Hermes sur le backend sélectionné pour activer les outils de l’agent ici.',
+      kanbanToolsUpdateBackend: 'Mettre à jour le backend',
+      kanbanToolsSaved: (profile: string) => `Outils Kanban enregistrés pour ${profile}. Ouvrez une nouvelle conversation pour appliquer le changement ; les conversations existantes restent inchangées.`,
       agentTitle: "Plugins de l'agent",
       agentBlurb:
         "Étendez l'agent du profil sélectionné avec des outils, hooks et fournisseurs. Les changements prennent effet après le redémarrage du gateway.",

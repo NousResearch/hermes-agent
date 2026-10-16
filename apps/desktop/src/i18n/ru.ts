@@ -1517,6 +1517,13 @@ export const ruOverrides = {
   },
   skills: {
     plugins: {
+      kanbanToolsHint:
+        'Переключатель Desktop показывает доску. Переключатель агента разрешает инструменты Kanban в CLI и Desktop этого профиля; диспетчер при этом не запускается.',
+      kanbanToolsUnavailable:
+        'Этот backend не показывает Kanban в настройках инструментов. Обновите Hermes на выбранном backend, чтобы включить инструменты агента здесь.',
+      kanbanToolsUpdateBackend: 'Обновите backend',
+      kanbanToolsSaved: (profile: string) =>
+        `Инструменты Kanban сохранены для ${profile}. Откройте новый чат для применения; существующие чаты не изменятся.`,
       pageBlurb: 'Плагин может расширять приложение, агента или оба сразу — у каждой части свой переключатель.'
     },
     tabSkills: 'Навыки',

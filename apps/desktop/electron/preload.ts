@@ -383,6 +383,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
   setKeepAwake: mode => ipcRenderer.send('hermes:keep-awake', mode),
+  // Once per computer, after a timed sleep interrupted a turn with keep-awake off.
+  onKeepAwakeOffer: callback => {
+    const listener = () => callback()
+    ipcRenderer.on('hermes:keep-awake-offer', listener)
+
+    return () => ipcRenderer.removeListener('hermes:keep-awake-offer', listener)
+  },
   minimizeToTray: {
     get: () => ipcRenderer.invoke('hermes:minimize-to-tray:get'),
     set: on => ipcRenderer.invoke('hermes:minimize-to-tray:set', on),

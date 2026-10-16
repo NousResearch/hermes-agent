@@ -35,6 +35,9 @@ export type SessionControlWaitBarrier =
 export interface SessionControlGoal {
   contract: SessionControlGoalContract
   gates: SessionControlGate[]
+  /** Set while an active goal's turn was killed by a process death and nobody
+   *  has continued it yet; absent again once the goal moves. */
+  interrupted_at?: number
   last_reason?: string
   last_verdict?: 'blocked' | 'continue' | 'done' | 'skipped' | 'wait'
   max_turns: number
@@ -86,6 +89,7 @@ export interface SessionControlSnapshot {
 
 export type SessionControlAction =
   | 'goal.clear'
+  | 'goal.continue'
   | 'goal.pause'
   | 'goal.resume'
   | 'goal.unwait'
@@ -270,7 +274,16 @@ function parseWaitBarrier(value: unknown): SessionControlWaitBarrier | null {
 
 function parseGoal(value: unknown): SessionControlGoal | null {
   const required = ['title', 'status', 'turns_used', 'max_turns', 'contract', 'subgoals', 'gates']
-  const optional = ['created_at', 'updated_at', 'paused_reason', 'last_verdict', 'last_reason', 'wait_barrier']
+
+  const optional = [
+    'created_at',
+    'updated_at',
+    'interrupted_at',
+    'paused_reason',
+    'last_verdict',
+    'last_reason',
+    'wait_barrier'
+  ]
 
   if (!isRecord(value) || !hasExactFields(value, required, optional)) {
     return null
@@ -288,6 +301,7 @@ function parseGoal(value: unknown): SessionControlGoal | null {
     !hasOptionalStrings(value, ['paused_reason', 'last_reason']) ||
     (hasOwn(value, 'created_at') && !isFiniteNumber(value.created_at)) ||
     (hasOwn(value, 'updated_at') && !isFiniteNumber(value.updated_at)) ||
+    (hasOwn(value, 'interrupted_at') && !isFiniteNumber(value.interrupted_at)) ||
     (hasOwn(value, 'last_verdict') &&
       (typeof value.last_verdict !== 'string' ||
         !GOAL_VERDICTS.has(value.last_verdict as NonNullable<SessionControlGoal['last_verdict']>)))
@@ -321,6 +335,10 @@ function parseGoal(value: unknown): SessionControlGoal | null {
 
   if (hasOwn(value, 'updated_at')) {
     goal.updated_at = value.updated_at as number
+  }
+
+  if (hasOwn(value, 'interrupted_at')) {
+    goal.interrupted_at = value.interrupted_at as number
   }
 
   if (hasOwn(value, 'paused_reason')) {

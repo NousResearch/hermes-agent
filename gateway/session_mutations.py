@@ -38,6 +38,9 @@ def _authorize_control(authority, actor, ref, params):
         raise RuntimeStoreError('profile_mismatch')
     if 'session:control' not in actor.capabilities:
         raise RuntimeStoreError('permission_denied')
+    from gateway.session_read_status import operator_read_status
+    if operator_read_status(actor, params):
+        return False
     cold_history = False
     # A receipt authorizes only its original principal's exact retry; the
     # transaction still verifies the entire digest and current epoch.

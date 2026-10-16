@@ -81,3 +81,27 @@ async def test_standalone_edit_refuses_while_a_gateway_owns_the_store(tmp_path, 
             owner.close()
         assert db.get_session('owned')['title'] is None
         assert db.get_session('owned')['runtime_revision'] == 0
+
+
+@pytest.mark.asyncio
+async def test_uncertain_owner_read_status_never_opens_an_offline_writer(tmp_path, monkeypatch):
+    from hermes_cli import gateway_runtime
+    from hermes_cli import gateway_read_status
+    from hermes_cli import web_server_sessions
+
+    app = _standalone_app(tmp_path, monkeypatch)
+    endpoint = gateway_runtime.GatewayEndpoint(str(tmp_path), 'owner', 1, 1,
+        'http://127.0.0.1:1', 'none', frozenset({'session-authority-v1'}))
+    monkeypatch.setattr(gateway_runtime, 'discover_gateway_endpoint',
+        lambda home: gateway_runtime.GatewayDiscovery('ready', endpoint))
+    def lost_response(*args):
+        raise TimeoutError
+    def forbidden_offline_write(*args):
+        pytest.fail('An uncertain owner request must not be repeated by an offline writer')
+    monkeypatch.setattr(gateway_read_status, '_exchange', lost_response)
+    monkeypatch.setattr(web_server_sessions, '_mutate_offline_store', forbidden_offline_write)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                 base_url='http://localhost', headers=AUTH) as client:
+        response = await client.patch('/api/sessions/answer', json={
+            'request_id': 'read-once', 'expected_revision': 0, 'expected_generation': 0, 'unread': False})
+    assert (response.status_code, response.json()['detail']) == (409, 'mutation_outcome_unknown')

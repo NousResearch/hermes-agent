@@ -344,6 +344,8 @@ async def _start_gateway_start_control_socket(runner):
                            # live adapters' handlers (#87770); tools/prompt still wait for the next session.
                            "reload-plugins": reload_plugins_verb(runner, _main_loop)})
         _control_server.ticket_store = runner.session_ticket_store
+        from gateway.session_read_status import install_read_status_forwarder
+        install_read_status_forwarder(runner, _control_server, _main_loop)
         if not await _control_server.start():
             _control_server = None
         else:

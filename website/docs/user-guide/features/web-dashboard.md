@@ -1017,7 +1017,7 @@ pip install 'hermes-agent[webauthn]'   # installs fido2>=2.2.1,<3
 dashboard:
   webauthn:
     rp_id: "hermes.example.com"     # required: registrable domain of every origin
-    rp_name: "Hermes (richards-lab)" # required: label shown in the browser's passkey UI
+    rp_name: "Hermes (home lab)" # required: label shown in the browser's passkey UI
     origins:                         # required: exact scheme+host[:port] the browser presents
       - "https://hermes.example.com"
       # - "http://localhost:9119"     # the SSH-tunnel / loopback-forward path

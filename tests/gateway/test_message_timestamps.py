@@ -5,8 +5,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from gateway import message_timestamps
-from gateway.message_timestamps import (
+from agent import message_timestamps
+from agent.message_timestamps import (
     coerce_message_timestamp,
     format_message_timestamp,
     render_user_content_with_timestamp,
@@ -70,8 +70,7 @@ def test_early_embedded_local_time_replays_with_injection_on_or_off(style, enabl
         inject_timestamps=enabled,
     )
 
-    expected = render_user_content_with_timestamp("hello", 1.0) if enabled else content
-    assert history[0]["content"] == expected
+    assert history[0]["content"] == content
     assert history[1]["content"] == "hi"
 
 
@@ -143,7 +142,7 @@ def test_unsupported_embedded_time_does_not_abort_history(enabled):
         [{"role": "user", "content": content}], inject_timestamps=enabled
     )
 
-    assert history[0]["content"] == ("hello" if enabled else content)
+    assert history[0]["content"] == content
 
 
 @pytest.mark.platforms("windows")
@@ -184,7 +183,18 @@ def test_render_user_content_deduplicates_existing_timestamp_and_preserves_embed
 
 
 
-def test_build_history_injects_only_when_enabled():
+def test_global_message_timestamps_setting_is_canonical_with_gateway_compatibility():
+    from gateway.run import _message_timestamps_enabled
+
+    assert _message_timestamps_enabled({"message_timestamps": {"enabled": True}}) is True
+    assert _message_timestamps_enabled(
+        {
+            "message_timestamps": {"enabled": False},
+            "gateway": {"message_timestamps": {"enabled": True}},
+        }
+    ) is False
+
+def test_build_history_keeps_content_clean_for_shared_request_renderer():
     from gateway.run import _build_gateway_agent_history
 
     history = [
@@ -196,9 +206,9 @@ def test_build_history_injects_only_when_enabled():
     agent_history, _ = _build_gateway_agent_history(history)
     assert agent_history[0]["content"] == "hello"
 
-    # Enabled: user content gets exactly one timestamp prefix.
+    # Even with injection enabled, the shared agent renders only its request copy.
     agent_history, _ = _build_gateway_agent_history(history, inject_timestamps=True)
-    assert agent_history[0]["content"].startswith("[")
-    assert agent_history[0]["content"].endswith("hello")
+    assert agent_history[0]["content"] == "hello"
+    assert agent_history[0]["timestamp"] == history[0]["timestamp"]
     # Assistant message is never timestamped.
     assert agent_history[1]["content"] == "hi"

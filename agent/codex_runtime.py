@@ -732,12 +732,23 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         from agent.conversation_compression_checkpoint import _checkpoint_blocked
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
-    _ensure_codex_session(agent, messages)
+    from agent.message_timestamps import render_turn_with_message_timestamps
+    from hermes_cli.config import load_config_readonly
+    from hermes_time import get_timezone
+
+    current_timestamp = next(
+        (msg.get("timestamp") for msg in reversed(messages) if msg.get("role") == "user"), None,
+    )
+    model_history, model_user_message, _ = render_turn_with_message_timestamps(
+        messages, user_message, config=load_config_readonly(),
+        current_timestamp=current_timestamp, tz=get_timezone(),
+    )
+    _ensure_codex_session(agent, model_history)
     try:
         _start_codex_thread(agent)
         wire_model = _codex_wire_model(agent, getattr(agent, "_codex_session_model_provider", None))
         turn = agent._codex_session.run_turn(
-            user_input=user_message,
+            user_input=model_user_message,
             model=wire_model, reasoning_effort=_codex_turn_effort(agent, wire_model),
             service_tier=_codex_turn_service_tier(agent))
     except Exception as exc:

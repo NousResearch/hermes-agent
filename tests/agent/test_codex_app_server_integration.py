@@ -68,6 +68,26 @@ def _make_codex_agent(**kwargs):
 
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_timestamps_reach_native_turn_without_changing_transcript(fake_session, monkeypatch, enabled):
+    from agent.message_timestamps import render_user_content_with_timestamp
+    from hermes_time import get_timezone
+
+    timestamp = 1_000_000_000.0
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"message_timestamps": {"enabled": enabled}},
+    )
+    agent = _make_codex_agent()
+    with patch.object(agent, "_spawn_background_review", return_value=None):
+        result = agent.run_conversation("hello", persist_user_timestamp=timestamp)
+
+    expected = render_user_content_with_timestamp("hello", timestamp, tz=get_timezone()) if enabled else "hello"
+    assert result["final_response"] == f"echo: {expected}"
+    assert result["messages"][0]["content"] == "hello"
+    assert result["messages"][0]["timestamp"] == timestamp
+
+
 class TestRunConversationCodexPath:
     @pytest.mark.parametrize(
         "reasoning_config,service_tier,expected_effort,expected_tier",

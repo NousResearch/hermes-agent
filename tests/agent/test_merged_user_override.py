@@ -15,7 +15,7 @@ def _agent_persisting(override):
 
 def test_replay_flush_row_keeps_prefix_and_exact_api_sidecar():
     from agent.model_metadata import estimate_messages_tokens_rough
-    from gateway.message_timestamps import strip_leading_message_timestamps
+    from agent.message_timestamps import strip_leading_message_timestamps
 
     wire = "[2026-04-13T17:02:06+0200] can you also run the smoke tests"
     clean, _epoch = strip_leading_message_timestamps(wire)
@@ -40,7 +40,7 @@ def test_replay_flush_row_keeps_prefix_and_exact_api_sidecar():
 
 
 def test_empty_gateway_timestamp_turn_preserves_all_unanswered_rows_on_live_and_replay():
-    from gateway.message_timestamps import strip_leading_message_timestamps
+    from agent.message_timestamps import strip_leading_message_timestamps
 
     clean, _epoch = strip_leading_message_timestamps("[2026-04-13T17:02:06+0200]")
     assert clean == ""

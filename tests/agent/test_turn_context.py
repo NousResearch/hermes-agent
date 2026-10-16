@@ -18,6 +18,7 @@ from agent.turn_context import (
     PreflightCompressionTimedOut,
     TurnContext,
     build_turn_context,
+    build_api_messages,
 )
 
 
@@ -381,6 +382,58 @@ def test_pending_cli_message_uses_clean_override_for_api_local_note():
     assert ctx.messages[-1]["_db_persisted"] is True
     assert isinstance(ctx.messages[-1]["timestamp"], float)
     assert agent._pending_cli_user_message is None
+
+
+
+
+@pytest.mark.parametrize("source", ["platform", "cli"])
+def test_global_message_timestamps_decorate_model_context_but_persist_clean_text(source):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Europe/Berlin")
+    prior_ts = datetime(2026, 4, 28, 13, 40, 53, tzinfo=tz).timestamp()
+    current_ts = datetime(2026, 4, 28, 13, 42, 10, tzinfo=tz).timestamp()
+    agent = _FakeAgent()
+    history = [{"role": "user", "content": "earlier", "timestamp": prior_ts}]
+    if source == "cli":
+        agent._pending_cli_user_message = {
+            "role": "user", "content": "now", "timestamp": current_ts,
+        }
+
+    with (
+        patch(
+            "hermes_cli.config.load_config_readonly",
+            return_value={"message_timestamps": {"enabled": True}},
+        ),
+        patch(
+            "hermes_cli.config.load_config",
+            side_effect=AssertionError("turn hot path must use readonly config"),
+        ),
+        patch("hermes_time.get_timezone", return_value=tz),
+        patch("agent.message_timestamps.time.time", return_value=current_ts + 600),
+    ):
+        ctx = _build(
+            agent, user_message="now", conversation_history=history,
+            persist_user_timestamp=current_ts if source == "platform" else None,
+        )
+        agent._copy_reasoning_content_for_api = lambda *args: None
+        agent._should_sanitize_tool_calls = lambda: False
+        agent.ephemeral_system_prompt = ""
+        api_messages, _ = build_api_messages(
+            agent, ctx.messages, current_turn_user_idx=ctx.current_turn_user_idx,
+            ext_prefetch_cache="", plugin_user_context="", moa_config=None,
+            active_system_prompt="SYSTEM",
+        )
+
+    assert history[0]["content"] == "earlier"
+    assert ctx.messages[0]["content"] == "earlier"
+    assert ctx.messages[-1]["content"] == "now"
+    assert ctx.messages[-1]["timestamp"] == current_ts
+    assert api_messages[1]["content"] == "[Tue 2026-04-28 13:40:53 CEST] earlier"
+    assert api_messages[-1]["content"] == "[Tue 2026-04-28 13:42:10 CEST] now"
+    assert ctx.original_user_message == "now"
+    assert agent._persist_user_message_override is None
 
 
 def test_recall_indicator_emitted_when_memory_injected():

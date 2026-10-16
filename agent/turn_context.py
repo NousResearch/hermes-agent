@@ -1268,11 +1268,19 @@ def build_api_messages(
     split = current_turn_user_idx if has_current else 0
     canonical_messages = canonicalize_replay_history(messages[:split], now=turn_now) + messages[split:]
 
+    from agent.message_timestamps import render_model_history_with_timestamps
+    from hermes_cli.config import load_config_readonly
+    from hermes_time import get_timezone
+
+    model_messages = render_model_history_with_timestamps(
+        canonical_messages, config=load_config_readonly(), tz=get_timezone(),
+    )
+
     api_messages = []
-    for idx, msg in enumerate(canonical_messages):
+    for idx, (msg, model_msg) in enumerate(zip(canonical_messages, model_messages)):
         # Structural clone, NOT msg.copy(): in-place transforms below must not reach
         # persisted history via nested containers; see _clone_message_for_send.
-        api_msg = _clone_message_for_send(msg)
+        api_msg = _clone_message_for_send(model_msg)
         # api_content is bookkeeping (exact bytes sent), never a provider field — pop
         # it from EVERY outgoing copy. Persistence/display fields (display_*, _row_id,
         # timestamp) are local bookkeeping: strict OpenAI backends reject unknown keys

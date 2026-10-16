@@ -72,6 +72,8 @@ DEFAULT_CONFIG = {
     "attachments": {
         "storage": "hermes-home",
     },
+    # Global opt-in; None defers to gateway.message_timestamps.enabled.
+    "message_timestamps": {"enabled": None},
     "agent": {
         # Turn cap. null = unlimited (default; caps caused silent mid-task truncation). Positive int
         # caps; "none"/"unlimited"/"inf"/0/-1 also mean unlimited (resolve_turn_limit).
@@ -2195,9 +2197,7 @@ DEFAULT_CONFIG = {
         # supervisor can't hammer the process. max_starts <= 0 disables. Env escape hatches:
         # HERMES_GATEWAY_MAX_STARTS / HERMES_GATEWAY_START_WINDOW_S.
         "respawn_storm": {"max_starts": 5, "window_seconds": 120},
-        # Prefix user messages IN THE MODEL'S CONTEXT with a timestamp (e.g. "[Tue 2026-04-28
-        # 13:40:53 CEST]") for temporal awareness. Persisted transcripts stay clean (timestamp is
-        # message metadata regardless), so enabling later surfaces past send-times too.
+        # Legacy fallback for the agent-wide message_timestamps.enabled opt-in.
         "message_timestamps": {"enabled": False},
         # Max bytes of inbound image/audio/video the gateway buffers into RAM and caches to disk.
         # Media is read fully into memory first, so unbounded uploads (Discord Nitro: 500 MB) or

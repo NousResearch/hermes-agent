@@ -1134,7 +1134,7 @@ def _build_replay_entry(
     """
     entry: dict[str, Any] = {"role": role, "content": content}
     # api_content sidecar keeps the request prefix byte-stable — ONLY if this pipeline did not rewrite
-    # content. The caller renders timestamps AFTER this check so a stamp alone never drops the sidecar.
+    # content. Timestamp rendering happens later on the agent's disposable request copy.
     _sidecar = msg.get("api_content")
     if (
         role in ("user", "assistant")
@@ -1225,17 +1225,10 @@ def _is_slack_ignored_channel(config: Any, chat_id: Any, adapter: Any = None) ->
 
 
 def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
-    """True when gateway.message_timestamps.enabled is opted in (default OFF: changes what the model sees)."""
-    if not isinstance(user_config, dict):
-        return False
-    gw = user_config.get("gateway")
-    if not isinstance(gw, dict):
-        return False
-    mt = gw.get("message_timestamps")
-    if isinstance(mt, dict):
-        return bool(mt.get("enabled", False))
-    # Allow a bare ``message_timestamps: true`` shorthand.
-    return bool(mt)
+    """Compatibility wrapper for the shared cross-surface config resolver."""
+    from agent.message_timestamps import message_timestamps_enabled
+
+    return message_timestamps_enabled(user_config)
 
 
 def _has_replayable_sidecar(role: Any, content: Any, msg: dict[str, Any]) -> bool:
@@ -1259,7 +1252,7 @@ def _build_gateway_agent_history(
 
     Observed context stays out of ``conversation_history`` so consecutive-user repair can't merge it in."""
     from hermes_time import get_timezone as _get_msg_tz
-    from gateway.message_timestamps import (
+    from agent.message_timestamps import (
         render_user_content_with_timestamp as _render_msg_ts,
         strip_leading_message_timestamps as _strip_msg_ts,
     )
@@ -1288,7 +1281,7 @@ def _build_gateway_agent_history(
             agent_history.append(clean_msg)
         elif content or _has_replayable_sidecar(role, content, msg):
             replay_timestamp = msg.get("timestamp")
-            # Clean before rendering: a timestamp prefix hides recovery notes
+            # A timestamp prefix hides recovery notes
             # from the startswith-based stripper. Retain an embedded original time.
             if role == "user":
                 if isinstance(content, str):
@@ -1302,17 +1295,8 @@ def _build_gateway_agent_history(
                     continue
             # Keep user timestamps for the stale-dangerous-confirmation stripper in agent/replay_cleanup.py.
             entry = _build_replay_entry(role, content, msg, preserve_timestamp=(role == "user"))
-            if inject_timestamps and role == "user" and isinstance(content, str):
-                rendered = _render_msg_ts(content, replay_timestamp, tz=_msg_tz)
-                # Preserve only a sidecar matching the complete rendered message,
-                # optionally followed by the normal context separator. Cleanup
-                # above already invalidated sidecars containing stripped content.
-                sidecar = entry.get("api_content")
-                if rendered != content and sidecar and not (
-                    sidecar == rendered or sidecar.startswith(rendered + "\n\n")
-                ):
-                    entry.pop("api_content", None)
-                entry["content"] = rendered
+            if role == "user" and replay_timestamp is not None:
+                entry["timestamp"] = replay_timestamp
             if msg.get("mirror"):
                 mirror_src = msg.get("mirror_source", "another session")
                 entry["content"] = f"[Delivered from {mirror_src}] {entry['content']}"

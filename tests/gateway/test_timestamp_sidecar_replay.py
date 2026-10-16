@@ -2,12 +2,14 @@
 
 from copy import deepcopy
 from datetime import datetime
+from types import SimpleNamespace
+from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 import json
 
 import pytest
 
-from gateway.message_timestamps import render_user_content_with_timestamp
+from agent.message_timestamps import render_user_content_with_timestamp
 from gateway.run import _build_gateway_agent_history, _select_cached_agent_history
 
 
@@ -40,7 +42,8 @@ def test_recovery_cleanup_never_restores_a_sidecar(timestamps, embedded, real_te
         assert "api_content" not in replay[0]
         assert "System note:" not in replay[0]["content"]
         expected_timestamp = STAMP if embedded else STAMP + 100
-        assert replay[0]["content"] == (_render(real_text, expected_timestamp) if timestamps else real_text)
+        assert replay[0]["content"] == real_text
+        assert replay[0]["timestamp"] == expected_timestamp
 
 
 @pytest.fixture
@@ -140,3 +143,62 @@ def test_full_builder_to_responses_keeps_cross_turn_prefix(responses_agent, tmp_
     assert not any("api_content" in item or "timestamp" in item for item in next_input)
     assert any(item.get("encrypted_content") == "synthetic-reasoning" for item in next_input)
     assert any(item.get("phase") == "final_answer" for item in next_input)
+
+
+@pytest.mark.parametrize("entry", ["core", "gateway_prepare", "gateway_replay"])
+def test_global_timestamps_stay_on_wire_and_replay_from_clean_storage(responses_agent, monkeypatch, entry):
+    make_agent, captured, _, db, sid = responses_agent
+    config = {"message_timestamps": {"enabled": True}}
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: config,
+    )
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: config)
+    hooks = []
+
+    def hook(name, **kwargs):
+        if name == "pre_llm_call":
+            hooks.append(deepcopy(kwargs))
+            return [{"context": POLICY}]
+        return []
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", hook)
+    agent = make_agent()
+    memory = Mock()
+    memory.prefetch_all.return_value = ""
+    agent._memory_manager = memory
+    message, clean, stamp = "first question", "first question", STAMP
+    if entry == "gateway_prepare":
+        from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+
+        message, clean, stamp = GatewayTurnPrepareMixin._hmwa_apply_message_timestamp(
+            None, SimpleNamespace(timestamp=STAMP), message,
+        )
+    result = agent.run_conversation(message, persist_user_message=clean, persist_user_timestamp=stamp)
+    assert result["completed"]
+    rows = db.get_messages_as_conversation(sid)
+    user = next(row for row in rows if row["role"] == "user")
+    assert user["content"] == "first question"
+    assert user["timestamp"] == STAMP
+    assert user["api_content"] == "first question\n\n" + POLICY
+    assert result["messages"][0]["content"] == "first question"
+    assert result["messages"][0]["api_content"] == user["api_content"]
+    assert agent._session_messages[0]["api_content"] == user["api_content"]
+    assert memory.on_turn_start.call_args.args[1] == "first question"
+    assert memory.prefetch_all.call_args.args[0] == "first question"
+    first_input = deepcopy(captured[0]["input"])
+    assert any(_render("first question") in str(item) for item in first_input)
+    if entry == "gateway_replay":
+        rows, observed = _build_gateway_agent_history(rows, inject_timestamps=True)
+        assert observed is None
+    result = make_agent().run_conversation(
+        "second question", conversation_history=rows, persist_user_timestamp=STAMP + 30,
+    )
+    assert result["completed"]
+    assert captured[1]["input"][:len(first_input)] == first_input
+    for kwargs in hooks:
+        assert not kwargs["user_message"].startswith("[")
+        for row in kwargs["conversation_history"]:
+            if row["role"] == "user":
+                assert not row["content"].startswith("[")
+                assert not row.get("api_content", "").startswith("[")

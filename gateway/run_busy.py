@@ -131,6 +131,21 @@ class GatewayBusySessionMixin:
         # else: no adapter — leave the head in place so we don't silently drop it.
         return pending_event
 
+    def _requeue_event_at_front(self, session_key: str, event: "MessageEvent", adapter: Any) -> None:
+        """Restore *event* at the FIFO head without dropping a staged next turn.
+
+        The recursion cap can fire after the drain consumed the current head and
+        ``_promote_queued_event`` staged the next item in the adapter slot. Replacing that slot
+        would lose it, so move it back to the front of overflow first.
+        """
+        pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
+        if pending_slot is None:
+            return
+        staged = pending_slot.get(session_key)
+        if staged is not None:
+            self._session_state(session_key).conversation.queued_events.insert(0, staged)
+        pending_slot[session_key] = event
+
     def _queue_depth(self, session_key: str, *, adapter: Any = None) -> int:
         """Total pending /queue items for a session — slot + overflow."""
         depth = len(self._overflow_queue(session_key) or ())

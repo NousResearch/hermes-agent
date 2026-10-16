@@ -5240,7 +5240,9 @@ export const deOverrides = {
       alwaysTitle: 'Diesen Befehl immer erlauben?',
       alwaysDescription: pattern =>
         `Dies fügt das Muster „${pattern}“ Ihrer dauerhaften Zulassungsliste hinzu (~/.hermes/config.yaml). Hermes fragt bei solchen Befehlen nicht mehr nach – weder in dieser noch in zukünftigen Sessions.`,
-      alwaysAllow: 'Immer erlauben'
+      alwaysAllow: 'Immer erlauben',
+      smartUnavailable: reason =>
+        `Warum Sie gefragt werden - ${reason}.`
     },
     clarify: deClarify,
     themePicker: deThemePicker,

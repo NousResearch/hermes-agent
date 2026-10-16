@@ -4812,7 +4812,9 @@ export const en: Translations = {
       alwaysTitle: 'Always allow this command?',
       alwaysDescription: pattern =>
         `This adds the “${pattern}” pattern to your permanent allowlist (~/.hermes/config.yaml). Hermes won’t ask again for commands like this — in this session or any future one.`,
-      alwaysAllow: 'Always allow'
+      alwaysAllow: 'Always allow',
+      smartUnavailable: reason =>
+        `Why you're being asked - ${reason}.`
     },
     clarify: enClarify,
     themePicker: enThemePicker,

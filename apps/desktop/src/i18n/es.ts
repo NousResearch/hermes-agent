@@ -5236,7 +5236,9 @@ export const esOverrides = {
       alwaysTitle: '¿Permitir siempre este comando?',
       alwaysDescription: pattern =>
         `Esto añade el patrón “${pattern}” a tu allowlist permanente (~/.hermes/config.yaml). Hermes no volverá a preguntar por comandos como este, ni en esta sesión ni en futuras.`,
-      alwaysAllow: 'Permitir siempre'
+      alwaysAllow: 'Permitir siempre',
+      smartUnavailable: reason =>
+        `Por qué se te pregunta - ${reason}.`
     },
     clarify: esClarify,
     themePicker: esThemePicker,

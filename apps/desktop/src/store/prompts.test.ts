@@ -124,6 +124,37 @@ describe('approval prompt store', () => {
     expect($approvalRequest.get()?.requestId).toBe('r2')
   })
 
+  it('carries a degraded-guardian notice on a replayed queue entry', async () => {
+    const gateway = {
+      request: async (method: string) => {
+        if (method === 'approval.pending') {
+          return {
+            approvals: [
+              {
+                command: 'first',
+                description: 'd1',
+                request_id: 'r1',
+                smart_unavailable: 'RuntimeError: relay refused'
+              },
+              { command: 'second', description: 'd2', request_id: 'r2' }
+            ]
+          }
+        }
+
+        return { acknowledged: true }
+      }
+    }
+
+    await replayPendingApproval(gateway, 's1')
+
+    const queued = sessionApprovalRequests('s1').get()
+    expect(queued.find(request => request.requestId === 'r1')?.smartUnavailable).toBe(
+      'RuntimeError: relay refused'
+    )
+    // An entry without the field stays silent rather than carrying a placeholder.
+    expect(queued.find(request => request.requestId === 'r2')?.smartUnavailable).toBeUndefined()
+  })
+
   it('preserves live server request routing for every queued replay entry', async () => {
     for (const id of ['r1', 'r2']) {
       await receiveApprovalRequest(null, {

@@ -434,8 +434,10 @@ def _dm_delivery_id(dm_file: str | os.PathLike) -> str:
 
 
 class LiveTargetUnavailableError(RuntimeError):
-    """No canonical Bot Chat owner was found BEFORE any intent was pinned: nothing was admitted, so
-    this is a definite no-send the sender may retry, not the ambiguous post-admission state."""
+    """The canonical Bot Chat owner could not be reached with anything admitted — before the
+    intent was pinned, or on a dial that died before the deliver RPC went out: nothing was
+    sent, so this is a definite no-send the sender may retry, not the ambiguous
+    post-admission state."""
 
     reason = "runtime_unavailable"
 
@@ -447,7 +449,8 @@ def _unavailable_payload(dm_file: str, exc: BaseException) -> str:
 
 def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dict] = None) -> dict | None:
     """Pin intent before admission; retries may inspect, never change transport."""
-    from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner, read_delivery_result
+    from tools.bot_live_delivery import (PreDialError, deliver_to_live_owner, find_canonical_live_owner,
+                                         read_delivery_result)
     from utils import fsync_directory
 
     intent: dict[str, Any]
@@ -479,8 +482,15 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
     home = intent["owner"]["profile_home"]
     record = read_delivery_result(home, intent["delivery_id"])
     if record is None or intent["owner"].get("canonical"):
-        record = deliver_to_live_owner(home, intent["owner"], intent["message"],
-                                       delivery_id=intent["delivery_id"], author=intent.get("author"))
+        try:
+            record = deliver_to_live_owner(home, intent["owner"], intent["message"],
+                                           delivery_id=intent["delivery_id"], author=intent.get("author"))
+        except PreDialError as exc:
+            # The dial died before bot_relay.deliver reached the socket: nothing was admitted
+            # and this intent can never settle, so drop it and report the definite no-send
+            # the sender may retry (#139303).
+            _unlink_dm_file(_live_intent_file(dm_file))
+            raise LiveTargetUnavailableError(f"live authority dial failed before admission ({exc})") from exc
     return record
 
 
@@ -631,7 +641,9 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
             record = _admit_live_dm(profile_home, dm_file, author)
         except LiveTargetUnavailableError as exc:
             payload = _unavailable_payload(dm_file, exc)
-            _unlink_dm_file(dm_file)  # no intent was pinned: nothing will ever replay this file
+            # Nothing was admitted (a pre-dial failure already dropped any pinned intent),
+            # so nothing will ever replay this file.
+            _unlink_dm_file(dm_file)
             return payload
         except Exception as exc:
             return json.dumps({"status": "ambiguous", "delivery_id": _dm_delivery_id(dm_file),

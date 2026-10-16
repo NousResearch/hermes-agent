@@ -286,7 +286,8 @@ def test_a_redial_to_a_restarted_gateway_and_slash_new_reread_the_plugin_command
     # B's catalog has no /alpha: one refresh on the miss, never a slash.exec, no plugin output
     assert stale[1] == ['commands.catalog'] and 'RAN_alpha' not in stale[0], stale
     assert c.session_id != first and conn.epoch == epoch_b
-    assert new_calls == [('commands.catalog', None), ('slash.exec', c.session_id)], new_calls
+    # /new reads the new session's own catalog (its skills come from that session's folder)
+    assert new_calls == [('commands.catalog', c.session_id), ('slash.exec', c.session_id)], new_calls
     assert f'RAN_beta PID={b.pid}' in after_new, after_new
 
 

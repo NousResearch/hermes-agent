@@ -241,8 +241,33 @@ def test_a_hung_up_connection_rereads_the_catalog_before_a_cached_name_runs(monk
     conn.closed, conn._plugins = True, {}  # the gateway restarted without the plugin
     ran = _colliding_skill_and_bundle(monkeypatch, "gone-plugin")
     assert c._process_unregistered_slash("/gone-plugin", "/gone-plugin") is True
+    # The name's miss re-reads the catalog (redialing) and the session's skills come from that same
+    # read: one refreshed snapshot, no stale cache answers.
     assert _execs(conn) == ["gone-plugin"] and _catalog_reads(conn) == 2
     assert ran == ["_run_skill_bundle_command"] and local_plugin_reads == []
+
+
+def test_a_hung_up_connection_rereads_the_sessions_skills(monkeypatch):
+    """/help and completion: the old gateway life's skills are not served after it hung up."""
+    from hermes_cli import gateway_plugin_commands
+    conn = _Conn({})
+    conn.extra = {"skills": ["/old-skill"]}
+    c = _cli(monkeypatch, conn)
+    assert set(gateway_plugin_commands.skills(c) or ()) == {"/old-skill"}
+    conn.closed, conn.extra = True, {"skills": ["/new-skill"]}  # same epoch until the next call redials
+    assert set(gateway_plugin_commands.skills(c) or ()) == {"/new-skill"}
+    assert _catalog_reads(conn) == 2
+
+
+def test_a_hung_up_connection_rereads_the_plugin_toolsets(monkeypatch):
+    """/tools validation: the old gateway life's plugin toolsets are not served after it hung up."""
+    from hermes_cli import gateway_plugin_commands
+    conn = _Conn({}, reply={"toolsets": [{"key": "old-ts"}]})
+    c = _cli(monkeypatch, conn)
+    assert gateway_plugin_commands.toolsets(c) == ([("old-ts", "old-ts", "")], set())
+    conn.closed, conn._reply = True, {"toolsets": [{"key": "new-ts"}]}
+    assert gateway_plugin_commands.toolsets(c) == ([("new-ts", "new-ts", "")], set())
+    assert [m for m, _ in conn.calls].count("plugins.list") == 2
 
 
 def test_a_reply_that_is_no_plugin_run_is_reported(monkeypatch, capsys):
@@ -377,3 +402,27 @@ def test_a_skill_reply_for_an_unloaded_plugin_command_runs_the_skill_here(monkey
     monkeypatch.setattr(HermesCLI, "_run_skill_slash_command", lambda self, *a: ran.append(a[0]))
     assert c._process_unregistered_slash("/pptwin", "/pptwin") is True
     assert ran == ["/pptwin"] and "nothing was run" not in capsys.readouterr().out
+
+
+def test_the_open_sessions_catalog_is_read_and_an_older_gateway_is_asked_without_it(monkeypatch, local_plugin_reads):
+    """On its open gateway session the CLI reads that session's catalog (skills from the session's folder);
+    a gateway older than this CLI refuses ``session_id`` and is asked again without it."""
+    from hermes_cli import gateway_plugin_commands
+    from hermes_cli.gateway_client import GatewayRPCError
+    conn = _Conn({"mcp-status": "Ask the MCP server"})
+    c = _cli(monkeypatch, conn)
+    c._gateway_session_open = True
+    assert gateway_plugin_commands.lookup(c, "mcp-status") is True
+    assert conn.calls[-1] == ("commands.catalog", {"session_id": "local-s"})
+    newer = conn.call_tagged
+
+    def older(method, **params):
+        if method == "commands.catalog" and params:
+            conn.calls.append((method, params))
+            raise GatewayRPCError("invalid_params", code=-32602)
+        return newer(method, **params)
+    monkeypatch.setattr(conn, "call_tagged", older)
+    c.session_id = "local-t"  # another session: its catalog is read again
+    assert gateway_plugin_commands.lookup(c, "mcp-status") is True
+    assert [p for m, p in conn.calls if m == "commands.catalog"][-2:] == [{"session_id": "local-t"}, {}]
+    assert local_plugin_reads == []

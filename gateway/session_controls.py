@@ -135,6 +135,7 @@ class AuthorityConnection:
         name is declared in ``tui_gateway/contracts`` (``METHODS`` or ``CANONICAL_METHODS``)."""
         handlers = {'session.create': self.create, 'ping': self.ping, 'runtime.describe': self.describe,
                     'commands.catalog': self.command_catalog, 'complete.slash': self.slash_completions,
+                    'plugins.list': self.plugins_list, 'command.observe': self.command_observe,
                     'slash.exec': self.slash_exec, 'command.dispatch': self.command_dispatch,
                     'session.list': self.list_sessions, 'session.info': self.info,
                     'session.mutate': self.mutate, 'bot_relay.deliver': self.bot_deliver,
@@ -324,9 +325,17 @@ class AuthorityConnection:
         from gateway.session_commands import execute_command
         return await execute_command(self, ref, params, dispatch=True)
 
+    async def command_observe(self, ref, params):
+        from gateway.session_commands import observe_command
+        return await observe_command(self, ref, params)
+
     async def command_catalog(self, ref, params):
         from gateway.session_discovery import discover_commands
         return await discover_commands(self.authority, self.actor, params)
+
+    async def plugins_list(self, ref, params):
+        from gateway.session_discovery import list_plugins
+        return await list_plugins(self.authority, self.actor, params)
 
     async def slash_completions(self, ref, params):
         from gateway.session_discovery import discover_commands

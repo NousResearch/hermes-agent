@@ -523,3 +523,13 @@ class SlashCommandAutoSuggest(AutoSuggest):
                 if sub.startswith(sub_lower) and sub != sub_lower:
                     return Suggestion(sub[len(sub_text):])
         return self._history_suggestion(buffer, document)
+
+
+def cli_slash_completer(cli):
+    """The classic CLI prompt's slash completer; on a gateway session its skills and plugin commands are
+    the gateway's (``commands.catalog``), so completing loads no plugin in the CLI process."""
+    from cli import _session_skill_commands, get_skill_bundles
+    from hermes_cli import gateway_plugin_commands
+    return SlashCommandCompleter(
+        skill_commands_provider=lambda: _session_skill_commands(cli), command_filter=cli._command_available,
+        skill_bundles_provider=lambda: get_skill_bundles(), plugin_commands_provider=lambda: gateway_plugin_commands.names(cli))

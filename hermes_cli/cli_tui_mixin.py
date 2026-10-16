@@ -16,7 +16,7 @@ import time
 
 from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
-from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
+from hermes_cli.commands_completion import SlashCommandAutoSuggest, cli_slash_completer
 from pathlib import Path
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import FileHistory
@@ -1854,9 +1854,7 @@ class CLITuiMixin:
         self._should_exit = False
         self._last_ctrl_c_time = 0  # double Ctrl+C force-exit tracking
 
-        # Plugins get a CLI reference so they can inject messages.
-        from hermes_cli.plugins import get_plugin_manager
-        get_plugin_manager()._cli_ref = self
+        # No PluginManager._cli_ref: plugins load in the gateway, not here (PLG-7).
 
         # Config file watcher — detect mcp_servers changes and auto-reload.
         from hermes_cli.config import get_config_path as _get_config_path
@@ -2209,19 +2207,15 @@ class CLITuiMixin:
     def _tui_build_input_area(self):
         """Multi-line prompt TextArea with slash completion, paste-collapse tracking and
         placeholder/password processors."""
-        from cli import _estimate_tui_input_height, get_skill_bundles, get_skill_commands
+        from cli import _estimate_tui_input_height
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
         from prompt_toolkit.completion import ThreadedCompleter
-        from hermes_cli import gateway_plugin_commands
         cli_ref = self
 
         def get_prompt():
             return cli_ref._get_tui_prompt_fragments()
 
-        _completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: get_skill_commands(),
-            command_filter=cli_ref._command_available,
-            skill_bundles_provider=lambda: get_skill_bundles(), plugin_commands_provider=lambda: gateway_plugin_commands.names(cli_ref))
+        _completer = cli_slash_completer(self)
         input_area = TextArea(
             height=Dimension(min=1, max=8, preferred=1),
             prompt=get_prompt,

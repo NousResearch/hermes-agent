@@ -126,6 +126,22 @@ canonical_method("session.prune", params=SessionPruneParams, result=SessionPrune
                      "selected, skipping busy sessions and retained reset owners.")
 
 
+class CommandObserveParams(Params):
+    session_id: str
+    name: str
+    arg: str | None = None
+    profile: str | None = None
+
+
+class CommandObserveResult(Result):
+    queued: bool
+
+
+canonical_method("command.observe", params=CommandObserveParams, result=CommandObserveResult,
+                 doc="Fire-only: a recognized command the classic CLI runs in its own process; the gateway fires "
+                     "`pre_command` for it in the session's profile after replying (`queued` false: not fired).")
+
+
 class CanonicalSessionInfoParams(Params):
     session_id: str
 
@@ -152,6 +168,7 @@ class SessionInventoryFields(Result):
     # Classic CLI surface (``source: cli``) only: main's startup lines under the banner (Rich markup).
     tool_availability_warnings: list[str] | None = None
     browser_backend_notice: str | None = None
+    unknown_toolsets: list[str] | None = None  # main's "Unknown toolsets" warning, judged by the gateway
 
 
 class CanonicalSessionInfo(SessionInventoryFields, OpenModel):

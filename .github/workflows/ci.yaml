@@ -70,8 +70,8 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   detect:
     name: Detect affected areas
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 3
     outputs:
       python: ${{ steps.gate-lanes.outputs.python }}
       python_prod: ${{ steps.gate-lanes.outputs.python_prod }}
@@ -92,9 +92,13 @@ jobs:
       e2e_desktop_update: ${{ steps.gate-lanes.outputs.e2e_desktop_update }}
       event_name: ${{ github.event_name }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
+          sparse-checkout: |
+            .github/actions/detect-changes
+            scripts/ci/classify_changes.py
+          sparse-checkout-cone-mode: false
       - name: Detect affected areas
         id: classify
         uses: ./.github/actions/detect-changes
@@ -445,12 +449,12 @@ jobs:
       # to block a merge. A separate run also stops it from holding this
       # run open. That is what blocked ``gh run rerun``.
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     outputs:
       needs-json: ${{ steps.evaluate.outputs.needs-json }}
     steps:
-      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit || github.sha }}
       - name: Evaluate job results
@@ -480,11 +484,11 @@ jobs:
     name: CI timing report
     needs: [all-checks-pass]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     steps:
       - name: Checkout code
-        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ inputs.commit }}
 

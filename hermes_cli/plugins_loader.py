@@ -307,6 +307,10 @@ class PluginLoaderMixin:
 
             previous = platform_registry.snapshot_registration(platform_name, scope=scope)
             platform_registry.register_deferred(platform_name, _loader, scope=scope)
+            # Lets the gateway config pass recognise an env-only setup (sms: TWILIO_*) without
+            # importing the adapter; see gateway.platform_activation.
+            platform_registry.note_activation_env(
+                platform_name, [e.get("name") if isinstance(e, dict) else e for e in manifest.requires_env or ()])
             current = platform_registry.snapshot_registration(platform_name, scope=scope)
             if current[0] is None and current[1] is _loader:
                 self._plugin_platform_names.add(platform_name)

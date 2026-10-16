@@ -2572,7 +2572,7 @@ class TestPluginCommandResultResolution:
         async def _handler():
             return "threaded-ok"
 
-        monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
+        monkeypatch.setattr("hermes_cli.plugins_dispatch.asyncio.get_running_loop", lambda: _Loop())
         assert resolve_plugin_command_result(_handler()) == "threaded-ok"
 
     def test_running_loop_timeout_does_not_hang_forever(self, monkeypatch):
@@ -2586,8 +2586,8 @@ class TestPluginCommandResultResolution:
             await _asyncio.sleep(10)
             return "should-not-reach"
 
-        monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
-        monkeypatch.setattr("hermes_cli.plugins._PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS", 0.1)
+        monkeypatch.setattr("hermes_cli.plugins_dispatch.asyncio.get_running_loop", lambda: _Loop())
+        monkeypatch.setattr("hermes_cli.plugins_dispatch._PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS", 0.1)
 
         with pytest.raises(TimeoutError):
             resolve_plugin_command_result(_slow_handler())

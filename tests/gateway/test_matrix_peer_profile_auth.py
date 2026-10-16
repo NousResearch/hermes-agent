@@ -14,8 +14,8 @@ from gateway.profile_routing import parse_profile_routes
 from plugins.platforms.matrix.adapter import MatrixAdapter
 
 
-@pytest.fixture
-def routed_matrix(tmp_path, monkeypatch):
+@pytest.fixture(params=[False, True], ids=["thread-route", "server-thread-route"])
+def routed_matrix(tmp_path, monkeypatch, request):
     from gateway.run import GatewayRunner
 
     home = tmp_path / "hh"
@@ -35,7 +35,8 @@ def routed_matrix(tmp_path, monkeypatch):
     runner.config = GatewayConfig(multiplex_profiles=True)
     runner.config.profile_routes = parse_profile_routes([
         {"platform": "matrix", "chat_id": "!room:example.org",
-         "thread_id": "$routed", "profile": "secondary"},
+         "thread_id": "$routed", "profile": "secondary",
+         **({"guild_id": "example.org"} if request.param else {})},
     ])
     runner._primary_profile_name = "default"
     runner._profile_adapters = {"secondary": {}}
@@ -95,5 +96,6 @@ async def test_budget_uses_final_thread_pairing_grant(routed_matrix, synthetic, 
     if adapter.handle_message.await_count:
         source = adapter.handle_message.call_args.args[0].source
         assert source.thread_id == "$routed"
+        assert source.guild_id == "example.org"
         assert runner._canonicalize(source).runtime_profile == "secondary"
         assert runner._is_user_authorized_for_source(source) is authorized

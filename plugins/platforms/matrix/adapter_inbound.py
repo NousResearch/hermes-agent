@@ -8,6 +8,7 @@ import logging
 from typing import Optional
 
 from gateway.config import PlatformConfig
+from gateway.session import SessionSource
 from plugins.platforms.matrix.voice_mention import VoiceGate
 
 logger = logging.getLogger(__name__)
@@ -47,12 +48,14 @@ class MatrixInboundMixin:
         self._peer_reply_budget_remaining: dict[str, int] = {}
 
     def _admit_peer_room_message(
-        self, room_id: str, sender: str, is_mentioned: bool, thread_id: Optional[str],
+        self, source: SessionSource, is_mentioned: bool,
     ) -> bool:
         """Charge only authorized, directly mentioned peers after the ordinary inference gates."""
         if not self._peer_agent_ids:
             return True
-        authorized = self._is_authorized_user(sender, room_id, chat_type="group", thread_id=thread_id)
+        room_id, sender = source.chat_id, source.user_id
+        authorized = self._is_authorized_user(
+            sender, room_id, chat_type=source.chat_type, thread_id=source.thread_id, source=source)
         if sender not in self._peer_agent_ids:
             if authorized:
                 self._peer_reply_budget_remaining[room_id] = self._peer_reply_budget_per_human_message
@@ -125,16 +128,16 @@ class MatrixInboundMixin:
                     self._matrix_session_scope != "room" and self._auto_thread)
             if synthetic:
                 thread_id = event_id
-        # Pairing authorization follows the same final real/synthetic thread as the event.
-        if not is_dm and not self._admit_peer_room_message(room_id, sender, is_mentioned, thread_id):
-            return None
-        if voice_gate is not None:  # decided (parked or passing): don't hold bare mentions any longer
-            self._parked_voices.release(room_id, sender, voice_gate)
         display_name = await self._get_display_name(room_id, sender)
         source = self.build_source(
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
             guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
+        # Authorize the actual event source: every route discriminator and transport owner travels with it.
+        if not is_dm and not self._admit_peer_room_message(source, is_mentioned):
+            return None
+        if voice_gate is not None:  # decided (parked or passing): don't hold bare mentions any longer
+            self._parked_voices.release(room_id, sender, voice_gate)
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)

@@ -78,6 +78,7 @@ from gateway.platforms.base import (
 from gateway.platforms.base import transcode_to_ogg_opus
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
+from gateway.session import SessionSource
 from plugins.platforms.matrix.adapter_inbound import MatrixInboundMixin
 from plugins.platforms.matrix.voice_mention import ParkedVoices, has_voice_marker, is_voice_event
 
@@ -2537,12 +2538,12 @@ class MatrixAdapter(MatrixInboundMixin, BasePlatformAdapter):
 
     def _is_authorized_user(
         self, user_id: str, room_id: str | None = None, *, chat_type: str | None = None,
-        thread_id: str | None = None,
+        thread_id: str | None = None, source: SessionSource | None = None,
     ) -> bool:
         """Resolve live gateway authorization, falling back to the startup snapshot when unwired."""
         if getattr(self, "_authorization_check", None) is not None:
             return self._is_sender_authorized(
-                user_id, chat_type=chat_type, chat_id=room_id, thread_id=thread_id) is True
+                user_id, chat_type=chat_type, chat_id=room_id, thread_id=thread_id, source=source) is True
         # Scoped read — the DEFAULT profile's os.environ opt-in must not authorize on a secondary bot.
         return _get_scoped_secret("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in ("true", "1", "yes") or bool(
             self._allowed_user_ids and user_id in self._allowed_user_ids)

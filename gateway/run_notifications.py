@@ -111,9 +111,10 @@ def _raw_process_event_session_id(evt: dict) -> str:
 
 
 def _local_completion_card(evt: dict) -> dict[str, str]:
-    """The async-result card main's in-process TUI wrote for a completion; the claim's
-    ``message.start`` carries it, and an idle classic CLI only opens a turn that has one (a
-    gateway-side ``/review`` reports as an async delegation). ``{}`` for a watch event."""
+    """The card of a local process notice: the async-result card the in-process TUI wrote for a
+    completion or async delegation (a gateway-side ``/review`` reports as one), and a liveness tick's
+    one-line receipt. The claim's ``message.start`` carries it, and an idle classic CLI only opens a
+    turn that has one. ``{}`` for a watch match."""
     from tools.process_registry_notifications import (
         PROCESS_COMPLETE_DISPLAY_KIND, async_delegation_display_text, process_completion_display_text)
     evt_type = evt.get("type", "completion")
@@ -122,6 +123,12 @@ def _local_completion_card(evt: dict) -> dict[str, str]:
                 "display_text": evt.get("_display_text") or process_completion_display_text([evt])}
     if evt_type == "async_delegation":
         return {"display_kind": "async_delegation_complete", "display_text": async_delegation_display_text(evt)}
+    if evt_type == "heartbeat":
+        # The wake stays machinery (no bubble, and a quiet tick may end in silence); the receipt lets an
+        # idle CLI open the turn with one line and show the agent's reply.
+        from gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
+        from tools.process_registry_notifications import heartbeat_display_text
+        return {"display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND, "display_text": heartbeat_display_text(evt)}
     return {}
 
 
@@ -141,8 +148,8 @@ def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
     if evt.get('_automation_identities'):
         metadata['automation_identities'] = evt['_automation_identities']
     if source.platform == Platform.LOCAL:
-        # A local completion persists as the async-result card the in-process TUI wrote;
-        # messaging rows stay internal_notification, as on main.
+        # A local completion persists as the async-result card the in-process TUI wrote, and a tick
+        # carries its CLI receipt; messaging rows stay internal_notification, as on main.
         metadata.update(_local_completion_card(evt))
     proven_session_id = str(evt.get("proven_session_id") or "").strip()
     if proven_session_id:
@@ -709,6 +716,18 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     continue
                 if self._load_background_notifications_mode() == "off":
                     continue
+                if evt.get("type") == "heartbeat":
+                    from gateway.session_automation import prepare_heartbeat
+                    try:
+                        prepared = await prepare_heartbeat(self, evt)
+                    except Exception:
+                        # One tick's failure must not drop the rest of the drained events.
+                        logger.exception("Heartbeat preparation error; the tick is requeued")
+                        completion_queue.put(evt)
+                        continue
+                    if prepared is None:
+                        continue
+                    evt = prepared
                 synth_text = _format_gateway_process_notification(evt)
                 if not synth_text:
                     continue
@@ -885,11 +904,15 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             from gateway.session_authorities import active_authority
             authority = active_authority(self)
             if authority is not None:
-                from gateway.session_automation import producer_identity
+                from gateway.session_automation import producer_identity, remember_heartbeat, withdraw_process_ticks
                 from hermes_state_runtime import RuntimeStoreError
                 try:
                     identity = producer_identity(self, evt)
                     await authority.admit_automation(adapter, synth_event, identity)
+                    if evt.get("type") == "heartbeat":
+                        remember_heartbeat(self, identity, evt)
+                    elif evt.get("type") == "completion":
+                        await withdraw_process_ticks(self, evt)
                 except RuntimeStoreError as exc:
                     raise WakeNotAccepted(str(exc)) from exc
             else:
@@ -925,7 +948,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 task_idx = ((evt.get("results") or [{}])[0] or {}).get("task_index", "")
                 return (evt_type, producer_id, f"task_failure:{task_idx}")
             return (evt_type, producer_id, "")
-        if evt_type in {"watch_match", "watch_disabled"} and evt.get("event_id"):
+        # A liveness tick is one watch event like a match: without an identity the session authority
+        # refuses it and the drain requeues it forever.
+        if evt_type in {"watch_match", "watch_disabled", "heartbeat"} and evt.get("event_id"):
             return (evt_type, str(evt["session_id"]), str(evt["event_id"]))
         if evt_type == "completion":
             producer_id = str(evt.get("session_id") or "")

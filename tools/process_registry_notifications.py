@@ -3,6 +3,7 @@ watch_match, watch_disabled, watch_overflow_*, async_delegation) into the
 ``[IMPORTANT: ...]`` / ``[ASYNC DELEGATION ...]`` text the CLI drain loop, gateway and
 TUI inject into the agent conversation."""
 
+import re
 import time
 from dataclasses import dataclass
 from contextlib import suppress
@@ -372,6 +373,34 @@ def process_completion_display_text(events: list) -> str:
 
 
 HEARTBEAT_DISPLAY_KIND = "hidden"  # a wake, not a message: no surface paints the row
+HEARTBEAT_OUTPUT_CHARS = 2000
+
+
+_OMITTED_PREFIX = re.compile(r"\.\.\.\((\d+) earlier characters omitted\)\n")
+
+
+def heartbeat_output_tail(output: str, omitted: int = 0) -> str:
+    """A tick's output, capped to its newest characters: a long job's latest lines are what matter.
+    ``omitted`` counts characters already cut before ``output``."""
+    if len(output) > HEARTBEAT_OUTPUT_CHARS:
+        omitted += len(output) - HEARTBEAT_OUTPUT_CHARS
+        output = output[-HEARTBEAT_OUTPUT_CHARS:]
+    return f"...({omitted} earlier characters omitted)\n{output}" if omitted else output
+
+
+def join_heartbeat_outputs(earlier: str, later: str) -> str:
+    """Two consecutive ticks' output as one tick's, capped the same way, counting every character
+    either cut. A later tick that was itself cut leaves none of the earlier output."""
+    earlier_cut, earlier_text = _omitted_prefix(earlier)
+    later_cut, later_text = _omitted_prefix(later)
+    if later_cut:
+        return heartbeat_output_tail(later_text, earlier_cut + len(earlier_text) + later_cut)
+    return heartbeat_output_tail(earlier_text + later_text, earlier_cut)
+
+
+def _omitted_prefix(output: str) -> tuple[int, str]:
+    match = _OMITTED_PREFIX.match(output)
+    return (int(match.group(1)), output[match.end():]) if match else (0, output)
 
 
 def heartbeat_display_text(evt: dict) -> str:

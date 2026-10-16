@@ -173,6 +173,7 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
                 if not line:
                     continue
                 call_start = time.monotonic()
+                request = None
                 try:
                     request = json.loads(line.decode())
                 except (json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -183,6 +184,9 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
                         max_tool_calls=max_tool_calls, dispatch=dispatch, tool_call_log=tool_call_log,
                         call_start=call_start, where="sandbox",
                     ) if _rpc_token_ok(request, rpc_token) else tool_error("Unauthorized RPC request")
+                rid = request.get("rid") if isinstance(request, dict) else None
+                if rid is not None:   # echo so a client can reject an out-of-step reply (older stubs send no rid)
+                    resp = json.dumps({"rid": rid, "result": resp})
                 conn.sendall((resp + "\n").encode())
     except TimeoutError:
         logger.debug("RPC listener socket timeout")

@@ -133,9 +133,9 @@ _DESKTOP_INSTANCE_ID_RE = re.compile(r"[0-9a-f]{32}")
 def set_desktop_instance_id(value: Any) -> bool:
     """Record this process's Desktop app-instance identity; False when it is not 32 lowercase hex.
 
-    Called once at backend startup (``hermes_cli.web_server.start_server``, derived from the
-    Desktop's ``desktop-ssh/<ownershipId>/`` token path) or supplied explicitly through
-    ``HERMES_DESKTOP_INSTANCE_ID`` by a spawner that mints its own id.
+    Called once at backend startup (``hermes_cli.web_server.start_server``), derived from the
+    ``desktop-ssh/<ownershipId>/`` token path the Desktop already passes to its backend — the
+    identity is a startup argument, never a new environment variable.
     """
     global _DESKTOP_INSTANCE_ID
     candidate = str(value or "").strip().lower()
@@ -150,16 +150,13 @@ def set_desktop_instance_id(value: Any) -> bool:
 
 def desktop_instance_id() -> str:
     """This process's Desktop app-instance identity, or "" when it is not a Desktop backend."""
-    if _DESKTOP_INSTANCE_ID:
-        return _DESKTOP_INSTANCE_ID
-    env_value = str(os.environ.get("HERMES_DESKTOP_INSTANCE_ID") or "").strip().lower()
-    return env_value if _DESKTOP_INSTANCE_ID_RE.fullmatch(env_value) else ""
+    return _DESKTOP_INSTANCE_ID
 
 
 # Name of the lease-metadata key that records the Desktop instance above, and of the key a
 # Desktop backend keeps current to say whether it still holds a LIVE client transport for the
-# chat. Both are additive metadata: existing consumers read ``live_session_id`` /
-# ``bot_live_delivery_consumer`` and ignore anything else.
+# chat. Both are additive metadata: existing consumers read ``live_session_id`` and ignore
+# anything else.
 DESKTOP_INSTANCE_METADATA_KEY = "desktop_instance_id"
 CLIENT_ATTACHED_METADATA_KEY = "client_attached"
 

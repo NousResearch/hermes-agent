@@ -48,7 +48,6 @@ INSTANCE_A = "a" * 32
 
 @pytest.fixture(autouse=True)
 def _no_ambient_desktop_identity(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("HERMES_DESKTOP_INSTANCE_ID", raising=False)
     monkeypatch.setattr(active_sessions, "_DESKTOP_INSTANCE_ID", "")
 
 

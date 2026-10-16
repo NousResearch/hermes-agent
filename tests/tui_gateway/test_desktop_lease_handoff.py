@@ -40,8 +40,7 @@ INSTANCE_B = "b" * 32
 
 @pytest.fixture(autouse=True)
 def _no_ambient_desktop_identity(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Neither the module global nor the env may leak a Desktop identity into a test."""
-    monkeypatch.delenv("HERMES_DESKTOP_INSTANCE_ID", raising=False)
+    """No ambient Desktop identity may leak into a test."""
     monkeypatch.setattr(active_sessions, "_DESKTOP_INSTANCE_ID", "")
 
 
@@ -65,7 +64,7 @@ def holder_entry(
     lease_id: str = "holder-lease-1",
 ) -> dict:
     """A lease entry exactly as a sibling Desktop backend would have written it."""
-    metadata: dict = {"live_session_id": f"live-{pid}", "bot_live_delivery_consumer": True}
+    metadata: dict = {"live_session_id": f"live-{pid}"}
     if instance:
         metadata["desktop_instance_id"] = instance
     if attached is not None:
@@ -278,13 +277,10 @@ def test_the_supersede_predicate_refuses_every_other_holder_shape(
 def test_lease_metadata_keeps_the_historical_shape_for_existing_consumers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert server._lease_metadata("live-1") == {
-        "live_session_id": "live-1", "bot_live_delivery_consumer": True,
-    }
+    assert server._lease_metadata("live-1") == {"live_session_id": "live-1"}
     set_desktop_instance(monkeypatch, INSTANCE_A)
     desktop = server._lease_metadata("live-2")
     assert desktop["live_session_id"] == "live-2"
-    assert desktop["bot_live_delivery_consumer"] is True
     assert desktop["desktop_instance_id"] == INSTANCE_A
     assert desktop["client_attached"] is True  # a claim happens on a user turn
 
@@ -294,9 +290,7 @@ def test_lease_metadata_keeps_the_historical_shape_for_existing_consumers(
     tui_lease, message = server._claim_active_session_slot(
         "k", live_session_id="live-4", surface="tui", profile_home=tui_home)
     assert tui_lease is not None and message is None
-    assert read_ledger(tui_home)[0]["metadata"] == {
-        "live_session_id": "live-4", "bot_live_delivery_consumer": True,
-    }
+    assert read_ledger(tui_home)[0]["metadata"] == {"live_session_id": "live-4"}
     tui_lease.release()
 
 

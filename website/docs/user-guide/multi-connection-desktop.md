@@ -187,9 +187,15 @@ The union roster is what multi-gateway surfaces (and the built-in
   live on the machine that owns the profile, exactly as if you were using
   that instance directly.
 
-Each `(connection, profile)` pair gets its own backend and socket, pooled
-with the same idle-reaping as local per-profile backends — background agents
-keep streaming while you look at another gateway.
+Each `(connection, profile)` pair gets its own socket, and Desktop caches the
+gateway descriptor it dialed so the next open joins the same connection —
+background agents keep streaming while you look at another gateway. Desktop
+never spawns or reaps a *remote* gateway; each one owns its own lifetime. For a
+**local** profile, the first open runs `hermes gateway ensure`, which attaches
+to that profile's running gateway or, when there is none, installs and starts a
+persistent per-profile gateway (a systemd/launchd service where one exists,
+otherwise a detached daemon). That gateway keeps running after you close the
+app — it has no idle shutdown — until you stop it with `hermes gateway stop`.
 
 Approval buttons route back to the session's owning backend, not whichever
 profile is currently selected. For a local secondary profile, Desktop can use
@@ -214,7 +220,7 @@ that live on one gateway.
 - Selecting a gateway restores the last profile used there. The home pill
   returns to its default profile and the layers pill shows **All profiles on
   this gateway**. **Cmd/Ctrl+1–9** continue to switch profiles within the
-  active gateway.
+  active gateway whenever no pane has a tab strip to claim them.
 - With several gateways the profile rail is a **fleet rail**: every registered
   gateway's profiles sit on the one strip, each group headed by that gateway's
   kind glyph (device, network, terminal, cloud) — the same glyph the gateway
@@ -251,9 +257,12 @@ that live on one gateway.
   are all scoped to the active `(gateway, profile)`. Switching from a Telegram
   gateway to a Signal gateway cannot leave the previous gateway's channel groups
   or sessions in the sidebar.
-- Merely displaying the switcher reads Electron's local connection registry.
-  Remote gateways are opened only when selected; there is no periodic fleet
-  polling.
+- Desktop loads the local connection registry at startup, even with the status
+  bar hidden, and keeps it current when gateways are saved or removed. Opening
+  Settings is not required. In Simple mode, the profile rail stays available
+  when more than one gateway is registered, even with only a default profile.
+  Loading the registry does not connect every gateway; there is no periodic
+  fleet polling.
 - Hovering an agent pre-warms its backend so the switch doesn't pay a cold
   boot. SSH agents are the exception: hovering never dials the tunnel or
   starts a remote backend — only opening one does.

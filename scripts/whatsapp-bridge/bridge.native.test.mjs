@@ -17,7 +17,6 @@ import {
   buildPollPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
-  appendMediaFailureNote,
   extractBridgeEvent,
   inboundReadReceiptKeys,
   mediaPayloadForFile,
@@ -490,22 +489,6 @@ import {
 }
 
 // -- media download failure containment (port of nanoclaw#2895) -----------
-{
-  assert.equal(appendMediaFailureNote('hello', []), 'hello');
-  assert.equal(
-    appendMediaFailureNote('check this out', ['image']),
-    'check this out\n[image could not be downloaded]',
-  );
-  // Regression guard: an uncaptioned failed image must still produce a
-  // non-empty body, or the empty-message guard drops the whole message.
-  assert.equal(appendMediaFailureNote('', ['image']), '[image could not be downloaded]');
-  assert.equal(
-    appendMediaFailureNote('', ['image', 'document']),
-    '[image could not be downloaded] [document could not be downloaded]',
-  );
-  console.log('  ✓ appendMediaFailureNote formats failure notes');
-}
-
 {
   // A throwing downloadMedia (expired CDN URL) must not reject out of
   // extractBridgeEvent — before this guard the whole upsert batch died and

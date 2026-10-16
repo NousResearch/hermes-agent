@@ -11,6 +11,7 @@ import {
   $layoutTree,
   activateTreePane,
   bindToolPaneCollapse,
+  closeTabPane,
   closeToolPane,
   isPaneVisible,
   revealTreePane,
@@ -294,6 +295,56 @@ describe('collapsing the active terminal in a shared group with the workspace', 
     // … while the terminal stays OPEN: its PTYs live and clicking the tab
     // brings back a mounted workspace.
     expect($terminalTakeover.get()).toBe(true)
+  })
+})
+
+describe('closing an active tool tab (✕ / ⌘W) that shares the chat zone', () => {
+  // #79002: a terminal dragged into the chat's zone, closed from its tab ✕,
+  // left the user on whatever tab sat next to it (review) instead of the chat.
+  // removePane's neighbour rule ran first, and the store listener's collapse
+  // then no-oped on a pane that had already left the tree. Same destination
+  // as putting the pane away with its toggle: the uncloseable workspace.
+
+  const chatZoneActive = () => {
+    const tree = $layoutTree.get()
+
+    return tree?.type === 'group' ? tree.active : undefined
+  }
+
+  it.each([
+    ['terminal', ['workspace', 'files', 'review', 'terminal']],
+    ['logs', ['workspace', 'review', 'logs', 'files']]
+  ])('closing %s hands the active slot to the workspace, not a neighbour', (paneId, panes) => {
+    $layoutTree.set(group(panes, { active: paneId, id: 'g-chat' }))
+    const $open = atom(true)
+    bindPaneCollapse(paneId, $open)
+
+    closeTabPane(paneId)
+
+    expect(allPaneIds($layoutTree.get()!)).not.toContain(paneId)
+    expect(chatZoneActive()).toBe('workspace')
+    expect(isPaneVisible('workspace')).toBe(true)
+    expect($open.get()).toBe(false) // toggle store stays truthful
+  })
+
+  it('leaves the active tab alone when the closed tool tab was in the background', () => {
+    $layoutTree.set(group(['workspace', 'review', 'terminal'], { active: 'review', id: 'g-chat' }))
+    bindPaneCollapse('terminal', atom(true))
+
+    closeTabPane('terminal')
+
+    expect(chatZoneActive()).toBe('review')
+  })
+
+  it('still hands a pure tool zone to the neighbouring tool tab', () => {
+    stackTree({ active: 'terminal' })
+    bindPaneCollapse('terminal', atom(true))
+    bindPaneCollapse('logs', atom(true))
+
+    closeTabPane('terminal')
+
+    expect(toolZone()?.panes).toEqual(['logs'])
+    expect(toolZone()?.active).toBe('logs')
   })
 })
 

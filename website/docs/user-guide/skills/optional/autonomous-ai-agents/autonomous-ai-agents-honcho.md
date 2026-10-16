@@ -15,7 +15,7 @@ Configure and troubleshoot Honcho memory for Hermes.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/autonomous-ai-agents/honcho` |
-| Path | `optional-skills/autonomous-ai-agents\honcho` |
+| Path | `optional-skills/autonomous-ai-agents/honcho` |
 | Version | `2.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
@@ -43,6 +43,12 @@ Honcho provides AI-native cross-session user modeling. It learns who the user is
 - Configuring context budgets and session summary injection
 
 ## Setup
+
+Honcho is a plugin-catalog memory provider maintained by Plastic Labs. Install it once per machine (homes upgraded from a release that bundled Honcho get it automatically):
+
+```bash
+hermes plugins install honcho
+```
 
 ### Cloud (app.honcho.dev)
 

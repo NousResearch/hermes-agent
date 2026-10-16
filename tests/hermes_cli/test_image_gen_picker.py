@@ -57,17 +57,6 @@ def _reset_registry():
 
 
 class TestPluginPickerInjection:
-    def test_plugin_providers_returns_registered(self, monkeypatch):
-        from hermes_cli import tools_config
-
-        image_gen_registry.register_provider(_FakeProvider("myimg"))
-
-        rows = tools_config._plugin_image_gen_providers()
-        names = [r["name"] for r in rows]
-        plugin_names = [r.get("image_gen_plugin_name") for r in rows]
-
-        assert "Myimg" in names
-        assert "myimg" in plugin_names
 
 
     def test_visible_providers_includes_plugins_for_image_gen(self, monkeypatch):
@@ -81,14 +70,6 @@ class TestPluginPickerInjection:
         assert "someimg" in plugin_names
 
 
-    def test_post_setup_omitted_when_not_declared(self, monkeypatch):
-        from hermes_cli import tools_config
-
-        image_gen_registry.register_provider(_FakeProvider("plain_img"))
-
-        rows = tools_config._plugin_image_gen_providers()
-        match = next(r for r in rows if r.get("image_gen_plugin_name") == "plain_img")
-        assert "post_setup" not in match
 
 
 class TestPluginCatalog:

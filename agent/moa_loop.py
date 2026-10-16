@@ -206,7 +206,9 @@ _REFERENCE_SYSTEM_PROMPT = (
     "systems exist and reason about them from the context given rather than "
     "asking for access.\n\n"
     "Respond with your advice directly — no preamble, no disclaimers about "
-    "tools or access. Your response is private guidance handed to the "
+    "tools or access. Advise in prose: never emit a tool call or a JSON "
+    "tool-call object, because the aggregator replays what looks like one. "
+    "Your response is private guidance handed to the "
     "aggregator, not an answer shown to the user. NEVER claim to have executed "
     "anything."
 )
@@ -298,6 +300,37 @@ def _with_cache_disabled(runtime: dict[str, Any], cache_disabled: Any) -> dict[s
     return runtime if cache_disabled is None else {**runtime, "_cache_disabled": cache_disabled}
 
 
+def _reference_liveness_hook(agent: Any, label: str) -> Any:
+    """Thread-local aux progress hook bridging advisor stream chunks to the agent's
+    activity clock.
+
+    The MoA fan-out runs in worker threads outside the main agent loop, so without this
+    bridge nothing stamps the turn's activity clock while advisors stream — the
+    turn-liveness watchdog then reads the clock frozen at the last main-loop stamp and
+    force-aborts healthy, still-streaming advisor turns at ``agent.turn_liveness.timeout_s``
+    (default 600s) even though the aux stream layer deliberately permits
+    ``max(600, 4 × timeout)``. ``call_llm`` preserves a thread-local hook across its
+    dispatch/protected-daemon paths and ticks it per substantive stream chunk, so each
+    chunk re-arms the watchdog. A failed touch must never break the advisor call.
+    """
+    touch = getattr(agent, "_touch_activity", None)
+
+    def _touch_on_progress() -> None:
+        if callable(touch):
+            touch(f"MoA reference {label}: stream progress")
+
+    return _touch_on_progress
+
+
+def _touch_fanout_progress(agent: Any, description: str) -> None:
+    """Best-effort activity stamp for fan-out milestones; never raises (display of
+    progress must not decide turn liveness on its own, it only supports it)."""
+    touch = getattr(agent, "_touch_activity", None)
+    if callable(touch):
+        with contextlib.suppress(Exception):
+            touch(description)
+
+
 def _maybe_apply_moa_cache_control(
     messages: list[dict[str, Any]], runtime: dict[str, Any], *, cache_disabled: bool | None = None,
     cache_ttl: str | None = None,
@@ -365,7 +398,7 @@ def _price_reference_response(
 def _run_reference(
     slot: dict[str, Any], ref_messages: list[dict[str, Any]], *, temperature: float | None = None,
     max_tokens: int | None = None, reference_timeout: float | None = None, context_length_cache: Any = None,
-    cache_disabled: bool | None = None, cache_ttl: str | None = None,
+    cache_disabled: bool | None = None, cache_ttl: str | None = None, agent: Any = None,
 ) -> tuple[str, str, Any]:
     """Call one reference model; return ``(label, text, accounting)``. Never raises:
     a failed reference becomes a labelled ``[failed: …]`` note. Runs in a thread pool."""
@@ -391,12 +424,23 @@ def _run_reference(
         # user's current turn, so mirror the main agent's x-initiator header.
         from agent.auxiliary_client import _normalize_aux_provider
         is_copilot = _normalize_aux_provider(str(runtime.get("provider") or "")) in ("copilot", "copilot-acp")
-        response = call_llm(
-            task="moa_reference", messages=trimmed, temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
-            extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
-        )
+        if agent is not None:
+            from agent.auxiliary_client import aux_progress_hook
+
+            with aux_progress_hook(_reference_liveness_hook(agent, label)):
+                response = call_llm(
+                    task="moa_reference", messages=trimmed, temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
+                    extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
+                )
+        else:
+            response = call_llm(
+                task="moa_reference", messages=trimmed, temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
+                extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
+            )
         output_text = _extract_text(response) or "(empty response)"
         acct = _RefAccounting(*_price_reference_response(response, slot, runtime), messages=trimmed, output=output_text, **trace_fields)
         return label, output_text, acct
@@ -468,21 +512,40 @@ def _trim_messages_for_reference(
     if budget <= 0 or estimated <= budget:
         return messages
 
-    has_system = messages[0].get("role") == "system"
-    head = [messages[0]] if has_system else []
-    body = list(messages[1:] if has_system else messages)
+    has_system = bool(messages) and messages[0].get("role") == "system"
+    head_count = 1 if has_system else 0
+
+    # estimate_messages_tokens_rough is a pure sum of per-message weights,
+    # so weigh each message once and track a running total while popping
+    # instead of re-estimating head + body after every pop. The naive form
+    # paid one full memo walk per dropped frame (quadratic on long
+    # histories). The pop sequence is unchanged, so the trim result is
+    # identical to the naive loop.
+    weights = [estimate_messages_tokens_rough([m]) for m in messages]
+    total = sum(weights)
 
     # Keep the trailing user turn plus at least one preceding turn.
-    while len(body) > 2 and estimate_messages_tokens_rough(head + body) > budget:
-        body.pop(0)
-        # Preserve the user-first invariant after each pop.
-        while len(body) > 2 and body[0].get("role") == "assistant":
-            body.pop(0)
-    # Two frames left with an assistant first: still enforce user-first.
-    while len(body) > 1 and body[0].get("role") == "assistant":
-        body.pop(0)
+    start = head_count
+    remaining = len(messages) - head_count
+    while remaining > 2 and total > budget:
+        total -= weights[start]
+        start += 1
+        remaining -= 1
+        # Preserve the user-first invariant: never leave the advisory
+        # conversation starting on an assistant turn after a pop.
+        while remaining > 2 and messages[start].get("role") == "assistant":
+            total -= weights[start]
+            start += 1
+            remaining -= 1
+    # The loop can stop with two frames left where the first is an
+    # assistant turn — enforce user-first even then (a lone trailing user
+    # turn is a valid request; an assistant-first one is not).
+    while remaining > 1 and messages[start].get("role") == "assistant":
+        total -= weights[start]
+        start += 1
+        remaining -= 1
 
-    trimmed = head + body
+    trimmed = messages[:head_count] + messages[start:]
     dropped = len(messages) - len(trimmed)
     if dropped:
         logger.info(
@@ -494,6 +557,7 @@ def _trim_messages_for_reference(
 
 
 _REFERENCE_POLL_INTERVAL_S = 5.0
+_REFERENCE_INTERRUPT_SETTLE_S = 0.05
 
 # Sentinel for a reference aborted by user interrupt; the facade must never cache it.
 _INTERRUPTED_REFERENCE_NOTE = "[skipped: interrupted by user]"
@@ -564,31 +628,54 @@ def _run_references_parallel(
     # Shared per-fan-out context-length cache (dict get/set is GIL-atomic).
     ctx_len_cache: dict[tuple[str, str], int | None] = {}
     cache_disabled, cache_ttl = _agent_cache_opts(agent)
+
+    def collect(done: set[Any]) -> None:
+        nonlocal completed
+        for future in done:
+            idx = futures[future]
+            results[idx] = future.result()
+            completed += 1
+            # Each completion is fan-out progress the main loop cannot see: the
+            # fan-out blocks it, so stamp the turn's activity clock here (non-streaming
+            # advisors otherwise tick nothing between dispatch and completion).
+            _touch_fanout_progress(agent, f"MoA: {completed} of {total} references complete")
+            if progress_callback is not None:
+                try:
+                    progress_callback(completed, total, _slot_label(reference_models[idx]))
+                except Exception as exc:  # pragma: no cover - display must never break
+                    logger.debug("MoA progress_callback failed: %s", exc)
+
     try:
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
                 results[idx] = _placeholder_output(slot, "[skipped: MoA presets cannot recursively reference MoA]")
                 continue
-            futures[executor.submit(
-                propagate_context_to_thread(_run_reference), slot, ref_messages, temperature=temperature,
-                max_tokens=max_tokens, reference_timeout=reference_timeout, context_length_cache=ctx_len_cache,
-                cache_disabled=cache_disabled, cache_ttl=cache_ttl,
-            )] = idx
+            futures[
+                executor.submit(
+                    propagate_context_to_thread(_run_reference),
+                    slot,
+                    ref_messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    reference_timeout=reference_timeout,
+                    context_length_cache=ctx_len_cache,
+                    cache_disabled=cache_disabled,
+                    cache_ttl=cache_ttl,
+                    agent=agent,
+                )
+            ] = idx
 
         # Collect every reference (no early exit except a user interrupt).
         pending = set(futures)
         while pending:
             done, pending = _futures_wait(pending, timeout=_REFERENCE_POLL_INTERVAL_S)
-            for future in done:
-                idx = futures[future]
-                results[idx] = future.result()
-                completed += 1
-                if progress_callback is not None:
-                    try:
-                        progress_callback(completed, total, _slot_label(reference_models[idx]))
-                    except Exception as exc:  # pragma: no cover - display must never break
-                        logger.debug("MoA progress_callback failed: %s", exc)
+            collect(done)
             if pending and agent is not None and getattr(agent, "_interrupt_requested", False):
+                # A worker can raise the interrupt immediately before publishing
+                # its own result. Give concurrently-finishing work one scheduler
+                # turn so completed output is not replaced by an interrupt note.
+                done, pending = _futures_wait(pending, timeout=_REFERENCE_INTERRUPT_SETTLE_S)
+                collect(done)
                 interrupted = True
                 _settle_interrupted(futures, results, reference_models, late_accounting_sink)
                 break
@@ -635,12 +722,36 @@ def _render_tool_calls(tool_calls: Any) -> str:
     return "\n".join(lines)
 
 
+# Cached guidance (user_turn / off-cadence every_n fanout) is reused on later iterations of the
+# same turn, where it predates the tool results the acting model now sees. Without this line the
+# block reads as fresh instruction and an advisor's suggested tool call gets replayed after it
+# already ran.
+_STALE_GUIDANCE_NOTE = (
+    "This guidance was produced earlier in this turn, before the tool results below it. "
+    "Check the transcript before acting on it: a step it suggests may already have run, and "
+    "repeating a completed tool call is never the next step.\n"
+)
+
+
 _ADVISORY_INSTRUCTION = (
     "[The conversation above is the current state of the task. Give your "
     "most intelligent judgement: what is going on, what should happen next, "
     "what risks or mistakes you see, and how the acting agent should "
     "proceed.]"
 )
+
+
+def _tool_activity_since_last_user(messages: list[dict[str, Any]]) -> bool:
+    """Whether the acting model has already called tools since the last real user turn.
+    Guidance cached from the start of the turn predates those results, so replaying a
+    tool call it suggests can repeat work the transcript already shows as done."""
+    for msg in reversed(messages):
+        role = msg.get("role")
+        if role == "user":
+            return False
+        if role == "tool" or (role == "assistant" and msg.get("tool_calls")):
+            return True
+    return False
 
 
 def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -836,6 +947,9 @@ def aggregate_moa_context(
     agg_label = _slot_label(aggregator)
     agg_runtime = _slot_runtime(aggregator)
     cache_disabled, cache_ttl = _agent_cache_opts(agent)
+    _touch_fanout_progress(
+        agent, f"MoA: synthesizing aggregator guidance ({agg_label})"
+    )
     try:
         # Same cache_control decoration as the advisor calls; this synthesis call is
         # a third independent MoA call path that otherwise re-bills its full input.
@@ -1266,6 +1380,7 @@ class MoAChatCompletions:
 
     def _build_guidance(
         self, reference_outputs: list[tuple[str, str, Any]], aggregator: dict[str, Any], degraded_reference_policy: str,
+        stale: bool = False,
     ) -> str | None:
         """Render the reference block attached to the aggregator prompt (None = nothing)."""
         agg_refs, degraded, all_failed = _guidance_inputs(
@@ -1296,7 +1411,8 @@ class MoAChatCompletions:
                 f"{header}"
                 f"References: {', '.join(label for label, _, _ in agg_refs)}\n\n"
                 "Use the reference responses below as private context. You are the aggregator and acting model: "
-                "answer the user directly or call tools as needed.\n\n"
+                "answer the user directly or call tools as needed.\n"
+                f"{_STALE_GUIDANCE_NOTE if stale else ''}\n"
                 f"{_join_reference_outputs(agg_refs, degraded)}"
             )
         return None
@@ -1327,7 +1443,8 @@ class MoAChatCompletions:
 
         ref_messages = _reference_messages(messages)
         cache_key = self._fanout_cache_key(preset, ref_messages, reference_models)
-        if cache_key == self._ref_cache_key and self._ref_cache_outputs:
+        cache_hit = bool(cache_key == self._ref_cache_key and self._ref_cache_outputs)
+        if cache_hit:
             # HIT: already ran and accounted. Do NOT zero pending totals (a late
             # interrupted reference may have deposited) and no trace (not a new turn).
             reference_outputs = list(self._ref_cache_outputs)
@@ -1336,7 +1453,10 @@ class MoAChatCompletions:
             reference_outputs = self._run_fanout(preset, ref_messages, reference_models, aggregator, aggregator_temperature, cache_key)
 
         agg_messages = [dict(m) for m in messages]
-        guidance = self._build_guidance(reference_outputs, aggregator, str(preset.get("degraded_reference_policy") or "loud"))
+        guidance = self._build_guidance(
+            reference_outputs, aggregator, str(preset.get("degraded_reference_policy") or "loud"),
+            stale=cache_hit and _tool_activity_since_last_user(messages),
+        )
         if guidance:
             _attach_reference_guidance(agg_messages, guidance)
 

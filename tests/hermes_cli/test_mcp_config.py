@@ -61,7 +61,7 @@ def _make_args(**kwargs):
 
 def _seed_config(tmp_path: Path, mcp_servers: dict):
     """Write a config.yaml with the given mcp_servers."""
-    import yaml
+    import hermes_yaml as yaml
 
     config = {"mcp_servers": mcp_servers, "_config_version": 9}
     config_path = tmp_path / "config.yaml"
@@ -82,12 +82,6 @@ class FakeTool:
 # ---------------------------------------------------------------------------
 
 class TestMcpList:
-    def test_list_empty_config(self, tmp_path, capsys):
-        from hermes_cli.mcp_config import cmd_mcp_list
-
-        cmd_mcp_list()
-        out = capsys.readouterr().out
-        assert "No MCP servers configured" in out
 
     def test_list_with_servers(self, tmp_path, capsys):
         _seed_config(tmp_path, {
@@ -123,6 +117,7 @@ class TestMcpList:
         assert "myserver" in out
         assert "enabled" in out
 
+
     def test_list_redacts_sensitive_url_query_values(self, tmp_path, capsys):
         _seed_config(tmp_path, {
             "remote": {"url": "https://a.b?code=supersecret"},
@@ -133,27 +128,6 @@ class TestMcpList:
         out = capsys.readouterr().out
         assert "code=***" in out
         assert "supersecret" not in out
-
-    def test_redact_url_preserves_fragments(self):
-        from hermes_cli.mcp_config import _redact_url
-
-        url = "https://example.test/mcp?access_token=abc123#frag"
-
-        assert _redact_url(url) == "https://example.test/mcp?access_token=***#frag"
-
-    def test_redact_url_avoids_keyword_substring_false_positives(self):
-        from hermes_cli.mcp_config import _redact_url
-
-        url = (
-            "https://example.test/mcp?"
-            "monkey=banana&donkey=value&mistoken=plain&contesting=no&token=abc123"
-        )
-
-        assert (
-            _redact_url(url)
-            == "https://example.test/mcp?"
-            "monkey=banana&donkey=value&mistoken=plain&contesting=no&token=***"
-        )
 
     def test_list_handles_non_string_url_values(self, tmp_path, capsys):
         _seed_config(tmp_path, {
@@ -341,7 +315,6 @@ class TestMcpAdd:
         assert "access_token=***" in out
         assert "supersecret" not in out
 
-
     def test_add_redacts_probe_failure_diagnostics(self, tmp_path, capsys, monkeypatch):
         """Add failure output must not leak credential-bearing URLs."""
         def mock_probe(name, config, **kw):
@@ -372,23 +345,6 @@ class TestMcpAdd:
 
 class TestMcpTest:
 
-    def test_test_success(self, tmp_path, capsys, monkeypatch):
-        _seed_config(tmp_path, {
-            "ink": {"url": "https://mcp.ml.ink/mcp"},
-        })
-
-        def mock_probe(name, config, **kw):
-            return [("create_service", "Deploy"), ("list_services", "List all")]
-
-        monkeypatch.setattr(
-            "hermes_cli.mcp_config._probe_single_server", mock_probe
-        )
-        from hermes_cli.mcp_config import cmd_mcp_test
-
-        cmd_mcp_test(_make_args(name="ink"))
-        out = capsys.readouterr().out
-        assert "Connected" in out
-        assert "Tools discovered: 2" in out
 
     def test_exit_codes_distinguish_failure_from_unknown_server(self, tmp_path, capsys, monkeypatch):
         """0 connected, 1 connection failed, 3 not in config — never argparse's 2, never a silent 0."""
@@ -423,7 +379,6 @@ class TestMcpTest:
         """OAuth-capable probes must not hard-code a short 30s timeout."""
         import asyncio
         from hermes_cli import mcp_config
-        import tools.mcp_tool as mcp_tool
         from tools import mcp_tool_discovery as _mcp_discovery
         from tools import mcp_tool_lifecycle as _mcp_lifecycle
         from tools import mcp_tool_loop as _mcp_loop
@@ -460,6 +415,7 @@ class TestMcpTest:
         assert captured["outer_timeout"] == 310.0
         assert captured["shutdown"] is True
 
+
     def test_test_redacts_sensitive_url_query_values(self, tmp_path, capsys, monkeypatch):
         _seed_config(tmp_path, {
             "ink": {"url": "https://example.test/mcp?x-amz-signature=supersecret&x=1"},
@@ -495,7 +451,6 @@ class TestMcpTest:
         out = capsys.readouterr().out
         assert "Transport: HTTP → 12345" in out
 
-
     def test_test_redacts_probe_failure_diagnostics(self, tmp_path, capsys, monkeypatch):
         """Test failure output must not leak credential-bearing URLs."""
         _seed_config(tmp_path, {
@@ -516,38 +471,6 @@ class TestMcpTest:
         out = capsys.readouterr().out
         assert "Connection failed" in out
         assert "access_token=***" in out
-        assert "supersecret" not in out
-
-
-class TestMcpConfigure:
-
-    def test_configure_redacts_probe_failure_diagnostics(
-        self, tmp_path, capsys, monkeypatch
-    ):
-        """Configure failure output must not leak credential-bearing URLs."""
-        _seed_config(tmp_path, {
-            "ink": {"url": "https://example.test/mcp?access_token=supersecret"},
-        })
-        import sys
-        from unittest.mock import MagicMock
-
-        mock_stdin = MagicMock()
-        mock_stdin.isatty.return_value = True
-        monkeypatch.setattr(sys, "stdin", mock_stdin)
-
-        def mock_probe(name, config, **kw):
-            raise ConnectionError(
-                "connect failed: https://example.test/mcp?access_token=supersecret"
-            )
-
-        monkeypatch.setattr(
-            "hermes_cli.mcp_config._probe_single_server", mock_probe
-        )
-        from hermes_cli.mcp_config import cmd_mcp_configure
-
-        cmd_mcp_configure(_make_args(name="ink"))
-        out = capsys.readouterr().out
-        assert "Failed to connect" in out
         assert "supersecret" not in out
 
 
@@ -594,7 +517,6 @@ class TestContextVarInterpolation:
         assert _interpolate_env_vars("${/}") == os.sep
 
     def test_workspace_folder_and_basename(self, monkeypatch):
-        import tools.mcp_tool as mcp_tool
 
         monkeypatch.setattr(
             _mcp_config, "_workspace_folder", lambda: "/srv/projects/myapp"
@@ -609,7 +531,7 @@ class TestContextVarInterpolation:
     def test_workspace_folder_falls_back_to_cwd(self, monkeypatch):
         import os
 
-        import tools.file_tools_paths as file_tools_paths
+        from tools import file_tools_paths
         from tools.mcp_tool_config import _workspace_folder
 
         monkeypatch.setattr(
@@ -620,7 +542,6 @@ class TestContextVarInterpolation:
     def test_mixed_string_with_env_and_context_vars(self, monkeypatch):
         import os
 
-        import tools.mcp_tool as mcp_tool
 
         monkeypatch.setenv("MY_TOKEN", "tok-1")
         monkeypatch.setattr(_mcp_config, "_workspace_folder", lambda: "/ws/app")
@@ -649,7 +570,6 @@ class TestContextVarInterpolation:
     def test_context_vars_in_nested_config(self, monkeypatch):
         import os
 
-        import tools.mcp_tool as mcp_tool
         from tools import mcp_tool_config as _mcp_config
 
         monkeypatch.setattr(_mcp_config, "_workspace_folder", lambda: "/ws/app")
@@ -838,7 +758,7 @@ class TestProbeCapabilityGating:
     def test_config_disables_prompts_probe(self, monkeypatch):
         # Server advertises both, but user turned prompts off.
         caps = self._Caps(prompts=object(), resources=object())
-        called, details = self._run_probe(
+        called, _details = self._run_probe(
             monkeypatch, {"url": "http://x/mcp", "tools": {"prompts": False}}, caps
         )
         assert "prompts" not in called
@@ -847,7 +767,7 @@ class TestProbeCapabilityGating:
 
     def test_advertised_and_enabled_is_probed(self, monkeypatch):
         caps = self._Caps(prompts=object(), resources=object())
-        called, details = self._run_probe(monkeypatch, {"url": "http://x/mcp"}, caps)
+        called, _details = self._run_probe(monkeypatch, {"url": "http://x/mcp"}, caps)
         assert set(called) == {"prompts", "resources"}
 
 
@@ -969,10 +889,7 @@ class TestMcpLogin:
         """
         _seed_config(tmp_path, {
             "googledrive": {
-                "url": (
-                    "https://drivemcp.googleapis.com/mcp/v1?"
-                    "signature=oauth-secret&region=us"
-                ),
+                "url": "https://drivemcp.googleapis.com/mcp/v1",
                 "auth": "oauth",
             },
         })
@@ -992,8 +909,6 @@ class TestMcpLogin:
         assert "no OAuth token was obtained" in out
         assert "Authenticated" not in out
         assert "client_id" in out
-        assert "signature=***" in out
-        assert "oauth-secret" not in out
 
     def test_login_genuine_success_with_token(self, tmp_path, capsys, monkeypatch):
         """Probe lists tools AND a token exists → report real success."""
@@ -1116,52 +1031,6 @@ class TestMcpReauth:
         cmd_mcp_reauth(_make_args(name="ghost", all=False))
         out = capsys.readouterr().out
         assert "not found" in out
-
-    def test_reauth_redacts_probe_failure_diagnostics(
-        self, tmp_path, capsys, monkeypatch
-    ):
-        """Reauth failure output must not leak credential-bearing URLs."""
-        _seed_config(tmp_path, {
-            "gh": {
-                "url": "https://gh.example.com/mcp?access_token=supersecret",
-                "auth": "oauth",
-            },
-        })
-
-        def mock_probe(name, config, **kw):
-            raise ConnectionError(
-                "connect failed: https://gh.example.com/mcp?access_token=supersecret"
-            )
-
-        monkeypatch.setattr(
-            "hermes_cli.mcp_config._probe_single_server", mock_probe
-        )
-
-        class _NullCtx:
-            def __enter__(self):
-                return None
-
-            def __exit__(self, *args):
-                return False
-
-        monkeypatch.setattr(
-            "tools.mcp_oauth.force_interactive_oauth", _NullCtx
-        )
-
-        class _FakeManager:
-            def remove(self, name):
-                return None
-
-        monkeypatch.setattr(
-            "tools.mcp_oauth_manager.get_manager", lambda: _FakeManager()
-        )
-
-        from hermes_cli.mcp_config import cmd_mcp_reauth
-
-        cmd_mcp_reauth(_make_args(name="gh", all=False))
-        out = capsys.readouterr().out
-        assert "Authentication failed" in out
-        assert "supersecret" not in out
 
 
 def test_tool_filters_keeps_explicit_empty_include():

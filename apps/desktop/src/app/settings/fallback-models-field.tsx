@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 
@@ -7,8 +8,10 @@ import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Plus, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $customModels, withCustomModels } from '@/store/custom-models'
 
 import { CONTROL_TEXT } from './constants'
+import { ModelSelect } from './model-select'
 
 // An entry is `{provider, model}` plus whatever routing the user hand-wrote
 // (`base_url`, `api_key`, `key_env`, `api_mode`, ...). The editor only edits
@@ -81,7 +84,12 @@ export function FallbackModelsField({
     queryFn: () => getGlobalModelOptions()
   })
 
-  const providers = (modelOptions.data?.providers ?? []).filter(provider => provider.slug)
+  const customModels = useStore($customModels)
+
+  const providers = withCustomModels(
+    (modelOptions.data?.providers ?? []).filter(provider => provider.slug),
+    customModels
+  )
 
   const [rows, setRows] = useState<FallbackEntry[]>(() => normalizeEntries(value))
   // Last complete chain we emitted (or seeded). Autosave echoes the same
@@ -118,10 +126,6 @@ export function FallbackModelsField({
       {rows.length === 0 && <p className="text-xs text-muted-foreground">{m.fallbackEmpty}</p>}
       {rows.map((entry, index) => {
         const providerRow = providers.find(provider => provider.slug === entry.provider)
-        const catalog = providerRow?.models ?? []
-        // Keep an out-of-catalog model selectable so an existing custom
-        // provider/model renders instead of showing a blank box.
-        const modelItems = entry.model && !catalog.includes(entry.model) ? [entry.model, ...catalog] : catalog
 
         return (
           <div className="flex flex-wrap items-center gap-2" key={index}>
@@ -138,18 +142,14 @@ export function FallbackModelsField({
                 ))}
               </SelectContent>
             </Select>
-            <Select onValueChange={model => updateRow(index, { model })} value={entry.model}>
-              <SelectTrigger className={cn('min-w-52 flex-1', CONTROL_TEXT)}>
-                <SelectValue placeholder={m.model} />
-              </SelectTrigger>
-              <SelectContent>
-                {modelItems.map(model => (
-                  <SelectItem key={model} value={model}>
-                    {model}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <ModelSelect
+              className="min-w-52 flex-1"
+              models={providerRow?.models ?? []}
+              onValueChange={model => updateRow(index, { model })}
+              provider={providerRow}
+              providerSlug={entry.provider}
+              value={entry.model}
+            />
             <Button
               aria-label={t.common.remove}
               onClick={() => commit(rows.filter((_, i) => i !== index))}

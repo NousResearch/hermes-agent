@@ -30,6 +30,25 @@ _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
 _CREDENTIAL_FILES = r'(?:~|\$home|\$\{home\})/\.' r'(?:netrc|pgpass|npmrc|pypirc)\b'
+_HOME_PREFIX = r'(?:~|\$home|\$\{home\})/'
+_SECRET_FILE = (
+    rf'(?:{_SSH_SENSITIVE_PATH}|{_HERMES_ENV_PATH}|{_CREDENTIAL_FILES}|{_PROJECT_ENV_PATH}(?![\w-])'
+    rf'|{_HOME_PREFIX}\.(?:aws/credentials|git-credentials|config/gh/hosts\.yml|docker/config\.json|kube/config)\b'
+    r'|/etc/(?:shadow|passwd)\b|\bid_(?:rsa|ed25519|ecdsa|dsa)\b)'
+)
+_SECRET_VAR = r'\$\{?\w*(?:key|token|secret|passwd|password|credential)\w*\}?'
+# Flags whose argument becomes a request body / uploaded file. Case-sensitive: curl -D dumps headers, -f fails.
+_UPLOAD_FLAG = (r'(?<!\S)(?:(?-i:-[a-zA-Z]*[dFT])|--data(?:-binary|-raw|-urlencode|-ascii)?|--form(?:-string)?'
+                r'|--upload-file|--json|--post-(?:data|file)|--body-(?:data|file))')
+_EMOJI_RANGE = r'\U0001F000-\U0001FAFF\u2600-\u27BF'
+# Global flags before a subcommand, each with an optional value. Every flag has one parse ('-' plus
+# its possessive remainder, so '--x' and '--x=v' never split two ways) and a value cannot itself be a
+# flag, so a long run that never reaches the subcommand fails in linear time instead of holding the
+# GIL for minutes (#129281). Whole groups still backtrack to expose the target flag or verb.
+_GLOBAL_FLAGS = r'(?:-\S++(?:\s++(?!-\S)\S++)?\s++)*'
+# Same grammar for the docker/podman rules, which have always taken a separate value only after exactly
+# one whitespace character; keeping that means this fix changes no approval decision.
+_CONTAINER_GLOBAL_FLAGS = r'(?:-\S++(?:\s(?!-\S)\S++)?\s++)*'
 # macOS: /etc, /var, /tmp, /home are symlinks to /private/*, so /private/etc/sudoers would bypass a plain
 # "/etc/" check. Match both forms.
 _MACOS_PRIVATE_SYSTEM_PATH = r'/private/(?:etc|var|tmp|home)/'
@@ -317,6 +336,19 @@ DANGEROUS_PATTERNS = [
     (rf'\becho\b[^|]*\|\s*\btr\b[^|]*\|\s*\b(?:{_SHELL_NAMES_RE})\b', "pipe tr-transformed output to shell (possible command obfuscation)"),
     (rf'\bopenssl\b.*\b(?:base64|enc)\b[^|]*\s+-[dD]\b[^|]*\|\s*\b(?:{_SHELL_NAMES_RE})\b',
      "pipe openssl-decoded content to shell (possible command obfuscation)"),
+    # Credential exfiltration: a curl/wget request BODY (not a header — `-H "Authorization: Bearer $KEY"` is
+    # ordinary API use) carrying a secret-named variable or a credential file, or a credential file piped into
+    # an uploading curl/wget. Flag letters are case-sensitive (-d/-F/-T upload; -D/-f/-t do not).
+    (rf'{_UPLOAD_FLAG}(?:[\s=]+|(?=[@"\'$]))(?:"[^"]*(?:{_SECRET_VAR}|{_SECRET_FILE})|\'[^\']*{_SECRET_FILE}'
+     rf'|\$\([^)]*{_SECRET_FILE}|\S*?(?:{_SECRET_VAR}|{_SECRET_FILE}))',
+     "upload a secret or credential file via curl/wget (possible exfiltration)"),
+    (rf'{_SECRET_FILE}[^|;&\n]*\|[^;&|\n]*\b(?:curl|wget)\b[^;&|\n]*{_UPLOAD_FLAG}',
+     "pipe a credential file into a curl/wget upload (possible exfiltration)"),
+    # Invisible / bidirectional Unicode controls make the command the user approves differ from what runs.
+    # ZWJ between emoji (family/flag sequences) is ordinary text; variation selectors are left alone.
+    (rf'[\u200b\u200c\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u180e\U000e0000-\U000e007f]'
+     rf'|(?<![{_EMOJI_RANGE}\ufe0f])\u200d|\u200d(?![{_EMOJI_RANGE}])',
+     "invisible or bidirectional Unicode control character (possible obfuscation)"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
     (rf'\btee\b.*["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_WRITE_TARGET_BOUNDARY}', "overwrite project env/config via tee"),
@@ -339,24 +371,24 @@ DANGEROUS_PATTERNS = [
      "dynamic shell word may expand to arbitrary program execution flag"),
     # Gateway lifecycle: stopping/restarting the gateway kills all running agents. Global flags
     # between `hermes` and `gateway` (`hermes -p ade gateway restart`) are allowed so a profile flag can't slip past.
-    (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
+    (r'\bhermes\s+' + _GLOBAL_FLAGS + r'gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
     # Docker/Podman daemon redirect — global flags or env that point the CLI at a DIFFERENT (often remote) daemon:
     # `docker -H ssh://prod stop app` looks local but operates on remote infra, so any redirect requires approval
     # regardless of subcommand. The flag must be in global position (before the subcommand) and -H/--host/--context
     # must carry a value, keeping `docker -h` and `docker run -h <hostname>` out. Listed BEFORE the lifecycle rules so
     # a redirected lifecycle command surfaces the more specific reason.
-    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-h|--host)[=\s]+\S+', "docker with remote daemon redirect (-H/--host)"),
-    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-c|--context)[=\s]+\S+', "docker with daemon redirect (--context: alternate daemon)"),
+    (r'\bdocker\s+' + _CONTAINER_GLOBAL_FLAGS + r'(?:-h|--host)[=\s]+\S+', "docker with remote daemon redirect (-H/--host)"),
+    (r'\bdocker\s+' + _CONTAINER_GLOBAL_FLAGS + r'(?:-c|--context)[=\s]+\S+', "docker with daemon redirect (--context: alternate daemon)"),
     (r'\bdocker\s+context\s+use\b', "docker context use (switches default daemon for future commands)"),
-    (r'\bpodman\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:--url|--connection|--identity)[=\s]+\S+', "podman with remote daemon redirect (--url/--connection/--identity)"),
-    (r'\bpodman\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-r\b|--remote\b)', "podman remote mode (-r/--remote: remote daemon)"),
+    (r'\bpodman\s+' + _CONTAINER_GLOBAL_FLAGS + r'(?:--url|--connection|--identity)[=\s]+\S+', "podman with remote daemon redirect (--url/--connection/--identity)"),
+    (r'\bpodman\s+' + _CONTAINER_GLOBAL_FLAGS + r'(?:-r\b|--remote\b)', "podman remote mode (-r/--remote: remote daemon)"),
     (r'\b(?:docker_host|docker_context|container_host|container_connection)=\S+', "docker/podman daemon redirect via environment (DOCKER_HOST/CONTAINER_HOST)"),
     # Container lifecycle (docker.sock mounts let the agent stop/kill containers) always needs
     # consent. Global flags between docker/compose and the verb and the legacy `docker-compose`
     # binary are allowed so a flag can't slip past.
-    (r'\bdocker(?:-compose|\s+compose)\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(restart|stop|kill|down)\b', "docker compose restart/stop/kill/down (container lifecycle)"),
-    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(restart|stop|kill)\b', "docker restart/stop/kill (container lifecycle)"),
+    (r'\bdocker(?:-compose|\s+compose)\s+' + _CONTAINER_GLOBAL_FLAGS + r'(restart|stop|kill|down)\b', "docker compose restart/stop/kill/down (container lifecycle)"),
+    (r'\bdocker\s+' + _CONTAINER_GLOBAL_FLAGS + r'(restart|stop|kill)\b', "docker restart/stop/kill (container lifecycle)"),
     # Gateway protection: never start gateway outside systemd management
     (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
@@ -415,7 +447,12 @@ DANGEROUS_PATTERNS = [
     (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
     (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
-    (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
+    # `-D` = `-d --force`: only the capital short flag is force-delete, so the group opts out of
+    # the module-wide re.IGNORECASE and relies on _lower_preserving_flags keeping dash-prefixed
+    # tokens' case in the detection input (every other pattern matches case-insensitively and is
+    # unaffected). The safe merged-only -d / --delete stays ungated by design — git itself refuses
+    # to delete a branch that is not fully merged.
+    (r'\bgit\s+branch\s+(?-i:-D)\b', "git branch force delete"),
     # `-D` = `-d --force`; the long spellings are different tokens, so match delete+force in either order, bounded to
     # one command segment (no `;`/`|`/`&`/newline) so an unrelated later command isn't contaminated.
     (r'\bgit\s+branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
@@ -467,6 +504,12 @@ for _canonical_key, _legacy_key in [
     _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).update({_canonical_key, _legacy_key})
     _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update({_legacy_key, _canonical_key})
 
+# Scoping the force-delete flag to (?-i:-D) changed this pattern's regex-derived legacy key;
+# keep the pre-change spelling resolvable so approvals stored under it still match.
+_old_branch_key = r"git\s+branch\s+-D"
+_PATTERN_KEY_ALIASES.setdefault("git branch force delete", set()).add(_old_branch_key)
+_PATTERN_KEY_ALIASES.setdefault(_old_branch_key, set()).add("git branch force delete")
+
 
 def _approval_key_aliases(pattern_key: str) -> set[str]:
     """All approval keys for this pattern: the description plus the historical regex-derived key
@@ -496,6 +539,15 @@ def _normalize_command_for_detection(command: str) -> str:
     # Collapse $IFS / ${IFS...} (incl. `${IFS:0:1}`) to a space: IFS defaults to whitespace, so `rm${IFS}-rf${IFS}/`
     # runs as `rm -rf /`, and every pattern — incl. the hardline floor — anchors on literal \s between tokens.
     return re.sub(r'\$\{IFS\b[^}]*\}|\$IFS\b', ' ', command)
+
+
+def _lower_preserving_flags(command: str) -> str:
+    """Lowercase a detection variant for the pattern pass while keeping dash-prefixed tokens
+    byte-for-byte, so case-dependent flags keep their distinction. All dangerous patterns are
+    compiled case-insensitively, so preserved flag case is invisible to them except where a
+    pattern explicitly scopes a case-sensitive group. Non-flag tokens (command words, quoted
+    prose, paths) are lowercased exactly as before; separators and whitespace are untouched."""
+    return ''.join(t if t.startswith('-') else t.lower() for t in re.split(r'(\s+)', command))
 
 
 # Shell metacharacters, quotes, and whitespace that terminate a path token.
@@ -596,10 +648,10 @@ _INTERPRETER_WITH_ARG = {
     "php": {"-c", "-d", "-z"},
     "powershell": {"-configurationname", "-custompipename", "-executionpolicy", "-inputformat", "-outputformat",
                    "-settingsfile", "-version", "-windowstyle", "-workingdirectory"},
-    # Deno deliberately maps to no value-taking globals: its inline-script entry is the
-    # bare `eval` subcommand (first-arg fast path below), and its dash flags that precede
-    # `eval` (--ext, --no-check, ...) never swallow the next token as a value.
-    "bun": {"--config", "--cwd", "--env-file", "--preload", "--require"}, "deno": set(),
+    # Deno's inline-script entry is the bare `eval` subcommand; the only global option that
+    # may precede it and take a separate value is `-L/--log-level <level>` (`--env-file[=v]`
+    # binds with `=`; the `--unstable-*` and `--ext` flags belong after `eval`).
+    "bun": {"--config", "--cwd", "--env-file", "--preload", "--require"}, "deno": {"-L", "--log-level"},
 }
 _READ_TOOL_EXEC_FLAGS = {
     "sort": {"--compress-program"}, "rg": {"--pre", "--hostname-bin"}, "ag": {"--pager"},
@@ -846,10 +898,6 @@ def _iter_top_level_shell_segments(command: str):
 def _interpreter_exec_flag(family: str, args: list[str]) -> str | None:
     """Return an execution-bearing interpreter option, if present."""
     flags, with_arg = _INTERPRETER_EXEC_FLAGS[family], _INTERPRETER_WITH_ARG[family]
-    # Deno evaluates inline scripts via a bare `eval` subcommand rather than a dash flag, and
-    # only as the first argument; a later positional `eval` stays data.
-    if family == "deno" and args and args[0].lower() == "eval":
-        return "eval"
     powershell = family == "powershell"
     skip_value = False
     for token in args:
@@ -857,6 +905,11 @@ def _interpreter_exec_flag(family: str, args: list[str]) -> str | None:
             skip_value = False
             continue
         if token == "--" or (not powershell and not token.startswith("-")):
+            # Deno evaluates inline scripts via a bare `eval` subcommand rather than a dash
+            # flag: the FIRST positional token, after any global options (`deno -q eval ...`);
+            # a later positional `eval` (`deno run eval.ts`) stays data.
+            if family == "deno" and token.lower() == "eval":
+                return "eval"
             break
         option, equals, _ = token.partition("=")
         comparable = option.lower() if powershell else option
@@ -1499,12 +1552,14 @@ def detect_dangerous_command(command: str) -> tuple:
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
     for command_variant in _command_detection_variants(command):
-        command_lower = command_variant.lower()
+        command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
             if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
                 if masked_lower is None:
-                    masked_lower = _mask_quoted_prose(command_variant).lower()
+                    masked_lower = _lower_preserving_flags(
+                        _mask_quoted_prose(command_variant)
+                    )
                 if pattern_re.search(masked_lower):
                     return (True, description, description)
             elif pattern_re.search(command_lower):

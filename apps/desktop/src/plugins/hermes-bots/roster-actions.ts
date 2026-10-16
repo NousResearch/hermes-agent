@@ -10,8 +10,15 @@
 
 import { ackStoredSessionId, atom, haptic, host, markSessionUnreadFinished } from '@hermes/plugin-sdk'
 
-import { $openBotChat, $selectedBot, rosterWatermarks, saveSelectedRosterBot } from './bot-state'
-import { CANONICAL_CHAT_TITLE, notifyBotOpenFailure, openBotCanonicalChat, prepareBotSource } from './canonical-chat'
+import {
+  $openBotChat,
+  $pendingBotOpen,
+  $selectedBot,
+  lastToastedPreview,
+  rosterWatermarks,
+  saveSelectedRosterBot
+} from './bot-state'
+import { isStaleBotChatTile, notifyBotOpenFailure, openBotCanonicalChat, prepareBotSource } from './canonical-chat'
 import { $botMeta, botActivitySession, botRosterKey, botSelectionKey, newBotChat } from './data'
 import { $groupChats, $groupChatWorkspace } from './group-chat'
 import { openGroupChat } from './group-chat-view'
@@ -65,6 +72,12 @@ export function trackInboundActivity(roster: RosterRow[]) {
     rosterWatermarks.set(key, Math.max(prev, ts))
 
     if (seeding || ts <= prev) {
+      // Seed (or refresh) the last-toasted preview so a fresh mount, or a row
+      // whose activity hasn't advanced, treats current content as already-seen
+      // rather than replaying it — or a busy bridge's unchanged preview — as a
+      // duplicate toast.
+      lastToastedPreview.set(key, (activity?.preview || '').trim())
+
       continue
     }
 
@@ -93,10 +106,21 @@ export function trackInboundActivity(roster: RosterRow[]) {
 
     // Toasts are opt-in: the unread mark is recorded above regardless, but the
     // per-message notification fires only when the user enabled it.
+    const preview = (activity?.preview || '').trim()
+
+    // Content-level dedup, tracked independently of the toast pref so the
+    // memory stays accurate whether or not toasts are on: skip re-surfacing an
+    // identical preview a busy bridge keeps re-pinging (last_active advances
+    // but the visible content is unchanged). Unread marking above is unaffected.
+    if (lastToastedPreview.get(key) === preview) {
+      continue
+    }
+
+    lastToastedPreview.set(key, preview)
+
     if ($activityToasts.get()) {
       const meta = botRosterMeta(bot, $botMeta.get())
       const label = displayName(bot, meta)
-      const preview = (activity?.preview || '').trim()
       const inbound = /^Message from/i.test(preview)
       host.notify({
         kind: 'info',
@@ -115,7 +139,12 @@ export function trackInboundActivity(roster: RosterRow[]) {
  *  forceResume re-pulls the transcript. Only while that chat is the FOCUSED
  *  session — a group room or another tab owning the center must not be
  *  yanked away by background activity — and never mid-turn, when the
- *  activity is the turn itself, already streaming. */
+ *  activity is the turn itself, already streaming.
+ *
+ *  BACKGROUND wake: passed through as `background` so the refresh runs
+ *  refreshInPlace and never navigates — this fires on roster activity,
+ *  not a user gesture, so whatever route is showing stays showing (issue
+ *  121874). */
 function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowWhileBusy?: boolean } = {}) {
   const canonicalIds = [bot.canonical_session?.id, bot.canonical_session?.resolved_id].filter(Boolean).map(String)
   const focused = String(host.state.focusedStoredSessionId?.get?.() || '')
@@ -125,9 +154,20 @@ function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowW
   }
 
   const generation = getBotOpenGeneration()
-  void openBotCanonicalChat(bot, () => generation === getBotOpenGeneration()).catch(() => {
+  void openBotCanonicalChat(bot, {
+    background: true,
+    openingStillCurrent: () => generation === getBotOpenGeneration()
+  }).catch(() => {
     /* the next click or reclaim event re-resolves it */
   })
+}
+
+/** Release the pending-open mark, but only for the flight that set it: a
+ *  superseded flight settling late must not clear its successor's mark. */
+function settlePendingBotOpen(generation: number) {
+  if ($pendingBotOpen.get()?.generation === generation) {
+    $pendingBotOpen.set(null)
+  }
 }
 
 /** Front the bot's canonical Bot Chat when it is ALREADY open as a tab —
@@ -157,13 +197,12 @@ function focusExistingBotTab(bot: RosterRow): null | { registryId: string; store
     return null
   }
 
-  const isStaleTile = (tile: { storedSessionId: string; workspaceTabTitle?: string }) =>
-    typeof tile.workspaceTabTitle === 'string' &&
-    tile.workspaceTabTitle === CANONICAL_CHAT_TITLE &&
-    !canonicalIds.includes(String(tile.storedSessionId))
-
   try {
-    const focused = host.focusOpenWorkspaceSession(botWorkspaceOwnerKey(bot), isStaleTile, canonicalIds)
+    const focused = host.focusOpenWorkspaceSession(
+      botWorkspaceOwnerKey(bot),
+      isStaleBotChatTile(canonicalIds),
+      canonicalIds
+    )
 
     return typeof focused === 'string' && focused
       ? { registryId: String(canonical!.id), storedSessionId: focused }
@@ -257,6 +296,11 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     return true
   }
 
+  // The click missed an already-open tab. Publish the target before the cold
+  // backend start so the row can acknowledge it in this same turn (#120277).
+  // Highlight, routing, drafts, and running turns are unchanged.
+  $pendingBotOpen.set({ generation, key })
+
   try {
     // Activation selects this row's source only. Canonical identity is resolved
     // after that by the owner profile's "Bot Chat" title registry.
@@ -268,17 +312,23 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
       notifyBotOpenFailure(error, bot, 'reach')
     }
 
+    settlePendingBotOpen(generation)
+
     return false
   }
 
   if (generation !== getBotOpenGeneration()) {
+    settlePendingBotOpen(generation)
+
     return false
   }
 
   try {
-    const opened = await openBotCanonicalChat(bot, () => generation === getBotOpenGeneration())
+    const opened = await openBotCanonicalChat(bot, { openingStillCurrent: () => generation === getBotOpenGeneration() })
 
     if (generation !== getBotOpenGeneration()) {
+      settlePendingBotOpen(generation)
+
       return false
     }
 
@@ -295,6 +345,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
         openedRegistryId: opened.registryId,
         openedSessionId: opened.openedId
       })
+      settlePendingBotOpen(generation)
 
       return true
     }
@@ -305,6 +356,8 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
       notifyBotOpenFailure(error, bot, 'open', displayName(bot, meta))
     }
 
+    settlePendingBotOpen(generation)
+
     return false
   }
 
@@ -313,6 +366,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
   if (typeof host.newChat !== 'function') {
     $openBotChat.set(null)
     restorePreviousGroup()
+    settlePendingBotOpen(generation)
 
     return false
   }
@@ -322,6 +376,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     openedRegistryId: ''
   })
   newBotChat(bot)
+  settlePendingBotOpen(generation)
 
   return true
 }

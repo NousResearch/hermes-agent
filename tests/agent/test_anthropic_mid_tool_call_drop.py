@@ -42,7 +42,7 @@ def _make_anthropic_agent(**kwargs):
 def _stream_cm(final_message, events=()):
     cm = MagicMock()
     stream = MagicMock()
-    stream.__iter__ = MagicMock(return_value=iter(list(events)))
+    stream.__iter__ = MagicMock(side_effect=lambda *_a: iter(list(events)))  # fresh per retry
     stream.get_final_message = MagicMock(return_value=final_message)
     cm.__enter__ = MagicMock(return_value=stream)
     cm.__exit__ = MagicMock(return_value=False)
@@ -56,6 +56,9 @@ def _tool_use_block(name="write_file", input_obj=None):
         name=name,
         input=input_obj if input_obj is not None else {},
     )
+
+
+_MESSAGE_STOP = SimpleNamespace(type="message_stop")
 
 
 def _tool_use_start_event(name="write_file"):
@@ -77,7 +80,7 @@ class TestAnthropicMidToolCallStreamDrop:
 
         agent = _make_anthropic_agent()
         agent._anthropic_client.messages.stream = MagicMock(
-            return_value=_stream_cm(dropped, events=[_tool_use_start_event()])
+            return_value=_stream_cm(dropped, events=[_tool_use_start_event(), _MESSAGE_STOP])
         )
 
         with pytest.raises(EmptyStreamError, match="tool_use"):
@@ -92,7 +95,7 @@ class TestAnthropicMidToolCallStreamDrop:
 
         agent = _make_anthropic_agent()
         agent._anthropic_client.messages.stream = MagicMock(
-            return_value=_stream_cm(done, events=[_tool_use_start_event()])
+            return_value=_stream_cm(done, events=[_tool_use_start_event(), _MESSAGE_STOP])
         )
 
         response = agent._interruptible_streaming_api_call(
@@ -100,20 +103,24 @@ class TestAnthropicMidToolCallStreamDrop:
         )
         assert response is done
 
-    def test_text_only_message_without_stop_reason_passes(self):
-        """No tool_use block -> the new gate stays out of the way (text-only
-        no-stop_reason handling keeps its pre-existing behavior)."""
+    def test_text_only_message_without_message_stop_raises_empty_stream(self):
+        """No tool_use block and no message_stop -> the stream was cut short, so
+        the message_stop gate (#121320) raises instead of returning the partial."""
+        from agent.chat_completion_helpers import EmptyStreamError
+
         text_only = MagicMock()
         text_only.content = [SimpleNamespace(type="text", text="partial answer")]
         text_only.stop_reason = None
         text_only.usage = SimpleNamespace(input_tokens=10, output_tokens=5)
+        text_delta = SimpleNamespace(
+            type="content_block_delta",
+            delta=SimpleNamespace(type="text_delta", text="partial answer"),
+        )
 
         agent = _make_anthropic_agent()
         agent._anthropic_client.messages.stream = MagicMock(
-            return_value=_stream_cm(text_only)
+            return_value=_stream_cm(text_only, events=[text_delta])
         )
 
-        response = agent._interruptible_streaming_api_call(
-            {"model": "claude-opus-4-7"}
-        )
-        assert response is text_only
+        with pytest.raises(EmptyStreamError, match="message_stop"):
+            agent._interruptible_streaming_api_call({"model": "claude-opus-4-7"})

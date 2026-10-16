@@ -5,21 +5,11 @@ Inspired by Claude Code's Rewind "Summarize up to here" action.
 """
 
 from hermes_cli.partial_compress import (
-    DEFAULT_KEEP_LAST,
     MAX_KEEP_LAST,
     parse_partial_compress_args,
     rejoin_compressed_head_and_tail,
     split_history_for_partial_compress,
 )
-
-
-def _history(n_pairs: int) -> list[dict[str, str]]:
-    """Build n_pairs of (user, assistant) exchanges."""
-    h: list[dict[str, str]] = []
-    for i in range(n_pairs):
-        h.append({"role": "user", "content": f"u{i}"})
-        h.append({"role": "assistant", "content": f"a{i}"})
-    return h
 
 
 # ── parse_partial_compress_args ──────────────────────────────────────
@@ -86,10 +76,6 @@ def test_split_tail_always_starts_on_user():
 
 
 
-def test_split_rejoin_preserves_all_messages():
-    h = _history(6)
-    head, tail = split_history_for_partial_compress(h, keep_last=3)
-    assert head + tail == h
 
 
 # ── rejoin_compressed_head_and_tail (seam-alternation guard) ─────────

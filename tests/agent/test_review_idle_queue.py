@@ -375,13 +375,16 @@ def test_dispatch_runs_under_the_enqueuing_profile_context(tmp_path, monkeypatch
         def clear(self):
             pass
 
+    agents = []  # The queue is a weak owner; live sessions retain their agents.
     ss.set_multiplex_active(True)
     try:
         for home in (on_home, off_home):
             tok = set_hermes_home_override(home)
             stok = ss.set_secret_scope({"REVIEW_PROBE_KEY": home.name}, profile_home=str(home))
             try:
-                q.enqueue(_Agent(), home.name, {"home": home, "task_cfg": {}})
+                agent = _Agent()
+                agents.append(agent)
+                q.enqueue(agent, home.name, {"home": home, "task_cfg": {}})
             finally:
                 ss.reset_secret_scope(stok)
                 reset_hermes_home_override(tok)

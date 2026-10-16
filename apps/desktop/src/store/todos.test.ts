@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TodoItem } from '@/lib/todos'
 
 import {
+  $retainedTodosBySession,
   $todoRevisionsBySession,
   $todosBySession,
   clearActiveSessionTodos,
@@ -40,6 +41,14 @@ describe('setSessionTodos finished-list auto-clear', () => {
     vi.advanceTimersByTime(5_000)
 
     expect($todosBySession.get().s1).toBeUndefined()
+  })
+
+  it('clears finished lists for session ids that collide with object prototype keys', () => {
+    setSessionTodos('toString', [todo('a', 'completed')])
+
+    vi.advanceTimersByTime(5_000)
+
+    expect(Object.hasOwn($todosBySession.get(), 'toString')).toBe(false)
   })
 
   it('cancels the pending clear when a new active list arrives', () => {
@@ -87,6 +96,11 @@ describe('clearActiveSessionTodos (turn-end cleanup)', () => {
 
     expect($todosBySession.get().s1).toBeUndefined()
   })
+
+  it('ignores an inherited prototype key on an empty map', () => {
+    expect(() => clearActiveSessionTodos('toString')).not.toThrow()
+    expect(Object.hasOwn($todosBySession.get(), 'toString')).toBe(false)
+  })
 })
 
 describe('todosForHydration (stale-active guard on restore)', () => {
@@ -133,6 +147,20 @@ describe('revisioned snapshots', () => {
 
     restoreSessionTodosFromSnapshot('s1', snapshot, true)
     expect($todosBySession.get().s1?.[0]?.id).toBe('active')
+  })
+
+  it('keeps an idle snapshot available for review without reviving live work', () => {
+    const saved = [todo('a', 'completed'), todo('b', 'in_progress')]
+    restoreSessionTodosFromSnapshot('s1', { revision: 7, todos: saved }, false)
+
+    expect($todosBySession.get().s1).toBeUndefined()
+    expect($retainedTodosBySession.get().s1).toEqual(saved)
+
+    restoreSessionTodosFromSnapshot('s1', { revision: 6, todos: [todo('old', 'pending')] }, false)
+    expect($retainedTodosBySession.get().s1).toEqual(saved)
+
+    restoreSessionTodosFromSnapshot('s1', { revision: 8, todos: [] }, false)
+    expect($retainedTodosBySession.get().s1).toBeUndefined()
   })
 
   it('applies an unversioned update after a revisioned snapshot (tool.start merge)', () => {

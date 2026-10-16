@@ -4,7 +4,7 @@ import csv
 import json
 import sys
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from unittest import mock
 
@@ -108,9 +108,9 @@ class TestRating:
     def test_hard_adds_1_day(self, capsys):
         _run(capsys, ["add", "--question", "Q", "--answer", "A"])
         card_id = _run(capsys, ["list"])["cards"][0]["id"]
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
         result = _run(capsys, ["rate", "--id", card_id, "--rating", "hard"])
-        after = datetime.now(timezone.utc)
+        after = datetime.now(UTC)
         next_review = datetime.fromisoformat(result["card"]["next_review_at"])
         assert before + timedelta(days=1) <= next_review <= after + timedelta(days=1)
         assert result["card"]["ease_streak"] == 0
@@ -118,7 +118,7 @@ class TestRating:
     def test_good_adds_3_days(self, capsys):
         _run(capsys, ["add", "--question", "Q", "--answer", "A"])
         card_id = _run(capsys, ["list"])["cards"][0]["id"]
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
         result = _run(capsys, ["rate", "--id", card_id, "--rating", "good"])
         next_review = datetime.fromisoformat(result["card"]["next_review_at"])
         assert next_review >= before + timedelta(days=3)

@@ -86,9 +86,11 @@ describe('tile split-share memory across a hard reload', () => {
     // empty), every persisted tile pane is pruned, then the tiles re-register
     // and re-dock in anchor order. The prune pass must not remember shares.
     tree.beginLayoutHydration()
+
     for (const id of ['session-tile:a', 'session-tile:b', 'session-tile:c', 'session-tile:d']) {
       tree.removeTreePane(id)
     }
+
     tree.endLayoutHydration()
 
     // Persisted shares stay empty — nothing was recorded by the prune.
@@ -105,6 +107,7 @@ describe('tile split-share memory across a hard reload', () => {
     // chain. (Group ids are regenerated per insert, so compare the weight
     // vector only, against a fresh-boot reference of the same tile set.)
     const fresh = await setup()
+
     for (const [id, anchor] of [
       ['session-tile:a', 'workspace'],
       ['session-tile:b', 'session-tile:a'],

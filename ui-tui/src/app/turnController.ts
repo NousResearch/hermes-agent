@@ -8,8 +8,10 @@ import {
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
 import type { SessionInterruptResponse } from '../gatewayTypes.js'
+import { t } from '../i18n/runtime.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
+import { rpcErrorMessage } from '../lib/rpc.js'
 import {
   boundedLiveRenderText,
   estimateTokensRough,
@@ -26,6 +28,7 @@ import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '
 import type { Notice } from './interfaces.js'
 import { resetFlowOverlays } from './overlayStore.js'
 import { pushSnapshot } from './spawnHistoryStore.js'
+import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { archiveDoneTodos, getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
@@ -122,9 +125,37 @@ const finalTail = (finalText: string, segments: Msg[]) => {
   return tail
 }
 
+const interruptedText = (partial: string) => (partial ? `${partial}\n\n*[interrupted]*` : '*[interrupted]*')
+
+// What interruptTurn sealed into the transcript: `text` is the bubble it
+// appended (null when it only wrote a sys note), `partial` the reply text in it.
+export interface SealedInterrupt {
+  partial: string
+  text: null | string
+}
+
+// The bubble fix for an honoured interrupt: Ctrl+C seals the reply the moment
+// the key lands, but the agent keeps streaming until it notices the interrupt,
+// and it persists (and replays next turn) everything it streamed. The
+// interrupted message.complete carries that persisted partial; when it extends
+// what was sealed, the transcript takes it so the screen matches state.db.
+export const lateInterruptedReply = (
+  sealed: null | SealedInterrupt,
+  payload: MessageCompletePayload
+): null | { from: null | string; to: string } => {
+  const persisted = typeof payload.text === 'string' ? payload.text.trim() : ''
+  const shown = sealed?.partial.trimEnd() ?? ''
+
+  if (!sealed || payload.status !== 'interrupted' || persisted.length <= shown.length || !persisted.startsWith(shown)) {
+    return null
+  }
+
+  return { from: sealed.text, to: interruptedText(persisted) }
+}
+
 export interface InterruptDeps {
   appendMessage: (msg: Msg) => void
-  gw: { request: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T> }
+  gw: { isCanonical?: boolean; request: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T> }
   sid: string
   sys: (text: string) => void
 }
@@ -142,6 +173,7 @@ const clear = (t: Timer): null => {
 class TurnController {
   bufRef = ''
   interrupted = false
+  sealedInterrupt: null | SealedInterrupt = null
   lastStatusNote = ''
   persistedToolLabels = new Set<string>()
   persistSpawnTree?: (subagents: SubagentProgress[], sessionId: null | string) => Promise<void>
@@ -306,17 +338,21 @@ class TurnController {
     patchTurnState({ reasoningActive: false, reasoningStreaming: false })
   }
 
-  idle() {
+  idle(opts: { keepTurnArchive?: boolean } = {}) {
     this.endReasoningPhase()
     this.activeTools = []
     this.streamTimer = clear(this.streamTimer)
     this.bufRef = ''
-    this.pendingSegmentTools = []
-    this.segmentMessages = []
+    // `keepTurnArchive`: the turn-over signal arrived before the final; the sealed segments
+    // and finished tool rows wait for `recordMessageComplete` to archive them.
+    if (!opts.keepTurnArchive) {
+      this.pendingSegmentTools = []
+      this.segmentMessages = []
+    }
 
     patchTurnState({
-      streamPendingTools: [],
-      streamSegments: [],
+      streamPendingTools: opts.keepTurnArchive ? this.pendingSegmentTools : [],
+      streamSegments: opts.keepTurnArchive ? this.segmentMessages : [],
       streaming: '',
       subagents: [],
       tools: [],
@@ -331,9 +367,45 @@ class TurnController {
   // while `interrupted`) instead of racing the still-unwinding turn — the race
   // duplicated the user bubble, leaked a "queued: …" note, and surfaced the
   // cancelled turn's "[interrupted]" reply.
-  interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps, opts: { keepBusy?: boolean } = {}) {
+  async interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps, opts: { keepBusy?: boolean } = {}) {
+    if (gw.isCanonical) {
+      const destination = captureDestination()
+      const info = getUiState().info
+
+      const isActiveTurn = () => {
+        const current = getUiState()
+
+        return current.sid === sid && isCurrentDestination(destination) && current.busy && !this.interrupted &&
+          current.info?.execution_epoch === info?.execution_epoch &&
+          current.info?.execution_generation === info?.execution_generation
+      }
+
+      try {
+        const response = await gw.request<SessionInterruptResponse>('session.interrupt', {
+          session_id: sid, execution_generation: info?.execution_generation
+        })
+
+        // An already-settled handle is a successful no-op, not a cancelled turn.
+        if (response.execution_state !== 'running' || response.execution_generation !== info?.execution_generation) {
+          return
+        }
+      } catch (error) {
+        if (isActiveTurn()) {
+          sys(t('canonical.submit.interruptFailed', rpcErrorMessage(error)))
+        }
+
+        return
+      }
+
+      // Completion or navigation may win the RPC race; never cancel its successor.
+      if (!isActiveTurn()) {
+        return
+      }
+    } else {
+      gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
+    }
+
     this.interrupted = true
-    gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
 
     this.closeReasoningSegment()
 
@@ -358,20 +430,20 @@ class TurnController {
     // otherwise emit a sys note so the transcript always records that the
     // turn was cancelled, even when only prior `segments` were preserved.
     if (partial || tools.length) {
-      appendMessage({
-        role: 'assistant',
-        text: partial ? `${partial}\n\n*[interrupted]*` : '*[interrupted]*',
-        ...(tools.length && { tools })
-      })
+      const text = interruptedText(partial)
+
+      appendMessage({ role: 'assistant', text, ...(tools.length && { tools }) })
+      this.sealedInterrupt = { partial, text }
     } else {
-      sys('interrupted')
+      sys(t('session.turn.interrupted'))
+      this.sealedInterrupt = { partial: '', text: null }
     }
 
     this.clearStatusTimer()
 
     if (opts.keepBusy) {
       // `idle()` already cleared busy; re-assert it so the drain waits for settle.
-      patchUiState({ busy: true, status: 'interrupting…' })
+      patchUiState({ busy: true, status: t('session.status.interrupting') })
 
       return
     }
@@ -687,6 +759,7 @@ class TurnController {
     }
 
     const wasInterrupted = this.interrupted
+    const interruptedReply = wasInterrupted ? lateInterruptedReply(this.sealedInterrupt, payload) : null
 
     // Archive the turn's spawn tree to history BEFORE idle() drops subagents
     // from turnState.  Lets /replay and the overlay's history nav pull up
@@ -708,16 +781,17 @@ class TurnController {
     this.persistedToolLabels.clear()
     this.bufRef = ''
     this.interrupted = false
+    this.sealedInterrupt = null
     patchTurnState({ activity: [], outcome: '' })
 
     // Real turn end: surface any notice held back while busy. Done after
     // idle() flips busy=false so applyNotice() reaches the visible slot.
     this.flushPendingNotice()
 
-    return { finalMessages, finalText, wasInterrupted }
+    return { finalMessages, finalText, interruptedReply, wasInterrupted }
   }
 
-  recordMessageDelta({ text }: { rendered?: string | null; text?: string }) {
+  recordMessageDelta({ text }: { rendered?: string | null; text?: string | null }) {
     if (this.interrupted || !text) {
       return
     }
@@ -937,6 +1011,7 @@ class TurnController {
     this.idle()
     this.bufRef = ''
     this.interrupted = false
+    this.sealedInterrupt = null
     this.lastStatusNote = ''
     this.activeReasoningText = ''
     this.pendingSegmentTools = []
@@ -1003,6 +1078,7 @@ class TurnController {
     this.turnTools = []
     this.toolTokenAcc = 0
     this.interrupted = false
+    this.sealedInterrupt = null
     this.persistedToolLabels.clear()
     // "Flash and yield" notices clear when a new turn starts: a usage-band heads-up
     // (credits.usage, 50/75/90%) and the one-time "grant spent" transition
@@ -1018,7 +1094,11 @@ class TurnController {
     }
 
     patchUiState({ busy: true })
-    patchTurnState({ activity: [], outcome: '', subagents: [], toolTokens: 0, tools: [], turnTrail: [] })
+    // A turn whose final never came (owner died between settle and publish) must not leak its
+    // parked archive into this one.
+    this.segmentMessages = []
+    this.pendingSegmentTools = []
+    patchTurnState({ activity: [], outcome: '', streamPendingTools: [], streamSegments: [], subagents: [], toolTokens: 0, tools: [], turnTrail: [] })
   }
 
   upsertSubagent(

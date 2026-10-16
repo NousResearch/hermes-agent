@@ -43,7 +43,7 @@ def _pm_package_for_command(command: str) -> str | None:
     package definitions (binary_rel → executable basename) — no restated
     name table, so new pm packages are covered without doctor changes."""
     try:
-        import pm  # noqa: F401 — imports pm.packages, registering the definitions
+        import pm
         from pm import registry, store
         from pm.packages import BinaryPackage
 
@@ -77,7 +77,7 @@ def _doctor_tool(name: str) -> tuple[str | None, str]:
 def _run_ok(cmd: list[str], timeout: int, **kw) -> bool:
     """True when *cmd* exits 0 within *timeout*; a timeout counts as failure."""
     try:
-        return subprocess.run(cmd, capture_output=True, timeout=timeout, **kw).returncode == 0
+        return subprocess.run(cmd, capture_output=True, timeout=timeout, **kw).returncode == 0  # noqa: PLW1510 -- forwarding wrapper: callers pass subprocess kwargs via **kwargs (check may arrive through it); an explicit check=False would raise TypeError
     except subprocess.TimeoutExpired:
         return False
 
@@ -142,18 +142,12 @@ def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
 
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
-    from hermes_cli.doctor_state import _honcho_is_configured_for_doctor
     updated_available, updated_unavailable = list(available), []
     for item in unavailable:
-        if _is_kanban_worker_env_gate(item):
-            gated = "kanban"
-        elif item.get("name") == "honcho" and _honcho_is_configured_for_doctor():
-            gated = "honcho"
-        else:
+        if not _is_kanban_worker_env_gate(item):
             updated_unavailable.append(item)
-            continue
-        if gated not in updated_available:
-            updated_available.append(gated)
+        elif "kanban" not in updated_available:
+            updated_available.append("kanban")
     return updated_available, updated_unavailable
 
 
@@ -252,7 +246,7 @@ def _check_daytona_backend(issues: list[str]) -> None:
              ("Daytona API key missing", "(needed for the 'daytona' terminal backend)"),
              "run `hermes setup terminal` (Daytona) to enter it.", issues)
     try:
-        from daytona import Daytona  # noqa: F401 — SDK presence check
+        from daytona import Daytona
         check_ok("daytona SDK", "(installed)")
     except ImportError:
         _fail_and_issue("daytona SDK not installed", "(run hermes setup terminal)", "Run hermes setup terminal and select Daytona, then restart Hermes", issues)
@@ -403,7 +397,8 @@ def _check_lightpanda() -> None:
 @doctor_check()
 def _check_node_and_browser(should_fix: bool, f: Finding) -> None:
     """Node.js, agent-browser resolution, Playwright Chromium, Lightpanda engine."""
-    if _safe_which("node"):
+    # Only PM's Node counts; Termux's APT distribution is the one that relies on `pkg install nodejs`.
+    if _pm_tool_path("node") or (_is_termux() and _safe_which("node")):
         check_ok("Node.js")
     elif _is_termux():
         _termux_browser_hints("Node.js not found (browser tools are optional in the tested Termux path)",
@@ -419,7 +414,7 @@ def _plural(n: int) -> str:
     return "vulnerability" if n == 1 else "vulnerabilities"
 
 
-def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues: list[str]) -> None:
+def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], manual_issues: list[str]) -> None:
     """Run one `npm audit --json` and report; any failure is silently skipped.
 
     Every row here audits a tree whose versions come from a COMMITTED lockfile
@@ -431,10 +426,12 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
     prescribes a local mutating fix command. See #116774.
     """
     import json
+    from hermes_constants import with_hermes_node_path
     try:
         # Resolved absolute path so Windows can execute npm.cmd (CreateProcessW can't run bare .cmd names).
         audit_result = subprocess.run([npm_bin, "audit", "--json", *audit_extra], cwd=str(npm_dir),
-                                      capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+                                      capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
+                                      env=with_hermes_node_path(), check=False)
         audit_data = json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
         counts = audit_data.get("metadata", {}).get("vulnerabilities", {})
         critical, high, moderate = (counts.get(k, 0) for k in ("critical", "high", "moderate"))
@@ -443,16 +440,18 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
         if total == 0:
             check_ok(f"{label} deps", "(no known vulnerabilities)")
         elif critical > 0 or high > 0:
-            detail = "build-time tooling" if workspace_scoped else "runtime dependency tree"
             remedy = ("fix is an upstream lockfile bump — a local manual fix does not persist"
                       " (the next `hermes update` reinstalls from the committed lockfile)")
             check_warn(f"{label} deps", f"({critical} critical, {high} high, {moderate} moderate — {remedy})")
             if workspace_scoped:
-                check_info("  ^ build-time tooling (not runtime); if manual npm remediation "
+                check_info("  ^ workspace audit includes runtime and build dependencies; if manual npm remediation "
                            "errors with an arborist crash it's a known npm bug — clears via a lockfile bump")
             else:
-                check_info(f"  ^ {detail}; report/pin the fix in package-lock.json — see #116774")
-            issues.append(f"{label} has {total} npm {_plural(total)}")
+                check_info("  ^ runtime dependency tree; report/pin the fix in package-lock.json — see #116774")
+            manual_issues.append(
+                f"{label} has {total} npm {_plural(total)}; wait for an upstream lockfile fix, then update "
+                "your installation (Docker: pull a rebuilt image; recreating the same image restores the same dependencies)"
+            )
         else:
             check_ok(f"{label} deps", f"({moderate} moderate {_plural(moderate)})")
     except Exception:
@@ -468,7 +467,8 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
     HERMES_HOME mirror rather than the (possibly read-only) Docker install tree, hence the shared resolver.
     """
     from hermes_cli.doctor import PROJECT_ROOT
-    npm_bin = _safe_which("npm")
+    staged = _pm_tool_path("npm")
+    npm_bin = str(staged) if staged else (_safe_which("npm") if _is_termux() else None)
     if npm_bin:
         try:
             # Each entry: (cwd, label, extra_audit_args) PROJECT_ROOT is audited with --workspaces=false so
@@ -482,14 +482,18 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
         except Exception:
             whatsapp_bridge_dir = PROJECT_ROOT / "scripts" / "whatsapp-bridge"
         for npm_dir, label, audit_extra in (
-            (PROJECT_ROOT, "Browser tools (agent-browser)", ["--workspaces=false"]),
+            # NOT agent-browser: it is now a pm-managed precompiled binary
+            # (see AgentBrowser in pm/packages.py) with no node_modules/lockfile
+            # of its own to audit. This row is the root package.json itself
+            # (js-yaml, semver, eslint tooling). See #122223.
+            (PROJECT_ROOT, "Root npm package", ["--workspaces=false"]),
             (PROJECT_ROOT, "web workspace", ["--workspace", "web"]),
             (PROJECT_ROOT, "ui-tui workspace", ["--workspace", "ui-tui"]),
             (whatsapp_bridge_dir, "WhatsApp bridge", []),
         ):
             # Workspace-scoped audits check the root node_modules; standalone dirs check their own.
             if ((PROJECT_ROOT if audit_extra else npm_dir) / "node_modules").exists():
-                _audit_one(npm_bin, npm_dir, label, audit_extra, f.issues)
+                _audit_one(npm_bin, npm_dir, label, audit_extra, f.manual_issues)
     if _is_termux():
         check_info("Termux compatibility fallbacks:")
         for note in _TERMUX_INSTALL_ALL_FALLBACK_NOTES:

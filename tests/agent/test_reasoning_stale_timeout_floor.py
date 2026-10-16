@@ -47,6 +47,12 @@ from pathlib import Path
 
 
 
+def test_nemotron_super_reasoning_floor_matches_existing_super_family():
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor as floor
+
+    assert floor("nvidia/nemotron-3.5-super-vl-120b-a12b") == floor("nvidia/nemotron-3-super-120b-a12b") is not None
+
+
 def test_floor_matching_is_vendor_prefix_and_variant_suffix_transparent():
     """A routed/vendor-prefixed or -variant/:sku slug resolves to its family's floor,
     while a look-alike community derivative does not match at all."""
@@ -56,6 +62,15 @@ def test_floor_matching_is_vendor_prefix_and_variant_suffix_transparent():
     assert floor("gpt-5.6-sol-900k") == floor("gpt-5.6-sol") is not None
     assert floor("thinkingmachines/inkling:free") == floor("thinkingmachines/inkling") is not None
     assert floor("openai/gpt-4o") is None
+
+
+def test_minimax_m2_reasoning_models_get_floor_but_non_reasoning_minimax_does_not():
+    """MiniMax M2.x thinks >180s before first content (#62353); VL/chat variants don't."""
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor as floor
+
+    assert floor("minimax/minimax-m2.7") == floor("minimax-m2.5") == 300.0
+    for slug in ("minimax/minimax-vl", "minimax-chat", "some-minimax-m2-fork"):
+        assert floor(slug) is None, slug
 
 
 # ── integration: _resolved_api_call_stale_timeout_base ─────────────────────

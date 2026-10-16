@@ -152,3 +152,51 @@ class TestStreamStaleCircuitBreaker:
 
         # At least one stale kill happened; the streak must have advanced.
         assert agent._consecutive_stale_streams >= 1
+
+    @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+    @pytest.mark.parametrize("slow", ["worker_start", "worker_unwind"])
+    def test_one_attempt_counts_once_however_often_the_timer_fires(self, monkeypatch, caplog, slow):
+        """The stale timer re-fires every window while the worker has not started its
+        attempt yet (CPU-starved host) or has not unwound a kill; one attempt must still
+        count once, or a single wedged turn trips the breaker for the next one."""
+        from agent import chat_completion_helpers as h
+
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.1")
+        monkeypatch.setenv("HERMES_STREAM_STALE_GIVEUP", "50")
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        agent = _make_anthropic_agent()
+        agent._consecutive_stale_streams = 0
+        unblock = threading.Event()
+
+        if slow == "worker_start":
+            start = h._StreamingCall._start_stream_attempt
+
+            def _late_start(self):
+                threading.Event().wait(1.0)
+                return start(self)
+
+            monkeypatch.setattr(h._StreamingCall, "_start_stream_attempt", _late_start)
+            agent._abort_request_anthropic_client = lambda *a, **k: unblock.set()
+        else:
+            agent._abort_request_anthropic_client = lambda *a, **k: None  # the kill never wakes the read
+
+        def _blocking_gen():
+            unblock.wait(timeout=1.2)
+            raise httpx.ConnectError("connection dropped")
+            yield
+
+        def _stream_side_effect(*args, **kwargs):
+            cm = MagicMock()
+            stream = MagicMock()
+            stream.__iter__ = MagicMock(return_value=_blocking_gen())
+            cm.__enter__ = MagicMock(return_value=stream)
+            cm.__exit__ = MagicMock(return_value=False)
+            return cm
+
+        agent._anthropic_client.messages.stream.side_effect = _stream_side_effect
+        with caplog.at_level("WARNING", logger="agent.chat_completion_helpers"), pytest.raises(Exception):
+            agent._interruptible_streaming_api_call({})
+
+        kills = sum("Stream stale for" in r.getMessage() for r in caplog.records)
+        assert kills >= 2, f"scenario needs the timer to re-fire; saw {kills} kill(s)"
+        assert agent._consecutive_stale_streams == 1

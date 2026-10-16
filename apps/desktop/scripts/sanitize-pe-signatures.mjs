@@ -178,7 +178,15 @@ function* walkFiles(dir) {
 export function sanitizeTree(rootDir) {
   const repaired = []
   let scanned = 0
+  let visited = 0
+  let nextProgressAt = performance.now() + 5000
   for (const file of walkFiles(rootDir)) {
+    visited += 1
+    const now = performance.now()
+    if (now >= nextProgressAt) {
+      console.log(`[sanitize-pe] checked ${visited - 1} files (${scanned} PEs), repaired ${repaired.length}; checking ${path.relative(rootDir, file)}`)
+      nextProgressAt = now + 5000
+    }
     let entry
     try {
       entry = readSecurityDirectory(file)

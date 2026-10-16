@@ -211,18 +211,18 @@ class TestAuxiliaryClientWiring:
         token = _make_codex_jwt("acct-aux-try-codex")
 
         # Force _select_pool_entry to return "no pool" so we fall through to
-        # _read_codex_access_token.
+        # the auth.json token.
         monkeypatch.setattr(
             auxiliary_client, "_select_pool_entry",
             lambda provider: (False, None),
         )
         monkeypatch.setattr(
-            auxiliary_client, "_read_codex_access_token",
+            auxiliary_client, "_read_codex_singleton_token",
             lambda: token,
         )
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            client, model = auxiliary_client._build_codex_client("gpt-5.4")
+            client, _model = auxiliary_client._build_codex_client("gpt-5.4")
             assert client is not None
             headers = mock_openai.call_args.kwargs.get("default_headers") or {}
             assert headers.get("originator") == "hermes-agent"
@@ -235,12 +235,16 @@ class TestAuxiliaryClientWiring:
         from agent import auxiliary_client
         token = _make_codex_jwt("acct-aux-raw-codex")
         monkeypatch.setattr(
-            auxiliary_client, "_read_codex_access_token",
+            auxiliary_client, "_select_pool_entry",
+            lambda provider: (False, None),
+        )
+        monkeypatch.setattr(
+            auxiliary_client, "_read_codex_singleton_token",
             lambda: token,
         )
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
-            client, model = auxiliary_client.resolve_provider_client(
+            client, _model = auxiliary_client.resolve_provider_client(
                 "openai-codex", model="gpt-5.4", raw_codex=True,
             )
             assert client is not None

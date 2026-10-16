@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
 from agent.codex_lifecycle import codex_retirements
+from gateway.agent_cache_claim import cache_agent_in_use
 from gateway.config import Platform
 from gateway.session import SessionSource, build_session_context_prompt
 from gateway.session_prompt_pin import PROMPT_PIN_VERSION, sanitize_prompt_pin
@@ -845,7 +846,7 @@ class GatewayAgentCacheMixin:
             if agent is None or agent is _AGENT_PENDING_SENTINEL:
                 self._agent_cache.pop(session_key, None)
                 return None
-            if id(agent) in self._running_agent_ids():
+            if cache_agent_in_use(agent) or id(agent) in self._running_agent_ids():
                 # Keep the owner in the cache until the running slot is released. Never
                 # register a retirement and then abandon it after a second running snapshot.
                 agent._cache_evict_after_turn = commit_memory or getattr(agent, "_cache_evict_after_turn", False)
@@ -1027,7 +1028,8 @@ class GatewayAgentCacheMixin:
         running_ids = self._running_agent_ids()
 
         def _is_live(agent: Any) -> bool:
-            return agent is not None and agent is not _AGENT_PENDING_SENTINEL and id(agent) not in running_ids
+            return (agent is not None and agent is not _AGENT_PENDING_SENTINEL
+                    and not cache_agent_in_use(agent) and id(agent) not in running_ids)
 
         def _is_evictable(key: str, agent: Any) -> bool:
             return _is_live(agent) and transcript_persistence_caught_up(agent)
@@ -1113,7 +1115,8 @@ class GatewayAgentCacheMixin:
         # history) to protect a long-running one. Cache may stay over cap until the next insert.
         cap = self._agent_cache_cap()
         candidates = [(key, _tuple_agent(_cache.get(key))) for key in list(_cache.keys())[:max(0, len(_cache) - cap)]]
-        evict_plan = [(key, agent) for key, agent in candidates if agent is None or id(agent) not in running_ids]
+        evict_plan = [(key, agent) for key, agent in candidates
+                      if not cache_agent_in_use(agent) and (agent is None or id(agent) not in running_ids)]
         for key, agent in evict_plan:
             codex_retirements(self).track(agent)
             _cache.pop(key, None)
@@ -1146,7 +1149,7 @@ class GatewayAgentCacheMixin:
         with _lock:
             for key, entry in list(_cache.items()):
                 agent = _tuple_agent(entry)
-                if agent is None or id(agent) in running_ids:
+                if agent is None or cache_agent_in_use(agent) or id(agent) in running_ids:
                     continue  # mid-turn — don't tear it down
                 last_activity = getattr(agent, "_last_activity_ts", None)
                 if last_activity is None or (now - last_activity) <= idle_ttl:

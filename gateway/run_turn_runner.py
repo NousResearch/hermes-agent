@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from agent.i18n import t
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import canonicalize_replay_history
+from gateway.agent_cache_claim import owns_cached_agent
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
@@ -1108,6 +1109,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         unique_tags = (["[[audio_as_voice]]"] if has_voice_directive else []) + list(dict.fromkeys(media_tags))
         return final_response + "\n" + "\n".join(unique_tags)
 
+    @owns_cached_agent
     def run_sync(self):
         from gateway.session_policy import policy_for_source, policy_scope
         from gateway.session_api_turn import api_policy_scope

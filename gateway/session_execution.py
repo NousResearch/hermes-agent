@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from agent.interrupt_compat import _accepts_keyword
 from agent.replay_cleanup import strip_stale_dangerous_confirmations
 from agent.codex_lifecycle import codex_retirements
+from gateway.agent_cache_claim import claim_cached_agent, unclaim_cached_agent
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
@@ -91,10 +92,12 @@ class GatewaySessionAgentMixin:
         socket teardown while the idle sweeper waits on this lock). The turn rebuilds a fresh agent, so
         the caller does a SOFT release that keeps sandbox / browser / bg processes."""
         from gateway.run import _AGENT_PENDING_SENTINEL
-        evicted = self._runner._agent_cache.pop(self._ctx.session_key, None)
-        agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
+        cached = self._runner._agent_cache.get(self._ctx.session_key)
+        agent = cached[0] if isinstance(cached, tuple) and cached else None
         if agent is not None and agent is not _AGENT_PENDING_SENTINEL:
+            unclaim_cached_agent(self, agent)
             codex_retirements(self._runner).track(agent)
+            self._runner._agent_cache.pop(self._ctx.session_key, None)
             return agent
         return None
 
@@ -135,6 +138,7 @@ class GatewaySessionAgentMixin:
                 )
             else:
                 out.agent = cached[0]
+                claim_cached_agent(self, out.agent)
                 # Refresh LRU order so cap enforcement evicts truly-oldest entries.
                 if hasattr(cache, "move_to_end"):
                     with suppress(KeyError):
@@ -233,6 +237,7 @@ class GatewaySessionAgentMixin:
                 with cache_lock:
                     # Record the snapshot's session_id with message_count so the cross-process guard
                     # can skip the meaningless count comparison if the active session_id switches.
+                    claim_cached_agent(self, agent)
                     cache[ctx.session_key] = (agent, sig, msg_count, ctx.session_id)
                     runner._enforce_agent_cache_cap()
             logger.debug("Created new agent for session %s (sig=%s)", ctx.session_key, sig)

@@ -16,6 +16,7 @@ import pytest
 from agent.transports.codex_app_server_session import CodexAppServerSession
 from agent.codex_lifecycle import codex_retirements, wait_for_codex_writer
 from agent.codex_runtime import _start_codex_thread
+from gateway.agent_cache_claim import owns_cached_agent
 from gateway.run import GatewayRunner
 from gateway.run_turn_runner import TurnRunner
 from run_agent import AIAgent
@@ -127,11 +128,14 @@ def test_gateway_reuses_warm_writer_and_fences_replacement(tmp_path, monkeypatch
 
     turn._build_fresh_agent = build
     route = {'model': 'synthetic-model', 'runtime': {}}
-    def resolve():
+    @owns_cached_agent
+    def resolve_turn(turn):
         result = turn._resolve_turn_agent(route, channel, '', 5, {}, {})
         wait_for_codex_writer(result[0])
         assert _start_codex_thread(result[0]) == 'synthetic-thread'
         return result
+
+    resolve = lambda: resolve_turn(turn)
     for _ in range(3):
         assert resolve() == (old, True)
         assert old._codex_session.ensure_started() == 'synthetic-thread'

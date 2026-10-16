@@ -227,6 +227,7 @@ class CodexAppServerSession:
         # A codex thread id persisted by an earlier process for this Hermes session: the first
         # ``ensure_started`` issues ``thread/resume`` for it instead of ``thread/start``.
         self._resume_thread_id = resume_thread_id
+        self._writer_thread_id = resume_thread_id  # identity survives consuming the one-shot resume attempt
         # ``thread/start.model``: the Hermes-selected slug, for every provider. ``.modelProvider``: a named
         # custom provider's id in codex's own ``[model_providers.<id>]`` table; only the id travels, codex
         # reads base_url/env_key itself.
@@ -260,22 +261,44 @@ class CodexAppServerSession:
         self._pending_file_changes: dict[str, str] = {}
         self._closed = False
         self._close_lock = threading.Lock()
+        self._start_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._client_ready = threading.Event()
+        self._client_ready.set()
 
     def ensure_started(self) -> str:
         """Spawn, handshake, and ``thread/start`` (or ``thread/resume`` for a stored id); idempotent, returns
         the codex thread id. A failed resume raises :class:`CodexThreadResumeError` once; the next call
         starts a fresh thread on the same handshaken client."""
-        with self._close_lock:
+        # Only competing startups serialize here. close() must never wait for RPC I/O.
+        with self._start_lock:
             return self._ensure_started()
 
     def _ensure_started(self) -> str:
-        if self._closed:
-            raise RuntimeError("codex app-server session is closing")
-        if self._thread_id is not None:
-            return self._thread_id
-        if self._client is None:
-            self._client = self._client_factory(codex_bin=self._codex_bin, codex_home=self._codex_home)
-            self._client.initialize(client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version())
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("codex app-server session is closing")
+            if self._thread_id is not None:
+                return self._thread_id
+            client = self._client
+            if client is None:
+                self._client_ready.clear()
+        if client is None:
+            try:
+                client = self._client_factory(codex_bin=self._codex_bin, codex_home=self._codex_home)
+                with self._state_lock:
+                    # A concurrent close waits for this publication, then retires this exact
+                    # client. It cannot report completion while construction is unresolved.
+                    self._client = client
+            finally:
+                self._client_ready.set()
+            with self._state_lock:
+                if self._closed:
+                    raise RuntimeError("codex app-server session is closing")
+            client.initialize(client_name="hermes", client_title="Hermes Agent", client_version=_get_hermes_version())
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("codex app-server session is closing")
         # Permissions are NOT sent on thread/start: codex gates ``thread/start.permissions``
         # behind experimentalApi + a matching ``[permissions]`` table in ~/.codex/config.toml.
         # Hermes supplies the agent identity through its own system prompt; ``personality: "none"`` strips
@@ -289,7 +312,7 @@ class CodexAppServerSession:
             params["model"] = self._model
         if self._resume_thread_id:
             wanted, self._resume_thread_id = self._resume_thread_id, None  # one attempt per stored id
-            thread_id = self._resume_thread(wanted, params)
+            thread_id = self._resume_thread(wanted, params, client)
             # A resumed thread may carry a tier an earlier process selected (CLI ``/fast`` rebuilds the agent),
             # so its first turn sends Hermes' tier even when that is a clearing null.
             self._service_tier_sent = _TIER_UNKNOWN
@@ -298,7 +321,7 @@ class CodexAppServerSession:
             if self._history_seed:
                 params["developerInstructions"] = "\n\n".join(
                     part for part in (params.get("developerInstructions"), self._history_seed) if part)
-            result = self._client.request("thread/start", params, timeout=15)
+            result = client.request("thread/start", params, timeout=15)
             thread_id = _extract_thread_id(result)
             if not thread_id:
                 raise CodexAppServerError(
@@ -306,15 +329,17 @@ class CodexAppServerSession:
                 )
             self._service_tier_sent = None  # a new thread runs codex's own configured tier
             logger.info("codex app-server thread started: id=%s profile=%s cwd=%s", thread_id[:8], self._permission_profile, self._cwd)
-        self._thread_id = thread_id
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("codex app-server session closed during startup")
+            self._thread_id = self._writer_thread_id = thread_id
         return thread_id
 
-    def _resume_thread(self, wanted: str, params: dict[str, Any]) -> str:
+    def _resume_thread(self, wanted: str, params: dict[str, Any], client) -> str:
         """``thread/resume`` for the stored id; the same thread/start params ride along so the resumed thread
         carries the CURRENT prompt composition and provider (accepted by the resume schema, codex 0.147)."""
-        assert self._client is not None
         try:
-            result = self._client.request("thread/resume", {"threadId": wanted, **params}, timeout=15)
+            result = client.request("thread/resume", {"threadId": wanted, **params}, timeout=15)
         except CodexAppServerError as exc:
             raise CodexThreadResumeError(wanted, exc.message) from exc
         thread_id = _extract_thread_id(result)
@@ -324,20 +349,27 @@ class CodexAppServerSession:
 
     @property
     def writer_key(self):
-        return self._writer_home, self._thread_id or self._resume_thread_id
+        return self._writer_home, self._thread_id or self._writer_thread_id
 
     def close(self) -> None:
         if not self._close_lock.acquire(timeout=30):
             raise TimeoutError("codex app-server session close is still in progress")
         try:
-            self._closed = True
+            with self._state_lock:
+                self._closed = True
+            if not self._client_ready.wait(timeout=30):
+                raise TimeoutError("codex app-server client construction is still in progress")
+            with self._state_lock:
+                client = self._client
             with self._active_turn_lock:
                 self._active_turn_id = None
-            if self._client is not None:
-                self._client.close()
-            # Retain the client and thread identity on failure so the same owner is retryable.
-            self._client = None
-            self._thread_id = None
+            if client is not None:
+                client.close()
+            # Retain the client and writer identity on failure; no startup may publish
+            # another client after _closed is set and _client_ready has completed.
+            with self._state_lock:
+                self._client = None
+                self._thread_id = None
         finally:
             self._close_lock.release()
 

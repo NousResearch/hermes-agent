@@ -135,7 +135,7 @@ def test_multiplex_housekeeping_uses_primary_routes_for_credentialless_satellite
         yield
 
     class FakeSharedRouteAdapters:
-        def __new__(cls, adapters, routes):
+        def __new__(cls, adapters, routes, profile_adapters=None):
             calls.append(("routed", adapters, routes))
             return routed
 

@@ -539,11 +539,10 @@ async def _dispatch_on_gateway_loop(runner, make_coro, log_message):
 
 
 async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None, media_files=None,
-                            force_document=False):
-    """Live in-process gateway adapter first, else the plugin's ``standalone_sender_fn`` (cron),
-    else an error naming both; media uses the adapter's native media APIs under the same rules."""
+                            force_document=False, force_standalone=False):
+    """Live adapter first unless fenced, else the plugin's standalone sender."""
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
-    runner, adapter = _live_adapter(platform)
+    runner, adapter = (None, None) if force_standalone else _live_adapter(platform)
     if adapter is not None:
         try:
             metadata = {**({"thread_id": thread_id} if thread_id else {}),
@@ -687,7 +686,7 @@ _MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, fei
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None,
-                            force_document=False, mentions=None, args=None):
+                            force_document=False, mentions=None, args=None, force_standalone=False):
     """Route to the platform sender, chunking long text with the adapters' splitter. Order matters:
     Weixin first (its native helper must not be blocked by unrelated optional imports such as
     lark-oapi), Telegram (chunks itself), plugin standalone media, native chunked, generic text."""
@@ -704,6 +703,16 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.platforms.base import BasePlatformAdapter
     max_len = _platform_max_length(platform)
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
+    if force_standalone:
+        if platform_name in _PLUGIN_STANDALONE_MEDIA:
+            return await _send_plugin_standalone(
+                platform_name, pconfig, chat_id, message, chunks, media_files,
+                thread_id=thread_id, max_len=max_len, force_document=force_document,
+                mentions=mentions)
+        return await _send_chunks(chunks, lambda chunk, is_last: _send_via_adapter(
+            platform, pconfig, chat_id, chunk, thread_id=thread_id,
+            media_files=media_files if is_last else [], force_document=force_document,
+            force_standalone=True))
     if (platform_name == "discord" or (platform_name == "whatsapp" and mentions)
             or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA)):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,

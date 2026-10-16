@@ -498,6 +498,24 @@ def test_progress_publishes_subagent_lifecycle_events_for_local_viewers():
     assert msg_published == []
 
 
+def test_a_failed_viewer_publish_is_logged_and_still_reaches_the_failure_notice(monkeypatch, caplog):
+    """A viewer publish error stays best-effort: logged, and the failed-subagent notice still runs."""
+    import logging
+    from gateway import local_viewer_events
+
+    def boom(*_a, **_k):
+        raise RuntimeError('viewer down')
+
+    monkeypatch.setattr(local_viewer_events, 'publish_progress', boom)
+    turn = _turn(Platform.LOCAL, [])
+    notices = []
+    turn._progress_subagent_notice = lambda preview, kwargs: notices.append(kwargs.get('status'))
+    with caplog.at_level(logging.DEBUG, logger='gateway.run'):
+        turn.progress_callback('subagent.complete', None, 'child', None, status='failed')
+    assert notices == ['failed']
+    assert any('Local viewer progress publish failed for subagent.complete' in r.getMessage() and r.exc_info for r in caplog.records)
+
+
 def test_subagent_roster_retains_running_child_after_fallback_evicts_parent():
     """TUI-4 fallback roster: when ``_run_agent_evict_on_fallback`` evicts the parent after a successful provider fallback, ``_owner_objects`` and ``subagent_records`` keep the child visible for the owning profile DB and route without transferring control/tail ownership or leaking across independent DB or route mismatches."""
     import weakref

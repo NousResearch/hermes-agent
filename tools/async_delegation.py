@@ -972,8 +972,11 @@ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], statu
     """Push a type='async_delegation' event onto the shared completion queue. Batch records
     (``is_batch``) carry the per-task ``results`` list (plus live transcript paths, the
     full-fidelity record of each child's run) instead of a single summary. Best-effort: failure
-    must not crash the worker, but it WOULD mean a silently-lost result, so we log loudly."""
-    result = redact_child_result(result)
+    must not crash the worker, but it WOULD mean a silently-lost result, so we log loudly.
+
+    The queued event is the parent's in-process copy and honours ``security.redact_secrets: false``;
+    ``_persist_completion`` re-scrubs with force for the durable row (and the worker IPC)."""
+    result = redact_child_result(result, force=False)
     is_batch = bool(record.get("is_batch"))
     label = " batch" if is_batch else ""
     try:
@@ -1027,8 +1030,9 @@ def push_task_failure_notice(delegation_id: str, entry: dict[str, Any], *, n_tas
     arrived: 66 minutes of a dead wave with nothing running. The notice rides the same
     ``type="async_delegation"`` event shape as the batch result (so every drain/route/format path
     treats it identically) with ``task_failure_notice=True`` and a single-entry ``results`` list; the
-    batch record is NOT finalized and its consolidated result still arrives as before."""
-    entry = redact_child_result(entry)
+    batch record is NOT finalized and its consolidated result still arrives as before. In-process
+    queue only (never persisted), so the parent's copy honours ``security.redact_secrets: false``."""
+    entry = redact_child_result(entry, force=False)
     with _records_lock:
         record = _records.get(delegation_id)
         if record is None or record.get("status") not in _ACTIVE_STATES:

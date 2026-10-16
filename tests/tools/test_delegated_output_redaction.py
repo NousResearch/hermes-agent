@@ -70,7 +70,7 @@ def test_child_result_events_memory_hooks_and_spill_use_redacted_output(
     assert text not in stop["child_summary"]
     spills = list((tmp_path / "cache" / "delegation").glob("subagent-summary-*.txt"))
     assert spills
-    assert text not in spills[0].read_text(encoding="utf-8")
+    assert text not in spills[0].read_text(encoding="utf-8-sig")
 
 
 def _record():
@@ -406,12 +406,47 @@ def test_batch_failure_notice_scrubs_entry_without_finishing_batch(monkeypatch):
     assert ad._records[record["delegation_id"]]["status"] == "running"
 
 
-def test_forced_redaction_does_not_follow_optional_display_setting(monkeypatch):
-    from agent.redact import redact_sensitive_text
+def test_structured_summary_is_redacted_per_value_and_stays_valid_json():
+    """A text pass over JSON lets ``KEY=***`` swallow the closing quote and comma."""
+    from tools.delegation_redaction import redact_child_result
+
+    answer = {"env": "OPENAI_API_KEY=sk-proj-" + "a" * 40, "n": 2}
+    entry = redact_child_result(
+        {"summary": json.dumps(answer), "schema_valid": True}, {"type": "object"}
+    )
+
+    parsed = json.loads(entry["summary"])
+    assert parsed["n"] == 2 and "sk-proj-" + "a" * 40 not in parsed["env"]
+    assert entry["schema_valid"] is True
+
+
+def test_parent_copy_honours_opt_out_while_persisted_copies_stay_forced(
+    tmp_path, monkeypatch
+):
+    """security.redact_secrets=false: the parent model reads the child's text as-is;
+    spill file, memory provider, lifecycle hook and the durable row are still masked."""
+    import hermes_cli.plugins
 
     monkeypatch.setattr("agent.redact._redact_enabled", lambda: False)
-    assert redact_sensitive_text(SECRET) == SECRET
-    entry = delegate._run_single_child(
-        0, "finish the task", _StubChild([SECRET]), _Parent()
-    )
-    assert entry["status"] == "completed" and SECRET not in entry["summary"]
+    hooks = Mock()
+    monkeypatch.setattr(hermes_cli.plugins, "invoke_hook", hooks)
+    monkeypatch.setattr(delegate, "_load_config", lambda: {"max_summary_chars": 2000})
+    summary = SECRET + "\n" + "ordinary explanation\n" * 180
+    parent = _Parent()
+
+    entry = results._run_child_lifecycle(0, "summarize", _StubChild([summary]), parent)
+
+    assert SECRET in entry["summary"]
+    assert SECRET not in parent._memory_manager.on_delegation.call_args.kwargs["result"]
+    stop = next(c.kwargs for c in hooks.call_args_list if c.args[0] == "subagent_stop")
+    assert SECRET not in stop["child_summary"]
+    spill = next((tmp_path / "cache" / "delegation").glob("subagent-summary-*.txt"))
+    assert SECRET not in spill.read_text(encoding="utf-8-sig")
+
+    record, target = _record(), queue.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", target)
+    ad._push_completion_event(record, {"status": "completed", "summary": SECRET}, "completed")
+    assert SECRET in target.get_nowait()["summary"]
+    with ad._transaction() as conn:
+        row = conn.execute("SELECT event_json,result_json FROM async_delegations").fetchone()
+    assert SECRET not in "".join(row)

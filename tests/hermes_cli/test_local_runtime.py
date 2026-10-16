@@ -1005,7 +1005,7 @@ def test_boot_prices_the_engine_it_serves(tmp_path, monkeypatch):
                         lambda: {"local_runtime": {"backend": "cpu"}})  # another profile's config
     priced: list = []
     monkeypatch.setattr(bootstrap, "_generate_presets",
-                        lambda mdir, path: priced.append(hardware._configured_engine()) or path)
+                        lambda mdir, path, residents=1: priced.append(hardware._configured_engine()) or path)
     monkeypatch.setattr(bootstrap, "_admitted_models_max", lambda mdir, configured: configured)
 
     class _NoStart:

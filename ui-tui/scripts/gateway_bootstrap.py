@@ -48,7 +48,8 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
     except (RuntimeError, OSError) as exc:  # no committed generation / unreadable install state
         raise ImportError(f"dependency environment unavailable: {exc}") from exc
     from hermes_constants import get_hermes_home
-    from hermes_cli.gateway_runtime import control_home_for, discover_gateway_endpoint, ensure_gateway_runtime
+    from hermes_cli.gateway_runtime import (attachable, control_home_for, discover_gateway_endpoint,
+                                           ensure_gateway_runtime)
     from hermes_cli.gateway_runtime_discovery import connect_private
 
     home = get_hermes_home().resolve()
@@ -63,9 +64,11 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
         os.environ.pop(key, None)
     receipt = (ensure_gateway_runtime(home, timeout=30, idle_exit=True) if start
                else discover_gateway_endpoint(home, timeout=5))
-    if not start and recover and receipt.state != "ready":
+    # A restart's after-turn wait still owns its turns (#139041): attach to answer a parked prompt,
+    # on a recovery too, rather than re-ensuring until the restart ends.
+    if not start and recover and not attachable(receipt):
         receipt = ensure_gateway_runtime(home, timeout=30, idle_exit=True)
-    if receipt.state != "ready" or receipt.endpoint is None:
+    if not attachable(receipt):
         raise RuntimeError(failure_message(receipt))
     endpoint = receipt.endpoint
     # A profile served by the default multiplexer has no socket of its own; the host mints its ticket.

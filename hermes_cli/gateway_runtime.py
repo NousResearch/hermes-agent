@@ -49,6 +49,17 @@ class GatewayDiscovery:
     detail: str | None = None
 
 
+def attachable(result: GatewayDiscovery) -> bool:
+    """Whether a client may attach to this discovery/ensure verdict.
+
+    ``ready`` owners, plus a restart's after-turn wait (``draining``/``restart_wait``): that owner
+    still owns its turns and must stay reachable to answer a parked approval/clarify (#139041).
+    Shared by every client bootstrap (``connect_gateway`` and Ink's ``gateway_bootstrap.py``)."""
+    if result.endpoint is None:
+        return False
+    return result.state == "ready" or (result.state == "draining" and result.reason_code == "restart_wait")
+
+
 def _canonical_home(home: str | Path) -> str:
     return os.path.normcase(str(Path(home).expanduser().resolve()))
 

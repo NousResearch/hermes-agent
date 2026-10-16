@@ -117,6 +117,10 @@ class HardwareBudget:
     # except integrated GPUs (b11370 #28160); Hermes passes --lazy-mode on to NVIDIA's, so only
     # AMD/Intel integrated GPUs load them up front.
     lazy_reads: bool = True
+    # Windows unified memory, live budgets only: commit the server may take for the models and
+    # their prompt caches. Windows charges every GPU allocation to commit (RAM it can see plus
+    # the page file), so this is the real ceiling there. None everywhere else.
+    commit_room_bytes: int | None = None
 
 
 def as_loaded(profile: ModelProfile, budget: HardwareBudget) -> ModelProfile:

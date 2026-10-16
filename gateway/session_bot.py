@@ -7,6 +7,7 @@ import asyncio
 from functools import partial
 import logging
 from pathlib import Path
+import time
 
 from agent.turn_author import parse_turn_author
 
@@ -71,20 +72,59 @@ def _record_shape_error(path, record):
     return 'unknown receipt schema'
 
 
-def _scan_records(root):
-    """Bulk mailbox scan: isolate unreadable/malformed records; exact-id reads still fail closed."""
+def _is_pre_admission_pin(path, record):
+    """The ``ambiguous`` pin ``_admit`` writes before it admits: no admission id, never refused."""
+    return (record.get('status') == 'ambiguous' and 'admission_id' not in record and 'refused' not in record
+            and _canonical_record_error(path, record, ('profile_home', 'session_id', 'principal_id')) is None)
+
+
+def _warn_malformed(path, problem):
+    logging.getLogger(__name__).warning("Skipping malformed Bot mailbox receipt %s (%s)", path, problem)
+
+
+def _scan_records(root, pins=None):
+    """Bulk mailbox scan: isolate unreadable/malformed records; exact-id reads still fail closed.
+    An owner scan passes ``pins``: pre-admission pins land there with their mtime, unwarned, since
+    only the owner can tell whether their admission committed (``_scan_owner_receipts``)."""
     for path in root.glob('*.json'):
         try:
             record = _read(path)
             problem = None if record is None else _record_shape_error(path, record)
+            if problem is not None and pins is not None and _is_pre_admission_pin(path, record):
+                pins.append((path, record, path.stat().st_mtime))
+                continue
         except (OSError, ValueError) as exc:
             record, problem = None, str(exc)
         if problem is not None:
-            logging.getLogger(__name__).warning(
-                "Skipping malformed Bot mailbox receipt %s (%s)", path, problem)
+            _warn_malformed(path, problem)
             continue
         if record is not None:
             yield path, record
+
+
+# An ``_admit`` pins, commits and withdraws under the mailbox lock in well under a second: a
+# pre-admission pin older than this is no in-flight admission, and the owner scan may withdraw it.
+_PIN_GRACE_SECONDS = 300
+
+
+async def _scan_owner_receipts(authority, home):
+    """The owner's bulk scan, under the mailbox lock ``_admit`` holds. A pre-admission pin past the
+    grace window whose ``bot:<key>`` never committed (refused by an older build, a death before the
+    commit, a transient refusal on the legacy migration path) is withdrawn as ``_admit`` withdraws
+    one: the scan stops warning and a same-id resend admits once. A pin whose admission committed
+    stays the explicit unknown record and keeps its warning."""
+    pins = []
+    root, records = await scan_receipts(home, pins)
+    for path, record, mtime in pins:
+        key, age = record['delivery_id'], time.time() - mtime
+        if (age < _PIN_GRACE_SECONDS or record['profile_home'] != str(home)
+                or _admission_at(authority, record['session_id'], 'bot:' + key) is not None
+                or not await withdraw_pin(home, key)):
+            _warn_malformed(path, _record_shape_error(path, record))
+            continue
+        logging.getLogger(__name__).info(
+            'Withdrew Bot delivery %s pre-admission pin (age %ds): nothing was admitted', key, age)
+    return root, records
 
 
 def _home(authority, actor, profile):
@@ -410,7 +450,7 @@ def relay_operation(connection, operation, params):
 
 
 async def _migrate(authority, actor, home, root):
-    root, records = await scan_receipts(home)
+    root, records = await _scan_owner_receipts(authority, home)
     legacy = [(path, record) for path, record in records
               if record and 'owner' in record and not record.get('admission_id')
               and record['status'] in {'queued', 'claimed'}]
@@ -440,7 +480,7 @@ async def recover_bot_deliveries(authority):
     """Rebuild derivative replies and queued legacy admissions at owner startup."""
     home = Path(authority.db.db_path).parent.resolve()
     async with mailbox_lock(authority):
-        root, records = await scan_receipts(home)
+        root, records = await _scan_owner_receipts(authority, home)
         for path, record in records:
             if not record or record.get('profile_home') != str(home) or not record.get('admission_id'):
                 continue

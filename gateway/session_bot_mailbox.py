@@ -80,10 +80,10 @@ async def write_receipt(home, record, *, expect=_UNCHECKED):
     return await _mailbox_io(_write_receipt, home, record, expect)
 
 
-def _scan_receipts(home):
+def _scan_receipts(home, pins=None):
     from gateway.session_bot import _scan_records
     with _locked(home) as root:
-        return root, list(_scan_records(root))
+        return root, list(_scan_records(root, pins))
 
 
 def _withdraw_pin(home, key):
@@ -92,6 +92,8 @@ def _withdraw_pin(home, key):
         current = _read(path)
         if current is not None and current.get('status') == 'ambiguous' and not current.get('admission_id'):
             path.unlink()
+            return True
+        return False
 
 
 async def withdraw_pin(home, key):
@@ -117,8 +119,9 @@ async def refuse_pin(home, key):
     return await _mailbox_io(_refuse_pin, home, key)
 
 
-async def scan_receipts(home):
-    return await _mailbox_io(_scan_receipts, home)
+async def scan_receipts(home, pins=None):
+    """Bulk scan; an owner scan passes ``pins`` to collect pre-admission pins instead of warning."""
+    return await _mailbox_io(_scan_receipts, home, pins)
 
 
 def remember_receipt(authority, home, record):

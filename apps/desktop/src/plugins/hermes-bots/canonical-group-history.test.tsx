@@ -7,8 +7,9 @@ import { expectDownloaded, observeDownloads } from './canonical-download-test-ut
 const request = vi.hoisted(() => vi.fn())
 vi.mock('@hermes/plugin-sdk', async () => {
   const { en } = await import('@/i18n/en')
+  const { Textarea } = await import('@/components/ui/textarea')
 
-  return { host: { requestProfile: request }, useI18n: () => ({ locale: 'en', t: en }),
+  return { Textarea, host: { requestProfile: request }, useI18n: () => ({ locale: 'en', t: en }),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
     Streamdown: ({ children }: { children: ReactNode }) => <div data-testid="markdown">{children}</div>,
     Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
@@ -77,7 +78,7 @@ it('binds user/member history downloads to their real event and refuses missing 
 
   const events = [
     { seq: 1, room_id: binding.roomId, event_id: 'user-event', kind: 'message.user' },
-    { seq: 2, room_id: binding.roomId, event_id: 'member-event', kind: 'message.member', actor: { member_id: 'helper' } },
+    { seq: 2, room_id: binding.roomId, event_id: 'member-event', kind: 'message.member', actor: { kind: 'member', id: 'helper' } },
     { seq: 3, room_id: binding.roomId, kind: 'message.user' },
     { seq: 4, room_id: 'other-room', event_id: 'foreign-event', kind: 'message.member' }
   ].map(event => ({ ...event, payload: { attachments: [{ ...manifest, event_id: 'not-the-event' }] } }))
@@ -112,7 +113,7 @@ it('renders only room messages with their author and markdown presentation', asy
 
     if (method === 'groups.log') {
       return { events: [
-        { seq: 1, room_id: binding.roomId, kind: 'message.member', actor: { member_id: 'helper' }, payload: { text: '**Done**' } },
+        { seq: 1, room_id: binding.roomId, kind: 'message.member', actor: { kind: 'member', id: 'helper' }, payload: { text: '**Done**' } },
         { seq: 2, room_id: binding.roomId, kind: 'turn.settled', payload: {} }
       ] }
     }

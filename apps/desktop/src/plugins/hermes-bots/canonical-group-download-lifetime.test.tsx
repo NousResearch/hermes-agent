@@ -7,8 +7,9 @@ import { expectDownloaded, observeDownloads } from './canonical-download-test-ut
 const request = vi.hoisted(() => vi.fn())
 vi.mock('@hermes/plugin-sdk', async () => {
   const { en } = await import('@/i18n/en')
+  const { Textarea } = await import('@/components/ui/textarea')
 
-  return { host: { requestProfile: request }, useI18n: () => ({ locale: 'en', t: en }),
+  return { Textarea, Streamdown: undefined, host: { requestProfile: request }, useI18n: () => ({ locale: 'en', t: en }),
     Button: (props: ComponentProps<'button'>) => <button {...props} />,
     Codicon: () => <span />, Tip: ({ children }: { children: ReactNode }) => <>{children}</> }
 })

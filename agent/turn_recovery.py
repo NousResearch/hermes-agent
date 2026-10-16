@@ -1867,6 +1867,45 @@ def route_classified_error(
                 return _verdict("break")
         # Compression exhausted or didn't help: fall through to normal error handling.
 
+    # Stale-call circuit breaker: when the consecutive-stale streak trips with a large
+    # context, compact once and retry before giving up. A smaller request may survive
+    # prefill where the full context timed out (#139209).
+    _is_stale_giveup = type(api_error).__name__ == "StaleGiveupError"
+    if (
+        _is_stale_giveup
+        and getattr(agent, "compression_enabled", True)
+        and not getattr(_retry, "stale_compaction_attempted", False)
+        and compression_attempts < max_compression_attempts
+    ):
+        _compressor = getattr(agent, "context_compressor", None)
+        _tok = getattr(_compressor, "threshold_tokens", 0)
+        _est_tokens = estimate_request_tokens_rough(
+            api_messages, tools=getattr(agent, "tools", None) or None,
+        )
+        if _compressor is not None and _est_tokens > _tok > 0:
+            from agent.chat_completion_helpers import _reset_stale_streak, _stale_streak
+            _retry.stale_compaction_attempted = True
+            compression_attempts += 1
+            logger.warning(
+                "%sStale giveup with large context (streak=%s, ~%s tokens): compacting before final attempt.",
+                getattr(agent, "log_prefix", ""), _stale_streak(agent), f"{_est_tokens:,}",
+            )
+            original_len = len(messages)
+            messages, active_system_prompt = agent._compress_context(
+                messages, system_message,
+                approx_tokens=_est_tokens, task_id=effective_task_id,
+                trigger="stale", overflow_reason="stale_provider",
+            )
+            conversation_history = conversation_history_after_compression(agent, messages, conversation_history)
+            _reset_stale_streak(agent)
+            if len(messages) < original_len:
+                _retry.restart_with_compressed_messages = True
+                return _verdict("break")
+            # Compression did not shrink the transcript: fall through so the
+            # turn aborts with the resume copy instead of re-sending the same
+            # oversized request. (#139209)
+            return _verdict("fallthrough")
+
     # Eager fallback: rate-limit/billing switch immediately (primary won't recover in
     # the retry window); transport errors get 1 retry first.
     is_rate_limited = classified.reason in _RATE_LIMIT_REASONS

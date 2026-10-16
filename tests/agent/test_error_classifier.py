@@ -15,6 +15,7 @@ from agent.error_classifier import (
     _extract_error_code,
     _classify_402,
 )
+from agent.chat_completion_stale import StaleGiveupError
 from tests.hermes_cli.anon_portal import make_jwt
 
 
@@ -1738,17 +1739,16 @@ class Test408RequestTimeout:
 
     def test_stale_breaker_runtime_error_triggers_fallback_not_retry(self):
         # The cross-turn stale-call circuit breaker (_check_stale_giveup in
-        # chat_completion_helpers.py) raises a RuntimeError when the provider
+        # chat_completion_helpers.py) raises StaleGiveupError when the provider
         # has been unresponsive for N consecutive stale attempts.  This must
         # be classified as non-retryable + should_fallback so the retry loop
         # activates the fallback provider immediately instead of burning all
         # max_retries against the same dead provider (each retry hitting the
         # circuit breaker instantly with zero network overhead).
-        e = RuntimeError(
-            "Provider has been unresponsive (no response received) for "
-            "6 consecutive stale attempts — aborting this call to "
-            "avoid an indefinite stall. Switch models or start a new "
-            "session, then retry."
+        e = StaleGiveupError(
+            "Provider has been unresponsive for 6 consecutive stale attempts — "
+            "aborting this call to avoid an indefinite stall. Send another message "
+            "to try again, switch models with /model, or start a new session with /new."
         )
         result = classify_api_error(
             e, provider="openrouter", model="anthropic/claude-fable-5",

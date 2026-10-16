@@ -36,7 +36,7 @@ _METHODS = frozenset({
 })
 _TRIGGERS = frozenset({
     "manual", "turn_start_threshold", "pre_api", "post_tool", "idle", "engine_preflight", "overflow",
-    "gateway_hygiene", "between_turns", "proactive_prune", "provider", "unknown",
+    "gateway_hygiene", "between_turns", "proactive_prune", "provider", "stale", "unknown",
 })
 # Every other known trigger is automatic; an unknown or unlisted one asserts nothing.
 _TRIGGER_CLASSES = {
@@ -44,7 +44,7 @@ _TRIGGER_CLASSES = {
 }
 _TRIGGER_CLASS_VALUES = frozenset({"auto", "manual", "overflow", "provider", "unknown"})
 # The error-classifier reasons whose recovery compresses with ``trigger="overflow"``.
-_OVERFLOW_REASONS = frozenset({"context_overflow", "payload_too_large", "long_context_tier"})
+_OVERFLOW_REASONS = frozenset({"context_overflow", "payload_too_large", "long_context_tier", "stale_provider"})
 _OUTCOMES = frozenset({"committed", "aborted", "failed", "skipped", "blocked"})
 _SPLIT_STATUSES = frozenset({
     "not_applicable", "in_place_committed", "rotated_committed", "failed_not_indexed", "aborted",

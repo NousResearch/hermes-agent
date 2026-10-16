@@ -19,6 +19,7 @@ import hermes_yaml as yaml
 
 from agent import model_metadata_http
 from agent.model_metadata_cache import _write_context_cache, locked_context_cache
+from agent.model_metadata_llamacpp import llamacpp_context
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
@@ -998,7 +999,7 @@ def _apply_llamacpp_props(cache: dict[str, dict[str, Any]], request_candidate: s
         child_id = child.get("id") if isinstance(child, dict) else None
         if not child_id or child_id not in cache or (child.get("status") or {}).get("value") not in ("loaded", "ready"):
             continue
-        pr = _props({"model": child_id})
+        pr = _props({"model": child_id, "autoload": "false"})  # it may have unloaded since /models
         child_ctx = _n_ctx(pr.json()) if not pr.is_error else None
         if child_ctx:
             cache[child_id]["context_length"] = child_ctx
@@ -1566,23 +1567,6 @@ def _lmstudio_context(client, lmstudio_url: str, model: str) -> Optional[int]:
     return None
 
 
-def _llamacpp_context(client, server_url: str, model: str) -> Optional[int]:
-    """llama.cpp /props: the RUNTIME n_ctx, answered by the router even for a not-yet-loaded model
-    (while /v1/models has meta=null), so a lazily-loaded model doesn't fall to a family catch-all."""
-    import httpx
-    for props_path in (f"/props?model={model}", "/props"):
-        try:
-            resp = client.get(f"{server_url}{props_path}")
-        except httpx.HTTPError:
-            return None
-        if resp.status_code != 200:
-            continue
-        n_ctx = _positive_int((resp.json().get("default_generation_settings") or {}).get("n_ctx"))
-        if n_ctx is not None:
-            return n_ctx
-    return None
-
-
 def _openai_models_list_context(client, server_url: str, model: str) -> Optional[int]:
     """/v1/models list: match by id, else the sole model on single-model servers (llama.cpp reports a GGUF path as id)."""
     resp = client.get(f"{server_url}/v1/models")
@@ -1633,7 +1617,7 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
     typed = {
         "ollama": _ollama_ctx,
         "lm-studio": lambda client: _lmstudio_context(client, lmstudio_url, model),
-        "llamacpp": lambda client: _llamacpp_context(client, server_url, model),
+        "llamacpp": lambda client: llamacpp_context(client, server_url, model),
     }.get(server_type)
     probes = ([typed] if typed else []) + [_model_detail_ctx, lambda client: _openai_models_list_context(client, server_url, model)]
     try:

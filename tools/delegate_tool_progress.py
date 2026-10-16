@@ -38,7 +38,8 @@ def _safe_progress(cb: Any, event_type: Any, *args: Any, **kwargs: Any) -> None:
 def _clean_error_text(error: Any, max_chars: int = 200) -> str:
     """Reduce an error payload (traceback / JSON wall) to one clean line: the exception message (last line of a
     traceback) or the first non-empty line, hard-capped in length."""
-    lines = [ln.strip() for ln in str(error or "").strip().splitlines() if ln.strip()]
+    from tools.delegation_redaction import redact_child_text
+    lines = [ln.strip() for ln in redact_child_text(str(error or ""), force=False).strip().splitlines() if ln.strip()]
     if not lines:
         return ""
     line = lines[-1] if lines[0].startswith("Traceback") else lines[0]

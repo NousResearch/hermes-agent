@@ -1,19 +1,31 @@
 """Resolve explicit model changes using the existing source model switch pipeline."""
 import asyncio
 import json
+import logging
 from dataclasses import asdict, replace
 
 from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger(__name__)
 
 
 async def prepare_model(authority, live, payload, prepared):
     from gateway.session_policy import restore_policy, launch_key, bind_launch_key
     from gateway.session_policy_credentials import recover_config_secrets
+    from hermes_cli.auth import AuthError
     from hermes_cli.model_switch import apply_model_selection, selection_route_changed, switch_model
     from hermes_cli.config import get_compatible_custom_providers
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
     config = old.config(authority)
-    _, runtime = authority.runner._resolve_session_agent_runtime(source=live.source, session_key=live.route)
+    try:
+        _, runtime = authority.runner._resolve_session_agent_runtime(source=live.source, session_key=live.route)
+    except AuthError as exc:
+        # This resolution only supplies the CURRENT route's probe credential; a frozen policy that
+        # can no longer re-resolve (a persisted bare ``custom`` placeholder, #138879) must not kill
+        # the switch that replaces it — the target resolves its own credentials from config.
+        logger.warning("session.mutate model: the pre-switch runtime would not resolve (%s); "
+                       "switching on the target's own credentials", exc)
+        runtime = {}
 
     def switch(**kwargs):
         result = switch_model(**kwargs)

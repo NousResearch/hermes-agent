@@ -391,6 +391,47 @@ async def test_a_pick_whose_only_server_is_gone_selects_no_server_not_every_enab
         store.close_all_db_handles()
 
 
+@pytest.mark.asyncio
+async def test_a_removed_pick_keeps_later_refreshes_following_config_after_a_restart(tmp_path, monkeypatch):
+    """A server config removed stays known as one of the pick's servers: after an owner restart, disabling
+    another picked server still reaches the chat (the removed name no longer fails the pick's validation)."""
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_policy import policy_for_source
+    from tests.gateway.test_session_resume_config_refresh import _runner
+    both = CONFIG.replace('{old: {command: old-mcp}}', '{old: {command: old-mcp}, keep: {command: keep-mcp}}')
+    home = _home(monkeypatch)
+    (home / 'config.yaml').write_text(both)
+    monkeypatch.setattr('gateway.session_policy.launch_key', lambda authority, policy: None)
+    store, authority = await _owner_authority(home)
+    owner = _connect(authority)
+    viewer = None
+    try:
+        sid = (await _call(owner, 'session.create', request_id='k', source='cli', cwd=str(tmp_path),
+                           toolsets=['terminal', 'old', 'keep']))['session_id']
+        generation = _generation(store, sid)
+        (home / 'config.yaml').write_text(both.replace('old: {command: old-mcp}, ', ''))
+        await _call(_connect(authority), 'session.resume', session_id=sid)
+        assert _generation(store, sid) == generation + 1
+        assert set(_worker_servers(_worker_frame(authority, sid, monkeypatch), monkeypatch)[0]) == {'keep'}
+        await owner.close()
+        (home / 'config.yaml').write_text(both.replace('old: {command: old-mcp}, ', '').replace(
+            '{command: keep-mcp}', '{command: keep-mcp, enabled: false}'))
+        cold = await initialize_session_authority(_runner(store), profile_id=str(home), instance_id='restarted')
+        viewer = _connect(cold)
+        await _call(viewer, 'session.resume', session_id=sid)
+        assert _generation(store, sid) == generation + 2
+        frame = _worker_frame(cold, sid, monkeypatch)
+        servers, toolsets = _worker_servers(frame, monkeypatch)
+        assert 'terminal' in toolsets and not {'old', 'keep'} & (toolsets | set(servers)), (toolsets, servers)
+        assert json.loads(frame['policy']['config_json'])['mcp_servers']['keep']['enabled'] is False
+        assert 'keep' not in policy_for_source(cold.runner, cold.sessions[sid].source).toolsets
+    finally:
+        await owner.close()
+        if viewer is not None:
+            await viewer.close()
+        store.close_all_db_handles()
+
+
 def test_not_connected_names_a_configured_server_in_cooldown(monkeypatch):
     from tools import mcp_tool, mcp_tool_discovery as discovery
     from tools.mcp_tool_scope import _server_key

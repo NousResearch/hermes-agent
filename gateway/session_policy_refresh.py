@@ -113,8 +113,11 @@ def _mcp_servers(policy, config, live, toolsets, secrets, replaced):
                                      json.loads(json.dumps(live)), policy.source, policy.safe_mode, policy.coding_posture)
     except RuntimeStoreError:
         return toolsets  # the rest of the launch pick no longer validates against the profile: keep the frozen servers
-    if 'mcp_servers' in live:
-        config['mcp_servers'] = json.loads(json.dumps(live['mcp_servers']))
+    # A picked server config removed keeps a disabled stub in the stored section, so every later refresh
+    # (after an owner restart too) still knows that name as one of the pick's servers, not an unknown toolset.
+    stubs = {name: {'enabled': False} for name in picked - set(sections[1])}
+    if 'mcp_servers' in live or stubs:
+        config['mcp_servers'] = json.loads(json.dumps({**sections[1], **stubs} if stubs else live['mcp_servers']))
         _extract_config_secrets(config['mcp_servers'], secrets, ('mcp_servers',))
     else:
         config.pop('mcp_servers', None)

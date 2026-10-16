@@ -18,7 +18,7 @@ from tools.computer_use.cua_backend_input import _BTF_UNSUPPORTED_MSG
 from tools.computer_use.cua_backend_parse import (
     _apps_from_windows, _image_dimensions_from_bytes, _image_from_tool_result, _ingest_windows, _is_placeholder_id,
     _is_real_app_window, _parse_elements_from_structured, _parse_elements_from_tree, _parse_xprop_net_active_window,
-    _positive_int, _split_tree_text, _windows_from_tool_result, _z_index_uninformative,
+    _positive_int, _screen_rect, _screenshot_size, _split_tree_text, _windows_from_tool_result, _z_index_uninformative,
 )
 
 logger = logging.getLogger("tools.computer_use.cua_backend")
@@ -300,6 +300,13 @@ class _CaptureMixin:
                     else _parse_elements_from_tree(tree) if tree else [])
         # Tokens are tied to this snapshot: overwrite the whole map (and clear it when the new capture carries none).
         self._snapshot_tokens = {e.index: e.element_token for e in elements if e.element_token}
+        self._snapshot_bounds = {e.index: e.bounds for e in elements}
+        structured = gws_out.get("structuredContent") if isinstance(gws_out.get("structuredContent"), dict) else {}
+        # macOS publishes the same window rectangle drag's pixel frame uses.
+        # Otherwise keep the list_windows bounds stored when the target was selected.
+        if (frame := _screen_rect(structured.get("window_bounds"))) is not None:
+            self._snapshot_window_frame = frame
+        self._snapshot_screenshot_size = _screenshot_size(structured)
         return *_image_from_tool_result(gws_out), elements, window_title
 
     def capture(self, mode: str = "som", app: Optional[str] = None, pid: Optional[int] = None,

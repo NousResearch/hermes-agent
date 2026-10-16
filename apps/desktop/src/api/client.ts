@@ -407,7 +407,19 @@ export class HermesGateway extends JsonRpcGatewayClient {
     const wireMethod = this.protocol.wire(method, prepared)
 
     try {
-      const result = await super.request<T>(wireMethod, prepared, remainingRequestBudget(deadline, signal), signal)
+      let result: T
+
+      try {
+        result = await super.request<T>(wireMethod, prepared, remainingRequestBudget(deadline, signal), signal)
+      } catch (error) {
+        if (!this.protocol.retryableFence(prepared, error)) { throw error }
+        // The refusal carried the owner's current fences: one retry at them, never a loop.
+        this.protocol.failure(prepared, error)
+        this.requireConnectionGeneration(generation)
+        prepared = this.protocol.prepare(method, params)
+        result = await super.request<T>(wireMethod, prepared, remainingRequestBudget(deadline, signal), signal)
+      }
+
       this.requireConnectionGeneration(generation)
 
       if (['session.resume', 'session.create', 'session.activate'].includes(method)) {

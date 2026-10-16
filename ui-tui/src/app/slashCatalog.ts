@@ -14,7 +14,11 @@ import { $uiState } from './uiStore.js'
 /** `commands.catalog` bound to `sid` when there is one: project-local skills follow the session's repo,
  *  so the catalog is reloaded whenever the live session changes. A reply for a session that is no longer
  *  the live one is dropped. */
-export const loadSlashCatalog = (rpc: GatewayRpc, sid: null | string, setCatalog: (catalog: null | SlashCatalog) => void) =>
+export const loadSlashCatalog = (
+  rpc: GatewayRpc,
+  sid: null | string,
+  setCatalog: (catalog: null | SlashCatalog) => void
+) =>
   rpc<CommandsCatalogResponse>('commands.catalog', sid ? { session_id: sid } : {})
     .then(r => {
       if (!r?.pairs || $uiState.get().sid !== sid) {
@@ -33,7 +37,9 @@ export const loadSlashCatalog = (rpc: GatewayRpc, sid: null | string, setCatalog
         turnController.pushActivity(r.warning, 'warn')
       }
     })
-    .catch(e => turnController.pushActivity(t('gatewayMsg.startup.commandCatalogUnavailable', rpcErrorMessage(e)), 'info'))
+    .catch(e =>
+      turnController.pushActivity(t('gatewayMsg.startup.commandCatalogUnavailable', rpcErrorMessage(e)), 'info')
+    )
 
 /** The slash catalog for the live session (or the launch workspace before one exists). */
 export const $slashCatalog = atom<null | SlashCatalog>(null)

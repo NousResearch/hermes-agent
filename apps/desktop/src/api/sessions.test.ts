@@ -86,7 +86,9 @@ describe('deleteSession profile scoping', () => {
       method: 'DELETE',
       path: expect.stringContaining('/api/sessions/sess-3')
     })
-    expect((hermesApi.mock.calls.filter(([request]) => request.method)[0][0] as { path: string }).path).not.toContain('profile=')
+    expect((hermesApi.mock.calls.filter(([request]) => request.method)[0][0] as { path: string }).path).not.toContain(
+      'profile='
+    )
   })
 
   it('keeps an explicit local pin routed to the local pool', async () => {
@@ -221,7 +223,13 @@ describe('setSessionPinnedRemote / setSessionUnreadRemote profile scoping', () =
 
 describe('renameSession profile scoping', () => {
   it('carries the owning profile in the PATCH body and request', async () => {
-    hermesApi.mockResolvedValue({ ok: true, title: 'Prep Butler', exists: true, runtime_revision: 5, runtime_generation: 2 } as never)
+    hermesApi.mockResolvedValue({
+      ok: true,
+      title: 'Prep Butler',
+      exists: true,
+      runtime_revision: 5,
+      runtime_generation: 2
+    } as never)
 
     await renameSession('sess-r', 'Prep Butler', 'personal')
 
@@ -234,7 +242,13 @@ describe('renameSession profile scoping', () => {
   })
 
   it('falls back to the active request profile when the argument is omitted', async () => {
-    hermesApi.mockResolvedValue({ ok: true, title: 'Prep Butler', exists: true, runtime_revision: 5, runtime_generation: 2 } as never)
+    hermesApi.mockResolvedValue({
+      ok: true,
+      title: 'Prep Butler',
+      exists: true,
+      runtime_revision: 5,
+      runtime_generation: 2
+    } as never)
     vi.mocked(client.getApiRequestProfile).mockReturnValue('personal')
 
     await renameSession('sess-r2', 'Prep Butler')

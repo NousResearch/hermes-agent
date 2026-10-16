@@ -152,6 +152,31 @@ class _GatewayReviewAdmission:
             )
         return True
 
+    def drop_candidate(self, cause: str) -> bool:
+        """Discard the parked candidate before delivery; ownership stays live until ``finish``.
+
+        The compression-exhaustion auto-reset rotates the chat to a fresh, parentless session
+        and re-homes the follow-ups queued behind the exhausted turn onto it. The registry keys
+        that session apart from this one, so the exhausted transcript's review would decode
+        beside the follow-up's turn (the overlap the follow-up fence exists to prevent), and it
+        has nothing to learn: the turn answered with the timeout notice. True when a candidate
+        was held; the drop logs the owner-tagged ``cause``.
+        """
+        from agent import review_admission
+
+        with self._lock:
+            candidate, self._candidate = self._candidate, None
+        if not isinstance(candidate, dict):
+            return False
+        logger.info(
+            "Background review skipped (owner=%s): %s",
+            review_admission.owner_tag(
+                self.profile_key, candidate.get("_review_session_id") or self.session_id
+            ),
+            cause,
+        )
+        return True
+
     def finish(
         self,
         *,

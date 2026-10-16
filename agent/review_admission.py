@@ -46,6 +46,10 @@ REASON_REVIEW_SLOT_BUSY = "review_slot_busy"
 # not confirmed, or when the turn handed the session to a queued follow-up's drain task.
 REASON_DELIVERY_UNCONFIRMED = "delivery_unconfirmed"
 REASON_PENDING_HANDOFF = "pending_followup_handoff"
+# The gateway auto-reset the session after compression exhaustion before the turn's reply went
+# out: the transcript the candidate would replay is abandoned, and the follow-ups queued behind
+# the turn run on the fresh session the reset re-homed them onto.
+REASON_EXHAUSTION_RESET = "compression_exhausted_reset"
 # The shared runtime's drain could not commit the turn's terminal outcome (fenced unknown or
 # discarded): nobody is told an answer, so the turn's ownership is released without a review.
 REASON_TURN_UNSETTLED = "turn_unsettled"

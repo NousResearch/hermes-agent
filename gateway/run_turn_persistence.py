@@ -303,12 +303,14 @@ class GatewayTurnPersistenceMixin:
         return agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure
 
     async def _hmwa_compression_exhaustion_reset(
-        self, agent_result, response, session_entry, session_key, source,
+        self, agent_result, response, session_entry, session_key, source, *,
+        gateway_review_admission=None,
     ):
         """Auto-reset a permanently oversized session so the next message starts fresh instead of
         replaying the oversized context forever. Never on a lock-contended defer — that is the
         OPPOSITE case (a concurrent path holds the lock and is shrinking it). Returns
-        ``(response, session_entry)``."""
+        ``(response, session_entry)``. ``gateway_review_admission`` is the turn's review ownership
+        (``gateway/run_turn_review.py``): its candidate is dropped with the transcript."""
         # When compression is exhausted, the session is permanently too large to process. (#9893) Never wipe
         # the session for that — retry-next-message semantics apply (#69870 lock-skip consumer; salvaged
         # from #49874).
@@ -321,6 +323,11 @@ class GatewayTurnPersistenceMixin:
             )
         elif agent_result.get("compression_exhausted") and session_entry and session_key:
             logger.info("Auto-resetting session %s after compression exhaustion.", session_entry.session_id)
+            if gateway_review_admission is not None:
+                # The re-homed follow-ups run on the fresh session, which review admission keys apart
+                # from this one: the exhausted transcript's review would decode beside them.
+                from agent.review_admission import REASON_EXHAUSTION_RESET
+                gateway_review_admission.drop_candidate(REASON_EXHAUSTION_RESET)
             from gateway.session_automation import move_route_wakes, reset_and_rehome_messages
             # Messages queued behind the exhausted turn still run, on the fresh session (unlike /new).
             new_entry, release_fresh = await reset_and_rehome_messages(self, session_key, session_entry.session_id)

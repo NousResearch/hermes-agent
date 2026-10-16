@@ -212,7 +212,7 @@ def _launchd_unsupported_marker_exists() -> bool:
 
 def _gateway_run_command() -> list[str]:
     from hermes_cli._launchers import runtime_command
-    return runtime_command(_gw().PROJECT_ROOT, [*shlex.split(_gw()._profile_arg()), "gateway", "run", "--replace"],
+    return runtime_command(_gw()._service_project_root(), [*shlex.split(_gw()._profile_arg()), "gateway", "run", "--replace"],
                            python=_gw().get_python_path())
 
 
@@ -267,13 +267,13 @@ def _timestamped_stderr_gateway_command(error_log: Path, *, external_supervisor:
     from hermes_cli._launchers import installation_command, runtime_command
     inner = _gw()._gateway_run_command()
     if external_supervisor:
-        inner = installation_command(_gw().PROJECT_ROOT, [*shlex.split(_gw()._profile_arg()), "gateway", "run"],
+        inner = installation_command(_gw()._service_project_root(), [*shlex.split(_gw()._profile_arg()), "gateway", "run"],
                                      python=_gw().get_python_path())
         inner = [part for part in inner if part != "--replace"]
         if "--external-supervisor" not in inner:
             inner.append("--external-supervisor")
     command = installation_command if external_supervisor else runtime_command
-    return command(_gw().PROJECT_ROOT, ["--error-log", str(error_log), "--", *inner],
+    return command(_gw()._service_project_root(), ["--error-log", str(error_log), "--", *inner],
                    module="hermes_cli.stderr_timestamp", python=_gw().get_python_path())
 
 

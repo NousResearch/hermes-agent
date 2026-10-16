@@ -123,7 +123,11 @@ def _report_database_holders(name: str, db_path: Path) -> None:
 def _report_database_journal_modes(hermes_home: Path | None = None, version_info: tuple[int, ...] | None = None) -> None:
     """List each database's journal mode; warn on WAL under a vulnerable SQLite, and on a configured
     ``database.journal_mode: delete`` that never took effect."""
-    from hermes_cli.doctor import HERMES_HOME
+    # Fork seam: the home is resolved at CALL time, never imported as a module constant
+    # (docs/downstream-development.md rule 3 — a frozen home reads the operator's live store
+    # under pytest, where the hermetic fixture moves HERMES_HOME after import).
+    from hermes_cli.config import get_hermes_home
+    HERMES_HOME = get_hermes_home()
     from hermes_state_wal import (
         _path_on_cross_vm_fs, _wal_reset_repair_hint, is_sqlite_wal_reset_vulnerable, resolve_journal_mode,
     )

@@ -408,7 +408,11 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
     if not force and not section.get("enabled"):
         return None
     if _SUPERVISOR is not None:
-        return _SUPERVISOR
+        if _SUPERVISOR.watching():
+            return _SUPERVISOR
+        # Its watchdog gave up on a dead router (restart cap, runtime switched off, port taken):
+        # boot a fresh one rather than hand back a supervisor with nothing behind it.
+        shutdown_local_runtime()
 
     try:
         adopt_legacy_models()
@@ -458,7 +462,8 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
             sup = LlamaServerSupervisor(engine.binary, mdir, preset_path=preset_path,
                                         models_max=_admitted_models_max(
                                             mdir, int(section.get("models_max", 4))),
-                                        port=int(section.get("port", 0)) or None)
+                                        port=int(section.get("port", 0)) or None,
+                                        restart_when_disabled=force)
             try:
                 sup.start()
             except Exception:

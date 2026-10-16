@@ -22,7 +22,8 @@ import {
   ownerScoped,
   type ProfileScope,
   profileScoped,
-  type ResolvedOwner
+  type ResolvedOwner,
+  resolveOwnerNow
 } from './client'
 
 export const AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS = 180_000
@@ -228,12 +229,20 @@ export const AUDIO_TTS_LEASE_REQUEST_TIMEOUT_MS = 180_000
  * (`active: true`) or release it once no surface needs it (`active: false`).
  * `lease` names the toggle — `desktop:read-aloud`, `desktop:conversation`.
  */
-export function setTtsLease(lease: string, active: boolean): Promise<AudioTtsLeaseResponse> {
-  return hermesApi<AudioTtsLeaseResponse>({
-    ...profileScoped(),
+export function setTtsLease(
+  lease: string,
+  active: boolean,
+  owner: ResolvedOwner = resolveOwnerNow()
+): Promise<AudioTtsLeaseResponse> {
+  // The lifecycle registry is process-global because the local model cache is
+  // process-global. Namespace the public lease with its immutable route so
+  // colliding profile names on two connections cannot clear one another.
+  const ownedLease = `${lease}:owner:${encodeURIComponent(JSON.stringify([owner.connectionId, owner.profile]))}`
+
+  return hermesApiAs<AudioTtsLeaseResponse>(owner, {
     path: '/api/audio/tts-lease',
     method: 'POST',
-    body: { active, lease },
+    body: { active, lease: ownedLease },
     timeoutMs: AUDIO_TTS_LEASE_REQUEST_TIMEOUT_MS
   })
 }

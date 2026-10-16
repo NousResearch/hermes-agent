@@ -11,12 +11,14 @@ import type { code as streamdownCode } from '@streamdown/code'
 import { type ComponentProps, isValidElement, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { defaultRemarkPlugins } from 'streamdown'
 
+import { useComposerScope } from '@/app/chat/composer/scope'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { TranscriptVideo } from '@/components/chat/transcript-video'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
+import { getApiRequestConnection, getApiRequestProfile, type ResolvedOwner, resolveOwnerNow } from '@/hermes'
 import { useMediaImage } from '@/hooks/use-media-image'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
@@ -28,7 +30,7 @@ import {
   downloadGatewayMediaFile,
   isFileMediaPath,
   isMarkdownDocumentPath,
-  isRemoteGateway,
+  isRemoteMediaOwner,
   mediaExternalUrl,
   mediaKind,
   mediaName,
@@ -110,15 +112,15 @@ function preprocessWithTailRepair(text: string): string {
   }
 }
 
-function useOpenMediaFile(path: string) {
+function useOpenMediaFile(path: string, owner?: ResolvedOwner) {
   const [openFailed, setOpenFailed] = useState(false)
 
   const open = () => {
-    if (window.hermesDesktop && isRemoteGateway()) {
+    if (window.hermesDesktop && isRemoteMediaOwner(owner)) {
       setOpenFailed(false)
-      void downloadGatewayMediaFile(path).catch(() => setOpenFailed(true))
+      void downloadGatewayMediaFile(path, { owner }).catch(() => setOpenFailed(true))
     } else {
-      openExternalLink(mediaExternalUrl(path))
+      openExternalLink(mediaExternalUrl(path, owner))
     }
   }
 
@@ -133,8 +135,8 @@ function OpenMediaFailedNote({ name }: { name: string }) {
   )
 }
 
-function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string }) {
-  const { open, openFailed } = useOpenMediaFile(path)
+function OpenMediaButton({ kind, owner, path }: { kind: 'audio' | 'video'; owner: ResolvedOwner; path: string }) {
+  const { open, openFailed } = useOpenMediaFile(path, owner)
 
   return (
     <span className="block">
@@ -151,17 +153,22 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
 }
 
 function MediaAttachment({ path }: { path: string }) {
+  const scope = useComposerScope()
+  const connectionId = scope.connectionId || getApiRequestConnection()
+  const profile = scope.profile || getApiRequestProfile()
+  const owner = useMemo(() => resolveOwnerNow({ connectionId, profile }), [connectionId, profile])
+
   return mediaKind(path) === 'image' ? (
     <MarkdownImage alt={mediaName(path)} src={path} />
   ) : (
-    <MediaPlaybackAttachment path={path} />
+    <MediaPlaybackAttachment owner={owner} path={path} />
   )
 }
 
-function MediaPlaybackAttachment({ path }: { path: string }) {
+function MediaPlaybackAttachment({ owner, path }: { owner: ResolvedOwner; path: string }) {
   const [src, setSrc] = useState('')
   const [failed, setFailed] = useState(false)
-  const { open, openFailed } = useOpenMediaFile(path)
+  const { open, openFailed } = useOpenMediaFile(path, owner)
   const kind = mediaKind(path)
   const name = mediaName(path)
 
@@ -180,7 +187,7 @@ function MediaPlaybackAttachment({ path }: { path: string }) {
       }
     }
 
-    void resolveMediaPlaybackSrc(path)
+    void resolveMediaPlaybackSrc(path, owner)
       .then(value => {
         if (value.startsWith('blob:')) {
           objectUrl = value
@@ -205,14 +212,14 @@ function MediaPlaybackAttachment({ path }: { path: string }) {
         URL.revokeObjectURL(objectUrl)
       }
     }
-  }, [kind, path])
+  }, [kind, owner, path])
 
   if (kind === 'audio' && src) {
     return (
       <span className="my-3 block max-w-md rounded-xl border border-(--ui-stroke-tertiary) bg-muted/35 p-3">
         <span className="mb-2 block truncate text-xs font-medium text-muted-foreground">{name}</span>
         <audio className="block w-full" controls onError={() => setFailed(true)} preload="metadata" src={src} />
-        {failed && <OpenMediaButton kind="audio" path={path} />}
+        {failed && <OpenMediaButton kind="audio" owner={owner} path={path} />}
       </span>
     )
   }
@@ -227,7 +234,7 @@ function MediaPlaybackAttachment({ path }: { path: string }) {
           onError={() => setFailed(true)}
           src={src}
         />
-        {failed && <OpenMediaButton kind="video" path={path} />}
+        {failed && <OpenMediaButton kind="video" owner={owner} path={path} />}
       </span>
     )
   }

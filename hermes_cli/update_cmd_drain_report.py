@@ -89,6 +89,11 @@ def format_drain_report(work: Optional[list], *, remaining_s: float, home: Optio
     else:
         lines.append(f"     waiting on {len(work)} active work unit(s):")
         lines.extend(f"       • {describe_active_work_unit(u, home)}" for u in work)
+        if any(isinstance(u, dict) and u.get("kind") == "chat" for u in work):
+            # The draining gateway stays reachable for this (#139041): a chat turn parked on an
+            # approval/clarify is answered from a client, not waited out.
+            lines.append("     a chat turn waiting on an approval or clarify question can be answered now: "
+                         "open it with `hermes --tui` (resume the session)")
         lines.append("     finish or kill the work above to release the drain now; "
                      "agent.restart_after_turn_timeout in config.yaml caps this wait")
     return "\n".join(lines)

@@ -91,6 +91,34 @@ def _hold_port():
     return sock, sock.getsockname()[1]
 
 
+def test_port_probe_reuses_time_wait_addresses(monkeypatch):
+    """A secondary restart must not mistake the prior bridge's TCP TIME-WAIT for a listener (#139425)."""
+    import plugins.platforms.whatsapp.bridge_ownership as ownership
+
+    calls = []
+
+    class ProbeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def setsockopt(self, level, option, value):
+            calls.append(("setsockopt", level, option, value))
+
+        def bind(self, address):
+            calls.append(("bind", address))
+
+    monkeypatch.setattr(ownership.socket, "socket", ProbeSocket)
+
+    assert ownership.port_is_free(3001)
+    assert calls == [
+        ("setsockopt", socket.SOL_SOCKET, socket.SO_REUSEADDR, 1),
+        ("bind", ("127.0.0.1", 3001)),
+    ]
+
+
 def test_allocation_skips_ports_recorded_by_siblings(tmp_path):
     """A sibling whose bridge is down leaves its recorded port unbound; a new profile must not take it,
     or the sibling hits a non-retryable port conflict on its next start. A corrupt record names itself."""

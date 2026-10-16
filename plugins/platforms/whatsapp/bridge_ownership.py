@@ -11,6 +11,9 @@ SECONDARY_PORT_LAST = 3999
 
 def port_is_free(port: int) -> bool:
     with socket.socket() as sock:
+        # A just-stopped bridge can leave its accepted TCP connections in TIME-WAIT. The Node
+        # bridge enables this option too, so match its bind semantics while still rejecting a listener.
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("127.0.0.1", port))
         except OSError:

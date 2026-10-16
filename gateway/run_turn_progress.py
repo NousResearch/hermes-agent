@@ -31,6 +31,17 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _append_progress_repeat_count(message: str, occurrences: int) -> str:
+    """Put a repeat counter after a closing code fence on its own line: ```` ``` (×N) ```` is not a
+    valid closing fence, so Telegram/Markdown renderers would leave the block open."""
+    suffix = f"(×{occurrences})"
+    body = message.rstrip("\r\n")
+    if re.search(r"(?:^|\n)[ \t]*```[ \t]*\r?\Z", body):
+        line_end = "\r\n" if message.endswith("\r\n") else "\n"
+        return f"{body}{line_end}{suffix}"
+    return f"{message} {suffix}"
+
+
 def _tool_lifecycle_payload(call_id, tool_name, args) -> dict:
     """The ``ToolStartPayload`` contract every client reads (``tool_id``/``name``/``context``),
     plus the ``tool_call_id``/``tool_name`` the gateway's own consumers were built on."""
@@ -316,7 +327,7 @@ class GatewayTurnProgressMixin:
         if msg == ctx.last_progress_msg[0]:
             ctx.repeat_count[0] += 1
             if native:
-                sc.on_tool_progress(f"{msg} (×{ctx.repeat_count[0] + 1})")
+                sc.on_tool_progress(_append_progress_repeat_count(msg, ctx.repeat_count[0] + 1))
             else:
                 ctx.progress_queue.put(("__dedup__", msg, ctx.repeat_count[0]))
             return
@@ -654,7 +665,7 @@ class GatewayTurnProgressMixin:
             _, base_msg, count = raw
             if not st.progress_lines:
                 return base_msg
-            st.progress_lines[-1] = f"{base_msg} (×{count + 1})"
+            st.progress_lines[-1] = _append_progress_repeat_count(base_msg, count + 1)
             return st.progress_lines[-1]
         st.progress_lines.append(raw)
         return raw

@@ -279,14 +279,14 @@ def _strip_inline_comment(value: str) -> str:
 
 def _parse_env_value(raw_value: str) -> str:
     """Parse the small .env value subset Hermes writes itself (bare, 'single', or "double" with
-    ``\\"`` / ``\\\\`` escapes)."""
+    ``\\"`` / ``\\\\`` / ``\\$`` / ``\\``` escapes)."""
     value = raw_value.strip()
     if len(value) >= 2 and value[0] == value[-1] == '"':
         quoted = value[1:-1]
         parsed: list[str] = []
         i = 0
         while i < len(quoted):
-            escaped = quoted[i] == "\\" and quoted[i + 1:i + 2] in ('"', "\\")
+            escaped = quoted[i] == "\\" and quoted[i + 1:i + 2] in ('"', "\\", "$", "`")
             parsed.append(quoted[i + 1] if escaped else quoted[i])
             i += 2 if escaped else 1
         return "".join(parsed)

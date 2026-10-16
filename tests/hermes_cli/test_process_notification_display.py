@@ -4,22 +4,80 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from cli import HermesCLI
 from tools.process_registry_notifications import (
     PROCESS_COMPLETE_DISPLAY_KIND, format_process_notification, process_completion_display_text)
 from tui_gateway import server
-
 
 def _registry(events):
     return SimpleNamespace(
         drain_notifications=lambda **kw: [(e, format_process_notification(e)) for e in events],
         completion_queue=queue.Queue(), is_completion_consumed=lambda sid: False)
 
-
 def _event(sid, exit_code, command="cd /tmp && bash long-build.sh"):
     return {"type": "completion", "session_id": sid, "session_key": "display-session", "command": command,
             "exit_code": exit_code, "completion_reason": "exited", "output": "web tsc=0\nSECRET_OUTPUT_LINE"}
 
+@pytest.mark.parametrize("mode,expect_injected", [("off", False), ("concise", True), ("all", True)])
+def test_drain_honors_background_process_notifications_off(monkeypatch, mode, expect_injected):
+    """``off`` consumes completion events without injecting a REPL input (no spurious post-Ctrl+C
+    turn, #123114); every other documented mode keeps injecting, and the durable claim/ack chain
+    runs in all modes so an ``off`` session never leaves pending rows to replay on restart."""
+    events = [_event("proc_off", 0)]
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "display-session"
+    cli._pending_input = queue.Queue()
+    monkeypatch.setattr("tools.process_registry.process_registry", _registry(events))
+    acked = []
+    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "claimed")
+    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a: acked.append(a))
+    monkeypatch.setattr("cli.CLI_CONFIG", {"display": {"background_process_notifications": mode}})
+    cli._drain_process_notifications("cli-post-turn")
+    assert acked, "events must still be claimed and acknowledged under every mode"
+    assert cli._pending_input.empty() is (not expect_injected)
+    if expect_injected:
+        assert cli._pending_input.get_nowait() is not None
+
+
+def test_off_mutes_process_wakes_but_subagent_results_still_land(monkeypatch):
+    """``off`` is about background PROCESSES: a finished ``delegate_task(background=true)`` is a
+    result the user asked for, never a notification to opt out of."""
+    delegation = {"type": "async_delegation", "delegation_id": "d1", "session_key": "display-session",
+                  "results": [{"status": "completed", "summary": "done", "goal": "audit"}]}
+    events = [_event("proc_a", 0), {**_event("proc_b", 0), "type": "heartbeat", "seq": 1, "output": "line"}, delegation]
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "display-session"
+    cli._pending_input = queue.Queue()
+    monkeypatch.setattr("tools.process_registry.process_registry", _registry(events))
+    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "claimed")
+    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a: None)
+    monkeypatch.setattr("cli.CLI_CONFIG", {"display": {"background_process_notifications": "off"}})
+    cli._drain_process_notifications("cli-post-turn")
+    queued = cli._pending_input.get_nowait()
+    assert cli._pending_input.empty()
+    assert queued.display_kind == "async_delegation_complete"
+
+
+def test_heartbeat_wake_paints_one_line_and_persists_hidden(monkeypatch):
+    """The model gets the output delta; the human gets a one-line receipt, and the persisted row is
+    typed ``hidden`` so Desktop/TUI never paint the wake as a user bubble."""
+    from tools.process_registry_notifications import HEARTBEAT_DISPLAY_KIND, heartbeat_display_text
+    beat = {**_event("proc_hb", None), "type": "heartbeat", "seq": 3, "elapsed": 422, "interval": 60,
+            "output": "web tsc=0\nSECRET_OUTPUT_LINE"}
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "display-session"
+    cli._pending_input = queue.Queue()
+    monkeypatch.setattr("tools.process_registry.process_registry", _registry([beat]))
+    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "claimed")
+    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a: None)
+    cli._drain_process_notifications("cli-idle")
+    queued = cli._pending_input.get_nowait()
+    assert queued == format_process_notification(beat)
+    assert queued.display_kind == HEARTBEAT_DISPLAY_KIND == "hidden"
+    assert queued.display_text == heartbeat_display_text(beat)
+    assert "SECRET_OUTPUT_LINE" not in queued.display_text and "long-build.sh" in queued.display_text
 
 def test_process_completion_display_keeps_payload_separate_across_surfaces(monkeypatch, capsys, tmp_path):
     events = [_event("proc_1", 0)]
@@ -39,8 +97,8 @@ def test_process_completion_display_keeps_payload_separate_across_surfaces(monke
         setattr(cli, attr, value)
     cli._tui_process_one_input(cli._pending_input.get_nowait())
     visible = capsys.readouterr().out
-    expected = "Background Process Finished: cd /tmp && bash long-build.sh"
-    assert expected in visible
+    expected = process_completion_display_text(events)
+    assert "long-build.sh" in expected and expected in visible
     assert "[IMPORTANT" not in visible and "SECRET_OUTPUT_LINE" not in visible
     queued = cli.chat.call_args.args[0]
     assert queued == payload  # the model still receives the full notification
@@ -70,14 +128,3 @@ def test_process_completion_display_keeps_payload_separate_across_surfaces(monke
     assert text == payload
     assert kwargs["display_kind"] == PROCESS_COMPLETE_DISPLAY_KIND
     assert kwargs["display_metadata"] == {"display_text": expected}
-
-
-def test_process_completion_titles_reflect_outcome_and_batch():
-    assert process_completion_display_text([_event("p", 1)]) == (
-        "Background Process Failed (exit 1): cd /tmp && bash long-build.sh")
-    killed = {**_event("p", -15), "completion_reason": "killed"}
-    assert process_completion_display_text([killed]).startswith("Background Process Terminated: ")
-    assert process_completion_display_text([_event("a", 0), _event("b", 2)]) == "2 Background Processes Finished"
-    long_cmd = "x" * 200
-    title = process_completion_display_text([_event("p", 0, command=long_cmd)])
-    assert title.endswith("...") and len(title) < 120

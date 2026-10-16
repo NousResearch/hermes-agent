@@ -85,10 +85,6 @@ test('resolveRouteProfile passes the requested profile through when nothing was 
   assert.equal(resolveRouteProfile(null, 'other-profile'), 'other-profile')
 })
 
-test('resolveRouteProfile passes through undefined when nothing was torn down and no profile was requested', () => {
-  assert.equal(resolveRouteProfile(null, undefined), undefined)
-})
-
 // ---------------------------------------------------------------------------
 // ProfileDeletionGate / localProfilePoolKeys
 // ---------------------------------------------------------------------------

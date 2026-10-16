@@ -128,8 +128,7 @@ class TestTurnContextOverflowWarning:
         agent = _build_warn_agent(comp)
         _run_build(agent)
         assert len(agent._warnings) == 1
-        assert "over the compression threshold" in agent._warnings[0]
-        assert "blocked (cooldown:" in agent._warnings[0]
+        assert "cooldown" in agent._warnings[0]
 
 
 

@@ -62,7 +62,7 @@ class TestGatewayConnectionErrorReply:
         for text in samples:
             assert _looks_like_gateway_provider_error(text), text
             reply = _gateway_provider_error_reply(text)
-            assert "not running or is unreachable" in reply, text
+            assert reply == _gateway_provider_error_reply(UNREACHABLE_ENVELOPES[0]), text
             assert "/retry" in reply, text
 
         assert _looks_like_gateway_provider_error("openai.APIConnectionError")
@@ -74,7 +74,7 @@ class TestGatewayConnectionErrorReply:
             "failed to establish a new connection",
         ):
             reply = _gateway_provider_error_reply(text)
-            assert "not running or is unreachable" in reply, text
+            assert reply == _gateway_provider_error_reply(UNREACHABLE_ENVELOPES[0]), text
 
     def test_prose_cannot_connect_is_not_a_provider_error(self):
         text = (
@@ -91,7 +91,7 @@ class TestGatewayConnectionErrorReply:
         ):
             if _looks_like_gateway_provider_error(text):
                 reply = _gateway_provider_error_reply(text)
-                assert "not running or is unreachable" not in reply, text
+                assert reply != _gateway_provider_error_reply(UNREACHABLE_ENVELOPES[0]), text
 
     def test_connection_regex_does_not_match_non_connection_error(self):
         assert not _GATEWAY_CONNECTION_ERROR_RE.search("Rate limited after 3 retries")
@@ -107,8 +107,9 @@ class TestGatewayConnectionErrorReply:
     def test_every_reply_names_a_slash_command_and_no_jargon(self):
         """Each shaped reply must give the chat user something they can run; 'provider' and
         'gateway logs' are operator words (the log pointer is the `hermes logs` command)."""
+        from agent.i18n import t
         from gateway.run import _PROVIDER_ERROR_REPLIES
-        replies = [reply for _, reply in _PROVIDER_ERROR_REPLIES] + [_gateway_provider_error_reply("zzz")]
+        replies = [t(reply_key) for _, reply_key in _PROVIDER_ERROR_REPLIES] + [_gateway_provider_error_reply("zzz")]
         for reply in replies:
             assert any(cmd in reply for cmd in ("/login", "/retry", "/model")), reply
             assert "provider" not in reply.lower(), reply
@@ -216,3 +217,35 @@ class TestQuotaExhaustedIsNotAnAuthFailure:
         result = TurnRunner(runner, ctx).run_sync()
         reply = result["final_response"]
         assert "/login" not in reply and "resets in ~33h" in reply and result["api_calls"] == 0
+
+    def test_turn_runner_resolution_failure_is_a_failed_turn_with_local_detail(self, monkeypatch):
+        """A pre-agent resolution failure is a FAILED result (one-shot exits non-zero, the turn
+        is closed in the transcript), and a LOCAL session sees the resolver's own diagnosis —
+        ``hermes chat -q`` on a bare ``custom`` must print the no-credentials error and exit
+        non-zero, not ``rc 0`` with a /login hint (C11 bare_custom_without_base_url_fails_fast)."""
+        from types import SimpleNamespace
+        import gateway.run as gateway_run
+        from gateway.config import Platform
+        from gateway.run_turn_runner import TurnRunner
+        from gateway.session import SessionSource
+        from gateway.turn_context import TurnContext
+
+        detail = "provider 'custom' resolved without credentials (no endpoint or API key configured)."
+
+        def _resolve(**_kwargs):
+            raise RuntimeError(detail)
+
+        monkeypatch.setattr(gateway_run, "_current_max_iterations", lambda: 30)
+        runner = SimpleNamespace(_resolve_session_agent_runtime=_resolve,
+                                 _get_system_prompt_for_channel=lambda *a, **k: "",
+                                 _ephemeral_system_prompt="", _adapter_for_source=lambda _s: None)
+        for platform, chat_id in ((Platform.LOCAL, "local-1"), (Platform.SLACK, "C1")):
+            ctx = TurnContext(source=SessionSource(platform=platform, chat_id=chat_id, chat_type="dm"),
+                              session_key=f"{platform.value}:{chat_id}", user_config={}, message="Hi")
+            result = TurnRunner(runner, ctx).run_sync()
+            assert result["failed"] is True and result["completed"] is False and result["api_calls"] == 0
+            assert result["failure_reason"] and result["error"] == detail
+            if platform == Platform.LOCAL:
+                assert detail in result["final_response"] and "/login" not in result["final_response"]
+            else:
+                assert detail not in result["final_response"] and "/login" in result["final_response"]

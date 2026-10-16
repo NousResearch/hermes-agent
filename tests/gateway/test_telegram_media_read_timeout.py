@@ -18,13 +18,14 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from gateway.config import PlatformConfig  # noqa: E402
-from plugins.platforms.telegram import adapter as tg  # noqa: E402
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from gateway.config import PlatformConfig
+from plugins.platforms.telegram import adapter as tg
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
+    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda *a, **k: True)
     a = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
     a._bot = MagicMock()
     a._metadata_thread_id = lambda metadata: None
@@ -58,7 +59,7 @@ def _stub_download(monkeypatch, size: int):
         async def get(self, url):
             return _Resp()
 
-    import tools.url_safety as url_safety
+    from tools import url_safety
 
     monkeypatch.setattr(url_safety, "create_ssrf_safe_async_client", lambda **kw: _Client())
 

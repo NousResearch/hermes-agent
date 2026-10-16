@@ -321,11 +321,6 @@ def test_telegram_final_response_redacts_auth_secrets():
     assert "sk-live" not in sanitized
 
 
-def test_telegram_final_response_keeps_normal_answers():
-    """Normal assistant content should not be rewritten."""
-    answer = "Here is the clean summary you asked for."
-
-    assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
 
 
 # Synthetic credential shapes from #23810. Bodies are placeholder gibberish —

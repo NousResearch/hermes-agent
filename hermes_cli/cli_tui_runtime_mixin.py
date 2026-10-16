@@ -13,6 +13,7 @@ import shutil
 import sys
 import threading
 import time
+from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
 from agent.pet import render as pet_render
 from contextlib import suppress
@@ -58,10 +59,24 @@ class CLITuiRuntimeMixin:
             with suppress(Exception):
                 step()
 
+    def _tui_dock_drop_dequeued(self):
+        """Re-read the live-work dock once an input has left ``_pending_input``.
+
+        The spinner thread polls the dock once a second, so without this the prompt a turn just took
+        (a seeded ``-q`` prompt above all) stays listed as queued while the turn starts. If the reply
+        prints in that window the dock shrinks only after it, leaving blank rows under the prompt.
+        The turn's own invalidate repaints the refreshed rows.
+        """
+        monitor = getattr(self, "_subagent_monitor", None)
+        if monitor is not None:
+            with suppress(Exception):
+                monitor.refresh()
+
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
         from cli import _DIM, _PASTE_REF_RE, _RST, _cprint, _detect_file_drop, _looks_like_slash_command, _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         from tools.process_registry_notifications import TimelineNotification
+        self._tui_dock_drop_dequeued()
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
         if not user_input:
             return
@@ -90,9 +105,9 @@ class CLITuiRuntimeMixin:
             if _file_drop["is_image"]:
                 submit_images.append(_drop_path)
                 user_input = _remainder or f"[User attached image: {_drop_path.name}]"
-                _cprint(f"  📎 Auto-attached image: {_drop_path.name}")
+                _cprint("  " + t("cli.tui.auto_attached_image", name=_drop_path.name))
             else:
-                _cprint(f"  📄 Detected file: {_drop_path.name}")
+                _cprint("  " + t("cli.tui.detected_file", name=_drop_path.name))
                 user_input = f"[User attached file: {_drop_path}]" + (f"\n{_remainder}" if _remainder else "")
         elif isinstance(user_input, str):
             # A bare number right after a bare `/resume` selects that session (never sent to the agent).
@@ -108,12 +123,13 @@ class CLITuiRuntimeMixin:
 
         if isinstance(user_input, str) and _PASTE_REF_RE.search(user_input):
             user_input = self._expand_paste_references(user_input)
-        print()
+        _cprint("")
         self._print_user_message_preview(notification_preview or user_input)
 
         if submit_images:
             n = len(submit_images)
-            _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
+            _attached = t("cli.tui.images_attached_one" if n == 1 else "cli.tui.images_attached_other", count=n)
+            _cprint(f"  {_DIM}{_attached}{_RST}")
 
         self._agent_running = self._interactive_turn = True
         self._pet_turn_error = self._pet_reasoning = False
@@ -135,7 +151,7 @@ class CLITuiRuntimeMixin:
                     self._app.exit()
         except KeyboardInterrupt:
             # Ctrl+C during a slow slash command returns to the prompt instead of exiting.
-            _cprint("\n[dim]Command interrupted.[/dim]")
+            _cprint(f"\n[dim]{t('cli.tui.command_interrupted')}[/dim]")
             return None
         _seed, self._pending_agent_seed = self._pending_agent_seed, None
         return _seed or None
@@ -186,7 +202,7 @@ class CLITuiRuntimeMixin:
                     self._voice_start_recording()
                     self._app.invalidate()
                 except Exception as e:
-                    _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
+                    _cprint(f"{_DIM}{t('cli.voice.autorestart_failed', error=e)}{_RST}")
             threading.Thread(target=_restart_recording, daemon=True).start()
 
         with suppress(Exception):
@@ -227,6 +243,18 @@ class CLITuiRuntimeMixin:
             pass
         raise KeyboardInterrupt()  # fallback for non-prompt_toolkit contexts
 
+    def _show_startup_browser_notice(self):
+        """Main's ``_show_browser_backend_notice``; on a gateway session the gateway computed the notice
+        (and its once-per-24h stamp) with the session's tools, so it is printed from the snapshot."""
+        inventory = getattr(getattr(self, "_session_db", None), "banner_inventory", lambda: None)()
+        if inventory is None or "browser_backend_notice" not in inventory:
+            self._show_browser_backend_notice()
+            return
+        notice = inventory.get("browser_backend_notice")
+        if notice:
+            from gateway.warning_notifications import render_notification
+            render_notification(lambda: self._console_print(f"[yellow]⚠ {notice}[/yellow]"), platform="cli")
+
     def _tui_print_startup(self):
         """Startup output: light-mode probe, banner, advisories, resume/welcome lines, tips."""
         from cli import _accent_hex, _detect_light_mode
@@ -238,9 +266,16 @@ class CLITuiRuntimeMixin:
             if _term_lines > 2:
                 print("\n" * (_term_lines - 1), end="", flush=True)
 
+        from hermes_cli.gateway_client import GatewayClientError
+        try:
+            self._ensure_gateway_session()  # the banner shows the gateway session's id and inventory
+        except GatewayClientError as exc:
+            # A refused open (a changed launch flag on --resume) is a startup error, not a traceback.
+            print(f"Error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from None
         self.show_banner()
         self._show_security_advisories()
-        self._show_browser_backend_notice()
+        self._show_startup_browser_notice()
 
         # First-run: an unconfigured install routes into provider onboarding instead of
         # a chat that spins ~30s and fails with a provider-specific error. TTY only. A
@@ -249,12 +284,21 @@ class CLITuiRuntimeMixin:
             self._maybe_offer_first_run_setup()
         except Exception:
             logger.debug("first-run setup offer failed", exc_info=True)
+        # A persisted Docker sandbox on the previous default image is kept until the user says
+        # so; this TTY is where they can. Either answer pins an image, so it is asked once.
+        if sys.stdin.isatty():
+            try:
+                from hermes_cli.sandbox_image_switch import offer_interactive
+                from cli import _cprint
+                offer_interactive(cprint=_cprint)
+            except Exception:
+                logger.debug("sandbox image switch offer failed", exc_info=True)
 
         if self._resumed and self._preload_resumed_session():
             self._display_resumed_history()
 
         _welcome_skin = None  # stays None when the skin engine failed
-        _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
+        _welcome_text = t("cli.tui.welcome")
         _welcome_color = "#FFF8DC"
         try:
             from hermes_cli.skin_engine import get_active_skin
@@ -272,7 +316,8 @@ class CLITuiRuntimeMixin:
         # Before the background preload is folded in (at agent init), show the REQUESTED names.
         _skills_for_line = self.preloaded_skills or list(self._preload_skills_requested or [])
         if _skills_for_line and not self._startup_skills_line_shown:
-            self._console_print(f"[bold {_accent_hex()}]Activated skills:[/] {', '.join(_skills_for_line)}")
+            self._console_print(
+                f"[bold {_accent_hex()}]{t('cli.tui.activated_skills_label')}[/] {', '.join(_skills_for_line)}")
             self._startup_skills_line_shown = True
         self._console_print()
 
@@ -289,8 +334,8 @@ class CLITuiRuntimeMixin:
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
             def _prewarm_agent_runtime() -> None:
                 try:
-                    import run_agent  # noqa: F401  (imports model_tools + tool registry)
-                    import openai  # noqa: F401
+                    import run_agent
+                    import openai
                 except Exception:
                     logger.debug("agent runtime pre-import failed", exc_info=True)
 
@@ -304,12 +349,9 @@ class CLITuiRuntimeMixin:
             _redact_raw = os.getenv("HERMES_REDACT_SECRETS", "true")
             if _redact_raw.lower() not in {"1", "true", "yes", "on"}:
                 self._console_print(
-                    "[bold red]⚠  Secret redaction is DISABLED[/] "
-                    f"(HERMES_REDACT_SECRETS={_redact_raw}). "
-                    "API keys and tokens may appear verbatim in chat output, "
-                    "session JSONs, and logs. Set "
-                    "[cyan]security.redact_secrets: true[/] in config.yaml "
-                    "to re-enable."
+                    f"[bold red]{t('cli.tui.redaction_disabled_title')}[/] "
+                    + t("cli.tui.redaction_disabled_body", value=_escape(_redact_raw),
+                        setting="[cyan]security.redact_secrets: true[/]")
                 )
         # One-time banner when ~/.openclaw/ is left over from a migration.
         try:
@@ -345,19 +387,6 @@ class CLITuiRuntimeMixin:
                 idle_for_seconds=float("inf"),  # CLI startup = fully idle
                 on_summary=lambda msg: self._console_print(f"[dim #6b7684]💾 {msg}[/]"),
             )
-
-        # Skill sync (personal, then org-shared): inert unless the access gate is open
-        # and a sync base URL is configured. The org pull is gated on a real org role on
-        # the token (only issued for multi-member orgs), so a solo account never hits
-        # the network here. Both fail-quiet.
-        try:
-            from tools.skills_sync_client import maybe_pull_skills
-            from tools.skills_sync_client_org import maybe_pull_org_skills
-        except Exception:
-            return
-        for pull in (maybe_pull_skills, maybe_pull_org_skills):
-            with suppress(Exception):
-                pull()
 
     def _tui_build_application(self, layout, kb, style):
         """Construct the prompt_toolkit Application for the REPL."""
@@ -419,11 +448,7 @@ class CLITuiRuntimeMixin:
         try:
             os.fstat(0)
         except OSError:
-            print(
-                "Error: stdin (fd 0) is not available.\n"
-                "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
-                "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
-            )
+            print(t("cli.tui.stdin_unavailable"))
             return False
         if sys.platform == "darwin":
             import selectors as _selectors
@@ -445,6 +470,13 @@ class CLITuiRuntimeMixin:
                 _aio_probe.set_event_loop_policy(_SelectEventLoopPolicy())
         return True
 
+    def _closing_session_id(self):
+        """The session quit closes: the agent's, or (gateway) the session opened at the banner before
+        any agent was built. Main created its row lazily at the first turn, so with no agent it had none."""
+        if self.agent:
+            return self.agent.session_id
+        return self.session_id if getattr(self, "_gateway_session_open", False) else None
+
     def _tui_shutdown(self):
         """Teardown after the app exits: interrupt agent, stop voice/pet, persist + close session, cleanup, exit summary."""
         from cli import _DIM, _RST, _cprint, _invoke_interrupted_session_end, _run_cleanup, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
@@ -452,7 +484,7 @@ class CLITuiRuntimeMixin:
         self._pet_stop_anim()
         # Without this line the terminal sits silent through the whole cleanup window.
         with suppress(Exception):
-            print(f"{_DIM}Shutting down… (finalizing session){_RST}", flush=True)
+            print(f"{_DIM}{t('cli.tui.shutting_down')}{_RST}", flush=True)
         if self.agent and self._agent_running:
             with suppress(Exception):
                 request_hard_interrupt(self.agent)
@@ -472,29 +504,32 @@ class CLITuiRuntimeMixin:
         # On SIGHUP/SIGTERM the agent thread may be reaped before its own persistence runs.
         self._persist_active_session_before_close()
 
-        if self._session_db and self.agent:
+        _closing_sid = self._closing_session_id()
+        if self._session_db and _closing_sid:
             try:
-                self._session_db.end_session(self.agent.session_id, "cli_close")
+                self._session_db.end_session(_closing_sid, "cli_close")
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Could not close session in DB: %s", e)
             if not self._delete_session_on_exit:
                 # Drop the empty row of a start-and-quit session so /resume stays clean.
                 try:
-                    self._discard_session_if_empty(self.agent.session_id)
+                    self._discard_session_if_empty(_closing_sid)
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not prune empty session: %s", e)
             else:
                 # /exit --delete: remove transcripts + SQLite history.
                 try:
-                    _sid = self.agent.session_id
+                    _sid = _closing_sid
                     if self._session_db.delete_session(_sid, sessions_dir=get_hermes_home() / "sessions"):
-                        _cprint(f"  {_DIM}✓ Session {_escape(_sid)} deleted{_RST}")
+                        _cprint(f"  {_DIM}{t('cli.tui.session_deleted', session_id=_escape(_sid))}{_RST}")
                     else:
-                        _cprint(f"  {_DIM}✗ Session {_escape(_sid)} not found for deletion{_RST}")
+                        _cprint(f"  {_DIM}{t('cli.tui.session_delete_missing', session_id=_escape(_sid))}{_RST}")
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not delete session on exit: %s", e)
-        # run_conversation() fires on_session_end on normal completion; only fire here mid-turn.
-        if self.agent and self._agent_running:
+        # run_conversation() fires on_session_end on normal completion; only fire here mid-turn. A gateway
+        # turn fires it in the gateway when the interrupted turn finalizes.
+        from hermes_cli.cli_shutdown import _gateway_owns_session_end
+        if self.agent and self._agent_running and not _gateway_owns_session_end(self.agent):
             _invoke_interrupted_session_end(self.agent, self.agent.session_id, "shutdown")
         _run_cleanup()
         self._print_exit_summary()

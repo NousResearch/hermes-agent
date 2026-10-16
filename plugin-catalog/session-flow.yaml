@@ -1,0 +1,21 @@
+name: session-flow
+repo: https://github.com/agantila/session-flow
+sha: 359f9afecb5872fe0864eec79867a4dfa4d88d33
+description: "Session pane for Hermes Desktop: Firefox-style session groups with project grouping, list/grid views, Ctrl+Scroll session cycling with a HUD, session-row styling and a built-in settings page. All timers are ctx-owned intervals disposed on unload (live-session poll ~30 s, session refresh ~45 s, project cache 60 s, activity expiry 30 s). The standalone full build in this repo (full/plugin.js, install.sh) is not part of this catalog entry. Contact: info@agantila.com. Disclosure — SDK-only Desktop plugin: reads the local Hermes gateway through public RPCs (projects.tree, projects.list, session.list, session.active_list, session.context_breakdown) and, on your actions, writes through public RPCs (projects.create/update/add_folder/remove_folder/set_primary/set_active/delete, session.create, session.cwd.set, session.title, session.branch_stored, session.archive, session.close, session.delete); captures Ctrl+mouse-wheel across the app (browser zoom suppressed except over canvases, editors and zoomable images) to cycle sessions; settings and groups stay in the app's local plugin storage; no outbound network, no shell commands, no credentials, no self-update."
+maintainer: "AGANTILA — Deniz Yilmaz <info@agantila.com>"
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/agantila/session-flow#readme
+version: "1.29.1"
+image: https://raw.githubusercontent.com/agantila/session-flow/359f9afecb5872fe0864eec79867a4dfa4d88d33/docs/marketing/sf-catalog-banner-2x1.png
+screenshots:
+  - https://raw.githubusercontent.com/agantila/session-flow/359f9afecb5872fe0864eec79867a4dfa4d88d33/docs/marketing/heroes/sf-hero-a9-sidebar-kanban-files-16x9.jpg
+  - https://raw.githubusercontent.com/agantila/session-flow/359f9afecb5872fe0864eec79867a4dfa4d88d33/docs/marketing/heroes/sf-hero-a5-ctrlscroll-hud-16x9.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

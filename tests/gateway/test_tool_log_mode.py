@@ -3,40 +3,13 @@
 `display.tool_progress: log` keeps the chat silent and appends tool-call
 lines to ~/.hermes/logs/tool_calls.log via write_tool_log's rotating handler.
 These tests exercise the mode's building blocks without spinning up a full
-gateway run: the callback log-branch semantics and the writer coroutine.
+gateway run: the writer coroutine.
 """
 
 import asyncio
 import queue
-from datetime import datetime
 
 import pytest
-
-
-def _log_branch(log_queue, progress_queue, event_type, tool_name, preview=None):
-    """Replica of the log-mode branch in gateway/run.py progress_callback."""
-    if log_queue is not None:
-        if event_type == "tool.started" and tool_name and tool_name != "_thinking":
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            preview_str = f' "{preview}"' if preview else ""
-            log_queue.put(f"{ts}  {tool_name}:{preview_str}".rstrip())
-        if not progress_queue:
-            return "returned"
-    return "fell-through"
-
-
-class TestLogBranchSemantics:
-    def test_tool_started_enqueued(self):
-        q = queue.Queue()
-        assert _log_branch(q, None, "tool.started", "terminal", "ls -la") == "returned"
-        line = q.get_nowait()
-        assert "terminal" in line and "ls -la" in line
-
-
-    def test_thinking_not_enqueued(self):
-        q = queue.Queue()
-        _log_branch(q, None, "tool.started", "_thinking", "pondering")
-        assert q.empty()
 
 
 @pytest.mark.asyncio

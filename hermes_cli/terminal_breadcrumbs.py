@@ -101,7 +101,7 @@ def read_breadcrumb() -> Optional[dict]:
         if not terminal_id:
             return None
         path = _breadcrumbs_dir() / terminal_id
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         if not isinstance(data, dict) or not str(data.get("session_id") or "").strip():
             return None
         ts = data.get("ts")
@@ -126,8 +126,9 @@ def resolve_breadcrumb_session() -> Optional[str]:
         return None
     try:
         from hermes_state import SessionDB
+        from hermes_constants import get_hermes_home
 
-        db = SessionDB(read_only=True)  # existence + lineage lookup only; no writer connection
+        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
     except Exception:
         return None
     try:

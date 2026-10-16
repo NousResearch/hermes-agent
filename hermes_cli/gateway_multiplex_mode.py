@@ -41,9 +41,13 @@ STANDALONE_DEPRECATION_NOTICE = (
 #: ``gateway.multiplex_profiles: false`` is no longer an opt-out from the one-gateway-per-host
 #: topology; it parses, it is reported, and it is ignored.
 RETIRED_OPT_OUT_REASON = (
-    "gateway.multiplex_profiles: false is retired and was ignored: one gateway per host serves "
-    "every profile. Remove the key; `hermes gateway migrate --multiplex` folds any leftover "
-    "per-profile gateway.")
+    "gateway.multiplex_profiles: false is retired and was rewritten to true; one gateway per host "
+    "serves every profile. A per-profile gateway is `gateway.standalone: true` in that profile's "
+    "config (temporary shim) or `--force`.")
+
+#: One-time marker the gateway leaves after rewriting a retired ``false``; ``hermes update``'s summary
+#: prints the notice from it and clears it, so the flip is never silent on either surface.
+REWRITTEN_MARKER_NAME = ".multiplex_opt_out_rewritten"
 
 
 def explicit_multiplex_flag(default_home: Path) -> Optional[bool]:
@@ -70,6 +74,23 @@ def explicit_multiplex_flag(default_home: Path) -> Optional[bool]:
         parsed = _bool_token(value)
         return True if parsed is None else parsed
     return bool(value)
+
+
+def settled_explicit_flag(value: Optional[bool]) -> Optional[bool]:
+    """How boot reads an explicit ``multiplex_profiles``: ``true`` is final; the retired ``false``
+    settles exactly like an unset key (``None``: the boot preflight decides)."""
+    return True if value else None
+
+
+def host_serves_named_profile(default_home: Path, home: Path) -> Optional[bool]:
+    """Offline twin of the boot verdict for named profile *home* under *default_home*'s gateway:
+    ``False`` for a ``gateway.standalone: true`` secondary (``profiles_to_serve`` never serves it),
+    ``True`` for an explicit ``true`` on the default, ``None`` when boot settles it (unset or the
+    retired ``false``, see :func:`resolve_multiplex_mode`)."""
+    from hermes_cli.profiles import profile_is_standalone
+    if profile_is_standalone(home):
+        return False
+    return settled_explicit_flag(explicit_multiplex_flag(default_home))
 
 
 def default_gateway_multiplexes(default_home: Optional[Path] = None) -> bool:
@@ -141,7 +162,8 @@ def implicit_multiplex_blocker() -> Optional[str]:
     # Cheap and first: a single-profile install has nothing to multiplex, and the fail-closed secret
     # scope the multiplexer arms buys it nothing. (Also keeps every embedded/test runner off the
     # service-manager probes below.) Create a second profile and restart to start serving it.
-    if len(profiles_to_serve(multiplex=True)) < 2:
+    # Parking is reversible without a host restart, so keep the reconcile watcher alive.
+    if len(profiles_to_serve(multiplex=True, include_parked=True)) < 2:
         return SINGLE_PROFILE_REASON
     from hermes_cli.gateway_migrate import MIGRATE_COMMAND, _host_supports_migration, build_migration_plan
     host_reason = _host_supports_migration()
@@ -156,6 +178,68 @@ def implicit_multiplex_blocker() -> Optional[str]:
     if plan.blocked:
         return "; ".join(plan.blockers)
     return None
+
+
+def _default_profile_home() -> Path:
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root()
+
+
+def persist_resolved_default(decision: MultiplexDecision, default_home: Optional[Path] = None) -> bool:
+    """Write ``gateway.multiplex_profiles: true`` into the DEFAULT profile's config.yaml so the file
+    reads as the gateway behaves. The key has ONE valid value right now (Teknium ruling): an unset key
+    is made explicit ("left unset" was read as "off"), a retired ``false`` is rewritten in place and
+    leaves a one-time marker for the boxed notice. Comment-preserving writer, once, and NEVER on a guard
+    refusal (the file must not say true while the runtime is standalone). Returns True on a write."""
+    if not decision.enabled or decision.source == "guard":
+        return False
+    default_home = Path(default_home) if default_home is not None else _default_profile_home()
+    cfg_path = default_home / "config.yaml"
+    try:
+        from hermes_cli.config import read_user_config_raw
+        cfg = read_user_config_raw(cfg_path) or {} if cfg_path.exists() else {}
+        section = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+        in_file = cfg.get("multiplex_profiles", section.get("multiplex_profiles"))
+        if in_file is True:
+            return False
+        from hermes_cli.gateway_migrate import _write_multiplex_flag
+        _write_multiplex_flag(default_home, True)
+        if decision.source == "retired-opt-out":
+            (default_home / REWRITTEN_MARKER_NAME).write_text(RETIRED_OPT_OUT_REASON + "\n", encoding="utf-8")
+    except Exception:
+        logger.debug("could not persist gateway.multiplex_profiles: true", exc_info=True)
+        return False
+    logger.info("Wrote gateway.multiplex_profiles: true to %s (was %s).", cfg_path,
+                "unset" if in_file is None else repr(in_file))
+    return True
+
+
+def retired_opt_out_notice_lines() -> list[str]:
+    """The one-time boxed notice for a rewritten ``false`` (same box as the guard warning)."""
+    return _box(["⚠ gateway.multiplex_profiles: false is retired and was rewritten to true;",
+                 "one gateway per host serves every profile.",
+                 "A per-profile gateway is `gateway.standalone: true` in that profile's config",
+                 "(temporary shim) or `--force`."])
+
+
+def consume_rewritten_notice(default_home: Optional[Path] = None) -> list[str]:
+    """``hermes update``'s summary: print the rewrite notice ONCE more, then clear the marker."""
+    default_home = Path(default_home) if default_home is not None else _default_profile_home()
+    marker = default_home / REWRITTEN_MARKER_NAME
+    if not marker.exists():
+        return []
+    try:
+        marker.unlink()
+    except OSError:
+        return []
+    return retired_opt_out_notice_lines()
+
+
+def _box(body: list[str]) -> list[str]:
+    width = max(len(line) for line in body) + 2
+    return ["┌" + "─" * width + "┐",
+            *[f"│ {line.ljust(width - 1)}│" for line in body],
+            "└" + "─" * width + "┘"]
 
 
 def resolve_multiplex_mode(config) -> MultiplexDecision:
@@ -173,7 +257,7 @@ def resolve_multiplex_mode(config) -> MultiplexDecision:
     standalone = standalone_launcher_decision(config)
     if standalone is not None:
         return standalone
-    if current:
+    if settled_explicit_flag(current):
         return MultiplexDecision(True, "config")
     retired_opt_out = current is False
     try:
@@ -191,25 +275,113 @@ def resolve_multiplex_mode(config) -> MultiplexDecision:
     return decision
 
 
+_pending_decision: list[MultiplexDecision] = []
+
+
 def record_multiplex_decision(decision: MultiplexDecision) -> None:
     """Persist a guard refusal into ``gateway_state.json`` so `hermes gateway status` can show why this
-    gateway serves one profile while the default says multiplex; any other verdict clears the field."""
+    gateway serves one profile while the default says multiplex; any other verdict clears the field.
+
+    Only the runtime-lock owner writes that file. The decision is made while the config loads, before
+    the lock claim, and a pre-lock write published this process's pid as a live ``starting`` gateway:
+    a launch racing it read that as an owner and refused, leaving no gateway at all. Until this process
+    holds the lock the decision stays pending; ``publish_pending_multiplex_decision`` writes it once
+    the claim succeeds, and a launch that loses the claim never writes it."""
     try:
-        from gateway.status import write_runtime_status
+        from gateway.status import owns_gateway_runtime_lock, write_runtime_status
+        if not owns_gateway_runtime_lock():
+            _pending_decision[:] = [decision]
+            return
+        _pending_decision.clear()
         write_runtime_status(multiplex_standalone_reason=decision.reason if decision.source == "guard" else None)
     except Exception:
         logger.debug("could not record the multiplex decision", exc_info=True)
+
+
+def publish_pending_multiplex_decision() -> None:
+    """Write the decision held back before the runtime-lock claim (called right after the claim)."""
+    if _pending_decision:
+        record_multiplex_decision(_pending_decision[-1])
 
 
 def log_multiplex_decision(decision: MultiplexDecision) -> None:
     record_multiplex_decision(decision)
     if decision.source == "retired-opt-out":
         logger.warning("%s", RETIRED_OPT_OUT_REASON)
+        persist_resolved_default(decision)
+        for line in retired_opt_out_notice_lines():
+            print(line)
     elif decision.source == "guard" and decision.reason == SINGLE_PROFILE_REASON:
         logger.info("Single-profile install: gateway.multiplex_profiles unset, serving the default profile only.")
     elif decision.source == "guard":
         logger.warning(
             "This gateway stays standalone: %s. It serves only the launching profile.",
             decision.reason)
+        for line in standalone_warning_lines(decision):
+            print(line)
     elif decision.source == "default":
         logger.info("Serving every profile on this host (gateway.multiplex_profiles unset; default on).")
+        persist_resolved_default(decision)
+
+
+def unserved_profiles() -> list[str]:
+    """Named profiles a standalone gateway leaves without a bot (the whole point of the warning)."""
+    from hermes_constants import get_hermes_home, profile_name_for_home
+    from hermes_cli.profiles import profiles_to_serve
+    me = profile_name_for_home(get_hermes_home()) or "default"
+    return [name for name, _home in profiles_to_serve(multiplex=True, include_parked=True) if name != me]
+
+
+def standalone_warning_lines(decision: MultiplexDecision, unserved: Optional[list[str]] = None) -> list[str]:
+    """The boxed warning a multi-profile host prints when a guard keeps its gateway standalone.
+
+    Empty for anything but a guard refusal on a host with other profiles to serve: a single-profile
+    install has nothing unserved, so there is nothing to shout about. The same box appears at
+    gateway start, in the ``hermes update`` summary and (as text) in the dashboard banner.
+    """
+    if decision.source != "guard" or decision.reason == SINGLE_PROFILE_REASON:
+        return []
+    if unserved is None:
+        try:
+            unserved = unserved_profiles()
+        except Exception:
+            unserved = []
+    if not unserved:
+        return []
+    from hermes_cli.gateway_migrate import MIGRATE_COMMAND
+    body = [
+        "⚠ This gateway is STANDALONE: it serves only its own profile.",
+        "Profiles NOT served (their bots stay silent): " + ", ".join(unserved),
+        f"Why: {decision.reason}",
+        f"Fix: {MIGRATE_COMMAND}",
+    ]
+    return _box(body)
+
+
+def recorded_standalone_reason(state_path: Path | None = None) -> str | None:
+    """The guard refusal a LIVE standalone gateway published in its ``gateway_state.json`` (this
+    home's, or *state_path*), else ``None``. A stopped, failed or dead record's reason is history."""
+    try:
+        from gateway.status import read_runtime_status, runtime_status_pid_is_live
+        record = read_runtime_status(state_path) or {}
+        if record.get("gateway_state") in (None, "stopped", "startup_failed"):
+            return None
+        # Liveness is the state + a live PID, never the heartbeat: a paused or wedged gateway is
+        # still the standalone process the box warns about (#120991).
+        if not runtime_status_pid_is_live(record):
+            return None
+        reason = record.get("multiplex_standalone_reason")
+    # The readers already absorb a missing/garbled file; what is left is a hostile record shape
+    # (a non-object, a PID too large for the OS) or a liveness probe's OS error.
+    except (OSError, ValueError, TypeError, AttributeError, OverflowError):
+        return None
+    return str(reason) if isinstance(reason, str) and reason else None
+
+
+def recorded_standalone_warning_lines() -> list[str]:
+    """Same box, rebuilt from the live gateway's ``gateway_state.json`` for processes that did not
+    make the decision (``hermes update``'s summary, ``hermes gateway status``)."""
+    reason = recorded_standalone_reason()
+    if not reason:
+        return []
+    return standalone_warning_lines(MultiplexDecision(False, "guard", reason))

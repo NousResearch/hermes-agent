@@ -113,6 +113,37 @@ def _flush_sessions_before_exit(budget_s: float | None = None) -> int:
     return result["flushed"]
 
 
+# Bounded wait for interrupted turns on the way out; the SIGTERM path hard-exits after a ~1s grace.
+_EXIT_TURN_SETTLE_S = 0.5
+
+
+def _stop_turns_before_exit(budget_s: float | None = None) -> None:
+    """Interrupt every in-flight turn and give it ``budget_s`` to settle, so a running tool call ends
+    with a result the teardown's final persist records. A foreground command runs in its own process
+    group and would outlive the gateway, reparented to init. One still alive halfway through the budget
+    ignored the interrupt's SIGTERM: SIGKILL it then, early enough for its result to land as well (the
+    interrupt's own TERM, 1s, KILL outlasts the SIGTERM path's ~1s grace)."""
+    with _sessions_lock:
+        running = [(sid, s) for sid, s in _sessions.items() if s.get("running")]
+    threads = []
+    for sid, session in running:
+        with contextlib.suppress(Exception):
+            _interrupt_session_turn(sid, session)
+        if (t := session.get("_run_thread")) is not None and t is not threading.current_thread():
+            threads.append(t)
+    budget = _EXIT_TURN_SETTLE_S if budget_s is None else max(0.0, budget_s)
+    deadline = time.monotonic() + budget
+
+    def _join(until: float) -> None:
+        for t in threads:
+            t.join(max(0.0, until - time.monotonic()))
+
+    _join(deadline - budget / 2)
+    from tools.environments.base import kill_live_foreground_processes
+    kill_live_foreground_processes(now=True)
+    _join(deadline)
+
+
 _exit_flush_prev_handlers: dict[int, Any] = {}
 _exit_flush_handlers_installed = False
 
@@ -120,13 +151,21 @@ _exit_flush_handlers_installed = False
 def _handle_exit_flush_signal(signum, frame) -> None:
     """Flush in-memory sessions, then hand off to the prior handler (uvicorn's graceful shutdown, a supervisor's
     handler, or the default disposition) — this only *prepends* a bounded flush."""
-    with contextlib.suppress(Exception):
-        _flush_sessions_before_exit()
     import signal as _signal
     prev = _exit_flush_prev_handlers.get(signum)
+    if prev is _signal.SIG_IGN:
+        # An inherited ignore (`cmd &` from a non-interactive shell) ends nothing: stopping turns here
+        # would raise the one-way exit fence in a process that keeps running and refuses every command.
+        return
+    with contextlib.suppress(Exception):
+        _flush_sessions_before_exit()
+    # The group signal that stopped us never reaches a command in its own session: reap it now,
+    # before a supervisor's SIGKILL can cut the graceful shutdown (and its atexit) short.
+    with contextlib.suppress(Exception):
+        _stop_turns_before_exit()
     if callable(prev):
         prev(signum, frame)
-    elif prev is not _signal.SIG_IGN:
+    else:
         # Default disposition: restore it and re-raise so the process dies with the correct signal (exit status
         # visible to supervisors).
         try:
@@ -200,13 +239,21 @@ def _sessions_quiescent(exclude: str | None = None) -> bool:
     return all(_session_is_lru_evictable(sid, s) for sid, s in others)
 
 
+def _session_is_reapable(sid: str, session: dict) -> bool:
+    """Reaper eligibility: the LRU exemptions, and not the sole driver of an active /loop or /heartbeat
+    (closing the session stops the notification poller that fires it, freezing the schedule until a client
+    reattaches). Kept out of ``_sessions_quiescent``: an idle looping session does not block a memory trim."""
+    return _session_is_lru_evictable(sid, session) and not _session_owns_live_wakeup_schedule(session)
+
+
 def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
-    """TTL eviction: the LRU exemptions plus idle-for-TTL AND older-than-TTL."""
-    if not _session_is_lru_evictable(sid, session):
-        return False
+    """TTL eviction: idle-for-TTL AND older-than-TTL, plus the reap exemptions (the cheap clock check first: the
+    exemptions read the session store, and this runs for every session on each reaper pass)."""
     last_active = float(session.get("last_active") or 0.0)
     created_at = float(session.get("created_at") or 0.0)
-    return (now - last_active) > _SESSION_TTL_S and (now - created_at) > _SESSION_TTL_S
+    if (now - last_active) <= _SESSION_TTL_S or (now - created_at) <= _SESSION_TTL_S:
+        return False
+    return _session_is_reapable(sid, session)
 
 
 def _reap_idle_sessions() -> None:
@@ -268,6 +315,12 @@ def _repair_missing_ws_orphan_reaps() -> None:
 def _reclaim_orphaned_leases() -> None:
     """Hand the registry the lease ids we still own so it can drop the rest."""
     try:
+        # Stale deferred leases first: a settlement callback that never arrived must not
+        # keep vouching for a zombie slot (#62823). Released leases leave _own_live_lease_ids.
+        _reap_stale_deferred_leases()
+    except Exception:
+        logger.debug("stale deferred lease sweep failed", exc_info=True)
+    try:
         from hermes_cli.active_sessions import release_orphaned_leases
         if dropped := release_orphaned_leases(_own_live_lease_ids()):
             logger.info("Reclaimed %d orphaned active-session lease(s)", dropped)
@@ -298,7 +351,7 @@ def _enforce_session_cap() -> None:
     with _sessions_lock:
         if len(_sessions) <= cap:
             return
-        evictable = [(sid, s) for sid, s in _sessions.items() if _session_is_lru_evictable(sid, s)]
+        evictable = [(sid, s) for sid, s in _sessions.items() if _session_is_reapable(sid, s)]
     # Oldest-touched first; evict only down to the cap (may stop short: live sessions are never eligible).
     evictable.sort(key=lambda kv: float(kv[1].get("last_active") or 0.0))
     for sid, _s in evictable:
@@ -306,7 +359,7 @@ def _enforce_session_cap() -> None:
             if len(_sessions) <= cap:
                 break
         _close_session_by_id(
-            sid, end_reason="lru_evict", predicate=lambda session, vs=sid: _session_is_lru_evictable(vs, session))
+            sid, end_reason="lru_evict", predicate=lambda session, vs=sid: _session_is_reapable(vs, session))
 
 
 def _reaper_daemon_timer(delay: float, fn, fail_log: str, level: str = "debug") -> None:
@@ -368,7 +421,8 @@ def _sweep_orphaned_session_rows() -> list[str]:
                 candidates += [getattr(session.get("agent"), "session_id", None), session.get("session_key")]
             live_ids.update(str(c) for c in candidates if c)
     swept = db.sweep_orphaned_sessions(
-        max_idle_seconds=_SESSION_TTL_S, sources=_ORPHAN_SWEEP_SOURCES, exclude_ids=tuple(sorted(live_ids)))
+        max_idle_seconds=_SESSION_TTL_S, sources=_ORPHAN_SWEEP_SOURCES,
+        exclude_ids=tuple(sorted(live_ids)), exclude_pinned=True)
     if swept:
         logger.info(
             "Closed %d orphaned session row(s) from a previous gateway process (startup_orphan_reap): %s",

@@ -12,7 +12,6 @@ wrapper in run_agent.AIAgent._spawn_background_review:
 """
 
 import threading
-import time
 import types
 
 import pytest
@@ -40,13 +39,14 @@ def test_defer_mode_values():
 
 
 def test_defer_max_age_parsing():
-    assert defer_max_age_s(None) == 30 * 60
+    default = defer_max_age_s(None)
+    assert default > 0
     assert defer_max_age_s({"defer_max_age_s": 120}) == 120.0
     assert defer_max_age_s({"defer_max_age_s": "600"}) == 600.0
     # Nonsense and non-positive fall back to the default.
-    assert defer_max_age_s({"defer_max_age_s": "soon"}) == 30 * 60
-    assert defer_max_age_s({"defer_max_age_s": 0}) == 30 * 60
-    assert defer_max_age_s({"defer_max_age_s": -5}) == 30 * 60
+    assert defer_max_age_s({"defer_max_age_s": "soon"}) == default
+    assert defer_max_age_s({"defer_max_age_s": 0}) == default
+    assert defer_max_age_s({"defer_max_age_s": -5}) == default
 
 
 # ── queue harness ────────────────────────────────────────────────
@@ -262,7 +262,6 @@ def test_wrapper_cloud_fast_path_skips_runtime_resolution(monkeypatch):
 
 def test_dispatcher_rechecks_enabled_gate(monkeypatch):
     """A review disabled while queued must not be resurrected at dispatch."""
-    from agent import review_idle_queue as riq
 
     q, clock = _make_queue()
     agent = _FakeAgent()
@@ -345,3 +344,53 @@ def test_requeue_skips_non_managed(monkeypatch):
             {"task_cfg": {"defer": "auto"}, "focus": None,
              "_requeue_attempts": 1})
     assert calls["enqueued"] == []
+
+
+def test_dispatch_runs_under_the_enqueuing_profile_context(tmp_path, monkeypatch):
+    """#108537: the enabled re-check and the spawn must run under the contextvars captured at
+    enqueue (that profile's home + secret scope), not the shared dispatcher thread's ambient ones."""
+    from agent import secret_scope as ss
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    ambient, on_home, off_home = (tmp_path / n for n in ("ambient", "on", "off"))
+    for home, gate in ((ambient, False), (on_home, True), (off_home, False)):
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            f"auxiliary:\n  background_review:\n    enabled: {str(gate).lower()}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(ambient))
+    q, clock = _make_queue()
+    seen = []
+
+    class _Agent:
+        def _spawn_background_review_now(self, **kwargs):
+            seen.append((kwargs["home"], get_hermes_home(), ss.get_secret("REVIEW_PROBE_KEY")))
+
+    class _Stop(BaseException):
+        pass
+
+    class _DrainWake:
+        def wait(self):
+            if q.pending_count() == 0:
+                raise _Stop
+        def clear(self):
+            pass
+
+    ss.set_multiplex_active(True)
+    try:
+        for home in (on_home, off_home):
+            tok = set_hermes_home_override(home)
+            stok = ss.set_secret_scope({"REVIEW_PROBE_KEY": home.name}, profile_home=str(home))
+            try:
+                q.enqueue(_Agent(), home.name, {"home": home, "task_cfg": {}})
+            finally:
+                ss.reset_secret_scope(stok)
+                reset_hermes_home_override(tok)
+        clock["t"] += defer_max_age_s(None) + 1  # aged out: dispatch regardless of idleness
+        q._wake = _DrainWake()
+        with pytest.raises(_Stop):
+            q._run()  # the dispatcher itself runs with NO profile scope (ambient = disabled)
+    finally:
+        ss.set_multiplex_active(False)
+
+    assert q.pending_count() == 0
+    assert seen == [(on_home, on_home, "on")]

@@ -166,8 +166,8 @@ def rasterize_svg_data_url(url: str) -> Optional[str]:
         raw = base64.b64decode(payload) if ";base64" in header.lower() else unquote(payload).encode()
     except Exception:
         return None
-    out_dir = get_hermes_dir("cache/vision", "temp_vision_images")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    from tools.vision_tools import _secure_cache_dir, _write_private_bytes
+    out_dir = _secure_cache_dir("cache/vision", "temp_vision_images")
     stem = out_dir / f"inline_{uuid.uuid4()}"
     svg_path, png_path = stem.with_suffix(".svg"), stem.with_suffix(".png")
     try:
@@ -189,8 +189,8 @@ def _normalize_to_supported_image(
     Pillow-readable rasters (BMP, TIFF) re-encode to PNG."""
     if detected_mime in _supported_media_types():
         return image_path, detected_mime, None
-    out_dir = get_hermes_dir("cache/vision", "temp_vision_images")
-    out_dir.mkdir(parents=True, exist_ok=True)
+    from tools.vision_tools import _secure_cache_dir
+    out_dir = _secure_cache_dir("cache/vision", "temp_vision_images")
     out_path = out_dir / f"converted_{uuid.uuid4()}.png"
     if detected_mime == "image/svg+xml":
         if _rasterize_svg_to_png(image_path, out_path):
@@ -199,8 +199,7 @@ def _normalize_to_supported_image(
             "This is an SVG, which vision models cannot read directly, and no "
             "SVG rasterizer is installed (tried cairosvg, svglib, rsvg-convert, "
             "inkscape). Convert the SVG to PNG first — e.g. open it in a browser "
-            "and screenshot it, or install a rasterizer "
-            "(`pip install cairosvg`) — then re-run vision_analyze on the PNG.")
+            "and screenshot it — then re-run vision_analyze on the PNG.")
     # HEIF/AVIF need a codec Pillow's core doesn't always carry, served by DIFFERENT optional
     # backends that must not be gated on one another: HEIC/HEIF (HEVC) needs the pillow-heif
     # plugin registered; AVIF (AV1) is native in Pillow >= 11.3 while pillow-heif wheels are
@@ -309,7 +308,7 @@ def _crop_image_region(
         from PIL import Image
     except ImportError:
         return None, None, (
-            "region cropping requires Pillow (`pip install Pillow`); "
+            "region cropping requires Pillow (run `hermes pm repair`); "
             "retry without the region parameter.")
     if not (isinstance(region, (list, tuple)) and len(region) == 4
             and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in region)):

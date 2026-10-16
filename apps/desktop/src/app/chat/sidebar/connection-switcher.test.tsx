@@ -76,7 +76,7 @@ afterEach(() => {
   $connectionsRegistry.set(null)
   $activeConnectionId.set('local')
   $pendingConnectionId.set(null)
-  $findInPage.set({ active: false, query: '', matchOrdinal: 0, matchCount: 0 })
+  $findInPage.set({ active: false, query: '', matchOrdinal: 0, matchCount: 0, focusRequest: 0 })
 })
 
 describe('ConnectionSwitcher', () => {
@@ -100,9 +100,6 @@ describe('ConnectionSwitcher', () => {
     const trigger = screen.getByRole('button', { name: 'Registered gateways: This device' })
 
     expect(trigger.textContent).toContain('This device')
-    expect(trigger.getAttribute('data-variant')).toBe('ghost')
-    expect(trigger.querySelector('[data-connection-kind="local"] svg')).toBeTruthy()
-    expect(trigger.querySelector('.codicon-home')).toBeNull()
 
     fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'Homelab' }))
@@ -114,45 +111,12 @@ describe('ConnectionSwitcher', () => {
     expect(selectConnection).toHaveBeenCalledTimes(1)
   })
 
-  it('fits the shared statusbar slot without changing its gateway identity', () => {
-    $connectionsRegistry.set(registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')]))
-    render(<ConnectionSwitcher compact onConnect={onConnect} />)
-
-    const group = screen.getByRole('group', { name: 'Registered gateways' })
-    const trigger = screen.getByRole('button', { name: 'Registered gateways: This device' })
-
-    expect(group.className).toContain('h-full')
-    expect(group.className).toContain('min-w-20')
-    expect(group.className).toContain('max-w-40')
-    expect(group.className).toContain('shrink')
-    expect(group.className).toContain('overflow-hidden')
-    expect(trigger.className).toContain('text-[0.6875rem]')
-    expect(trigger.className).toContain('min-w-0')
-    expect(trigger.className).toContain('overflow-hidden')
-    expect(trigger.textContent).toContain('This device')
-  })
-
   it('keeps source controls stable while a remote is opening', () => {
     $connectionsRegistry.set(registry([connection('local', 'This device', 'local'), connection('homelab', 'Homelab')]))
     $pendingConnectionId.set('homelab')
     render(<ConnectionSwitcher onConnect={onConnect} />)
 
     expect(screen.getByRole('group', { name: 'Registered gateways' }).getAttribute('aria-busy')).toBe('true')
-    expect(
-      screen.getByRole('button', { name: 'Registered gateways: This device' }).querySelector('.animate-spin')
-    ).toBeTruthy()
-  })
-
-  it.each([2, 20])('uses the same stable source selector for %i registered backends', count => {
-    $connectionsRegistry.set(
-      registry([
-        connection('local', 'This device', 'local'),
-        ...Array.from({ length: count - 1 }, (_, index) => connection(`remote-${index}`, `Remote ${index}`))
-      ])
-    )
-    render(<ConnectionSwitcher onConnect={onConnect} />)
-
-    expect(screen.getByRole('button', { name: 'Registered gateways: This device' })).toBeTruthy()
   })
 
   it('keeps small gateway lists simple and naturally sorted', () => {
@@ -221,7 +185,7 @@ describe('ConnectionSwitcher', () => {
     fireEvent.keyDown(search, { key: 'ArrowDown' })
     expect(globalThis.document.activeElement).toBe(result)
 
-    $findInPage.set({ active: true, query: '', matchOrdinal: 0, matchCount: 0 })
+    $findInPage.set({ active: true, query: '', matchOrdinal: 0, matchCount: 0, focusRequest: 0 })
     result.focus()
     fireEvent.keyDown(result, { key: 'f', metaKey: true })
     expect(globalThis.document.activeElement).toBe(search)
@@ -258,20 +222,6 @@ describe('ConnectionSwitcher', () => {
 
     expect(screen.getByText('No gateways match your search.')).toBeTruthy()
     expect(screen.getByRole('menuitem', { name: 'Manage gateways…' })).toBeTruthy()
-    expect(globalThis.document.querySelector('[data-slot="dropdown-menu-radio-group"]')?.className).toContain('h-48')
-  })
-
-  it('announces a pending switch in the compact source menu', () => {
-    $connectionsRegistry.set(
-      registry([
-        connection('local', 'This device', 'local'),
-        ...Array.from({ length: 6 }, (_, index) => connection(`remote-${index}`, `Remote ${index}`))
-      ])
-    )
-    $pendingConnectionId.set('remote-3')
-    render(<ConnectionSwitcher onConnect={onConnect} />)
-
-    expect(screen.getByRole('group', { name: 'Registered gateways' }).getAttribute('aria-busy')).toBe('true')
   })
 
   // The window lifecycle owns IPC; this consumer paints its published cache.

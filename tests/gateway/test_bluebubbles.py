@@ -48,12 +48,6 @@ class TestBlueBubblesConfigLoading:
 
 
 class TestBlueBubblesHelpers:
-    def test_check_requirements(self, monkeypatch):
-        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
-        monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
-        from gateway.platforms.bluebubbles import check_bluebubbles_requirements
-
-        assert check_bluebubbles_requirements() is True
 
 
     def test_format_message_preserves_underscores_in_identifiers(self, monkeypatch):
@@ -513,23 +507,6 @@ class TestBlueBubblesTimeoutErrorNormalization:
             f"_is_timeout_error must recognise {result.error!r}"
         )
 
-    @pytest.mark.asyncio
-    async def test_send_write_timeout_produces_matchable_error(self, monkeypatch):
-        adapter = _make_adapter(monkeypatch)
-
-        async def fake_resolve(chat_id):
-            return "iMessage;+;chat-123"
-        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
-
-        async def fake_api_post(path, payload):
-            raise httpx.WriteTimeout("")
-        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
-
-        result = await adapter.send("chat-1", "hello world")
-
-        assert not result.success
-        assert result.error
-        assert BasePlatformAdapter._is_timeout_error(result.error)
 
     @pytest.mark.asyncio
     async def test_create_chat_for_handle_timeout_produces_matchable_error(

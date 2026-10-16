@@ -157,7 +157,7 @@ def _read_with_fallback(request: Request, bare_name: str) -> Optional[str]:
                  if v is not None), None)
 
 
-def read_session_cookies(request: Request) -> Tuple[Optional[str], Optional[str]]:
+def read_session_cookies(request: Request) -> tuple[Optional[str], Optional[str]]:
     """Returns (access_token, refresh_token), either may be None."""
     return (
         _read_with_fallback(request, SESSION_AT_COOKIE),

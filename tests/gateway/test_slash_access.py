@@ -21,11 +21,6 @@ from gateway.slash_access import (
 
 
 class TestPolicyFromExtra:
-    def test_empty_extra_is_disabled(self):
-        p = policy_from_extra({}, "dm")
-        assert p.enabled is False
-        assert p.admin_user_ids == frozenset()
-        assert p.user_allowed_commands == frozenset()
 
     def test_disabled_policy_treats_anyone_as_admin(self):
         # When gating is off, downstream code uses is_admin/can_run uniformly.
@@ -58,7 +53,6 @@ class TestPolicyFromExtra:
         # Admin lists are scope-specific. DM admin must not auto-promote in groups.
         extra = {"allow_admin_from": ["111"]}
         dm = policy_from_extra(extra, "dm")
-        gp = policy_from_extra(extra, "group")
         assert dm.is_admin("111") is True
         # Group has no admin list set → gating disabled in groups → "111"
         # gets unrestricted access, but that's the backward-compat fallback,

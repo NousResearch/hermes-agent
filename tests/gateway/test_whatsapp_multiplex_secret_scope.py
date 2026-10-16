@@ -145,10 +145,6 @@ class TestWhatsAppCloudAdapterUsesSecretScope:
         try:
             from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
 
-            cfg = type("C", (), {
-                "extra": {},
-                "enabled": True,
-            })()
             # Cloud adapter won't fully init without creds, but we can at least
             # verify the dm_policy assignment path doesn't crash under scope.
             # We test via the mixin's behavior instead.

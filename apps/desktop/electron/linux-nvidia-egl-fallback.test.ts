@@ -8,6 +8,7 @@ import {
   decideNvidiaEglFallback,
   NVIDIA_GPU_DEATH_REASONS,
   nvidiaEglFallbackMarker,
+  type NvidiaEglMarker,
   nvidiaEglMarkerAfterSuccessfulBoot,
   parseNvidiaDriverMajor,
   parseNvidiaDriverVersion,
@@ -224,5 +225,77 @@ describe('marker persistence', () => {
         driverVersion: '580.178.04'
       })
     ).toEqual(nvidiaEglFallbackMarker('0.21.5', '580.178.04'))
+  })
+})
+
+// #131055: the NVIDIA EGL ladder is written before the single-instance lock like
+// the other two, so its marker went through the same two failures — a
+// second-instance launch promoted it to `booting` on a host that never lost a
+// GPU child, and a source install could never re-probe it because every build
+// reports 0.0.0. The writer half is covered in launch-marker-writer.test.ts.
+describe('NVIDIA EGL marker build identity (#131055)', () => {
+  const buildA = '0.0.0+g357f51c49106@2026-09-28T10:11:12Z'
+  const buildB = '0.0.0+gaabbccddeeff@2026-10-02T00:00:00Z'
+  const SOURCE_PROBE = { ...PROBE, appVersion: '0.0.0' }
+
+  it('stays sticky within one source build', () => {
+    const decision = decideNvidiaEglFallback({
+      ...SOURCE_PROBE,
+      buildIdentity: buildA,
+      marker: nvidiaEglFallbackMarker('0.0.0', '580.178.04', buildA)
+    })
+
+    expect(decision.enable).toBe(true)
+    expect(decision.reason).toContain('witnessed')
+  })
+
+  it('re-probes on the next source build even though the version is still 0.0.0', () => {
+    const decision = decideNvidiaEglFallback({
+      ...SOURCE_PROBE,
+      buildIdentity: buildB,
+      marker: nvidiaEglFallbackMarker('0.0.0', '580.178.04', buildA)
+    })
+
+    expect(decision.enable).toBe(false)
+    expect(decision.nextMarker.state).toBe('booting')
+  })
+
+  it('leaves a release install sticky across builds it did not witness', () => {
+    // A real release version is the whole identity, so it must not gain a
+    // build field or re-probe on its own.
+    const marker = nvidiaEglFallbackMarker('0.21.5', '580.178.04', '0.21.5')
+
+    expect(marker).toEqual({ state: 'fallback', version: '0.21.5', driverVersion: '580.178.04' })
+    expect(decideNvidiaEglFallback({ ...PROBE, buildIdentity: '0.21.5', marker }).enable).toBe(true)
+  })
+
+  it('records the build identity when a booting marker is promoted', () => {
+    const decision = decideNvidiaEglFallback({
+      ...SOURCE_PROBE,
+      buildIdentity: buildB,
+      marker: { state: 'booting' }
+    })
+
+    expect(decision.nextMarker).toEqual({
+      state: 'fallback',
+      version: '0.0.0',
+      driverVersion: '580.178.04',
+      build: buildB
+    })
+  })
+
+  it('round-trips the build identity through the marker file', () => {
+    const dir = tmpUserData()
+
+    const marker: NvidiaEglMarker = {
+      state: 'fallback',
+      version: '0.0.0',
+      driverVersion: '580.178.04',
+      build: buildA
+    }
+
+    writeNvidiaEglMarker(dir, marker)
+
+    expect(readNvidiaEglMarker(dir)).toEqual(marker)
   })
 })

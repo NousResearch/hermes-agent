@@ -187,6 +187,18 @@ test('shouldAttemptAclRepair only fires on evidence of trouble', () => {
   assert.equal(shouldAttemptAclRepair({ state: 'fallback' }), true)
 })
 
+test('parseSandboxMarker round-trips the build identity', () => {
+  const marker = parseSandboxMarker({
+    state: 'fallback',
+    reason: 'boot-loop',
+    version: '0.0.0',
+    build: '0.0.0+g357f51c49106@2026-09-28T10:11:12Z'
+  })
+
+  assert.equal(marker?.build, '0.0.0+g357f51c49106@2026-09-28T10:11:12Z')
+  assert.equal(parseSandboxMarker({ state: 'fallback', build: '' })?.build, undefined)
+})
+
 test('sandbox marker round-trips through the userData file', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-sandbox-marker-'))
 
@@ -431,6 +443,142 @@ test('linux boot-abort ladder engages --no-sandbox on the second consecutive abo
 
   assert.equal(reprobeFailed.enable, true)
   assert.equal(reprobeFailed.reason, 'reprobe-failed')
+})
+
+// #131055: a burst of second-instance launches used to write `booting` before
+// the single-instance lock, which the next launch read as an aborted boot and
+// promoted to `fallback/boot-loop` — pinning --no-sandbox on a host that never
+// crashed. Two halves: the writer no longer persists from a secondary instance
+// (launch-marker-writer.test.ts), and the ladder below no longer escalates on
+// a userns host or pins a marker across source builds.
+test('a userns Linux host never escalates the boot loop to --no-sandbox (#131055)', () => {
+  const argv: string[] = []
+  const env = {}
+  const appVersion = '0.0.0'
+  const userns = { userNamespaceSandbox: true, appVersion, argv, env, platform: 'linux' as const }
+
+  const first = decideWindowsSandboxLaunch({ ...userns, marker: { state: 'booting' } })
+
+  assert.equal(first.enable, false)
+  assert.deepEqual(first.nextMarker, { state: 'booting', bootAborts: 1 })
+
+  // Second consecutive abort. On this host --no-sandbox skips the broker and
+  // the chroot, so the renderer cannot create /dev/shm and dies in a SIGILL
+  // loop: the escalation is the crash, not the recovery.
+  const second = decideWindowsSandboxLaunch({ ...userns, marker: first.nextMarker })
+
+  assert.equal(second.enable, false)
+  assert.equal(second.reason, null)
+  // Nothing to be sticky about: the next launch starts from a clean slate.
+  assert.deepEqual(second.nextMarker, { state: 'ok' })
+
+  // ...and it does not escalate again on the launch after that either.
+  const third = decideWindowsSandboxLaunch({ ...userns, marker: second.nextMarker })
+
+  assert.equal(third.enable, false)
+  assert.deepEqual(third.nextMarker, { state: 'booting' })
+})
+
+test('the userns gate does not apply to Windows or to a host without userns (#131055)', () => {
+  const bootLoopMarker = { state: 'booting' as const, bootAborts: 1 }
+
+  // Windows keeps the two-strike ladder: the breakpoint signature is real
+  // evidence there, and ACL repair + --no-sandbox is the documented recovery.
+  const windows = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: bootLoopMarker,
+    argv: [],
+    env: {},
+    appVersion: '0.21.5',
+    userNamespaceSandbox: true
+  })
+
+  assert.equal(windows.enable, true)
+  assert.equal(windows.reason, 'boot-loop')
+
+  // A Linux host with unprivileged userns switched off has no /dev/shm problem
+  // under --no-sandbox, so the ladder still applies.
+  const noUserns = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: bootLoopMarker,
+    argv: [],
+    env: {},
+    appVersion: '0.21.5',
+    userNamespaceSandbox: false
+  })
+
+  assert.equal(noUserns.enable, true)
+  assert.equal(noUserns.reason, 'boot-loop')
+})
+
+test('a source install re-probes a sticky marker on the next build (#131055)', () => {
+  const promoted = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: { state: 'booting', bootAborts: 1 },
+    argv: [],
+    env: {},
+    appVersion: '0.0.0',
+    userNamespaceSandbox: false
+  })
+
+  assert.equal(promoted.nextMarker.state, 'fallback')
+  assert.equal(promoted.nextMarker.build, undefined)
+
+  const buildA = '0.0.0+g357f51c49106@2026-09-28T10:11:12Z'
+
+  const sticky = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: { state: 'fallback', reason: 'boot-loop', version: '0.0.0', build: buildA },
+    argv: [],
+    env: {},
+    appVersion: '0.0.0',
+    buildIdentity: buildA,
+    userNamespaceSandbox: false
+  })
+
+  assert.equal(sticky.enable, true)
+  assert.equal(sticky.reason, 'sticky-fallback')
+
+  // Same 0.0.0, different build: the only signal that moves on a source
+  // install, and the one that finally clears the marker.
+  const afterUpdate = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: { state: 'fallback', reason: 'boot-loop', version: '0.0.0', build: buildA },
+    argv: [],
+    env: {},
+    appVersion: '0.0.0',
+    buildIdentity: '0.0.0+gaabbccddeeff@2026-10-02T00:00:00Z',
+    userNamespaceSandbox: false
+  })
+
+  assert.equal(afterUpdate.enable, false)
+  assert.deepEqual(afterUpdate.nextMarker, { state: 'booting', reprobe: true, bootAborts: 0 })
+})
+
+test('a marker promoted before build identities existed is re-probed once (#131055)', () => {
+  const decision = decideWindowsSandboxLaunch({
+    platform: 'linux',
+    marker: { state: 'fallback', reason: 'boot-loop', version: '0.0.0' },
+    argv: [],
+    env: {},
+    appVersion: '0.0.0'
+  })
+
+  assert.equal(decision.enable, false)
+  assert.deepEqual(decision.nextMarker, { state: 'booting', reprobe: true, bootAborts: 0 })
+})
+
+test('a real release version keeps the sticky contract unchanged (#131055)', () => {
+  const decision = decideWindowsSandboxLaunch({
+    platform: 'win32',
+    marker: { state: 'fallback', reason: 'boot-loop', version: '0.21.5' },
+    argv: [],
+    env: {},
+    appVersion: '0.21.5'
+  })
+
+  assert.equal(decision.enable, true)
+  assert.equal(decision.reason, 'sticky-fallback')
 })
 
 test('linux GPU SIGTERM signature triggers the one-shot relaunch; other exits do not (#121954)', () => {

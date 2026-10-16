@@ -95,16 +95,17 @@ def _pipe_client_sid(handle) -> str:
         raise PermissionError('cannot impersonate named-pipe peer')
     token = wintypes.HANDLE()
     try:
-        # OpenAsSelf: the access check runs against the gateway's own token, not the client's.
-        if not open_thread_token(current_thread(), 8, True, ctypes.byref(token)):
-            raise PermissionError('cannot read named-pipe peer token')
-    finally:
-        if not revert():
-            raise _ImpersonationLeak('RevertToSelf failed after reading a named-pipe peer')
-    try:
+        try:
+            # OpenAsSelf: the access check runs against the gateway's own token, not the client's.
+            if not open_thread_token(current_thread(), 8, True, ctypes.byref(token)):
+                raise PermissionError('cannot read named-pipe peer token')
+        finally:
+            if not revert():
+                raise _ImpersonationLeak('RevertToSelf failed after reading a named-pipe peer')
         return _token_sid(token)
     finally:
-        close(token)
+        if token:
+            close(token)
 
 
 def _peer_subject(handle, *, server: bool) -> str:

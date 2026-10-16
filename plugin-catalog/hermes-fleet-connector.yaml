@@ -1,12 +1,12 @@
 name: hermes-fleet-connector
 title: Hermes Fleet Connector
 repo: https://github.com/tony-simons-aiowa/hermes-fleet-connector
-sha: "fe377321947c3a049f3e9e73ca60f10dd0e50ae9"
+sha: "64dfb9a364c912952214a0996f114430b5d3573d"
 description: "Owner-authorized Telegram pairing for Hermes Fleet through a separate connector service and private HTTPS origin. Phone invitations grant broad fleet:operator access."
 maintainer: tony-simons-aiowa
 tier: community
 category: platform
-requires_hermes: ">=0.21.6,<0.22.2"
+requires_hermes: ">=0.21.6"
 version: "0.1.5"
 readme: true
 platforms: [linux, macos]

@@ -38,6 +38,7 @@ import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { SubagentNode, SubagentProgress } from '../types.js'
 
+import { Chevron } from './accordion.js'
 import { AgentLiveTail, AgentSteerForm, rosterViewport } from './agentControls.js'
 import { buildProcessBlock, ProcessRowLine, processSummary } from './agentsPanel.js'
 import { listRowStyle } from './overlayPrimitives.js'
@@ -305,13 +306,14 @@ function OverlaySection({
 
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Box onClick={() => toggleOverlaySection(id, defaultOpen)}>
-        <Text color={t.color.label}>
-          <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
-          {title}
-          {typeof count === 'number' ? ` (${count})` : ''}
-        </Text>
-      </Box>
+      <Chevron
+        count={count}
+        onClick={() => toggleOverlaySection(id, defaultOpen)}
+        open={open}
+        t={t}
+        title={title}
+        tone="label"
+      />
 
       {open ? <Box flexDirection="column">{children}</Box> : null}
     </Box>

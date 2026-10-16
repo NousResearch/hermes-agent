@@ -185,7 +185,7 @@ class TestResolveProxyUrl:
 
 class TestRedactProxyUrl:
     def test_masks_password(self):
-        from gateway.platforms.base import redact_proxy_url
+        from gateway.platforms.base_proxy import redact_proxy_url
 
         assert (
             redact_proxy_url("http://user:secret@127.0.0.1:7890")
@@ -193,12 +193,12 @@ class TestRedactProxyUrl:
         )
 
     def test_passthrough_without_credentials(self):
-        from gateway.platforms.base import redact_proxy_url
+        from gateway.platforms.base_proxy import redact_proxy_url
 
         assert redact_proxy_url("http://127.0.0.1:7890") == "http://127.0.0.1:7890"
 
     def test_socks_scheme_preserved(self):
-        from gateway.platforms.base import redact_proxy_url
+        from gateway.platforms.base_proxy import redact_proxy_url
 
         assert (
             redact_proxy_url("socks5://u:p@10.0.0.1:1080")

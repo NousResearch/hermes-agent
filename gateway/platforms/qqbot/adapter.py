@@ -42,8 +42,9 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
     _ssrf_redirect_guard, cache_document_from_bytes_async, cache_image_from_bytes_async,
-    redact_proxy_url, resolve_proxy_url,
+    resolve_proxy_url,
 )
+from gateway.platforms.base_proxy import redact_proxy_url
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import strip_markdown
 from gateway.platforms.helpers import MessageDeduplicator, cancel_task

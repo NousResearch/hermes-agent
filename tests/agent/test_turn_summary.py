@@ -30,6 +30,10 @@ from agent.turn_summary import (
         (60.0, "1m00s"),
         (125.0, "2m05s"),
         (-3.0, "0.0s"),
+        # Minutes must roll into hours past 60m (was "60m00s" / "284m41s").
+        (3600.0, "1h00m"),
+        (3601.0, "1h00m"),
+        (4200.0, "1h10m"),
     ],
 )
 def test_format_elapsed(seconds, expected):

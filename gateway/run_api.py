@@ -238,6 +238,11 @@ def _embedded_chat_enabled() -> bool:
     return True if web is None else bool(getattr(web, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True))
 
 
+def _restart_wait_read(runner, scope) -> bool:
+    from gateway.drain_control import restart_wait_read
+    return scope['type'] == 'http' and restart_wait_read(runner, scope.get('method'), scope.get('path'))
+
+
 class GatewayRuntimeAPI:
     """Redeem private local tickets at the existing WS subprotocol boundary.
 
@@ -256,7 +261,8 @@ class GatewayRuntimeAPI:
         draining_socket = (descriptor['state'] in {'ready', 'draining'}
             and (self.runner._draining or descriptor['state'] == 'draining')
             and scope['type'] == 'websocket' and scope['path'] == '/api/ws')
-        if (descriptor['state'] != 'ready' or self.runner._draining) and not draining_socket:
+        if ((descriptor['state'] != 'ready' or self.runner._draining) and not draining_socket
+                and not _restart_wait_read(self.runner, scope)):
             if scope['type'] == 'websocket':
                 await send({'type': 'websocket.close', 'code': 1013})
             else:

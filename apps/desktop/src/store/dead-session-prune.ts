@@ -27,6 +27,8 @@ import { $pinnedSessionIds, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $sessions } from '@/store/session'
 
+import { sessionCreatedThisRun } from '@/app/session/hooks/use-session-actions/created-this-run'
+
 import { forgetPinSyncState } from './session-pin-sync'
 
 const SWEEP_CONCURRENCY = 4
@@ -153,6 +155,15 @@ function collectCandidates(): string[] {
   }
 
   return [...candidates].filter(id => {
+    // A session minted by this window in this run may still have no state.db row
+    // (`session.create` writes none until the first prompt), so a by-id probe
+    // 404s for a chat the user is merely COMPOSING in. Pruning it would unpin its
+    // tile and discard its unsent draft — the "new session cleared itself" class
+    // the resume path already refuses to treat as gone (#96793, #123622).
+    if (sessionCreatedThisRun(id)) {
+      return false
+    }
+
     const expiresAt = alive.get(id)
 
     return !(expiresAt !== undefined && Date.now() < expiresAt) && !inFlight.has(id)
@@ -165,7 +176,7 @@ function dropDeadId(id: string): void {
   // page landed), the id is no longer dead — keep every entry.
   const covered = $sessions.get().some(row => row.id === id || row._lineage_root_id === id)
 
-  if (covered) {
+  if (covered || sessionCreatedThisRun(id)) {
     return
   }
 

@@ -1745,6 +1745,65 @@ describe('resumeSession failure recovery', () => {
     await resume!('stored-1', true)
   }
 
+  it('continues a resume when the route settles on the session being resumed', async () => {
+    const storedMessages = [
+      { content: 'branch question', role: 'user', timestamp: 1 },
+      { content: 'branch answer', role: 'assistant', timestamp: 2 }
+    ]
+    const storedSessionId = 'stored-branch'
+
+    setSessions([storedSession({ id: storedSessionId, message_count: storedMessages.length })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      messages: storedMessages,
+      session_id: storedSessionId
+    } as never)
+
+    let routeToken = `${sessionRoute('stored-parent')}::`
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: storedMessages.length,
+          messages: storedMessages,
+          resumed: storedSessionId,
+          running: false,
+          session_id: 'runtime-branch',
+          session_key: storedSessionId
+        } as never
+      }
+
+      return {} as never
+    })
+
+    render(
+      <ResumeHarness
+        getRouteToken={() => routeToken}
+        onReady={action => (resume = action)}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="stored-parent"
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+
+    let pending!: Promise<unknown>
+
+    act(() => {
+      pending = resume!(storedSessionId, true)
+      routeToken = `${sessionRoute(storedSessionId)}::`
+    })
+
+    await act(async () => {
+      await pending
+    })
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.resume',
+      expect.objectContaining({ session_id: storedSessionId })
+    )
+    expect($activeSessionId.get()).toBe('runtime-branch')
+  })
+
   it('does not resume a tombstoned session after delete', async () => {
     $removedSessionIds.set(new Set(['stored-1']))
 

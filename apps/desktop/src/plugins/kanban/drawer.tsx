@@ -482,49 +482,88 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
 // administrative note into that slot; hide those (Runs still shows them).
 const isAdminSummary = (summary: string) => /^status changed to \w+ \(dashboard\/direct\)$/.test(summary)
 
-// The filename is the download action. The path is the backend's own
-// stored_path, saved through the connection/profile that returned this detail;
-// a row without one (older backend) stays inert rather than guessing a path.
-function AttachmentDownload({
+// The filename OPENS the attachment in the preview rail — reading a plan or
+// report an agent attached is the common case, saving a copy the rare one.
+// Both act on the backend's own stored_path; a row without one (older backend)
+// stays inert rather than guessing a path. Download saves through the
+// connection/profile that returned this detail.
+function AttachmentRow({
   attachment,
-  onDownload
+  onDownload,
+  onPreview
 }: {
   attachment: KanbanAttachment
   onDownload: (path: string, suggestedName: string) => Promise<void>
+  onPreview: (path: string) => Promise<boolean>
 }) {
   const { t } = useI18n()
+  const k = useKanban()
   const path = attachment.stored_path?.trim()
 
   const download = useMutation({
     mutationFn: () => onDownload(path!, attachment.filename)
   })
 
+  // Nothing readable to show (binary, gone, unreachable): save a copy instead
+  // of dead-ending the click.
+  const open = useMutation({
+    mutationFn: async () => {
+      if (!(await onPreview(path!))) {
+        await onDownload(path!, attachment.filename)
+      }
+    },
+    onError: err => host.notify({ kind: 'error', message: errText(err) })
+  })
+
+  const busy = download.isPending || open.isPending
+
   // Long names truncate in the narrow sidebar; the tip reveals the full name.
   return (
-    <Tip label={attachment.filename} placement="row">
+    <>
+      <Tip label={attachment.filename} placement="row">
+        <Button
+          aria-label={`${k.openAttachment} ${attachment.filename}`}
+          className="min-w-0 flex-1 justify-start font-normal"
+          disabled={!path || busy}
+          onClick={() => open.mutate()}
+          size="inline"
+          variant="text"
+        >
+          <Codicon name={open.isPending ? 'sync' : 'file'} size="0.75rem" spinning={open.isPending} />
+          <span className="truncate">{attachment.filename}</span>
+        </Button>
+      </Tip>
       <Button
         aria-label={`${t.fileMenu.download} ${attachment.filename}`}
-        className="max-w-full justify-start font-normal"
-        disabled={!path || download.isPending}
+        className={cn(
+          'shrink-0 opacity-0 group-hover/att:opacity-100 focus-visible:opacity-100',
+          download.isPending && 'opacity-100'
+        )}
+        disabled={!path || busy}
         onClick={() => download.mutate()}
-        size="inline"
-        variant="text"
+        size="icon-xs"
+        variant="ghost"
       >
-        <Codicon name={download.isPending ? 'sync' : 'cloud-download'} size="0.75rem" spinning={download.isPending} />
-        <span className="truncate">{attachment.filename}</span>
+        <Codicon
+          name={download.isPending ? 'sync' : 'cloud-download'}
+          size="0.7rem"
+          spinning={download.isPending}
+        />
       </Button>
-    </Tip>
+    </>
   )
 }
 
 function AttachmentsSection({
   attachments,
   onDownload,
+  onPreview,
   onUpload,
   pending
 }: {
   attachments: KanbanAttachment[]
   onDownload: (path: string, suggestedName: string) => Promise<void>
+  onPreview: (path: string) => Promise<boolean>
   onUpload: (file: File) => void
   pending: boolean
 }) {
@@ -565,8 +604,11 @@ function AttachmentsSection({
       {attachments.length > 0 ? (
         <ul className="flex flex-col gap-1">
           {attachments.map(attachment => (
-            <li className="flex items-center gap-1.5 text-[0.75rem] text-(--ui-text-tertiary)" key={attachment.id}>
-              <AttachmentDownload attachment={attachment} onDownload={onDownload} />
+            <li
+              className="group/att flex items-center gap-1 text-[0.75rem] text-(--ui-text-tertiary)"
+              key={attachment.id}
+            >
+              <AttachmentRow attachment={attachment} onDownload={onDownload} onPreview={onPreview} />
             </li>
           ))}
         </ul>
@@ -1170,6 +1212,16 @@ export function TaskDrawer({
                   <AttachmentsSection
                     attachments={detail.attachments}
                     onDownload={detail.downloadAttachment}
+                    onPreview={async path => {
+                      // The modal covers the rail; step aside once the tab is open.
+                      const opened = await host.preview(path)
+
+                      if (opened) {
+                        onClose()
+                      }
+
+                      return opened
+                    }}
                     onUpload={file => uploadMut.mutate(file)}
                     pending={uploadMut.isPending}
                   />

@@ -485,7 +485,7 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     skipped: list[str] = []  # rows a live turn/compression still owns; the UI must keep them listed
     deleted = await asyncio.to_thread(_with_db, profile, lambda db: db.delete_sessions(
         body.ids, exclude_active_write_guards=True, skipped_ids=skipped,
-        include_compression_chain=True), read_only=False)
+        include_compression_chain=True, deletion_origin="user_rest"), read_only=False)
     return {"ok": True, "deleted": deleted, "skipped_active": skipped}
 
 
@@ -852,7 +852,7 @@ async def delete_session_endpoint(session_id: str, request: Request, profile: Op
     try:
         result = await _mutate_session_request(request, profile, session_id,
             request_id=request_id, expected_revision=expected_revision,
-            expected_generation=expected_generation, operation='delete', payload={})
+            expected_generation=expected_generation, operation='delete', payload={}, _deletion_origin="user_rest")
     except HTTPException as exc:
         # Already-absent is an idempotent success: the desktop optimistically removes the row
         # and RESTORES it on any error, so a 404 resurrected ghost rows (a row deleted by

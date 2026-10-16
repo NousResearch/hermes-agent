@@ -145,7 +145,7 @@ def _native_history_transport(request, authority, actor):
         unbind_native_transport(authority, actor)
 
 
-def _mutate_offline_store(profile, actor, params):
+def _mutate_offline_store(profile, actor, params, *, _deletion_origin="unknown"):
     """Standalone edit: the receipt transaction on this process's single shared writer.
 
     Runs under the exact owner lock (409 while any gateway owns the store, never a
@@ -172,6 +172,7 @@ def _mutate_offline_store(profile, actor, params):
             epoch = row[0] if row else begin_runtime_epoch(db, instance_id='dashboard-offline')
             return mutate_runtime_session(db, epoch=epoch, principal_id=actor.subject,
                 expected_generation=params.get('expected_generation'), _authorize_write=write_guard,
+                _deletion_origin=_deletion_origin,
                 **{key: params[key] for key in ('session_id', 'request_id', 'expected_revision',
                                                 'operation', 'payload')})
         finally:
@@ -180,7 +181,8 @@ def _mutate_offline_store(profile, actor, params):
 
 
 async def _mutate_session_request(request, profile, session_id, *, request_id,
-                                  expected_revision, operation, payload, expected_generation=None):
+                                  expected_revision, operation, payload, expected_generation=None,
+                                  _deletion_origin="unknown"):
     """Resolve the authenticated principal and owner; never open a second writer."""
     import sqlite3
     from fastapi import HTTPException
@@ -202,10 +204,12 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
         params['expected_generation'] = expected_generation
     try:
         if authority is None:
-            result = await asyncio.to_thread(_mutate_offline_store, profile, actor, params)
+            result = await asyncio.to_thread(_mutate_offline_store, profile, actor, params,
+                                             _deletion_origin=_deletion_origin)
         else:
             with _native_history_transport(request, authority, actor):
-                result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params)
+                result = await mutate_session(authority, actor, SessionRef(authority.profile_id, session_id), params,
+                                              _deletion_origin=_deletion_origin)
         return {'ok': True, **result}
     except RuntimeStoreError as exc:
         status = {'permission_denied': 403, 'profile_mismatch': 403, 'not_found': 404,

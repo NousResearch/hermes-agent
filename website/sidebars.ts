@@ -839,6 +839,7 @@ const sidebars: SidebarsConfig = {
                 'developer-guide/browser-provider-plugin',
                 'developer-guide/terminal-environment-plugin',
                 'developer-guide/plugins/application-declarations',
+                'developer-guide/plugins/session-deletion-receipts',
                 'developer-guide/plugins/catalog-submission',
               ],
             },

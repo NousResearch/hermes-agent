@@ -1189,7 +1189,7 @@ def _(rid, params: dict) -> dict:
         try:
             home = Path(profile_home) if profile_home is not None else get_hermes_home()
             deleted = delete_chat(db, target, lambda: db.delete_session(
-                target, sessions_dir=home / "sessions", exclude_active_write_guards=True))
+                target, sessions_dir=home / "sessions", exclude_active_write_guards=True, deletion_origin="user_rpc"))
         except SessionActiveWriteGuardError:
             return _err(rid, 4023, "cannot delete an active session")
         except Exception as e:

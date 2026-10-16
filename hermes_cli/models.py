@@ -1535,6 +1535,157 @@ def _anthropic_catalog(normalized: str, force_refresh: bool) -> list[str]:
     return live if cfg_base_url else _merge_unique(curated, live)
 
 
+# ---------------------------------------------------------------------------
+# MiniMax (minimax.io / api.minimaxi.com) — Anthropic-compatible /v1/models
+# endpoint served by OAuth device-code, a static API key, or the China
+# endpoint. The endpoint's /v1/models listing often lags freshly-shipped
+# SKUs (a model may be invocable for weeks before the listing updates), so
+# the picker merges the live result with the curated table: curated first
+# (so an in-flight rollout is never invisible), live-only entries appended
+# (so newly-launched SKUs surface without a Hermes release). When the live
+# fetch fails (no creds, 401, timeout) we fall back to the curated table and
+# flag it so the disk cache re-probes on the short fallback TTL instead of
+# pinning it for an hour. The "configured base_url is terminal" rule
+# (#121387) is honored by consulting ``_configured_relay_base_url`` rather
+# than re-implementing the canonical/relay distinction here.
+# ---------------------------------------------------------------------------
+
+# MiniMax vendor hosts (Global + China) — used to validate that a configured
+# base_url is actually a user-installed relay and not just the vendor default
+# surfaced through the profile. A future MiniMax region should be added here
+# when the provider profile picks up a new ``base_url``.
+_MINIMAX_CANONICAL_HOSTS: frozenset[str] = frozenset({"api.minimax.io", "api.minimaxi.com"})
+
+
+def _minimax_models_url(base_url: Optional[str] = None, *, after_id: Optional[str] = None) -> str:
+    """Anthropic-compatible ``/v1/models`` URL for a MiniMax vendor host.
+
+    Mirrors ``_anthropic_models_url``: pagination cursor is ``after_id`` and
+    the page size is requested at the endpoint max so a single round-trip is
+    the common case.
+    """
+    endpoint = str(base_url or "https://api.minimax.io/anthropic").strip().rstrip("/")
+    url = endpoint + ("/models" if endpoint.endswith("/v1") else "/v1/models")
+    params: list[str] = ["limit=1000"]
+    if after_id:
+        params.append(f"after_id={after_id}")
+    return f"{url}?{'&'.join(params)}"
+
+
+def _minimax_next_cursor(payload: dict) -> Optional[str]:
+    """Cursor extractor compatible with the Anthropic /v1/models pagination
+    shape: ``last_id`` is the next page's ``after_id``; ``has_more=False``
+    terminates the loop."""
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("has_more") is False:
+        return None
+    last_id = payload.get("last_id")
+    return str(last_id) if last_id else None
+
+
+def _fetch_minimax_models(
+    timeout: float = 5.0, *, base_url: Optional[str] = None, api_key: Optional[str] = None
+) -> Optional[list[str]]:
+    """Sorted model ids from a MiniMax /v1/models endpoint, or None on any
+    failure. Credentials: explicit ``api_key``+``base_url``, else resolved via
+    the OAuth runtime helper, else ``MINIMAX_API_KEY`` env. Returns None (NOT
+    a partial list) on auth/timeout/network errors so the caller falls back
+    to the curated table without half-baked data."""
+    from urllib.parse import urlparse
+
+    from hermes_cli.auth_minimax import resolve_minimax_oauth_runtime_credentials
+
+    resolved_base_url = (base_url or "").strip() or None
+    token = (api_key or "").strip()
+
+    if not token:
+        try:
+            creds = resolve_minimax_oauth_runtime_credentials()
+            token = (creds.get("api_key") or "").strip()
+            if not resolved_base_url:
+                resolved_base_url = (creds.get("base_url") or "").strip() or None
+        except Exception:
+            token = ""
+
+    if not token:
+        # Last-ditch: an env-supplied API key so the same fetcher works for
+        # ``minimax`` / ``minimax-cn`` without OAuth credentials.
+        token = os.getenv("MINIMAX_API_KEY", "").strip()
+
+    if not token or not resolved_base_url:
+        return None
+
+    # Defensive: a credential-pool key must NEVER be paired with a caller-provided
+    # endpoint. Reject malformed base_url values rather than pair the token
+    # with an unknown host.
+    cfg_base = (base_url or "").strip()
+    cfg_host = urlparse(cfg_base).hostname if cfg_base else ""
+    if cfg_base and not cfg_host:
+        return None
+
+    headers = {
+        "authorization": f"Bearer {token}",
+        "anthropic-version": "2023-06-01",
+        "accept": "application/json",
+    }
+
+    try:
+        seen_cursors: set[str] = set()
+        models: list[str] = []
+        url = _minimax_models_url(resolved_base_url)
+        for _page in range(_ANTHROPIC_MODELS_MAX_PAGES):
+            data = _get_json(url, timeout=timeout, headers=headers)
+            page_ids = [m["id"] for m in (data.get("data") or []) if isinstance(m, dict) and m.get("id")]
+            models.extend(page_ids)
+            cursor = _minimax_next_cursor(data)
+            if cursor is None or cursor in seen_cursors:
+                break
+            seen_cursors.add(cursor)
+            url = _minimax_models_url(resolved_base_url, after_id=cursor)
+        # Dedup preserving first-seen order; the endpoint does not guarantee
+        # uniqueness across pages, and re-sorting before dedup would be lossy.
+        models = list(dict.fromkeys(models))
+        if not models:
+            return None
+        return sorted(models)
+    except Exception as e:
+        logger.debug("Failed to fetch MiniMax models: %s", e)
+        return None
+
+
+def _minimax_oauth_catalog(normalized: str, force_refresh: bool) -> list[str]:
+    """Picker catalog for the MiniMax provider family (``minimax-oauth``,
+    ``minimax``, ``minimax-cn`` — all sharing the same Anthropic-compatible
+    /v1/models endpoint). Tries the live ``/v1/models`` first; on any
+    failure returns the curated table flagged as a fallback so the disk
+    cache re-probes on the short fallback TTL.
+    """
+    # Honor the same "configured base_url is terminal for live catalog
+    # egress" rule that ``_anthropic_catalog`` does: if the user has
+    # routed the provider credential to a self-hosted relay, the relay
+    # wins and we never mix in vendor curated rows. If the configured
+    # base_url is the vendor default (or none is configured), the live
+    # result is augmented with the curated table so a freshly-shipped
+    # alias never disappears from the picker.
+    cfg_base_url = ""
+    if normalize_provider(str(_get_model_config_dict().get("provider", "") or "")) == normalized:
+        cfg_base_url = str(_get_model_config_dict().get("base_url", "") or "").strip()
+
+    relay = _configured_relay_base_url(normalized)
+    if relay:
+        live = _fetch_minimax_models(base_url=relay, api_key=None)
+        if not live:
+            return CuratedFallbackModels(list(_PROVIDER_MODELS.get(normalized, [])))
+        return live
+
+    live = _fetch_minimax_models(base_url=cfg_base_url or None, api_key=None)
+    curated = list(_PROVIDER_MODELS.get(normalized, []))
+    if not live:
+        return CuratedFallbackModels(curated)
+    return _merge_unique(curated, live)
+
+
 def _openai_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
@@ -1640,7 +1791,18 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
     "openai-api": _openai_catalog,
     "custom": _custom_catalog,
     "bedrock": _bedrock_catalog,
-    "azure-foundry": _azure_foundry_catalog}
+    "azure-foundry": _azure_foundry_catalog,
+    # MiniMax (minimax.io / api.minimaxi.com): a single Anthropic-compatible
+    # /v1/models endpoint shared by the OAuth device-code, the env API key,
+    # and the China endpoint. The fetcher merges live with the curated table
+    # so freshly-shipped SKUs (a model may be invocable for weeks before
+    # the listing updates) surface in the picker without a Hermes release;
+    # the curated row remains the safety net when the live endpoint is
+    # unreachable or returns 401.
+    "minimax-oauth": _minimax_oauth_catalog,
+    "minimax": _minimax_oauth_catalog,
+    "minimax-cn": _minimax_oauth_catalog,
+}
 
 
 # ``-free`` slugs the relay still LISTS but no longer serves: the Go-only twin (``ox-alpha-free``)
@@ -1795,7 +1957,12 @@ def _relay_model_catalog(normalized: str, relay: str) -> Optional[list[str]]:
 # "no vendor egress when a relay is configured" invariant, so intercepting them would only
 # override correct, better-merged behaviour. Everything else is vendor-pinned (#121387).
 _RELAY_AWARE_CATALOG_FETCHERS = frozenset(
-    {"anthropic", "custom", "openai", "openai-api", "stepfun", "gmi"}
+    {"anthropic", "custom", "openai", "openai-api", "stepfun", "gmi",
+     # MiniMax: same reasoning as Anthropic — the canonical vendor host
+     # is reached via the live fetcher, which itself respects the
+     # "configured base_url is terminal" rule via ``_configured_relay_base_url``.
+     "minimax-oauth", "minimax", "minimax-cn",
+     }
 )
 
 

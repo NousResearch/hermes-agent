@@ -1118,6 +1118,35 @@ def _commit_tool_result(
     _status_suffix = " (error)" if is_error else ""
     agent._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s){_status_suffix}")
 
+    if function_name == "terminal":
+        from tools.terminal_model_result import REQUIRED, present_terminal_result
+        if REQUIRED:
+            function_result = present_terminal_result(
+                function_args, function_result, task_id=effective_task_id,
+                tool_call_id=tool_call_id, session_id=agent.session_id or "",
+                turn_id=getattr(agent, "_current_turn_id", "") or "",
+                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                duration_ms=int(tool_duration * 1000),
+            )
+    elif function_name == "execute_code":
+        from tools.code_model_result import REQUIRED as _CODE_REQUIRED, mediation_failure_message, present_code_result
+        if _CODE_REQUIRED:
+            try:
+                function_result = present_code_result(
+                    function_args, function_result, task_id=effective_task_id,
+                    tool_call_id=tool_call_id, session_id=agent.session_id or "",
+                    turn_id=getattr(agent, "_current_turn_id", "") or "",
+                    api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                    duration_ms=int(tool_duration * 1000),
+                )
+            except Exception:
+                function_result = mediation_failure_message(
+                    function_args, function_result, task_id=effective_task_id,
+                    tool_call_id=tool_call_id, session_id=agent.session_id or "",
+                    turn_id=getattr(agent, "_current_turn_id", "") or "",
+                    api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                    duration_ms=int(tool_duration * 1000),
+                )
     persisted_result = function_result
     if _is_multimodal_tool_result(persisted_result):
         persisted_result = _persist_multimodal_text_parts(

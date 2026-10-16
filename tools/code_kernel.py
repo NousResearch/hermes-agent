@@ -793,7 +793,8 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
     duration = round(time.monotonic() - exec_start, 2)
     kernel.execution_count = int(payload.get("execution_count", kernel.execution_count + 1))
     stderr_raw = kernel.stderr.drain()
-    stdout_text, stdout_metadata = _truncate_stdout_text(clean(str(payload.get("stdout", "")) + kernel.raw.drain()))
+    full_stdout = clean(str(payload.get("stdout", "")) + kernel.raw.drain())
+    stdout_text, stdout_metadata = _truncate_stdout_text(full_stdout)
     cell_stderr = clean(str(payload.get("stderr", "")) + stderr_raw)
     cell_status = payload.get("status", "")
     result: dict[str, Any] = {
@@ -803,6 +804,50 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
                    "execution_count": kernel.execution_count, "state_reset": state_reset},
     }
     result.update(stdout_metadata)
+    from tools.code_model_result import REQUIRED, capture_code_result
+    archive_stdout = ""
+    stream_complete = True
+    if REQUIRED:
+        nested_parts = []
+        for entry in kernel.tool_call_log[kernel.cell_log_start:]:
+            cap = entry.get("terminal_capture")
+            if not cap:
+                continue
+            try:
+                from tools.terminal_model_result import read_terminal_capture
+                nested_parts.append(read_terminal_capture(cap).get("output", ""))
+            except Exception:
+                continue
+        archive_stdout = "\n".join([*nested_parts, full_stdout]).strip("\n")
+        if full_stdout and nested_parts:
+            archive_stdout = "\n".join(nested_parts) + "\n" + full_stdout
+        elif nested_parts:
+            archive_stdout = "\n".join(nested_parts)
+        else:
+            archive_stdout = full_stdout
+        stream_complete = not bool(payload.get("stdout_clipped"))
+        spill_path = str(payload.get("stdout_spill_path", "") or result.get("stdout_spill_path", "") or "")
+        archived_from_spill = False
+        if spill_path and payload.get("stdout_clipped"):
+            try:
+                from tools.code_model_result import spill_output_text
+                archive_stdout = spill_output_text(spill_path, spill_root=kernel.tmpdir)
+                stream_complete = True
+                archived_from_spill = True
+            except Exception:
+                stream_complete = False
+        from tools.code_execution_tool import MAX_SPILLED_STDOUT_BYTES, MAX_STDOUT_BYTES
+        has_terminal_capture = any(
+            entry.get("terminal_capture") for entry in kernel.tool_call_log[kernel.cell_log_start:]
+        )
+        total_bytes = int(result.get("stdout_bytes_total", 0) or payload.get("stdout_bytes_total", 0) or 0)
+        archive_bytes = len(archive_stdout.encode("utf-8", errors="replace"))
+        if total_bytes > MAX_SPILLED_STDOUT_BYTES or archive_bytes > MAX_SPILLED_STDOUT_BYTES:
+            stream_complete = False
+        if max((len(line) for line in archive_stdout.splitlines()), default=len(archive_stdout)) > MAX_STDOUT_BYTES:
+            stream_complete = False
+        if result.get("stdout_truncated") and not has_terminal_capture and not archived_from_spill:
+            stream_complete = False
     from tools.code_execution_rpc import tool_errors_since
     tool_errors = tool_errors_since(kernel.tool_call_log, kernel.cell_log_start)
     if tool_errors:
@@ -844,6 +889,17 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
                       + (": " + stderr_raw.strip() if stderr_raw.strip() else "."))
     elif cell_stderr:
         result["output"] = _with_stderr(stdout_text, cell_stderr)
+    capture_incomplete_reason = None
+    if status in ("timeout", "interrupted", "error"):
+        stream_complete = False
+        capture_incomplete_reason = "kernel_terminated_before_stream_complete"
+    if REQUIRED:
+        result["code_capture"] = capture_code_result(
+            archive_stdout,
+            result,
+            stream_complete=stream_complete,
+            incomplete_reason=capture_incomplete_reason,
+        )
     return result
 
 

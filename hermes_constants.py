@@ -803,14 +803,16 @@ SOCKET_TMPDIR_MAX_LEN = 50
 
 
 def socket_safe_tmpdir() -> str:
-    """Temp root short enough for AF_UNIX sockets. The scratch dir usually fits; macOS
-    ``TMPDIR`` never does and a deep profile home may not, so those fall back to the OS
-    default root for sockets only (everything else stays in the scratch dir)."""
+    """Temp root short enough for AF_UNIX sockets. Respect a configured short root;
+    long macOS ``TMPDIR`` and deep profile homes fall back to the OS default root
+    for sockets only (everything else stays in the scratch dir)."""
     import tempfile
+    candidate = tempfile.gettempdir()
+    if len(os.fsencode(candidate)) <= SOCKET_TMPDIR_MAX_LEN:
+        return candidate
     if sys.platform == "darwin":
         return "/tmp"  # no-tmp: ok — AF_UNIX 104-byte socket path limit on darwin
-    candidate = tempfile.gettempdir()
-    if len(candidate) <= SOCKET_TMPDIR_MAX_LEN or not os.path.isdir("/tmp"):  # no-tmp: ok — probe, not a write target
+    if not os.path.isdir("/tmp"):  # no-tmp: ok — probe, not a write target
         return candidate
     return "/tmp"  # no-tmp: ok — AF_UNIX 108-byte socket path limit on Linux
 

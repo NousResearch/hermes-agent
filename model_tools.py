@@ -853,6 +853,11 @@ def _apply_transform_tool_result_hook(function_name: str, function_args: dict[st
     Runs after post_tool_call and before the result enters context. Fail-open;
     first string return wins. Gated on has_hook so the no-listener path is cheap.
     """
+    if function_name in ("terminal", "execute_code"):
+        from tools.terminal_model_result import REQUIRED as _TERM_REQUIRED
+        from tools.code_model_result import REQUIRED as _CODE_REQUIRED
+        if (function_name == "terminal" and _TERM_REQUIRED) or (function_name == "execute_code" and _CODE_REQUIRED):
+            return result  # RPC keeps the complete native JSON; presentation belongs to executor.
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook
         if has_hook("transform_tool_result"):

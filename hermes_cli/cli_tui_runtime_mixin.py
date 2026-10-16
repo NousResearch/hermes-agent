@@ -420,7 +420,9 @@ class CLITuiRuntimeMixin:
             key_bindings=kb,
             style=style,
             full_screen=False,
-            mouse_support=False,
+            # display.cli_mouse: clickable live-work footer (cli_dock_footer); off keeps the
+            # terminal's own wheel scrolling and text selection.
+            mouse_support=bool(CLI_CONFIG.get("display", {}).get("cli_mouse", False)),
             # 0 (default) avoids fighting terminal auto-scroll in non-fullscreen mode.
             refresh_interval=float(CLI_CONFIG.get("display", {}).get("cli_refresh_interval", 0)),
             # Erase the bottom chrome on exit instead of freezing a copy into scrollback.

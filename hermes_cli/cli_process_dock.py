@@ -67,6 +67,8 @@ def process_rows(now: float | None = None) -> list:
             "elapsed": max(0, int(end - proc.started_at)),
             "since_exit": max(0, int(now - exited_at)) if exited_at else 0,
             "detail": _last_output_line(proc.output_buffer),
+            # watch_patterns: the agent is monitoring this stream, not waiting for it to finish.
+            "watching": bool(getattr(proc, "watch_patterns", None)),
         })
     rows.sort(key=lambda r: (r["status"] != "running", -r["elapsed"] if r["status"] == "running" else r["since_exit"]))
     return rows

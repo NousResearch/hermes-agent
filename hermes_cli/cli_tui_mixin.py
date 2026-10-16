@@ -430,12 +430,13 @@ class CLITuiMixin:
             *self._get_extra_tui_widgets(),
             getattr(self, "_pet_widget", None),
             getattr(self, "_stash_panel_widget", None),
-            getattr(self, "_subagent_dock_widget", None),
             status_bar,
             input_rule_top,
             image_bar,
             input_area,
             input_rule_bot,
+            # Live work sits under the composer, where Down reaches it (cli_dock_footer).
+            getattr(self, "_subagent_dock_widget", None),
             voice_status_bar,
             completions_menu]
         return [item for item in ordered if item is not None]
@@ -1962,17 +1963,8 @@ class CLITuiMixin:
         kb.add(Keys.BracketedPaste, eager=True)(self._tui_handle_paste)
         kb.add('c-v')(self._tui_handle_ctrl_v)
         kb.add('escape', 'v')(self._tui_handle_alt_v)
-        from hermes_cli.cli_subagent_monitor import modal_prompt_active, open_monitor, toggle_dock
-        for key in ('c-t', 'f6'):
-            kb.add(key, filter=Condition(lambda: not modal_prompt_active(self)))(
-                lambda event: open_monitor(self))
-        # F7 is retained for terminals that forward the function-key sequence;
-        # Ctrl+R is the portable fallback because macOS often reserves F7 for
-        # a hardware control unless Fn/globe is held.
-        kb.add('c-r', filter=Condition(lambda: not modal_prompt_active(self)))(
-            lambda event: toggle_dock(self))
-        kb.add('f7', filter=Condition(lambda: not modal_prompt_active(self)))(
-            lambda event: toggle_dock(self))
+        from hermes_cli.cli_dock_footer import bind_keys
+        bind_keys(self, kb)
         return kb
 
     def _tui_bind_editor_and_stash(self, kb) -> None:

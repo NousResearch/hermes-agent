@@ -906,9 +906,8 @@ DEFAULT_CONFIG = {
         # fights terminal auto-scroll in non-fullscreen mode.
         # See #45592.
         "cli_refresh_interval": 1.0,
-        # Vi/vim keybindings in the CLI input composer (config-only, no slash command).
-        # Off by default, preserving prompt_toolkit's standard emacs bindings.
-        "vim_mode": False,
+        "vim_mode": False,  # vi keybindings in the CLI composer (config-only); off = emacs bindings
+        "cli_mouse": False,  # classic CLI footer clicks; off: mouse tracking takes wheel + text select
         "user_message_preview": {  # CLI: submitted user-message lines echoed to scrollback
             "first_lines": 2,
             "last_lines": 2,

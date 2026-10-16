@@ -183,6 +183,14 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._webhook_path: str = self._normalize_path(extra.get("webhook_path", DEFAULT_WEBHOOK_PATH))
         self._health_path: str = self._normalize_path(extra.get("health_path", "/health"))
         self._api_version: str = str(extra.get("api_version", DEFAULT_API_VERSION))
+        # Match the shared platform setting used by Telegram and Discord: ``off``
+        # suppresses the visible quote, ``first`` keeps the existing first-message
+        # behavior, and ``all`` anchors every text chunk.
+        reply_to_mode = getattr(config, "reply_to_mode", "first")
+        # YAML 1.1 parses an unquoted ``off`` as False; normalize before defaulting.
+        if reply_to_mode is False:
+            reply_to_mode = "off"
+        self._reply_to_mode: str = reply_to_mode or "first"
         # Behavior-mixin contract attributes. WHATSAPP_CLOUD_* env vars take precedence so
         # both adapters can run in parallel with independent policies; shared WHATSAPP_*
         # names remain the fallback. Allowlist: config, then legacy ALLOW_FROM, then ALLOWED_USERS.
@@ -361,6 +369,14 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             payload["context"] = {"message_id": reply_to}
         return payload
 
+    def _reply_anchor_for_send(self, reply_to: Optional[str], chunk_index: int = 0) -> Optional[str]:
+        """Return the Cloud reply anchor selected by the shared reply-to mode."""
+        if not reply_to or self._reply_to_mode == "off":
+            return None
+        if self._reply_to_mode == "all" or chunk_index == 0:
+            return reply_to
+        return None
+
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send a text message via Graph API. ``chat_id`` is the recipient's ``wa_id``."""
         if self._http_client is None:
@@ -370,9 +386,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         formatted = self.format_message(content)
         last_message_id: Optional[str] = None
         for idx, chunk in enumerate(self.truncate_message(formatted, self._outgoing_chunk_limit())):
-            # Quote the user's message on the first chunk only.
             payload = self._outbound_payload(
-                chat_id, "text", {"body": chunk, "preview_url": True}, reply_to if idx == 0 else None
+                chat_id, "text", {"body": chunk, "preview_url": True}, self._reply_anchor_for_send(reply_to, idx)
             )
             ids, err = await self._post_messages(
                 payload,
@@ -423,7 +438,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         success, remember ``state_id → session_key`` for the tap. Free-form interactives need no
         Meta approval but are only valid inside the 24h window — fine, all senders here reply to a user."""
         result = await self._post_message_result(
-            self._outbound_payload(chat_id, "interactive", interactive, _reply_to_from(metadata)),
+            self._outbound_payload(chat_id, "interactive", interactive, self._reply_anchor_for_send(_reply_to_from(metadata))),
             fail_log="[whatsapp_cloud] interactive send failed",
             reject_log="[whatsapp_cloud] interactive rejected (status=%d): %s",
         )
@@ -566,7 +581,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if filename and media_kind == "document":
             media_block["filename"] = filename
         return await self._post_message_result(
-            self._outbound_payload(chat_id, media_kind, media_block, reply_to),
+            self._outbound_payload(chat_id, media_kind, media_block, self._reply_anchor_for_send(reply_to)),
             fail_log="[whatsapp_cloud] media send failed",
             reject_log="[whatsapp_cloud] media send rejected (status=%d, kind=%s): %s",
             reject_args=(media_kind,),

@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +65,7 @@ def _make_adapter(**overrides):
     adapter._webhook_path = "/whatsapp/webhook"
     adapter._health_path = "/health"
     adapter._api_version = overrides.pop("api_version", "v20.0")
+    adapter._reply_to_mode = overrides.pop("reply_to_mode", "first")
     adapter._runner = None
     adapter._http_client = None
 
@@ -134,6 +135,16 @@ def _mock_httpx_response(status_code: int, json_body: dict):
 class TestSendText:
     """Outbound text-message path."""
 
+    def test_reply_to_mode_reads_shared_platform_config(self):
+        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+
+        adapter = WhatsAppCloudAdapter(PlatformConfig(
+            enabled=True,
+            reply_to_mode="off",
+            extra={"phone_number_id": "7794189252778687", "access_token": "test-token"},
+        ))
+
+        assert adapter._reply_to_mode == "off"
 
     @pytest.mark.asyncio
     async def test_send_includes_bearer_auth(self):
@@ -170,6 +181,34 @@ class TestSendText:
         assert payload["type"] == "text"
         assert payload["text"]["body"] == "hello world"
         assert payload["text"]["preview_url"] is True
+
+
+    @pytest.mark.asyncio
+    async def test_send_off_mode_omits_reply_context(self):
+        """Regression for #138288: operators can suppress the inbound quote in Cloud DMs."""
+        adapter = _make_adapter()
+        adapter._reply_to_mode = "off"
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"messages": [{"id": "wamid.abc"}]})
+        )
+
+        await adapter.send("15551234567", "hello world", reply_to="wamid.INBOUND")
+
+        assert "context" not in adapter._http_client.post.call_args.kwargs["json"]
+
+
+    @pytest.mark.asyncio
+    async def test_send_default_mode_keeps_reply_context(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"messages": [{"id": "wamid.abc"}]})
+        )
+
+        await adapter.send("15551234567", "hello world", reply_to="wamid.INBOUND")
+
+        assert adapter._http_client.post.call_args.kwargs["json"]["context"] == {"message_id": "wamid.INBOUND"}
 
 
     @pytest.mark.asyncio

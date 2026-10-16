@@ -413,22 +413,50 @@ class GatewayModelCommandsMixin:
 
     async def _commit_model_switch_locked(self, result, ctx: _ModelSwitchContext, *, source, picker: bool) -> str:
         one_turn = False if picker else ctx.one_turn
-        error = self._switch_cached_agent_model(result, ctx, picker)
-        if error is not None:
-            return error
-        self._record_switch_metrics(result, ctx, source)
-        global_error = await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
+        from gateway.session_setting_commands import defer_local_model_pick, local_authority_live
+        authority, live = local_authority_live(self, source)
+        level = ""
+        if live is not None:
+            # A local session runs its frozen policy: the owner's canonical model mutation is the
+            # only commit, landing at the next turn boundary (this command is the running turn).
+            if one_turn:
+                return t("gateway.model.error_prefix", error=t("gateway.model.err_once_local"))
+            from hermes_constants import parse_reasoning_effort
+            effort = (ctx.reasoning_effort or "").strip().lower()
+            level = effort if parse_reasoning_effort(effort) is not None else ""
+            await asyncio.to_thread(defer_local_model_pick, authority, live, result, level)
+            self._record_switch_metrics(result, ctx, source)
+            global_error = None
+            if ctx.persist_global:
+                try:
+                    await _persist_model_switch_to_config(result, ctx.config_path)
+                except Exception as e:
+                    logger.warning("Failed to persist model switch", exc_info=True)
+                    global_error = t("gateway.model.err_config_not_updated", error=str(e) or type(e).__name__)
+        else:
+            error = self._switch_cached_agent_model(result, ctx, picker)
+            if error is not None:
+                return error
+            self._record_switch_metrics(result, ctx, source)
+            global_error = await self._record_model_switch(
+                result, ctx, source=source, one_turn=one_turn, picker=picker)
         reply = await self._model_switch_confirmation(
             result, ctx, one_turn=one_turn, picker=picker, global_error=global_error,
         )
-        if ctx.reasoning_effort and not one_turn:
+        if level:
+            # Committed with the local pick: only the config write-through and the reply remain.
+            saved = (ctx.persist_global and global_error is None
+                     and self._save_gateway_config_key("agent.reasoning_effort", level))
+            reply += "\n" + t("gateway.reasoning.set_global" if saved else "gateway.reasoning.set_session",
+                              effort=level)
+        elif ctx.reasoning_effort and not one_turn:
             # `/model X --reasoning <level>`: same applier as /reasoning, same scope as the pick.
             # The record step already evicted the cached agent, so the pin lands on the rebuild.
             from gateway.run import _platform_config_key
             reply += "\n" + self._apply_reasoning_selection(
                 ctx.session_key, _platform_config_key(source.platform), ctx.reasoning_effort,
                 persist_global=ctx.persist_global and global_error is None)
-        return reply
+        return reply + ("\n" + t("gateway.model.local_next_turn") if live is not None else "")
 
     async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
         """Send the interactive /model picker; False when nothing was sent (text fallback). *source*

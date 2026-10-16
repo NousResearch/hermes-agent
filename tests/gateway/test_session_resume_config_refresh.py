@@ -557,3 +557,22 @@ async def test_the_next_command_after_a_terminal_refresh_runs_on_the_new_backend
         for connection in (owner, later, last):
             await connection.close()
         store.close_all_db_handles()
+
+
+def test_a_skipped_resume_refresh_warns_unless_the_session_is_busy(monkeypatch, caplog):
+    """A turn running or queued is the expected skip; a revoked credential or an unreadable profile leaves a
+    silent no-refresh, so it is a WARNING."""
+    import logging
+    from gateway import session_policy_refresh as refresh
+    from hermes_state_runtime import RuntimeStoreError
+    for failure in (RuntimeStoreError('session_busy'), RuntimeStoreError('launch_credentials_unavailable'),
+                    OSError('config.yaml unreadable')):
+        async def fail(authority, ref, failure=failure):
+            raise failure
+        monkeypatch.setattr(refresh, 'commit_refresh', fail)
+        with caplog.at_level(logging.INFO, logger=refresh.__name__):
+            asyncio.run(refresh.refresh_resumed_policy(None, SimpleNamespace(session_id='s1')))
+    levels = [(record.levelno, record.getMessage().rsplit(': ', 1)[1]) for record in caplog.records
+              if 'keeps its stored policy' in record.getMessage()]
+    assert levels == [(logging.INFO, 'session_busy'), (logging.WARNING, 'launch_credentials_unavailable'),
+                      (logging.WARNING, 'OSError')], levels

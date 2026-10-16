@@ -168,12 +168,15 @@ async def commit_refresh(authority, ref, *, mcp_only=False):
 
 async def refresh_resumed_policy(authority, ref):
     """Commit the config refresh of an idle local session before it is attached. Never fails the resume:
-    a busy session, a revoked launch credential or an unreadable profile keeps the stored policy."""
+    a busy session, a revoked launch credential or an unreadable profile keeps the stored policy. Only a turn
+    running or queued (or admitted during the commit) is expected; anything else is a WARNING."""
     try:
         await commit_refresh(authority, ref)
     except Exception as exc:  # health: allow BLE001 -- a refresh is best-effort; the resume itself must proceed
-        logger.info('Session %s keeps its stored policy on resume: %s', ref.session_id,
-                    getattr(exc, 'reason', None) or type(exc).__name__)
+        reason = getattr(exc, 'reason', None) or type(exc).__name__
+        busy = reason in {'session_busy', 'unknown_execution', 'revision_conflict'}
+        logger.log(logging.INFO if busy else logging.WARNING, 'Session %s keeps its stored policy on resume: %s',
+                   ref.session_id, reason)
 
 
 def _drop_terminal(authority, ref):

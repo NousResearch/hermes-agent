@@ -493,6 +493,11 @@ class CLIInfoMixin:
         ``CommandDef`` entries declare ``busy_policy="dispatch"``; the classic CLI honours it here)."""
         return self._busy_inline_command(text, has_images, ("bg", "btw"))
 
+    def _should_handle_stop_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when /stop should be dispatched while the agent runs: its ``CommandDef`` declares
+        ``busy_policy="interrupt_then_dispatch"``, and queued it would only run after the turn it stops."""
+        return self._busy_inline_command(text, has_images, ("stop",))
+
     def handle_bang_shell(self, text: str) -> bool:
         """Run a ``!<command>`` submission. Returns True when it was handled.
 

@@ -2,6 +2,8 @@
 import hashlib
 import json
 
+from hermes_state_keys import prefix_range
+
 PREFIX = 'gateway.media.retired.v1.'
 
 
@@ -22,7 +24,7 @@ def collect_retired_media(db):
     with db._read_ctx() as conn:
         # Primary-key range, not LIKE: the common no-candidate case costs one index probe.
         rows = conn.execute('SELECT key,value FROM state_meta WHERE key>=? AND key<?',
-                            (PREFIX, PREFIX[:-1] + chr(ord(PREFIX[-1]) + 1))).fetchall()
+                            prefix_range(PREFIX)).fetchall()
     if rows:
         release_unheld_media(db, [json.loads(row['value']) for row in rows])
         from pathlib import Path

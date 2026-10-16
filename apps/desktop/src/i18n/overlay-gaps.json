@@ -2124,7 +2124,7 @@
   "starmap.title": ["ar"],
   "starmap.viewGraph": ["ar"],
   "statusStack.coding.readOnlyScope": ["de","es","fr","ru"],
-  "statusStack.control.heartbeatDueWaitingForIdle": ["ar"],
+  "statusStack.control.dueWaitingForIdle": ["ar"],
   "tips.close": ["ru"],
   "tips.items.artifacts.text": ["ru"],
   "tips.items.artifacts.title": ["ru"],

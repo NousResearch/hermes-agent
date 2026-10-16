@@ -204,12 +204,23 @@ class TestSlackNativeSlashes:
                 assert ch.isalnum() or ch in "-_", f"invalid char {ch!r} in {name!r}"
 
 
+    def test_manifest_respects_slack_command_cap(self):
+        """Slack rejects any app manifest past 25 slash commands outright, so the
+        generator must never emit more — the curation list (_SLACK_VIA_HERMES_ONLY)
+        is what keeps the registry inside the cap."""
+        from hermes_cli.commands_platforms import _SLACK_MAX_SLASH_COMMANDS
+
+        m = slack_app_manifest()
+        slashes = m["features"]["slash_commands"]
+        assert len(slashes) <= _SLACK_MAX_SLASH_COMMANDS
+        assert _SLACK_MAX_SLASH_COMMANDS == 25
+
     def test_telegram_parity(self):
         """Every Telegram bot command must be registerable on Slack too.
 
         This catches the old behavior where Slack users couldn't invoke
         commands like /btw natively. If a future command surfaces on
-        Telegram but not Slack (because of Slack's 50-slash cap), this
+        Telegram but not Slack (because of Slack's 25-slash cap), this
         test fails loudly so we can curate the list rather than silently
         dropping parity.
 
@@ -227,7 +238,7 @@ class TestSlackNativeSlashes:
         tg_norm = {_norm(n) for n in tg_names}
         reserved_norm = {_norm(n) for n in _SLACK_RESERVED_COMMANDS}
         # Commands deliberately routed through /hermes <command> on Slack only
-        # (Slack's 50-slash cap) are expected to be absent from native slashes.
+        # (Slack's 25-slash cap) are expected to be absent from native slashes.
         via_hermes_norm = {_norm(n) for n in _SLACK_VIA_HERMES_ONLY}
         missing = (tg_norm - slack_norm) - reserved_norm - via_hermes_norm
         assert not missing, (

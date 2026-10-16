@@ -539,7 +539,9 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
-    Hermes entrypoint plus the ``gateway`` subcommand, or a gateway-dedicated entrypoint. Tokenizes
+    Hermes entrypoint plus the ``gateway`` subcommand, or a gateway-dedicated entrypoint in the
+    program position (argv[0], or argv[1] behind an interpreter/``env`` wrapper — an entrypoint
+    name later in argv is an argument another program received, #140089). Tokenizes
     quote-aware (Windows paths with spaces); ``--profile``/``-p`` selectors are stripped anywhere in
     argv since ``_apply_profile_override`` removes them before argparse."""
     if not command:
@@ -572,8 +574,31 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # Gateway-dedicated entrypoints carry no subcommand to inspect (``python -m gateway.run`` is the
     # module spelling of the same script: its PID record renders argv as ``gateway/run.py``, and a
     # liveness probe that read the live ``-m`` cmdline as "not a gateway" made every fixture-launched
-    # standalone owner invisible to the multiplex preflight).
-    if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in tokens):
+    # standalone owner invisible to the multiplex preflight). An entrypoint name only counts in the
+    # program position — argv[0], or argv[1] directly behind an interpreter/``env`` wrapper; further
+    # in argv it is an argument another program received (``claude --resume hermes-gateway``), and
+    # matching it made the updater drain and kill that unrelated process (#140089). /proc cmdline
+    # reaches us NUL→space, so an argv element with spaces ("/…/Atomic Hermes.app/…/python") splits
+    # into a head token (absolute path) plus a tail token (relative-looking, contains "/") holding
+    # the real basename: re-pair that shape so argv[0]/argv[1] keep their kernel meaning.
+    logical: list[str] = []
+    i = 0
+    while i < len(tokens) and len(logical) < 2:
+        if (i + 1 < len(tokens) and tokens[i].startswith("/")
+                and not tokens[i + 1].startswith("/") and "/" in tokens[i + 1]):
+            logical.append(f"{tokens[i]} {tokens[i + 1]}")
+            i += 2
+        else:
+            logical.append(tokens[i])
+            i += 1
+    def _interpreter(token: str) -> bool:
+        base = token.rsplit("/", 1)[-1].removesuffix(".exe")
+        return base.startswith("python") or base in ("env", "py")
+
+    program_argv = logical if _interpreter(logical[0]) else logical[:1]
+    if any(
+        t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in program_argv
+    ):
         return "run"
     if any(tokens[i] == "-m" and tokens[i + 1] == "gateway.run" for i in range(len(tokens) - 1)):
         return "run"
@@ -581,9 +606,12 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # `gateway run --replace` does not recognise it as a running gateway, skips the
     # terminate-and-scoped-lock-handoff path, and collides with its still-held scoped locks
     # (e.g. the Discord bot-token lock). See #22418.
-    if any(b == "desktop-gateway.py" for b in basenames):
+    if any(t.rsplit("/", 1)[-1] == "desktop-gateway.py" for t in program_argv):
         return "run"
-    if any(b in ("hermes-gateway", "hermes-gateway.exe") for b in basenames):
+    if any(
+        t.rsplit("/", 1)[-1] in ("hermes-gateway", "hermes-gateway.exe")
+        for t in program_argv
+    ):
         return "run"
     joined = " ".join(tokens)
     if "hermes_cli.main" not in joined and "hermes_cli/main.py" not in joined and not any(

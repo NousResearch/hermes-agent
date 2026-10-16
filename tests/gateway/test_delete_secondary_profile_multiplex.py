@@ -1,4 +1,5 @@
 """A multiplexed secondary profile's delete retires routing under one owner (#138826)."""
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -32,12 +33,36 @@ async def test_delete_of_secondary_profile_session_does_not_409(tmp_path, monkey
         with _profile_runtime_scope(home, {}):
             ref = create_local_session(authority, actor, {'request_id': 'r', 'source': 'gui',
                                                           'cwd': str(tmp_path), 'model': 'frozen', 'toolsets': []})
+            # A messaging key routed at this session, published to the launch store's durable
+            # index — the shape that survives deletes a user actually observes (#138862).
+            from gateway.session import SessionEntry
+            store = runner.session_store
+            now = datetime.now(UTC)
+            store._entries['agent:main:telegram:111'] = SessionEntry(
+                session_key='agent:main:telegram:111', session_id=ref.session_id,
+                created_at=now, updated_at=now)
+            with store._lock:
+                store._save()
             result = await mutate_session(authority, actor, ref, dict(
                 session_id=ref.session_id, request_id='delete', expected_revision=0,
                 expected_generation=0, operation='delete', payload={}))
         assert result.get('deleted_ids') == [ref.session_id]
         assert authority.db.get_session(ref.session_id) is None
         assert runner.session_store.lookup_by_session_id(ref.session_id) is None
+        # The retire clears the in-memory entry but not the launch store's durable row: the
+        # fence marker lives in the owner store, and the launch table is rewritten only by the
+        # next whole-index save. Pin both halves — a live path always republishes on its next
+        # save, while an offline CLI delete, with no live store, leaves its row behind for good.
+        routing_db = runner.session_store._routing_db
+        seated = {r['session_key'] for r in routing_db._read_all(
+            'SELECT session_key FROM gateway_routing WHERE json_extract(entry_json, ?) = ?',
+            ('$.session_id', ref.session_id))}
+        assert 'agent:main:telegram:111' in seated
+        with runner.session_store._lock:
+            runner.session_store._save()
+        assert not routing_db._read_all(
+            'SELECT session_key FROM gateway_routing WHERE json_extract(entry_json, ?) = ?',
+            ('$.session_id', ref.session_id)), 'the next whole-index save republishes the retire'
     finally:
         for a in list(getattr(runner, 'session_authorities', None) or []):
             a.db.close()

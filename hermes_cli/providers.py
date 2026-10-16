@@ -200,6 +200,11 @@ def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderD
     if mdev_info is not None:
         ov = overlay or HermesOverlay()
         env_vars = list(mdev_info.env)
+        profile = _plugin_profile_pdef(canonical)
+        if profile is not None:
+            for ev in profile.api_key_env_vars:
+                if ev not in env_vars:
+                    env_vars.append(ev)
         for ev in ov.extra_env_vars:
             if ev not in env_vars:
                 env_vars.append(ev)

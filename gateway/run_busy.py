@@ -1305,10 +1305,12 @@ class GatewayBusySessionMixin:
         ``once`` runs it, ``always`` persists the opt-out then runs it, ``cancel`` skips it.
         """
         confirm_required = True
+        allow_persistent = True
         try:
             approvals = self._read_user_config().get("approvals")
             if isinstance(approvals, dict):
                 confirm_required = bool(approvals.get("destructive_slash_confirm", True))
+                allow_persistent = approvals.get("allow_persistent", True) is not False
         except Exception:
             pass
         if not confirm_required:
@@ -1319,13 +1321,17 @@ class GatewayBusySessionMixin:
         async def _on_confirm(choice: str):
             # Via the class, not ``self``: tests drive this gate on a bare SimpleNamespace runner.
             return await GatewayBusySessionMixin._run_confirmed_destructive_slash(
-                choice, command, execute, session_key
+                choice, command, execute, session_key, allow_persistent=allow_persistent
             )
 
         _p = self._typed_command_prefix_for(event.source.platform)
-        prompt_message = t("gateway.confirm.destructive_prompt", command=command, detail=detail, prefix=_p)
+        prompt_message = t(
+            "gateway.confirm.destructive_prompt" if allow_persistent else "gateway.confirm.destructive_prompt_once",
+            command=command, detail=detail, prefix=_p,
+        )
         return await self._request_slash_confirm(
-            event=event, command=command, title=title, message=prompt_message, handler=_on_confirm
+            event=event, command=command, title=title, message=prompt_message, handler=_on_confirm,
+            allow_persistent=allow_persistent,
         )
 
     @staticmethod
@@ -1336,10 +1342,14 @@ class GatewayBusySessionMixin:
         return t("gateway.confirm.destructive_optout" if persisted else "gateway.confirm.destructive_optout_save_failed")
 
     @staticmethod
-    async def _run_confirmed_destructive_slash(choice: str, command: str, execute, session_key: str):
+    async def _run_confirmed_destructive_slash(
+        choice: str, command: str, execute, session_key: str, *, allow_persistent: bool = True
+    ):
         """Confirm-callback body: ``cancel`` → message; ``always`` persists the opt-out, then runs."""
         if choice == "cancel":
             return t("gateway.confirm.cancelled", command=command)
+        if choice == "always" and not allow_persistent:
+            return t("gateway.confirm.persistent_disabled")
         persisted = False
         if choice == "always":
             try:
@@ -1363,7 +1373,8 @@ class GatewayBusySessionMixin:
         return result
 
     async def _request_slash_confirm(
-        self, *, event: MessageEvent, command: str, title: str, message: str, handler
+        self, *, event: MessageEvent, command: str, title: str, message: str, handler,
+        allow_persistent: bool = True,
     ) -> Optional[str]:
         """Ask the user to confirm a slash command; ``handler(choice)`` runs on "once"/"always"/
         "cancel" and its return is sent as a message. Returns None if buttons rendered, else the
@@ -1388,7 +1399,7 @@ class GatewayBusySessionMixin:
             try:
                 button_result = await adapter.send_slash_confirm(
                     chat_id=source.chat_id, title=title, message=message, session_key=session_key,
-                    confirm_id=confirm_id, metadata=metadata,
+                    confirm_id=confirm_id, metadata=metadata, allow_persistent=allow_persistent,
                 )
                 if button_result and getattr(button_result, "success", False):
                     return None  # buttons rendered — no redundant text ack

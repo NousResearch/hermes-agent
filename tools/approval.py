@@ -812,7 +812,15 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if result is not None:
             return result
     pending_body = pending_body() if pending_body else None
-    allow_permanent = not smart_denied
+    # A gateway profile can serve several people.  Do not let one participant turn a
+    # one-operation approval into a profile-wide allowlist entry.  This is read at
+    # request time so an operator can change it without restarting the gateway.
+    gateway_allows_persistent = (
+        not is_gateway
+        or approval_context._get_approval_config().get("allow_persistent", True) is not False
+    )
+    allow_permanent = not smart_denied and gateway_allows_persistent
+    allow_session = not smart_denied and gateway_allows_persistent
 
     def deny(template: str, outcome: str, **fmt) -> dict:
         breaker = ""
@@ -836,7 +844,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         attempt = _present_with_selected_transport(
             command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
             session_key=session_key, surface="gateway" if (is_gateway or is_ask) else "cli",
-            allow_session=not smart_denied, allow_permanent=allow_permanent,
+            allow_session=allow_session, allow_permanent=allow_permanent,
         )
         choice, denied = _transport_choice(attempt, pattern_key=pattern_key, description=description)
         if denied is not None:
@@ -861,8 +869,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             data = {
                 "command": display_command, "pattern_key": pattern_key,
                 "pattern_keys": pattern_keys, "description": display_description,
-                "allow_permanent": not smart_denied,
-                "allow_session": not smart_denied,
+                "allow_permanent": allow_permanent,
+                "allow_session": allow_session,
             }
             if smart_denied:
                 data["smart_denied"] = True
@@ -888,6 +896,9 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 return deny(spec.gateway_refused, "denied", reason="denied by user",
                             reason_addendum=(f' Reason given by the user: "{deny_reason}".' if deny_reason else ""),
                             timeout_addendum="", deny_reason=deny_reason)
+            if not gateway_allows_persistent and choice in {"session", "always"}:
+                return deny(spec.gateway_refused, "denied", reason="persistent approvals are disabled",
+                            reason_addendum="", timeout_addendum="", deny_reason=None)
             return grant(choice)
 
         # No gateway callback (cron, batch, or ask-mode leaked into an interactive CLI, historically via `import

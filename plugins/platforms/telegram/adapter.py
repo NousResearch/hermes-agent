@@ -4247,15 +4247,16 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
-        metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        """Render a three-button slash-command confirmation prompt."""
+        metadata: Optional[dict[str, Any]] = None, allow_persistent: bool = True) -> SendResult:
+        """Render a slash-command confirmation prompt."""
         def build():
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(t("platform.telegram.slash_confirm.approve_once"), callback_data=f"sc:once:{confirm_id}"),
-                    InlineKeyboardButton(t("platform.telegram.slash_confirm.always_approve"), callback_data=f"sc:always:{confirm_id}")],
-                [InlineKeyboardButton(t("platform.telegram.slash_confirm.cancel"), callback_data=f"sc:cancel:{confirm_id}")],
-           ])
+            first_row = [InlineKeyboardButton(
+                t("platform.telegram.slash_confirm.approve_once"), callback_data=f"sc:once:{confirm_id}")]
+            if allow_persistent:
+                first_row.append(InlineKeyboardButton(
+                    t("platform.telegram.slash_confirm.always_approve"), callback_data=f"sc:always:{confirm_id}"))
+            keyboard = InlineKeyboardMarkup([first_row, [InlineKeyboardButton(
+                t("platform.telegram.slash_confirm.cancel"), callback_data=f"sc:cancel:{confirm_id}")]])
             # Budget the MarkdownV2 rendering (escaping expands text), not the raw message.
             preview = self.format_message(self._ea_fit(
                 message, self.MAX_MESSAGE_LENGTH - utf16_len(self.format_message("...")), escape=self.format_message))

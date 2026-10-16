@@ -776,6 +776,8 @@ gateway:
 
   confirm:
     destructive_prompt: "⚠️ **Confirm /{command}**\n\n{detail}\n\nChoose:\n• **Approve Once** — proceed this time only\n• **Always Approve** — proceed and silence this prompt permanently\n• **Cancel** — keep current conversation\n\n_Text fallback: reply `{prefix}approve`, `{prefix}always`, or `{prefix}cancel`._"
+    destructive_prompt_once: "⚠️ **Confirm /{command}**\n\n{detail}\n\nChoose:\n• **Approve Once** — proceed this time only\n• **Cancel** — keep current conversation\n\n_Text fallback: reply `{prefix}approve` or `{prefix}cancel`._"
+    persistent_disabled: "⚠️ Persistent approval choices are disabled for this gateway. Choose Approve Once or Cancel."
     destructive_optout: "\n\nℹ️ Future /clear, /new, /reset, and /undo will run without confirmation. Re-enable via `approvals.destructive_slash_confirm: true` in config.yaml."
     destructive_optout_save_failed: "\n\n⚠️ Could not save that preference (config.yaml is not writable), so /clear, /new, /reset, and /undo will ask again next time. To silence it permanently, set `approvals.destructive_slash_confirm: false` in config.yaml."
     cancelled: "🟡 /{command} cancelled. Conversation unchanged."

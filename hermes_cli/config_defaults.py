@@ -1687,6 +1687,9 @@ DEFAULT_CONFIG = {
         # After this many consecutive guardian DENYs in a session, the deny message escalates to a
         # hard-stop (report to user / ask for /approve). Approval resets; 0 off.
         "denial_breaker_threshold": 3,
+        # Gateways that serve a shared room can keep every approval scoped to one operation.
+        # False removes persistent command and destructive-slash choices from gateway prompts.
+        "allow_persistent": True,
         # Case-insensitive fnmatch globs against terminal commands; a match blocks even under --yolo
         # / mode=off. Quote in YAML when starting with * or containing {}/!/: e.g. "git push
         # --force*".

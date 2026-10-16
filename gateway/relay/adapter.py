@@ -1980,14 +1980,16 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         session_key: str,
         confirm_id: str,
         metadata: Optional[dict[str, Any]] = None,
+        allow_persistent: bool = True,
     ) -> SendResult:
         """Three-button slash-command confirmation over the relay (resolves via
         tools.slash_confirm.resolve; success=False falls back to text-intercept)."""
         options = [
             {"id": "once", "label": t("platform.relay.confirm_approve_once"), "style": "primary"},
-            {"id": "always", "label": t("platform.relay.confirm_always_approve")},
-            {"id": "cancel", "label": t("platform.relay.confirm_cancel"), "style": "danger"},
         ]
+        if allow_persistent:
+            options.append({"id": "always", "label": t("platform.relay.confirm_always_approve")})
+        options.append({"id": "cancel", "label": t("platform.relay.confirm_cancel"), "style": "danger"})
         result = await self._mint_and_send_prompt(
             "slash_confirm", {"session_key": session_key, "confirm_id": confirm_id}, chat_id,
             prompt_kind="approval", text=f"**{title}**\n\n{message}" if title else message,

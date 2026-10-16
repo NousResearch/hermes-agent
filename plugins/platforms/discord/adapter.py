@@ -5732,7 +5732,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
-        confirm_id: str, metadata: Optional[dict] = None,
+        confirm_id: str, metadata: Optional[dict] = None, allow_persistent: bool = True,
     ) -> SendResult:
         """Send a three-button slash-command confirmation prompt."""
         def _build(_channel):
@@ -5744,6 +5744,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             view = SlashConfirmView(
                 session_key=session_key, confirm_id=confirm_id,
                 allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
+                allow_persistent=allow_persistent,
             )
             return {"content": content, "embed": embed, "view": view}, view
         return await self._send_prompt(chat_id, metadata, _build)
@@ -6531,7 +6532,8 @@ def _define_discord_view_classes() -> None:
         """Approve Once / Always Approve / Cancel for slash-command confirmations (``/reload-mcp``,
         ``GatewayRunner._request_slash_confirm``); clicks call ``tools.slash_confirm.resolve(...)``."""
 
-        def __init__(self, session_key: str, confirm_id: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
+        def __init__(self, session_key: str, confirm_id: str, allowed_user_ids: set,
+                     allowed_role_ids: Optional[set] = None, allow_persistent: bool = True):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
             self.confirm_id = confirm_id
@@ -6539,6 +6541,8 @@ def _define_discord_view_classes() -> None:
                 approve_once="platform.discord.slash_confirm.approve_once",
                 approve_always="platform.discord.slash_confirm.always_approve",
                 cancel="platform.discord.slash_confirm.cancel")
+            if not allow_persistent:
+                self.remove_item(self.approve_always)
 
         async def _resolve(self, interaction: discord.Interaction, choice: str, color: discord.Color, label_key: str):
             if not await self._gate(

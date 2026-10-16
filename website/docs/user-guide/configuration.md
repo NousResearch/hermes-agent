@@ -2882,6 +2882,20 @@ approvals:
 
 Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.
 
+### Shared gateway approval scope
+
+For a gateway profile used by more than one participant, set
+`approvals.allow_persistent: false` to offer only one-operation approval for
+dangerous commands and destructive session slash commands. This prevents a
+participant from adding a profile-wide command allowlist entry or permanently
+silencing a destructive-command confirmation; existing allowlist entries are
+not changed.
+
+```yaml
+approvals:
+  allow_persistent: false
+```
+
 :::warning
 Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.
 :::

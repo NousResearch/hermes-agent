@@ -4985,7 +4985,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
-        metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        metadata: Optional[dict[str, Any]] = None, allow_persistent: bool = True) -> SendResult:
         """Send a Block Kit three-option slash-command confirmation prompt."""
 
         def _build() -> tuple[str, list]:
@@ -4997,17 +4997,18 @@ class SlackAdapter(BasePlatformAdapter):
             # session_key|confirm_id in the button value lets the callback resolve
             # without extra bookkeeping.
             value = f"{session_key}|{confirm_id}"
+            buttons = [
+                self._button(t("platform.slack.confirm.approve_once")[:75],
+                             "hermes_confirm_once", value, style="primary"),
+            ]
+            if allow_persistent:
+                buttons.append(self._button(t("platform.slack.confirm.always_approve")[:75],
+                                            "hermes_confirm_always", value))
+            buttons.append(self._button(t("platform.slack.confirm.cancel")[:75],
+                                        "hermes_confirm_cancel", value, style="danger"))
             blocks = [
                 {"type": "section", "text": {"type": "mrkdwn", "text": f"*{_title}*\n\n{body}"}},
-                {
-                    "type": "actions",
-                    "elements": [
-                        self._button(t("platform.slack.confirm.approve_once")[:75],
-                                     "hermes_confirm_once", value, style="primary"),
-                        self._button(t("platform.slack.confirm.always_approve")[:75],
-                                     "hermes_confirm_always", value),
-                        self._button(t("platform.slack.confirm.cancel")[:75],
-                                     "hermes_confirm_cancel", value, style="danger")]}]
+                {"type": "actions", "elements": buttons}]
             return f"{_title}: {body[:100]}", blocks
 
         return await self._send_interactive_prompt(chat_id, metadata, _build, "send_slash_confirm")

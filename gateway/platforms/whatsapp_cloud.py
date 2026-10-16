@@ -509,14 +509,16 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str, metadata: Optional[dict[str, Any]] = None,
+        allow_persistent: bool = True,
     ) -> SendResult:
         """Approve Once / Always / Cancel buttons; ``confirm_id`` is caller-supplied."""
-        interactive = self._button_interactive(
-            self._truncate_body(f"*{title}*\n\n{message}"),
+        buttons = [
             (f"sc:once:{confirm_id}", self._truncate_button_label(t("platform.whatsapp.slash_confirm_once"))),
-            (f"sc:always:{confirm_id}", self._truncate_button_label(t("platform.whatsapp.slash_confirm_always"))),
-            (f"sc:cancel:{confirm_id}", self._truncate_button_label(t("platform.whatsapp.slash_confirm_cancel"))),
-        )
+        ]
+        if allow_persistent:
+            buttons.append((f"sc:always:{confirm_id}", self._truncate_button_label(t("platform.whatsapp.slash_confirm_always"))))
+        buttons.append((f"sc:cancel:{confirm_id}", self._truncate_button_label(t("platform.whatsapp.slash_confirm_cancel"))))
+        interactive = self._button_interactive(self._truncate_body(f"*{title}*\n\n{message}"), *buttons)
         return await self._send_interactive(chat_id, interactive, metadata, self._slash_confirm_state, confirm_id, session_key)
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
